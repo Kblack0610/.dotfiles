@@ -99,7 +99,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
 : "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
-: "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped
+: "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped and holds no run unit
+: "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_NIGHT_PROJECTS:=agent-runtime notes-cockpit}"
@@ -612,8 +613,7 @@ claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5"
   panel_lists "$agent" || return 1
   if [ -n "$sess" ]; then
-    [ -e "$PARKED_DIR/$sess" ] && return 1
-    compgen -G "$PARKED_DIR/$sess:*" >/dev/null && return 1
+    parked "$sess" && return 1
   else
     [ -n "$sids" ] || return 1
   fi
@@ -696,14 +696,20 @@ reap_confirm() {
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
+# parked <tmux session> -- a claude-acct park ledger names the session, or one of its windows: its
+# claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
+parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
+
 # live_runs -> "<project>/<area> <weight>[ <host>]" for every running session this runner started
 # itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
 # other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
+# A parked session holds none either: its claude has exited and costs nothing until it is unparked.
 live_runs() {
   local slug server sess origin project area state weight _agent _started _sids host
   while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
+    [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
   return 0
@@ -882,12 +888,13 @@ lane_cache() {
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
-# or resumed. They add load, which the gate reads, but no run slot.
+# or resumed. They add load, which the gate reads, but no run slot. A parked one adds no load.
 live_hand() {
   local slug server sess origin project area state _weight _agent _started _sids host
   while IFS=$'\x1f' read -r slug server sess origin project area state _weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
     case "$origin" in '' | run) continue ;; esac
+    [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s\n' "$project" "$area"
   done < <(item_sessions)
   return 0
@@ -2409,7 +2416,7 @@ start_items() {
       why=$(gate)
       [ -z "$why" ] || { say "$why, the pass stops after $n started"; return 0; }
     fi
-    if ! pick_item "$items"; then
+    if ! pick_item "$items" && ! preempt_pick; then
       # Every item too heavy for the units left is a full fleet, not a block: NOOP, as cmd_run says.
       if [ "$n" -gt 0 ]; then say "$PICK_WHY"
       elif [ "$PICK_FULL" = 1 ]; then settle NOOP "$PICK_WHY"
@@ -2482,8 +2489,8 @@ load_findings() {
 }
 
 # pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
-# holds, except that the first urgent item waiting only on run units keeps the free ones: a later
-# item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
+# holds, except that the first urgent item waiting only on run units (PICK_RESERVED, which
+# preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
@@ -2494,7 +2501,7 @@ pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
-  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST=''
+  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$DISPATCH_MAX_LIVE}
   while IFS= read -r it; do
@@ -2512,7 +2519,7 @@ pick_item() {
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
       why="the $free free run units wait for urgent $reserved"
     elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$DISPATCH_MAX_LIVE" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
-      reserved=$(jq -r .slug <<<"$it")
+      reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
     fi
     if [ -z "$why" ]; then PICKED=$it PLACE_HOST=$host; return 0; fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
@@ -2522,6 +2529,109 @@ pick_item() {
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
+}
+
+# --- preempt: an urgent item waiting only on run units takes them from a runner session ----------
+
+# preempt_victims <units> -> "<slug> <server> <session>" for each runner session (origin run, a
+# Claude on this machine, not urgent): those whose weight alone covers <units> run units first, then
+# the rest (a heavy urgent item among light sessions takes one a pass, the reserve keeping what each
+# frees); within each, lowest priority first, then the newest start. A hand or restored session is
+# never one, nor a fleet worker's (park is local), nor another harness's (park exits a Claude).
+preempt_victims() {
+  agent-queue list --json --state active 2>/dev/null | jq -sr --argjson u "$1" '
+    map(select(.state != "queued" and (.origin // "") == "run" and (.host // "") == ""
+        and (.agent // "claude") == "claude" and (.priority // "high") != "urgent"
+        and ((.session // "") | index(":")) != null))
+    | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
+               ({"high": 1, "low": 2}[.priority // "high"] // 1), (.started // "")]) | reverse
+    | .[] | (.session | index(":")) as $i | "\(.slug) \(.session[:$i]) \(.session[$i + 1:])"' 2>/dev/null
+  return 0
+}
+
+# preempt_for <urgent item json> -- park one runner session (preempt_victims) so the urgent item fits
+# this machine's run units (UNITS_FREE). claude-acct park refuses a session mid-turn, so a busy one
+# waits for the next pass and the next one in line is tried now; it never kills a turn. One park a
+# pass (PREEMPTED). A dry run names the victim it would park and parks nothing. Rc 0 once one is parked.
+preempt_for() {
+  [ "$DISPATCH_PREEMPT" = 1 ] && [ "${PREEMPTED:-0}" = 0 ] || return 1
+  local slug need free v='' server sess out
+  slug=$(jq -r .slug <<<"$1")
+  need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
+  free=${UNITS_FREE:-0}; [ "$free" -ge 0 ] || free=0
+  [ "$need" -gt "$free" ] || return 1
+  while read -r v server sess; do
+    [ -n "$sess" ] || continue
+    ! parked "$sess" && session_live "$sess" "$server" || continue
+    if [ "$DRY" = 1 ]; then say "would preempt $v ($server/$sess) for urgent $slug"; return 1; fi
+    if out=$(claude-acct park "$server/$sess" --why preempt --for "$slug" 2>&1); then
+      PREEMPTED=1
+      say "preempted $v ($server/$sess) for urgent $slug"
+      logline "preempted $v ($server/$sess) for urgent $slug"
+      return 0
+    fi
+    out=$(tail -n 1 <<<"$out" | sed 's/^claude-acct: park [^ ]*: //')
+    say "preempt waits: $v: $out"
+    logline "preempt waits: $v: $out"
+  done < <(preempt_victims $(( need - free )))
+  [ "$DRY" = 1 ] || [ -n "$v" ] || say "preempt: no runner session to park for urgent $slug"
+  return 1
+}
+
+# preempt_pick -- pick_item left the first urgent item waiting only on run units (PICK_RESERVED):
+# park a victim for it (preempt_for), re-read the units, and pick that item alone, so the units the
+# park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
+preempt_pick() {
+  [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
+  UNITS_FREE=$(( DISPATCH_MAX_LIVE - $(live_units) ))
+  pick_item "$PICK_RESERVED"
+}
+
+# preempt_items -> with preempt on, the runnable urgent items no finding holds and DISPATCH_MAX_LIVE
+# can fit, in queue order: what a pass at full run units goes on to pick (preempt_pick) instead of
+# stopping there. Rc 1 when the findings cannot be read: it cannot tell.
+preempt_items() {
+  [ "$DISPATCH_PREEMPT" = 1 ] || return 0
+  load_findings || return 1
+  local it
+  while IFS= read -r it; do
+    [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && printf '%s\n' "$it"
+  done < <(next_items | jq -c --argjson max "$DISPATCH_MAX_LIVE" '
+    select(.priority == "urgent" and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
+  return 0
+}
+
+# unpark_preempted -- resume the sessions preempt_for parked (ledger why=preempt), oldest park first,
+# while their run units fit and no urgent item waits to preempt (preempt_items, which must read). A
+# budget or hand park (why=park) stays the human's. It runs before a pass picks, so a victim gets
+# its units back ahead of any new start; a dispatch hold holds it too.
+unpark_preempted() {
+  [ "$DISPATCH_PREEMPT" = 1 ] || return 0
+  local ledgers f free key sess server w units out items urgent
+  ledgers=$(for f in "$PARKED_DIR"/*; do
+              [ -f "$f" ] && [ "$(sed -n 's/^why=//p' "$f" | head -n 1)" = preempt ] || continue
+              printf '%s\t%s\n' "$(sed -n 's/^parked=//p' "$f" | head -n 1)" "$f"
+            done | sort -n)
+  [ -n "$ledgers" ] || return 0
+  agent-hold check dispatch >/dev/null 2>&1 || return 0
+  urgent=$(preempt_items) && [ -z "$urgent" ] || return 0
+  free=$(( DISPATCH_MAX_LIVE - $(live_units) ))
+  items=$(item_sessions)
+  while IFS=$'\t' read -r _ f; do
+    key=${f##*/}
+    sess=$(sed -n 's/^session=//p' "$f" | head -n 1); server=$(sed -n 's/^server=//p' "$f" | head -n 1)
+    w=$(awk -F'\x1f' -v v="$server" -v s="$sess" '$2 == v && $3 == s { print $8; exit }' <<<"$items")
+    units=$(weight_units "${w:-light}")
+    [ "$units" -le "$free" ] || break
+    if [ "$DRY" = 1 ]; then say "would unpark $key"
+    elif out=$(claude-acct unpark "$key" 2>&1); then
+      say "unparked $key"; logline "unparked $key"
+    else
+      out=$(tail -n 1 <<<"$out"); say "unpark $key failed: $out"; logline "unpark $key failed: $out"; continue
+    fi
+    free=$(( free - units ))
+  done <<<"$ledgers"
+  return 0
 }
 
 # --- fleet workers (fleet-hosts.sh): where a pass may place a session besides this machine --------
@@ -3558,7 +3668,7 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
@@ -3568,6 +3678,7 @@ cmd_run() {
   agent-hold check dispatch >/dev/null 2>&1 && fill_night
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
+  unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")
   FLOOR_LIVE=$(grep -c . <<<"$runs" || true)
@@ -3582,7 +3693,10 @@ cmd_run() {
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
   [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
-  # A full fleet is working, not blocked: NOOP.
+  # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
+  # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
+  local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
+  if [ -n "$urgent" ] && [ -z "$(gate)" ]; then start_items "$urgent" 1; return; fi
   if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units${HOST_FREE[*]:+, every fleet worker full}, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is

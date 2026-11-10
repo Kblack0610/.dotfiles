@@ -508,6 +508,27 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
 }
 
+@test "park --why and --for land in the ledger and the page, and a preempt resume says why it was parked" {
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" park agent-1 --server lab --why preempt --for now-one
+  assert_success
+  assert_called 'agent-notify -p low -t park: agent-1 parked on main (idle), preempt for now-one (by '
+  run cat "$(PARKED_LEDGER agent-1)"
+  assert_line 'why=preempt'
+  assert_line 'for=now-one'
+  run "$ACCT" unpark agent-1
+  assert_success
+  run cat "$FIX/started"
+  assert_output --partial 'so\ an\ urgent\ queue\ item\ could\ take\ its\ run\ unit'
+  # move and a bad word are refused before tmux is touched
+  run "$ACCT" move agent-1 --server lab --why preempt
+  assert_failure 2
+  assert_output 'claude-acct: move: --why is for park'
+  run "$ACCT" park agent-1 --server lab --for 'two words'
+  assert_failure 2
+  assert_output 'claude-acct: park: --for needs a lowercase word'
+}
+
 # on_gateway <claude pid>: that claude runs on the Lazer gateway, as claude-lazer exports it
 on_gateway() { printf 'ANTHROPIC_BASE_URL=https://llm.example\0ANTHROPIC_AUTH_TOKEN=sk-x\0' > "$CLAUDE_ACCT_PROC/$1/environ"; }
 
