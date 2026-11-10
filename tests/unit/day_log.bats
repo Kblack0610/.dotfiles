@@ -32,10 +32,10 @@ case "$1" in
 esac
 EOF
   # usage-stub: rollup rows; `tokens line --date D` serves $SANDBOX/tokens-D and `tokens json --date D`
-  # $SANDBOX/tokjson-D, failing like no snapshot without it; `tokens snapshot` is a no-op
+  # $SANDBOX/tokjson-D, failing like no snapshot without it; `tokens snapshot` exits $SANDBOX/snap-rc, else 0
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
-[ "\$1 \$2" = "tokens snapshot" ] && exit 0
+[ "\$1 \$2" = "tokens snapshot" ] && exit "\$(cat "$SANDBOX/snap-rc" 2>/dev/null || echo 0)"
 [ "\$1 \$2" = "tokens json" ] && exec cat "$SANDBOX/tokjson-\$4" 2>/dev/null
 [ "\$1" = tokens ] && exec cat "$SANDBOX/tokens-\$4" 2>/dev/null
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
@@ -704,6 +704,15 @@ EOF
   assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" FAILED
   run tail -n 1 "$SANDBOX/astate/token-usage/activity.log"
   assert_output --partial 'why: day-log nightly 2026-10-27 rc=1, failed: ci'
+}
+
+@test "nightly names every step that failed, in run order" {
+  echo 1 > "$SANDBOX/cif-rc"; echo 1 > "$SANDBOX/snap-rc"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_failure 1
+  assert_output --partial 'day-log: nightly 2026-10-27 failed: tokens ci'
+  run tail -n 1 "$SANDBOX/astate/token-usage/activity.log"
+  assert_output --partial 'rc=1, failed: tokens ci'
 }
 
 @test "nightly by hand writes no runner outcome" {
