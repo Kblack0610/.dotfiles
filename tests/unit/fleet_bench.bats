@@ -23,7 +23,7 @@ setup() {
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
-  export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
+  export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
@@ -2632,7 +2632,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 # served by board-stub
 agent_feed() {
   BJSON="$SANDBOX/board.json"
-  printf '%s\n' "$@" | jq -Rnc '{rows: [inputs | {project: "game", lane: "agent", state: .}]}' > "$BJSON"
+  printf '%s\n' "$@" | jq -Rnc '{rows: [inputs | {profile: "personal", project: "game", lane: "agent", state: .}]}' > "$BJSON"
   printf '#!/usr/bin/env bash\ncat %q\n' "$BJSON" > "$SANDBOX/bin/board-stub"
   chmod +x "$SANDBOX/bin/board-stub"
   export BENCH_BOARD_CMD=board-stub
@@ -3303,8 +3303,8 @@ check_fixture() {
 @test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
   agent_feed open doing open
-  # a human-lane row and one in a project with automation off are not the agent board's
-  jq -c '.rows += [{project: "game", lane: "human", state: "open"}, {project: "off", lane: "agent", state: "open", automation: false}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  # a human-lane row, one in a project with automation off and one in another profile are not the agent board's
+  jq -c '.rows += [{profile: "personal", project: "game", lane: "human", state: "open"}, {profile: "personal", project: "off", lane: "agent", state: "open", automation: false}, {profile: "work", project: "other", lane: "agent", state: "open"}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
   echo board_open_max=2 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
