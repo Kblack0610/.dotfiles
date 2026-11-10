@@ -107,8 +107,17 @@ fn pass_in(
     build: &str,
     game: Option<&str>,
 ) -> Result<i32> {
-    let build = checked("--build", build)?;
-    let game = game.map(|g| checked("--game", g)).transpose()?;
+    // Both land in a sheet row's text, where `#` is a tag and `<!--` opens its marker.
+    let plain = |flag: &str, v: &str| -> Result<String> {
+        let v = checked(flag, v)?;
+        if v.contains('#') || v.contains("<!--") || v.contains("-->") {
+            bail!("{flag} takes no `#` and no `<!--`/`-->`: it is written into a sheet row");
+        }
+        Ok(v.to_string())
+    };
+    let build = plain("--build", build)?;
+    let game = game.map(|g| plain("--game", g)).transpose()?;
+    let game = game.as_deref();
     let content = fs::read_to_string(path(dir)).unwrap_or_default();
     let n = open_rows(&content)
         .iter()
@@ -323,8 +332,7 @@ where
 /// authored line anywhere else stays as prose.
 fn is_scaffold(line: &str) -> bool {
     let t = line.trim();
-    t == "---"
-        || t.eq_ignore_ascii_case("### Done")
+    t.eq_ignore_ascii_case("### Done")
         || t.eq_ignore_ascii_case(NO_PR)
         || t.strip_prefix("### PR ")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -557,13 +565,15 @@ pub(crate) fn sheet_sweep(
     layout_only: bool,
     dry_run: bool,
 ) -> Result<i32> {
-    if !crate::config::managed_path(file) {
+    // Only a project's playtest.md, the one beside a task sheet: no other folder gets a
+    // version note.
+    let dir = file.parent().unwrap_or(Path::new("."));
+    if !crate::config::managed_path(file) || project_tasks::task_sheet(dir).is_none() {
         if stdin {
             print!("{content}");
         }
         return Ok(0);
     }
-    let dir = file.parent().unwrap_or(Path::new("."));
     let project = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -743,6 +753,9 @@ mod tests {
             again.content, laid.content,
             "a second sweep changes nothing"
         );
+        // An authored rule is the human's prose, never scaffold the sweep deletes.
+        let ruled = lay_out("# P\n\n## G\n---\n- [ ] a\n", day("2026-11-09"), None);
+        assert_eq!(ruled.content, "# P\n\n## G\n---\n### No PR\n- [ ] a\n");
         // A file with no game heading is left as it is.
         let bare = "# Playtest\n\nnothing yet\n";
         assert_eq!(

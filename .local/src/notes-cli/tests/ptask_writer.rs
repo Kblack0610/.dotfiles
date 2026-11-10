@@ -578,6 +578,11 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
     );
     assert_eq!(pt(&["pass", "--build", "b2101"]).status.code(), Some(3));
     assert_eq!(h.sheet().matches("check(playtest)").count(), 1);
+    // A tag or a marker in the build would retag the row.
+    assert!(!pt(&["pass", "--build", "b9 #v9.9.9"]).status.success());
+    // The next build is its own row, though only its id differs.
+    ok(&pt(&["pass", "--build", "b2102"]));
+    assert!(h.sheet().contains("play build b2102, 3 checks"), "{}", h.sheet());
 
     // A tick is dated and stays in Done; the nightly sweep rolls off only what the window drops.
     ok(&pt(&["done", "lobby", "--unverified", "played it"]));
@@ -611,5 +616,5 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
         Some(0),
         "no open checks under that game files nothing"
     );
-    assert_eq!(h.sheet().matches("check(playtest)").count(), 1);
+    assert_eq!(h.sheet().matches("check(playtest)").count(), 2);
 }
