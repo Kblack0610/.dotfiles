@@ -64,12 +64,29 @@ forbid = [
 quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
 source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
-# The morning briefing page (refs/<date>/briefing.md), linted whole: at most 5 items under Needs you and 6 under Areas.
+# The morning briefing page (refs/<date>/briefing.md), linted whole: the human overview. Needs you
+# holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Builds and
+# releases and Overnight 14, Money 3; each section must be there.
 [channel.briefing]
-sections = [['^## Needs you$', 5, 160], ['^## Areas$', 6, 200]]
+sections = [['^## Needs you$', 5, 160], ['^## Landed yesterday$', 10, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 3, 160]]
+require = [
+  ['(?m)^## Needs you$', 'a Needs you section'],
+  ['(?m)^## Landed yesterday$', 'a Landed yesterday section'],
+  ['(?m)^## Builds and releases$', 'a Builds and releases section'],
+  ['(?m)^## Overnight$', 'an Overnight section'],
+  ['(?m)^## Money$', 'a Money section'],
+]
 max_line = 200
 forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
 source = { kind = "files", glob = "~/.notes/journal/refs/*/briefing.md" }
+
+# The agent briefing (refs/<date>/agents.md): what the briefing was before the overview split off.
+# At most 5 items under Needs you and 6 under Areas.
+[channel.briefing-agents]
+sections = [['^## Needs you$', 5, 160], ['^## Areas$', 6, 200]]
+max_line = 200
+forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
+source = { kind = "files", glob = "~/.notes/journal/refs/*/agents.md" }
 
 # The Morning block the briefing copies into the daily note.
 [channel.morning]

@@ -45,7 +45,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub vitals [--json]
        hub needs --json | --page
-       hub briefing --json | --md [--since WHEN]
+       hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
        hub board --json
@@ -65,10 +65,12 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
-  briefing what needs you, then one line per area (Infra, Sessions, Workers overnight, Nightly,
-          Delivery, Costs) and the detail, for the window from WHEN (epoch seconds or RFC 3339,
-          default 12h ago); --md is the file agentctl-briefing writes. Exits 1 when a source could
-          not be read (the output says which)
+  briefing the human overview (what needs you, what landed, builds and releases, overnight,
+          money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
+          the file agentctl-briefing writes as briefing.md, and --agents-md FILE writes the agent
+          briefing (what needs you, one line per area: Infra, Sessions, Workers overnight,
+          Nightly, Delivery, Costs, and the detail) from the same read. Exits 1 when a source
+          could not be read (the output says which)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
   projects --page NAME
@@ -259,7 +261,7 @@ fn needs(args: Vec<String>) -> i32 {
 
 /// `hub briefing`: hub-core's briefing over the window from `--since`.
 fn briefing(args: Vec<String>) -> i32 {
-    let (mut since, mut md) = (None, None);
+    let (mut since, mut md, mut agents) = (None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -272,6 +274,7 @@ fn briefing(args: Vec<String>) -> i32 {
             }
             "--json" => md = Some(false),
             "--md" => md = Some(true),
+            "--agents-md" => agents = Some(it.next().unwrap_or_else(|| die(USAGE)).clone()),
             _ => die(USAGE),
         }
     }
@@ -279,6 +282,12 @@ fn briefing(args: Vec<String>) -> i32 {
     let now = chrono::Utc::now().timestamp();
     let since = since.unwrap_or(now - hub_core::briefing::DEFAULT_WINDOW_SECS);
     let b = hub_core::briefing::build(&hub_core::briefing::gather(since, now));
+    if let Some(path) = agents {
+        if let Err(e) = std::fs::write(&path, b.agents_markdown()) {
+            eprintln!("hub: {path}: {e}");
+            return 2;
+        }
+    }
     if md {
         print!("{}", b.markdown());
     } else {
