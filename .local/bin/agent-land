@@ -24,7 +24,8 @@
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
-# line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
+# line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
+# closes with the same proof). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
@@ -47,6 +48,8 @@ usage() {
 }
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
+# shellcheck source=../lib/plan-phases.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
@@ -414,6 +417,31 @@ credit() {
 # board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
 # Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
+# close_plan_rows: once --plan has no open phase left, each row on its `rows:` line (plan_rows) that
+# is still open on a board closes with this PR as proof, as the item's own row does. The PR is
+# merged by now, so a row it cannot close is a line with the command, never a failed landing.
+close_plan_rows() {
+  local ids feed id hit prof proj lane out flag
+  [ "$partial" -eq 0 ] || return 0
+  ids=$(plan_rows "$plan")
+  [ -n "$ids" ] || return 0
+  plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 == $2 { ok = 1 } END { exit !ok }' || return 0
+  if grep -q '^- \[-\]' "$plan"; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
+  feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
+  while IFS= read -r id; do
+    hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
+      { echo "rows: notes board --json was not JSON; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
+    if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
+    IFS=$'\t' read -r prof proj lane <<<"$hit"
+    flag=(); [ "$lane" = agent ] && flag=(--agent)
+    if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:$pr${merged:+ commit:${merged:0:12}}" 2>&1); then
+      echo "rows: closed $id on $proj"
+    else
+      echo "rows: $id not closed ($(lastline "$out")): notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:$pr"
+    fi
+  done <<<"$ids"
+}
+
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
   [ -f "$plan" ] || die "no plan file: $plan"
@@ -445,6 +473,10 @@ if [ "$dry" -eq 1 ]; then
   mapfile -t b < <(board_cmd)
   [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
+  if [ -n "$plan" ] && [ "$partial" -eq 0 ] && [ -n "$(plan_rows "$plan")" ] &&
+    plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 + 1 == $2 { ok = 1 } END { exit !ok }'; then
+    echo "rows: close $(plan_rows "$plan" | tr '\n' ' ')with pr:$pr, the plan's last phase"
+  fi
   exit 0
 fi
 
@@ -569,6 +601,7 @@ if [ -n "$plan" ]; then
     { print }' "$plan" >"$tmp" || fail plan "awk could not rewrite $plan"
   cat "$tmp" >"$plan" && rm -f "$tmp"
   echo "plan: ticked \"$phase\""
+  close_plan_rows
 fi
 
 echo "landed #$pr"
