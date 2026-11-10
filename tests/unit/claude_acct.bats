@@ -163,6 +163,22 @@ creds() {
   assert_output ''
 }
 
+@test "link points at the real file, one hop, so a settings write cannot replace the stow link" {
+  # Claude Code follows one symlink before it renames a temp file over the target,
+  # so a two-hop chain turns the middle (stow) link into a plain copy.
+  mkdir -p "$HOME/.dotfiles/.claude"
+  echo '{}' > "$HOME/.dotfiles/.claude/settings.json"
+  ln -s ../.dotfiles/.claude/settings.json "$HOME/.claude/settings.json"
+  ln -s "$HOME/.claude/settings.json" "$ALT/settings.json"   # the old two-hop link
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/settings.json")" == "$(readlink -f "$HOME/.dotfiles/.claude/settings.json")" ]]
+  # an old link is replaced in place, never parked
+  [[ ! -e "$ALT/.pre-share-$(date +%F)" ]]
+  run "$ACCT" link
+  assert_output ''
+}
+
 @test "link merges an account's live sessions into the shared registry" {
   mkdir -p "$HOME/.claude/sessions" "$ALT/sessions"
   echo main > "$HOME/.claude/sessions/100.json"

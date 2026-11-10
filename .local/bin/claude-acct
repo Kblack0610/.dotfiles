@@ -380,14 +380,19 @@ cmd_link() {
     while IFS=$'\037' read -r name dir; do
         [[ -n "$dir" && -d "$dir" ]] || continue
         for e in "${SHARED[@]}"; do
-            src="$MAIN_DIR/$e" dst="$dir/$e"
-            [[ -e "$src" ]] || continue
-            [[ -L "$dst" && "$(readlink "$dst")" == "$src" ]] && continue
-            if [[ -d "$dst" && ! -L "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
+            # One hop to the real file: Claude Code follows a single symlink and renames a
+            # temp file over its target, so linking to a stow link would replace that link.
+            [[ -e "$MAIN_DIR/$e" ]] || continue
+            src="$(readlink -f "$MAIN_DIR/$e")" dst="$dir/$e"
+            if [[ -L "$dst" ]]; then
+                [[ "$(readlink "$dst")" == "$src" ]] || ln -sfn "$src" "$dst"
+                continue
+            fi
+            if [[ -d "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
                 find "$dst" -mindepth 1 -maxdepth 1 -exec mv -n -t "$src" {} +
                 rmdir "$dst" 2>/dev/null   # anything left (a name clash) is parked below
             fi
-            if [[ -e "$dst" || -L "$dst" ]]; then
+            if [[ -e "$dst" ]]; then
                 # Never delete what an account already had: park it for a manual merge.
                 bk="$dir/.pre-share-$(date +%F)"
                 mkdir -p "$bk"
