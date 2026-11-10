@@ -176,9 +176,41 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
     (joined != content).then_some((joined, report))
 }
 
-/// Is this open row started (`- [/]`, a queue item exists)?
-fn is_started(line: &str) -> bool {
-    line.trim_start().starts_with("- [/]")
+/// The section an open row is laid out in, in sheet order. The sections follow the queue
+/// (human, 2026-11-09): Now is the rows whose item runs (`run:`), Next up every queued row,
+/// uncapped, and Backlog the rows no item is behind. An epic row is in Epics whatever its box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Section {
+    Epics,
+    Now,
+    Next,
+    Backlog,
+}
+
+impl Section {
+    /// The word `notes board --json` prints in a row's `section`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Section::Epics => "epics",
+            Section::Now => "now",
+            Section::Next => "next",
+            Section::Backlog => "backlog",
+        }
+    }
+}
+
+/// [`Section`] of the open row `line`: the one rule the sweep lays a sheet out by and the
+/// feed reports, so a view grouping by it draws the sheet's order.
+pub(crate) fn section_of(line: &str) -> Section {
+    if epics::is_epic(line) {
+        Section::Epics
+    } else if crate::project_tasks::is_running(line) {
+        Section::Now
+    } else if line.trim_start().starts_with("- [/]") {
+        Section::Next
+    } else {
+        Section::Backlog
+    }
 }
 
 /// Lay one `## Tasks` body out in its sections. A heading is emitted only over rows, except
@@ -188,15 +220,11 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     let mut open = tb.open;
     // Rows aimed past the open version wait in the backlog whatever their rank.
     open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
-    let (epic_rows, open): (Vec<Block>, Vec<Block>) =
-        open.into_iter().partition(|b| epics::is_epic(&b[0]));
-    // The sections follow the queue (human, 2026-11-09): Now is the rows whose item runs
-    // (`run:`), Next up every queued row, uncapped, and Backlog the rows no item is behind.
-    let (started, backlog): (Vec<Block>, Vec<Block>) =
-        open.into_iter().partition(|b| is_started(&b[0]));
-    let (now, open): (Vec<Block>, Vec<Block>) = started
-        .into_iter()
-        .partition(|b| crate::project_tasks::is_running(&b[0]));
+    let mut by: [Vec<Block>; 4] = Default::default();
+    for b in open {
+        by[section_of(&b[0]) as usize].push(b);
+    }
+    let [epic_rows, now, open, backlog] = by;
     let mut done = tb.done;
     // Newest close first, undated last; equal days keep file order.
     done.sort_by_key(|b| std::cmp::Reverse(crate::project_tasks::done_on(&b[0])));

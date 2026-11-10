@@ -48,13 +48,14 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub briefing --json | --md [--since WHEN]
        hub projects --json
        hub projects --page NAME
+       hub board --json
        hub tabs
   TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
           that lands on its new tab, on the section it became when it became one
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its open rows, 'fleet RUNNER' that runner's page)
+          over its rows, 'fleet RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would); fleet takes
@@ -73,6 +74,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   projects --page NAME
           one project's page, what its card shows when opened: the flow line, what needs you,
           the epics by system with each system's criteria, the next stage and shipped versions
+  board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
+          forecast day and queue state, one head line per project and the words beside each
+          sheet row (what nvim draws as virtual text over a project sheet)
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -125,6 +129,14 @@ fn main() {
         }
         let p = hub_core::projects::gather();
         println!("{}", hub_core::projects::to_json(&p));
+        return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("board") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--json"] {
+            die(USAGE);
+        }
+        println!("{}", hub_core::sheet_view::gather());
         return;
     }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
@@ -428,7 +440,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Projects) {
         let sys = hub_core::session_actions::System;
         a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(hub_core::tasks::feed(&sys));
+        a.tasks = Some(hub_core::sheet_view::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
         // `--tab 'projects <name>'` prints that project's opened card, its page read here, over

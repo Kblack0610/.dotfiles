@@ -1,8 +1,10 @@
 "use strict";
 // The Board tab (every project's rows) and the rows under an opened project on Projects: the
-// shared table (table.js) over the open rows from `notes board --json` (/api/board, which
-// filters and sorts by the view in the showing tab's URL query): the human sheet, the agent board,
-// playtest; each profile's Focus is a count linking to the Daily tab. A row opens under itself
+// shared table (table.js) over the rows from `notes board --json` (/api/board, which filters and
+// sorts by the view in the showing tab's URL query): the human sheet, the agent board, playtest,
+// open ones under their sheet sections (each row's `label`) then the closed ones, each row's
+// `when` its queue state and forecast or its close day and PRs, the hub's words for both; each
+// profile's Focus is a count linking to the Daily tab. A closed row has no actions. A row opens under itself
 // with its actions: add, start, done, drop, move (to a project or a version), a release sooner
 // or later, edit and tags go through `notes ptask --exact` with the row's raw line (POST
 // /api/board), so a row changed elsewhere since this page read it fails the write, and the page
@@ -95,7 +97,9 @@ function bRow(r, i) {
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
   ].filter(Boolean).join(", ");
   let acts = "";
-  if (bst.form && bst.form.k === k) {
+  if (r.state === "done") {
+    // Closed rows are the record: reopening one is the sheet's.
+  } else if (bst.form && bst.form.k === k) {
     const cancel = `<button class="btn sm" data-formcancel="${i}">Cancel</button></div>`;
     const kind = bst.form.kind;
     if (kind === "done" || kind === "drop") {
@@ -141,7 +145,7 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-const B_COLS = { priority: ["priority"], project: ["project"], lane: ["lane"], state: ["state"], id: ["id"], version: ["version"], size: ["size"], tier: ["tier", "n"], since: ["since"], text: ["text"] };
+const B_COLS = { section: ["section"], priority: ["priority"], project: ["project"], lane: ["lane"], state: ["state"], id: ["id"], version: ["version"], size: ["size"], tier: ["tier", "n"], since: ["since"], when: ["when"], text: ["text"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 
@@ -149,10 +153,10 @@ const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
-    `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td><td>${bDash(r.project)}</td><td>${esc(r.lane)}</td>` +
+    `<td><b>${esc(r.label || "")}</b></td><td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td><td>${bDash(r.project)}</td><td>${esc(r.lane)}</td>` +
     `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td><code>${bDash(r.id)}</code></td>` +
     `<td>${bDash(r.lane === "playtest" ? r.game : r.version)}</td><td>${bDash(r.size)}</td><td class="n">${bDash(r.tier)}</td>` +
-    `<td>${bDash((r.since || "").slice(5))}</td><td><div class="btext">${esc(r.text)}</div></td></tr>`;
+    `<td>${bDash((r.since || "").slice(5))}</td><td>${bDash(r.when)}</td><td><div class="btext">${esc(r.text)}</div></td></tr>`;
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
@@ -165,13 +169,14 @@ function bBody() {
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  return `<div class="muted qstats">${t.shown} of ${t.total} open rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
+  return `<div class="muted qstats">${t.shown} of ${t.total} rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
+    (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
     (shown.length
       ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table>` +
         tblMore(more, "more") + `</div>`
-      : `<div class="card muted">${t.total ? "No row matches." : "No open rows."}</div>`);
+      : `<div class="card muted">${t.total ? "No row matches." : "No rows."}</div>`);
 }
 
 function renderBoard() {
