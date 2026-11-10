@@ -66,9 +66,9 @@ source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
 # The morning briefing page (refs/<date>/briefing.md), linted whole: the human overview. Needs you
 # holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Builds and
-# releases and Overnight 14, Money 3; each section must be there.
+# releases and Overnight 14, Money 6 (spent, one line per store or broker); each section must be there.
 [channel.briefing]
-sections = [['^## Needs you$', 5, 160], ['^## Landed yesterday$', 10, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 3, 160]]
+sections = [['^## Needs you$', 5, 160], ['^## Landed yesterday$', 10, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 6, 160]]
 require = [
   ['(?m)^## Needs you$', 'a Needs you section'],
   ['(?m)^## Landed yesterday$', 'a Landed yesterday section'],
