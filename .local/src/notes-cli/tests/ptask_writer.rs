@@ -598,3 +598,81 @@ fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
     let _ = agent(&h, &["done", "dm-3", "--proof", "pr:2"]);
     assert_eq!(h.sheet().matches("verify dm-1").count(), 1, "{}", h.sheet());
 }
+
+#[test]
+fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window() {
+    let h = Home::new("playtest");
+    let pt = |verb: &[&str]| {
+        let mut args = vec!["ptask", "demo", "--playtest"];
+        args.extend_from_slice(verb);
+        h.run(&args)
+    };
+    let file = h.0.join("notes/projects/current/demo/playtest.md");
+    ok(&pt(&[
+        "add",
+        "--pr",
+        "7",
+        "lobby: two pads join: both spawn",
+    ]));
+    ok(&pt(&["add", "--pr", "12", "arena: throw: the ball arcs"]));
+    ok(&pt(&["add", "menu: back exits: you land on the title"]));
+    let laid = fs::read_to_string(&file).unwrap();
+    let at = |s: &str| laid.find(s).unwrap_or_else(|| panic!("no {s}:\n{laid}"));
+    assert!(
+        at("### PR 12") < at("arena")
+            && at("arena") < at("### PR 7")
+            && at("### PR 7") < at("lobby"),
+        "newest PR first:\n{laid}"
+    );
+    assert!(at("### No PR") > at("lobby"), "no PR last:\n{laid}");
+
+    // A pass counts the open checks into one human sheet row; the same build again is a twin.
+    ok(&pt(&["pass", "--build", "b2101"]));
+    assert!(
+        h.sheet()
+            .contains("- [ ] check(playtest): play build b2101, 3 checks in playtest.md #"),
+        "{}",
+        h.sheet()
+    );
+    assert_eq!(pt(&["pass", "--build", "b2101"]).status.code(), Some(3));
+    assert_eq!(h.sheet().matches("check(playtest)").count(), 1);
+    // A tag or a marker in the build would retag the row.
+    assert!(!pt(&["pass", "--build", "b9 #v9.9.9"]).status.success());
+    // The next build is its own row, though only its id differs.
+    ok(&pt(&["pass", "--build", "b2102"]));
+    assert!(h.sheet().contains("play build b2102, 3 checks"), "{}", h.sheet());
+
+    // A tick is dated and stays in Done; the nightly sweep rolls off only what the window drops.
+    ok(&pt(&["done", "lobby", "--unverified", "played it"]));
+    let laid = fs::read_to_string(&file).unwrap();
+    let done = laid.find("### Done").expect("a Done section");
+    let row = laid.find("- [x] lobby").expect("the ticked check");
+    assert!(row > done && laid[row..].contains("done:"), "{laid}");
+    ok(&pt(&[
+        "drop",
+        "menu",
+        "--why",
+        "superseded by the arena check",
+    ]));
+    ok(&h.run(&["projects", "--sweep"]));
+    let laid = fs::read_to_string(&file).unwrap();
+    assert!(laid.contains("- [x] lobby"), "kept in the window:\n{laid}");
+    assert!(
+        !laid.contains("menu: back"),
+        "a dropped check rolls off:\n{laid}"
+    );
+    let note = fs::read_to_string(h.0.join("notes/projects/current/demo/agent/versions/v0.1.0.md"))
+        .unwrap();
+    assert!(
+        note.contains("## Playtest done: General\n- [x] menu: back exits"),
+        "{note}"
+    );
+    assert_eq!(
+        pt(&["pass", "--build", "x", "--game", "Nope"])
+            .status
+            .code(),
+        Some(0),
+        "no open checks under that game files nothing"
+    );
+    assert_eq!(h.sheet().matches("check(playtest)").count(), 2);
+}

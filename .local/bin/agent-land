@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--dry-run]
+#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--dry-run]
 #
 # Which repo <pr> is in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else gh's
 # default for this checkout. Either way the PR must be in this checkout's origin repo (git, the merge
@@ -15,8 +15,8 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
-# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
-# --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# for a landing train whose member PRs read MERGED only while their heads stay reachable; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
@@ -223,7 +223,7 @@ catch_up() {
   return 0
 }
 
-pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0
+pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash
 implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -233,6 +233,7 @@ while [ $# -gt 0 ]; do
   --item) item="${2:?--item needs a value}" implied='' && shift ;;
   --repo) repo="${2:?--repo needs a value}" repo_from=--repo && shift ;;
   --partial) partial=1 ;;
+  --merge-commit) method=--merge ;;
   --dry-run) dry=1 ;;
   -h | --help) usage ;;
   -*) die "unknown flag: $1" ;;
@@ -468,7 +469,7 @@ if [ "$dry" -eq 1 ]; then
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
-  echo "merge: gh pr merge $pr${repo:+ -R $repo} --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
+  echo "merge: gh pr merge $pr${repo:+ -R $repo} $method --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
   echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo; never fails the landing)"
@@ -525,7 +526,7 @@ else
   while ! catch_up; do wait_checks; done
 
   head=$(git rev-parse HEAD)
-  out=$(gh pr merge "$pr" "${R[@]}" --squash --match-head-commit "$head" 2>&1) || fail merge "$(lastline "$out")"
+  out=$(gh pr merge "$pr" "${R[@]}" "$method" --match-head-commit "$head" 2>&1) || fail merge "$(lastline "$out")"
   state=$(gh pr view "$pr" "${R[@]}" --json state -q .state 2>&1) || fail merge "gh pr view: $(lastline "$state")"
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
   echo "merge: #$pr MERGED at ${head:0:8}"

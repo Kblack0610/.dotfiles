@@ -288,6 +288,22 @@ item() {
   assert_output 1
 }
 
+@test "--merge-commit lands a train with a merge commit, never a squash, so its member heads stay reachable" {
+  run "$LAND" 42 --item ship --merge-commit
+  assert_success
+  assert_line 'landed #42'
+  run grep -c 'pr merge 42 --merge --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+  run grep -c 'pr merge 42 --squash' "$LOG"
+  assert_output 0
+}
+
+@test "--merge-commit --dry-run names the merge-commit method" {
+  run "$LAND" 42 --item ship --merge-commit --dry-run
+  assert_success
+  assert_output --partial 'gh pr merge 42 --merge --match-head-commit'
+}
+
 # second_wait: the catch-up push was followed by a second checks wait, before the merge
 second_wait() {
   assert_success
