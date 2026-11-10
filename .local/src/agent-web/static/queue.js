@@ -147,6 +147,7 @@ const Q_COLS = {
 // The state cell: what the item is. A finish says how it ended.
 function qState(i) {
   if (i.state === "waiting") return `<td class="warn">needs</td>`;
+  if (i.state === "review") return `<td>on a PR</td>`;
   if (i.state === "done") {
     const s = i.status || "ok";
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;

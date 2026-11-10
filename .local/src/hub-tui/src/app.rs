@@ -1100,7 +1100,9 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Tasks(Box::new(hub_core::tasks::feed(runner.as_ref()))));
+                let _ = tx.send(Msg::Tasks(Box::new(hub_core::sheet_view::feed(
+                    runner.as_ref(),
+                ))));
             });
         }
     }
@@ -1682,6 +1684,17 @@ impl App {
                 }
             }
             Msg::ProjPage(pg) => {
+                if self.tv.project.as_ref().map(|(_, n)| n) == Some(&pg.project) {
+                    // The narrowed rows can shrink: keep the selected row, else clamp.
+                    let was = match &self.tasks {
+                        Some(Ok(f)) => self.tv.selected(f).cloned(),
+                        _ => None,
+                    };
+                    self.pv.narrow(&mut self.tv, &pg);
+                    if let Some(Ok(f)) = &self.tasks {
+                        self.tv.reselect(was, f);
+                    }
+                }
                 self.proj_page = Some(*pg);
                 if self.proj_page_read.done() {
                     self.read_proj_page();
@@ -2073,6 +2086,29 @@ impl App {
         if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
             self.pv.folds = !self.pv.folds;
             return true;
+        }
+        if !self.tv.typing() && self.tv.project.is_some() {
+            let name = self.tv.project.as_ref().map(|(_, n)| n.clone());
+            let pg = self
+                .proj_page
+                .as_ref()
+                .filter(|pg| Some(&pg.project) == name.as_ref());
+            match (k.code, pg) {
+                (KeyCode::Char('z'), Some(pg)) => {
+                    self.pv.step_system(&mut self.tv, pg);
+                    return true;
+                }
+                (KeyCode::Char('Z'), Some(pg)) => {
+                    self.pv.step_epic(&mut self.tv, pg);
+                    return true;
+                }
+                // An open epic narrows the rows: Esc widens them before it clears or goes back.
+                (KeyCode::Esc, _) if self.pv.epic.is_some() => {
+                    self.pv.close_epic(&mut self.tv);
+                    return true;
+                }
+                _ => {}
+            }
         }
         if let (false, KeyCode::Char('R'), Some((_, name))) =
             (self.tv.typing(), k.code, self.tv.project.clone())
@@ -3085,7 +3121,7 @@ impl App {
             }
             Tab::Projects if self.pv.open => format!(
                 "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "F page sections  " } else { "" }
+                if self.tv.project.is_some() { "z/Z/F folds  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open  a all rows  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
@@ -3187,7 +3223,7 @@ impl App {
                             .find(|c| c.profile == *profile && c.name == *name)
                         {
                             let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                            l = projtab::open_lines(c, pg, self.pv.folds, self.p, w);
+                            l = projtab::open_lines(c, pg, &self.pv, self.p, w);
                             l.push(Line::raw(""));
                         }
                     }
@@ -4539,7 +4575,7 @@ mod tests {
         );
         assert!(
             s.contains("FLOW  inbox - | board - | queued 2")
-                && s.contains("running 1 | needs you 1"),
+                && s.contains("running 1 | on a PR 0 | needs you 1"),
             "{s}"
         );
         assert!(
@@ -4552,7 +4588,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("all 5  needs you 1  running 1  up next 2  done 1"),
+            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
             "{s}"
         );
         assert!(
@@ -4790,21 +4826,44 @@ mod tests {
         let s = screen(&mut a, 140, 40);
         assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
         assert!(s.contains("F opens it"), "{s}");
-        assert!(s.lines().last().unwrap().contains("F page sections"), "{s}");
+        assert!(s.lines().last().unwrap().contains("z/Z/F folds"), "{s}");
         a.handle(key('F'));
         assert!(a.pv.folds);
         assert!(!screen(&mut a, 140, 40).contains("F opens it"));
         a.handle(key('F'));
+        // Z opens the first system's first epic and narrows the rows to its open tasks; Esc
+        // widens them again.
+        let mut pg = a.proj_page.clone().unwrap();
+        pg.systems = vec![hub_core::page::System {
+            id: "ui".into(),
+            epics: vec![hub_core::page::EpicLine {
+                id: "de-9".into(),
+                leaves: vec![hub_core::page::Leaf {
+                    id: "de-1".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        a.proj_page = Some(pg);
+        a.handle(key('Z'));
+        assert_eq!(a.tv.only, Some(vec!["de-1".to_string()]));
+        assert!(screen(&mut a, 140, 40).contains("of the open epic (Esc shows all)"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.pv.open && a.tv.only.is_none() && a.pv.epic.is_none());
+        a.handle(key('z'));
+        assert!(a.pv.sys.is_none(), "z after ui folds it");
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 of 3 open rows"),
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
         assert!(s.lines().last().unwrap().contains("t/T tag"), "{s}");
         // The selected row in full sits under the rows, above the keys.
         assert!(
-            at_line(&s, "OPEN ROWS") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
+            at_line(&s, "ROWS  ") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
             "{s}"
         );
         assert!(

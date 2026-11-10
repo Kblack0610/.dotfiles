@@ -48,7 +48,7 @@ return {
             desc = "Open today's refs in Neo-tree",
         })
         vim.keymap.set("n", "<C-p>", function() _G.open_dev_projects_in_neotree() end, {
-            desc = "Open /dev/projects in Neo-tree",
+            desc = "Reveal the projects index in Neo-tree",
         })
         -- Kitty hack, these are bound to alt, but kitty is binding ctrl + KEY to send this as well
         -- see kitty.conf

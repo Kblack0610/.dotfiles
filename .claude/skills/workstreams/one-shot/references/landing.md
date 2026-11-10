@@ -16,7 +16,7 @@ Work blocked on another queue item (one that fixes its red, or a PR that must la
 
 - Record the open PR on this item: `agent-queue set <slug> pr=<owner>/<repo>#<N>`.
 - Queue the rest: `agent-queue add --project <p> --after <blocker> "<next step, naming the plan file, the PR and its branch>"`, and mark the phase `- [-] <name>: queue item <new slug>`. A blocker that closes failed never releases an `after:` hold, so the wind-down note names the blocker.
-- Wind down without `auto`, as `--pr-only` does: once the session is gone, reap parks this item in `waiting/` and closes it when the PR merges.
+- Wind down without `auto`, as `--pr-only` does: once the session is gone, reap parks this item in `review/` and closes it when the PR merges.
 
 ## Blocked mode
 

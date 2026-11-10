@@ -56,6 +56,9 @@ struct RawConfig {
     /// `board` above is already this file's key for the board's PATH.
     #[serde(default)]
     board_layout: RawBoardLayout,
+    /// `[sheet]`: how a project sheet's `## Tasks` is laid out ([`SheetShape`]).
+    #[serde(default)]
+    sheet: SheetShape,
     /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
@@ -72,6 +75,33 @@ pub struct ProjectType {
     /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
     #[serde(default)]
     pub requires: Vec<String>,
+}
+
+/// `[sheet]`: the sizes of a project sheet's `## Tasks` sections (`project_sweep`). Every key
+/// is optional; the defaults are the human's 2026-11-09 choice.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct SheetShape {
+    /// Days a closed row stays in `### Done` before it rolls into `agent/versions/<v>.md`.
+    pub done_days: i64,
+    /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
+    /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
+    pub done_max: usize,
+}
+
+impl Default for SheetShape {
+    fn default() -> Self {
+        SheetShape {
+            done_days: 7,
+            done_max: 30,
+        }
+    }
+}
+
+/// The `[sheet]` table, read independently of the active profile like [`board_layout`]: a
+/// sheet looks the same in every org. The defaults when there is no config.
+pub fn sheet_shape() -> SheetShape {
+    load_raw().map(|(raw, _)| raw.sheet).unwrap_or_default()
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -187,6 +217,12 @@ fn default_surface_profile() -> String {
 #[derive(Debug, Deserialize, Clone)]
 struct RawProfile {
     root: String,
+    /// `automation = false`: board automation leaves this profile's sheets alone (the sweep,
+    /// `doctor --projects`, propose, migrate-rows; inbox-triage and fleet-dispatch read it from
+    /// the `automation` field of `notes board --json`). For an org whose tracker is elsewhere
+    /// (a work profile tracked in another tool). Read-only views still show it. Default on.
+    #[serde(default = "default_true")]
+    automation: bool,
     #[serde(default = "default_daily")]
     daily: String,
     #[serde(default = "default_refs")]
@@ -306,6 +342,10 @@ fn default_inbox() -> String {
 // The leaf names match personal's on purpose: one engine writes one shape of note, so a job
 // vault should read like the journal. A vault still holding the older `log/` is carried across
 // by `daily::migrate_log_to_daily`, which is why this can change without a per-machine edit.
+fn default_true() -> bool {
+    true
+}
+
 fn default_daily() -> String {
     "daily".to_string()
 }
@@ -493,6 +533,7 @@ fn builtin_default() -> RawConfig {
         "personal".to_string(),
         RawProfile {
             root: "~/.notes".into(),
+            automation: true,
             daily: "journal/daily".into(),
             refs: "journal/refs".into(),
             fun: "journal/backlogs/fun.md".into(),
@@ -527,6 +568,7 @@ fn builtin_default() -> RawConfig {
         outbox: default_outbox(),
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
+        sheet: SheetShape::default(),
         project_type: HashMap::new(),
     }
 }
@@ -735,6 +777,41 @@ pub fn all_profile_names() -> Result<Vec<String>> {
     let mut names: Vec<String> = raw.profile.keys().cloned().collect();
     names.sort();
     Ok(names)
+}
+
+/// The profiles board automation may write: [`all_profile_names`] less any with
+/// `automation = false`. Every fleet-wide loop that rewrites or judges sheets uses this.
+pub fn managed_profile_names() -> Result<Vec<String>> {
+    let (raw, _src) = load_raw()?;
+    let mut names: Vec<String> = raw
+        .profile
+        .iter()
+        .filter(|(_, p)| p.automation)
+        .map(|(n, _)| n.clone())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Whether board automation may touch `profile` (see [`managed_profile_names`]). An unknown
+/// profile is managed, the default.
+pub fn automation(profile: &str) -> bool {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.profile.get(profile).map(|p| p.automation))
+        .unwrap_or(true)
+}
+
+/// Whether board automation may rewrite the file at `path`: false when it sits under the root
+/// of a profile with `automation = false`, so a write, a save or the nightly leaves it as is.
+pub fn managed_path(path: &Path) -> bool {
+    load_raw().map_or(true, |(raw, _)| managed_in(&raw, path))
+}
+
+fn managed_in(raw: &RawConfig, path: &Path) -> bool {
+    !raw.profile
+        .values()
+        .any(|p| !p.automation && path.starts_with(expand(&p.root)))
 }
 
 /// Resolve the board layout. Read independently of the active profile, like
@@ -1022,6 +1099,31 @@ mod tests {
         assert_eq!(name, "AcmeCorp");
         assert!(src.contains("hostname_map"));
         std::env::remove_var("NOTES_HOSTNAME");
+    }
+
+    // A profile nested under another's root (a work profile under personal's ~/.notes) is the case
+    // that matters: its files are unmanaged, its parent's are not.
+    #[test]
+    fn automation_off_leaves_that_profile_out_and_no_other() {
+        let raw: RawConfig = toml::from_str(
+            "default_profile = \"personal\"\n\
+             [profile.personal]\nroot = \"/n\"\n\
+             [profile.gig]\nroot = \"/n/jobs/gig\"\nautomation = false\n",
+        )
+        .unwrap();
+        assert!(raw.profile["personal"].automation, "on unless switched off");
+        assert!(!managed_in(
+            &raw,
+            Path::new("/n/jobs/gig/projects/current/a/README.md")
+        ));
+        assert!(managed_in(
+            &raw,
+            Path::new("/n/lab/projects/current/a/README.md")
+        ));
+        assert!(
+            managed_in(&raw, Path::new("/n/jobs/gigs/README.md")),
+            "a prefix is no parent"
+        );
     }
 
     #[test]

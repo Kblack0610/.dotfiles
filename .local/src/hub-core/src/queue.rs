@@ -39,8 +39,11 @@ pub fn harness_of(said: &str, account: &str) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
+    /// The session needs the human: a plan, a dialog or an ask.
     Waiting,
     Running,
+    /// Parked on its open PR, its session ended or stopped there; reap closes it on the merge.
+    Review,
     #[default]
     Queued,
     Done,
@@ -48,9 +51,10 @@ pub enum State {
 
 /// The old section ids (`#queue/running`, `hub --tab "queue running"`) and the state chip each
 /// one opens the table on, so a link made before the table still lands on that view.
-pub const SECTION_ALIASES: [(&str, &str); 4] = [
+pub const SECTION_ALIASES: [(&str, &str); 5] = [
     ("waiting", "needs you"),
     ("running", "running"),
+    ("review", "on a PR"),
     ("queued", "up next"),
     ("done", "done"),
 ];
@@ -106,6 +110,9 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// `yes` while an item that landed one PR still has its final landing to make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
     /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
@@ -140,6 +147,9 @@ pub struct Item {
     /// When it moved to `waiting/`, the human's turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// When it moved to `review/`, parked on its open PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     /// The merge commit `agent-land` proved, beside `pr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<String>,
@@ -242,6 +252,7 @@ impl Item {
             ("ready", &self.ready),
             ("started", &self.started),
             ("waiting", &self.waiting),
+            ("review", &self.review),
             ("finished", &self.finished),
         ] {
             let Some(at) = said(v) else { continue };
@@ -304,10 +315,15 @@ impl Item {
                 State::Queued => mins(queued, Some(now)),
                 State::Running => mins(started, Some(now)),
                 State::Waiting => mins(waiting.or(started), Some(now)),
+                State::Review => mins(at(&self.review).or(waiting).or(started), Some(now)),
             },
             wait: mins(at(&self.ready).or(queued), started),
             run: match self.state {
                 State::Waiting => mins(started, waiting.filter(|w| Some(*w) >= started).or(end)),
+                State::Review => {
+                    let parked = at(&self.review).or(waiting);
+                    mins(started, parked.filter(|w| Some(*w) >= started).or(end))
+                }
                 _ => mins(started, end),
             },
             lead: mins(queued, end),
@@ -368,6 +384,21 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// Why an item in review or waiting sits there, in the words of what its headers record.
+    /// Review is a PR to merge; waiting is the human's turn, by an ask, a note or the question
+    /// its live session shows.
+    pub fn waits_on(&self) -> &'static str {
+        match self.state {
+            State::Review if self.partial.as_deref() == Some("yes") => "on a final landing",
+            State::Review => "on its merge",
+            _ if self.extra_str("ask").is_some() || self.extra_str("report").is_some() => {
+                "on an ask or report"
+            }
+            _ if said(&self.note).is_some() => "parked with a note",
+            _ => "on its session's question",
+        }
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -730,7 +761,7 @@ pub struct Queue {
 }
 
 /// What `Queue::read` prefixes a failed `agent-queue list` with.
-const LIST_FAILED: &str = "agent-queue list";
+pub(crate) const LIST_FAILED: &str = "agent-queue list";
 
 impl Queue {
     /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.
@@ -807,9 +838,10 @@ impl QueueRow<'_> {
         match (self.item.state, self.item.hold.is_some()) {
             (State::Waiting, _) => 0,
             (State::Running, _) => 1,
-            (State::Queued, false) => 2,
-            (State::Queued, true) => 3,
-            (State::Done, _) => 4,
+            (State::Review, _) => 2,
+            (State::Queued, false) => 3,
+            (State::Queued, true) => 4,
+            (State::Done, _) => 5,
         }
     }
 
@@ -817,7 +849,7 @@ impl QueueRow<'_> {
     fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.item.state {
-            State::Waiting => o.timing.in_state.cmp(&self.timing.in_state),
+            State::Waiting | State::Review => o.timing.in_state.cmp(&self.timing.in_state),
             State::Running => o.timing.run.cmp(&self.timing.run),
             State::Done => {
                 // Newest finish first; a stamp that does not parse sorts last.
@@ -840,7 +872,8 @@ impl crate::table::Row for QueueRow<'_> {
     ];
     /// `all` first, because the first chip keeps every row; then the states in the order the
     /// Queue sections list them.
-    const STATES: &'static [&'static str] = &["all", "needs you", "running", "up next", "done"];
+    const STATES: &'static [&'static str] =
+        &["all", "needs you", "running", "on a PR", "up next", "done"];
     const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
@@ -855,6 +888,7 @@ impl crate::table::Row for QueueRow<'_> {
                 match i.state {
                     State::Waiting => "needs",
                     State::Running => "running",
+                    State::Review => "on a PR",
                     State::Queued => "queued",
                     State::Done => "done",
                 }
@@ -877,6 +911,7 @@ impl crate::table::Row for QueueRow<'_> {
         let want = match s {
             "needs you" => State::Waiting,
             "running" => State::Running,
+            "on a PR" => State::Review,
             "up next" => State::Queued,
             "done" => State::Done,
             _ => return false,
@@ -1836,6 +1871,18 @@ mod tests {
         );
         assert_eq!(
             timed(
+                r#"{"slug":"p","state":"review","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:10:00Z","review":"2026-11-06T11:00:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(60),
+                wait: Some(10),
+                run: Some(110),
+                lead: Some(180)
+            },
+            "review: its run stops when it parked on its PR"
+        );
+        assert_eq!(
+            timed(
                 r#"{"slug":"c","state":"done","status":"cancelled","queued":"2026-11-06T09:00:00Z","finished":"2026-11-06T09:05:00Z","task":"t"}"#
             ),
             Timing {
@@ -1957,6 +2004,7 @@ mod tests {
                 ("all", 3),
                 ("needs you", 1),
                 ("running", 1),
+                ("on a PR", 0),
                 ("up next", 0),
                 ("done", 1)
             ]

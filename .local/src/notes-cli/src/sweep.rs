@@ -3,9 +3,9 @@
 //! targets, and an untagged task dropped under one inherits that lane's tag. The tag is the
 //! source of truth; position decides only for a task that has none.
 //!
-//! Apart from `focus_sweep` because the daily note's `## Focus` is not the only list with
-//! urgency in it: a project sheet's `## Tasks` section sorts the same way, and a second copy
-//! would be a second answer to "which lane is this task in".
+//! The daily note's `## Focus` is laid out here. A project sheet's `## Tasks` is taken apart
+//! by the same bucketing ([`task_body`]) and laid out in its sections by `project_sweep`, so
+//! one parser answers "which rows, with which detail lines", for both.
 
 use crate::md;
 
@@ -26,9 +26,13 @@ fn lane_of(line: &str) -> usize {
         .unwrap_or(LANES)
 }
 
+/// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
+/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
+pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
+
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
 /// puts it and an authored heading elsewhere survives as content.
-fn is_scaffold(line: &str) -> bool {
+fn is_scaffold(line: &str, layout: Layout) -> bool {
     let t = line.trim();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
@@ -36,6 +40,7 @@ fn is_scaffold(line: &str) -> bool {
         || md::PRIORITIES
             .iter()
             .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
+        || (layout == Layout::Tasks && TASK_SECTIONS.iter().any(|h| t.eq_ignore_ascii_case(h)))
 }
 
 /// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
@@ -63,11 +68,13 @@ struct Buckets {
 /// when empty. Nothing is unlaned: an empty `- [ ]` slot goes, a line of text is a task
 /// ([`md::loose_task`]), and a task with no lane takes [`md::FOCUS_DEFAULT_PRIORITY`].
 fn rebuild(body: &[&str]) -> Vec<String> {
-    let mut b = bucket(body, Layout::Focus);
+    let mut b = bucket(body, Layout::Focus, true);
     let mut out: Vec<String> = Vec::new();
     out.extend(b.open[LANES].drain(..));
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
-        out.push(String::new());
+        if !out.is_empty() {
+            out.push(String::new());
+        }
         out.push((*heading).to_string());
         out.extend(b.open[i].drain(..));
     }
@@ -78,32 +85,44 @@ fn rebuild(body: &[&str]) -> Vec<String> {
     out
 }
 
-/// Rebuild one list body as a single list SORTED by priority, with a trailing `### Done`.
-/// This is the `## Tasks` layout.
-///
-/// A project sheet does not earn the headings. Measured on the live vault before this
-/// landed: 84 open tasks across 15 sheets, 16 of them tagged - so three headings and a rule
-/// were scaffolding two real groups, and notes-cockpit rendered 13 tasks above an empty
-/// `### Urgent`. The daily note is the opposite shape (16 of 17 tagged, every lane full),
-/// which is why it keeps them.
-///
-/// Always emits: the section's `### Done` is part of it, not something that appears once
-/// there is enough to organize.
-pub(crate) fn rebuild_sorted(body: &[&str]) -> Vec<String> {
-    let mut b = bucket(body, Layout::Tasks);
-    let mut out: Vec<String> = Vec::new();
-    // Prose first, above the task list, where it reads as a note about the list.
-    out.extend(b.open[LANES].drain(..));
-    // Then every open task, most urgent first. `drain` in lane order preserves file order
-    // within a lane, so a sort never reshuffles two tasks of equal priority.
-    for i in 0..LANES {
-        out.extend(b.open[i].drain(..));
+/// One task row with the indented lines under it (wrapped text, details, child rows).
+pub(crate) type Block = Vec<String>;
+
+/// A `## Tasks` body taken apart for `project_sweep` to lay out: the prose lines, the open and
+/// closed row blocks, and the empty `- [ ] ` slot if it had one. Open blocks come out grouped
+/// by priority and in file order within one, which a stable sort by [`crate::rank`] keeps.
+pub(crate) struct TaskBody {
+    pub prose: Vec<String>,
+    pub open: Vec<Block>,
+    pub done: Vec<Block>,
+    pub placeholder: Option<String>,
+}
+
+/// `retag` gives an untagged row the default priority; without it every row keeps its bytes.
+pub(crate) fn task_body(body: &[&str], retag: bool) -> TaskBody {
+    let mut b = bucket(body, Layout::Tasks, retag);
+    let prose = std::mem::take(&mut b.open[LANES]);
+    let open = (0..LANES)
+        .flat_map(|i| blocks(std::mem::take(&mut b.open[i])))
+        .collect();
+    TaskBody {
+        prose,
+        open,
+        done: blocks(b.done),
+        placeholder: b.placeholder,
     }
-    out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
-    out.push(String::new());
-    out.push("---".to_string());
-    out.push("### Done".to_string());
-    out.extend(b.done);
+}
+
+/// Split one bucket's lines into row blocks: an indented line belongs to the row above it,
+/// which `bucket` already put in the same bucket right after it.
+fn blocks(lines: Vec<String>) -> Vec<Block> {
+    let mut out: Vec<Block> = Vec::new();
+    for l in lines {
+        match out.last_mut() {
+            Some(b) if l.starts_with(char::is_whitespace) => b.push(l),
+            _ => out.push(vec![l]),
+        }
+    }
     out
 }
 
@@ -116,7 +135,7 @@ enum Layout {
 }
 
 /// Sort one list body into buckets. Shared by both layouts.
-fn bucket(body: &[&str], layout: Layout) -> Buckets {
+fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
     let default = match layout {
         Layout::Focus => md::FOCUS_DEFAULT_PRIORITY,
         Layout::Tasks => md::DEFAULT_PRIORITY,
@@ -130,7 +149,7 @@ fn bucket(body: &[&str], layout: Layout) -> Buckets {
 
     for l in body {
         let t = l.trim();
-        if is_scaffold(l) {
+        if is_scaffold(l, layout) {
             cur_lane = scaffold_lane(l);
             last = None;
             continue;
@@ -166,11 +185,17 @@ fn bucket(body: &[&str], layout: Layout) -> Buckets {
                 Some(_) => lane_of(l), // the tag is the source of truth
                 None => {
                     // Untagged: inherit the lane it was dropped under, else take the
-                    // default. Either way it leaves here TAGGED - an open task with no
-                    // stated priority used to sort above `### Urgent`, so a task nobody had
-                    // thought about outranked one explicitly marked urgent.
+                    // default. A Focus task leaves here TAGGED - an open task with no stated
+                    // priority used to sort above `### Urgent`. A sheet row with no lane over
+                    // it stays untagged: it is untriaged, and a default `#high` would hide that
+                    // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
-                    open[i].push(md::add_tag(l, md::PRIORITIES[i].1));
+                    let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
+                    open[i].push(if tag {
+                        md::add_tag(l, md::PRIORITIES[i].1)
+                    } else {
+                        l.to_string()
+                    });
                     last = Some(Bucket::Open(i));
                     continue;
                 }
@@ -304,7 +329,7 @@ mod tests {
     #[test]
     fn golden_matches_the_nvim_buffer_sweep_with_markers_and_children() {
         let note = "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] outlook integration #high\n      needs OAuth2 first\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\nafter\n";
-        let expected = "## Focus\n\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(focus(note), expected);
     }
 }

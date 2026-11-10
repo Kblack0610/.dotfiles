@@ -1,9 +1,9 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | queued (ready) | running | needs you | done 24h | drain`). Home leads
+//! chips (`inbox | board | queued (ready) | running | on a PR | needs you | done 24h | drain`). Home leads
 //! with it on both surfaces and the Queue tab shows the same one, from this one builder, so the
 //! hub TUI and agent-web cannot word or count it differently.
 //!
-//! Where each number comes from: the queue's own chips (queued, running, needs you) are the live
+//! Where each number comes from: the queue's own chips (queued, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
 //! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
@@ -88,7 +88,7 @@ impl Strip {
     /// The strip from the queue; inbox and board wait for `set_pipeline`. With no queue read the
     /// queue chips read `-`.
     pub fn build(queue: Option<&Queue>) -> Strip {
-        let n = |s: State| queue.map(|q| q.count(s));
+        let n = |s: State| queue.filter(|q| q.list_read()).map(|q| q.count(s));
         let recent = queue
             .and_then(|q| q.stats.as_ref())
             .and_then(|s| s.recent.as_ref());
@@ -118,6 +118,12 @@ impl Strip {
                     "running",
                     n(State::Running).map(|c| c.to_string()),
                     queue_to("running"),
+                ),
+                chip(
+                    "review",
+                    "on a PR",
+                    n(State::Review).map(|c| c.to_string()),
+                    queue_to("on a PR"),
                 ),
                 chip(
                     "needs",
@@ -177,7 +183,7 @@ impl Strip {
     }
 }
 
-/// The record names the board `backlog` and the human's turn `waiting`.
+/// The record names the board `backlog`, the human's turn `waiting` and a parked PR `review`.
 fn chip_key(step: &str) -> &str {
     match step {
         "backlog" => "board",
@@ -228,7 +234,10 @@ impl From<&Problem> for Trouble {
         };
         Trouble {
             text: format!("{time}  {}  {}{times}  {why}", p.subject, p.kind),
-            item: matches!(p.kind.as_str(), "failed" | "reaped").then(|| p.subject.clone()),
+            // A land failure before its item was known names the PR, which no Queue row can open.
+            item: (matches!(p.kind.as_str(), "failed" | "reaped" | "land failed")
+                && !p.subject.contains('#'))
+            .then(|| p.subject.clone()),
         }
     }
 }
@@ -254,8 +263,6 @@ pub struct Node {
     pub problems_n: usize,
     /// The newest problems, newest first.
     pub problems: Vec<Trouble>,
-    /// What this step's record does not hold yet, so an empty list is not read as a clean bill.
-    pub gap: Option<&'static str>,
     /// The step with the most problems, when it is another one.
     pub elsewhere: Option<String>,
 }
@@ -274,15 +281,6 @@ pub struct Rail {
     pub reading: bool,
     pub error: Option<String>,
     pub absent: bool,
-}
-
-fn gap_of(key: &str) -> Option<&'static str> {
-    match key {
-        "inbox" => Some("failed sweeps: not recorded"),
-        "needs" => Some("why an item waits: not recorded"),
-        "done" => Some("land failures: not recorded"),
-        _ => None,
-    }
 }
 
 fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
@@ -334,9 +332,20 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
         facts,
         problems_n: s.and_then(|s| s.problems_n).unwrap_or(0),
         problems: s.map_or(vec![], |s| s.problems.iter().map(Trouble::from).collect()),
-        gap: gap_of(c.key),
         elsewhere: None,
     }
+}
+
+/// Why the items in `state` sit there, most common first. None when none does.
+fn why(queue: &Queue, state: State, head: &str) -> Option<String> {
+    let mut by = std::collections::BTreeMap::new();
+    for i in queue.in_state(state) {
+        *by.entry(i.waits_on()).or_insert(0_usize) += 1;
+    }
+    let mut by: Vec<_> = by.into_iter().collect();
+    by.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let parts: Vec<String> = by.iter().map(|(why, n)| format!("{n} {why}")).collect();
+    (!parts.is_empty()).then(|| format!("{head}: {}", parts.join(", ")))
 }
 
 fn worst_of(nodes: &[Node], p: Option<&Pipeline>) -> usize {
@@ -373,6 +382,15 @@ impl Rail {
             .filter(|c| c.key != "drain")
             .map(|c| node(c, step_of(p, c.key), drain))
             .collect();
+        if let Some(q) = queue.filter(|q| q.list_read()) {
+            for n in nodes.iter_mut() {
+                match n.key {
+                    "needs" => n.facts.extend(why(q, State::Waiting, "Why waiting")),
+                    "review" => n.facts.extend(why(q, State::Review, "Why on a PR")),
+                    _ => {}
+                }
+            }
+        }
         let most = nodes
             .iter()
             .filter(|n| n.problems_n > 0)
@@ -399,7 +417,7 @@ impl Rail {
 mod tests {
     use super::*;
     use crate::pipeline::tests::snapshot;
-    use crate::queue::{Item, Sitting, Stats};
+    use crate::queue::{Item, Sitting, Stats, LIST_FAILED};
 
     fn pipe(ratio: f64) -> Pipeline {
         snapshot(&[
@@ -422,6 +440,7 @@ mod tests {
                 item("b", State::Queued),
                 item("c", State::Queued),
                 item("d", State::Waiting),
+                item("e", State::Review),
             ],
             stats: Some(Stats {
                 sitting: Some(Sitting {
@@ -446,7 +465,7 @@ mod tests {
         st.set_pipeline(&Ok(Some(pipe(0.5))));
         assert_eq!(
             st.line(),
-            "inbox 4 | board 312 | queued 2 (1 ready) | running 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
+            "inbox 4 | board 312 | queued 2 (1 ready) | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
         );
         let to: Vec<_> = st
             .chips
@@ -460,6 +479,7 @@ mod tests {
                 Some(("board", "")),
                 Some(("queue", "up next")),
                 Some(("queue", "running")),
+                Some(("queue", "on a PR")),
                 Some(("queue", "needs you")),
                 Some(("queue", "done")),
                 Some(("queue", "")),
@@ -489,7 +509,7 @@ mod tests {
         let mut st = Strip::build(None);
         assert_eq!(
             st.line(),
-            "inbox - | board - | queued - | running - | needs you - | done 24h - | drain -"
+            "inbox - | board - | queued - | running - | on a PR - | needs you - | done 24h - | drain -"
         );
         // No snapshot: the queue's chips stand and inbox and board stay `-`.
         let mut q = Strip::build(Some(&queue()));
@@ -549,7 +569,7 @@ mod tests {
         let keys: Vec<_> = r.nodes.iter().map(|n| n.key).collect();
         assert_eq!(
             keys,
-            ["inbox", "board", "queued", "running", "needs", "done"]
+            ["inbox", "board", "queued", "running", "review", "needs", "done"]
         );
         let q = node_at(&r, "queued");
         assert_eq!(
@@ -617,13 +637,80 @@ mod tests {
         assert_eq!(node_at(&bad, "queued").count.as_deref(), Some("2"));
         assert!(Rail::build(None, Some(&Ok(None)), now).absent);
         assert!(Rail::build(None, None, now).reading);
-        for key in ["inbox", "needs", "done"] {
-            let r = Rail::build(None, None, now);
-            assert!(
-                node_at(&r, key).gap.is_some(),
-                "{key} must not read as clean"
-            );
+    }
+
+    #[test]
+    fn needs_you_counts_the_humans_turn_and_a_parked_pr_is_on_a_pr() {
+        let item = |slug: &str, state, set: fn(&mut Item)| {
+            let mut i = Item {
+                slug: slug.into(),
+                state,
+                ..Item::default()
+            };
+            set(&mut i);
+            i
+        };
+        let q = Queue {
+            items: vec![
+                item("a", State::Review, |i| i.pr = Some("o/r#1".into())),
+                item("b", State::Review, |i| i.pr = Some("o/r#2".into())),
+                item("c", State::Review, |i| {
+                    i.pr = Some("o/r#3".into());
+                    i.partial = Some("yes".into());
+                }),
+                item("d", State::Waiting, |_| {}),
+                item("e", State::Waiting, |i| {
+                    i.pr = Some("o/r#4".into());
+                    i.extra.insert("ask".into(), "at-9".into());
+                }),
+            ],
+            ..Queue::default()
+        };
+        let r = Rail::build(Some(&q), None, 0);
+        let needs = node_at(&r, "needs");
+        assert_eq!(needs.count.as_deref(), Some("2"), "only the human's turn");
+        assert_eq!(
+            needs.facts.last().map(String::as_str),
+            Some("Why waiting: 1 on an ask or report, 1 on its session's question")
+        );
+        let review = node_at(&r, "review");
+        assert_eq!(review.count.as_deref(), Some("3"));
+        assert_eq!(
+            review.facts.last().map(String::as_str),
+            Some("Why on a PR: 2 on its merge, 1 on a final landing")
+        );
+    }
+
+    #[test]
+    fn a_queue_that_could_not_be_listed_reads_dash_never_zero() {
+        let q = Queue {
+            errors: vec![format!("{LIST_FAILED}: boom")],
+            ..Queue::default()
+        };
+        let r = Rail::build(Some(&q), None, 0);
+        for key in ["queued", "running", "review", "needs"] {
+            assert_eq!(node_at(&r, key).count, None, "{key}");
         }
+        assert!(!node_at(&r, "needs")
+            .facts
+            .iter()
+            .any(|f| f.starts_with("Why waiting")));
+        // The control: the same empty queue, read, is a real zero.
+        let read = Rail::build(Some(&Queue::default()), None, 0);
+        assert_eq!(node_at(&read, "needs").count.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn a_land_failure_opens_its_item_unless_it_only_knows_the_pr() {
+        let p = |subject: &str| Problem {
+            ts: "2026-11-09T10:00:00Z".into(),
+            subject: subject.into(),
+            kind: "land failed".into(),
+            why: "checks: Checks".into(),
+            n: 1,
+        };
+        assert_eq!(Trouble::from(&p("ship")).item.as_deref(), Some("ship"));
+        assert_eq!(Trouble::from(&p("o/r#42")).item, None);
     }
 
     #[test]

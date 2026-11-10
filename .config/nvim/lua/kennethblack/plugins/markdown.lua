@@ -353,8 +353,7 @@ return {
       --
       -- `kind` says which list this is. "daily" is a daily note's Focus (sweep::Layout::Focus):
       -- a line of text is a task, a task in no lane files under Low, and the lanes are always
-      -- there. "tasks" is a sheet's `## Tasks`, which always emits and defaults to High. nil is
-      -- any other markdown with a `## Focus` heading: its prose stays, and `nil` comes back when
+      -- there. nil is any other markdown with a `## Focus` heading: its prose stays, and `nil` comes back when
       -- there is nothing to organize (no priority-tagged open task, no done, no scaffold).
       local function rebuild_focus_body(body, inherit, kind)
         local daily = kind == "daily"
@@ -424,7 +423,9 @@ return {
           out[#out + 1] = l
         end
         for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
-          out[#out + 1] = ""
+          if #out > 0 then
+            out[#out + 1] = ""
+          end
           out[#out + 1] = lane[2]
           for _, l in ipairs(open[i]) do
             out[#out + 1] = l
@@ -439,48 +440,10 @@ return {
         return out, placeholder
       end
 
-      -- Rebuild a `## Tasks` body as a single list SORTED by priority, with a trailing
-      -- `### Done`. Mirrors sweep::rebuild_sorted.
-      --
-      -- A project sheet does not earn the lane headings the daily note gets: measured before
-      -- this landed, 84 open tasks across 15 sheets with 16 tagged, so three headings and a
-      -- rule were scaffolding two real groups. Always emits: Done is part of the section, not
-      -- something that shows up once there is enough to organize.
-      local function rebuild_task_body(body, inherit)
-        local grouped, placeholder = rebuild_focus_body(body, inherit, "tasks")
-        -- Re-read the lane-grouped output back into one sorted list: drop the scaffold, keep
-        -- the order the lanes already put things in. Reusing the bucketing this way is what
-        -- keeps the two layouts from disagreeing about which lane a task is in.
-        local open, done, in_done = {}, {}, false
-        for _, l in ipairs(grouped) do
-          if l:match "^###%s+Done%s*$" then
-            in_done = true
-          elseif not (is_scaffold(l) or l:match "^%s*$") then
-            if in_done then
-              done[#done + 1] = l
-            else
-              open[#open + 1] = l
-            end
-          end
-        end
-        local out = {}
-        for _, l in ipairs(open) do
-          out[#out + 1] = l
-        end
-        out[#out + 1] = placeholder or "- [ ] "
-        out[#out + 1] = ""
-        out[#out + 1] = "---"
-        out[#out + 1] = "### Done"
-        for _, l in ipairs(done) do
-          out[#out + 1] = l
-        end
-        return out
-      end
-
       -- ---- project sheets ----------------------------------------------------------
-      -- A project sheet is one `## Tasks` list. A row's release is its `#vX.Y.Z` tag, a filter
-      -- rather than a section. Mirrors project_sweep.rs; a golden test in the Rust crate pins
-      -- the two to the same bytes.
+      -- A project sheet's `## Tasks` is laid out by the notes CLI (`notes sheet-sweep`), its one
+      -- writer. A row's release is its `#vX.Y.Z` tag, a filter rather than a section; the
+      -- helpers below serve the tW/tw release ladder.
       local VERSION_PAT = "#v%d+%.%d+%.%d+"
 
       local function parse_ver(s)
@@ -574,53 +537,28 @@ return {
 
       local TASKS_PAT = "^##%s+Tasks%s*$"
 
-      -- Pure: given all buffer lines, return (new_lines, changed). Rewrites only `## Tasks`.
-      -- A tag on a closed release goes and the row follows the open version; `#urgent` is
-      -- legal only in the open version, so a row aimed later becomes `#high`.
-      local function sweep_tasks(lines, inherit)
-        local s = find_heading(lines, TASKS_PAT)
-        if not s then
+      -- Given all buffer lines, return (new_lines, changed): `## Tasks` laid out in Now / Next up /
+      -- Backlog / Done by `notes sheet-sweep`, the same writer every CLI verb uses. `save` is the
+      -- save sweep (hand-ticked rows dated, old closes rolled off into the version note); the
+      -- live cycles only re-sort. Any failure (no CLI, an error, a timeout) leaves the buffer as
+      -- it is, so a save is never blocked.
+      local function sweep_tasks(lines, save)
+        local path = vim.api.nvim_buf_get_name(0)
+        if path == "" or vim.fn.executable "notes" == 0 then
           return lines, false
         end
-        local e = section_end(lines, s)
-        local cur = sheet_version(lines)
-        local body = {}
-        for i = s + 1, e - 1 do
-          local l = lines[i]
-          -- blanks and the generated `- [ ] ` placeholder are scaffold, not content
-          if l:match "%S" and not l:match "^%s*%- %[ %]%s*$" then
-            local tag = l:match "^%s*%- %[[ /]%]" and cur and version_of(l)
-            if tag and ver_cmp(tag, cur) < 0 then
-              l = strip_version(l)
-            elseif tag and ver_cmp(tag, cur) > 0 and select(2, strip_priority(l)) == "urgent" then
-              l = add_tag((strip_priority(l)), "#high")
-            end
-            body[#body + 1] = l
-          end
+        local cmd = { "notes", "sheet-sweep", "--stdin", path }
+        if not save then
+          table.insert(cmd, 4, "--layout-only")
         end
-
-        local out = {}
-        for i = 1, s do
-          out[#out + 1] = lines[i]
+        local ok, res = pcall(function()
+          return vim.system(cmd, { stdin = table.concat(lines, "\n") .. "\n", text = true }):wait(5000)
+        end)
+        if not ok or res.code ~= 0 or not res.stdout or res.stdout == "" then
+          return lines, false
         end
-        for _, l in ipairs(rebuild_task_body(body, inherit)) do
-          out[#out + 1] = normalize_tags(l)
-        end
-        -- One blank line between the section and whatever follows it. At EOF there is nothing
-        -- to separate, and a trailing blank would be a line the CLI does not write.
-        if e <= #lines then
-          out[#out + 1] = ""
-          for i = e, #lines do
-            out[#out + 1] = lines[i]
-          end
-        end
-        local squeezed = {}
-        for _, l in ipairs(out) do
-          if not (l == "" and squeezed[#squeezed] == "") then
-            squeezed[#squeezed + 1] = l
-          end
-        end
-        return squeezed, table.concat(squeezed, "\n") ~= table.concat(lines, "\n")
+        local out = vim.split(res.stdout:gsub("\n$", ""), "\n", { plain = true })
+        return out, table.concat(out, "\n") ~= table.concat(lines, "\n")
       end
 
       -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
@@ -999,6 +937,85 @@ return {
           })
         end,
       })
+
+      -- The board's words beside a project sheet, as virtual text that is never written to the
+      -- file: `hub board --json` (hub_core::sheet_view) gives each project's head line (version,
+      -- stage, done share, ETA, playtests waiting) and each row's words (its queue state, its
+      -- forecast day on Next up, an epic's leaf rollup). Read async when a sheet is read and after
+      -- each save, so the lines match the file; no `hub`, or a failed read, draws nothing.
+      local board_ns = vim.api.nvim_create_namespace "board_hints"
+      local function draw_board(buf, data)
+        if not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].modified then
+          return
+        end
+        vim.api.nvim_buf_clear_namespace(buf, board_ns, 0, -1)
+        local path = vim.api.nvim_buf_get_name(buf)
+        local n = vim.api.nvim_buf_line_count(buf)
+        for _, h in ipairs(data.heads or {}) do
+          if path == h.dir .. "/README.md" or path == h.dir .. "/agent/README.md" then
+            local head = { { h.project .. "  " .. h.text, "Comment" } }
+            vim.api.nvim_buf_set_extmark(buf, board_ns, 0, 0, { virt_lines = { head }, virt_lines_above = true })
+          end
+        end
+        for _, h in ipairs(data.hints or {}) do
+          if h.sheet == path and h.line >= 1 and h.line <= n then
+            vim.api.nvim_buf_set_extmark(buf, board_ns, h.line - 1, 0, { virt_text = { { "  " .. h.text, "Comment" } } })
+          end
+        end
+      end
+      -- One read at a time, drawn on every README waiting for it; a save during a read reads
+      -- again after it, so the lines match the saved file. `sheets` (the head dirs of the last
+      -- read that had any) keeps a README outside every project from starting one.
+      local waiting, again, sheets = nil, false, nil
+      local function is_sheet(path)
+        for _, d in ipairs(sheets or {}) do
+          if path == d .. "/README.md" or path == d .. "/agent/README.md" then
+            return true
+          end
+        end
+        return sheets == nil
+      end
+      local function read_board(args)
+        local path = vim.api.nvim_buf_get_name(args.buf)
+        if vim.fn.fnamemodify(path, ":t") ~= "README.md" or vim.fn.executable "hub" == 0 or not is_sheet(path) then
+          return
+        end
+        if waiting then
+          waiting[args.buf] = true
+          again = again or args.event == "BufWritePost"
+          return
+        end
+        waiting = { [args.buf] = true }
+        vim.system({ "hub", "board", "--json" }, { text = true }, function(res)
+          local ok, data = pcall(vim.json.decode, res.code == 0 and res.stdout or "")
+          vim.schedule(function()
+            local bufs, rerun = waiting, again
+            waiting, again = nil, false
+            if rerun then
+              for buf in pairs(bufs) do
+                read_board { buf = buf, event = "reread" }
+              end
+              return
+            end
+            if not ok or type(data) ~= "table" then
+              return
+            end
+            if data.heads and #data.heads > 0 then
+              sheets = {}
+              for _, h in ipairs(data.heads) do
+                table.insert(sheets, h.dir)
+              end
+            end
+            for buf in pairs(bufs) do
+              draw_board(buf, data)
+            end
+          end)
+        end)
+      end
+      -- FileType, not BufReadPost: this config loads on the first markdown FileType, after that
+      -- buffer's read, and lazy re-fires FileType for it.
+      vim.api.nvim_create_autocmd("FileType", { pattern = "markdown", callback = read_board })
+      vim.api.nvim_create_autocmd("BufWritePost", { pattern = "README.md", callback = read_board })
 
       -- Color the priority tags. matchadd is window-local, so (re)apply it once
       -- per window showing a markdown buffer; a window flag prevents duplicates.

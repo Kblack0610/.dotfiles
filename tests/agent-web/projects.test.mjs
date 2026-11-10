@@ -54,24 +54,24 @@ const listTable = (kept, total = kept.length, o = {}) => ({
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", text: "fix the menu", raw: "- [ ] fix the menu", sheet: "a.md", tags: [] },
-  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix the menu", raw: "- [ ] fix the menu", sheet: "a.md", tags: [] },
+  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({
   q, state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
-  columns: ["priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "text", "profile", "tag"]
+  columns: ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "lane", on: "", clear: "", values: [{ value: "agent", n: 1, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
-// What /api/board answers: `scope` narrows the rows, `q` is a word of a row's text.
+// What /api/board answers: `scope` narrows the rows, `q` is a word of a row's text or `id:<prefix>`.
 function board(u) {
   const p = new URLSearchParams(u.split("?")[1] || ""), scope = p.get("scope"), q = p.get("q") || "";
   const mine = rows.filter((r) => !scope || r.profile + "/" + r.project === scope);
-  const kept = mine.filter((r) => r.text.includes(q));
+  const kept = mine.filter((r) => (q.startsWith("id:") ? (r.id || "").startsWith(q.slice(3)) : r.text.includes(q)));
   return { today: "2026-11-05", projects, rows: kept, focus, table: tableOf(q, mine.length, kept) };
 }
 const read = () => ({ cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, rows: box("b-tbl").innerHTML });
@@ -162,7 +162,13 @@ test("with a project open every card is read, and an answer for a list no longer
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
   needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
-  systems: [{ id: "ui", head: "ui  criteria 5 of 7", epics: [{ line: "Menus  [rows]  behind", behind: true }], closed: "+1 closed, 1 verified" }],
+  systems: [
+    { id: "ui", head: "ui  25%  1 feature, 0 done  criteria 5 of 7", closed: "+1 closed, 1 verified", epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true, leaves: [
+      { id: "de-1", line: "[ ] de-1  feat: wire the pause key  m", done: false },
+      { id: "de-2", line: "[x] de-2  fix: <menu> flicker  s  pr 7", done: true },
+    ] }] },
+    { id: "ci", head: "ci  criteria 1 of 2", epics: [], closed: "" },
+  ],
   systems_says: "1 systems, 1 open epics (2 rows with no epic)", next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
   next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }], shipped_says: "none yet", shipped: [], errors: [],
   timeline: { says: "7d: 1 commit (1 red on CI), 1 PR", older: 3, notes: ["PRs: the origin is not GitHub"], lines: [
@@ -181,8 +187,14 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   head = box("p-head").innerHTML;
   assert.match(head, /flow: ideas 3 \| briefs 1/);
   assert.match(head, /Needs you <span class="muted">1<\/span><\/h2><div class="card"><div class="qlate">verify: Saves/);
-  assert.match(head, /data-k="pg:systems"><summary><b>Build by system<\/b> <span class="muted">1 systems, 1 open epics \(2 rows with no epic\)<\/span>/);
-  assert.match(head, /<div class="pep qlate">Menus  \[rows\]  behind<\/div><div class="pep muted">\+1 closed, 1 verified/);
+  // Build by system is always shown, above Needs you: a fold per system with an epic, a fold per
+  // epic over its tasks, an open task a link to its row, a system with no epic only its line.
+  assert.match(head, /<h2 class="sec">Build by system <span class="muted">1 systems, 1 open epics \(2 rows with no epic\)<\/span><\/h2>.*Needs you/s);
+  assert.match(head, /data-k="pg:sys:ui"><summary><b>ui  25%  1 feature, 0 done  criteria 5 of 7<\/b><\/summary>/);
+  assert.match(head, /data-k="pg:ep:de-9"><summary><span class="pep qlate">Menus  25%  \[rows\]  behind<\/span><\/summary>/);
+  assert.match(head, /<div class="pleaf"><a href="#" data-leaf="de-1">\[ \] de-1  feat: wire the pause key  m<\/a><\/div>/);
+  assert.match(head, /<div class="pleaf muted">\[x\] de-2  fix: &lt;menu&gt; flicker  s  pr 7<\/div>/, "a done task is no link");
+  assert.match(head, /<\/details><div class="pep muted">\+1 closed, 1 verified<\/div><\/details><div class="psys"><b>ci  criteria 1 of 2<\/b><\/div>/);
   assert.match(head, /Next stage<\/b> <span class="muted">beta  4 of 12 met.*<b>FAIL<\/b> a soak test/s);
   assert.match(head, /Shipped<\/b> <span class="muted">none yet/);
   assert.match(head, /Timeline<\/b> <span class="muted">7d: 1 commit \(1 red on CI\), 1 PR<\/span>.*<div class="muted">PRs: the origin is not GitHub<\/div>/s);
@@ -191,6 +203,26 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   assert.match(head, /In flight<\/b> <span class="muted">1 running, 0 waiting, 0 queued; 1 rows #requested.*wire the bar/s);
   assert.match(head, /Agent note<\/b> <span class="muted">model-written, 2026-11-05.*landed it/s);
   assert.doesNotMatch(head, /<details[^>]* open/, "every fold starts shut");
+});
+
+test("a task under an epic filters the rows to its id and opens its row", async () => {
+  rows.push({ profile: "bnb", project: "demo", lane: "human", state: "open", priority: "low", id: "de-1", text: "wire the pause key", raw: "- [ ] wire the pause key <!-- id:de-1 -->", sheet: "h.md", tags: [] });
+  try {
+    ctx.answers = { "/api/projects/demo/page": page };
+    await drawn(list(), "bnb/demo");
+    let prevented = false;
+    const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-leaf]" ? { dataset: { leaf: "de-1" } } : null) };
+    for (const f of box("projects").on.click) f({ type: "click", target, preventDefault() { prevented = true; } });
+    await settle(); await settle();
+    assert.ok(prevented, "the link goes nowhere itself");
+    assert.equal(vm.runInContext("st.views.projects", ctx), "q=id%3Ade-1");
+    assert.match(read().rows, /<tr class="jr sel" data-row="0">.*wire the pause key/s);
+    assert.doesNotMatch(read().rows, /fix the menu/, "the rows are the task's alone");
+    assert.equal(vm.runInContext("pst.leaf", ctx), null, "the answer settles it");
+    // A read that lacks the row (one in flight before the click) leaves the click waiting.
+    vm.runInContext('pst.leaf = { id: "de-404", feed: null }; renderProjects()', ctx);
+    assert.equal(vm.runInContext("pst.leaf && pst.leaf.id", ctx), "de-404");
+  } finally { rows.pop(); }
 });
 
 test("a page that cannot be read says why, and a card with no goal says so", async () => {
@@ -207,10 +239,10 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /Back to projects.*>demo<.*v0\.1\.0 25%/s);
-  assert.match(shown, /1 of 1 open rows/);
+  assert.match(shown, /1 of 1 rows/);
   assert.match(shown, /data-tsort="priority".*data-tsort="text"/s);
   assert.doesNotMatch(shown, /data-tsort="profile"|data-tsort="tag"/, "a query key with no column of its own is not drawn");
-  assert.match(shown, /<tr class="jr" data-row="0"><td><span class="qprio high">high<\/span><\/td><td>demo<\/td>.*fix the menu/s);
+  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td><span class="qprio high">high<\/span><\/td><td>demo<\/td>.*fix the menu/s);
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
   assert.match(read().rows, /id="board-q".*id="board-chips"/s);
@@ -219,14 +251,14 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="10">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
   await onBoard("q=water");
-  assert.match(read().rows, /1 of 2 open rows/);
+  assert.match(read().rows, /1 of 2 rows/);
   ctx.sent = [];
   click("b-root", { start: "0" });
   await settle(); await settle();
@@ -268,7 +300,7 @@ test("a click into a project or Back clears the query; a deep link keeps its own
 
 test("Board reads every project's rows under its own view, and leaves them behind", async () => {
   ctx.sent = [];
-  assert.match((await onBoard("q=water")).rows, /1 of 2 open rows/);
+  assert.match((await onBoard("q=water")).rows, /1 of 2 rows/);
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "no scope, the Board's own query");
   ctx.sent = [];
   vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; TABS.projects.show();`, ctx);

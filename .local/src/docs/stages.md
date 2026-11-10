@@ -25,7 +25,7 @@ A project with no stage sorts between dev and draft and is dispatched like a dra
 
 Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s] [--json]` runs the rows (`--json` gives met, total, fail, human, todo, the gate and each row, for a page to read): `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
 
-A gap becomes work with `--file` (with `--stage s`, or `--systems`): each FAIL row is filed as a `#size/s` story on the agent board under the open epic for its target, an `epic(stage): <stage> ...` row for a stage (with no `--stage`, that epic names the target) or an `epic(<system>): ...` row for a system. It never files the epic, which only the human, the session whose plan they just approved, or an answered ask does, and never a row already on either sheet under the same title, open, done or dropped. With no epic it lists what it would file and writes nothing. The nightly `project-index` pass runs it for each project whose sheet carries `#prio/focus` (`notes projects --prio <name> --set focus`).
+A gap becomes work with `--file` (with `--stage s`, or `--systems`): each FAIL row is filed as a `#size/s` story on the agent board under the open epic for its target, an `epic(stage): <stage> ...` row for a stage (with no `--stage`, that epic names the target) or an `epic(<system>): ...` row for a system. It never files the epic (who does: `lifecycle.md`, "What an epic is"), and never a row already on either sheet under the same title, open, done or dropped. With no epic it lists what it would file and writes nothing. The nightly `project-index` pass runs it for each project whose sheet carries `#prio/focus` (`notes projects --prio <name> --set focus`).
 
 Enforced from: 2026-11-19
 
@@ -80,6 +80,15 @@ Each doc comes from an existing skill. There are no doc types beyond these.
 | beta | CHANGELOG; for an app, the PRD and TSD | `changelog-draft`, `scope` |
 | beta | content rating, store listing | `content-rating`, `mobile-store-metadata` |
 | prod | incident and rollback runbook, credentials inventory | `docs-write` |
+
+## Versions
+
+A version is one release: what reached the project's users or target in one cut. Its number follows from what is in it, so nobody picks it.
+
+- Minor: the release holds a feature epic closed on proof (`lifecycle.md`, "What an epic is"). Patch: anything else, fixes, stories toward open epics, standing-epic work. Major: only the human; a project starts at 0.x and v1.0.0 is its first public release (the `prod` stage), a project already past 1.0 keeps its line, and a later major is a break the human names (a save or API break, a relaunch).
+- Cadence comes from the stage: every 7 days at draft, dev, alpha and beta, every 14 at prod. A window with no closed rows cuts nothing. Releases below beta start with `systems-versions-p5` (see Tooling today).
+- A project that ships builds is versioned by its git tag and the sheet follows (`project_release_version`, `.config/shared-hooks/project-name.sh`). A game in the playground has its own tag family, `<game>-vX.Y.Z`, registered as its `tagGlob`. A project with no build (agent-runtime, home-config) uses the sheet's counter and has no tag.
+- Tooling today: `projects --release` bumps a patch unless told otherwise and refuses below beta, and the playground tags game builds `v<engine>-<game><N>`. Queue item `systems-versions-p5` (ar-1245) makes them follow this section, and `systems-versions-p6` (ar-1246) backfills one version per week of past work.
 
 ## What stays with the human
 

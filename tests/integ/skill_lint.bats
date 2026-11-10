@@ -167,6 +167,19 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_output --partial "missing metadata.tags"
 }
 
+@test "BADMETA: a metadata.replaces row the guard would skip" {
+  mkskill ops good "  replaces:" "    - match: 'gh\\s+run\\s+watch'" "      use: gh-run-wait <id>" >/dev/null
+  lint
+  assert_success
+  mkskill ops bad "  replaces:" "    - match: '(unclosed'" "      mode: maybe" >/dev/null
+  lint
+  assert_failure
+  assert_output --partial 'needs a non-empty use'
+  assert_output --partial 'mode must be one of deny/report'
+  assert_output --partial 'match is not a valid regex'
+  refute_output --partial 'good '
+}
+
 @test "CATCOLLIDE: a category sharing a name with a skill" {
   # This is not hypothetical: comms/comms/ made `git mv` refuse and silently
   # swallowed two sibling skills during the category migration.

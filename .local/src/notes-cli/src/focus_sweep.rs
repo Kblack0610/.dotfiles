@@ -204,7 +204,7 @@ after
     // empty `- [ ]` slot that used to sit above them goes.
     #[test]
     fn a_note_with_only_the_slot_opens_on_the_bare_lanes() {
-        let lanes = "## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n\n## Notes\n";
+        let lanes = "## Focus\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n\n## Notes\n";
         assert_eq!(
             sweep_content("## Focus\n- [ ] \n\n## Notes\n").unwrap(),
             lanes
@@ -293,7 +293,7 @@ after
         // (markdown.lua rebuild_focus_body), locking the two surfaces in parity.
         // tests/integ/notes_save_sweep.bats runs the same input through the real plugin.
         let note = "## Focus\n- [ ] plain top\n- [ ] task #high\n- bare bullet\n    its note\nplain line\n### Urgent\n- [ ] dropped\ntyped here\n- [ ] \n\n## Notes\nafter\n";
-        let expected = "## Focus\n\n### Urgent\n- [ ] dropped #urgent\n- [ ] typed here #urgent\n\n### High\n- [ ] task #high\n\n### Low\n- [ ] plain top #low\n- [ ] bare bullet #low\n    its note\n- [ ] plain line #low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n### Urgent\n- [ ] dropped #urgent\n- [ ] typed here #urgent\n\n### High\n- [ ] task #high\n\n### Low\n- [ ] plain top #low\n- [ ] bare bullet #low\n    its note\n- [ ] plain line #low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(sweep_content(note).unwrap(), expected);
     }
 
@@ -303,7 +303,7 @@ after
         // `#HIGH.` is high. tests/integ/notes_save_sweep.bats ("a save reads a priority tag by
         // the CLI's tag grammar") runs the same input through markdown.lua's each_tag.
         let note = "## Focus\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority\n- [ ] c foo#urgent\n- [ ] d `#urgent` #HIGH.\n\n## Notes\n";
-        let expected = "## Focus\n\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n";
         assert_eq!(sweep_content(note).unwrap(), expected);
     }
 

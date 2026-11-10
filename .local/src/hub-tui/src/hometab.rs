@@ -617,7 +617,9 @@ mod tests {
         let out = text(&home());
         // The flow strip leads, then health and spend; the queue's counts are the strip's.
         assert!(
-            out.starts_with("FLOW  inbox - | board - | queued 2 | running 1 | needs you 1"),
+            out.starts_with(
+                "FLOW  inbox - | board - | queued 2 | running 1 | on a PR 0 | needs you 1"
+            ),
             "{out}"
         );
         assert!(!out.contains("NUMBERS"), "{out}");

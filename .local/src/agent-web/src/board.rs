@@ -1,6 +1,6 @@
-//! The rows under the Projects tab: every project's open rows (human sheet, agent board,
-//! playtest, and each profile's Focus, read-only), and add, start, done, drop, move, edit and
-//! tag on them.
+//! The rows under the Projects tab: every project's rows (human sheet, agent board, playtest,
+//! open under their sheet sections then the closed ones, and each profile's Focus, read-only),
+//! and add, start, done, drop, move, edit and tag on the open ones.
 //!
 //! `notes` is the sheets' only writer. The read and the writes go through `hub_core::tasks`,
 //! which the hub TUI uses too; a write passes the row's raw line to `notes ptask --exact`, so a
@@ -35,15 +35,30 @@ pub struct BoardQuery {
 }
 
 /// The feed with its rows narrowed to the scope and the view, and the controls that drew them.
+/// Each row carries the hub's words for it: `label`, its section cell (`NEXT UP (10)` over a
+/// section's first row), and `when`, its queue state and forecast or its close day and PRs.
 fn shown(f: &Feed, q: &BoardQuery) -> Value {
-    let rows = f.open_rows(q.scope.split_once('/'));
+    let rows = f.board_rows(q.scope.split_once('/'));
     let view = View::new::<Row>(&q.q, &q.s, &q.sort, &q.dir);
     let (kept, table) = view.summary(&rows);
+    let kept: Vec<&Row> = kept.into_iter().copied().collect();
+    let labels = tasks::section_labels(&kept, !q.sort.is_empty());
+    let rows: Vec<Value> = kept
+        .iter()
+        .zip(labels)
+        .map(|(r, label)| {
+            let mut v = json!(r);
+            v["label"] = json!(label);
+            v["when"] = json!(r.when());
+            v
+        })
+        .collect();
     json!({
         "today": f.today,
         "projects": f.projects,
-        "rows": kept,
+        "rows": rows,
         "focus": f.focus,
+        "errors": f.errors,
         "table": table,
     })
 }
@@ -53,7 +68,7 @@ pub async fn feed(Query(q): Query<BoardQuery>) -> ApiResult<Json<Value>> {
         let why = format!("scope is <profile>/<project>, not {}", q.scope);
         return Err(bad(StatusCode::BAD_REQUEST, why));
     }
-    tokio::task::spawn_blocking(move || tasks::feed(&System).map(|f| shown(&f, &q)))
+    tokio::task::spawn_blocking(move || hub_core::sheet_view::feed(&System).map(|f| shown(&f, &q)))
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
@@ -173,6 +188,8 @@ mod tests {
 
     fn fixture() -> Feed {
         let row = |project: &str, priority: &str, text: &str| Row {
+            section: Some(if priority == "low" { "backlog" } else { "next" }.into()),
+            rank: text.len() as u64,
             profile: "bnb".into(),
             project: Some(project.into()),
             lane: "agent".into(),
@@ -189,6 +206,13 @@ mod tests {
                 row("demo", "urgent", "ship"),
                 row("garden", "high", "water"),
             ],
+            done: vec![Row {
+                state: "done".into(),
+                section: Some("done".into()),
+                closed: Some("2026-11-05".into()),
+                prs: vec!["63".into()],
+                ..row("demo", "high", "lint")
+            }],
             ..Default::default()
         }
     }
@@ -215,9 +239,18 @@ mod tests {
     fn the_scope_narrows_before_the_view_and_the_rows_keep_the_tables_order() {
         let f = fixture();
         let all = shown(&f, &BoardQuery::default());
-        assert_eq!(texts(&all), ["ship", "water", "tidy"]);
+        // The sheet's order: Next up by rank, Backlog, then the closed rows.
+        assert_eq!(texts(&all), ["ship", "water", "tidy", "lint"]);
+        let labels: Vec<&str> = all["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["NEXT UP (2)", "", "BACKLOG (1)", "DONE (1)"]);
+        assert_eq!(all["rows"][3]["when"], "11-05  pr 63");
         assert_eq!(all["today"], "2026-11-06");
-        assert_eq!(all["table"]["total"], 3);
+        assert_eq!(all["table"]["total"], 4);
 
         let q = BoardQuery {
             scope: "bnb/demo".into(),
@@ -226,7 +259,7 @@ mod tests {
         };
         let one = shown(&f, &q);
         assert_eq!(texts(&one), ["tidy"]);
-        assert_eq!(one["table"]["total"], 2, "the total is the scope's");
+        assert_eq!(one["table"]["total"], 3, "the total is the scope's");
         assert_eq!(one["table"]["shown"], 1);
         assert_eq!(one["table"]["states"][3]["name"], "urgent");
         assert_eq!(

@@ -6,6 +6,12 @@ metadata:
   category: <authoring|memory|messaging|monitoring|ops|reference|research|tickets|workstreams>
   tags: [<tag>, <tag>]
   reviewed: "<YYYY-MM-DD>"
+  # Only when the skill stands in for a command sequence (~/.local/src/docs/skills.md); else delete.
+  replaces:
+    - match: '<regex over the hand-typed command>'
+      use: <the script or command to run instead>
+      mode: deny
+      why: <what the hand form costs>
 ---
 
 # <Skill Title>

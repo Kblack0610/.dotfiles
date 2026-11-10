@@ -45,12 +45,23 @@ usage() {
   sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0" >&2
   exit 2
 }
+# shellcheck source=../lib/chain-event.sh
+. "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
 }
+# land_failed STEP CAUSE: a landing that stopped goes on the record, where the pipeline line's done
+# node reads it. A dry run lands nothing, and a wrong checkout or an unfinished PR body never began
+# to land, like a refusal (die). Once merged only the bookkeeping failed, and the cause says so.
+land_failed() {
+  [ "${dry:-0}" = 1 ] && return 0
+  case "$1" in repo | match | head | review) return 0 ;; esac
+  chain_event land land-failed "${project:-}" "${pr_ref:-#${pr:-}}" --item "${item:-}" --pr "${pr_ref:-}" --why "${merged:+merged, but }$1: $2"
+}
 fail() {
   printf 'agent-land: %s failed: %s\n' "$1" "$2" >&2
+  land_failed "$1" "$2"
   exit 1
 }
 lastline() { printf '%s' "$1" | tail -n 1; }
@@ -174,6 +185,7 @@ catch_up() {
   if ! out=$(git merge -q --no-edit "origin/$base" 2>&1); then
     git merge --abort >/dev/null 2>&1 || true
     printf 'agent-land: behind origin/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$base" "$behind" >&2
+    land_failed conflict "behind origin/$base by $behind and merging it conflicts"
     exit 3
   fi
   # Push HEAD to the PR's own head branch: a bare `git push` under push.default=simple refuses when
@@ -234,7 +246,7 @@ it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (a
 # and `merged:` their merge commits in the same order, so a task split across repos lands each on
 # its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
 case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
-running | waiting | queued | done-ok) ;;
+running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
 # With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would
@@ -492,8 +504,6 @@ echo "proof: $out"
 # fast-forward it now. Prints nothing for any other repo, and never fails the landing.
 live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
 [ -z "$live" ] || echo "live: $live"
-# shellcheck source=../lib/chain-event.sh
-. "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 

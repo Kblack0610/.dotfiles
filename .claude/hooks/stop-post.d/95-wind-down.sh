@@ -44,7 +44,10 @@ fi
 
 # --- CI gate: don't tear down while content checks are failing ---
 # Named and exported by pre-stop-checks.sh, which writes it (keyed by session id).
+# Only this session's file counts (pre-stop-checks.sh names it ci-result-<sid>.txt): an inherited
+# one, such as the outer Stop hook's while it runs the bats suite, is another session's verdict.
 CI_RESULT_FILE="${CI_RESULT_FILE:-}"
+[ -z "$SID" ] || [ "${CI_RESULT_FILE##*/}" = "ci-result-$SID.txt" ] || CI_RESULT_FILE=""
 CI_STATUS_VAL=""
 if [ -n "$CI_RESULT_FILE" ] && [ -f "$CI_RESULT_FILE" ]; then
   CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)

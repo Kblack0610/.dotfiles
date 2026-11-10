@@ -420,7 +420,9 @@ pub fn prios() -> Result<()> {
             continue;
         };
         for (name, summary) in indexed(&p) {
-            let Some(dir) = summary.parent() else { continue };
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
             let v = prio_of(dir);
             if !v.is_empty() {
                 println!("{name}\t{v}");
@@ -818,8 +820,8 @@ const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
 /// - a root entry outside the shape: a `*.md` outside [`Overlays::root_md`] or a dir outside
 ///   [`ROOT_DIRS`] belongs in `docs/`, any other file in `docs/assets/` (dotfiles are not
 ///   checked; a version note or a changelog is the layout check's finding, fixed by `--migrate`);
-/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
-///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
+/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows past the Done
+///   window `notes ptask <name> --agent sweep` would roll to `agent/versions/`;
 /// - an open row written twice on one sheet (same [`md::task_key`]).
 pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String> {
     let mut out = Vec::new();
@@ -877,11 +879,14 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
     let board = crate::agent_sheet::sheet_path(dir);
     if let Ok(content) = fs::read_to_string(&board) {
         if content.len() > AGENT_BOARD_BUDGET {
-            let done = crate::project_tasks::done_rows(&content).len();
-            let fix = if done > 0 {
-                format!("{done} done rows to move: notes ptask {name} --agent archive")
+            // Only the closed rows the sweep rolls off count: a row inside the Done window is
+            // what the board is meant to show, so the nightly sweep is the fix, never archive.
+            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let old = crate::project_sweep::old_done(&content, &ctx).len();
+            let fix = if old > 0 {
+                format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")
             } else {
-                "no done rows; the open rows need triage".to_string()
+                "the open rows need triage".to_string()
             };
             out.push(format!(
                 "agent board is {} KiB, over the {} KiB budget ({fix})",
@@ -902,6 +907,8 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
         }
+        let today = chrono::Local::now().date_naive();
+        out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
         let unlinked = if label == "agent board" {
             tree.stories_without_feature(&content)
         } else {
@@ -1010,6 +1017,11 @@ pub(crate) const TITLE_MAX: usize = 80;
 /// behind it.
 fn split_row_prefix(text: &str) -> Option<&str> {
     row_prefix(text).map(|(_, _, title)| title)
+}
+
+/// Does `text` open with a well-formed `type(area): ` (README "The task row")?
+pub(crate) fn is_typed(text: &str) -> bool {
+    row_type_area(&format!("- [ ] {text}")).is_some()
 }
 
 /// A row line's `(type, area)`, when its text (hashtags aside) opens with a well-formed
@@ -1187,6 +1199,27 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     out
 }
 
+/// The sheet's open rows with no priority. No writer defaults one, so an untagged row is one
+/// nobody has ranked yet, and the nightly triage gives it one the same day (human, 2026-11-09).
+/// A doctor finding, never a write refusal: a row may be added untagged.
+pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Option<String> {
+    let (mut rows, mut old) = (Vec::new(), 0);
+    for (i, line) in content.lines().enumerate() {
+        if line.starts_with("- [") && md::is_open_task(line) && md::task_priority(line).is_none() {
+            rows.push(i + 1);
+            // A row with no created stamp predates the stamps, so it is old by definition.
+            if md::find_created(line, today).is_none_or(|c| c < today) {
+                old += 1;
+            }
+        }
+    }
+    let first = rows.first()?;
+    Some(format!(
+        "{} untriaged open row(s) with no #urgent, #high or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        rows.len()
+    ))
+}
+
 /// A `<!-- ... -->` marker other than the bookkeeping ones (`carried:N`, `ask:<id>`): what
 /// `ptask done --proof`/`--unverified` stamps.
 fn has_proof(line: &str) -> bool {
@@ -1232,7 +1265,7 @@ pub(crate) fn indexed_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
 /// skipped, like [`stats`].
 pub fn shape_report(o: &Overlays) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for profile in config::all_profile_names()? {
+    for profile in config::managed_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };
@@ -1942,6 +1975,26 @@ fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     format!("\n## PRs\n{list}")
 }
 
+/// Cut `## <heading>` out of `content`: its non-blank lines, and the content without the
+/// heading or its body. Empty lines and `content` unchanged when it has no such section.
+fn take_section(content: &str, heading: &str) -> (Vec<String>, String) {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, heading) else {
+        return (Vec::new(), content.to_string());
+    };
+    let rows = lines[span.clone()]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim_end().to_string())
+        .collect();
+    let mut rest: Vec<&str> = lines[..span.start - 1].to_vec();
+    rest.extend(&lines[span.end..]);
+    while rest.last().is_some_and(|l| l.trim().is_empty()) {
+        rest.pop();
+    }
+    (rows, format!("{}\n", rest.join("\n")))
+}
+
 /// The closed rows of the version `cur` on a project's agent board: what
 /// [`release_agent_board`] moves, read before it moves them so the frozen note can list their PRs.
 fn agent_closed_rows(dir: &Path, cur: V) -> Vec<String> {
@@ -2107,6 +2160,17 @@ pub fn release(
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    // The sheet's rows that already rolled off its Done window wait in the agent note; the
+    // version they belong to is this one, so they freeze with the sheet's own.
+    let agent_note = agent_note_path(&dir, &fmt_version(cur));
+    let note = fs::read_to_string(&agent_note).unwrap_or_default();
+    let (rolled, note_rest) = take_section(&note, project_tasks::SHEET_DONE_ROWS);
+    // The frozen body is only `## Tasks` (`rebuild_sheet`), so the end of it is under Tasks.
+    let frozen_body = if rolled.is_empty() {
+        frozen_body
+    } else {
+        format!("{}\n{}\n", frozen_body.trim_end(), rolled.join("\n"))
+    };
     let agent_rows = agent_closed_rows(&dir, cur);
     let prs = prs_section(
         frozen_body
@@ -2146,6 +2210,11 @@ pub fn release(
         md::write_atomic(&frozen, &append_closeout(&prior, &stamped, &date))?;
     } else {
         fs::write(&frozen, &stamped)?;
+    }
+
+    // Frozen first, then the note: a failure in between leaves the rows in both, never neither.
+    if !rolled.is_empty() {
+        md::write_atomic(&agent_note, &note_rest)?;
     }
 
     // the agent board follows: its done rows go to the version's note
@@ -2816,6 +2885,9 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
 struct ProjectStats {
     profile: String,
     name: String,
+    /// False for a profile with `automation = false`: the stage check, dispatch and triage skip
+    /// it (`config::automation`).
+    automation: bool,
     dir: PathBuf,
     stage: String,
     /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
@@ -3096,11 +3168,15 @@ impl Progress {
         }
     }
 
-    /// The version note: its archived `## Done rows` count as closed, and its frozen
+    /// The version note: its archived `## Done rows` (and the sheet's `## Sheet done rows`)
+    /// count as closed, and its frozen
     /// `## Proof` table dates the closes that predate the `done:` stamp.
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let lines: Vec<&str> = content.lines().collect();
-        if let Some(span) = md::section_span(&lines, "Done rows") {
+        for section in ["Done rows", project_tasks::SHEET_DONE_ROWS] {
+            let Some(span) = md::section_span(&lines, section) else {
+                continue;
+            };
             let body = lines[span].join("\n");
             let rows: Vec<&str> = body.lines().collect();
             self.closed(
@@ -3210,6 +3286,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     ProjectStats {
         profile: profile.to_string(),
         name: name.to_string(),
+        automation: config::automation(profile),
         dir: dir.to_path_buf(),
         stage: stage_of(dir).unwrap_or_default(),
         prio: prio_of(dir),
@@ -3970,7 +4047,10 @@ mod stage_tag_tests {
         assert_eq!(prio_of_str(&two), "low");
         let only = replace_head_tag(&two, &PRIOS, Some("prio/only")).unwrap();
         assert_eq!(prio_of_str(&only), "only");
-        assert!(!only.contains("#prio/low"), "only replaces the old word: {only}");
+        assert!(
+            !only.contains("#prio/low"),
+            "only replaces the old word: {only}"
+        );
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -4634,6 +4714,59 @@ Some prose left on the board.
         let _ = fs::remove_dir_all(&root);
     }
 
+    // The sheet's rows that rolled off its Done window wait in the agent note; the release
+    // freezes them with the version and takes them out of the note.
+    #[test]
+    fn a_release_freezes_the_sheet_rows_that_rolled_off() {
+        let root = board_scratch("release-rolled");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.13.0 #beta\n\n## Tasks\n- [x] feat(a): recent <!-- pr:11 -->\n",
+        )
+        .unwrap();
+        let agent_note = dir.join("agent/versions/v1.13.0.md");
+        fs::write(
+            &agent_note,
+            "# demo v1.13.0 - agent\n\n## Done rows\n- [x] fix(d): agent row <!-- pr:30 -->\n\n\
+             ## Sheet done rows\n- [x] feat(z): rolled off <!-- done:2026-10-01 pr:21 -->\n  its detail\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        release(&p, &log, "demo", Bump::Patch, false, false, None, false).unwrap();
+
+        let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
+        assert!(
+            note.contains("- [x] feat(a): recent <!-- pr:11 -->\n- [x] feat(z): rolled off <!-- done:2026-10-01 pr:21 -->\n  its detail\n"),
+            "{note}"
+        );
+        assert!(note.contains("## PRs\n- pr:11\n- pr:21\n"), "{note}");
+        let agent = fs::read_to_string(&agent_note).unwrap();
+        assert!(
+            !agent.contains("Sheet done rows") && !agent.contains("feat(z)"),
+            "{agent}"
+        );
+        // NEGATIVE CONTROL: the agent lane's own rows stay in its note
+        assert!(
+            agent.contains("- [x] fix(d): agent row <!-- pr:30 -->"),
+            "{agent}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_release_with_no_prs_writes_no_prs_section() {
         assert_eq!(prs_section(["- [x] a <!-- id:ar-1 -->", "- [x] b"]), "");
@@ -5216,6 +5349,26 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // An open row with no priority is counted, and one created before today is the overdue
+    // share; tagged, closed, placeholder and child rows are not counted (the negative control).
+    #[test]
+    fn untriaged_counts_open_untagged_rows_and_the_old_ones() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let sheet = "## Tasks\n\
+            - [ ] fine #low #c1101\n\
+            - [ ] new today #c1109\n\
+            - [/] queued, untagged #c1108\n\
+            - [ ] never stamped\n\
+            - [x] closed untagged\n\
+            - [ ] \n\
+            \x20 - [ ] a child row is not a row\n";
+        assert_eq!(
+            untriaged_finding(sheet, today).unwrap(),
+            "3 untriaged open row(s) with no #urgent, #high or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
+        );
+        assert_eq!(untriaged_finding("- [ ] fine #high\n", today), None);
     }
 
     // Each grammar check fires on its bad row; the well-formed rows (the negative control)
@@ -5807,7 +5960,7 @@ mod shape_tests {
     }
 
     #[test]
-    fn an_agent_board_over_budget_says_how_many_done_rows_go() {
+    fn an_agent_board_over_budget_counts_only_done_rows_past_the_window() {
         let s = sandbox("budget");
         let dir = s.p.projects.as_ref().unwrap().join("demo");
         fs::create_dir_all(dir.join("agent")).unwrap();
@@ -5826,10 +5979,25 @@ mod shape_tests {
             .expect("budget finding");
         assert!(
             line.contains(&format!(
-                "{n} done rows to move: notes ptask demo --agent archive"
+                "{n} done rows past the Done window: notes ptask demo --agent sweep"
             )),
             "{line}"
         );
+
+        // Two closes from today sit inside the window: the board is over on its open rows.
+        let today = chrono::Local::now().date_naive();
+        let mut board = String::from("# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n");
+        board.push_str(&format!("- [x] shipped today <!-- done:{today} -->\n").repeat(2));
+        while board.len() <= AGENT_BOARD_BUDGET {
+            board.push_str("- [ ] an open row with some words on it\n");
+        }
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        let line = f
+            .iter()
+            .find(|l| l.starts_with("agent board is"))
+            .expect("budget finding");
+        assert!(line.ends_with("(the open rows need triage)"), "{line}");
     }
 
     /// A registry fixture beside the sandbox, and the shipped overlay tables
