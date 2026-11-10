@@ -1453,6 +1453,30 @@ gw_accts() {
   assert_failure 2
 }
 
+@test "skip refuses a line that is not due, names the nearest due line, and stores nothing" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: a f-...' 'shortened'
+  assert_failure 2
+  assert_output --partial "nearest is 'nudge DONE: a f-a'"
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  ! grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"
+  # Negative control: the line as check printed it is accepted and stays out of the next check.
+  run "$SH" skip 'nudge DONE: a f-a' 'the human has it'
+  assert_success
+  run checked
+  assert_failure 1
+}
+
+@test "skip with nothing due says so and stores nothing" {
+  doc "[]"
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_failure 2
+  assert_output --partial 'nothing is due'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+}
+
 @test "stats counts the ledgers: open, unhandled, skipped and paged lines, 24h receipts from log.md, the last pass" {
   run "$SH" stats
   assert_success
