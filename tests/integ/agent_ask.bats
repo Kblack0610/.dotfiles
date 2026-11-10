@@ -871,8 +871,16 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
   resumed="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
   loose="$(post demo 'headless?')"
+  # Only sid-8 is a Claude conversation claude --resume can open: it has a transcript. sid-9 has
+  # none, like a Codex thread that posted under its own id, so nothing offers to reopen it.
+  mkdir -p "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME" >"$HOME/.claude/projects/p/sid-8.jsonl"
   run "$AGENT_ASK" card "$gone"
   assert_output --partial 'session gone: the answer becomes a row on the demo board'
+  refute_output --partial 'g reopens'
+  run "$AGENT_ASK" target "$gone"
+  assert_failure
+  assert_output 'no Claude conversation sid-9 to reopen; answer it here'
   run "$AGENT_ASK" card "$resumed"
   assert_output --partial 'session gone: the answer starts `/captain resume`'
   assert_output --partial 'g reopens the session'
