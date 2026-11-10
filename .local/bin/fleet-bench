@@ -1161,14 +1161,14 @@ depth_section() {
   echo "Whole sessions as of the last nightly, counted from the transcript's structure. A test run is one command, and a suite is many runs. Spent after the last edit is the share of tokens past its last commit or edit, so a high share on a long session is time spent waiting or polling."
   echo
   session_rows "$1" | jq -rs "$JQ_LIB"'
-    map(select(.activity != null)) | sort_by(-.activity.tokens) | .[:15]
+    map(select(.activity != null)) | sort_by(-(.activity.tokens // 0)) | .[:15]
     | if length == 0 then "_No session in this window has been through the nightly yet._"
       else ("| Session | Test runs | Test runs per PR | CI polls | Tool calls | Tool errors | API messages | Tokens (M) | Spent after last edit |",
             "|---|---|---|---|---|---|---|---|---|",
             (.[] | .activity as $a
              | "| \(.target) | \($a.test_runs) | \(if (.prs_merged // 0) > 0 then $a.test_runs / .prs_merged | round1 else "-" end) | \($a.ci_polls) | \($a.tool_calls) | "
-               + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages) | \($a.tokens / 1000000 | round1) | "
-               + "\(if (.edits // 0) > 0 and $a.tokens > 0 then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
+               + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages) | \(($a.tokens // 0) / 1000000 | round1) | "
+               + "\(if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
       end'
 }
 

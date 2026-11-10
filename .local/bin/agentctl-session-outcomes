@@ -239,6 +239,9 @@ cmd_run() {
       so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
       so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
+    elif jq -e '.metrics' <<<"$row" >/dev/null 2>&1; then
+      jq -c '.metrics' <<<"$row" > "$work/m.$sid.json"
+      jq -c '.metrics.time_use' <<<"$row" > "$work/t.$sid.json"
     else
       null_metrics "$work" "$sid"
     fi
@@ -448,7 +451,9 @@ cmd_run() {
           cost_by_model: ($row.cost_by_model // null),
           cost_src: ($row.cost_src // null),
           models: ($row.models // null),
-          account: ($row.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a // null),
+          account: ($row.account // ($row.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a) // null),
+          effort: ($row.effort // null),
+          error: ($row.error // null),
           tokens_total: ($row.tokens.total // null),
           duration_s: ($row.duration_s // null),
           prs: $prs,
@@ -472,7 +477,7 @@ cmd_run() {
           activity: ($mm.activity // null),
           uses: ($mm.uses // null),
           time_use: $time_use[0],
-          delivery: ($bench[0][$row.session_id] // null) }
+          delivery: ($bench[0][$row.session_id] // (if $row.peak_context != null then {peak_context: $row.peak_context} else null end)) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
