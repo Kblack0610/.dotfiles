@@ -848,17 +848,23 @@ cmd_item_tier() {
 }
 
 # excluded_kind <item json> -> the first `excluded` kind of MATRIX whose `match` (a case-insensitive ERE)
-# hits the item's title or one of its tags written `#tag`, counting only an entry whose `stacks` (when
-# it names any) hold the item's project. rc 1 when none does, rc 2 when MATRIX is unreadable. The one
-# list fleet-bench prints as the matrix's excluded cells, so what it calls excluded is what route() refuses.
+# hits the item's headline (item_headline) or one of its tags written `#tag`, counting only an entry
+# whose `stack`, when it names one, holds the item's project (fleet-bench's scoping of an excluded cell).
+# rc 1 when none does; rc 2, failing closed, when MATRIX or the item is unreadable or a `match` is not a
+# valid ERE. The one list fleet-bench prints as the matrix's excluded cells, so what it calls excluded is
+# what route() refuses.
 excluded_kind() {
-  local text rows kind re
-  text=$(jq -r '[.title // "", ((.tags // "") | split(" ") | map(select(. != "") | "#" + .) | join(" "))] | join(" ")' <<<"$1")
+  local text tags rows kind re rc
+  tags=$(jq -r '.tags // "" | if type == "array" then join(" ") else . end | split(" ") | map(select(. != "") | "#" + .) | join(" ")' <<<"$1") || return 2
+  text="$(item_headline "$1") $tags"
   rows=$(jq -r --arg p "$(jq -r '.project // ""' <<<"$1")" '.stacks as $s | .excluded[]? | select(.kind and .match)
-      | select(((.stacks // []) | length) == 0 or any(.stacks[]; ($s[.].projects // []) | index($p)))
+      | select(.stack == null or (($s[.stack].projects // []) | index($p)))
       | "\(.kind)\t\(.match)"' "$MATRIX" 2>/dev/null) || return 2
   while IFS=$'\t' read -r kind re; do
-    [ -n "$kind" ] && grep -qiE -- "$re" <<<"$text" && { echo "$kind"; return 0; }
+    [ -n "$kind" ] || continue
+    grep -qiE -- "$re" <<<"$text"; rc=$?
+    [ "$rc" = 0 ] && { echo "$kind"; return 0; }
+    [ "$rc" = 1 ] || return 2
   done <<<"$rows"
   return 1
 }
@@ -2776,28 +2782,29 @@ item_pinned() {
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
-  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl erc why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
   item_pinned "$it" && pinned=1
   if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
   else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
   [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
   tier=$(item_tier "$it")
-  excl=$(excluded_kind "$it"); erc=$?
   while read -r h m; do
     if [ "$h" = claude ]; then
       [ "${ACCT_RC:-1}" = 0 ] && { ROUTE_HARNESS=claude; return 0; }
       why+=("claude: no account has room"); continue
     fi
-    src=$(harness_source "$h")
+    src=$(harness_source "$h") hl=0
+    headless "$h" && hl=1
+    [ "$hl" = 0 ] || [ -n "$erc" ] || { excl=$(excluded_kind "$it"); erc=$?; }   # once, and only for a headless one
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
-    elif [ "$erc" = 0 ] && headless "$h"; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
-    elif [ "$erc" = 2 ] && headless "$h"; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable")
+    elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
+    elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
     elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")

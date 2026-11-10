@@ -5365,7 +5365,7 @@ harness_ready() {
     excluded: [{kind: "deploy", match: "\\b(deploy(s|ed|ing|ment)?|kubectl)\\b", why: "human-gated"},
       {kind: "secrets", match: "\\b(secrets?|rbw|sops)\\b", why: "secrets"},
       {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
-      {kind: "unity-editor", stacks: ["unity"], match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
+      {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
       {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -6133,6 +6133,9 @@ case "$1" in log) echo run-9 ;; classify)
   # Pinned is no way around it.
   refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix prod dns","agent":"codex","model":"sol"}' \
     "codex: runs headless, and this is prod work (excluded in $MATRIX)"
+  # An item with no title is read by its task's first line, the headline every log uses.
+  refused '{"slug":"x","project":"game","mode":"oneshot","task":"\n  kubectl apply the ingress\nmore"}' \
+    "codex: runs headless, and this is deploy work (excluded in $MATRIX); claude: no account has room"
   # Negative controls: a near miss (product, not prod), the same tag off the Unity stack, and plain work route to codex.
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"open the editor pane","tags":"requested"}' \
@@ -6147,7 +6150,12 @@ case "$1" in log) echo run-9 ;; classify)
   # An unreadable list keeps every headless harness off, never open.
   ACCT_RC=1 MATRIX="$SANDBOX/no-matrix.json"
   refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu sides"}' \
-    "codex: runs headless, and the exclusion list $SANDBOX/no-matrix.json is unreadable; claude: no account has room"
+    "codex: runs headless, and the exclusion list $SANDBOX/no-matrix.json is unreadable or has a bad match; claude: no account has room"
+  # So does a `match` that is not a valid ERE: grep's error is not a miss.
+  jq '.excluded[0].match = "(deploy"' "$HOME/.config/fleet-bench/matrix.json" > "$SANDBOX/bad-match.json"
+  MATRIX="$SANDBOX/bad-match.json"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu sides"}' \
+    "codex: runs headless, and the exclusion list $SANDBOX/bad-match.json is unreadable or has a bad match; claude: no account has room"
 }
 
 @test "a red past the ceiling routes only to a harness that can hold the red-fix gate" {
