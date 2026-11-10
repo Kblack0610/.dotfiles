@@ -43,7 +43,9 @@
 #   fleet-shepherd skip "<due line>" "<why>"
 #                          answer a due line by leaving it: it stays out of check while it is
 #                          due. check leads with `unhandled: <line>` for any line the last pass
-#                          was given (.handed) and neither moved nor skipped
+#                          was given (.handed) and neither moved nor skipped. A line that is not
+#                          due now is refused (exit 2) naming the nearest due lines, so a
+#                          shortened line never lands in .skipped; copy it as check printed it
 #   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
@@ -835,11 +837,43 @@ last_working() {
   [ "$st" != idle ] && [ "$st" != gone ]
 }
 
+# skip_known <key>: 0 when the key is a line due now. Anything else is refused with the nearest due
+# lines, because a skip stored under a shortened or reworded line never matches the due line, which
+# then comes back as unhandled (2026-11-09: a pass skipped 'overdue: lab/...-agent-58:1' and the
+# next check reported agent-58 and agent-59 unhandled). The due lines are cmd_due's, read live
+# (it writes nothing), not the ledger a check last wrote, which a line that appeared since is not in.
+skip_known() {
+  local key="$1" due rc=0 k n best="" bestn=-1 near="" cnt=0 pre="" suf=""
+  [ -n "$key" ] || { echo "fleet-shepherd: not skipped: the line is empty" >&2; return 1; }
+  due="$(cmd_due)" || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "fleet-shepherd: not skipped: the due lines could not be read (cmd_due exit $rc)" >&2; return 1; }
+  local keys
+  keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"$due")"
+  # exact, whole-line compare: grep would treat a multi-line key as several patterns
+  KEY="$key" awk 'ENVIRON["KEY"] == $0 { f = 1 } END { exit !f }' <<<"$keys" && return 0
+  if [ -z "$keys" ]; then
+    echo "fleet-shepherd: not skipped: '$key' is not a due line, and nothing is due now" >&2
+    return 1
+  fi
+  # an elided line ('lab/...-agent-58:1') matches a due line holding both ends of it
+  if [[ "$key" == *...* ]]; then pre="${key%%...*}"; suf="${key#*...}"; fi
+  while IFS= read -r k; do
+    n=0
+    while [ "$n" -lt "${#k}" ] && [ "$n" -lt "${#key}" ] && [ "${k:n:1}" = "${key:n:1}" ]; do n=$((n + 1)); done
+    [ -z "$suf" ] || [[ "$k" != "$pre"* || "$k" != *"$suf"* ]] || n=$((n + 1000))
+    if [ "$n" -gt "$bestn" ]; then bestn=$n; near="$k"; cnt=1
+    elif [ "$n" -eq "$bestn" ] && [ "$cnt" -lt 5 ]; then near+="'; '$k"; cnt=$((cnt + 1)); fi
+  done <<<"$keys"
+  echo "fleet-shepherd: not skipped: '$key' is not a due line; nearest due: '$near'. Skip a line exactly as check printed it (exit 2, nothing stored)." >&2
+  return 1
+}
+
 # skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
 # It logs the skip, so a pass whose only answer was a skip did something and is not STALLED.
 cmd_skip() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ] || die 'usage: fleet-shepherd skip "<due line>" "<why>"'
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  skip_known "$(due_key "$1")" || exit 2
   printf '%s\t%s\t%s\n' "$(due_key "$1")" "${2//[$'\t\n']/ }" "$(date +%s)" >> "$SKIPPED"
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
