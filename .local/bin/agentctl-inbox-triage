@@ -3,6 +3,7 @@
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high]]] [--watch]
 #
+# A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
 # A `#ask` outbox line is a question: one read-only call answers it into today's notes inbox and the
 # line leaves the outbox (`notes outbox answer`), so it is never a row.
 # `#p:` outbox lines naming a project exactly, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
@@ -237,10 +238,11 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out types
+  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out types agent_run
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
+  agent_run="$(agent_run_rule)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
   wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
   local -a froms=() raws=() texts=()
@@ -263,7 +265,7 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
 {\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\"}
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human. plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
+file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing.
 skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that plainly belongs to an open epic of its project ends with #of/<the epic's id>. When none plainly fits, add no #of.
@@ -549,9 +551,35 @@ priority_pass() {
   return "$rc"
 }
 
-# One sweep's pass: the outbox, then every inbox.
+# split_waiting: lists become one line per ask, before anything reads them: everything after this
+# treats one line as one item. Every sheet is asked, not only those the board counts, because a
+# block indented as a whole counts 0 until it is moved left. Writes, so a dry run skips it.
+split_waiting() {
+  local p sheets rc=0
+  [ "$DRY" = 1 ] && return 0
+  [ -n "$ONLY" ] || notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
+  sheets="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  sheets="$(managed_board <<<"$sheets" | jq -r '.projects[].project' | sort -u)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
+    notes ptask "$p" split >&2 || { say "$p: cannot split the inbox"; proof_why "$p: cannot split the inbox"; rc=1; }
+  done <<<"$sheets"
+  return "$rc"
+}
+
+# agent_run_rule: the lane sentence for projects an agent-lane worker takes with no tags, from the
+# worker table: there an agent does the work unattended, so a line files where the worker reads.
+agent_run_rule() {
+  local names
+  names="$(jq -r '[.[] | select(.lane == "agent" and .untagged == true) | .projects[]?] | unique | join(", ")' "${DISPATCH_WORKERS:-$HOME/.config/fleet-dispatch/workers.json}" 2>/dev/null)"
+  [ -z "$names" ] || printf ' Except on these projects, where agents do the work unattended, lane is agent unless a step needs a person (a playtest on a device, a release, money, a purchase, a product decision nobody has made): %s.' "$names"
+}
+
+# One sweep's pass: lists split, the outbox, then every inbox.
 pass() {
   local ob board all seen rc=0 mrc p lines from raw text size r details
+  split_waiting || rc=1
   ob="$(notes outbox list --json 2>/dev/null)" || { say "notes outbox list failed"; proof_why "notes outbox list failed"; return 1; }
   # What the record says was left or refused, by where it waited and its words.
   seen='{}'
