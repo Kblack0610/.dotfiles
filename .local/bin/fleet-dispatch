@@ -2085,7 +2085,7 @@ settle_item() {
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). Salvaging a mid-run limit's work is codex-parity P6.
     if [ "$why" = limit ]; then
-      agent-queue move "$1" queued "${end[@]}" --if "$st" >/dev/null || return 0
+      agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=session $2 hit the plan's usage limit; requeued (end_reason: limit)" >/dev/null
       logline "reaped $2: session gone, queue item $1 requeued: end_reason limit"
       echo "requeued queue item $1 ($2 hit the plan's usage limit)"
