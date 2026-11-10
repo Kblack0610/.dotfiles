@@ -2256,6 +2256,85 @@ SH
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
 
+@test "end to end: a source that fails for one repo holds only that repo's rows; every other row still logs (ar-1116)" {
+  landed_fixture
+  local oid line1
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # a second session, s2 (sid-8), in a clone of another repo
+  git init -q --bare "$SANDBOX/origin2.git"
+  git clone -q "$SANDBOX/origin2.git" "$SANDBOX/wt2" 2>/dev/null
+  git -C "$SANDBOX/wt2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt2" push -q origin HEAD:main 2>/dev/null
+  line1="$("$SANDBOX/bin/agent-panel")"
+  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$line1" \
+    "$(jq -c --arg c "$SANDBOX/wt2" '.target = "lab/s2:1" | .pane = "lab/%8" | .session_id = "sid-8" | .cwd = $c | .plan_file = ""' <<<"$line1")" \
+    > "$SANDBOX/bin/agent-panel"
+  # gh answers for wt, and for wt2 only while gh.down is absent
+  printf '#!/usr/bin/env bash\ncase "$PWD" in */wt2) [ -e %q ] && exit 1 ;; esac\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%%s\\n" %q\n' \
+    "$SANDBOX/gh.down" "$oid" > "$SANDBOX/bin/gh"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(cut -f1 "$FLEET_SHEPHERD_DIR/watch.state" | sort | paste -sd' ')" = 'sid-8 sid-9' ]
+  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" > "$SANDBOX/s2.ok"
+
+  touch "$SANDBOX/gh.down"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s2 +quality:reviewing >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '["gh pr list (wt2)"]' ]
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
+  # s1 read clean, so its change is logged; s2 read a failed source, so it keeps its last cells
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
+  refute_line --partial 's2:1'
+  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" | cmp - "$SANDBOX/s2.ok"
+
+  # NEGATIVE CONTROL: the read comes back, and s2's change is logged then, once
+  rm "$SANDBOX/gh.down"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(grep -c 's2:1  quality - -> reviewing$' "$FLEET_SHEPHERD_DIR/watch.log")" = 1 ]
+  [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 2 ]
+}
+
+@test "end to end: a clone on another forge asks gh nothing and is never an unreadable source (ar-1116)" {
+  landed_fixture
+  git -C "$SANDBOX/wt" remote set-url origin https://git.example.lan/o/asset-library.git
+  printf '#!/usr/bin/env bash\necho "$PWD $*" >> %q\nexit 1\n' "$SANDBOX/gh.calls" > "$SANDBOX/bin/gh"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
+  run grep -c 'pr list' "$SANDBOX/gh.calls"
+  [ "${output:-0}" = 0 ]
+  # NEGATIVE CONTROL: the same clone on GitHub asks gh, which fails, and is named
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/asset-library.git
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  jq -e '.unreadable | index("gh pr list (wt)")' "$doc" >/dev/null
+}
+
+@test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {
+  printf 'a\ts1:1\told\nb\ts2:1\told\nc\ts3:1\told\n' > "$SANDBOX/prev"
+  printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\n' > "$SANDBOX/cur"
+  # b's source failed: b keeps old; c left and d is new, as read
+  echo b > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\told\nd\ts4:1\tnew')"
+  # a blind row never seen before waits for a good read
+  echo d > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew')"
+  # a session list read with a gap: c is not gone
+  echo + > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\nc\ts3:1\told')"
+  # the local agent-panel failed: every row is the last good state
+  echo '*' > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(cat "$SANDBOX/prev")"
+}
+
 @test "an ask counts only for the Claude session that asked, never by tmux session name" {
   ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
   printf 'status: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"

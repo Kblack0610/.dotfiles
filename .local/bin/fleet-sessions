@@ -557,35 +557,48 @@ repo_slug() {
   printf '%s' "$url" | tr -c 'A-Za-z0-9' _
 }
 
+# unreadable <name>: this pass could not read <name>. The state document names it, and the row
+# collect is building is blind ($CACHE/blind_row), so tick keeps that row's last cells (keep_blind).
+unreadable() { echo "$1" >> "$CACHE/unreadable"; blind_row; }
+# blind_row: the row collect is building read a source that failed, this call or earlier in the pass.
+blind_row() { : > "$CACHE/blind_row"; }
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
+# A clone on another forge (origin_off_github: the Forgejo submodule External/asset-library) has no
+# gh PRs, never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
 prs_for() {
   local dir="$1" key
   key="$CACHE/$(repo_slug "$dir")" || return 0
+  ! origin_off_github "$dir" || return 0
   [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
       --json number,state,headRefName,headRefOid,statusCheckRollup \
       -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key" \
-    || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
+    || { : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"; }
+  [ ! -f "$key.failed" ] || blind_row
   cat "$key"
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
-# does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1.
+# does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
+# with the row blind on every read.
 branch_runs() {
   local d="$1" b="$2" all one rc=0
   all="$CACHE/runs_$(repo_slug "$d")" || return 1
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
-  [ -f "$one" ] && { [ -s "$one" ] && cat "$one"; return; }
-  if [ ! -f "$all" ]; then
-    main_runs "$(origin_repo "$d")" > "$all" || rc=$?
-    case $rc in
-      0) ;;
-      3) echo '[]' > "$all" ;;
-      *) : > "$all"; echo "run ledger ($(basename "$d"))" >> "$CACHE/unreadable" ;;
-    esac
+  if [ ! -f "$one" ]; then
+    if [ ! -f "$all" ]; then
+      main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+      case $rc in
+        0) ;;
+        3) echo '[]' > "$all" ;;
+        *) : > "$all"; unreadable "run ledger ($(basename "$d"))" ;;
+      esac
+    fi
+    if [ -s "$all" ]; then jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one"; else : > "$one"; fi
   fi
-  if [ -s "$all" ]; then jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one"; else : > "$one"; fi
-  [ -s "$one" ] && cat "$one"
+  [ -s "$one" ] || { blind_row; return 1; }
+  cat "$one"
 }
 
 # gate_ci <dir> <PR head branch> <head_oid> <ci> [<red job ids>] -> <ci> with the branch's dispatched gate runs folded in.
@@ -644,7 +657,7 @@ gate_line_only() {
       steps="$(cd "$d" && gh api "repos/{owner}/{repo}/actions/jobs/$id" \
         -q '[.steps[] | select((.conclusion // "skipped") | test("^(success|skipped)$") | not) | .name]
             | if length == 0 then "-" else .[] end' 2>/dev/null)" && [ -n "$steps" ] \
-        || { echo "gh api actions/jobs/$id ($(basename "$d"))" >> "$CACHE/unreadable"; return 1; }
+        || { unreadable "gh api actions/jobs/$id ($(basename "$d"))"; return 1; }
       mkdir -p "$MAIN_CACHE"
       printf '%s\n' "$steps" > "$file.$$" && mv "$file.$$" "$file"
     fi
@@ -708,8 +721,8 @@ sibling_pr() {
     mkdir -p "$MAIN_CACHE"
     printf '%s\n' "$view" > "$file.$$" && mv "$file.$$" "$file"
   else
-    [ -f "$failed" ] || { : > "$failed"; echo "gh pr view $repo#$n" >> "$CACHE/unreadable"; }
-    return 0
+    [ -f "$failed" ] || { : > "$failed"; unreadable "gh pr view $repo#$n"; }
+    blind_row; return 0
   fi
   jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
@@ -826,6 +839,7 @@ main_health() {
       printf 'RED\t%s\t%s\t%s\t%s\n' "$wfs" "${sha:0:8}" "${prs:--}" "$(basename "$url" .git)" > "$key"
     else echo OK > "$key"; fi
   fi
+  [ "$(cut -f1 "$key")" != UNKNOWN ] || blind_row   # a later row of the repo read the same failed ledger
   cut -f1-4 "$key"
 }
 
@@ -1126,7 +1140,8 @@ handoff_of() {
 # names no tmux server here, so a nudge or a set-option aimed at the row can never land on a local
 # session that shares its name, and item_of joins it to its queue item by session id alone. A worker
 # that does not answer, or runs no agent-panel, adds nothing: a laptop asleep is not this machine's
-# sources blinking ($CACHE/unreadable).
+# sources blinking ($CACHE/unreadable). It runs beside collect's row loop, so a gap goes straight to
+# $CACHE/blind as "+" (keep_blind), never through blind_row, which names the row the loop is on.
 remote_panel_lines() {
   local name out rc
   fleet_hosts >/dev/null
@@ -1134,7 +1149,7 @@ remote_panel_lines() {
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
     # not log the sessions it missed as gone.
     rc=0; out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || rc=$?
-    [ "$rc" -eq 3 ] && echo "agent-panel@$name" >> "$CACHE/unreadable"
+    [ "$rc" -eq 3 ] && { echo "agent-panel@$name" >> "$CACHE/unreadable"; echo + >> "$CACHE/blind"; }
     [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || continue
     jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   done < <(fleet_hosts | jq -r .name)
@@ -1168,17 +1183,20 @@ collect() {
   items="$(jq -r <<<"$qjson" '
     select(.state != "queued" and ((.session // "") | contains(":")))
     | (.session | sub(":"; "/")) + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
-  # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
-  # blink (every session "gone", every PR "-") as a change.
+  # A pass that could not read a source says so in $CACHE/unreadable, and marks the rows it feeds
+  # in $CACHE/blind (keep_blind), so tick never logs a blink (a session "gone", a PR "-") as a change.
+  # The local agent-panel feeds every row, parked ones included (parked_lines reads it): "*".
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
   # AGENT_PANEL_CODEX: a Codex run in a pane is a row too (busy, its thread id as session_id, so
   # item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
   # rebuilt ignores it instead of refusing the flag and reading as every session gone.
-  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
+  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" \
+    || { echo agent-panel >> "$CACHE/unreadable"; echo '*' >> "$CACHE/blind"; }
   local PENDING_ASKS
   PENDING_ASKS="$(pending_asks)"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
+    rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host
@@ -1322,6 +1340,7 @@ collect() {
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
       "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask"
+    [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   main_rows
   checkout_rows "$off"
@@ -1495,6 +1514,25 @@ transitions() {
     END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
 }
 
+# keep_blind <previous cells file> <current cells file> <blind file> -> the current cells with each
+# row a failed source fed put back to its previous cells, so tick logs no blink for it and the next
+# good read is compared with the last good one. <blind file> holds session ids (a row's per-row
+# source failed: gh pr list, the run ledger, gh api jobs, gh pr view), "+" (a remote agent-panel
+# read with a gap: the previous rows it did not list are kept, not gone) or "*" (the local
+# agent-panel failed: it feeds every row, so every row keeps its previous cells). A blind row with
+# no previous cells waits for a good read before it is new. Any other row is logged as read: one
+# blind source no longer holds the whole fleet (ar-1116, 2026-11-08 20:27 to 11-09 03:10).
+keep_blind() {
+  awk -F'\t' '
+    FILENAME == ARGV[1] { blind[$1] = 1; next }
+    FILENAME == ARGV[2] { prev[$1] = $0; order[++n] = $1; next }
+    blind["*"] { next }
+    !($1 in blind) { print; seen[$1] = 1; next }
+    $1 in prev { print prev[$1]; seen[$1] = 1 }
+    END { if (blind["*"] || blind["+"]) for (i = 1; i <= n; i++) if (!(order[i] in seen)) print prev[order[i]] }
+  ' "$3" "$1" "$2"
+}
+
 # tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Fleet tab. git, gh and the
 # transcripts have no change event to await, so fleet-state.timer runs it every minute; a pass
 # costs ~12s of gh and git. It logs what moved since the last tick to watch.log (the state file
@@ -1510,12 +1548,11 @@ tick() {
   cur="$CACHE/cells"; board_cells "$CACHE/eta" <<<"$rows" > "$cur"
   now="$(date '+%Y-%m-%d %H:%M')"
   mkdir -p "$LEDGER"
-  # A blind pass keeps the last good state: what it could not read did not change.
-  [ -s "$CACHE/unreadable" ] && cp "$LEDGER/watch.state" "$cur" 2>/dev/null
   (
     flock 9
-    if [ -s "$CACHE/unreadable" ]; then :
-    elif [ -f "$LEDGER/watch.state" ]; then
+    # What a source could not read did not change: those rows keep their last good cells.
+    if [ -f "$LEDGER/watch.state" ]; then
+      [ ! -s "$CACHE/blind" ] || { keep_blind "$LEDGER/watch.state" "$cur" "$CACHE/blind" > "$cur.kept" && mv "$cur.kept" "$cur"; }
       new="$(transitions "$LEDGER/watch.state" "$cur")"
       [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
     fi

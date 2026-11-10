@@ -24,6 +24,14 @@ origin_repo() {
   sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$url"
 }
 
+# origin_off_github <dir> -- exit 0 when <dir>'s origin names a host that is not github.com (a Forgejo
+# clone such as External/asset-library), so gh can never read its PRs. A path origin names no host.
+origin_off_github() {
+  local url
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) && [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || "$url" =~ ^[^/]+: ]] \
+    && ! origin_repo "$1" github.com >/dev/null
+}
+
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
 # mirror workflow, the marker forge-guard.py reads (home-config).
 forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }

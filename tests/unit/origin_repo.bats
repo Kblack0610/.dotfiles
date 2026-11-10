@@ -56,6 +56,21 @@ repo_of() {
   assert_failure
 }
 
+@test "origin_off_github: a URL on another host is off GitHub; GitHub and a path origin are not" {
+  local url
+  for url in https://git.example.lan/o/r.git git@git.example.lan:o/r.git ssh://git@git.example.lan:2222/o/r.git file:///srv/r.git; do
+    repo_of "$url" >/dev/null
+    run origin_off_github "$CLONE"
+    assert_success
+  done
+  # NEGATIVE CONTROL: GitHub in every form, and a local path (no host for gh to know), are not
+  for url in https://GitHub.com/o/r git@github.com:o/r.git ssh://git@github.com:22/o/r.git /srv/r.git; do
+    repo_of "$url" >/dev/null
+    run origin_off_github "$CLONE"
+    assert_failure
+  done
+}
+
 @test "no origin, or no dir, is nothing and rc 1" {
   run origin_repo "$CLONE"
   assert_failure
