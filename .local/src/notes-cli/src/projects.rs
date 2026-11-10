@@ -1613,7 +1613,7 @@ pub(crate) fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
 }
 
 /// The next version after `cur` (or the v0.0.1 seed when the project has none).
-fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
+pub(crate) fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
     match cur {
         None => (0, 0, 1), // every lab project starts here
         Some((a, b, c)) => match level {
@@ -1970,7 +1970,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
 /// The `## PRs` section a frozen note ends in: every PR named on the version's closed rows of
 /// both lanes, in row order and without repeats. A dropped row shipped nothing, so its PRs are
 /// left out. Empty when no row names one.
-fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
+pub(crate) fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     let mut prs: Vec<String> = Vec::new();
     for r in rows.into_iter().filter(|r| !md::is_dropped(r)) {
         for pr in md::pr_refs(r) {
@@ -2929,7 +2929,7 @@ struct ProjectStats {
 pub(crate) struct ReleaseDue {
     pub cadence_days: i64,
     /// The day of the last cut, `YYYY-MM-DD`. `None` for a project never cut: its history is
-    /// rebuilt first (`systems-versions-p6`), so a cadence cut never folds it into one version.
+    /// rebuilt first (`projects --backfill`), so a cadence cut never folds it into one version.
     pub last_cut: Option<String>,
     /// `last_cut` plus the cadence; `None` when never cut.
     pub due_on: Option<String>,
@@ -2937,7 +2937,7 @@ pub(crate) struct ReleaseDue {
     pub due: bool,
     /// Due and a whole cadence past `due_on`: the open version holds more than one window of
     /// work, which a cadence cut would fold into one version. `agentctl-wave-roll` leaves it
-    /// to the backfill that splits it by week (`systems-versions-p6`) or a hand `notes-roll`.
+    /// to `projects --backfill`, which splits it by week, or a hand `notes-roll`.
     pub backlog: bool,
     /// The bump the cut takes, `minor` or `patch` ([`derived_bump`]).
     pub bump: &'static str,
