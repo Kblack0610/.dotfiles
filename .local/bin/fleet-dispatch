@@ -5,6 +5,7 @@
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
+#   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item (night)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
@@ -3698,6 +3699,13 @@ cmd_report() {
     sort | awk -F'\t' '{ printf "%-9s %-2s t%-2s %-16s %-6s %-12s %s\n           %s\n", $1, $2, $3, $4, $5, $6, substr($7, 1, 90), $8 }'
 }
 
+# cmd_verdicts -- latest_verdicts, each with plan: true when it is a skip by one of
+# DISPATCH_PLAN_RULES (a row plan_skips sends for a split); fleet-bench's next_up_blocked reads it
+cmd_verdicts() {
+  latest_verdicts | jq -c --arg rules "$DISPATCH_PLAN_RULES" \
+    '($rules | split(" ") | map(select(. != ""))) as $r | . + {plan: (.verdict == "skip" and ((.rule // "") | IN($r[])))}'
+}
+
 main() {
   case "${1:-}" in
     run)
@@ -3713,6 +3721,7 @@ main() {
     fill) shift; cmd_fill "$@" ;;
     promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;
+    verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     stats) cmd_stats ;;
