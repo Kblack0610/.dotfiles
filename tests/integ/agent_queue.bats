@@ -243,9 +243,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug b-high "b"
   f="$(item queued b-high)"
   sed -i '/^priority:/d' "$f"
-  run bash -c "'$AQ' list --json | jq -r .slug"
+  run bash -c "'$AQ' list --json | jq -r '[.slug, .priority] | @tsv'"
   assert_success
-  assert_output $'b-high\na-low'
+  assert_output $'b-high\thigh\na-low\tlow'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = b-high ]
 }
 
 @test "list fails, never prints an empty queue, when the queue cannot be read" {
@@ -259,6 +262,9 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "could not read the queue"
   run "$AQ" list
   assert_failure
+  run "$AQ" next
+  assert_failure
+  assert_output --partial "could not read the queue"
 }
 
 @test "a project's #prio ranks its items within a priority, under red and urgent, over cleanup" {

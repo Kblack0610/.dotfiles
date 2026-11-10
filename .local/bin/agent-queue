@@ -609,7 +609,8 @@ item_recs() {
 # and, for a held queued item, hold. `ready` is when the item could first start: queued, or the finish of
 # its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
 # `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
-# An item with no weight line gets weight_of's answer, so every reader sees a weight.
+# An item with no weight line gets weight_of's answer, so every reader sees a weight, and one with
+# no priority line reads high, add's default: a missing key there broke every read of the queue (ar-1399).
 # `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
 # project or the one its `board` key names (project_board): its `row:` (file_story, link_row), else
 # the board row it was promoted from (`from: board:`). The one definition agent-land and
@@ -621,6 +622,7 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
   | ([range(4; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
+  | .priority //= "high"
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") == "" and (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:")) else . end)'
@@ -679,7 +681,7 @@ item_json() {
 # is not queued behind the fleet's own housekeeping (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority // ""] // 1),
+  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
     ($rank[.project // ""] // 2), untagged("cleanup"), .queued)'
 # order_filter -> ORDER with each project's rank bound to $rank, from the `#prio` the human set on
 # its front page (prios_read): only and focus 0, high 1, normal 2, low 3. No prio, or a notes that
@@ -851,7 +853,8 @@ link_row() {
   local id="$1" project lab code taken out
   IFS=$'\t' read -r project lab code < <(project_board "$2")
   [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $2 has no agent board (no lab or code in $AQ_MAP, nor a board key naming one)"
-  taken="$(collect $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')"
+  taken="$(collect $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')" ||
+    die "--row $id: could not check the queue for an item on that row"
   [ -z "$taken" ] || die "--row $id: $taken already works that row; to take it over: agent-queue claim $taken"
   command -v notes >/dev/null || die "--row $id: no notes on PATH"
   out="$(notes --profile "$lab" ptask "$project" --agent start "$id" 2>&1)" ||
@@ -1093,7 +1096,7 @@ add_plan() {
   local taken
   taken="$(collect $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
     "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" ||
-    die "could not read the queue, so nothing was added for $planf"
+    die "could not check the queue for items of $planf, so nothing was added"
   [ -z "$taken" ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
@@ -1217,7 +1220,7 @@ cmd_list() {
 cmd_next() {
   local items
   lock_read
-  items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')"
+  items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')" || die "could not read the queue"
   [ -n "$items" ] || return 1
   if [ "${1:-}" = --json ]; then printf '%s\n' "$items"; else jq -r .file <<<"$items"; fi
 }
@@ -1248,12 +1251,13 @@ cmd_mine() {
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
   lock_read
   if [ -z "$session" ] && [ -n "$sid" ]; then
-    slugs="$(collect running waiting review | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')"
+    slugs="$(collect running waiting review | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')" ||
+      die "could not read the queue"
   fi
   [ "$only" -eq 0 ] || [ -n "${slugs:-}" ] || return 1
   if [ -z "${slugs:-}" ]; then
     [ -n "$session" ] || session="$(own_session)" || { [ -n "$sid" ] && return 1; die "not in tmux: pass --session <server>:<session>"; }
-    slugs="$(collect running | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')"
+    slugs="$(collect running | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')" || die "could not read the queue"
   fi
   [ -n "$slugs" ] || return 1
   if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
