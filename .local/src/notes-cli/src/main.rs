@@ -38,6 +38,7 @@ mod rank;
 mod registry;
 mod sheet;
 mod show;
+mod standing;
 mod status;
 mod steps;
 mod summarize;

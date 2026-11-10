@@ -140,7 +140,7 @@ $details" 1 ask "$INBOX_ASK_CMD"; rc=$?
 ANSWER_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
   | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.lane | s),
-     (if .plan == true then "1" else "" end), (.why | s),
+     (if .plan == true then "1" else "" end), (.why | s), (.epic | s),
      ([.rows[]? | strings | s] | join("\u001e"))] | join("\u001f")'
 
 # note <action> <from> <why> <text>: a left or refused line in the ingest record, which keeps it
@@ -238,7 +238,7 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out types agent_run
+  local lines="$1" board="$2" names homes srcs wide batch open epics systems prompt out types agent_run
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
@@ -257,21 +257,29 @@ route() {
     | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   epics="$(epics_open "$board")"
+  # The system lists of the projects a line can go to: its own, or every one for an outbox line.
+  local -a sysp=()
+  mapfile -t sysp < <(jq -r --argjson src "$srcs" --argjson wide "$wide" \
+    'if $wide then [.projects[].project] else $src - ["outbox"] end | unique[]' <<<"$board")
+  systems="$(systems_of "${sysp[@]}")"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
 {\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\"}
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
+{\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing.
 skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
-A filed row that plainly belongs to an open epic of its project ends with #of/<the epic's id>. When none plainly fits, add no #of.
+A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
 
 ## Lines
 $batch
+## Systems (project: ids)
+$systems
 ## Open epics (id, project, title)
 $epics
 ## Open rows (id, project, lane, text)
@@ -279,9 +287,9 @@ $open"
   ask "$prompt" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
-  local n action id dest lane plan why rows r from raw text src
-  local -a args rowv
-  while IFS=$'\x1f' read -r n action id dest lane plan why rows; do
+  local n action id dest lane plan why epic rows r from raw text src eid
+  local -a args rowv asv
+  while IFS=$'\x1f' read -r n action id dest lane plan why epic rows; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
     [ -n "$raw" ] || continue
@@ -300,12 +308,13 @@ $open"
           args=(--dup "$id" --lane "$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .lane) // "human"' <<<"$board")")
         else
           IFS=$'\x1e' read -r -a rowv <<<"$rows"
+          asv=()
           for r in "${rowv[@]}"; do
             r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
-            if [ -n "$plan" ] && [ "${#args[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
-            [ -n "$r" ] && args+=(--as "$r")
+            if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
+            [ -n "$r" ] && asv+=("$r")
           done
-          [ "${#args[@]}" -gt 0 ] || { left "$from" "$text" "no row"; continue; }
+          [ "${#asv[@]}" -gt 0 ] || { left "$from" "$text" "no row"; continue; }
           [ "$lane" = agent ] && args+=(--lane agent)
           # A routed line is a want: the writer stamps it, so no row text here carries #requested.
           args+=(--want "$(want_channel "$from")")
@@ -317,6 +326,13 @@ $open"
           src="$dest"
         elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
           args+=(--project "$dest")
+        fi
+        # A new epic goes on its sheet before the rows that go under it.
+        if [ "$action" = file ]; then
+          if [ -n "$epic" ] && eid="$(epic_new "${dest:-$from}" "$(clean 150 <<<"$epic")")"; then
+            for r in "${!asv[@]}"; do asv[r]="$(under_epic "${asv[r]}" "$eid")"; done
+          fi
+          for r in "${asv[@]}"; do args+=(--as "$r"); done
         fi
         file_line "$src" "$raw" "$text" "${args[@]}"
         ;;
@@ -332,7 +348,7 @@ $open"
 # shellcheck disable=SC2016 # jq source, not shell
 BACKLOG_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
-  | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.row | s), (.why | s)] | join("\u001f")'
+  | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.row | s), (.why | s), (.epic | s)] | join("\u001f")'
 
 # pt <project> <lane> <ptask args...>: one ptask write on a lane, or its echo under --dry-run.
 pt() {
@@ -379,7 +395,7 @@ backlog_batch() {
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
@@ -391,8 +407,10 @@ dup: only when another row in this list asks for the same thing; never the row's
 drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
 A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
-A row you rewrite that plainly belongs to an open epic below ends with #of/<the epic's id>. When none plainly fits, add no #of.
+A row you rewrite that belongs to an open feature epic below ends with #of/<the epic's id>. Otherwise give it no #of. $(new_epic_rule)
 
+## Systems (project: ids)
+$(systems_of "$p")
 ## Open epics of this project (id, project, title)
 $(epics_of "$p" "$epics")
 ## Rows (n. [id] text, child rows indented)
@@ -400,9 +418,9 @@ $listing"
   ask "$prompt" "${#raws[@]}" "$p ($lane)" || return
   answered "$p ($lane)" || return 1
   out="$OUT"
-  local n action id dest row why raw own
+  local n action id dest row why epic raw own eid
   local -a seen=()
-  while IFS=$'\x1f' read -r n action id dest row why; do
+  while IFS=$'\x1f' read -r n action id dest row why epic; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
@@ -418,6 +436,9 @@ $listing"
     case "$action" in
       rewrite)
         row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
+        if [ -n "$row" ] && [ -n "$epic" ] && eid="$(epic_new "${dest:-$p}" "$(clean 150 <<<"$epic")")"; then
+          row="$(under_epic "$row" "$eid")"
+        fi
         if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
           REWROTE=$((REWROTE + 1))
           # the row's line changed, so the move names it by its id
