@@ -1938,6 +1938,38 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_failure; assert_output --partial "--epic is a row id"
 }
 
+# A repo with no sheet of its own names the board it files on (dotfiles-private -> agent-runtime): the
+# item stays on its own project and checkout, and its row lives on that board. NEGATIVE CONTROL: before
+# the board key, app filed nothing and --row on it was refused.
+@test "a project with no sheet files its story and links --row on the board its board key names" {
+  story_notes
+  jq '.trackers.app.board = "level"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
+  run "$AQ" add --project app --slug overlay "fix(hooks): the overlay's work"
+  assert_success
+  assert_line "story lv-9 on the level agent board"
+  f="$(item queued overlay)"
+  [ "$(field "$f" project)" = app ]
+  [ "$(field "$f" row)" = level:lv-9 ]
+  [ "$(field "$f" profile)" = bnb ]
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #size/s #high"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --running --project app --row lv-2 --slug linked "x"
+  assert_success
+  assert_line "story lv-2 on the level agent board"
+  [ "$(field "$(item running linked)" row)" = level:lv-2 ]
+  [ "$(field "$(item running linked)" project)" = app ]
+  run "$AQ" add --project app --row lv-2 --slug twice "y"
+  assert_failure; assert_output --partial "--row lv-2: linked already works that row"
+  "$AQ" move linked done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project app --slug linked --repeat "again"
+  assert_success
+  assert_line "story lv-2 on the level agent board"
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "every item write appends one queue event naming the item, its row and its PR" {
   story_notes
   "$AQ" add --project game --from board:level:lv-2 --slug chain "x" >/dev/null

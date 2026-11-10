@@ -601,8 +601,8 @@ item_recs() {
 # its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
 # `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
 # An item with no weight line gets weight_of's answer, so every reader sees a weight.
-# `row` is the "<project>:<key>" of the sheet row the item closes on merge: its `row:` (file_story,
-# link_row), else the board row it was promoted from (`from: board:`). The one definition
+# `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
+# project or the one its `board` key names (project_board): its `row:` (file_story, link_row), else the board row it was promoted from (`from: board:`). The one definition
 # agent-land and fleet-dispatch read, whatever the item's origin.
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
@@ -785,27 +785,30 @@ project_of_cwd() {
   [ -f "$AQ_MAP" ] && jq -r --arg r "$top" '.paths[$r] // empty' "$AQ_MAP" 2>/dev/null
 }
 
-# project_board <project> -> "<profile><TAB><row code>" of the project's lab sheet; either is empty when it has none.
+# project_board <project> -> "<board><TAB><profile><TAB><row code>" of the lab sheet the project's rows
+# go on: the project named by its `board` key (a repo with no sheet of its own: dotfiles-private ->
+# agent-runtime), else its own. Profile and code are empty when that board has no sheet.
 project_board() {
-  jq -r --arg p "$1" '(.trackers[$p] | objects) // {} | [.lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
+  jq -r --arg p "$1" '((.trackers[$p] | objects | .board) // $p) as $b
+    | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
-# file_story <project> <title> <priority> <weight> <epic> <want> -> "<profile><TAB><id>" of the story row
+# file_story <project> <title> <priority> <weight> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
-# `notes ptask` links, `#size/s` for a light item and `#size/m` for a
-# heavy one, at the item's priority. Started, so dispatch never promotes it a second time. An open
+# `notes ptask` links, `#size/s` for a light item and `#size/m` for a heavy one, at the item's
+# priority, on the board project_board names. Started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 file_story() {
-  local project="$1" text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=() want=()
+  local project text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=() want=()
   [ -z "${6:-}" ] || want=(--want "$6")
   [ "$4" = heavy ] && size=m
   [ -f "$AQ_MAP" ] || return 0
-  IFS=$'\t' read -r lab code < <(project_board "$project")
+  IFS=$'\t' read -r project lab code < <(project_board "$1")
   [ -n "$lab" ] && [ -n "$code" ] || return 0
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
   [ "${5%-*}" = "$code" ] && of=" #of/$5"
@@ -827,36 +830,37 @@ file_story() {
        if grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
-  printf '%s\t%s\n' "$lab" "$id"
+  printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
-# link_row <id> <project> -> "<profile><TAB><id>" of an open row on the project's agent board, started
+# link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
 # now, for an item that works a row already filed. Refused when the project has no board, the row is
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
 # the item's origin: a board origin also means dispatch's presence gate and the judge's picks.
 link_row() {
-  local id="$1" project="$2" lab code taken out
-  IFS=$'\t' read -r lab code < <(project_board "$project")
-  [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $project has no agent board (no lab or code in $AQ_MAP)"
+  local id="$1" project lab code taken out
+  IFS=$'\t' read -r project lab code < <(project_board "$2")
+  [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $2 has no agent board (no lab or code in $AQ_MAP, nor a board key naming one)"
   taken="$(collect $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')"
   [ -z "$taken" ] || die "--row $id: $taken already works that row; to take it over: agent-queue claim $taken"
   command -v notes >/dev/null || die "--row $id: no notes on PATH"
   out="$(notes --profile "$lab" ptask "$project" --agent start "$id" 2>&1)" ||
     die "--row $id: not an open row on the $project agent board: ${out##*$'\n'}"
-  printf '%s\t%s\n' "$lab" "$id"
+  printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
-# prior_story <slug> <project> -> "<profile><TAB><id>" of the row this slug's last item recorded, when
-# that row is still open on this project's board (started now if it was not), else nothing. A re-queue
+# prior_story <slug> <project> -> "<board><TAB><profile><TAB><id>" of the row this slug's last item recorded,
+# when that row is still open on this project's board (started now if it was not), else nothing. A re-queue
 # keeps its row by its id, not by its words: on 2026-11-06 two re-queued trader phases got second rows
 # (tr-76, tr-77) because the first ones were written before rows were typed, so no text matched.
 prior_story() {
-  local f row prof
+  local f row prof board
   f="$(latest_done "$1")"; [ -n "$f" ] || return 0
   row="$(fm_get "$f" row)"; prof="$(fm_get "$f" profile)"
-  [ "${row%%:*}" = "$2" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
-  notes --profile "$prof" ptask "$2" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
-  printf '%s\t%s\n' "$prof" "${row#*:}"
+  board="$(project_board "$2" | cut -f1)"
+  [ "${row%%:*}" = "$board" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
+  notes --profile "$prof" ptask "$board" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
+  printf '%s\t%s\t%s\n' "$board" "$prof" "${row#*:}"
 }
 
 # --- verbs ---
@@ -969,7 +973,7 @@ cmd_add() {
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
-  local story=''
+  local story='' sboard='' sprof='' srow=''
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
   case "$from" in
     board:* | canary) ;;
@@ -980,6 +984,7 @@ cmd_add() {
          [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")"
        fi ;;
   esac
+  [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -996,12 +1001,12 @@ cmd_add() {
     [ -n "$session" ] && printf 'session: %s\n' "$session"
     [ -n "$window" ] && printf 'window: %s\n' "$window"
     [ -n "$sid" ] && printf 'sessions: %s\n' "$sid"
-    [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$project" "${story#*$'\t'}" "${story%%$'\t'*}"
+    [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   item_event item-added "$f" --to "$state"
   echo "$state $slug -> $f"
-  [ -z "$story" ] || echo "story ${story#*$'\t'} on the $project agent board${epic:+, under $epic}"
+  [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
