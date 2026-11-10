@@ -695,7 +695,8 @@ enum PtaskCmd {
         #[arg(long, requires = "text")]
         was: bool,
         /// Link the new text as `add` would: a leaf with no `#of/` whose area is one of the
-        /// project's systems goes under that system's standing epic, filed when missing
+        /// project's systems goes under that system's standing epic, filed when missing; any
+        /// other leaf with no `#of/` is refused and nothing is edited
         #[arg(long, requires = "text")]
         link: bool,
         #[arg(required = true, num_args = 1..)]

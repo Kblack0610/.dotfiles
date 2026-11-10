@@ -856,6 +856,26 @@ ask_stub() {
   assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
 }
 
+@test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
+  export INBOX_PRIORITY_CMD=model-stub
+  systems ui
+  sheet '' '- [ ] feat(ui): pause menu #size/s <!-- id:sc-3 -->\n  - [ ] fix(ui): sub task <!-- id:sc-4 -->\n- [ ] fix(ui): resume button #size/s <!-- id:sc-5 -->\n- [ ] fix(ui): quit lags #size/s <!-- id:sc-6 -->\n- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' \
+    '{"n": 3, "system": "ui", "epic": "a pause menu"}' '{"n": 4, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  refute grep -q 'sub task' "$NOTES_FIXTURE/prompt.txt"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  run tasks
+  [ "$(grep -c 'epic(ui): a pause menu mid-match' <<<"$output")" = 1 ] || fail "$output"
+  assert_output --partial '  - [ ] fix(ui): sub task <!-- id:sc-4 -->'
+  assert_output --partial '- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->'
+  assert_output --regexp 'fix\(ui\): quit lags #size/s #of/sc-[0-9]+ <!-- id:sc-6 -->'
+}
+
 # A backlog past the 128 KB one argument holds: the rows and the cache must not go to jq as arguments.
 @test "--backlog --link replays its cache for a backlog past 128 KB" {
   export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"

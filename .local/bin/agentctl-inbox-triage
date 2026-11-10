@@ -51,7 +51,7 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0
 OUT=""
 FLAG=""; RECORD=""; OUTBOX=""
@@ -599,10 +599,11 @@ system_named() {
 # link_row <project> <lane> <raw> <system> <of> <new epic> <epics> <systems tsv>: one row under
 # an epic. An area that already names a system (its id or an alias) stays; any other area becomes
 # the model's system id. Then the row takes the open epic the model named, else the new epic it
-# proposed (epic_new), else its system's standing epic through `edit --link`. A row whose system
-# is no system of the project is left as it is.
+# proposed (epic_new), else its system's standing epic through `edit --link`. A row with neither
+# an open epic nor a system of the project is left as it is, and so is a row whose text does not
+# start with its `type(area):` (a tag first, say), since its area cannot be swapped in place.
 link_row() {
-  local p="$1" lane="$2" raw="$3" sys="$4" of="$5" epic="$6" epics="$7" tsv="$8" text ty area rest own eid
+  local p="$1" lane="$2" raw="$3" sys="$4" of="$5" epic="$6" epics="$7" tsv="$8" text ty area rest own eid r
   text="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//' <<<"$raw")"
   # The type and area come from the grammar's one home, `notes row parse`.
   IFS=$'\t' read -r ty area _ < <(notes row parse <<<"$text")
@@ -612,16 +613,21 @@ link_row() {
     sys="$own"
   else
     sys="$(system_named "$sys" "$tsv")"
-    if [ -n "$sys" ]; then
-      rest="${text#"$ty${area:+($area)}:"}"
+    rest="${text#"$ty${area:+($area)}:"}"
+    if [ -n "$sys" ] && [ "$rest" != "$text" ]; then
       text="$ty($sys): ${rest#"${rest%%[! ]*}"}"
+    else
+      sys=""
     fi
   fi
   epic_known "$of" "$p" "$epics" || of=""
-  # A dry run files no epic, so its row prints under the placeholder `#of/<new>`.
+  # A dry run files no epic (epic_new exits 2 on one it would file), so its row prints under the
+  # placeholder `#of/<new>`. A proposal counts once a pass, however many rows it takes.
   if [ -z "$of" ] && [ -n "$sys" ] && [ -n "$epic" ]; then
-    if eid="$(epic_new "$p" "$(clean 150 <<<"$epic")")"; then of="$eid"; NEW_EPICS=$((NEW_EPICS + 1))
-    elif [ "$DRY" = 1 ]; then of='<new>'; NEW_EPICS=$((NEW_EPICS + 1)); fi
+    epic="$(clean 150 <<<"$epic")" r=0
+    eid="$(epic_new "$p" "$epic")" || r=$?
+    case "$r" in 0) of="$eid" ;; 2) of='<new>' ;; esac
+    if [ -n "$of" ] && [ -z "${NEW_SEEN["$p $epic"]:-}" ]; then NEW_SEEN["$p $epic"]=1; NEW_EPICS=$((NEW_EPICS + 1)); fi
   fi
   if [ -n "$of" ]; then
     pt "$p" "$lane" --exact edit --text "$(under_epic "$text" "$of")" -- "$raw" && LINKED=$((LINKED + 1))
@@ -683,6 +689,7 @@ link_pass() {
   rows="$(jq -c --arg only "$ONLY" '[.rows[]
     | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
              and .type != null and .type != "epic" and (.tags | any(startswith("of/")) | not)
+             and (.raw | test("^\\s") | not)
              and ($only == "" or .project == $only))]' <<<"$board")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -693,8 +700,9 @@ link_pass() {
     mkdir -p "$(dirname "$cache")"
     # The cached answers for rows still as they were (link_cache). The rows go in on stdin and the answers as a file: either can pass the 128 KB an argument holds.
     # shellcheck disable=SC2016 # jq source, not shell
-    [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --slurpfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
-      | $c[] | select($live["\(.lane)\u0000\(.raw)"])' <<<"$rows")"
+    # A line cut short (a run killed mid-write) is dropped alone, never the whole cache.
+    [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --rawfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
+      | $c | split("\n")[] | fromjson? | select($live["\(.lane)\u0000\(.raw)"])' <<<"$rows")"
     [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
     if [ -n "$kept" ]; then
       while IFS=$'\x1f' read -r lane raw sys of epic; do

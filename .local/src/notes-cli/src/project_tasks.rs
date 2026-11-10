@@ -1822,7 +1822,8 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 /// sets one of the same name ([`carry_tags`]).
 ///
 /// `systems` (`--link`, the triager's backlog link pass) names the systems command, and the new
-/// text then gets the standing-epic default link `add` gives a row ([`link_standing`]).
+/// text then gets the standing-epic default link `add` gives a row ([`link_standing`]); a leaf
+/// with no `#of/` that would stay unlinked is refused, exit 1, so a caller never counts it linked.
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
     p: &Profile,
@@ -1884,9 +1885,27 @@ pub fn retext(
     let linked;
     let text = match (text, systems) {
         (Some(t), Some(bin)) if !t.is_empty() => {
+            // The row is found first: filing a standing epic for an edit that then matches
+            // nothing would leave the epic behind with no row under it.
+            let found = sheet_and_content(p, name, lane)?.and_then(|(_, content)| {
+                md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |l| Some(l.into()))
+            });
+            if found.is_none() {
+                eprintln!("no open task matches '{pick}' in {name}");
+                return Ok(1);
+            }
             let proj_dir = projects::project_dir(p, name)?;
             linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
-            Some(linked.as_ref().map_or(t, |l| l[0].as_str()))
+            match &linked {
+                Some(l) => Some(l[0].as_str()),
+                None if crate::standing::wants_link(t).is_some() => {
+                    eprintln!(
+                        "--link: '{t}' names no system of {name} (or {name} has no systems list), so nothing was edited"
+                    );
+                    return Ok(1);
+                }
+                None => Some(t),
+            }
         }
         _ => text,
     };

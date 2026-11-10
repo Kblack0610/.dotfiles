@@ -520,24 +520,25 @@ fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
         "the row keeps its id and goes under the filed epic: {row}"
     );
     assert_eq!(h.sheet().matches("epic(ui): ui to standard").count(), 1);
-    // A free area word stays unlinked under --link too, and files no second epic.
-    ok(&agent(
+    // A free area word under --link is refused: nothing is edited and no second epic is filed.
+    let out = agent(
         &h,
         &[
             "edit",
             "dm-2",
             "--link",
             "--text",
-            "fix(sound): resume flickers #size/s",
+            "fix(sound): resume flickers again #size/s",
         ],
-    ));
-    assert!(
-        h.board()
-            .lines()
-            .any(|l| l.contains("resume flickers") && !l.contains("#of/")),
-        "{}",
-        h.board()
     );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!h.board().contains("resume flickers again"), "{}", h.board());
+    // An edit that matches no row files no standing epic before it fails.
+    let out = agent(
+        &h,
+        &["edit", "no such row", "--link", "--text", "docs(docs): a setup guide #size/s"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
 }
 
