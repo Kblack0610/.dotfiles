@@ -569,6 +569,19 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'dup scratch scratch sc-1 make the bench not throwable'
 }
 
+@test "outbox: a repeat joins its row on the lane the CLI filed it on, and the person's own id: words never name the row" {
+  sheet '' '- [ ] fix(ui): an old row <!-- id:sc-9 -->\n'
+  outbox '- [ ] the scratch build breaks, see id:sc-9 #agent\n- [ ] scratch build still broken\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(build): the build breaks #size/s"], "project": "scratch", "lane": "human"}' \
+    '{"n": 2, "action": "dup", "line": 1}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 0, refused 0'
+  grep -qx '  was: scratch build still broken' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run grep -c 'was:' "$SHEET"
+  assert_output 0
+}
+
 @test "outbox: a repeat of a line that filed no row is left, saying so (negative control)" {
   sheet '' ''
   outbox '- [ ] a thought\n- [ ] the same thought\n'
@@ -596,6 +609,21 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
   assert_output --partial 'moved 1 from the outbox, filed 1'
   grep -q 'fix(ui): the menu flickers' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "outbox: a left record with a bad ts is only asked again itself; a refusal beside it still holds" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
+  mkdir -p "$HOME/.local/state/notes"
+  { jq -cn '{ts: "2026-13-45 not a time at all", action: "left", from: "outbox", to: "", text: "the scratch menu flickers", why: "x", stage: "intake"}'
+    jq -cn --arg ts "$(date --iso-8601=seconds)" '{ts: $ts, action: "refused", from: "outbox", to: "", text: "a refused line", why: "x", stage: "intake"}'
+  } >"$HOME/.local/state/notes/ingest.jsonl"
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 1 from the outbox, filed 1, left 0'
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial 'a refused line'
 }
 
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {

@@ -169,10 +169,12 @@ file_line() {
   if out="$(notes ptask "$p" --exact file "$@" -- "$raw" 2>"$errf")"; then
     rm -f -- "$errf"
     printf '%s\n' "$out"
-    FILED_ID="$(grep -oE 'id:[a-z][a-z0-9]*-[0-9]+' <<<"$out" | head -n 1)"; FILED_ID="${FILED_ID#id:}"
+    # A written row's marker, never the echoed `filed <words>` line, which holds the person's words.
+    FILED_ID="$(sed -n 's/^  - \[ \] .*<!-- id:\([a-z][a-z0-9]*-[0-9][0-9]*\).*/\1/p' <<<"$out" | head -n 1)"
     FILED=$((FILED + 1))
   else
     err="$(<"$errf")"; rm -f -- "$errf"
+    [ -n "$out" ] && printf '%s\n' "$out"
     say "$p: not filed, left in the inbox: $raw${err:+ ($err)}"
     note refused "$p" "$(tail -n 1 <<<"${err:-refused}" | clean 160)" "$text"
     FAILED=$((FAILED + 1)); return 1
@@ -280,7 +282,7 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other were written together, so read each with its neighbours: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
+file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), you cannot tell what it asks, or for an [outbox] line neither it nor its neighbours point at a project. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
@@ -299,7 +301,8 @@ $open"
   local n action id of dest lane plan why epic rows r from raw text src eid
   local -a args rowv asv
   # The row each filed line wrote (id, project, lane), by n, for a later line that repeats it.
-  local -A line_id=() line_dest=() line_lane=()
+  local -A line_id=() line_dest=()
+  local filed_board=""
   while IFS=$'\x1f' read -r n action id of dest lane plan why epic rows; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
@@ -312,10 +315,18 @@ $open"
       file|dup)
         args=()
         if [ "$action" = dup ] && [ -n "$of" ]; then
-          # A repeat of a line above joins the row that line filed: its project and lane.
-          [ -n "${line_id[$of]:-}" ] || { left "$from" "$text" "dup of line $of, which filed no row"; continue; }
-          dest="${line_dest[$of]}"
-          args=(--dup "${line_id[$of]}" --lane "${line_lane[$of]}")
+          # A repeat of a line above joins the row that line filed. Every filing is done by now (the
+          # answers are sorted), so one board read after them holds the row: its project and lane,
+          # as for any dup, since the CLI may file on a lane the model did not name (`#agent`).
+          id="${line_id[$of]:-}"
+          [ -n "$id" ] || { left "$from" "$text" "dup of line $of, which filed no row"; continue; }
+          if [ "$DRY" = 1 ]; then
+            dest="${line_dest[$of]}"; args=(--dup "$id")
+          else
+            [ -n "$filed_board" ] || filed_board="$(notes board --json 2>/dev/null | managed_board)" || filed_board='{"rows": []}'
+            dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$filed_board")"
+            args=(--dup "$id" --lane "$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .lane) // "human"' <<<"$filed_board")")
+          fi
         elif [ "$action" = dup ]; then
           id="$(clean 40 <<<"$id")"
           [ -n "$id" ] || { left "$from" "$text" "dup of no row"; continue; }
@@ -353,14 +364,13 @@ $open"
         file_line "$src" "$raw" "$text" "${args[@]}" || continue
         if [ "$action" = file ]; then
           [ "$DRY" = 1 ] && FILED_ID="<the row of line $n>"
-          line_id[$n]="$FILED_ID" line_dest[$n]="${dest:-$from}" line_lane[$n]="${lane:-human}"
-          [ "$lane" = agent ] || line_lane[$n]=human
+          line_id[$n]="$FILED_ID" line_dest[$n]="${dest:-$from}"
         fi
         ;;
       *) left "$from" "$text" "${why:-skipped}" ;;
     esac
   # A repeat of a line above (field 4, line) sorts after every other answer, so the row it joins is filed first.
-  done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$ANSWER_JQ" | sort -s -t $'\x1f' -k4,4)
+  done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$ANSWER_JQ" | LC_ALL=C sort -s -t $'\x1f' -k4,4n)
   # A line with no answer is not recorded: the next sweep asks again.
   for raw in "${raws[@]}"; do [ -n "$raw" ] && KEPT=$((KEPT + 1)); done
   return 0
@@ -631,10 +641,10 @@ pass() {
   local since; since="$(stat -c %Y "$(readlink -f "${BASH_SOURCE[0]}")" 2>/dev/null || echo 0)"
   # shellcheck disable=SC2016 # jq source, not shell
   [ -s "$RECORD" ] && seen="$(jq -cn --argjson since "$since" '
-    def epoch: (.ts // "") as $t | if ($t | length) < 19 then 0 else
+    def epoch: (.ts // "") as $t | try (
       ($t[0:19] + "Z" | fromdateiso8601)
       - (($t | capture("(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$")? // {s: "+", h: "0", m: "0"})
-         | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)) end;
+         | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))) catch 0;
     [inputs | select(.action == "refused" or (.action == "left" and epoch >= $since))
     | {key: (.from + "\t" + .text), value: true}] | from_entries' "$RECORD" 2>/dev/null || echo '{}')"
   local fresh='select($seen[.from + "\t" + .text] | not)'
