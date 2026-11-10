@@ -1661,7 +1661,10 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+# release_overdue and version_tag_drift are the release link (release_kpis): a sheet-counter project a
+# day past its cadence due date with done rows and no cut, and a tagged project whose sheet is not its
+# tag plus one patch.
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1813,6 +1816,10 @@ chain_notes() {
     (.blocked // [] | select(. != []) | sort_by(.at) | "next_up_blocked: skipped for a split over 24h ago, oldest first: " + (map("\(.project):\(.id) (\(.rule) \(.at[0:10]))") | few)),
     (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
     (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
+  local projects
+  projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
+    (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) due since \(.due_on)") | join(", "))),
+    (.drift | select(. != []) | "version_tag_drift: " + (map("\(.project) sheet \(.sheet), tag \(.tag)") | join(", ")))' 2>/dev/null
   held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
   if lead=$(lead_time_json "$t"); then
     jq -r --argjson d "$CHAIN_DAYS" --argjson lead "$BENCH_LEAD_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
@@ -1827,6 +1834,29 @@ chain_notes() {
   else
     echo "wants_unstamped: $BENCH_INGEST unreadable"
   fi
+}
+
+# release_kpis <now> <projects json> -> {overdue: [{project, version, due_on}], drift: [{project, sheet,
+# tag}]}, the release link over `notes projects --stats --json` (stages.md, "Versions"). overdue: a project
+# whose own sheet counter owns its version (project_version_owner) still due a day after its due date, so
+# a wave-roll pass had all day to cut it; its `.release.due` already means done rows waited out the
+# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
+# the tag plus one patch, the version wave-roll opens. A game waiting on its first tag counts in neither,
+# and so does a profile with `automation = false`.
+release_kpis() {
+  local today prof name ver due_on shipped
+  today=$(date -d "@$1" +%F)
+  jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end)] | join("|")' <<<"$2" |
+  while IFS='|' read -r prof name ver due_on; do
+    shipped=$(project_release_version "$name")
+    case "$(project_version_owner "$name" "$shipped")" in
+      sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
+               jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
+      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] && [ "$ver" != "${shipped%.*}.$(( ${shipped##*.} + 1 ))" ] &&
+             jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
+    esac
+    :   # a project that counts in neither is no failed pass, under pipefail
+  done | jq -sc '{overdue: map(.overdue // empty), drift: map(.drift // empty)}'
 }
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
@@ -1869,6 +1899,10 @@ chain_counts() {
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"')
   [ -n "$links" ] && printf '%s\n' "$links"
+  local rel
+  if [ "$projects" != null ] && rel=$(release_kpis "$t" "$projects"); then
+    jq -r '"release_overdue=\(.overdue | length)", "version_tag_drift=\(.drift | length)"' <<<"$rel"
+  else printf '%s=?\n' release_overdue version_tag_drift; fi
   if [ -n "$(lead_untrusted "$links")" ]; then echo "request_to_live_h=?"
   elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
   else echo "request_to_live_h=?"; fi
