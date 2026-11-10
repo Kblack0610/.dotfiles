@@ -23,7 +23,8 @@ while [ $# -gt 0 ]; do
     *) echo "trivy-criticals: unknown argument: $1" >&2; exit 64 ;;
   esac
 done
-case "$max" in ''|*[!0-9]*) [ -z "$max" ] || { echo "trivy-criticals: --max takes a count" >&2; exit 64; } ;; esac
+[[ -z $max || $max =~ ^[0-9]+$ ]] || { echo "trivy-criticals: --max takes a count" >&2; exit 64; }
+unreadable() { echo "Trivy vulnerability reports on $ctx could not be read"; exit 2; }
 
 if ! reports="$(kubectl --context "$ctx" --request-timeout=60s get vulnerabilityreports -A -o json)" \
    || ! out="$(jq -r '
@@ -39,15 +40,15 @@ if ! reports="$(kubectl --context "$ctx" --request-timeout=60s get vulnerability
       | ($per[] | "\(.n)\t\(.img)"),
         "TOTAL\t\($per | map(.n) | add // 0)\t\($per | length)\t\(map(select(.fix | not)) | length)"
     ' <<<"$reports" 2>/dev/null)"; then
-  echo "Trivy vulnerability reports on $ctx could not be read"
-  exit 2
+  unreadable
 fi
 
 total="" images="" nofix=""
 while IFS=$'\t' read -r n a b c; do
   if [ "$n" = TOTAL ]; then total="$a" images="$b" nofix="$c"; else printf '%4d fixable  %s\n' "$n" "$a"; fi
 done <<<"$out"
-[ -n "$total" ] || { echo "Trivy vulnerability reports on $ctx could not be read"; exit 2; }
+# kubectl that prints nothing still exits 0 from jq, with no totals line
+[ -n "$total" ] || unreadable
 
 printf 'Fixable critical CVEs on %s: %d in %d images%s; %d more have no fix\n' \
   "$ctx" "$total" "$images" "${max:+ (bound $max)}" "$nofix"
