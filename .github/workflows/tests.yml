@@ -157,15 +157,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Draws only: the tier jobs are the gate, so a failed test fails them, not this job. The
-  # reporter writes the job summary (use-actions-summary, its default), so it needs no write
-  # token and runs on fork PRs too.
+  # Draws only: the tier jobs are the gate, and fail-on-error: false keeps a failed test from
+  # failing this job too. The reporter writes the job summary (use-actions-summary, its
+  # default), so a read token is enough and it runs on fork PRs too.
   report:
     name: test report
     needs: [fast, ui]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
