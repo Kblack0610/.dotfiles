@@ -35,8 +35,9 @@
 # (before or after the checks): resolve it and re-run. A merge of <base> keeps a green gate green; gate again
 # only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
-# --partial records a merged PR with partial: yes and leaves the item and row open. Reap waits
-# for a final agent-land without --partial, which clears the marker and closes the item.
+# --partial records a merged PR with partial: yes and leaves the item and row open, for a final
+# agent-land without --partial, which clears the marker and closes the item. If the session ends first,
+# reap requeues the item and the next run makes that final landing.
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
 

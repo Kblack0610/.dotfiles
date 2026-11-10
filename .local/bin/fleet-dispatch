@@ -1833,6 +1833,33 @@ cmd_restore() {
 
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
+# item_ask <slug> <item json> -> the ask tag (agent-queue requeue --ask) of the pending ask the item
+# waits on: the newest one filed for it (`agent-ask post --task <slug>`, by created), else the one its `ask:` names;
+# nothing when no such ask is pending. The tag names every option the ask offers, since any answer the
+# human gives is the decision the run stopped for. Fails when the asks cannot be read, so the caller
+# moves nothing on a guess.
+item_ask() {
+  local own asks; own=$(jq -r '.ask // ""' <<<"$2")
+  asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
+  awk -F'\t' -v s="$1" -v own="$own" '
+    function tag(   n, o, i, t) {
+      n = split($7, o, "|"); t = ""
+      for (i = 1; i <= n; i++) { sub(/ .*/, "", o[i]); if (o[i] != "") t = t (t == "" ? "" : "+") o[i] }
+      return $1 (t == "" ? "" : "=" t)
+    }
+    $8 == s && $12 >= at { id = tag(); at = $12 } $1 == own { mine = tag() }
+    END { print (id != "" ? id : mine) }' <<<"$asks"
+}
+
+# note_add <slug> <item json> <text> -- the item's note becomes this text, with the note it had kept
+# after "; was: ", so what the session itself wrote there is not lost. Only the oldest "was:" is kept,
+# so a run requeued again and again does not grow a chain.
+note_add() {
+  local was; was=$(jq -r '.note // ""' <<<"$2")
+  [[ "$was" != *"; was: "* ]] || was=${was#*; was: }
+  agent-queue set "$1" "note=$3${was:+; was: $was}" >/dev/null
+}
+
 # ask_decisions <tags> -> one line per ask: tag naming what the human decided. The ask that released
 # an item has no session left to hear its answer, so the brief is where the answer reaches the work.
 ask_decisions() {
@@ -1897,6 +1924,7 @@ item_brief() {
   echo
   ask_decisions "$tags"
   salvage_line "$it"
+  pr_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")
@@ -1957,6 +1985,20 @@ salvage_line() {
   local sv; sv=$(jq -r '.salvage // empty' <<<"$1")
   [ -n "$sv" ] || return 0
   echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it, not from the trunk (git fetch origin ${sv%@*} && git reset --keep ${sv##*@}, on this worktree's branch). If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
+}
+
+# pr_line <item json> -- an earlier run of the item opened its PR and stopped (on an ask, the usage
+# limit or after a partial landing, settle_item) without closing the item: the new session continues
+# that PR, or after a partial landing makes the rest, never a second PR for the same work.
+pr_line() {
+  local pr co; pr=$(jq -r '.pr // "" | split(" ")[0]' <<<"$1")
+  [ -n "$pr" ] || return 0
+  if [ "$(jq -r '.partial // ""' <<<"$1")" = yes ]; then
+    echo "An earlier run of this item merged $(jq -r .pr <<<"$1") as a partial landing (agent-land --partial): do the part that is left in the other repo, and land it with agent-land without --partial, which closes the item. If nothing is left, close it that way on $pr."
+  else
+    co="gh pr checkout ${pr##*#}"; [[ "$pr" != */*#* ]] || co+=" -R ${pr%#*}"
+    echo "An earlier run of this item already opened $pr: check out its head branch ($co), continue the work there and push to it. Do not open a second PR."
+  fi
 }
 
 # resume_brief <item json> -- the prompt a resumed run (resume_thread) continues on: its thread already
@@ -2222,18 +2264,35 @@ item_rollout() {
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 # A Codex run that ends without closing also records why (item_end, --end): this is the only live writer of
-# end_reason, and the reason is named in the note. One with no PR that ended at the plan's usage limit is
-# requeued, not failed.
+# end_reason, and the reason is named in the note. A run that was blocked, not wrong, goes back to queued/
+# instead of failing: one with a pending ask for its item is held on that ask (PR or not), and one that
+# ended at the plan's usage limit, after a partial landing, or before its `after:` item finished, waits
+# there for its next start.
+# Each note is added in front of the one the session left (note_add), never over it.
 settle_item() {
-  local st it pr report info state='' oid head='' ci='' end=() why=''; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' end=() why='' ask after; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
   set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
+  # requeue_blocked <slug> <session> <reason> -- back to queued/, where the next start waits on what blocked
+  # it. Reads settle_item's st, it, end and why: call set_end first so the end reason goes with it.
+  requeue_blocked() {
+    agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
+    note_add "$1" "$it" "session $2 ended: $3; requeued${why:+ (end_reason: $why)}"
+    logline "reaped $2: session gone, queue item $1 requeued: $3"
+    echo "requeued queue item $1 ($2 ended: $3)"
+  }
   case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
-  # A partial merge proves only one repo landed. The next PR may not exist yet.
+  # A partial merge proves only one repo landed, and with its session gone nobody makes the final
+  # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
+  # run that also ends without it parks in review, where the human sees it, instead of looping.
   if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
+    if [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
+      set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial"
+      return 0
+    fi
     [ "$st" = review ] || agent-queue move "$1" review --if "$st" >/dev/null || return 0
-    logline "reaped $2: queue item $1 waits for its final landing (partial)"
+    logline "reaped $2: queue item $1 waits for its final landing (partial, its requeued run ended without it)"
     return 0
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
@@ -2242,14 +2301,26 @@ settle_item() {
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci <<<"$info"; oid=${oid#-} head=${head#-}
     fi
   fi
+  # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
+  # Codex runs that asked, 2026-11-10) is held on it while its work is unfinished (no report, no PR or
+  # an open one): the human's answer releases it and starts it again (agent-ask start_held), where a
+  # failed item turned the answer into a board row. A report or a merge is the work done, ask or not.
+  if [ -z "$report" ] && { [ -z "$pr" ] || [ "$state" = OPEN ]; }; then
+    ask=$(item_ask "$1" "$it") || { logline "reaped $2: queue item $1 left: agent-ask could not be read"; return 0; }
+    if [ -n "$ask" ]; then
+      agent-queue requeue "$1" --ask "$ask" >/dev/null 2>&1 || { logline "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed"; return 0; }
+      note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; held until the human answers it"
+      logline "reaped $2: session gone, queue item $1 held on ask ${ask%%=*}"
+      echo "held queue item $1 (ask ${ask%%=*} pending, $2 ended)"
+      return 0
+    fi
+  fi
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
-  # unless its checks went red with nobody on it (fix_red_pr). A
-  # waiting item that names an ask stays waiting on it: the human's turn outlives the session.
+  # unless its checks went red with nobody on it (fix_red_pr).
   [ "$state:$st" != OPEN:review ] || { fix_red_pr "$1" "$2" "$it" "$head" "$ci"; return 0; }
-  [ "$state:$st" != OPEN:waiting ] || [ -z "$(jq -r '.ask // ""' <<<"$it")" ] || return 0
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
-    agent-queue set "$1" "note=session $2 ended; $st without a PR" >/dev/null
+    note_add "$1" "$it" "session $2 ended; $st without a PR"
     logline "reaped $2: queue item $1 stays $st without a PR"
     return 0 ;;
   esac
@@ -2264,14 +2335,16 @@ settle_item() {
       close_row "$1" ;;
     OPEN)
       set_end
+      # Stopped at the usage limit with its PR open: the next start continues on that PR (pr_line).
+      [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit, with PR $pr open"; return 0; }
       agent-queue move "$1" "review" ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
-      agent-queue set "$1" "note=session $2 ended with PR $pr open${why:+ (end_reason: $why)}" >/dev/null
+      note_add "$1" "$it" "session $2 ended with PR $pr open${why:+ (end_reason: $why)}"
       logline "reaped $2: session gone, queue item $1 in review on its open PR $pr"
       echo "review queue item $1 (PR $pr open, $2 ended)" ;;
     CLOSED)
       set_end
       agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
-      agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended${why:+ (end_reason: $why)}" >/dev/null
+      note_add "$1" "$it" "PR $pr closed unmerged; session $2 ended${why:+ (end_reason: $why)}"
       logline "reaped $2: session gone, queue item $1 failed: PR $pr closed unmerged"
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
     *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
@@ -2284,16 +2357,14 @@ settle_item() {
     # The plan turned the run away at its usage limit: nothing about the item failed, so it goes back
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
-    # when it exited, and the next start resumes its thread there (resume_thread).
-    if [ "$why" = limit ]; then
-      agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
-      agent-queue set "$1" "note=session $2 hit the plan's usage limit; requeued (end_reason: limit)" >/dev/null
-      logline "reaped $2: session gone, queue item $1 requeued: end_reason limit"
-      echo "requeued queue item $1 ($2 hit the plan's usage limit)"
-      return 0
-    fi
+    # when it exited, and the next start resumes its thread there (resume_thread). A run started before
+    # its `after:` item finished (a hand start does not check holds) waits for that item the same way.
+    [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
+    after=$(jq -r '.after // ""' <<<"$it")
+    [ -z "$after" ] || case "$(item_state "$after")" in queued | running | waiting | review)
+      requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
-    agent-queue set "$1" "note=session $2 ended before it closed the item${why:+ (end_reason: $why)}" >/dev/null
+    note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
     echo "failed queue item $1 ($2 ended without closing it${why:+, end_reason $why})"
   fi

@@ -4581,13 +4581,61 @@ fix_ended() {
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
 }
 
-@test "reap: a gone session's waiting item that names a pending ask stays waiting on its open PR" {
+# 2026-11-10 audit: 4 of 24 Codex runs that asked stopped without `requeue --ask`; their items failed
+# or sat in review, and the answer became a board row instead of restarting the work.
+@test "reap: a gone session's item with a pending ask for it is held on that ask, with its open PR, and the next brief continues the PR" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
-  agent-queue set fix-crash ask=PfpYTR >/dev/null
+  agent-queue set fix-crash "note=pushed the fix, need a call on the API" >/dev/null
+  id=$(agent-ask post --project game --task fix-crash --options 'a=keep it|b=drop it' 'keep the old API?')
   run cmd_reap
   assert_success
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  assert_output --partial "held queue item fix-crash (ask $id pending, game-agent-1 ended)"
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .tags, .pr] | join(" ")' <<<"$it")" "queued ask:$id=a+b o/game#12"
+  assert_equal "$(jq -r .note <<<"$it")" "session game-agent-1 ended on ask $id; held until the human answers it; was: pushed the fix, need a call on the API"
+  run item_brief "$it"
+  assert_output --partial 'already opened o/game#12: check out its head branch (gh pr checkout 12 -R o/game)'
+}
+
+@test "reap: a gone session's item held only by the ask its ask: field names, with no PR, is held on it" {
+  project game beta "$SANDBOX/repos/game"
+  started_item p lab:game-agent-1 '' '' human waiting
+  id=$(agent-ask post --project game --options 'yes=ship it|no=hold it' 'ship it?')
+  agent-queue set p ask="$id" >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show p --json | jq -r '[.state, .tags] | join(" ")')" "queued ask:$id=yes+no"
+}
+
+@test "reap: an answered ask holds nothing, so the unclosed run still fails (negative control)" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'fix crash' '- [/] fix crash'
+  started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
+  id=$(agent-ask post --project game --task fix-crash --options 'a=yes|b=no' 'ship it?')
+  AGENT_ASK_NO_RESUME=1 agent-ask answer "$id" a >/dev/null 2>&1
+  run cmd_reap
+  assert_success
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
+}
+
+@test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug first "the first part" >/dev/null
+  started_item second lab:game-agent-1
+  agent-queue set second after=first >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
+  assert_equal "$(agent-queue show second --json | jq -r '[.state, .hold] | join(":")')" 'queued:after first'
+  # Negative control: once its after: item is done, the unclosed run is the run's own failure.
+  rm "$AGENT_QUEUE_DIR"/queued/*-second.md
+  started_item second lab:game-agent-1
+  agent-queue set second after=first >/dev/null
+  agent-queue move first done --status ok >/dev/null
+  run cmd_reap
+  assert_output --partial 'failed queue item second'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-second.md)" status)" failed
 }
 
 @test "reap: a gone session's closed PR fails its item and hands the row back" {
@@ -4621,13 +4669,24 @@ codex_end_item() {
 @test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane gets no outcome" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   run cmd_reap
-  assert_output --partial 'requeued queue item cx (game-agent-1 hit the plan'"'"'s usage limit)'
+  assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md 2>/dev/null)" ] || fail "a limit end is not a failure"
   f=$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)
   assert_equal "$(qfield "$f" end_reason) $(qfield "$f" session)" 'limit '
-  assert_equal "$(qfield "$f" note)" "session game-agent-1 hit the plan's usage limit; requeued (end_reason: limit)"
+  assert_equal "$(qfield "$f" note)" "session game-agent-1 ended: the plan's usage limit; requeued (end_reason: limit)"
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+@test "reap: a Codex run that hit its usage limit with its PR open goes back to the queue, not to review, and keeps the PR" {
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  agent-queue set cx pr=o/game#12 >/dev/null
+  stub gh 'echo OPEN'
+  run cmd_reap
+  assert_success
+  assert_output --partial "requeued queue item cx (game-agent-1 ended: the plan's usage limit, with PR o/game#12 open)"
+  it=$(agent-queue show cx --json)
+  assert_equal "$(jq -r '[.state, .pr, .end_reason] | join(" ")' <<<"$it")" 'queued o/game#12 limit'
 }
 
 @test "reap: a Codex run its login refused (unauthorized) still fails: a requeue would only meet the same refusal (negative control)" {
@@ -6965,19 +7024,30 @@ demand_of() {
   assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
 }
 
-@test "reap: a partial merge waits for the final landing and keeps its row and after items open" {
+# ucp-162 merged its unity-core half on 2026-11-08, its session ended, and it sat in review for good.
+@test "reap: a partial merge whose session is gone goes back to the queue for its final landing, keeping its row and after items open" {
   pr_item MERGED
   agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
   agent-queue add --project game --slug next --after fix-crash 'next phase' >/dev/null
   run cmd_reap
   assert_success
-  run agent-queue show fix-crash --json
-  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'review yes'
+  assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial)'
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .partial, .merged] | join(" ")' <<<"$it")" "queued yes $OID"
+  run item_brief "$it"
+  assert_output --partial 'merged o/game#12 as a partial landing'
+  refute_output --partial 'check out its head branch'
   run cmd_reap
   assert_success
   run agent-queue show next --json
   assert_equal "$(jq -r .hold <<<"$output")" 'after fix-crash'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail 'partial row closed'
+  # Its requeued run also ends without the final landing: it parks in review, no loop.
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  grep -q 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the parked partial'
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {

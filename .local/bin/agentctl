@@ -661,12 +661,15 @@ cmd_status() {
     fi
 }
 
+# start <name> [--no-block]: --no-block queues the start job and returns, for a caller that must not wait
+# out the run (agent-ask start_held); without it, start returns when the run ends.
 cmd_start() {
-    local name="${1:-}"
-    [ -n "$name" ] || die "usage: agentctl start <name>"
+    local name="${1:-}" block=()
+    [ -n "$name" ] || die "usage: agentctl start <name> [--no-block]"
+    case "${2:-}" in "") ;; --no-block) block=(--no-block) ;; *) die "usage: agentctl start <name> [--no-block]" ;; esac
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
     [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
-    systemctl --user start "agentctl@${name}.service"
+    systemctl --user start ${block[@]+"${block[@]}"} "agentctl@${name}.service"
 }
 
 cmd_stop() {
