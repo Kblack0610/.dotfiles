@@ -90,7 +90,7 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # `claude -p`, a short dispatched lane) exits before its first export and its cost is
     # never logged. Cumulative counters make the shorter period safe: a repeat export
     # restates the total, it does not double count.
-    export OTEL_METRIC_EXPORT_INTERVAL=5000
+    export OTEL_METRIC_EXPORT_INTERVAL="${OTEL_METRIC_EXPORT_INTERVAL:-5000}"
 
     # --- Traces -> Langfuse (via the same Alloy receiver) --------------------
     # Metrics answer "what did this session cost"; traces answer "what it actually did".
