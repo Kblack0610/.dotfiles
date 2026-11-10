@@ -1076,13 +1076,41 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   inbox | grep -q 'the gun sound is off' || fail "the inbox line moved"
 }
 
-@test "outbox: over the per-sweep cap a line is left saying how to tag it, with no ask" {
+@test "outbox: over the per-sweep cap a line is held unrecorded, and the next sweep asks it" {
   ask_setup
   sheet '' ''
   outbox '- [ ] one thing\n- [ ] two thing\n'
   answer '{"n": 1, "action": "ask", "projects": ["other"], "why": "w"}' '{"n": 2, "action": "ask", "projects": ["scratch"], "why": "w"}'
   INBOX_ASK_PROJECT_MAX=1 run "$TRIAGE"
   assert_success
+  assert_output --partial 'asked you 1'
   [ "$(the_ask | wc -l)" = 1 ] || fail "asks: $(the_ask)"
-  jq -e 'select(.action == "left" and .why == "unclear which project (likeliest scratch); tag it #p:<project>")' "$HOME/.local/state/notes/ingest.jsonl" >/dev/null || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  [ "$(grep -c '"text":"two thing"' "$HOME/.local/state/notes/ingest.jsonl")" = 0 ] || fail "the held line was recorded: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  answer '{"n": 1, "action": "ask", "projects": ["scratch"], "why": "w"}'
+  INBOX_ASK_PROJECT_MAX=1 run "$TRIAGE"
+  assert_success
+  grep -qx '1. \[outbox\] two thing' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  [ "$(the_ask | wc -l)" = 2 ] || fail "asks: $(the_ask)"
+}
+
+@test "outbox: --answer reads a project through punctuation and case, moves nothing under --dry-run, and needs an id" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] the menu flickers after a match\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other", "scratch"], "why": "w"}'
+  run "$TRIAGE"
+  id="$(basename "$(the_ask)" .md)"
+  run "$TRIAGE" --dry-run --answer "$id"
+  assert_failure
+  assert_output --partial 'no answer yet'
+  agent-ask answer "$id" 'Scratch, the menu one'
+  run "$TRIAGE" --dry-run --answer "$id"
+  assert_success
+  assert_output --partial 'would move [outbox -> scratch]'
+  grep -q 'menu flickers' "$HOME/.notes/outbox.md" || fail "a dry run moved the line"
+  run "$TRIAGE" --answer
+  assert_failure 2
+  run "$TRIAGE" --answer "$id"
+  assert_success
+  inbox | grep -q 'the menu flickers after a match' || fail "$(cat "$SHEET")"
 }

@@ -51,7 +51,7 @@ run_resume() { # $1=id $2=project $3=command
     if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; fi
     return 0
   fi
-  command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
+  [[ "$cmd" == run:* ]] || command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
   local log="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/ask-resume"
