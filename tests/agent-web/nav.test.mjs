@@ -34,7 +34,7 @@ for (const f of ["ui.js", "app.js", "nav.js"]) vm.runInContext(readFileSync(new 
 
 const outline = made.find((e) => e.className === "outl");
 const show = (tab, anchors) => {
-  boards[tab] = { querySelectorAll: () => anchors };
+  boards[tab] = { querySelectorAll: (q) => (q.startsWith("[id^=") ? anchors : []) };
   vm.runInContext(`st.tab = ${JSON.stringify(tab)}`, ctx);
   observed();
 };
