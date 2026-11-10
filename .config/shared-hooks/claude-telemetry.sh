@@ -86,6 +86,11 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # target_info lands and all counters are silently dropped. (Verified: cumulative
     # makes session/token/cost metrics appear.)
     export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+    # The SDK default is one export per 60000 ms, so a run that ends sooner (a one-shot
+    # `claude -p`, a short dispatched lane) exits before its first export and its cost is
+    # never logged. Cumulative counters make the shorter period safe: a repeat export
+    # restates the total, it does not double count.
+    export OTEL_METRIC_EXPORT_INTERVAL=5000
 
     # --- Traces -> Langfuse (via the same Alloy receiver) --------------------
     # Metrics answer "what did this session cost"; traces answer "what it actually did".
@@ -153,7 +158,7 @@ claude_launch_env() {
     # The export, only where the guard above defined it: off the LAN nothing is added.
     command -v claude_telemetry_launch >/dev/null 2>&1 || return 0
     for v in CLAUDE_CODE_ENABLE_TELEMETRY OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL \
-        OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE \
+        OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE OTEL_METRIC_EXPORT_INTERVAL \
         CLAUDE_CODE_ENHANCED_TELEMETRY_BETA OTEL_TRACES_EXPORTER OTEL_LOG_USER_PROMPTS \
         OTEL_LOG_ASSISTANT_RESPONSES OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT; do
         val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"
