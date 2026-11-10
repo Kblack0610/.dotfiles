@@ -569,12 +569,15 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 
 @test "outbox: a plan only the model asked for gets #go, so only the person's own #plan holds the row for review" {
   sheet '' ''
-  outbox '- [ ] other needs a logo\n- [ ] other needs a font #plan\n'
+  outbox '- [ ] other needs a logo\n- [ ] other needs a font #plan\n- [ ] other needs a color\n'
   answer '{"n": 1, "action": "file", "rows": ["feat(brand): a logo #size/m"], "project": "other", "plan": true}' \
-    '{"n": 2, "action": "file", "rows": ["feat(brand): a font #size/s"], "project": "other", "plan": true}'
+    '{"n": 2, "action": "file", "rows": ["feat(brand): a font #size/s"], "project": "other", "plan": true}' \
+    '{"n": 3, "action": "file", "rows": ["feat(brand): a color #size/s #plan"], "project": "other", "plan": false}'
   run "$TRIAGE"
   assert_success
   grep -qE 'feat\(brand\): a logo #size/m #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  # a #plan the model wrote into its row text, with plan false, is the model's too
+  grep -qE 'feat\(brand\): a color #size/s #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
   # negative control: the person's own #plan, with no #go, is theirs to review
   run grep 'a font' "$PROJ/other/README.md"
   assert_output --partial '#plan'
