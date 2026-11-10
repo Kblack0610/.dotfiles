@@ -22,8 +22,6 @@ const HEADER: [&str; 9] = [
 pub struct BuildsView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
-    /// Whether the keys drive this table rather than the channels above it.
-    pub focus: bool,
     /// The opened run's log, read in a worker. `Esc` closes it.
     pub log: Option<LogPane>,
     /// The Run times table holds the pane, scrolled to this line. `t` toggles it, `Esc` closes it.

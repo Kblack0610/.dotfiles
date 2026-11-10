@@ -1994,7 +1994,11 @@ impl App {
                 }
             }
             (Tab::Queue, Some(q)) => self.qv.open(&q),
-            (Tab::Releases, Some(q)) => self.rv.open_view(q),
+            // An inner tab's or a section's name shows that inner tab; any other word is the query.
+            (Tab::Releases, Some(q)) => match crate::innertabs::named(releases::tab(), &q) {
+                Some(id) => self.rv.show(id),
+                None => self.rv.open_view(q),
+            },
             (_, q) => self.open_project(q),
         }
     }
@@ -2840,23 +2844,29 @@ impl App {
     /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
-        // `t` opens each workflow's usual run time in the Builds pane, from either table.
+        let on = self.rv.on();
+        // Left and Right switch the inner tabs (Apps, Builds, Tests).
+        if !typing && matches!(k.code, KeyCode::Left | KeyCode::Right) {
+            let to = crate::innertabs::step(releases::tab(), on, k.code == KeyCode::Left);
+            self.rv.show(to);
+            return true;
+        }
+        // `t` opens each workflow's usual run time in the Builds pane, from any inner tab.
         if !typing && k.code == KeyCode::Char('t') {
             let bv = &mut self.rv.builds;
-            bv.times = if bv.times.is_some() { None } else { Some(0) };
+            bv.times = if bv.times.is_some() && on == "builds" {
+                None
+            } else {
+                Some(0)
+            };
             bv.log = None;
-            bv.focus = true;
-            self.rv.open = false;
+            self.rv.show("builds");
             return true;
         }
-        if !typing && k.code == KeyCode::Char('b') {
-            self.rv.builds.focus = !self.rv.builds.focus;
-            // The keys that close the app pane are the apps': it must not outlive them.
-            self.rv.open = false;
-            return true;
-        }
-        if self.rv.builds.focus {
-            return self.builds_key(k);
+        match on {
+            "builds" => return self.builds_key(k),
+            "tests" => return false,
+            _ => {}
         }
         if self.rv.table.key::<ReleaseApp>(k.code) != Took::No {
             self.sync_changelog();
@@ -3080,20 +3090,23 @@ impl App {
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.table.typing.is_some() || self.rv.builds.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Releases if self.rv.builds.focus && self.rv.builds.times.is_some() => {
-                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  b channels  q quit".into()
+            Tab::Releases if self.rv.on() == "builds" && self.rv.builds.times.is_some() => {
+                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  <-/-> view  q quit".into()
             }
-            Tab::Releases if self.rv.builds.focus && self.rv.builds.log.is_some() => {
-                "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  b channels  q quit".into()
+            Tab::Releases if self.rv.on() == "builds" && self.rv.builds.log.is_some() => {
+                "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
             }
-            Tab::Releases if self.rv.builds.focus => format!(
-                "Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  b apps  r refresh  {tabs} tabs  q quit"
+            Tab::Releases if self.rv.on() == "builds" => format!(
+                "<-/-> view  Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Releases if self.rv.on() == "tests" => format!(
+                "<-/-> view  t run times  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
-                "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
+                "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  <-/-> view  q quit".into()
             },
             Tab::Releases => format!(
-                "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  t run times  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  t run times  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3570,10 +3583,12 @@ impl App {
             );
             return;
         };
-        // Under the list, one pane: the focused section's own (the channel's, or the run's log).
-        let log = self.rv.builds.focus
-            && (self.rv.builds.log.is_some() || self.rv.builds.times.is_some());
-        let (list, pane) = if self.rv.open || log {
+        // The strip, then the inner tab shown, with its own pane under it: the app's, or the
+        // run's log or run times.
+        let on = self.rv.on();
+        let log =
+            on == "builds" && (self.rv.builds.log.is_some() || self.rv.builds.times.is_some());
+        let (list, pane) = if (on == "apps" && self.rv.open) || log {
             let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(area);
             (a, Some(b))
@@ -3582,41 +3597,39 @@ impl App {
         };
         let now = jobs::now();
         let w = list.width as usize;
-        let status = self.rv.status(s, self.p, now);
-        let table = self.rv.table(s, self.p, w, !self.rv.builds.focus);
-        let (bstatus, btable) = match &self.builds {
-            Some(b) => (
-                self.rv.builds.status(b, self.p, now),
-                self.rv
-                    .builds
-                    .table(b, self.p, w, self.rv.builds.focus, now),
+        let flagged = releases::flagged(s, self.builds.as_ref());
+        let mut lines = vec![crate::innertabs::strip(
+            releases::tab(),
+            on,
+            &flagged,
+            self.p,
+            w,
+        )];
+        let (head, table, sel) = match (on, &self.builds) {
+            ("apps", _) => (
+                self.rv.status(s, self.p, now),
+                self.rv.table(s, self.p, w, true),
+                &mut self.rv.table,
             ),
-            None => (
+            ("builds", Some(b)) => (
+                self.rv.builds.status(b, self.p, now),
+                self.rv.builds.table(b, self.p, w, true, now),
+                &mut self.rv.builds.table,
+            ),
+            ("builds", None) => (
                 vec![Line::styled("Reading builds...", self.p.dim())],
                 vec![],
+                &mut self.rv.builds.table,
             ),
+            _ => (releases::tests_note(self.p, w), vec![], &mut self.rv.table),
         };
-        // The focused section gets two thirds of what the heads leave, but a short list of
-        // channels never holds back rows the builds could use.
-        let rest = (list.height as usize).saturating_sub(status.len() + bstatus.len());
-        let share = if self.rv.builds.focus {
-            rest * 2 / 3
-        } else {
-            rest / 3
-        };
-        let ch = rest
-            .saturating_sub(share.max(3))
-            .clamp(2, table.len().max(2));
-        let bh = rest.saturating_sub(ch).max(1);
-        self.page = if self.rv.builds.focus {
-            bh.saturating_sub(1).max(1)
-        } else {
-            ch.saturating_sub(1).max(1)
-        };
-        let mut lines = status;
-        lines.extend(self.rv.table.window(table, ch));
-        lines.extend(bstatus);
-        lines.extend(self.rv.builds.table.window(btable, bh));
+        // The rows under the table's header line.
+        let h = (list.height as usize)
+            .saturating_sub(lines.len() + head.len() + 1)
+            .max(1);
+        self.page = h.saturating_sub(1).max(1);
+        lines.extend(head);
+        lines.extend(sel.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
         let Some(area) = pane else { return };
         if let (true, Some(top), Some(b)) = (log, self.rv.builds.times, &self.builds) {
@@ -5464,9 +5477,20 @@ mod tests {
     }
 
     #[test]
-    fn the_builds_section_sits_under_the_channels_with_each_runs_owner() {
+    fn the_builds_inner_tab_lists_each_runs_owner_and_its_red_counts_on_the_strip() {
         let mut a = builds_app();
         let s = screen(&mut a, 110, 30);
+        assert!(
+            s.contains("[Apps] Builds 1  Tests"),
+            "a recent red counts: {s}"
+        );
+        assert!(
+            !s.contains("runs in 30 days"),
+            "the runs are on Builds: {s}"
+        );
+        press(&mut a, KeyCode::Right);
+        let s = screen(&mut a, 110, 30);
+        assert!(s.contains("[Builds 1]"), "{s}");
         assert!(
             s.contains("Builds  3 runs in 30 days: 0 running, 1 queued, 1 red"),
             "{s}"
@@ -5478,19 +5502,17 @@ mod tests {
         assert!(red.contains("agent-3"), "{red}");
         let mut b = app(Tab::Releases);
         b.releases = Some(Releases::default());
+        b.rv.show("builds");
         assert!(screen(&mut b, 110, 30).contains("Reading builds..."));
     }
 
     #[test]
-    fn b_hands_the_keys_to_builds_and_enter_reads_that_runs_log_then() {
+    fn right_hands_the_keys_to_builds_and_enter_reads_that_runs_log_then() {
         let mut a = builds_app();
-        press(&mut a, KeyCode::Char('b'));
-        assert!(a.rv.builds.focus);
+        press(&mut a, KeyCode::Right);
+        assert_eq!(a.rv.on(), "builds");
         press(&mut a, KeyCode::Char('j'));
-        assert_eq!(
-            a.rv.builds.table.sel, 1,
-            "j moves the builds, not the channels"
-        );
+        assert_eq!(a.rv.builds.table.sel, 1, "j moves the builds, not the apps");
         assert_eq!(a.rv.table.sel, 0);
         press(&mut a, KeyCode::Char('k'));
         assert!(a.rv.builds.log.is_none(), "selecting reads no log");
@@ -5506,9 +5528,42 @@ mod tests {
         a.handle(Msg::Log(gen + 9, Ok("stale".into())));
         assert!(!screen(&mut a, 110, 30).contains("stale"));
         press(&mut a, KeyCode::Esc);
-        assert!(a.rv.builds.log.is_none() && a.rv.builds.focus);
-        press(&mut a, KeyCode::Char('b'));
-        assert!(!a.rv.builds.focus);
+        assert!(a.rv.builds.log.is_none() && a.rv.on() == "builds");
+        press(&mut a, KeyCode::Left);
+        assert_eq!(a.rv.on(), "apps");
+    }
+
+    #[test]
+    fn left_and_right_walk_releases_inner_tabs_and_hub_tab_names_one() {
+        let mut a = builds_app();
+        assert_eq!(a.rv.on(), "apps");
+        press(&mut a, KeyCode::Left);
+        assert_eq!(a.rv.on(), "tests", "Left wraps before the first");
+        let s = screen(&mut a, 80, 24);
+        assert!(s.contains("[Tests]") && s.contains("on agent-web"), "{s}");
+        press(&mut a, KeyCode::Right);
+        assert_eq!(a.rv.on(), "apps", "Right wraps past the last");
+        // An open app pane belongs to Apps: another inner tab closes it.
+        a.rv.open = true;
+        press(&mut a, KeyCode::Right);
+        assert!(!a.rv.open);
+        // `t` brings up Builds with its run times, from any inner tab.
+        a.rv.show("tests");
+        press(&mut a, KeyCode::Char('t'));
+        assert_eq!((a.rv.on(), a.rv.builds.times), ("builds", Some(0)));
+        // `hub --tab 'releases builds'` and the old section words land on the inner tab holding
+        // them; any other word is the apps' query, on Apps.
+        for (word, on, q) in [
+            ("builds", "builds", ""),
+            ("Tests", "tests", ""),
+            ("detail", "apps", ""),
+            ("project:binks", "apps", "project:binks"),
+        ] {
+            let mut a = builds_app();
+            a.rv.show("builds");
+            a.open_query(Some(word.to_string()));
+            assert_eq!((a.rv.on(), a.rv.table.view.q.as_str()), (on, q), "{word}");
+        }
     }
 
     #[test]
