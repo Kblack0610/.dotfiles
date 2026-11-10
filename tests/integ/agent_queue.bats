@@ -1993,6 +1993,20 @@ notes --profile bnb ptask level --agent start lv-9'
   [ -z "$(item queued no-board)" ]
 }
 
+@test "--row on a game keeps that game: a row moved from another game keeps its id and links where it is" {
+  story_notes
+  run "$AQ" add --project level --row ar-9 --slug moved "x"
+  assert_success
+  assert_line "story ar-9 on the level agent board"
+  f="$(item queued moved)"
+  [ "$(field "$f" project)" = level ]
+  [ "$(field "$f" row)" = level:ar-9 ]
+  # Negative control: the checkout's own project still credits the game the row code names.
+  run "$AQ" add --project game --row ar-8 --slug by-code "y"
+  assert_success
+  [ "$(field "$(item queued by-code)" project)" = arena ]
+}
+
 @test "a title whose subject is one open row works that row; a mention, a closed row, two ids or an --epic file a story as before" {
   story_notes
   run "$AQ" add --running --project game --slug named "fix(menu): close it for good (lv-2)"
