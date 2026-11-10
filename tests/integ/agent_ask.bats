@@ -220,6 +220,42 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'state: queued'
 }
 
+# 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
+# item waited up to 15 minutes for the timer's dispatch pass.
+@test "answer: the human's answer to an ask queue items hold files no board row and starts a dispatch pass; a dead-end ask files one row" {
+  unset AGENT_ASK_NO_RESUME
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local opts='go=run it now|later=run it later' a b c
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  "$AGENT_ASK" answer "$a" go 2>/dev/null
+  assert_not_called 'chore(ask)'
+  assert_called 'agentctl start fleet-dispatch --no-block'
+  # Negative control: no item waits on it and it has no resume, so the answer is filed where work is picked up.
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
+  "$AGENT_ASK" answer "$b" later 2>/dev/null
+  assert_called "chore(ask): free? -> answered: later (ask $b)"
+  assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
+  # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug picky --tags "ask:$c=go" "the go phase" >/dev/null
+  "$AGENT_ASK" answer "$c" later 2>/dev/null
+  assert_called "chore(ask): only on go? -> answered: later (ask $c)"
+  assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "answer: the judge's answer to an ask queue items hold releases nothing, starts nothing and files the override row (negative control)" {
+  unset AGENT_ASK_NO_RESUME
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local a
+  a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null
+  assert_not_called 'agentctl start'
+  assert_called "(the judge; to override: agent-ask answer $a <option>)"
+  [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer released the held item"
+}
+
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
   local id
   id="$("$AGENT_ASK" post --project demo --options 'a=take it|b=leave it' 'which one?')"

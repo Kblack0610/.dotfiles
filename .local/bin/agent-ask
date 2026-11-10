@@ -628,14 +628,20 @@ cmd_answer() {
 
   local row said="$answer"; row="$(live_row "$(field "$f" claude_session)")"
   [ "$by" = judge ] && said="$answer (the judge, $(field "$f" judge_rule): $(field "$f" judge_reason | sed 's/\.$//'); the human can override in this session)"
+  # A human answer that releases queue items held on the ask is their restart (start_held), so it files
+  # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
+  # releases nothing and still files one. A judge's answer does not release them
+  # (agent-queue ask_pending), so its row stays the human's way to override.
+  local held=""; [ "$by" != human ] || held="$(released_by "$id" "$answer")"
   if [ -n "$row" ]; then
     deliver_to_session "$f" "$said" "$row"
-  elif [ -n "$beside" ] || [ -z "$(field "$f" resume)" ]; then
+  elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
     # Boards list pending asks only, so a row for a judge answer says how to disagree with it.
     local how=""; [ "$by" = judge ] && how=" (the judge; to override: agent-ask answer $id <option>)"
     file_board_row "$f" "$(field "$f" question) -> answered: $answer$how"
   fi
   [ -n "$beside" ] || start_resume "$id"
+  [ -z "$held" ] || start_held
 }
 
 # record_answer <file> <by> <answer>: the ask's answer fields in one locked rewrite, so no reader
@@ -658,6 +664,22 @@ start_resume() {
   if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
     ask-resume "$1" >&2 || true
   fi
+}
+
+# released_by <id> <answer>: the queue items this human answer releases, one slug a line: those held on
+# the ask with no option named, or with the answer's first word among theirs (agent-queue ask_pending).
+released_by() {
+  local pick="${2%% *}"; pick="${pick%[.,;:!]}"
+  queue_holders "$1" | awk -F'\t' -v a="${pick,,}" '$2 == "" || index("+" tolower($2) "+", "+" a "+") { print $1 }'
+}
+
+# start_held: the human's answer released the queue items held on its ask, and a fleet-dispatch pass
+# starts them now, behind every gate a pass holds a start to (room, load, run units), not at the timer's
+# next fire. --no-block: the pass takes minutes; while one runs, systemd merges this start into it and
+# the next timer pass takes them.
+start_held() {
+  [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v agentctl >/dev/null 2>&1 || return 0
+  agentctl start fleet-dispatch --no-block >/dev/null 2>&1 || true
 }
 
 # --- live answers ----------------------------------------------------------
