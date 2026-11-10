@@ -9,8 +9,8 @@ setup() {
   sandbox_init basic
   export AU="$REPO_ROOT/.local/bin/agent-usage"
   export PROJECTS_ROOT="$HOME/.claude/projects" SESS_ROOT="$HOME/sess" OUTCOMES_ROOT="$HOME/outcomes" AGENT_QUEUE_DIR="$HOME/queue"
-  export FLEET_SHEPHERD_DIR="$HOME/shepherd" AGENTCTL_STATE_DIR="$HOME/state" PROM_LIB="$HOME/prom-stub.sh" FIX="$HOME/fix"
-  mkdir -p "$PROJECTS_ROOT/-p" "$SESS_ROOT" "$OUTCOMES_ROOT/p" "$AGENT_QUEUE_DIR" "$FLEET_SHEPHERD_DIR" "$AGENTCTL_STATE_DIR" "$FIX"
+  export FLEET_SHEPHERD_DIR="$HOME/shepherd" AGENTCTL_STATE_DIR="$HOME/state" PROM_LIB="$HOME/prom-stub.sh" FIX="$HOME/fix" TOKENS_DIR="$HOME/token-usage"
+  mkdir -p "$TOKENS_DIR" "$PROJECTS_ROOT/-p" "$SESS_ROOT" "$OUTCOMES_ROOT/p" "$AGENT_QUEUE_DIR" "$FLEET_SHEPHERD_DIR" "$AGENTCTL_STATE_DIR" "$FIX"
   NOW=$(date +%s); export NOW
   printf 'pass1\n' | sed 's/^/1\t/' > "$FLEET_SHEPHERD_DIR/passes.tsv"
   cat > "$PROM_LIB" <<'STUB'
@@ -85,6 +85,17 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
   run cost '[.total.estimated, (.unpriced | to_entries | map([.key, .value.why]) | sort), (.rates | has("claude-noisy-1"))]'
   assert_success
   assert_output '[0,[["claude-few-1","too few priced tokens"],["claude-never-1","no billed sessions"],["claude-noisy-1","the fit missed its held-out sessions"]],false]'
+}
+
+@test "a model with no fit in the window is priced at its newest snapshot rate, which says the day; a fitted one ignores it" {
+  echo '{"fleet_cost":{"rates":{"claude-few-1":{"input":1,"output":5,"cache_read":0,"cache_write":0},"claude-opus-5-5":{"input":99,"output":99,"cache_read":99,"cache_write":99}}}}' > "$TOKENS_DIR/2026-11-05.json"
+  echo '{"fleet_cost":{"rates":{"claude-few-1":{"input":2,"output":10,"cache_read":0,"cache_write":0,"from":"2026-11-01"}}}}' > "$TOKENS_DIR/2026-11-06.json"
+  echo 'not json' > "$TOKENS_DIR/2026-11-07.json"
+  turn few claude-few-1 1000000 1000000 0 0
+  turn unbilled claude-opus-5-5 1000000 1000000 0 0
+  run cost '[.by_model["claude-few-1"].estimated, .by_model["claude-opus-5-5"].estimated, .rates_from, (.unpriced | has("claude-few-1"))]'
+  assert_success
+  assert_output '[12,24,{"claude-few-1":"2026-11-01"},false]'
 }
 
 @test "the gateway's own model names are its metered dollars, not an estimate" {
