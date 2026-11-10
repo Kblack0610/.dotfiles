@@ -38,7 +38,8 @@ One file per night: `~/.agent/night-shift/<YYYY-MM-DD>.md`, dated by the day `st
    - Set `expiry:` to an ISO time the next morning (default 09:00 local). It is removed on its own if `morning` never runs.
    - Also required: `what`, `why`, `where`, `action` (`--strict` refuses a manifest without them), `created: $(date -Iseconds)` (expiry and the age column count from it), `source: night-shift`, and `subject`, `trip`, `next` for a readable page.
    - Validate with `sentinel-manifest validate --strict <file>`, then `watch-companion-loop list night-<slug>`. An agent watch runs its first check-in within a minute, so read its first verdict before the human sleeps: `awk '$2=="night-<slug>"' ~/.local/state/agentctl/sentinel/activity.log | tail -1`.
-3. **Tell the human** in three lines: what is armed and how often it checks, which standing watches cover the rest, and that only high and urgent standing watches can page them overnight.
+3. **Queue the morning.** `agent-queue add --project dotfiles --priority high --weight light --tags "at:<YYYY-MM-DD>T08:30" --slug night-shift-morning-<MMDD> "check(night-shift): run /night-shift morning for <the record file> and file the report with inbox-report; observe-only, change nothing"`, with the time before the night watches' expiry. Why: the report is waiting when the human wakes, with nothing for them to remember.
+4. **Tell the human** in three lines: what is armed and how often it checks, which standing watches cover the rest, and that only high and urgent standing watches can page them overnight.
 
 ## Verb: `status`
 
@@ -54,7 +55,7 @@ Log lines read `[<ts>] <watch> <prev> -> <new> <detail>`, so awk on fields works
 2. **What changed.** `awk -v s="[$S" '$0 >= s && $4 == "->" && $3 != $5 && $6 != "pending"'` on the same log: every watch that tripped, errored or recovered overnight. Compare `watch-companion-loop tripped` now with the bedtime list: new, cleared, still red.
 3. **Pages.** `agent-notify list` since `S`: what reached the phone and what was held. A low `watch expired and was removed` page for a night watch is expected and needs no line in the report.
 4. **Merges.** For each focus repo, `gh pr list -R <owner/repo> --state merged --limit 100 --search "merged:>=$(date -u -d "$S" +%Y-%m-%dT%H:%M:%SZ)" --json number,title,mergedAt` (UTC, since search reads the offset form unreliably). For the whole fleet's day, `day-log` is the owner.
-5. **Write it** under `## Morning` in the `comms-standard` status shape: one line that answers "did the night go as intended", then Focus (one line per focus: outcome, PR numbers, times), New reds, Cleared, Needs you. Lint with `comms-lint --channel rundown -`, then say the same in chat.
+5. **Write it** under `## Morning` in the `comms-standard` status shape: one line that answers "did the night go as intended", then Focus (one line per focus: outcome, PR numbers, times), New reds, Cleared, Needs you. Lint with `comms-lint --channel rundown -`, then file it with `inbox-report` so it is a link in today's daily note, and say the same in chat when a human is there.
 6. **Clean up.** Remove each `night-*` watch still present per `sentinel` (Verb: `stop`); one that already expired is gone, and its log lines are still the record. A red the report names gets a board row or queue item through its owner (`fix-red`, the session on it), never a fix from here.
 
 ## Do NOT
