@@ -142,6 +142,8 @@
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
 
 set -uo pipefail
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 
 # Each sample also publishes the window's numbers to Prometheus (fleet_bench.prom).
 # shellcheck source=/dev/null
@@ -313,8 +315,8 @@ def round2: . * 100 | round / 100;
 def ownerless: select((.state == "running" or .state == "review" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
 def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
 def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
-# An end that says nothing about the model (UNRATED_ENDS in agent-queue) is no evidence for or against it.
-def unrated: (.end_reason // "") | IN("refused", "limit", "provider", "cut");
+# An end that says nothing about the model (UNRATED_ENDS, lib/end-reasons.sh) is no evidence for or against it.
+def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
 def hold_key: "fix(hold): \(.name) went red";
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
 def leaves_landed: .open == 0 and .done > 0;
@@ -2506,7 +2508,7 @@ queue_section() {
 # have a pr-ci row: ci_red_per_pr is its red CI runs per PR, first_pass_share the
 # share of those that ran a gate with no red gate run (the KPI of that name). points are the
 # window points (source_attr) of the landed items' sessions, per pointed item: one with a known share.
-# An item whose end_reason is refused, limit, provider or cut (the run ended for a cause outside the
+# An item whose end_reason is unrated (UNRATED_ENDS: the run ended for a cause outside the
 # model) is counted in unrated, and left out of landed_rate and failed. A run model-lane voided
 # (voids.jsonl, `model-lane void`) is left out of runs, rated and redo; it still names its item's lane.
 # by is a comma list of class and lane. lane is the model-lane lane the item's run logged under (the
@@ -2594,7 +2596,7 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
-  echo "An item that ended for a cause outside the model (\`end_reason\` refused, limit, provider or cut: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`."
+  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`."
   echo
   local redo_h="Redo | " redo_c='\(.redo) | ' hdr
   case ",$by," in *,class,*) redo_h="" redo_c="" ;; esac
@@ -4769,7 +4771,7 @@ canary_lanes_section() {
 # from BENCH_MATRIX. A kind-by-stack cell counts that harness's canary scores on tasks of the kind and
 # stack, and its own items done in the last N days (default 30; canaries come in by score, not item):
 # a pass is a passed score or an item closed ok; a fail is a failed score or an item closed failed,
-# except an end that says nothing about the model (end_reason refused, limit, provider, cut). Proven
+# except an end that says nothing about the model (UNRATED_ENDS). Proven
 # is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why, no work is a cell no item
 # on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
 # `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in

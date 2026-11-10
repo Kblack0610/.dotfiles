@@ -18,8 +18,8 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--if <state>]
-#       --end records why a run ended (end_reason:): refused, limit, provider, cut, timeout or stopped.
-#       The first four are not the model's doing, so the run's model-lane outcome is not filed.
+#       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
+#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
@@ -57,6 +57,8 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
 # shellcheck source=../lib/machine-mode.sh
 . "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 # The night window a `night` item may start in, local time, which may wrap midnight: the `night`
 # part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
@@ -1400,12 +1402,7 @@ cmd_credit_of() {
   credit_of "$1" || die "could not read $AQ_MAP"
 }
 
-# END_REASONS: why a run ended (end_reason:), set by fleet-dispatch's settle_item from the rollout
-# (codex-rollout.jq); a run that ended before settle_item recorded it gets the same reason by `set`,
-# beside its `model-lane void`, from that classifier's reviewed dry-run. The first four say nothing
-# about the model, so lane_outcome files no outcome for them; `timeout` and `stopped` rate as before.
-END_REASONS="refused limit provider cut timeout stopped"
-UNRATED_ENDS=" refused limit provider cut "
+# END_REASONS and UNRATED_ENDS: lib/end-reasons.sh.
 check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of: $END_REASONS, not $1" ;; esac; }
 
 # move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended
@@ -1687,7 +1684,7 @@ cmd_reopen() {
 lane_outcome() {
   local o=''
   [ -n "$1" ] || return 0
-  case "$UNRATED_ENDS" in *" ${5:-none} "*) return 0 ;; esac
+  ! unrated_end "${5:-}" || return 0
   case "$3:$4" in
     done:ok) o=ok ;;
     done:failed) o=failed ;;
