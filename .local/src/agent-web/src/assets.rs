@@ -262,8 +262,7 @@ mod tests {
 
     #[test]
     fn the_schedules_headers_are_hub_cores_columns() {
-        // Rule 8, less `repo` and `next`: the name says the one, a row's detail the other, and
-        // both still sort and filter.
+        // Rule 8, less `repo`: the name says it, and it still sorts and filters.
         use hub_core::table::Row;
         let js = include_str!("../static/schedules.js");
         let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
@@ -274,8 +273,8 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::schedules::Schedule::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 2]);
-        assert_eq!(all[all.len() - 2..], ["repo", "next"]);
+        assert_eq!(keys, all[..all.len() - 1]);
+        assert_eq!(all[all.len() - 1..], ["repo"]);
     }
 
     #[test]

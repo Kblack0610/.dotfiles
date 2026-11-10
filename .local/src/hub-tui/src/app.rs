@@ -5895,7 +5895,7 @@ mod tests {
 
     fn infra_app() -> App {
         let mut a = app(Tab::Home);
-        a.infra = Some(board::tests::fixture());
+        a.infra = Some(board::tests::built(&board::tests::fixture()));
         a.jobs = Some(Jobs {
             at: 0,
             window_secs: 86400,
@@ -5958,14 +5958,14 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert_eq!(a.tab, Tab::Infra);
-        assert!(top(&s).starts_with("CI  running 3"), "{s}");
+        assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, and n/N step between the section headings from there.
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert!(top(&s).starts_with("MACHINE "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI  running"));
+        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI RUNNERS"));
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
     }
@@ -5986,7 +5986,7 @@ mod tests {
             "HEALTH",
             "RED NOW",
             "MACHINE ",
-            "CI  running",
+            "CI RUNNERS",
             "JOBS",
             "CLOUD RUNNERS",
             "GOVERNOR",
