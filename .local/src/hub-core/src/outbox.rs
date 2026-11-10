@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// The intake steps "Handled today" lists. `moved` (outbox -> an inbox) is left out: the same
 /// sweep files the line a moment later, and the filing is the step that names the row.
-const HANDLED: [&str; 5] = ["filed", "dup", "planned", "left", "refused"];
+const HANDLED: [&str; 6] = ["filed", "dup", "planned", "left", "asked", "refused"];
 
 /// The outbox as `notes outbox show --json` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
