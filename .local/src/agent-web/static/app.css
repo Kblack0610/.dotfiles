@@ -34,6 +34,10 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head
 .pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .pill { font: 11px var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); white-space: nowrap; }
 .pill.here { background: var(--accent); color: #fff; }
+/* Inner tabs (app.js innerStrip): a count pill on a tab whose sections need a look. */
+.istrip { margin: 8px 0; }
+.istrip .pill.warn { background: var(--b-stalled); color: #fff; }
+[data-in][hidden] { display: none; }
 .pill.parked { background: var(--busy); color: #fff; }
 .pill.ask { background: var(--wait); color: #fff; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
