@@ -1,6 +1,6 @@
 # store-sales
 
-`store-sales` answers "what did the app stores make yesterday". The morning briefing's Money section prints one line per store from it (hub-core `money.rs`). Plan: `~/.claude/plans/update-warm-dongarra.md`, P2.
+`store-sales` answers "what did the app stores make yesterday". The morning briefing's Money section prints one line per store from it (hub-core `money.rs`).
 
 ## Command
 

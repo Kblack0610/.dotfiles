@@ -4,11 +4,12 @@
 #
 #   store_google_token <rbw entry> <scope>  -> STORE_TOKEN, or STORE_WHY (a service-account JSON)
 #   store_asc_jwt <rbw entry>               -> STORE_TOKEN, or STORE_WHY ({key_id, issuer_id, p8})
+#   Both leave the entry in STORE_RAW, so a caller reads its other fields without a second get.
 #   store_rbw_ready                         -> 0, or 1 with STORE_WHY (missing, locked)
 #
 # The caller sets PROBE_TIMEOUT (seconds, the guard on every external call; default 20).
 
-STORE_TOKEN="" STORE_WHY=""
+STORE_TOKEN="" STORE_WHY="" STORE_RAW=""
 
 declare -F now_epoch >/dev/null || now_epoch() { date +%s; }
 
@@ -62,6 +63,7 @@ store_google_token() {
   local entry="$1" scope="$2" raw email pem now claims assertion answer
   STORE_TOKEN="" STORE_WHY=""
   raw="$(rbw_read "$entry")" && [ -n "$raw" ] || { STORE_WHY="no rbw entry $entry"; return 1; }
+  STORE_RAW="$raw"
   email="$(secret_field "$raw" client_email)"
   pem="$(secret_field "$raw" private_key)"
   [ -n "$email" ] && [ -n "$pem" ] || { STORE_WHY="rbw entry $entry is not a service account"; return 1; }
@@ -80,6 +82,7 @@ store_asc_jwt() {
   local entry="$1" raw kid iss pem now
   STORE_TOKEN="" STORE_WHY=""
   raw="$(rbw_read "$entry")" && [ -n "$raw" ] || { STORE_WHY="no rbw entry $entry"; return 1; }
+  STORE_RAW="$raw"
   kid="$(secret_field "$raw" key_id)"
   iss="$(secret_field "$raw" issuer_id)"
   pem="$(secret_field "$raw" p8 | base64 -d 2>/dev/null)"

@@ -75,8 +75,16 @@ pub fn line(s: &Source) -> String {
             )
         }
     };
-    if made.is_empty() || s.sales == 0 {
+    if made.is_empty() {
         return format!("{}: no sales yesterday.", s.name);
+    }
+    if s.sales == 0 {
+        return format!(
+            "{}: {} {} from refunds, no sales.",
+            s.name,
+            amounts(made),
+            s.basis
+        );
     }
     let sales = if s.sales == 1 {
         "1 sale".to_string()
@@ -162,6 +170,15 @@ mod tests {
             "App Store: not read, no rbw entry store_sales_asc."
         );
         assert!(!line(&s).contains('$'));
+    }
+
+    #[test]
+    fn a_day_of_refunds_only_shows_the_amount() {
+        let s = src(Some(vec![("USD", -0.7)]), 0, &[], None);
+        assert_eq!(
+            line(&s),
+            "App Store: $-0.70 proceeds from refunds, no sales."
+        );
     }
 
     #[test]

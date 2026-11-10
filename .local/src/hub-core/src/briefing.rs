@@ -1035,7 +1035,11 @@ fn money_lines(i: &Inputs) -> Vec<String> {
         _ => out.push("Spend not read: no day-log record for yesterday.".into()),
     }
     match &i.sales {
-        Some(sources) => out.extend(sources.iter().map(crate::money::line)),
+        Some(sources) => out.extend(
+            sources
+                .iter()
+                .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
+        ),
         None => out.push("App stores: not read, store-sales could not run.".into()),
     }
     out.push("Games and trader: not read yet, no reader is connected.".into());
@@ -1432,13 +1436,20 @@ fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
 
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
+    // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
+    // beside the other reads so their network waits overlap.
+    let day = date_before(now, 1);
+    let sales =
+        std::thread::spawn(move || crate::money::apps(&crate::session_actions::System, &day));
     let mut i = gather_from(since, now, || {
         let (state, queue, board, infra) = home::gather(true);
         let home = home::build(&state, Some(&queue), Some(&board), infra.as_ref());
         (state, queue, home)
     });
-    // Only the briefing reads the stores: Home's "Since last night" renders no Money section.
-    match crate::money::apps(&crate::session_actions::System, &date_before(now, 1)) {
+    match sales
+        .join()
+        .unwrap_or_else(|_| Err("store-sales: panicked".into()))
+    {
         Ok(sources) => {
             i.errors.extend(
                 sources

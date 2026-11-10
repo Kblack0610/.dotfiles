@@ -151,3 +151,15 @@ src() { jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$output"; }
   run "$SS" 11/09/2026
   assert_failure 2
 }
+
+@test "app store: a title starting with a quote does not swallow the rows after it, and a bare error code stays bare" {
+  asc_key
+  printf 'Title\tUnits\tDeveloper Proceeds\tCurrency of Proceeds\n"Odd Game\t1\t1.00\tUSD\nShape City\t2\t0.50\tUSD\n' | gzip -c > "$SANDBOX/asc.gz"
+  reply asc 200 "$SANDBOX/asc.gz"
+  run "$SS" 2026-11-09
+  assert_equal "$(src 'App Store' | jq -c '[.made[0].currency, (.made[0].amount * 100 | round), .sales]')" '["USD",200,3]'
+  printf 'not json' > "$SANDBOX/e.txt"
+  reply asc 401 "$SANDBOX/e.txt"
+  run "$SS" 2026-11-09
+  assert_equal "$(src 'App Store' | jq -r .error)" "HTTP 401"
+}
