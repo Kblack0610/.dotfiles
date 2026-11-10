@@ -972,8 +972,8 @@ pub fn fixes(
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
 pub type Section = (&'static str, Vec<Line<'static>>);
 
-/// The Infra page as named sections in `hub_core::layout` order, less `jobs`, which the app
-/// draws from its own job list. Exceptions lead: red items, then what runs, waits and failed;
+/// The Infra page as named sections in `hub_core::layout` order, less `fixes` and `jobs`, which
+/// the app draws from their own reads, and which it shows by inner tab. Exceptions lead: red items, then what runs, waits and failed;
 /// green workflows fold to a line. A failed read is one section with the error and nothing
 /// else: a board never leaves the last (maybe green) numbers up.
 pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) -> Vec<Section> {
@@ -1018,8 +1018,8 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
         ("red", b.down(w)),
         ("machines", b.machines(w)),
         ("ci", ci),
-        ("cloud", b.cloud(w)),
         ("governor", b.governor(w)),
+        ("cloud", b.cloud(w)),
     ];
     sections
         .into_iter()
@@ -1365,8 +1365,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|s| s.0)
             .collect();
-        // Jobs and Red fixes are the app's, each drawn from its own read: Jobs between CI and
-        // Cloud runners, Red fixes under Red now.
+        // Jobs and Red fixes are the app's, each drawn from its own read.
         let want: Vec<_> = hub_core::layout::resolve("infra")
             .unwrap()
             .sections

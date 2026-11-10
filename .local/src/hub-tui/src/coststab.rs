@@ -56,12 +56,7 @@ fn tab() -> &'static layout::Tab {
 
 /// The inner tab a word names strictly: an inner id, or a section id for the one holding it.
 fn inner_named(word: &str) -> Option<&'static str> {
-    let w = word.trim().to_ascii_lowercase();
-    tab()
-        .inner
-        .iter()
-        .find(|i| i.id == w || i.sections.contains(&w.as_str()))
-        .map(|i| i.id)
+    layout::inner_named(tab(), word).map(|i| i.id)
 }
 
 impl Default for CostsView {
@@ -83,12 +78,6 @@ impl Default for CostsView {
             inner: layout::inner_tab(tab(), None).map_or("", |i| i.id),
         }
     }
-}
-
-fn step<T: Copy + PartialEq>(list: &[T], at: T, back: bool) -> T {
-    let i = list.iter().position(|x| *x == at).unwrap_or(0);
-    let n = list.len();
-    list[if back { (i + n - 1) % n } else { (i + 1) % n }]
 }
 
 /// A column's header, the same words agent-web's costs.js prints.
@@ -191,23 +180,22 @@ impl CostsView {
         }
         match code {
             KeyCode::Left | KeyCode::Right => {
-                let ids: Vec<&'static str> = tab().inner.iter().map(|i| i.id).collect();
-                self.inner = step(&ids, self.inner, code == KeyCode::Left);
+                self.inner = crate::inner::step(tab(), self.inner, code == KeyCode::Left);
             }
             KeyCode::Char('/') => self.typing = Some(self.q.clone()),
             KeyCode::Char(c @ ('b' | 'B')) => {
-                self.by = step(&costs::CUTS, self.by, c == 'B');
+                self.by = crate::inner::cycle(&costs::CUTS, self.by, c == 'B');
                 // Another cut has other columns, so the sort goes back to the cut's own.
                 self.sort.clear();
             }
             KeyCode::Char('w') => {
                 let names: Vec<&'static str> = costs::WINDOWS.iter().map(|w| w.0).collect();
-                self.window = step(&names, self.window, false);
+                self.window = crate::inner::cycle(&names, self.window, false);
             }
             KeyCode::Char('s') => {
                 let mut cols = vec![""];
                 cols.extend(costs::columns(self.by));
-                self.sort = step(&cols, self.sort.as_str(), false).to_string();
+                self.sort = crate::inner::cycle(&cols, self.sort.as_str(), false).to_string();
             }
             KeyCode::Char('S') => self.asc = !self.asc,
             KeyCode::Char('e') => {
@@ -217,7 +205,7 @@ impl CostsView {
             KeyCode::Char('t') => {
                 let mut cols = vec![""];
                 cols.extend(<sections::Section as hub_core::table::Row>::COLUMNS);
-                self.ssort = step(&cols, self.ssort.as_str(), false).to_string();
+                self.ssort = crate::inner::cycle(&cols, self.ssort.as_str(), false).to_string();
                 // A new column starts descending, as a header click does on the web.
                 self.sasc = false;
             }
@@ -318,7 +306,7 @@ impl CostsView {
         let b = self.board(c);
         let mut out = fleet(&b.fleet_cost, p, now, w);
         let mut at = vec![("fleet", 0)];
-        out.push(strip(self.inner, &b.amber, p, w));
+        out.push(crate::inner::strip(tab(), self.inner, &b.amber, p, w));
         let shown = layout::inner_tab(tab(), Some(self.inner)).map_or(&[][..], |i| i.sections);
         for sec in shown {
             at.push((sec, out.len()));
@@ -415,30 +403,6 @@ impl CostsView {
         }
         out.push(Line::styled("trends: o opens Grafana", p.dim()));
     }
-}
-
-/// The inner tabs' strip: the open one in brackets, a count beside one with sections needing a
-/// look (`Board::amber`), and the keys that switch.
-fn strip(on: &str, amber: &[&str], p: Palette, w: usize) -> Line<'static> {
-    let mut s = vec![];
-    for i in tab().inner {
-        let n = layout::inner_count(i, amber);
-        let label = if n > 0 {
-            format!("{} {n}", i.title)
-        } else {
-            i.title.to_string()
-        };
-        let style = if n > 0 { p.warn() } else { p.head() };
-        s.push(if i.id == on {
-            Span::styled(format!("[{label}]"), style)
-        } else if n > 0 {
-            Span::styled(format!(" {label} "), p.warn())
-        } else {
-            Span::raw(format!(" {label} "))
-        });
-    }
-    s.push(Span::styled("  <- -> switch", p.dim()));
-    clip_line(Line::from(s), w)
 }
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold

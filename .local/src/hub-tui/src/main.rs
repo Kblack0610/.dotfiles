@@ -18,6 +18,7 @@ mod fmt;
 mod focustab;
 mod forecast;
 mod hometab;
+mod inner;
 mod jobs;
 mod logtab;
 mod outboxtab;

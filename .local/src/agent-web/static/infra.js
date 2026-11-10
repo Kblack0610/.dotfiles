@@ -489,10 +489,14 @@ function fixesSection() {
 function renderInfra() {
   const el = $("infra-main"), tail = $("infra-tail");
   const d = ist.data;
-  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? fixesSection() : ""); tail.innerHTML = ""; return; }
+  // Health and Red now are pinned; the strip and each section in its inner tab's group follow
+  // (hub_core::layout, app.js INNER_TABS). Jobs is its own element between main and the tail.
+  innerHide("infra", "jobs", $("jobs"));
+  const reds = () => innerStrip("infra", infraFlagged(d)) + innerWrap("infra", "fixes", fixesSection());
+  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? reds() : ""); tail.innerHTML = ""; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${fixesSection()}`; tail.innerHTML = ""; seekSection(); return; }
+  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${reds()}`; tail.innerHTML = ""; seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
@@ -505,12 +509,21 @@ function renderInfra() {
   html += red.length
     ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
     : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;
-  html += fixesSection();
-  html += `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
-  html += ciSection(cc, inst, t1, d.ci);
+  html += reds();
+  html += innerWrap("infra", "machines", `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`);
+  html += innerWrap("infra", "ci", ciSection(cc, inst, t1, d.ci));
   paint(el, html, ist.open);
-  paint(tail, cloudCard(inst) + governorPanel(inst));
+  paint(tail, innerWrap("infra", "governor", governorPanel(inst)) + innerWrap("infra", "cloud", cloudCard(inst)));
   seekSection();
+}
+
+// The sections whose inner tab carries a count: open red fixes, and CI lines hub_core::ci judged
+// red (a queued job no online runner can take); the hub's App::infra_flagged reads the same two.
+function infraFlagged(d) {
+  const out = [];
+  if (ist.reds && ist.reds.open.length) out.push("fixes");
+  if (d && d.ci && (d.ci.red || []).length) out.push("ci");
+  return out;
 }
 
 const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);

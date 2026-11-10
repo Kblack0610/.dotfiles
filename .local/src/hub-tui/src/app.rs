@@ -190,6 +190,11 @@ fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: 
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+
+/// Infra's layout entry: its pinned sections and inner tabs.
+fn infra_tab() -> &'static hub_core::layout::Tab {
+    hub_core::layout::resolve("infra").expect("infra is a tab")
+}
 /// The footer while a table's query is being typed.
 const QUERY_HINT: &str = "type a query (word, key:value, -key:value), Enter applies, Esc cancels";
 
@@ -510,6 +515,8 @@ pub struct App {
     seek: Option<&'static str>,
     /// Infra's Jobs section opened as the whole jobs table.
     pub infra_jobs: bool,
+    /// Infra's inner tab shown (a `hub_core::layout::Inner` id of Infra).
+    pub infra_inner: &'static str,
     /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
@@ -624,6 +631,7 @@ impl App {
             sections: vec![],
             seek: None,
             infra_jobs: false,
+            infra_inner: hub_core::layout::inner_tab(infra_tab(), None).map_or("", |i| i.id),
             scroll: 0,
             quit: false,
             popup: false,
@@ -1968,6 +1976,13 @@ impl App {
                     hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
                 if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
                     self.open_section(sec);
+                } else if let (Tab::Infra, Some(i)) =
+                    (self.tab, hub_core::layout::inner_named(infra_tab(), &q))
+                {
+                    // `hub --tab 'infra reds'`: an inner tab's own name opens it at its top.
+                    self.infra_inner = i.id;
+                    self.infra_jobs = false;
+                    self.scroll = 0;
                 }
             }
             // Fleet's own section names (`workers`) scroll there; any other word is a runner. A
@@ -2003,6 +2018,12 @@ impl App {
     /// list and a Log fold opens; any other scrolls to its heading at the next draw.
     fn open_section(&mut self, sec: &'static str) {
         self.infra_jobs = sec == "jobs";
+        if self.tab == Tab::Infra {
+            // A section on another inner tab switches to it; a pinned one keeps the one shown.
+            if let Some(i) = hub_core::layout::inner_named(infra_tab(), sec) {
+                self.infra_inner = i.id;
+            }
+        }
         self.log_days = self.tab == Tab::Log && sec == "history";
         if self.tab == Tab::Log && !self.log_open.contains(&sec) && FOLDS.iter().any(|f| f.0 == sec)
         {
@@ -2609,16 +2630,22 @@ impl App {
         }
     }
 
-    /// Infra's own keys. The summary: n/N jump between sections, Enter and the jobs keys
-    /// (/ s f h) open the jobs table. The table: the jobs keys, and Esc with nothing to clear
-    /// goes back to the summary.
+    /// Infra's own keys. The summary: Left/Right switch the inner tab, n/N jump between
+    /// sections, Enter and the jobs keys (/ s f h) open the jobs table (on the Jobs inner tab).
+    /// The table: the jobs keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
         if !self.infra_jobs {
             match k.code {
+                KeyCode::Left | KeyCode::Right => {
+                    self.infra_inner =
+                        crate::inner::step(infra_tab(), self.infra_inner, k.code == KeyCode::Left);
+                    // Another inner tab is another page: it opens at its top.
+                    self.scroll = 0;
+                }
                 KeyCode::Char('n' | 'N') => self.next_section(k.code == KeyCode::Char('n')),
-                KeyCode::Enter => self.infra_jobs = true,
+                KeyCode::Enter => self.open_jobs(),
                 c if c == KeyCode::Char('h') || DataTable::owns(c) => {
-                    self.infra_jobs = true;
+                    self.open_jobs();
                     return self.jobs_key(k);
                 }
                 _ => return false,
@@ -2632,6 +2659,12 @@ impl App {
             return true;
         }
         self.jobs_key(k)
+    }
+
+    /// The whole jobs table, from the Jobs inner tab, so Esc comes back to it.
+    fn open_jobs(&mut self) {
+        self.infra_jobs = true;
+        self.infra_inner = "jobs";
     }
 
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
@@ -3055,7 +3088,7 @@ impl App {
                 "a accept  d reject  Enter record  / query  f state  s sort  S asc/desc  x clear  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra if !self.infra_jobs => format!(
-                "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+                "<-/-> view  n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Log
@@ -3201,6 +3234,19 @@ impl App {
             ),
             w,
         ));
+        out
+    }
+
+    /// Infra's sections needing a look, for the strip's counts: open red fixes, and CI lines
+    /// `hub_core::ci` judged red (a queued job no online runner can take).
+    fn infra_flagged(&self, i: &hub_core::infra::Infra) -> Vec<&'static str> {
+        let mut out = vec![];
+        if matches!(&self.reds, Some(Ok(r)) if !r.open.is_empty()) {
+            out.push("fixes");
+        }
+        if !i.ci.red.is_empty() {
+            out.push("ci");
+        }
         out
     }
 
@@ -3359,29 +3405,46 @@ impl App {
             }
             (Tab::Log, Some(b), _) => self.log_page(b, now, w),
             (_, _, None) => reading("Prometheus"),
-            // Infra's sections in hub_core::layout order, a blank line between them.
+            // Infra: the pinned sections, the strip, then the inner tab shown, each section in
+            // hub_core::layout order with a blank line between them.
             (_, _, Some(i)) => {
+                let tab = infra_tab();
+                let shown = hub_core::layout::inner_tab(tab, Some(self.infra_inner))
+                    .map_or(&[][..], |i| i.sections);
                 let mut secs = board::infra(i, self.p, now, w, &self.hosts);
-                // Red fixes is read on its own, so it goes in under Red now (or last, when a
-                // failed Prometheus read left only the error).
-                let at = secs
-                    .iter()
-                    .position(|s| s.0 == "red")
-                    .map_or(secs.len(), |n| n + 1);
-                let fixes = board::fixes(self.reds.as_ref(), self.p, now, w);
-                secs.insert(at, ("fixes", fixes));
-                let at = secs
-                    .iter()
-                    .position(|s| s.0 == "cloud")
-                    .unwrap_or(secs.len());
-                secs.insert(at, ("jobs", self.jobs_section(w)));
+                // Red fixes and Jobs are read on their own, and built only on the inner tab that
+                // shows them: the jobs table walks every job in the window on each draw.
+                if shown.contains(&"fixes") {
+                    secs.push(("fixes", board::fixes(self.reds.as_ref(), self.p, now, w)));
+                }
+                if shown.contains(&"jobs") {
+                    secs.push(("jobs", self.jobs_section(w)));
+                }
                 let (mut l, mut at) = (vec![], vec![]);
-                for (n, (name, lines)) in secs.into_iter().enumerate() {
-                    if n > 0 {
-                        l.push(Line::raw(""));
+                let mut put = |name: &'static str, l: &mut Vec<Line<'static>>| {
+                    if let Some((_, lines)) = secs.iter_mut().find(|s| s.0 == name) {
+                        if !l.is_empty() {
+                            l.push(Line::raw(""));
+                        }
+                        at.push((name, l.len()));
+                        l.append(lines);
                     }
-                    at.push((name, l.len()));
-                    l.extend(lines);
+                };
+                for name in tab.pinned {
+                    put(name, &mut l);
+                }
+                if !l.is_empty() {
+                    l.push(Line::raw(""));
+                }
+                l.push(crate::inner::strip(
+                    tab,
+                    self.infra_inner,
+                    &self.infra_flagged(i),
+                    self.p,
+                    w,
+                ));
+                for name in shown {
+                    put(name, &mut l);
                 }
                 (l, at)
             }
@@ -5932,8 +5995,12 @@ mod tests {
         a.handle(Msg::Reds(Err("reds: cannot read the queue".into())));
         let s = screen(&mut a, 160, 80);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
-        assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
-        assert!(at("RED FIXES") < at("MACHINE "), "{s}");
+        assert!(at("RED NOW") < at("[Reds]"), "{s}");
+        assert!(at("[Reds]") < at("RED FIXES  read failed"), "{s}");
+        assert!(
+            !s.contains("MACHINE "),
+            "Machines is another inner tab: {s}"
+        );
         assert!(s.contains("reds: cannot read the queue"), "{s}");
     }
 
@@ -5976,7 +6043,7 @@ mod tests {
     }
 
     #[test]
-    fn infra_reads_health_red_machines_ci_jobs_cloud_governor_in_order() {
+    fn infra_pins_health_and_red_above_a_strip_and_left_right_switch_its_inner_tabs() {
         let mut a = infra_app();
         a.handle(key('5'));
         let s = screen(&mut a, 160, 200);
@@ -5986,20 +6053,73 @@ mod tests {
             "{s}"
         );
         assert!(top(&s).starts_with("HEALTH"), "{s}");
-        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        let order = [
-            "HEALTH",
-            "RED NOW",
-            "MACHINE ",
-            "CI RUNNERS",
-            "JOBS",
-            "CLOUD RUNNERS",
-            "GOVERNOR",
-        ];
-        for w in order.windows(2) {
-            assert!(at(w[0]) < at(w[1]), "{} after {}: {s}", w[0], w[1]);
+        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
+        assert!(at(&s, "HEALTH") < at(&s, "RED NOW") && at(&s, "RED NOW") < at(&s, "[Reds]"));
+        assert!(
+            s.contains("[Reds] Machines  Jobs  Cloud   <- -> switch"),
+            "{s}"
+        );
+        assert!(s.contains("RED FIXES") && !s.contains("CI RUNNERS"), "{s}");
+        // Right: Machines holds the machines, the CI runners and the governor, in that order.
+        let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
+        a.handle(right());
+        assert_eq!(a.infra_inner, "machines");
+        let s = screen(&mut a, 160, 200);
+        assert!(top(&s).starts_with("HEALTH"), "pinned stays: {s}");
+        for w in ["MACHINE ", "CI RUNNERS", "GOVERNOR"].windows(2) {
+            assert!(at(&s, w[0]) < at(&s, w[1]), "{} after {}: {s}", w[0], w[1]);
         }
-        assert!(s.contains("Enter opens the table"), "{s}");
+        assert!(
+            !s.contains("RED FIXES") && !s.contains("CLOUD RUNNERS"),
+            "{s}"
+        );
+        a.handle(right());
+        let s = screen(&mut a, 160, 200);
+        assert!(
+            s.contains("Enter opens the table") && !s.contains("GOVERNOR"),
+            "{s}"
+        );
+        a.handle(right());
+        assert!(screen(&mut a, 160, 200).contains("CLOUD RUNNERS"));
+        // Left from the first wraps to the last.
+        a.handle(right());
+        assert_eq!(a.infra_inner, "reds");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        assert_eq!(a.infra_inner, "cloud");
+        // An inner tab's own name opens it; a pinned section keeps the one shown.
+        let (t, q) = crate::tabreq::parse("infra reds").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(a.infra_inner, "reds");
+        let (t, q) = crate::tabreq::parse("infra red").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.infra_inner, a.seek), ("reds", Some("red")));
+    }
+
+    #[test]
+    fn infra_strip_counts_open_red_fixes_and_red_ci_lines() {
+        let mut a = infra_app();
+        a.tab = Tab::Infra;
+        let strip = |a: &App| {
+            a.body(160)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .find(|l| l.contains("<- -> switch"))
+                .unwrap()
+        };
+        assert!(strip(&a).starts_with("[Reds]"), "{}", strip(&a));
+        a.reds = Some(Ok(hub_core::reds::Reds {
+            open: vec![hub_core::reds::Red::default()],
+            ..Default::default()
+        }));
+        if let Some(i) = a.infra.as_mut() {
+            i.ci.red = vec!["queued job needs gpu".into()];
+        }
+        assert!(
+            strip(&a).starts_with("[Reds 1] Machines 1  Jobs"),
+            "{}",
+            strip(&a)
+        );
     }
 
     #[test]
@@ -6007,6 +6127,7 @@ mod tests {
         // `hub --once` prints body lines as they are, with no terminal to cut them (rule 11).
         let mut a = infra_app();
         a.tab = Tab::Infra;
+        a.infra_inner = "jobs";
         let lines = a.body(80).0;
         assert!(lines
             .iter()
@@ -6035,6 +6156,10 @@ mod tests {
         assert!(a.infra_jobs);
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!a.infra_jobs);
+        assert_eq!(
+            a.infra_inner, "jobs",
+            "Esc comes back to the Jobs inner tab"
+        );
         // `hub --tab jobs` opens the table straight away.
         let (t, q) = crate::tabreq::parse("jobs").unwrap();
         a.handle(Msg::Tab(t, q));

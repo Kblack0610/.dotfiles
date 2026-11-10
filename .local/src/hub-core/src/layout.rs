@@ -93,10 +93,33 @@ pub const TABS: [Tab; 12] = [
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
-            "health", "red", "fixes", "machines", "ci", "jobs", "cloud", "governor",
+            "health", "red", "fixes", "machines", "ci", "governor", "jobs", "cloud",
         ],
-        pinned: &[],
-        inner: &[],
+        // Health and what is red now stay above the strip (exceptions first); the governor
+        // powers machines on and off, so it sits with them.
+        pinned: &["health", "red"],
+        inner: &[
+            Inner {
+                id: "reds",
+                title: "Reds",
+                sections: &["fixes"],
+            },
+            Inner {
+                id: "machines",
+                title: "Machines",
+                sections: &["machines", "ci", "governor"],
+            },
+            Inner {
+                id: "jobs",
+                title: "Jobs",
+                sections: &["jobs"],
+            },
+            Inner {
+                id: "cloud",
+                title: "Cloud",
+                sections: &["cloud"],
+            },
+        ],
     },
     Tab {
         id: "log",
@@ -278,6 +301,15 @@ pub fn inner_tab(tab: &Tab, name: Option<&str>) -> Option<&'static Inner> {
         .or_else(|| tab.inner.first())
 }
 
+/// The inner tab a word names strictly: its id, or a section id for the one holding it. None for
+/// a pinned, unknown or empty word, so a caller can keep the inner tab it shows.
+pub fn inner_named(tab: &Tab, word: &str) -> Option<&'static Inner> {
+    let w = word.trim().to_ascii_lowercase();
+    tab.inner
+        .iter()
+        .find(|i| i.id == w || i.sections.contains(&w.as_str()))
+}
+
 /// How many of an inner tab's sections are in `flagged` (the ones needing a look), the count its
 /// label carries when above zero, so a red behind an unselected inner tab still shows.
 pub fn inner_count(inner: &Inner, flagged: &[&str]) -> usize {
@@ -447,6 +479,29 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
+    }
+
+    #[test]
+    fn infra_pins_health_and_red_and_old_links_open_their_inner_tab() {
+        let infra = resolve("infra").unwrap();
+        assert_eq!(infra.pinned, ["health", "red"]);
+        let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
+        assert_eq!(at(None), Some("reds"));
+        assert_eq!(at(Some("ci")), Some("machines"));
+        assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("jobs")), Some("jobs"));
+        // a retired tab name that became a section lands on the inner tab holding it
+        assert_eq!(
+            section("ci")
+                .and_then(|s| inner_named(infra, s))
+                .map(|i| i.id),
+            Some("machines")
+        );
+        // strict: a pinned or unknown word names none, so the caller keeps its inner tab
+        assert_eq!(inner_named(infra, "red"), None);
+        assert_eq!(inner_named(infra, "nope"), None);
+        assert_eq!(inner_named(infra, " Cloud ").map(|i| i.id), Some("cloud"));
     }
 
     #[test]

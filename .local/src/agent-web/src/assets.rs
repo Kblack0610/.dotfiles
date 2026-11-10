@@ -458,13 +458,27 @@ mod tests {
         let got: serde_json::Value =
             serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
         assert_eq!(got, serde_json::Value::Object(want));
-        // Every section a group names is one the page draws a board section for.
-        let costs = include_str!("../static/costs.js");
-        for i in hub_core::layout::resolve("costs").expect("costs").inner {
-            for s in i.sections {
+        // Every section a group names is one the page wraps in its inner tab's group, so a
+        // section never shows under every inner tab or under none.
+        let pages = [
+            ("costs", include_str!("../static/costs.js").to_string()),
+            ("infra", include_str!("../static/infra.js").to_string()),
+        ];
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty())
+        {
+            let (_, js) = pages
+                .iter()
+                .find(|p| p.0 == t.id)
+                .unwrap_or_else(|| panic!("{} has inner tabs but no page here", t.id));
+            for s in t.inner.iter().flat_map(|i| i.sections) {
+                let at = format!("(\"{}\", \"{s}\"", t.id);
                 assert!(
-                    costs.contains(&format!("\"{s}\"")) || costs.contains(&format!("sec-{s}")),
-                    "costs.js never draws {s}"
+                    js.contains(&format!("innerWrap{at}"))
+                        || js.contains(&format!("innerHide{at}")),
+                    "{}'s page never puts {s} in its inner tab",
+                    t.id
                 );
             }
         }
