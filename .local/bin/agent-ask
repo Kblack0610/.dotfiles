@@ -979,9 +979,9 @@ live_sessions() {
 # the live sessions. The same first-match order as answer_route below, which says it in prose on the card.
 cmd_routes() {
   load_queue_asks
-  cmd_list --all --pending | awk -F'\t' -v live=" $(live_sessions | tr '\n' ' ') " -v holds="$QUEUE_HOLDS" '
+  cmd_list --all --pending | awk -F'\t' -v live=" $(live_sessions | tr '\n' ' ') " -v holds="$(tr '\n' ';' <<<"$QUEUE_HOLDS")" '
     BEGIN {
-      n = split(holds, H, "\n")
+      n = split(holds, H, ";")
       for (i = 1; i <= n; i++) { split(H[i], f, "\t"); if (f[2] != "" && !(f[2] in item)) item[f[2]] = f[1] }
     }
     {
