@@ -545,35 +545,29 @@ const INTAKE: [&str; 12] = [
     "sweep-stopped",
 ];
 
-/// One intake event of the ingest record, the fields Log shows.
-#[derive(serde::Deserialize, Default)]
-#[serde(default)]
-struct Intake {
-    ts: String,
-    action: String,
-    from: String,
-    to: String,
-    text: String,
-    id: Option<String>,
-    why: Option<String>,
-    row: Option<String>,
-    by: String,
+/// An ingest event with its stage, which Daily's [`crate::outbox::Step`] does not need.
+#[derive(serde::Deserialize)]
+struct Staged {
+    #[serde(flatten)]
+    step: crate::outbox::Step,
     stage: Option<String>,
 }
 
 /// Intake's steps from the ingest record, its writer as the actor (`inbox-triage`, a session,
 /// `human`) and its `why` (how the sweep decided, or why a line stayed) in the text. A line that
-/// is no intake step is passed over before it is parsed: the record is mostly row and queue writes.
+/// is no intake step is passed over before it is parsed: the record is mostly row and queue writes,
+/// and the notes CLI writes it compact, so the stage reads as written; the parsed stage decides.
 pub fn parse_ingest(text: &str) -> Vec<Action> {
     text.lines()
         .filter(|l| !l.contains(r#""stage":""#) || l.contains(r#""stage":"intake""#))
-        .filter_map(|l| serde_json::from_str::<Intake>(l).ok())
+        .filter_map(|l| serde_json::from_str::<Staged>(l).ok())
         .filter(|e| e.stage.as_deref().is_none_or(|s| s == "intake"))
+        .map(|e| e.step)
         .filter(|e| INTAKE.contains(&e.action.as_str()))
         // A row put on the outbox is a capture; one added anywhere else is a row write.
         .filter(|e| e.action != "added" || e.from == "outbox")
         .filter_map(|e| {
-            let at = DateTime::parse_from_rfc3339(&e.ts).ok()?.timestamp();
+            let at = crate::fleet::ts(&e.ts)?;
             let place = match e.to.as_str() {
                 t if t.is_empty() || t == e.from => e.from.clone(),
                 t => format!("{} -> {t}", e.from),

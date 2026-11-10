@@ -257,14 +257,14 @@ ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
 # join the open row as a dup does (moved to the row's project, then `file --dup`, which keeps them
 # as the row's `was:` line), and a decide row is closed by it. No open row is `left`, with why.
 answer() {
-  local id="$1" raw="$2" text="$3" row p lane ty
+  local id="$1" raw="$2" text="$3" row p lane ty how="id answer: $1"
   row="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id and (.lane == "human" or .lane == "agent"))
     | [.project, .lane, (.type // "-")] | join("\u001f")) // ""' <<<"$4")"
   [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
   IFS=$'\x1f' read -r p lane ty <<<"$row"
-  move_out "$p" "$raw" "$text" "id answer: $id" || return 1
+  move_out "$p" "$raw" "$text" "$how" || return 1
   raw="$MOVED_RAW"
-  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" --why "id answer: $id" || return 1
+  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" --why "$how" || return 1
   [ "$ty" = decide ] || return 0
   pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
 }
@@ -346,7 +346,7 @@ $open"
   ask "$prompt" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
-  local n action id of dest lane plan why epic rows cands r from raw text src eid ctx k
+  local n action id of dest lane plan why how epic rows cands r from raw text src eid ctx k
   local -a cv
   local -a args rowv asv
   # The row each filed line wrote (id, project, lane), by n, for a later line that repeats it.
@@ -358,6 +358,7 @@ $open"
     [ -n "$raw" ] || continue
     raws[n - 1]=""   # one answer per line
     why="$(clean 100 <<<"$why")"
+    how="model: ${why:-no why}"
     dest="$(clean 60 <<<"$dest")"
     src="$from"
     case "$action" in
@@ -397,7 +398,7 @@ $open"
         fi
         if [ "$from" = outbox ]; then
           [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
-          move_out "$dest" "$raw" "$text" "model: ${why:-no why}" || continue
+          move_out "$dest" "$raw" "$text" "$how" || continue
           raw="$MOVED_RAW"
           src="$dest"
         elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
@@ -410,7 +411,7 @@ $open"
           fi
           for r in "${asv[@]}"; do args+=(--as "$r"); done
         fi
-        file_line "$src" "$raw" "$text" "${args[@]}" --why "model: ${why:-no why}" || continue
+        file_line "$src" "$raw" "$text" "${args[@]}" --why "$how" || continue
         if [ "$action" = file ]; then
           [ "$DRY" = 1 ] && FILED_ID="<the row of line $n>"
           line_id[$n]="$FILED_ID" line_dest[$n]="${dest:-$from}"
@@ -966,11 +967,12 @@ sweep() {
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
-  [ $((FILED + ROUTED + ANSWERED + ASKED)) -gt 0 ] && verdict=WORKED
+  local handled=$((FILED + ROUTED + ANSWERED + ASKED))
+  [ "$handled" -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
   # A sweep that handled a line says so in the record, so its moves and filings read as one run.
-  [ "$rc" = 0 ] && [ $((FILED + ROUTED + ANSWERED + ASKED + KEPT + FAILED)) -gt 0 ] \
+  [ "$rc" = 0 ] && [ $((handled + KEPT + FAILED)) -gt 0 ] \
     && chain_event intake sweep outbox "inbox sweep" --why "$SUMMARY"
   if [ "$rc" != 0 ]; then
     # A stopped sweep leaves its lines waiting: the pipeline line's inbox node reads it from the record.

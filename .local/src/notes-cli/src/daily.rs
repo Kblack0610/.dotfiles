@@ -1304,8 +1304,8 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
-    // A stopped sweep wrote no sheet, and the pipeline line is where it is read.
-    const INTAKE: [&str; 11] = [
+    // A sweep wrote no sheet itself: its summary is on Log, a stopped one on the pipeline line.
+    const INTAKE: [&str; 12] = [
         "split",
         "moved",
         "filed",
@@ -1316,6 +1316,7 @@ fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
         "dropped",
         "refused",
         "answered",
+        "sweep",
         "sweep-stopped",
     ];
     let told_above = |i: usize, e: &crate::ingest::Event| {
@@ -2787,6 +2788,7 @@ mod tests {
             row("added", "", "- [ ] filed later"),
             Event::new("filed", "demo", "demo", "filed later"),
             row("added", "", "- [ ] stays put"),
+            Event::new("sweep", "outbox", "outbox", "inbox sweep"),
         ];
         for n in 1..=5 {
             let line = format!("- [ ] a row <!-- id:dm-{n} -->");

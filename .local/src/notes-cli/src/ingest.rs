@@ -346,13 +346,7 @@ pub fn log(
         (None, Some(n)) => read_since(p, n),
         (None, None) => read_since(p, 1),
     };
-    for e in events.iter().filter(|e| filter.hits(e)) {
-        if json {
-            println!("{}", serde_json::to_string(e)?);
-        } else {
-            println!("{}", log_line(e));
-        }
-    }
+    print(events.iter().filter(|e| filter.hits(e)), json)?;
     // A line that does not read has no fields to filter on, so only the unfiltered log has it.
     if json && filter.is_empty() {
         for r in &rejects {
@@ -368,18 +362,24 @@ pub fn log(
 pub fn trace(p: &Profile, words: &str, json: bool) -> anyhow::Result<i32> {
     let events = all(p);
     let hits = traced(&events, words);
-    for e in &hits {
+    if hits.is_empty() {
+        eprintln!("no event in the record matches '{words}' (it keeps {KEEP_DAYS} days)");
+        return Ok(1);
+    }
+    print(hits, json)?;
+    Ok(0)
+}
+
+/// The events as `notes log` prints them: a line each, or one JSON object each.
+fn print<'a>(events: impl IntoIterator<Item = &'a Event>, json: bool) -> anyhow::Result<()> {
+    for e in events {
         if json {
             println!("{}", serde_json::to_string(e)?);
         } else {
             println!("{}", log_line(e));
         }
     }
-    if hits.is_empty() {
-        eprintln!("no event in the record matches '{words}' (it keeps {KEEP_DAYS} days)");
-        return Ok(1);
-    }
-    Ok(0)
+    Ok(())
 }
 
 fn traced<'a>(events: &'a [Event], words: &str) -> Vec<&'a Event> {
@@ -394,14 +394,11 @@ fn traced<'a>(events: &'a [Event], words: &str) -> Vec<&'a Event> {
                 .as_deref()
                 .is_some_and(|r| r.to_lowercase().contains(&want))
     };
-    let mut ids: HashSet<&str> = events
+    let ids: HashSet<&str> = events
         .iter()
-        .filter(|e| says(e) || e.id.as_deref() == Some(&want[..]))
+        .filter(|e| says(e) || e.id.as_deref() == Some(want.as_str()))
         .filter_map(|e| e.id.as_deref())
         .collect();
-    if events.iter().any(|e| e.id.as_deref() == Some(&want[..])) {
-        ids.insert(&want[..]);
-    }
     let of_ids = |e: &&Event| e.id.as_deref().is_some_and(|i| ids.contains(i));
     let items: HashSet<&str> = events
         .iter()

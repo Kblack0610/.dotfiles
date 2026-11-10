@@ -280,7 +280,7 @@ TABS.fleet = {
   },
   onEvent(ev) {
     if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : fst.refresh());
-    // The ingest record pushes as the outbox's kind; only a runner page reads it.
-    else if (st.tab === "fleet" && st.arg && ev.kind === "outbox") refreshRunner();
+    // The ingest record pushes as the outbox's kind; only a runner page with the ingest table reads it.
+    else if (st.tab === "fleet" && ev.kind === "outbox" && rst.data?.extras?.kind === "ingest") refreshRunner();
   },
 };
