@@ -184,15 +184,6 @@ pub(crate) fn lines(p: &Profile) -> Result<Vec<sheet::InboxLine>> {
     Ok(sheet::lines_in(&read(p)?, HEADING))
 }
 
-/// `notes outbox add <text>`: append `- [ ] <text>` to the outbox and wake the sweep.
-/// One `split` event for each list `from` had split, and a line on stdout for whoever ran it.
-pub(crate) fn record_splits(p: &Profile, from: &str, lists: &[(String, usize)]) {
-    for (text, n) in lists {
-        ingest::record(p, &Event::new("split", from, &format!("{n} lines"), text));
-        println!("{from}: split into {n} lines: {text}");
-    }
-}
-
 /// Turn the lists waiting in the outbox into one line per ask (`sheet::split_lists`), the first
 /// step of a triage sweep. Does not touch the inbox flag: the sweep that runs this reads after it.
 pub fn split(p: &Profile) -> Result<i32> {
@@ -202,10 +193,11 @@ pub fn split(p: &Profile) -> Result<i32> {
     if out != content {
         md::write_atomic(&p.outbox, &out)?;
     }
-    record_splits(p, "outbox", &lists);
+    ingest::record_splits(p, "outbox", &lists);
     Ok(0)
 }
 
+/// `notes outbox add <text>`: append `- [ ] <text>` to the outbox and wake the sweep.
 pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {

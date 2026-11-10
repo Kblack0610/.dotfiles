@@ -21,7 +21,7 @@
 //! release, and the current-version views leave it out. A release is a filter, never a section.
 
 use crate::md;
-use crate::{project_tasks, projects};
+use crate::projects;
 
 pub(crate) type V = (u32, u32, u32);
 
@@ -243,13 +243,15 @@ fn is_open_box(t: &str) -> bool {
     (t.starts_with("- [ ]") || t.starts_with("- [/]")) && !inbox_text(t).is_empty()
 }
 
+/// Leading spaces and tabs, the only indent the inbox grammar writes, so a cut there is a char boundary.
 fn indent_of(l: &str) -> usize {
-    l.len() - l.trim_start().len()
+    l.len() - l.trim_start_matches([' ', '\t']).len()
 }
 
-/// `body` with each run of indented lines no top-level line owns moved left as a run, its own
-/// nesting kept. `lines_in` reads past such a run, so a pasted block indented as a whole would
-/// wait for ever unseen.
+/// `body` with each run of indented lines no top-level line owns, and that opens with an open
+/// checkbox, moved left as a run, its own nesting kept. `lines_in` reads past such a run, so a
+/// pasted block indented as a whole would wait for ever unseen. Any other run (a detail after a
+/// blank line) is not an ask and stays where it is.
 fn dedent_orphans(body: &[&str]) -> Vec<String> {
     let indented = |l: &str| l.starts_with([' ', '\t']) && !l.trim().is_empty();
     let mut out = Vec::new();
@@ -268,6 +270,11 @@ fn dedent_orphans(body: &[&str]) -> Vec<String> {
         let end = (i..body.len())
             .find(|&e| !indented(body[e]))
             .unwrap_or(body.len());
+        if !is_open_box(body[i].trim()) {
+            out.extend(body[i..end].iter().map(|l| l.to_string()));
+            i = end;
+            continue;
+        }
         let cut = body[i..end].iter().map(|l| indent_of(l)).min().unwrap_or(0);
         out.extend(
             body[i..end]
@@ -285,7 +292,7 @@ fn is_inherited(w: &str) -> bool {
     md::project_tag_word(w).is_some()
         || md::agent_tag(w)
         || w.eq_ignore_ascii_case("#plan")
-        || (w.starts_with('#') && project_tasks::is_priority(w))
+        || (w.starts_with('#') && md::is_priority(w))
 }
 
 /// `words` with each `heading` tag it does not already set, before any marker comment. A `#p:`
@@ -297,9 +304,7 @@ fn with_inherited(words: &str, heading: &[&str]) -> String {
         own.iter().any(|o| {
             o.eq_ignore_ascii_case(tag)
                 || (md::project_tag_word(o).is_some() && md::project_tag_word(tag).is_some())
-                || (o.starts_with('#')
-                    && project_tasks::is_priority(o)
-                    && project_tasks::is_priority(tag))
+                || (o.starts_with('#') && md::is_priority(o) && md::is_priority(tag))
         })
     };
     let mut out = own.join(" ");
@@ -320,7 +325,10 @@ fn with_inherited(words: &str, heading: &[&str]) -> String {
 fn list_items(block: &[&str]) -> Option<Vec<String>> {
     let text = inbox_text(block[0]);
     let text = text[..text.find("<!--").unwrap_or(text.len())].trim();
-    if md::ask_tag(block[0]) || project_tasks::is_typed(text) {
+    if block[0].trim_start().starts_with("<!--")
+        || md::ask_tag(block[0])
+        || projects::is_typed(text)
+    {
         return None;
     }
     const INLINE: &str = " - [ ] ";
@@ -360,6 +368,9 @@ fn list_items(block: &[&str]) -> Option<Vec<String>> {
         }
         if !finished {
             let words = inbox_text(t);
+            if words.is_empty() {
+                continue;
+            }
             match items.last_mut() {
                 Some((_, details)) => details.push(words),
                 None => lead.push(words),
@@ -489,6 +500,27 @@ mod tests {
         assert!(
             lists.is_empty(),
             "nothing was split, it was only moved left"
+        );
+    }
+
+    #[test]
+    fn a_detail_after_a_blank_line_and_a_comment_block_stay_put() {
+        for body in [
+            "- [ ] fix login\n\n  more detail about login\n",
+            "<!-- notes\n  - [ ] example one\n  - [ ] example two\n-->\n",
+        ] {
+            let (got, lists) = split(body);
+            assert_eq!(got.join("\n") + "\n", body);
+            assert!(lists.is_empty());
+        }
+    }
+
+    #[test]
+    fn an_empty_deeper_bullet_leaves_no_blank_line_to_end_its_item() {
+        let (got, _) = split("- [ ] h\n  - [ ] a\n    -\n    - [ ] x\n  - [ ] b\n");
+        assert_eq!(
+            got,
+            vec!["- [ ] a", "  under: h", "  x", "- [ ] b", "  under: h"]
         );
     }
 

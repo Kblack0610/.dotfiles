@@ -478,8 +478,9 @@ backlog_pass() {
 split_waiting() {
   local p sheets rc=0
   [ "$DRY" = 1 ] && return 0
-  notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
-  sheets="$(notes board --json 2>/dev/null | jq -r '.projects[].project' | sort -u)"
+  [ -n "$ONLY" ] || notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
+  sheets="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  sheets="$(jq -r '.projects[].project' <<<"$sheets" | sort -u)"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue

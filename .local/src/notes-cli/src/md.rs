@@ -919,6 +919,12 @@ fn is_agent_word(w: &str) -> bool {
     w.eq_ignore_ascii_case("#agent")
 }
 
+/// Is `tag` (with or without its `#`) one of the priority words?
+pub fn is_priority(tag: &str) -> bool {
+    let t = tag.trim_start_matches('#').to_lowercase();
+    PRIORITIES.iter().any(|(w, _, _)| *w == t)
+}
+
 /// `line` without its `#agent` tag, the rest as it was.
 pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)

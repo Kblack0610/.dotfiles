@@ -1030,7 +1030,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                 format!(
                     "{at} split in {} into {}: {}",
                     name(&ev.from, ""),
-                    ev.to,
+                    ev.why.as_deref().unwrap_or("lines"),
                     few(&ev.text)
                 ),
             ),
