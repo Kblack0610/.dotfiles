@@ -175,8 +175,9 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    Prefer, in order: (a) **switch the slot back to the branch `wt` cut it on** - a
    `platform-agent-N` worktree starts on `agent-N-<stamp>` (a name no other cut used), which
-   tracks the trunk with zero unpushed commits, so checking it out clears the gate and preserves
-   the junk branch untouched; (b) land the commits properly if they are real work; (c) reset the
+   tracks the trunk with zero unpushed commits (`git branch --list 'agent-N-*'` finds it), so
+   checking it out clears the gate and preserves the junk branch untouched; when `wt gc` already
+   pruned it, use (c); (b) land the commits properly if they are real work; (c) reset the
    junk branch onto the local main ref. Never push a throwaway branch to origin just to buy a
    tracking ref. Verify by RUNNING the check - `bash ~/.claude/hooks/stop-checks.d/10-git-workflow.sh;
    echo $?` - rather than reasoning about whether it now passes.

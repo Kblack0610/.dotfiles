@@ -851,7 +851,7 @@ wt_recycle() {
       git diff --name-only -z --diff-filter=d "$old" HEAD |
         xargs -0 git lfs checkout -- >/dev/null 2>&1 || true' >&2
   fi
-  if [ -n "$old" ] && [ "$old" != "$branch" ]; then
+  if [ -n "$old" ]; then
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
   fi
@@ -1242,7 +1242,8 @@ cmd_done() {
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
-# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, worktree-agent-*) that
+# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, agent-N-<stamp>,
+# worktree-agent-*) that
 # are merged into the trunk and checked out in no worktree, which `reap` leaves when `-d`
 # refused at the time (2026-11-06: 11 in dotfiles, 5 in private). `-d`, never `-D`, so git
 # re-checks every one. Prints one line per branch: "deleted <b>" or "kept <b>".
@@ -1253,7 +1254,9 @@ wt_prune_branches() {
   while IFS=' ' read -r b wtpath; do
     [ -z "$wtpath" ] || continue
     case "$b" in
-    agent-[0-9]* | worktree-agent-*) ;;
+    agent-[0-9] | agent-[0-9][0-9] | worktree-agent-*) ;;
+    agent-[0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+    agent-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
     *) continue ;;
     esac
     if [ "$dry" -eq 1 ]; then

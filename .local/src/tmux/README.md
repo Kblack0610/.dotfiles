@@ -387,7 +387,7 @@ Measured on unity-core-playground (5k files in the main tree; `External/asset-li
 | 3 | `wt_next_slot`: walk agent-1, 2, ... and take the first idle one | background | 0.7s (was 4.5 to 9s, #463) |
 | 4 | `wt: recycle\|fresh <name>, opening it`, create the session, switch to it | status line, then the new session | instant |
 | 5 | `git fetch origin` on the main checkout | the new session's first pane | 2.8s, network |
-| 6 | `git switch -C agent-N origin/<trunk>` in the worktree | pane | 0.2s |
+| 6 | `git switch -c agent-N-<stamp> origin/<trunk>` in the worktree | pane | 0.2s |
 | 7 | copy each moved submodule's new commit from the main checkout into `refs/wt/main` | pane | 8 to 54ms (unity-core over the network was 1079ms, #474) |
 | 8 | `GIT_LFS_SKIP_SMUDGE=1 git submodule update --recursive` | pane | no network when step 7 found the commit |
 | 9 | `git lfs checkout -- <changed files>` in submodules that moved | pane | 0.07s for a real LFS file (a bare `lfs checkout` scanned the whole tree: 20s+, #456 #460) |

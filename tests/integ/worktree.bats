@@ -564,6 +564,8 @@ declare_in_lab() {
   printf 'edit\n' > "$WT_ROOT/repo-keep/file.txt"
   git -C "$MAIN" branch agent-7 origin/main              # merged, checked out nowhere
   git -C "$MAIN" branch worktree-agent-ab12 origin/main  # same, the harness's name
+  git -C "$MAIN" branch agent-4-261110-120000 origin/main  # same, a stamped cut
+  git -C "$MAIN" branch agent-5-hotfix origin/main       # merged, agent-shaped, not a slot
   git -C "$MAIN" branch feature origin/main              # merged, but not a slot branch
   git -C "$MAIN" branch agent-8 origin/main
   git -C "$MAIN" worktree add --quiet "$SANDBOX/side" agent-8
@@ -579,10 +581,13 @@ declare_in_lab() {
   assert_success
   assert_output --partial 'deleted agent-7'
   assert_output --partial 'deleted worktree-agent-ab12'
+  assert_output --partial 'deleted agent-4-261110-120000'
+  refute_output --partial 'agent-5-hotfix'
   refute_output --partial 'agent-3'
   git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc"
   git -C "$MAIN" rev-parse --verify --quiet worktree-agent-ab12 >/dev/null && fail "merged harness branch survived gc"
   git -C "$MAIN" rev-parse --verify --quiet feature >/dev/null || fail "gc deleted a branch that is not a slot"
+  git -C "$MAIN" rev-parse --verify --quiet agent-5-hotfix >/dev/null || fail "gc deleted an agent-shaped branch that is not a slot"
   git -C "$MAIN" rev-parse --verify --quiet agent-8 >/dev/null || fail "gc deleted an unmerged branch"
   git -C "$MAIN" rev-parse --verify --quiet agent-3 >/dev/null || fail "gc deleted a checked-out branch"
   [ -d "$WT_ROOT/repo-keep" ] || fail "gc deleted a dirty worktree"
@@ -729,7 +734,7 @@ declare_in_lab() {
 
 # ── reap takes the branch with it ────────────────────────────────────────────
 
-@test "reap deletes the branch it just freed, so the slot is reusable" {
+@test "reap deletes the merged branch of the tree it just freed" {
   # A cut never reuses a branch name, so a branch reap leaves behind is dead weight.
   make_repo
   add_wt repo-agent-1 agent-1
