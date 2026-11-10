@@ -346,22 +346,27 @@ finalize() {
 # outside the record's lock, and its result goes in as DAYLOG_CI_FILE. Everything is attempted
 # and any failure is the exit code: the runner reports it, the briefing names it.
 nightly() {
-  local day="$1" rc=0 tmp
+  local day="$1" rc=0 tmp failed=()
   [ "$day" = "$(today)" ] && { say "$day is not over yet"; return 2; }
-  $DAYLOG_USAGE_CMD tokens snapshot --date "$day" || rc=1
+  $DAYLOG_USAGE_CMD tokens snapshot --date "$day" || failed+=(tokens)
   tmp="$(mktemp)"
-  "$SNAPSHOTS" ci --day "$day" > "$tmp" || rc=1
+  "$SNAPSHOTS" ci --day "$day" > "$tmp" || failed+=(ci)
   [ -s "$tmp" ] || { rm -f "$tmp"; tmp=""; }
-  DAYLOG_CI_FILE="$tmp" finalize "$day" || rc=1
+  DAYLOG_CI_FILE="$tmp" finalize "$day" || failed+=(finalize)
   [ -z "$tmp" ] || rm -f "$tmp"
-  "$SNAPSHOTS" week --date "$day" --write || rc=1
+  "$SNAPSHOTS" week --date "$day" --write || failed+=(week)
   prom_textfile day_log_rollup.prom rollup_prom "$(record_of "$day")" "$DAYLOG_DIR/weeks/$day.json" ||
     say "could not write day_log_rollup.prom"
   # Under agentctl (the token-usage runner) a run that declares no outcome is promoted to
   # STALLED, which trips fleet-liveness every night.
+  local why="day-log nightly $day rc=0"
+  if [ "${#failed[@]}" -gt 0 ]; then
+    rc=1; why="day-log nightly $day rc=1, failed: ${failed[*]}"
+    say "nightly $day failed: ${failed[*]} (the record's unreadable list names each source)"
+  fi
   if [ -n "${AGENTCTL_NAME:-}" ]; then
     local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
-    proof_outcome "$AGENTCTL_NAME" "$verdict" "day-log nightly $day rc=$rc"
+    proof_outcome "$AGENTCTL_NAME" "$verdict" "$why"
   fi
   return "$rc"
 }
