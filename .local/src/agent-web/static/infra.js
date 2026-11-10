@@ -193,10 +193,9 @@ function runnersTable(ci) {
 }
 function queuedTable(ci) {
   if (!ci.queue.length) return "";
-  const stuck = (q) => !q.can.length && q.needs.length;
   return `<table class="tbl"><tr><th data-role="lead">queued</th><th class="n" data-role="glance" data-named>wait</th><th>needs</th><th data-role="glance" data-named>can run on</th></tr>${ci.queue.map((q) => {
     const can = q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-";
-    return `<tr${stuck(q) ? ' class="bad"' : ""}><td>${esc(q.job || "-")} <span class="muted">${esc(ciRef(q))}${q.n > 1 ? ` x${q.n}` : ""}</span></td><td class="n">${secs(q.wait)}</td><td class="muted">${esc(q.needs.join(", "))}</td><td class="wrap">${can}</td></tr>`;
+    return `<tr${q.stuck ? ' class="bad"' : ""}><td>${esc(q.job || "-")} <span class="muted">${esc(ciRef(q))}${q.n > 1 ? ` x${q.n}` : ""}</span></td><td class="n">${secs(q.wait)}</td><td class="muted">${esc(q.needs.join(", "))}</td><td class="wrap">${can}</td></tr>`;
   }).join("")}</table>`;
 }
 const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;

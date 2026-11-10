@@ -97,7 +97,7 @@ impl SchedulesView {
             flex: Some(7),
             flexmin: 14,
             flexkeep: true,
-            right: vec![4],
+            right: vec![3, 4],
             cap: vec![(1, name), (2, fit(SCHEDULE_FIT)), (5, 8)],
             mark,
         }

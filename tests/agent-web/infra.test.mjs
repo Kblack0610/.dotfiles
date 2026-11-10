@@ -86,7 +86,7 @@ test("CI lists no runs: one line links to Releases, whose Builds section has the
 });
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });
-const queued = (o) => ({ job: "HD tests", repo: "unity", pr: "", branch: "main", n: 1, wait: 900, needs: ["unity-full", "hd-library"], can: [], missing: ["hd-library"], ...o });
+const queued = (o) => ({ job: "HD tests", repo: "unity", pr: "", branch: "main", n: 1, wait: 900, needs: ["unity-full", "hd-library"], can: [], missing: ["hd-library"], stuck: true, ...o });
 const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"] };
 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
@@ -102,7 +102,7 @@ test("CI runners: a job nobody can take is a red line naming the missing label, 
 
 test("CI runners: a queued job some host can take names it, and is not red", () => {
   Object.assign(ist, { open: {} });
-  const ok = { ...ci, red: [], queue: [queued({ can: [{ host: "razer", state: "idle" }], missing: [] })] };
+  const ok = { ...ci, red: [], queue: [queued({ can: [{ host: "razer", state: "idle" }], missing: [], stuck: false })] };
   const h = run(`ciSection({}, {}, Date.now(), ${JSON.stringify(ok)})`);
   assert.ok(!h.includes('class="panel down"'), "no red panel");
   assert.match(h, /razer <span class="muted">idle<\/span>/);

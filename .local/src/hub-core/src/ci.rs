@@ -70,13 +70,11 @@ pub struct Queued {
     pub can: Vec<Fit>,
     /// The labels no online runner holds, when nobody can take it.
     pub missing: Vec<String>,
+    /// No online runner can take it: a label none of them holds, or no one runner holding all.
+    pub stuck: bool,
 }
 
 impl Queued {
-    /// No online runner can take it: its labels are unknown to none of them or never together.
-    pub fn stuck(&self) -> bool {
-        self.can.is_empty() && !self.needs.is_empty()
-    }
     /// The red line for a job nobody can take.
     pub fn problem(&self) -> String {
         let what = if self.repo.is_empty() {
@@ -126,7 +124,7 @@ impl Ci {
 
     /// The jobs no online runner can take, oldest first.
     pub fn problems(&self) -> Vec<&Queued> {
-        let mut p: Vec<&Queued> = self.queue.iter().filter(|q| q.stuck()).collect();
+        let mut p: Vec<&Queued> = self.queue.iter().filter(|q| q.stuck).collect();
         p.sort_by_key(|q| std::cmp::Reverse(q.wait));
         p
     }
@@ -447,7 +445,8 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         })
         .collect();
     for q in &mut out {
-        if q.can.is_empty() && !q.needs.is_empty() {
+        q.stuck = q.can.is_empty() && !q.needs.is_empty();
+        if q.stuck {
             // The labels no online runner holds; empty when each is held but never together.
             q.missing = q
                 .needs
@@ -726,7 +725,7 @@ mod tests {
                 state: "busy".into()
             }]
         );
-        assert!(!soak.stuck());
+        assert!(!soak.stuck);
         // Matched without regard to case: aws holds `Linux`, the job asks `linux`.
         let wide = ci.queue.iter().find(|q| q.job == "Wide").unwrap();
         assert_eq!(
@@ -805,7 +804,7 @@ mod tests {
         i.instant
             .insert("waiting", series(vec![waiting("Soak", FULL, "10")]));
         let q = &build(&i).queue[0];
-        assert!(q.missing.is_empty() && q.stuck());
+        assert!(q.missing.is_empty() && q.stuck);
         assert!(q
             .problem()
             .contains("no one online runner holds all of them"));

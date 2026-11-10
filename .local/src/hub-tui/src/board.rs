@@ -507,7 +507,7 @@ impl<'a> Board<'a> {
                 .queue
                 .iter()
                 .map(|q| {
-                    let s = if q.stuck() {
+                    let s = if q.stuck {
                         self.p.bad()
                     } else {
                         Style::default()
