@@ -1909,6 +1909,26 @@ notes --profile bnb ptask level --agent start lv-9'
   [ -z "$(item queued no-board)" ]
 }
 
+@test "a title naming one open row works that row; a closed row, two ids or an --epic file a story as before" {
+  story_notes
+  run "$AQ" add --running --project game --slug named "fix(menu): close lv-2 for good"
+  assert_success
+  assert_output --partial "named works row lv-2, which its title names"
+  [ "$(field "$(item running named)" row)" = level:lv-2 ]
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # NEGATIVE CONTROLS: each of these files its own story (the stub mints lv-9).
+  touch "$NOTES_FIXTURE/closed.lv-7"
+  "$AQ" add --project level --slug shut "fix(menu): lv-7 again"
+  [ "$(field "$(item queued shut)" row)" = level:lv-9 ]
+  "$AQ" add --project level --slug two "fix(menu): lv-3 beside lv-4"
+  [ "$(field "$(item queued two)" row)" = level:lv-9 ]
+  "$AQ" add --project level --epic lv-5 --slug epic "feat(menu): lv-3 under its epic"
+  [ "$(field "$(item queued epic)" row)" = level:lv-9 ]
+  run grep -c ' start lv-3' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "--row takes one row id, on one item, with no story options" {
   story_notes
   : > "$NOTES_FIXTURE/calls.log"

@@ -1387,11 +1387,45 @@ pub fn done(
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
     let on = done_token(day);
-    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+    let (code, row) = edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&closed(l), &on);
         Some(md::add_marker(&ticked, &stamp))
-    })?
-    .0)
+    })?;
+    if let (0, Some(row)) = (code, row) {
+        ask_verify(p, log, name, &row);
+    }
+    Ok(code)
+}
+
+/// After a close: when it was the last open leaf of an epic, file one
+/// `check(<system>): verify <epic> ...` row on the human sheet. Nothing closes an epic on its
+/// own (lifecycle.md): the human checks the outcome, and this row is how they hear it is
+/// theirs. It names the epic in words, never `#of/`, so it is no leaf of it, and ticking it
+/// cannot finish the epic again. An open twin is not filed twice. A profile with
+/// `automation = false` gets none. It never fails the close that triggered it.
+fn ask_verify(p: &Profile, log: &Logger, name: &str, closed_row: &str) {
+    let Some(id) = md::row_id(closed_row) else {
+        return;
+    };
+    if !crate::config::automation(&p.name) {
+        return;
+    }
+    let Ok(dir) = projects::project_dir(p, name) else {
+        return;
+    };
+    let ix = crate::epics::Index::of(&dir, open_version_for(&dir));
+    let Some(e) = ix.landed_epic_above(&id) else {
+        return;
+    };
+    let area = if e.system.is_empty() {
+        "epic"
+    } else {
+        e.system.as_str()
+    };
+    let text = format!("check({area}): verify {} {} #high", e.id, e.title);
+    if let Err(err) = add_via(p, log, name, &text, &[], None, None, Lane::Human, None) {
+        eprintln!("{} has every leaf done; its verify row was not filed: {err}", e.id);
+    }
 }
 
 /// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
