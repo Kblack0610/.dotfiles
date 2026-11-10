@@ -14,7 +14,9 @@
 # tool may have pulled), runs `dotfiles-deploy --apply --missing`, which links every deploy path of
 # both checkouts that resolves to nothing in $HOME (one more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
 # is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
-# line when it changed a link or failed).
+# line when it changed a link or failed). A merged Rust change is live only once its binary is rebuilt,
+# so every pass also runs `cargo build --release` for each Rust tool linked into ~/.local/bin and
+# restarts a running unit named after one whose binary is newer than the unit (agent-web).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
 # every path exits 0, so no network or repo state can break a shell start or a landing.
@@ -31,6 +33,8 @@ DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
 SKILL_DEPLOY="${DOTFILES_SKILL_DEPLOY:-${REPOS[0]}/.local/bin/skill-deploy}"
 DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
+BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # a release build of agent-web from clean takes minutes
+BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -96,10 +100,61 @@ attach_skills() {
   fi
 }
 
+# mtime <file> -> seconds since the epoch (GNU stat, else BSD stat)
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# restart_stale <bin> <binary>: a running user unit named <bin>.service that started before <binary>
+# was built still runs the old one, so restart it. One line when it restarted or failed.
+restart_stale() {
+  local unit="$1.service" state started built
+  command -v systemctl >/dev/null 2>&1 || return 0
+  state=$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)
+  [ "$state" = active ] || return 0
+  started=$(systemctl --user show "$unit" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null)
+  started=${started#@}
+  built=$(mtime "$2")
+  [[ "$started" =~ ^[0-9]+$ && "$built" =~ ^[0-9]+$ ]] && [ "$built" -gt "$started" ] || return 0
+  if systemctl --user restart "$unit" 2>/dev/null; then
+    say "~: restarted $unit on the new $1"
+  else
+    say "~: $unit runs an old $1 and its restart failed: systemctl --user restart $unit"
+  fi
+}
+
+# attach_rust -> one line per tool it rebuilt or could not build, and per unit it restarted. A link
+# in ~/.local/bin into <public checkout>/.local/src/<crate>/target/release/<bin> is a Rust tool
+# installed here (build_local_rust_tools writes them). cargo follows path dependencies (hub-core),
+# so it rebuilds a tool whatever crate the move touched, and is a no-op of about 0.1s per tool when
+# nothing changed; so this runs every pass, moved or not, and a hand pull heals too. A failed build
+# leaves the old binary in place, and its report goes to the log.
+attach_rust() {
+  local link target crate bin before out rc
+  command -v cargo >/dev/null 2>&1 || return 0
+  for link in "$BIN_DIR"/*; do
+    [ -L "$link" ] || continue
+    target=$(readlink "$link")
+    case $target in "${REPOS[0]}"/.local/src/*/target/release/*) ;; *) continue ;; esac
+    crate=${target%/target/release/*}
+    bin=${target##*/}
+    [ -f "$crate/Cargo.toml" ] || continue
+    before=$(mtime "$target")
+    out=$(cd "$crate" && capped "$BUILD_SECS" cargo build --release --quiet 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      log_report "cargo build --release ($bin)" "$rc" "$out"
+      say "~: cargo build of $bin failed (exit $rc), the old binary stays; report in ${LOG/#"$HOME"/\~}"
+      continue
+    fi
+    [ "$(mtime "$target")" = "$before" ] || say "~: rebuilt $bin (cargo build --release)"
+    restart_stale "$bin" "$target"
+  done
+}
+
 # attach_all: what every pass runs once, moved or not
 attach_all() {
   attach_missing
   attach_skills
+  attach_rust
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
