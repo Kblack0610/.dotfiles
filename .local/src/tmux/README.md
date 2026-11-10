@@ -301,9 +301,10 @@ session with seven windows all named `main` actually was.
 the current pane is in, and the slot is the lowest one that is free or idle. Idle means the
 same thing `reap` means by eligible - clean, landed, no session and no pane inside it - so a
 worktree whose session was killed without `wt done` is reset onto the trunk in place (its
-ignored build caches kept) instead of pushing the next agent one number higher. A leftover
-`agent-N` branch with no directory frees its slot too, once it is merged and checked out
-nowhere.
+ignored build caches kept) instead of pushing the next agent one number higher. The slot
+number is reused but the branch name never is: each cut starts on `agent-N-<UTC stamp>`, so a
+push never meets a stale `origin/agent-N` that GitHub kept after its PR merged or closed
+(ar-1121), and a leftover branch never pins a slot.
 
 `Prefix+f` **does** list worktrees, which reverses the original call that "a worktree is
 somewhere you are sent, not somewhere you go looking". Being sent covers the first minute of
@@ -347,7 +348,7 @@ breaking all three at once.
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
-`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
@@ -386,7 +387,7 @@ Measured on unity-core-playground (5k files in the main tree; `External/asset-li
 | 3 | `wt_next_slot`: walk agent-1, 2, ... and take the first idle one | background | 0.7s (was 4.5 to 9s, #463) |
 | 4 | `wt: recycle\|fresh <name>, opening it`, create the session, switch to it | status line, then the new session | instant |
 | 5 | `git fetch origin` on the main checkout | the new session's first pane | 2.8s, network |
-| 6 | `git switch -C agent-N origin/<trunk>` in the worktree | pane | 0.2s |
+| 6 | `git switch -c agent-N-<stamp> origin/<trunk>` in the worktree | pane | 0.2s |
 | 7 | copy each moved submodule's new commit from the main checkout into `refs/wt/main` | pane | 8 to 54ms (unity-core over the network was 1079ms, #474) |
 | 8 | `GIT_LFS_SKIP_SMUDGE=1 git submodule update --recursive` | pane | no network when step 7 found the commit |
 | 9 | `git lfs checkout -- <changed files>` in submodules that moved | pane | 0.07s for a real LFS file (a bare `lfs checkout` scanned the whole tree: 20s+, #456 #460) |
