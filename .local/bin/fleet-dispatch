@@ -2759,7 +2759,7 @@ item_pinned() {
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
-  local it="$1" verdict="$2" cands h m src tier pinned=0 why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
   item_pinned "$it" && pinned=1
   if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
@@ -2772,15 +2772,16 @@ route() {
       why+=("claude: no account has room"); continue
     fi
     src=$(harness_source "$h")
+    overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
-    elif [ "$pinned" = 0 ] && harness_flag "$h" metered && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
+    elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
-    elif [ "$pinned" = 0 ] && harness_flag "$h" metered && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
-    elif [ "$pinned" = 0 ] && harness_flag "$h" metered && [ "$tier" -gt 1 ]; then why+=("$h: pay-per-use takes tier-1 work only, and this is tier $tier")
+    elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
+    elif [ "$overflow" = 1 ] && [ "$tier" -gt 1 ]; then why+=("$h: pay-per-use takes tier-1 work only, and this is tier $tier")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" && ! headless "$h"; then why+=("$h: tier $tier is past the unattended ceiling")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
