@@ -14,15 +14,9 @@
       ".local/src/agent-panel/tests/list_gaps.rs"
     ],
     "cmd": [
-      "env",
-      "CARGO_TARGET_DIR=/home/kblack0610/.cache/fleet-bench/cargo-target/agent-panel",
-      "cargo",
-      "test",
-      "--manifest-path",
-      ".local/src/agent-panel/Cargo.toml",
-      "--offline",
-      "--test",
-      "list_gaps"
+      "bash",
+      "-c",
+      "CARGO_TARGET_DIR=\"$HOME/.cache/fleet-bench/cargo-target/agent-panel\" exec cargo test --manifest-path .local/src/agent-panel/Cargo.toml --offline --test list_gaps"
     ]
   }
 }

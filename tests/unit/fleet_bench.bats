@@ -5211,7 +5211,7 @@ STUB
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
-  printf '# lanes\ncodex sol\ncodex sol high\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
+  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
   echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1" = codex ] && { echo "codex: room"; exit 0; }\necho "$1: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
@@ -5220,6 +5220,7 @@ STUB
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week"
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol@high)"
+  assert_line "fleet-bench: canary: codex/sol@higher not queued, its slug is codex/sol@high's"
   assert_line "fleet-bench: canary: glm/glm not queued, glm: past its pace line"
   assert_line --partial "fleet-bench: canary: ghost/x not queued, ghost has no source"
   [ -f "$CQ/canary-greet-$week-codex-sol.json" ]
@@ -5299,10 +5300,12 @@ STUB
   mkdir -p "$SANDBOX/fj/.forgejo/workflows" "$FLEET_BENCH_DIR"; touch "$SANDBOX/fj/.forgejo/workflows/mirror-to-github.yml"
   jq --arg d "$SANDBOX/fj" '.paths[$d] = "fj"' "$BENCH_PROJECT_MAP" > "$BENCH_PROJECT_MAP.t" && mv "$BENCH_PROJECT_MAP.t" "$BENCH_PROJECT_MAP"
   # greet is fix(greet) on game: a codex pass proves fix/shell; claude's fail is another harness's.
-  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "r1", id: "greet", harness: "codex", model: "sol", pass: true}, {epoch: ($t - 86000), run: "r2", id: "greet", pass: false}' > "$FLEET_BENCH_DIR/canary.jsonl"
+  parses 'fix(greet): say hello' fix greet 'say hello'
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "r1", id: "greet", harness: "codex", model: "sol", pass: true}, {epoch: ($t - 86000), run: "r2", id: "greet", pass: false},
+    {epoch: ($t - 40 * 86400), run: "r0", id: "greet", harness: "codex", model: "sol", pass: false}' > "$FLEET_BENCH_DIR/canary.jsonl"   # r0 is older than --days
   jq -cn '{slug: "a", agent: "codex", type: "docs", project: "game", mode: "oneshot", status: "failed", end_reason: "limit", finished: "2026-10-26"},
-    {slug: "b", agent: "codex", title: "fix(panel): gaps", project: "other", mode: "oneshot", status: "failed", tags: "ask:q1=a", sessions: "x2", finished: "2026-10-26"},
-    {slug: "c", title: "docs(panel): readme", project: "other", mode: "oneshot", status: "ok", finished: "2026-10-26"},
+    {slug: "b", agent: "codex", title: "fix(panel): gaps", type: "fix", area: "panel", project: "other", mode: "oneshot", status: "failed", tags: "ask:q1=a", sessions: "x2", finished: "2026-10-26"},
+    {slug: "c", title: "docs(panel): readme", type: "docs", area: "panel", project: "other", mode: "oneshot", status: "ok", finished: "2026-10-26"},
     {slug: "d", agent: "codex", type: "chore", project: "fj", mode: "oneshot", status: "ok", sessions: "x3", finished: "2026-10-27"},
     {slug: "e", agent: "codex", from: "canary", type: "perf", project: "game", status: "ok", finished: "2026-10-27"}' > "$ITEMS"
   # x2 is item b's session and spawned subagents; x5 no item claims and it merged; c9 is claude's.

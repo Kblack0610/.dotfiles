@@ -1667,6 +1667,11 @@ pro_rollout() {
   rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
   run --separate-stderr "$ACCT" check underuse codex
   assert_success
+  # a reset already past reads as a fresh window with no reset (the codex source), so nothing is lost
+  rollout 10 0 -1
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check underuse codex
+  assert_success
   # a name that is no paced source is nothing read; a missing number stops the check
   run --separate-stderr "$ACCT" check underuse lazer
   assert_failure 1
