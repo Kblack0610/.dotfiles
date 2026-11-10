@@ -755,6 +755,34 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(str::to_string))
 }
 
+/// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
+/// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
+/// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
+/// stripping the tag rewrites the human's prose. The space before is taken only when the
+/// previous cut has not already taken it: a tag glued to the word before it (`?)#c1110`)
+/// takes the space after it, and two overlapping cuts panicked the slice (2026-11-10).
+fn tag_cut(
+    bytes: &[u8],
+    start: usize,
+    spans: &[(usize, usize)],
+    hash_at: usize,
+    k: usize,
+    end: usize,
+) -> (usize, usize) {
+    let mut cut_e = k;
+    while cut_e > end && bytes[cut_e - 1] == b'.' {
+        cut_e -= 1;
+    }
+    let prev_end = spans.last().map_or(0, |&(_, e)| e);
+    let mut cut_s = hash_at;
+    if cut_s > start && cut_s > prev_end && bytes[cut_s - 1] == b' ' {
+        cut_s -= 1;
+    } else if bytes.get(cut_e) == Some(&b' ') {
+        cut_e += 1;
+    }
+    (cut_s, cut_e)
+}
+
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
 /// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
@@ -771,20 +799,7 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
         if found.is_none() {
             found = Some(&line[tag_start..end]);
         }
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back for the same reason `split_priority` gives it back: it is the
-        // human's punctuation, not part of the tag.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
     });
     if spans.is_empty() {
         return (line.to_string(), None);
@@ -1254,21 +1269,7 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
         else {
             return;
         };
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back: `-` and `/` are tag noise and are cut with the tag, but a
-        // sentence-final `#high.` must keep its full stop or stripping the tag silently
-        // rewrites the human's prose.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
         best = Some(best.map_or(rank, |b| b.min(rank)));
     });
 
@@ -2288,6 +2289,19 @@ after
         let (core, w) = split_version("- [x] done #v0.0.2 <!-- pr:307 -->");
         assert_eq!(core, "- [x] done <!-- pr:307 -->");
         assert_eq!(w.as_deref(), Some("#v0.0.2"));
+    }
+
+    // A tag glued to the word before it takes the space after it, so the next tag must not
+    // take that same space: two cut spans overlapped and the slice panicked (Focus, 2026-11-10).
+    #[test]
+    fn split_created_handles_a_glued_tag_then_a_repeat() {
+        let (core, w) = split_created("- [ ] bridge (question?)#c1110 #c1110 #urgent");
+        assert_eq!(core, "- [ ] bridge (question?)#urgent");
+        assert_eq!(w.as_deref(), Some("c1110"));
+        // split_priority shares the cut: a glued priority tag then another one.
+        let (core, p) = split_priority("- [ ] ask (why?)#high #low");
+        assert_eq!(core, "- [ ] ask (why?)");
+        assert_eq!(p, Some("#high"));
     }
 
     // Every Focus task carries a priority. The two exclusions are what keep the sweep stable and
