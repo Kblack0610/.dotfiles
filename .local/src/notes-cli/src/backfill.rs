@@ -612,15 +612,15 @@ fn set_version(content: &str, open: V) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
-/// `notes projects --backfill <name> --weekly`. Exits 0 when there is nothing to split, and
-/// refuses before writing anything when a target note exists or the rows do not add up.
+/// `notes projects --backfill <name> --weekly`. Returns whether it wrote anything, and refuses
+/// before writing when a target note exists, the rows do not add up or the sheet is ahead.
 pub fn backfill(
     p: &Profile,
     log: &Logger,
     name: &str,
     repos: &[PathBuf],
     dry_run: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let dir = projects::project_dir(p, name)?;
     let Some(sheet_path) = projects::sheet_path(&dir) else {
         bail!("{name} has no working sheet (no README.md with a `Version: vX.Y.Z` line)");
@@ -636,7 +636,7 @@ pub fn backfill(
             "{name}: no agent note for {cur_s} ({}), nothing to backfill",
             note_path.display()
         );
-        return Ok(());
+        return Ok(false);
     };
     let note = parse_note(&note_text);
     let history = checked_days(&dir);
@@ -650,7 +650,10 @@ pub fn backfill(
         proof: note.proof.clone(),
     };
     let frozen = !projects::version_notes(&dir.join("versions")).is_empty();
-    let systems = standing::list(standing::SYSTEMS_BIN, name).unwrap_or_default();
+    // The systems name every frozen note's Shipped groups, which are never rewritten, so a
+    // failed lookup stops the backfill instead of filing everything under `other`.
+    let systems = standing::list(standing::SYSTEMS_BIN, name)
+        .map_err(|why| anyhow::anyhow!("{name}: no systems list ({why}); nothing written"))?;
     if frozen && !repos.is_empty() {
         println!("{name} already has a frozen version, so there is no baseline: --repo ignored");
     }
@@ -725,7 +728,13 @@ pub fn backfill(
     );
     if plan.cuts.is_empty() {
         println!("{name}: nothing before this week to backfill");
-        return Ok(());
+        return Ok(false);
+    }
+    if plan.open <= cur {
+        bail!(
+            "{name}: the sheet is at {cur_s}, past the {} the backfill would open; nothing written",
+            projects::fmt_version(plan.open)
+        );
     }
 
     // Refuse before writing anything: a frozen note is never overwritten. The open note is the
@@ -759,20 +768,29 @@ pub fn backfill(
     }
     if dry_run {
         println!("--dry-run: nothing written");
-        return Ok(());
+        return Ok(false);
     }
 
     let title = sheet.lines().next().unwrap_or("# project").to_string();
     let titles = epic_titles(&dir);
     fs::create_dir_all(&human)?;
     // The frozen notes first, then the open note, then the sheet: a failure in between leaves
-    // rows in two notes, never in none.
+    // rows in two notes, never in none. The first cut of a frozen project reuses the open
+    // note's path, so that one is written last, once every other row is on disk.
+    let mut reused = None;
     for (c, (h, a)) in plan.cuts.iter().zip(&targets) {
         let shipped = shipped(c, first, &systems, &titles);
         md::write_atomic(h, &human_note(&title, c, &shipped, c.rolled(first)))?;
-        md::write_atomic(a, &agent_note(name, c))?;
+        if *a == note_path {
+            reused = Some(agent_note(name, c));
+        } else {
+            md::write_atomic(a, &agent_note(name, c))?;
+        }
     }
     md::write_atomic(&open_path, &open_note(&note, cur, plan.open, &plan.left))?;
+    if let Some(body) = reused {
+        md::write_atomic(&note_path, &body)?;
+    }
     if open_path != note_path && !targets.iter().any(|(_, a)| *a == note_path) {
         fs::remove_file(&note_path)?;
     }
@@ -784,7 +802,7 @@ pub fn backfill(
     );
     log.info("projects", &msg);
     println!("{msg}");
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

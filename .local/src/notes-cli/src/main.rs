@@ -1593,8 +1593,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = backfill {
-                backfill::backfill(&prof, &log, &n, &repo, dry_run)?;
-                if !dry_run {
+                if backfill::backfill(&prof, &log, &n, &repo, dry_run)? {
                     lab_refresh::kick();
                 }
                 std::process::exit(0);
