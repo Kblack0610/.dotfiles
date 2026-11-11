@@ -1365,7 +1365,7 @@ cmd_bump() {
   [ "$prio" = urgent ] && [ -n "$after" ] && [[ "$f" == */queued/* ]] || return 0
   hold="$(hold_reason "$f")"
   case "$hold" in
-    *" closed "*) echo "agent-queue: $slug is held $hold" >&2 ;;
+    "after "*" closed "*) echo "agent-queue: $slug is held $hold" >&2 ;;
     "after "*" "*) echo "agent-queue: $slug is held $hold: it starts when those land; agent-queue set $slug after= runs it now" >&2 ;;
     "after "*) echo "agent-queue: $slug is held $hold: it starts when that lands; agent-queue set $slug after= runs it now" >&2 ;;
   esac
