@@ -160,7 +160,11 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
           WEIGHTS_TABLE: ${{ needs.weights.outputs.table }}
           TAG: ${{ matrix.tier }} ${{ matrix.shard }}
+        # A runner is this job's own machine, so bats gets every core: the Makefile's default
+        # subtracts the 1-minute load, which on a fresh runner is its own setup, and gave a
+        # 4-core runner 2 jobs (main run 42951363662: 562s of test time per shard in 292-424s).
         run: |
+          export UNIT_JOBS=$(nproc)
           if [ -n "$WEIGHTS_TABLE" ]; then
             printf '%s\n' "$WEIGHTS_TABLE" >"$RUNNER_TEMP/weights.tsv"
             export SHARD_WEIGHTS=$RUNNER_TEMP/weights.tsv
@@ -178,7 +182,7 @@ jobs:
             awk '!/^#/ { s += $1 } END { printf "%.0f", s }') || actual='?'
           median=$(grep -c 'weighs the median' "$RUNNER_TEMP/split" || true) note=
           [ "$median" = 0 ] || note=" ($median files not in the table, weighed at the median)"
-          echo "- $(sed -n 's/^shard.sh: //p' "$RUNNER_TEMP/split" | tail -1); actual ${actual}s of test time in $((SECONDS - start))s wall$note" >>"$GITHUB_STEP_SUMMARY"
+          echo "- $(sed -n 's/^shard.sh: //p' "$RUNNER_TEMP/split" | tail -1); actual ${actual}s of test time in $((SECONDS - start))s wall at --jobs $UNIT_JOBS$note" >>"$GITHUB_STEP_SUMMARY"
           exit $rc
       - name: Upload JUnit
         if: ${{ !cancelled() }}

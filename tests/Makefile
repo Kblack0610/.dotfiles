@@ -85,7 +85,7 @@ test-fast: test-unit test-integ
 # every other session (ar-885). Busy is the larger of the 1-minute load and the processes
 # running this instant (field 4 of /proc/loadavg, less this one), because the average lags
 # a minute and gates started together would all read it low. Free is nproc minus busy,
-# rounded, floor 2; an idle CI runner still gets nproc. UNIT_LOADAVG is the load source, a
+# rounded, floor 2. CI sets UNIT_JOBS to nproc (.github/workflows/tests.yml). UNIT_LOADAVG is the load source, a
 # file in /proc/loadavg's format; a missing or empty one gives 2.
 UNIT_LOADAVG ?= /proc/loadavg
 UNIT_JOBS ?= $(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2)
