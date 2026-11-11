@@ -90,7 +90,9 @@
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cancelled (closed cancelled
+#                                came back (red again after the merge), alert route (red, but
+#                                TRIAGE_ROUTES sends it to alert: its watch pages on a KPI no merge
+#                                clears, so reds_unfixed leaves it out), cancelled (closed cancelled
 #                                with no merge, as when handed to an owner), cleared (ok with no PR)
 #                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
@@ -1675,7 +1677,8 @@ ledger_counts() {
 # carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
 # `ptask --want`) was stamped by the writer.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
-# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
+# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
+# leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
@@ -3721,15 +3724,27 @@ red_titles() {
     { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
 }
 
+# alert_titles <items> -> the titles of the red items whose row TRIAGE_ROUTES sends to alert, as a
+# JSON array: their watch pages the human on a KPI past its bound, so no merge can clear it.
+alert_titles() {
+  jq -r "$JQ_LIB"'.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")' <<<"$1" | sort -u |
+    while IFS= read -r title; do
+      if triage_line "$title" && [ "$route" = alert ]; then printf '%s\n' "$title"; fi
+    done | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
 # reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS, then
 # per merged cleanup item (cleanup: true, its outcome the hold: the reds line of the usage above): what
 # was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
-# after the merge is "came back", red the whole time is "still red". Counted, never judged.
+# after the merge is "came back", red the whole time is "still red", and red now with its row routed
+# to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
+# Counted, never judged.
 reds_json() {
-  local t="$1" items holds live watches='{}' f n parsed
+  local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
   parsed=$(red_titles "$items") || return 1
+  alerted=$(alert_titles "$items") || return 1
   holds=$(hold_reds "$t" "$items" | jq -cs .)
   live=$(reds_live "$(jq -c '.[]' <<<"$holds")" | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
@@ -3738,7 +3753,7 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -3761,6 +3776,7 @@ reds_json() {
          elif .state == "running" or .state == "review" or .state == "waiting" then "fixing"
          elif .merged != null then
            (if $red | not then "fixed"
+            elif $t | gsub("\n"; " ") | IN($alerted[]) then "alert route"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
             else "still red" end)
          elif .status == "cancelled" then "cancelled"

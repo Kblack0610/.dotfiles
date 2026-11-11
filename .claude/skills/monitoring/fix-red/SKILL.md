@@ -64,7 +64,7 @@ A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet
 2. Merge with `agent-land <N>`. On a tier-3 item (a harness project, or a `tier3` tag) it refuses a body without that `Review: /code-review <level>, ...` line (`n/a` or empty counts as none) or checks that never ran. The line is a claim; CI and the post-merge hold check are what catch a bad merge. It waits for every check, merges only that head and records the merge on the item. A red check is fixed, never re-run: after two failed attempts, stop and go to step 6.
 3. Once the merge is live (the project's post-land step), re-run the probe. Still red is a finding: say so on the board row.
 
-`fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not. `reds_unfixed` on `fleet-bench chain` counts the misses. It records each merged cleanup item the same way: `holding`, `held`, `went red` or `recovered`.
+`fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not, and `alert route` when `triage-routes` sends its red to `alert` (a watch that pages on a KPI past its bound, which no merge clears). `reds_unfixed` on `fleet-bench chain` counts the misses, never an `alert route`. It records each merged cleanup item the same way: `holding`, `held`, `went red` or `recovered`.
 
 ## 6. When there is no fix
 
