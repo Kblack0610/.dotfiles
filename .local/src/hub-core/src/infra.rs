@@ -131,39 +131,43 @@ fn grafana_base(url: &str) -> String {
 /// Ask every query at once (each is a curl with its own timeout) and keep what answered.
 /// Any required query failing, or no `cc:overall_status`, makes the whole answer an error.
 pub fn gather() -> Infra {
+    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
+    // Alerts tab shows each source's answer on its own.
+    let (am, mut out) = std::thread::scope(|s| {
+        let am = s.spawn(alertmanager::read);
+        let out = prometheus();
+        (am.join().unwrap_or_else(|_| Err("panicked".into())), out)
+    });
+    out.alertmanager = Some(am);
+    out
+}
+
+fn prometheus() -> Infra {
     let mut out = Infra {
         at: crate::jobs::now().max(0) as u64,
         grafana: grafana(),
         ..Default::default()
     };
-    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
-    // Alerts tab shows each source's answer on its own.
-    let base = prom::base();
-    let (am, answers) = std::thread::scope(|s| {
-        let am = s.spawn(alertmanager::read);
-        let answers: Vec<_> = match &base {
-            Ok(base) => {
-                let handles: Vec<_> = instant_queries()
-                    .into_iter()
-                    .map(|(name, q)| (name, s.spawn(move || prom::instant(base, &q))))
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|(name, h)| (name, h.join().unwrap_or_else(|_| Err("panicked".into()))))
-                    .collect()
-            }
-            Err(_) => vec![],
-        };
-        (
-            am.join().unwrap_or_else(|_| Err("panicked".into())),
-            answers,
-        )
+    let base = match prom::base() {
+        Ok(b) => b,
+        Err(e) => {
+            out.error = Some(e);
+            return out;
+        }
+    };
+    let answers: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = instant_queries()
+            .into_iter()
+            .map(|(name, q)| {
+                let base = &base;
+                (name, s.spawn(move || prom::instant(base, &q)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|(name, h)| (name, h.join().unwrap_or_else(|_| Err("panicked".into()))))
+            .collect()
     });
-    out.alertmanager = Some(am);
-    if let Err(e) = base {
-        out.error = Some(e);
-        return out;
-    }
     let mut errors = vec![];
     for (name, res) in answers {
         match res {

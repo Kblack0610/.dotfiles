@@ -49,8 +49,9 @@ pub struct Alert {
     pub since: Option<i64>,
     /// The fix item and its outcome (`ar-1601 fixing`), or `-`.
     pub owner: String,
-    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check) or `unknown` (the
-    /// fixes could not be read).
+    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check), `unknown` (the
+    /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
+    /// under).
     pub state: String,
     /// The fix item's slug, for a link to its queue record.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -377,9 +378,9 @@ fn am_sev(sev: &str) -> &str {
     }
 }
 
-/// One Alertmanager alert as a firing row. Nothing files a fix for one by its name, so it has
-/// no owner; what it checks, where and what to do come from its rule.
-fn am_row(f: &Firing, fixes: Option<&[Red]>) -> Alert {
+/// One Alertmanager alert as a firing row. Nothing files a fix for one by its name, so it is
+/// `firing` and not `no owner`; what it checks, where and what to do come from its rule.
+fn am_row(f: &Firing) -> Alert {
     let about = [f.name.as_str(), f.description.as_str()]
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -396,7 +397,7 @@ fn am_row(f: &Firing, fixes: Option<&[Red]>) -> Alert {
     } else {
         format!("runbook {}; ", f.runbook)
     };
-    let mut a = Alert {
+    Alert {
         sev: am_sev(&f.severity).into(),
         what: if f.summary.is_empty() {
             f.name.clone()
@@ -411,10 +412,10 @@ fn am_row(f: &Firing, fixes: Option<&[Red]>) -> Alert {
             "{runbook}routed to {}; a silence in Alertmanager says known, leave it",
             label(&f.receivers.join(", "))
         ),
+        owner: "-".into(),
+        state: "firing".into(),
         ..Default::default()
-    };
-    owner(&mut a, None, fixes);
-    a
+    }
 }
 
 /// The tab from what each source returned; `read` gathers them.
@@ -504,7 +505,7 @@ pub fn join(
         }
     }
     match &infra.alertmanager {
-        Some(Ok(list)) => firing.extend(list.iter().map(|f| am_row(f, open))),
+        Some(Ok(list)) => firing.extend(list.iter().map(am_row)),
         Some(Err(e)) => errors.push(format!("alertmanager: {e}")),
         None => {}
     }
@@ -980,7 +981,7 @@ mod tests {
                 a.firing[0].sev.as_str(),
                 a.firing[0].state.as_str()
             ),
-            ("CPUThrottlingHigh", "low", "no owner"),
+            ("CPUThrottlingHigh", "low", "firing"),
             "no summary: the rule's name"
         );
 
@@ -1026,7 +1027,11 @@ mod tests {
         assert_eq!(r.about, "HomelabBackupStale");
         assert_eq!(r.place, "namespace=freqtrade");
         assert!(r.action.contains("routed to ntfy"), "{}", r.action);
-        assert_eq!((a.counts.tripped, a.counts.no_owner), (3, 3));
+        assert_eq!(
+            (a.counts.tripped, a.counts.no_owner),
+            (3, 1),
+            "no fix is filed under a rule, so it is not a red with no owner"
+        );
     }
 
     #[test]

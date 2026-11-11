@@ -7,16 +7,18 @@
 //! is a poll, the same as Prometheus (dashboards rule 9).
 
 use std::collections::BTreeMap;
-use std::process::Command;
 
 use serde::Serialize;
 use serde_json::Value;
 
-/// The timeout guard on the read, as `prom::query`'s.
-const TIMEOUT_SECS: &str = "10";
+use crate::prom;
 
 /// Active alerts a human has not silenced and no rule inhibits: what is firing and unhandled.
-pub const QUERY: &str = "/api/v2/alerts?active=true&silenced=false&inhibited=false";
+const FILTER: [(&str, &str); 3] = [
+    ("active", "true"),
+    ("silenced", "false"),
+    ("inhibited", "false"),
+];
 
 /// One firing alert.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -35,27 +37,15 @@ pub struct Firing {
     pub receivers: Vec<String>,
 }
 
-/// `CC_ALERTMANAGER_URL`, from the environment or `~/.config/command-center/env`.
-pub fn base() -> Result<String, String> {
-    crate::prom::config("CC_ALERTMANAGER_URL")
-        .map(|u| u.trim_end_matches('/').to_string())
-        .ok_or_else(|| {
-            "CC_ALERTMANAGER_URL is not set: it comes from ~/.config/command-center/env".into()
-        })
-}
-
-/// Ask Alertmanager through curl.
+/// Ask Alertmanager at `CC_ALERTMANAGER_URL` through curl.
 pub fn read() -> Result<Vec<Firing>, String> {
-    let base = base()?;
-    let out = Command::new("curl")
-        .args(["-sf", "-m", TIMEOUT_SECS, &format!("{base}{QUERY}")])
-        .output()
-        .map_err(|e| format!("curl: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("cannot read {base}"));
-    }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))?;
-    parse(&v)
+    let base = prom::required("CC_ALERTMANAGER_URL")?;
+    let params = FILTER.map(|(k, v)| (k, v.to_string()));
+    parse(&prom::get_json(
+        base.trim_end_matches('/'),
+        "/api/v2/alerts",
+        &params,
+    )?)
 }
 
 /// The API's answer as rows. Severity `none` is dropped: Watchdog and InfoInhibitor fire by
@@ -69,10 +59,7 @@ pub fn parse(v: &Value) -> Result<Vec<Firing>, String> {
         .map(|a| Firing {
             name: s(&a["labels"]["alertname"]),
             severity: s(&a["labels"]["severity"]),
-            since: a["startsAt"]
-                .as_str()
-                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .map(|t| t.timestamp()),
+            since: a["startsAt"].as_str().and_then(crate::fleet::ts),
             summary: s(&a["annotations"]["summary"]),
             description: s(&a["annotations"]["description"]),
             runbook: s(&a["annotations"]["runbook_url"]),
