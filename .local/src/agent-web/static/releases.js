@@ -143,7 +143,7 @@ function releasesHead(d) {
 const BUILDS_PRE = "b";
 const BUILDS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests";
 const bld = tblTab({
-  tab: "releases", id: "bld", pre: BUILDS_PRE, el: "releases", api: "/api/builds", hint: BUILDS_HINT, state: { log: null },
+  tab: "releases", id: "bld", pre: BUILDS_PRE, el: "releases", api: "/api/builds", hint: BUILDS_HINT, state: { log: null, detail: null },
   head: (t) => buildsHead(t.data), body: (t) => buildsBody(t.data),
   render: () => relst.render(),
 });
@@ -177,7 +177,32 @@ function buildDetail(r) {
   const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="wdet"><td colspan="9"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
     line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
-    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) + log + `</div></td></tr>`;
+    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) +
+    (bld.detail && bld.detail.key === bldKey(r) ? runJobs(bld.detail) : "") + log + `</div></td></tr>`;
+}
+
+// The opened run's header, jobs and their steps (/api/builds/detail, hub_core::run_detail), read
+// when the row opens. Each cell carries its label, so a phone stacks a job into labelled lines.
+function runJobs(o) {
+  if (o.err) return `<div class="cline down">${esc(o.err)}</div>`;
+  const d = o.d;
+  if (!d) return `<div class="cline">Loading jobs...</div>`;
+  const k = o.key;
+  const cell = (label, v, cls = "") => `<td data-label="${label}"${cls ? ` class="${cls}"` : ""}>${esc(v)}</td>`;
+  const job = (j) => `<tr>${cell("job", j.name, "wrap")}${cell("class", j.class, "muted")}${cell("wait", j.wait_text, "n")}` +
+    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}${cell("$", j.price.text, "n")}</tr>`;
+  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th><th>$ basis</th></tr>";
+  const jobs = (d.jobs || []).length
+    ? `<table class="tbl rdjobs">${head}${d.jobs.map(job).join("")}</table>` : "";
+  const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
+  const shas = d.tested_sha && d.workflow_sha && d.tested_sha !== d.workflow_sha
+    ? `tested ${esc(d.tested_sha.slice(0, 7))}, workflow from ${esc(d.workflow_sha.slice(0, 7))}` : "";
+  const cover = `<div class="cline">${esc(d.coverage_text)}</div>` + (shas ? `<div class="cline">${shas}</div>` : "") +
+    ((d.attempts || []).length > 1 ? `<div class="cline"><b>Attempts</b> ${d.attempts.join(", ")}</div>` : "");
+  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
+    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "") + jobs +
+    (steps ? cfold(`bld-steps:${k}`, `<b>Steps</b>`, steps, REL_OPEN) : "") +
+    cfold(`bld-cover:${k}`, `<b>Coverage</b> <span class="muted">${esc(d.coverage)}</span>`, cover, REL_OPEN);
 }
 
 function buildsBody(d) {
@@ -191,12 +216,16 @@ function buildsBody(d) {
 function buildTimes(d) {
   const t = d.times || [];
   if (!t.length) return "";
-  const row = (w) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
+  const c = d.costs || {}, cost = c.times || [];
+  const row = (w, i) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
     `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
-    `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td></tr>`;
-  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th></tr>";
+    `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td><td class="n">${esc(cost[i] || "-")}</td></tr>`;
+  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th><th>$ per run</th></tr>";
+  const money = (c.idle || []).map((l) => `<div class="cline">${esc(l)}</div>`).join("") +
+    (c.month ? `<div class="cline${c.month_off ? " warn" : ""}">${esc(c.month)}</div>` : "") +
+    (c.rates_error ? `<div class="cline warn">no rates: ${esc(c.rates_error)}</div>` : "");
   return cfold("bld-times", `<b>Run times</b> <span class="muted">${t.length} workflows, 30 days, finished runs (cancelled left out); usual is the median, - under 3 runs</span>`,
-    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN, true);
+    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table>${money}</div>`, REL_OPEN, true);
 }
 
 function buildsHead(d) {
@@ -217,13 +246,16 @@ function releaseBuilds() {
     `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
 }
 
-// A run's failed-job log, read when its row opens and never before.
+// A run's jobs and its failed-job log, read when its row opens and never before.
 async function openBuild(key, r) {
   bld.sel = key;
   bld.log = { key, text: "Loading..." };
+  bld.detail = { key, d: null };
   relst.render();
-  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, id: r.id, attempt: r.attempt });
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
+  const detail = api("/api/builds/detail?" + q).then((d) => { bld.detail.d = d; }, (e) => { bld.detail.err = e.message; });
   try { bld.log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { bld.log.text = e.message; }
+  await detail;
   if (st.tab === "releases" && bld.sel === key) relst.render();
 }
 
@@ -233,7 +265,7 @@ $("releases").addEventListener("click", (e) => {
   const tr = t.closest("tr.br");
   if (!tr) return;
   const key = tr.dataset.bkey;
-  if (bld.sel === key) { bld.sel = null; bld.log = null; relst.render(); return; }
+  if (bld.sel === key) { bld.sel = null; bld.log = null; bld.detail = null; relst.render(); return; }
   const r = (bld.data.rows || []).find((x) => bldKey(x) === key);
   if (r) openBuild(key, r);
 });

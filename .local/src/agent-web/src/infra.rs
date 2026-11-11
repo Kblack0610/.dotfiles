@@ -44,4 +44,9 @@ impl Cache {
     pub async fn infra(&self) -> Infra {
         self.answer().await.0.clone()
     }
+
+    /// The rates in the same answer, for the Builds section's prices.
+    pub async fn rates(&self) -> hub_core::run_detail::Rates {
+        self.answer().await.0.rates()
+    }
 }
