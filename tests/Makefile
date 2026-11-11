@@ -85,10 +85,11 @@ test-fast: test-unit test-integ
 # every other session (ar-885). Busy is the larger of the 1-minute load and the processes
 # running this instant (field 4 of /proc/loadavg, less this one), because the average lags
 # a minute and gates started together would all read it low. Free is nproc minus busy,
-# rounded, floor 2; an idle CI runner still gets nproc. UNIT_LOADAVG is the load source, a
-# file in /proc/loadavg's format; a missing or empty one gives 2.
+# rounded, floor 2. UNIT_LOADAVG is the load source, a file in /proc/loadavg's format; a
+# missing or empty one gives 2. On CI (CI set, as GitHub Actions does) the runner is the job's
+# own machine and its load is its own setup, which gave a 4-core runner 2 jobs: it gets nproc.
 UNIT_LOADAVG ?= /proc/loadavg
-UNIT_JOBS ?= $(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2)
+UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),$(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2))
 UNIT_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
