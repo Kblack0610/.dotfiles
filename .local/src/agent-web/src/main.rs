@@ -154,6 +154,7 @@ async fn main() -> Result<()> {
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
+        .route("/api/builds/detail", get(build_detail))
         .route("/api/tests", get(tests_list))
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
@@ -1224,10 +1225,10 @@ async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
         .into_response()
 }
 
-async fn builds_list(Query(q): Query<builds::Query>) -> Response {
+async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q).await,
+        builds::get(q, s.infra.rates().await).await,
     )
         .into_response()
 }
@@ -1238,6 +1239,17 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
+/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+async fn build_detail(
+    State(s): State<Shared>,
+    Query(key): Query<hub_core::builds::RunKey>,
+) -> ApiResult<Response> {
+    let body = builds::detail(key, s.infra.rates().await)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 async fn tests_list(Query(q): Query<suites::Query>) -> Response {

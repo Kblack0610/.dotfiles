@@ -193,6 +193,8 @@ fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: 
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+/// Lines an opened run's log keeps under its detail, however many jobs the detail lists.
+const BUILD_LOG_MIN: usize = 6;
 
 /// Infra's layout entry: its pinned sections and inner tabs.
 fn infra_tab() -> &'static hub_core::layout::Tab {
@@ -366,6 +368,8 @@ pub enum Msg {
     /// The outbox and today's intake steps (hub_core::outbox), or why the read failed.
     Outbox(Box<Result<hub_core::outbox::View, String>>),
     Log(u64, Result<String, String>),
+    /// The opened run's detail, for the open numbered first (`hub_core::builds::detail`).
+    BuildDetail(u64, Box<Result<hub_core::run_detail::RunDetail, String>>),
     /// The live and parked agent sessions, for the Sessions tab's controls.
     Sessions(Box<Snapshot>),
     /// A session action ended: its output, or why it failed.
@@ -1649,6 +1653,11 @@ impl App {
                     l.text = Some(text);
                 }
             }
+            Msg::BuildDetail(gen, d) => {
+                if let Some(p) = self.rv.builds.detail.as_mut().filter(|p| p.gen == gen) {
+                    p.read = Some(*d);
+                }
+            }
             Msg::Sessions(s) => {
                 self.controls.set(*s);
                 if self.sessions_read.done() {
@@ -2869,7 +2878,8 @@ impl App {
             .copied()
     }
 
-    /// Enter on a run: its failed-job log, read now and never before.
+    /// Enter on a run: its detail and failed-job log, read now and never before. The detail is
+    /// priced with the rates the Infra board last read; before its first read, nothing is priced.
     fn open_build_log(&mut self) {
         let Some(r) = self.selected_build() else {
             return;
@@ -2883,6 +2893,23 @@ impl App {
             text: None,
             back: 0,
             gen,
+        });
+        self.rv.builds.detail = Some(bv::DetailPane {
+            gen,
+            read: None,
+            top: 0,
+        });
+        let rates = self.infra.as_ref().map_or_else(
+            || hub_core::run_detail::Rates {
+                error: Some("the infra board has not been read yet".into()),
+                ..Default::default()
+            },
+            Infra::rates,
+        );
+        let (tx, paths, dkey) = (self.tx.clone(), self.files.builds.clone(), key.clone());
+        std::thread::spawn(move || {
+            let d = builds::detail(&paths, &rates, &dkey, jobs::now());
+            let _ = tx.send(Msg::BuildDetail(gen, Box::new(d)));
         });
         let (tx, paths, jobs_paths) = (
             self.tx.clone(),
@@ -2915,6 +2942,15 @@ impl App {
         match k.code {
             c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
                 if bv.log.as_mut().is_some_and(|l| l.scroll(c, n)) => {}
+            KeyCode::Char(c @ ('[' | ']')) if bv.detail.is_some() => {
+                if let Some(d) = bv.detail.as_mut() {
+                    d.top = if c == ']' {
+                        d.top + n
+                    } else {
+                        d.top.saturating_sub(n)
+                    };
+                }
+            }
             c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
                 if bv.times.is_some() =>
             {
@@ -2939,6 +2975,7 @@ impl App {
             KeyCode::Esc => {
                 if bv.log.is_some() {
                     bv.log = None;
+                    bv.detail = None;
                 } else {
                     bv.table.clear();
                 }
@@ -3212,7 +3249,7 @@ impl App {
                 "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  <-/-> view  q quit".into()
             }
             Tab::Releases if self.rv.on() == "builds" && self.rv.builds.log.is_some() => {
-                "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
+                "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
             }
             Tab::Releases if self.rv.on() == "builds" => format!(
                 "<-/-> view  Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
@@ -3811,11 +3848,27 @@ impl App {
         let Some(area) = pane else { return };
         if let (true, Some(top), Some(b)) = (log, self.rv.builds.times, &self.builds) {
             let (w, h) = (area.width as usize, area.height as usize);
-            f.render_widget(Paragraph::new(bv::times(b, self.p, w, h, top)), area);
+            let rates = self.infra.as_ref().map(Infra::rates).unwrap_or_default();
+            let costs = hub_core::run_detail::costs(b, &rates, now);
+            f.render_widget(
+                Paragraph::new(bv::times(b, &costs, self.p, w, h, top)),
+                area,
+            );
         } else if log {
+            // The run's detail on top, as tall as it is up to all but the log's few lines.
+            let (w, h) = (area.width as usize, area.height as usize);
+            let mut rest = area;
+            if let Some(d) = &mut self.rv.builds.detail {
+                let lines = bv::detail_pane(d, self.p, w, h.saturating_sub(BUILD_LOG_MIN));
+                let [top, bottom] =
+                    Layout::vertical([Constraint::Length(lines.len() as u16), Constraint::Min(0)])
+                        .areas(area);
+                f.render_widget(Paragraph::new(lines), top);
+                rest = bottom;
+            }
             if let Some(l) = &mut self.rv.builds.log {
-                let lines = log_lines(l, area.width as usize, area.height as usize, self.p);
-                f.render_widget(Paragraph::new(lines), area);
+                let lines = log_lines(l, rest.width as usize, rest.height as usize, self.p);
+                f.render_widget(Paragraph::new(lines), rest);
             }
         } else if let Some(r) = self.rv.shown(s).get(self.rv.table.sel).copied() {
             let cl = self
@@ -5720,8 +5773,28 @@ mod tests {
         assert!(screen(&mut a, 110, 30).contains("step 3 failed"));
         a.handle(Msg::Log(gen + 9, Ok("stale".into())));
         assert!(!screen(&mut a, 110, 30).contains("stale"));
+        let opened = |title: &str| hub_core::run_detail::RunDetail {
+            title: title.into(),
+            header: "end to end 46m | complete".into(),
+            coverage: "complete".into(),
+            ..Default::default()
+        };
+        a.handle(Msg::BuildDetail(gen + 9, Box::new(Ok(opened("#9 stale")))));
+        a.handle(Msg::BuildDetail(
+            gen,
+            Box::new(Ok(opened("#3 Tests  red  2m  $0.20"))),
+        ));
+        let s = screen(&mut a, 80, 30);
+        assert!(
+            s.contains("#3 Tests  red  2m  $0.20") && !s.contains("#9 stale"),
+            "{s}"
+        );
+        assert!(
+            s.contains("step 3 failed"),
+            "the log stays under the detail: {s}"
+        );
         press(&mut a, KeyCode::Esc);
-        assert!(a.rv.builds.log.is_none() && a.rv.on() == "builds");
+        assert!(a.rv.builds.log.is_none() && a.rv.builds.detail.is_none() && a.rv.on() == "builds");
         press(&mut a, KeyCode::Left);
         assert_eq!(a.rv.on(), "apps");
     }
