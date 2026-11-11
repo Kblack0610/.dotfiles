@@ -44,8 +44,8 @@ const table = {
   states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "queued", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
   columns: [col("state"), col("source"), col("name"), col("started", "asc", ["", "desc"]), col("took"), col("result"), col("detail")],
   facets: [
-    { key: "source", on: "ci", clear: "", values: [{ value: "agentctl", n: 1, q: "source:agentctl" }, { value: "ci", n: 2, q: "source:ci" }] },
-    { key: "result", on: null, clear: "source:ci", values: [{ value: "failure", n: 1, q: "source:ci result:failure" }] },
+    { key: "source", on: ["ci"], clear: "", values: [{ value: "agentctl", n: 1, on: false, q: "source:ci source:agentctl" }, { value: "ci", n: 2, on: true, q: "" }] },
+    { key: "result", on: [], clear: "source:ci", values: [{ value: "failure", n: 1, on: false, q: "source:ci result:failure" }] },
   ],
 };
 const job = (name, o = {}) => ({ source: "ci", name, state: "done", ok: true, result: "success", started: 1793942659, finished: null, secs: 60, detail: "", runs: 1, ...o });
@@ -63,8 +63,14 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
   assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
   assert.match(h, /<button class="" data-ts="failed">failed <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<option value="source:ci" selected>ci \(2\)<\/option>/, "the dropdown shows the value the query picks");
-  assert.match(h, /<option value="source:ci">every result<\/option>/, "its first option clears that column only");
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source">/, "the filter row sits under the headers, a cell per column");
+  assert.match(h, /<details class="tfacet on" data-fkey="source"><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
+  assert.match(h, /<button type="button" class="tfclear" data-tqc="">clear source<\/button>/, "a filtering column can be cleared");
+  assert.match(h, /<input type="checkbox" data-tq data-fv="ci" value="" checked> <span>ci<\/span> <span class="n">2<\/span>/, "the picked value is ticked and unticking it is the query without it");
+  assert.match(h, /<input type="checkbox" data-tq data-fv="agentctl" value="source:ci source:agentctl"> /, "ticking another adds it to the column's picks");
+  assert.match(h, /<details class="tfacet" data-fkey="result"><summary[^>]*>result<\/summary><div class="tfmenu"><label>/, "a column not filtering has no clear item");
+  assert.doesNotMatch(parts["jobs-facets"]?.innerHTML ?? "", /tfacet/);
+  assert.equal((h.match(/data-fkey="source"/g) || []).length, 1, "a facet whose column is drawn is not also in the bar");
   assert.match(h, /id="jobs-q" data-tsearch placeholder="[^"]*" value="source:ci"/);
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
 });
@@ -116,7 +122,9 @@ test("a refresh while the search box has focus leaves the box alone", () => {
   assert.equal(box.innerHTML, "KEEP");
   assert.match(parts["jobs-body"].innerHTML, /playground \/ Tests/);
   assert.match(parts["jobs-chips"].innerHTML, /data-ts="failed"/);
-  assert.match(parts["jobs-facets"].innerHTML, /every source/);
+  assert.match(parts["jobs-facets"].innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
+  assert.doesNotMatch(parts["jobs-facets"].innerHTML, /tfacet/, "the facets are in the body's filter row");
+  assert.match(parts["jobs-body"].innerHTML, /data-fkey="source"/);
 });
 
 test("a failed collection says why instead of drawing an empty table", () => {
