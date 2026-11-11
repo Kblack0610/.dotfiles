@@ -28,6 +28,7 @@ setup() {
   # A dispatched run (agentctl-run) exports the first and carries the second; a suite run from
   # inside one would read them as its own.
   export CLAUDE_HEADLESS=1 AGENTCTL_MODEL=inherited-model
+  export NO_COLOR=1 PANEL_NO_COLOR=1
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -44,6 +45,13 @@ setup() {
 @test "sandbox_init detaches from an inherited CLAUDE_HEADLESS and AGENTCTL_MODEL" {
   [ -z "${CLAUDE_HEADLESS:-}" ]
   [ -z "${AGENTCTL_MODEL:-}" ]
+}
+
+# md_render.bats, panel_lib.bats and questions_panel.bats assert on colour escapes, which either
+# switch blanks.
+@test "sandbox_init detaches from an inherited NO_COLOR and PANEL_NO_COLOR" {
+  [ -z "${NO_COLOR+x}" ]
+  [ -z "${PANEL_NO_COLOR+x}" ]
 }
 
 # The one that matters. The env assertions above would pass against a sandbox that merely
