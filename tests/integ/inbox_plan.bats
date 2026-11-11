@@ -119,6 +119,19 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
     "$HOME/.local/state/agentctl/inbox-plan/activity.log"
 }
 
+@test "a failed board read names notes' own error in the log and the outcome, and asks no model" {
+  sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n'
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet scratch: bad heading" >&2; exit 2; }\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$PLAN"
+  assert_failure
+  assert_output --partial 'notes board --json failed (exit 2): error: sheet scratch: bad heading'
+  grep -q 'outcome=FAILED .*why: notes board --json failed (exit 2): error: sheet scratch: bad heading$' \
+    "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}
+
 @test "no #plan row: no model call; --dry-run writes nothing" {
   sheet '- [ ] fix(ui): the menu flickers #low <!-- id:sc-2 -->\n'
   run "$PLAN"

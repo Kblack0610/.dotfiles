@@ -63,6 +63,7 @@ hooks() {
 project_repo_path() { printf '%s' "$REPO"; }
 project_release_version() { printf '%s' '$1'; }
 project_field() { [ "\$2" = type ] && printf '%s' '${TYPE:-}'; return 0; }
+project_release_tags_since() { printf '%s\n' '${SINCE_TAGS:-}'; }
 HOOKS
 }
 
@@ -194,4 +195,66 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   : > "$LAB/tasks.md"
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would roll personal/demoapp: v0.4.0 -> v0.4.1'
+}
+
+# -- one note per tag, named from the tag --
+
+tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_SINCE
+  local sheet="$1" newest="$2"; shift 2
+  printf '# demoapp\nVersion: %s #beta\n' "$sheet" > "$LAB/README.md"
+  printf 'demoapp\t%s/summary.md\tactive\t%s\n' "$LAB" "$sheet" > "$NOTES_FIXTURE/projects.personal"
+  SINCE_TAGS="$(printf '%s\n' "$@")" hooks "$newest"
+  git -C "$REPO" remote add origin "$SANDBOX/origin.git"
+}
+
+@test "a tag above the open version rolls it, the note named from the tag" {
+  # The app skipped v1.18.1 and tagged v1.19.0: the rows freeze as v1.19.0, not v1.18.1.
+  tags_since v1.18.1 v1.19.0 v1.19.0
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v1.18.1 -> v1.19.1 (tag v1.19.0'
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  assert_success
+  grep -q 'projects --release demoapp --next v1.19.1 --carry --tag v1.19.0' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "a tag below the open version gets a note with no planned rows, once" {
+  tags_since v1.20.0 v1.19.1 v1.19.1
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would record personal/demoapp: v1.19.1, no planned rows (sheet open at v1.20.0)'
+  refute_output --partial 'would roll'
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  assert_success
+  grep -q 'projects --release demoapp --tag v1.19.1' "$NOTES_FIXTURE/calls.log"
+  run cat "$OUTCOME"
+  assert_output WORKED
+  # NEGATIVE CONTROL: the tag's note exists, so there is nothing to record.
+  mkdir -p "$LAB/versions" && : > "$LAB/versions/v1.19.1.md"
+  run "$WAVE_ROLL" --dry-run demoapp
+  refute_output --partial 'would record'
+}
+
+@test "a tag from before the notes began is not recorded" {
+  # v1.19.1 is the newest tag but older than RELEASE_NOTES_SINCE: history, not a gap.
+  tags_since v1.20.0 v1.19.1
+  run "$WAVE_ROLL" --dry-run demoapp
+  refute_output --partial 'would record'
+  refute_output --partial 'would roll'
+}
+
+@test "two tags in one pass each get their note, lowest first" {
+  tags_since v1.19.0 v1.19.1 v1.19.0 v1.19.1
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_line --index 0 --partial 'would roll personal/demoapp: v1.19.0 -> v1.19.1 (tag v1.19.0'
+  assert_line --index 1 --partial 'would roll personal/demoapp: v1.19.1 -> v1.19.2 (tag v1.19.1'
+}
+
+@test "a roll whose open version cannot be read back stops the project's pass, loudly" {
+  # The stub answers no --version-of, so after v1.19.0 rolls, v1.19.1 cannot be compared.
+  tags_since v1.19.0 v1.19.1 v1.19.0 v1.19.1
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  assert_output --partial "FAILED demoapp: rolled on v1.19.0 but cannot read its open version back (''); v1.19.1 and later wait"
+  run grep -c 'projects --release demoapp' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run cat "$OUTCOME"
+  assert_output STALLED
 }
