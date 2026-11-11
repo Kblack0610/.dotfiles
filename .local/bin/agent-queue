@@ -128,13 +128,23 @@ fm_get() { # file key
 }
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
 
+# item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
+# `row:`, else the board row it was promoted from (`from: board:`), else nothing. Every reader of an
+# item file's row goes through it, so a `--from board:` item added by hand marks and closes its row
+# like a `row:` one.
+item_row() {
+  local row
+  row="$(fm_get "$1" row)"
+  [ -n "$row" ] || case "$(fm_get "$1" from)" in board:*) row="$(fm_get "$1" from)" row="${row#board:}" ;; esac
+  printf '%s' "$row"
+}
+
 # item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
-# naming the item, its project, its row's key (as ITEM_JQ reads `row`), its PR and merge commit.
+# naming the item, its project, its row's key (item_row), its PR and merge commit.
 item_event() {
   local action=$1 f=$2 row title
   shift 2
-  row="$(fm_get "$f" row)" title="$(fm_get "$f" title)"
-  [ -n "$row" ] || case "$(fm_get "$f" from)" in board:*) row="$(fm_get "$f" from)" row="${row#board:}" ;; esac
+  row="$(item_row "$f")" title="$(fm_get "$f" title)"
   chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
     --sha "$(fm_get "$f" merged)" "$@"
@@ -895,7 +905,7 @@ named_row() {
 prior_story() {
   local f row prof board
   f="$(latest_done "$1")"; [ -n "$f" ] || return 0
-  row="$(fm_get "$f" row)"; prof="$(fm_get "$f" profile)"
+  row="$(item_row "$f")"; prof="$(fm_get "$f" profile)"
   board="$(project_board "$2" | cut -f1)"
   [ "${row%%:*}" = "$board" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
   notes --profile "$prof" ptask "$board" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
@@ -1393,6 +1403,11 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # The row it works before the set, with the profile and lane that row is on (item_row).
+  local left_row="" left_prof="" left_lane=""
+  case " $* " in *" row="* | *" from="*)
+    left_row="$(item_row "$f")" left_prof="$(fm_get "$f" profile)" left_lane="$(fm_get "$f" lane)" ;;
+  esac
   # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
   # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
   case " $* " in
@@ -1410,6 +1425,28 @@ cmd_set() {
   done
   item_event item-set "$f" --why "$*"
   echo "$slug: $*"
+  [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
+}
+
+# repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
+# (`set row=` or `from=board:`) no longer works <row> (on <profile> and <lane>, as it was before the
+# set), so that row is un-started now instead of reading as board_orphan_started until reap's orphan
+# pass, and the row it works now is marked as a move to its state would mark it (mark_row). A row
+# another active item names is that item's, and a done item's rows are its close's business.
+repoint_row() {
+  local slug=$1 f=$2 row=$3 prof=$4 flag=() other
+  [ "$(state_of "$f")" != done ] && command -v notes >/dev/null || return 0
+  case "$5" in '' | agent) flag=(--agent) ;; esac
+  other="$(collect $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
+    { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
+  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  if [ -n "$other" ]; then :
+  elif notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1; then
+    echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
+  else
+    echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}" >&2
+  fi
+  case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
@@ -1566,7 +1603,7 @@ cmd_move() {
 # The item is the state and the row its view, so a row the write cannot reach warns and the move stands.
 mark_row() {
   local row prof flag=()
-  row="$(fm_get "$1" row)" prof="$(fm_get "$1" profile)"
+  row="$(item_row "$1")" prof="$(fm_get "$1" profile)"
   [ -n "$row" ] && command -v notes >/dev/null || return 0
   case "$(fm_get "$1" lane)" in '' | agent) flag=(--agent) ;; esac
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" "$2" "${row#*:}" >/dev/null 2>&1 ||
@@ -1779,7 +1816,7 @@ cmd_reopen() {
   echo "$slug: done -> $to (reopened, was $status)"
   # The row, through notes, the rows' one writer (it leaves a row already started as it is), read as
   # fleet-dispatch's settle_row un-started it: no profile is notes' default, no lane is the agent lane.
-  row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
+  row="$(item_row "$dest")" prof="$(fm_get "$dest" profile)"
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
   exec 8>&-
