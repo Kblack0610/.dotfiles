@@ -244,6 +244,7 @@ function renderQueue() {
     qst.render();
     return;
   }
+  if (qst.repaint()) return;
   el.innerHTML = pfold("q-add", "Add to the queue", qCompose()) + `<div id="q-list"></div>`;
   qst.render();
 }
