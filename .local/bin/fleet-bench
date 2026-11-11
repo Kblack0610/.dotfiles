@@ -3530,16 +3530,17 @@ triage_human() {
 
 # cause_tries <items> <cause> [trip] -> -1 while an item stands for the cause: queued, running or
 # waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
-# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok with no PR since
-# then (its job was the ask or the owner, not the red; the TRIAGE_FIX_DAYS window bounds it, and the
-# watch re-pages on its own). Else how many items the window queued for it.
-# Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
-# red still here did not hold.
+# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok since then (its
+# job was the ask or the owner, not the red, so a PR it merged fixed something beside the red; the
+# TRIAGE_FIX_DAYS window bounds it, and the watch re-pages on its own). Else how many items the window
+# queued for it.
+# Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
+# red still here on an agent route or before the trip, did not hold.
 cause_tries() {
   jq --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
-                or ($trip != "" and .state == "done" and .status == "ok" and (.pr // "") == ""
+                or ($trip != "" and .state == "done" and .status == "ok"
                     and ((.queued | ep) // 0) >= ($trip | tonumber)))
       then -1 else length end' <<<"$1"
 }

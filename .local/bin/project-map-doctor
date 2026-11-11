@@ -182,7 +182,10 @@ done < <(jq -r '
        | (if ((.id // "") | test("^[a-z0-9][a-z0-9-]*$") | not) then "trackers.\($p) target \"\($id)\": id must be lowercase letters, digits and -" else empty end),
          (if ((.channel // "") as $c | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \(chans | join("|"))" else empty end),
          (if (.pinned.tag == true) or (.pinned.deployed == true) or ((.pinned.repo // "") != "" and (.pinned.path // "") != "") then empty
-          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true}, {deployed: true} or repo and path" end),
+          elif .pinned.deployed == "manual" then
+            (if ((.pinned.reason // "") | type) == "string" and (.pinned.reason // "") != "" then empty
+             else "trackers.\($p) target \"\($id)\": {deployed: \"manual\"} needs a reason (why nothing records its deploys)" end)
+          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true}, {deployed: true}, {deployed: \"manual\", reason} or repo and path" end),
          (if .live == null or (.live.k8s.context and .live.k8s.namespace and .live.k8s.deployment) or .live.health.url
              or (.live.steam.app and .live.steam.branch) or (.live.play.package and .live.play.track) or .live.testflight.app then empty
           else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment}, health {url}, steam {app, branch}, play {package, track} or testflight {app}" end),
@@ -221,6 +224,29 @@ done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "obj
   | [$e[] | select(.value.buildTags != null and (.value.repo // .key) != .key) | .value.repo] | unique[] as $r
   | $e[] | select(.key == $r and (.value.tagGlob // "") == "")
   | "trackers.\($r) has no tagGlob, so its bare v* tag fallback lists the buildTags of the projects inside it: declare one"' "$MAP_FILE" 2>/dev/null)
+# One owner per tag, on the tags that exist: every tag a project's release line or buildTags
+# lists in its checkout is listed by no other project of that repo, or two apps' histories and
+# version rolls would both claim it. The globs above can only be read against real tags. A
+# repo-only key (no lab, no targets) has no version anyone reads, so only the others count.
+if declare -F project_tag_scope >/dev/null 2>&1 && project_release_lib 2>/dev/null; then
+  owned="$(
+    while IFS= read -r p; do
+      [ -n "$p" ] && project_tag_scope "$p" 2>/dev/null || continue
+      g="$(_gr_glob "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_GLOB")"
+      { [ -z "$g" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$g"
+        [ -z "$_PTS_BUILDS" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_BUILDS"; } |
+        sort -u | while IFS= read -r tag; do printf '%s\t%s\t%s\n' "$_PTS_REPO" "$tag" "$p"; done
+    done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object")] as $e
+      | [$e[] | (.value.repo // .key)] | group_by(.) | map(select(length > 1) | .[0]) as $shared
+      | $e[] | select((.value.repo // .key) as $r | $shared | index($r)) | select(.value.lab or .value.targets) | .key' "$MAP_FILE" 2>/dev/null)
+  )"
+  while IFS=$'\t' read -r repo tag who; do
+    [ -n "$tag" ] && fail "tag $tag in $repo is listed by $who: one tag, one project (tagGlob, buildTags)"
+  done < <(awk -F'\t' 'NF == 3 { k = $1 FS $2; o[k] = (k in o) ? o[k] " and " $3 : $3; n[k]++ }
+    END { for (k in n) if (n[k] > 1) print k FS o[k] }' <<<"$owned" | sort)
+else
+  skip "project-name.sh or git-release.sh unavailable; cannot check one owner per tag"
+fi
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 
