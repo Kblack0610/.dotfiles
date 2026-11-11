@@ -6,7 +6,7 @@
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
 // tiles: the whole fleet's 24h cost, who pays (Burn, one row per source claude-acct reads), who
 // spends (Consumers, one row per runner or gateway key with a priority), where the tokens go and
-// what Langfuse sees.
+// what Langfuse sees; the Budget inner tab is what we pay in cash this month.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
@@ -96,6 +96,25 @@ function fleetCostSection(d) {
     `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
     `<div class="muted">${esc(f.foot)}</div></div>`);
+}
+
+// The Budget inner tab (hub_core::budget, the TUI's coststab.rs `budget`): this month's cash, what
+// needs a look, one row per bill, then the split by project and lane. List price stays on Spend.
+function budgetSection(d) {
+  const b = d.budget || { why: "nothing read" };
+  const title = `<h2 class="sec" id="sec-budget">Budget`;
+  if (b.why) return `${title}</h2><div class="panel"><span class="warn">${esc(b.why)}</span></div>`;
+  const age = b.stale ? `<span class="warn">stale, as of ${when(b.as_of)}</span>` : `as of ${when(b.as_of)}`;
+  const partial = b.partial.length ? `<div class="warn">partial, not counted: ${esc(b.partial.join(", "))}</div>` : "";
+  const needs = b.needs.length ? `<h3 class="warn">Needs a look ${b.needs.length}</h3>` + b.needs.map((n) => `<div class="warn">${esc(n)}</div>`).join("") : "";
+  // A bill off ok (over, unread, unpriced) is amber on its name and its spend.
+  const row = (x) => { const w = x.status === "ok" ? "" : "warn"; return `<tr><td class="${w}">${esc(x.name)}</td><td class="muted">${esc(x.kind)}</td><td class="n">${esc(x.cap)}</td>` +
+    `<td class="n ${w}">${esc(x.spent)}</td><td class="n">${esc(x.month)}</td><td class="muted wrap">${esc(x.note)}</td></tr>`; };
+  const cut = (head, xs) => `<div><b>${head}</b> ${xs.map((x) => `${esc(x.name)} ${esc(x.usd)}`).join(", ")}</div>`;
+  return `${title} ${esc(b.spent)} so far, ${esc(b.projected)} by month end <span class="muted">${esc(b.month)}, caps ${esc(b.caps)}, ${age}</span></h2>` +
+    `<div class="panel scroll">${partial}${needs}` +
+    `<table class="tbl"><tr><th data-role="lead">bill</th><th>kind</th><th class="n">cap</th><th class="n" data-role="glance">so far</th><th class="n" data-role="glance">month est.</th><th>note</th></tr>${b.bills.map(row).join("")}</table>` +
+    cut("By project", b.by_project) + cut("By lane", b.by_lane) + `<div class="muted">${esc(b.foot)}</div></div>`;
 }
 
 // The Spend section (hub_core::spend_history, the TUI's coststab.rs `history`, `spend_chart` and
@@ -332,7 +351,8 @@ function costsTail(d) {
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
   // The Models sections follow the table in the page, as the layout lists them.
   return innerWrap("costs", "table", note) + innerWrap("costs", "tokens", tokensSection(d)) +
-    innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d));
+    innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d)) +
+    innerWrap("costs", "budget", budgetSection(d));
 }
 
 // A new cut has other columns, so its sort goes back to the cut's own.

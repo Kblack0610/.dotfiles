@@ -27,6 +27,7 @@ setup() {
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
+  export BENCH_BUDGET_CMD=false BENCH_BUDGET_FILE="$SANDBOX/budget.json"   # nor the real budget readers
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
@@ -253,7 +254,7 @@ PROM
   touch -d '1 hour ago' "$BENCH_FLEET_COST_FILE"
   run sample_at 1200   # BENCH_FLEET_COST_CMD=false from setup
   assert_success
-  assert_output --partial 'fleet-cost: the estimate failed; the last one stays'
+  assert_output --partial 'fleet-cost: the run failed; the last file stays'
   run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
   assert_output 1
   run compgen -G "$BENCH_FLEET_COST_FILE.*tmp"
@@ -266,6 +267,21 @@ PROM
   BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 1800
   run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
   assert_output 2
+}
+
+@test "sample writes the budget file with the command pointed at it, so unread_since carries over; a failed run keeps the last" {
+  brow a lab/game-agent-1:1 WORKING > "$SNAP"
+  printf '#!/usr/bin/env bash\necho "{\\"total\\":{\\"spent\\":5},\\"read\\":\\"$BUDGET_JSON\\"}"\n' > "$SANDBOX/bin/budget-stub"
+  chmod +x "$SANDBOX/bin/budget-stub"
+  BENCH_BUDGET_CMD=budget-stub run sample_at 0   # by name: the sandbox path has a space
+  assert_success
+  run jq -r '"\(.total.spent) \(.read)"' "$BENCH_BUDGET_FILE"
+  assert_output "5 $BENCH_BUDGET_FILE"
+  touch -d '1 hour ago' "$BENCH_BUDGET_FILE"
+  run sample_at 600   # BENCH_BUDGET_CMD=false from setup
+  assert_output --partial 'budget: the run failed; the last file stays'
+  run jq -c .total.spent "$BENCH_BUDGET_FILE"
+  assert_output 5
 }
 
 @test "chain: estimated_token_share reads the estimate, and an estimate that stopped reads as unknown" {

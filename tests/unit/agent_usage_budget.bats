@@ -47,7 +47,7 @@ cat "$FIX/do"
 EOF
   cat > "$PROM_LIB" <<'EOF'
 prom_q() {
-  local f; case "$1" in ci_governor*) f=$FIX/aws ;; *claude_account_*) f=$FIX/lazer ;; *) return 1 ;; esac
+  local f; case "$1" in *ci_governor*) f=$FIX/aws ;; *claude_account_*) f=$FIX/lazer ;; *) return 1 ;; esac
   [ -s "$f" ] || return 1; printf '{"status":"success","data":{"result":%s}}' "$(cat "$f")"
 }
 EOF
@@ -160,6 +160,10 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   assert_failure
   assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
 aws projects to $650 this month, past its $600 cap'
+  # the file carries the same reasons as `needs`, which the Costs Budget tab shows
+  run jq -r '.needs[]' "$BUDGET_JSON"
+  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
+aws projects to $650 this month, past its $600 cap'
   BUDGET_NOW="2026-11-11T03:00:00-08:00" run "$AU" budget check
   assert_failure
   assert_output 'budget.json is 3.0h old (the fleet-bench budget step)'
@@ -201,4 +205,18 @@ aws projects to $650 this month, past its $600 cap'
   assert_output --partial "is not schema 2"
   run "$AU" budget check --json
   assert_failure
+}
+
+@test "an aws forecast below what is spent is no forecast, and a failed governor read is unread, not a stale ok" {
+  echo '[{"metric":{"kind":"actual"},"value":[0,"100"]},{"metric":{"kind":"limit"},"value":[0,"600"]},{"metric":{"kind":"forecast"},"value":[0,"40"]}]' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.status, .spent, .projected, .note]'
+  assert_success
+  assert_output '["ok",100,300,""]'
+  echo '[{"metric":{"__name__":"ci_governor_budget_ok"},"value":[0,"0"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]}]' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.status, .spent, .note]'
+  assert_output '["unread",null,"the governor'"'"'s last AWS Budgets read failed (runbook, \"budget read\")"]'
+  # negative control: a good read with the same figure is ok
+  echo '[{"metric":{"__name__":"ci_governor_budget_ok"},"value":[0,"1"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]}]' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | .status'
+  assert_output '"ok"'
 }

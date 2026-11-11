@@ -419,6 +419,22 @@ MD
   assert_output ''
 }
 
+@test "project_tag_scope: a repo's own tagGlob loses a sibling's buildTags, so a build sits in one history" {
+  ship "release (#1)" v1.0.0
+  ship "game build (#2)" v0.5.0-web1
+  jq '.trackers.infra.tagGlob = "v*"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  tags() { bash -c ". '$PROJECT_NAME_LIB'; project_tag_scope infra && printf '%s|' \"\$_PTS_GLOB\" && git_tags \"\$_PTS_REPO\" infra \"\$_PTS_SCOPED\" \"\$_PTS_GLOB\" | paste -sd,"; }
+  # Negative control: with no sibling claiming it, the repo's v* lists the build.
+  run tags
+  assert_output 'v*|v1.0.0,v0.5.0-web1'
+  jq '.trackers.web.buildTags = ["v*-web*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run tags
+  assert_output 'v* !v*-web*|v1.0.0'
+  run "$RS" refresh
+  assert_success
+  [ "$(jq -c '.releases.web.tags | map(.tag)' "$RELEASE_STATE_DIR/state.json")" = '["v0.5.0-web1"]' ]
+}
+
 @test "history: several build families read newest first by date, not by name" {
   # By version sort shapecity3 > barrage9 at the same base; by date barrage9 is the newest.
   GIT_COMMITTER_DATE=@1700000000 ship "game build (#1)" v0.5.0-shapecity3

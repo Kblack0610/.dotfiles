@@ -274,6 +274,38 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output 'other-v5.0.0'
 }
 
+@test "git_tags and git_latest_tag: a ! entry subtracts its matches, so one tag has one owner" {
+  commit a; tag v1.0.0
+  commit b; tag v0.5.0-game3
+  commit c; tag v1.1.0
+  # Negative control: v* alone lists the game's build tag.
+  run git_tags "$REPO" repo 0 'v*'
+  assert_output "$(printf 'v1.1.0\nv1.0.0\nv0.5.0-game3')"
+  run git_tags "$REPO" repo 0 'v* !v*-game*'
+  assert_output "$(printf 'v1.1.0\nv1.0.0')"
+  run git_latest_tag "$REPO" repo 'v* !v1.1*'
+  assert_output 'v1.0.0'
+  run git_prev_tag "$REPO" repo 0 'v* !v*-game* !v1.0*' v1.1.0
+  assert_output ''
+  # Only a subtraction lists nothing, never every other tag.
+  run git_tags "$REPO" repo 0 '!v*-game*'
+  assert_output ''
+}
+
+@test "git_tag_for_version: a glob is authoritative, its family's exact version or nothing" {
+  commit a; tag portfolio-v1.6.4
+  commit b; tag portfolio-v1.7.0-rc1
+  commit c; tag v1.7.0
+  run git_tag_for_version "$REPO" kenneth-black-portfolio v1.6.4 'portfolio-v*'
+  assert_output 'portfolio-v1.6.4'
+  # Negative control: without the glob no rung reaches the portfolio- prefix.
+  run git_tag_for_version "$REPO" kenneth-black-portfolio v1.6.4
+  assert_output ''
+  # A prerelease is not the version, and a tag outside the family does not count.
+  run git_tag_for_version "$REPO" kenneth-black-portfolio v1.7.0 'portfolio-v*'
+  assert_output ''
+}
+
 @test "git_prev_tag: a release skips its own candidates; a candidate follows what came before it" {
   commit a; tag v1.9.0
   commit b; tag v1.10.0-rc1
@@ -318,4 +350,39 @@ tag() { git -C "$REPO" tag "$1"; }
   # Negative control: no previous tag means the whole history, not nothing.
   run git_tag_changes "$REPO" '' v1.1.0
   assert_output "$(printf 'api change (#2)\nweb change (#1)')"
+}
+
+@test "git_version_ge: compares numerically across tag and bare shapes" {
+  run git_version_ge v1.10.0 v1.9.3
+  assert_success
+  run git_version_ge shipper-v1.11.0 1.11.0
+  assert_success
+  # a `-v` inside a suffix is not a product prefix
+  run git_tag_version v1.2.0-vnext
+  assert_output '1.2.0-vnext'
+  run git_tag_version my-vapp-v1.0.0
+  assert_output '1.0.0'
+  # NEGATIVE CONTROL: a string compare ranks 1.10.0 below 1.9.3
+  run git_version_ge v1.9.3 v1.10.0
+  assert_failure
+}
+
+@test "git_version_max: the highest version as given, blanks skipped" {
+  run git_version_max <<<"$(printf 'v1.9.3\n\nv1.10.0\nv1.2.0\n')"
+  assert_output 'v1.10.0'
+  run git_version_max </dev/null
+  assert_output ''
+}
+
+@test "git_tag_at and git_tag_date: the tagged commit and git's creatordate" {
+  at() { GIT_COMMITTER_DATE="@$1 +0000" git -C "$REPO" tag -a -m "$2" "$2"; }
+  commit a; at 86400 v1.0.0
+  run git_tag_at "$REPO" v1.0.0
+  assert_output "$(git -C "$REPO" rev-parse HEAD) 86400"
+  run git_tag_date "$REPO" v1.0.0
+  assert_output '1970-01-02'
+  # NEGATIVE CONTROL: a missing tag is empty, never a date
+  run git_tag_date "$REPO" v9.9.9
+  assert_success
+  assert_output ''
 }

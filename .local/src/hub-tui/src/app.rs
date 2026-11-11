@@ -84,32 +84,32 @@ impl Tab {
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
+        Tab::Log,
         Tab::Queue,
-        Tab::Projects,
         Tab::Sessions,
         Tab::Fleet,
-        Tab::Log,
+        Tab::Projects,
+        Tab::Releases,
         Tab::Alerts,
         Tab::Infra,
         Tab::Schedules,
         Tab::Costs,
-        Tab::Releases,
     ];
     /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth, past
     /// which a tab has no digit and Tab reaches it (`hub_core::layout::bar_digit`). Daily is left
     /// off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
     pub const SHOWN: [Tab; 11] = [
         Tab::Home,
+        Tab::Log,
         Tab::Queue,
-        Tab::Projects,
         Tab::Sessions,
         Tab::Fleet,
-        Tab::Log,
+        Tab::Projects,
+        Tab::Releases,
         Tab::Alerts,
         Tab::Infra,
         Tab::Schedules,
         Tab::Costs,
-        Tab::Releases,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -4879,8 +4879,8 @@ mod tests {
         a.handle(key('q'));
         assert!(!a.quit, "q is typed into the query");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('3'));
         a.handle(key('2'));
-        a.handle(key('6'));
         a.handle(key('f'));
         assert!(
             a.log_open.contains(&"forecast"),
@@ -5031,9 +5031,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains(
-                "1 Home  2 Queue  3 Projects  4 Sessions  5 Fleet  6 Log  7 Alerts  8 Infra"
-            ),
+            lines[0].contains("1 Home  2 Log  3 Queue  4 Sessions  5 Fleet  6 Projects"),
             "{s}"
         );
         assert!(
@@ -5047,7 +5045,7 @@ mod tests {
         );
         assert!(s.contains("RUNNING (1)"), "{s}");
 
-        a.handle(key('2'));
+        a.handle(key('3'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
@@ -5106,7 +5104,7 @@ mod tests {
         std::fs::write(&a.files.candidates, "").unwrap();
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
-        a.handle(key('2'));
+        a.handle(key('3'));
         // Both workers reply when their read ends: wait for the two messages, not a timer.
         let (mut queue, mut cands) = (false, false);
         while !(queue && cands) {
@@ -5191,7 +5189,7 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        a.handle(key('3'));
+        a.handle(key('6'));
         settle(&mut a, &rx);
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
         let mut l = loaded();
@@ -5239,12 +5237,15 @@ mod tests {
             Some(Tab::Projects),
             "`a` opens it there"
         );
-        // Projects is the third tab on the bar, so 3 opens it.
-        a.handle(key('3'));
+        // Projects is the sixth tab on the bar, so 6 opens it.
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Projects);
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
-        assert!(bar.contains("3 Projects  4 Sessions  5 Fleet"), "{s}");
+        assert!(
+            bar.contains("5 Fleet  6 Projects") && bar.contains("4 Sessions"),
+            "{s}"
+        );
         assert!(s.contains("Reading notes projects..."), "{s}");
         settle(&mut a, &rx);
         assert!(screen(&mut a, 140, 30).contains("notes projects --stats --json"));
@@ -5587,7 +5588,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("8 Infra") && first.contains(" RED"),
+            first.contains("1 Home") && first.contains("9 Infra") && first.contains(" RED"),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -5645,22 +5646,14 @@ mod tests {
                 "the badges name this digit"
             );
         }
+        assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('8', '9'));
         assert_eq!(
-            (
-                Tab::Fleet.digit(),
-                Tab::Log.digit(),
-                Tab::Alerts.digit(),
-                Tab::Infra.digit()
-            ),
-            ('5', '6', '7', '8')
+            (Tab::Schedules.digit(), Tab::by_digit('0')),
+            ('0', Some(Tab::Schedules))
         );
-        assert_eq!(
-            (Tab::Costs.digit(), Tab::by_digit('0')),
-            ('0', Some(Tab::Costs))
-        );
-        assert_eq!(Tab::Releases.digit(), ' ');
+        assert_eq!(Tab::Costs.digit(), ' ');
         assert_eq!(Tab::Daily.digit(), ' ');
-        assert_eq!(Tab::by_digit('2'), Some(Tab::Queue));
+        assert_eq!(Tab::by_digit('2'), Some(Tab::Log));
     }
 
     #[test]
@@ -6240,7 +6233,10 @@ mod tests {
         assert!(screen(&mut a, 100, 60).contains("window:"));
         a.handle(k(KeyCode::Left));
         a.handle(k(KeyCode::Left));
-        assert_eq!(a.cv.inner, "models");
+        assert_eq!(a.cv.inner, "budget");
+        let (t, q) = crate::tabreq::parse("costs budget").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(a.cv.inner, "budget", "`hub --tab 'costs budget'` opens it");
         // `hub --tab 'costs burn'` and the moved `fleet tokens` land on the holding inner tab
         let (t, q) = crate::tabreq::parse("costs burn").unwrap();
         a.handle(Msg::Tab(t, q));
@@ -6387,7 +6383,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('4'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('6'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Log);
     }
 
@@ -6574,7 +6570,7 @@ mod tests {
     #[test]
     fn printed_infra_shows_every_inner_tab_under_the_strip() {
         let mut a = infra_app();
-        a.handle(key('8'));
+        a.handle(key('9'));
         a.infra_all = true;
         let s = screen(&mut a, 160, 400);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -6595,11 +6591,11 @@ mod tests {
     #[test]
     fn infra_leads_with_its_strip_and_left_right_switch() {
         let mut a = infra_app();
-        a.handle(key('8'));
+        a.handle(key('9'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("7 Alerts  8 Infra") && !bar.contains("Machines"),
+            bar.contains("8 Alerts  9 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(
@@ -6707,7 +6703,7 @@ mod tests {
     #[test]
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
-        a.handle(key('8'));
+        a.handle(key('9'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
@@ -6810,7 +6806,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9 Schedules  0  Releases "),
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9  0 Schedules  Costs "),
             "{bar:?}"
         );
         let wide: String = a
@@ -6827,18 +6823,22 @@ mod tests {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
         (a.alerts_read.busy, a.reds_read.busy) = (true, true);
-        a.handle(key('7'));
-        assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
         a.handle(key('8'));
+        assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
+        a.handle(key('9'));
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
-        a.handle(key('6'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Log);
-        a.costs_read.busy = true;
+        a.schedules_read.busy = true;
         a.handle(key('0'));
-        assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
-        a.handle(key('6'));
+        assert_eq!(a.tab, Tab::Schedules, "0 opens the tenth tab");
+        a.costs_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Alerts);
+        assert_eq!(
+            a.tab,
+            Tab::Costs,
+            "Tab reaches the eleventh, which has no digit"
+        );
         a.handle(key('q'));
         assert!(a.quit);
     }

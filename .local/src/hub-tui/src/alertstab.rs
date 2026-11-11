@@ -437,9 +437,12 @@ fn history(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         ));
     }
     if c.history_older > 0 {
-        let key = hub_core::layout::bar_digit("log").map_or(String::new(), |d| format!("{d} "));
         out.push(Line::styled(
-            format!("  +{} older on {key}Log, Actions", c.history_older),
+            format!(
+                "  +{} older on {}, Actions",
+                c.history_older,
+                hub_core::layout::bar_label("log")
+            ),
             p.dim(),
         ));
     }
@@ -756,7 +759,7 @@ pub(crate) mod tests {
         let (s, _) = page(&AlertsView::default(), &a, 160);
         assert!(s.contains("HISTORY  4 pages in 7 days"), "{s}");
         assert!(s.contains("tripped Sentinel: playground-nightly"), "{s}");
-        assert!(s.contains("  +3 older on 6 Log, Actions"), "{s}");
+        assert!(s.contains("  +3 older on 2 Log, Actions"), "{s}");
     }
 
     #[test]
