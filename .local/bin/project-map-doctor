@@ -108,12 +108,13 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
      | "trackers.\($p).names is not a list of non-empty strings"),
     ((.github, .forgejo) | select(. != null) | select(type != "string" or (test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not))
      | "trackers.\($p) slug \(tojson) is not owner/repo")' "$MAP_FILE" 2>/dev/null)
+spellings="$(project_spellings)"
 while IFS=$'\t' read -r spelling claims; do
   [ -n "$spelling" ] || continue
   fail "spelling \"$spelling\" names more than one project: $claims (drop it from all but one)"
-done < <(project_spellings | awk -F'\t' '{n[$1]++; if (!seen[$1 SUBSEP $2]++) { k[$1]++; c[$1] = c[$1] (c[$1] ? ", " : "") $2 " (" $3 ")" } }
-  END { for (s in k) if (k[s] > 1) print s "\t" c[s] }' | sort)
-n="$(project_spellings | cut -f1 | sort -u | wc -l)"
+done < <(awk -F'\t' '!seen[$1 SUBSEP $2]++ { k[$1]++; c[$1] = c[$1] (c[$1] ? ", " : "") $2 " (" $3 ")" }
+  END { for (s in k) if (k[s] > 1) print s "\t" c[s] }' <<<"$spellings" | sort)
+n="$(awk -F'\t' 'NF && !s[$1]++ { n++ } END { print n + 0 }' <<<"$spellings")"
 [ "$n" -gt 0 ] && pass "all $n spellings in the name index name one project" || skip "no name index to check"
 
 # --- 4d. every spelling the runtime has written resolves ------------------------------

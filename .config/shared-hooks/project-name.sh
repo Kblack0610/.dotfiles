@@ -94,7 +94,9 @@ project_lookup() {
 # dot (`Kblack0610/.dotfiles` -> `dotfiles`). The one shell answer to "which project is this name".
 project_canonical() {
   project_lookup "$1" && return 0
-  local n="${1%/}"; n="${n##*/}"; printf '%s\n' "${n#.}"
+  local n="$1"
+  while [ "${n%/}" != "$n" ]; do n="${n%/}"; done
+  n="${n##*/}"; printf '%s\n' "${n#.}"
 }
 
 # project_index_json -> the name index as one {"<spelling>": "<key>"} object, for a jq program

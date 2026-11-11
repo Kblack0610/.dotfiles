@@ -603,17 +603,14 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
         })
         .collect();
     // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
-    out.sort_by(|a, b| {
-        let k = |t: &RunTime| {
-            (
-                t.project(),
-                std::cmp::Reverse(t.runs),
-                t.workflow.clone(),
-                t.repo.clone(),
-                t.forge.clone(),
-            )
-        };
-        k(a).cmp(&k(b))
+    out.sort_by_cached_key(|t| {
+        (
+            t.project(),
+            std::cmp::Reverse(t.runs),
+            t.workflow.clone(),
+            t.repo.clone(),
+            t.forge.clone(),
+        )
     });
     let usual: HashMap<Key, Usual> = out
         .iter()

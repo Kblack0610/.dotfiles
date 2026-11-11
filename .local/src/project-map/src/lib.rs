@@ -47,23 +47,17 @@ pub fn cached() -> Option<Arc<Registry>> {
 
 /// The project key `name` spells, through the cached registry; see `Registry::canonical`.
 pub fn canonical(name: &str) -> String {
-    canonical_in(cached().as_deref(), name)
+    cached().map_or_else(|| fallback(name), |r| r.canonical(name))
 }
 
-/// `Registry::canonical` through `reg`, or with no registry the name's last path segment: what a
-/// caller holding its own registry (a test's, or one read from another path) asks.
-pub fn canonical_in(reg: Option<&Registry>, name: &str) -> String {
-    reg.map_or_else(|| fallback(name), |r| r.canonical(name))
-}
-
-/// What a name no registry entry knows reads as: its last path segment, leading dot stripped,
+/// What a name no registry entry knows reads as: its last path segment, one leading dot stripped,
 /// case kept (`Kblack0610/.dotfiles` -> `dotfiles`).
 fn fallback(name: &str) -> String {
     let last = name.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
-    last.trim_start_matches('.').to_string()
+    last.strip_prefix('.').unwrap_or(last).to_string()
 }
 
-/// Each `/`-suffix of `name`, longest first, each as written and without a leading dot,
+/// Each `/`-suffix of `name`, longest first, each as written and without one leading dot,
 /// lowercased: the forms the index stores and a lookup tries.
 fn suffixes(name: &str) -> Vec<String> {
     let lower = name.to_lowercase();
@@ -71,7 +65,7 @@ fn suffixes(name: &str) -> Vec<String> {
     let mut out = Vec::new();
     for i in 0..segs.len() {
         let s = segs[i..].join("/");
-        let bare = s.trim_start_matches('.').to_string();
+        let bare = s.strip_prefix('.').unwrap_or(&s).to_string();
         out.push(s);
         if bare != *out.last().unwrap() && !bare.is_empty() {
             out.push(bare);
@@ -158,7 +152,7 @@ impl Registry {
         by_path.sort();
         for (path, key) in by_path {
             let base = path.rsplit('/').next().unwrap_or("").to_lowercase();
-            let bare = base.trim_start_matches('.').to_string();
+            let bare = base.strip_prefix('.').unwrap_or(&base).to_string();
             add(base, key);
             add(bare, key);
         }

@@ -29,3 +29,5 @@ Other	Other
 someone/.thing	thing
 default	default
 _comment	_comment
+someone/thing//	thing
+..dots	.dots
