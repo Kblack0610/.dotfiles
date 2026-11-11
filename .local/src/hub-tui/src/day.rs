@@ -179,7 +179,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         "{} sessions",
         sessions(rec).map_or("-".into(), |n| n.to_string())
     ));
-    items.push(hub_core::costs::SPEND_BADGE.into());
+    items.push(hub_core::costs::spend_badge());
     if let Some(f) = rec["fleet"].as_object() {
         let mut b: Vec<(&String, i64)> = f
             .get("buckets")

@@ -436,9 +436,12 @@ fn history(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         ));
     }
     if c.history_older > 0 {
-        let key = hub_core::layout::bar_digit("log").map_or(String::new(), |d| format!("{d} "));
         out.push(Line::styled(
-            format!("  +{} older on {key}Log, Actions", c.history_older),
+            format!(
+                "  +{} older on {}, Actions",
+                c.history_older,
+                hub_core::layout::bar_label("log")
+            ),
             p.dim(),
         ));
     }

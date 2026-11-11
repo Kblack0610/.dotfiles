@@ -291,6 +291,13 @@ pub fn bar_digit(id: &str) -> Option<usize> {
         .map(|i| (i + 1) % 10)
 }
 
+/// A tab as the TUI's text names it: its bar digit and title (`8 Alerts`), or the title alone for
+/// a tab with no digit, so a badge or hint never names a stale key after a reorder.
+pub fn bar_label(id: &str) -> String {
+    let title = resolve(id).map_or(id, |t| t.title);
+    bar_digit(id).map_or(title.to_string(), |d| format!("{d} {title}"))
+}
+
 /// Where a section that moved off `tab` lives now: its new tab and section.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
     let (t, s) = (
@@ -528,6 +535,14 @@ mod tests {
         assert_eq!(bar_digit("alerts"), Some(8));
         assert_eq!(bar_digit("log"), Some(2));
         assert_eq!(bar_digit("sessions"), Some(4));
+    }
+
+    #[test]
+    fn a_bar_label_is_the_digit_and_title_or_the_title_alone() {
+        assert_eq!(bar_label("sessions"), "4 Sessions");
+        assert_eq!(bar_label("alerts"), "8 Alerts");
+        assert_eq!(bar_label("costs"), "Costs", "the eleventh has no digit");
+        assert_eq!(bar_label("daily"), "Daily", "off the bar");
     }
 
     #[test]

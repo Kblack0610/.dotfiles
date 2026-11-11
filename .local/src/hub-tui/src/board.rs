@@ -318,7 +318,7 @@ impl<'a> Board<'a> {
                 self.num("cc:watches_tripped"),
                 self.num("cc:watches_total")
             ),
-            hub_core::costs::SPEND_BADGE.into(),
+            hub_core::costs::spend_badge(),
         ];
         if self.get("cc:agent_sessions_running").is_some() {
             items.push(format!(
@@ -641,14 +641,10 @@ impl<'a> Board<'a> {
     /// The CI runs themselves are Releases' Builds section (`hub_core::builds`); CI points there,
     /// and Releases names its own window so no number is repeated here.
     pub fn runs_badge(&self) -> Line<'static> {
-        let key =
-            hub_core::layout::bar_digit("releases").map_or(String::new(), |d| format!("{d} "));
+        let releases = hub_core::layout::bar_label("releases");
         Line::from(vec![
             Span::styled("RUNS", self.p.head()),
-            Span::styled(
-                format!("  every CI run: {key}Releases, Builds"),
-                self.p.dim(),
-            ),
+            Span::styled(format!("  every CI run: {releases}, Builds"), self.p.dim()),
         ])
     }
     /// The governor's per-host series as name -> host -> (labels' key value, value).
@@ -1654,7 +1650,7 @@ pub(crate) mod tests {
         let ci = tab(&fixture(), "ci", 160);
         assert_eq!(
             ci.lines().last(),
-            Some("RUNS  every CI run: Releases, Builds"),
+            Some("RUNS  every CI run: 7 Releases, Builds"),
             "{ci}"
         );
         assert!(!ci.contains("RECENT RUNS"), "the runs are Releases': {ci}");

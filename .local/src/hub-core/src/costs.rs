@@ -44,9 +44,10 @@ pub const DEFAULT_WINDOW: &str = "7d";
 pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
-/// The line a TUI tab prints where it would show spend: the Costs tab, and its key while it has
-/// one (the eleventh tab on the bar has none; Tab reaches it).
-pub const SPEND_BADGE: &str = "spend: Costs";
+/// The line a TUI tab prints where it would show spend: the Costs tab and its key, when it has one.
+pub fn spend_badge() -> String {
+    format!("spend: {}", crate::layout::bar_label("costs"))
+}
 
 /// What the tool cut says when its snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
@@ -1485,14 +1486,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_spend_badge_names_the_costs_key() {
-        assert_eq!(
-            crate::layout::bar_digit("costs")
-                .map_or("spend: Costs".into(), |d| format!("spend: {d} Costs")),
-            SPEND_BADGE
-        );
-    }
     #[test]
     fn the_totals_are_the_outcomes_cost_per_window() {
         let t = totals(&costs().sessions, NOW);

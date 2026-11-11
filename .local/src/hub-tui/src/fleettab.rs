@@ -57,7 +57,7 @@ pub fn page(
                 "  {} of {} rows, {}",
                 rows.len(),
                 f.who.len(),
-                hub_core::costs::SPEND_BADGE
+                hub_core::costs::spend_badge()
             ),
             p,
         ),
@@ -588,8 +588,8 @@ pub fn runner_page(
         heading(
             "RUNS",
             format!(
-                "  14 days of runs.jsonl; a run's log: {}Infra, h on {}",
-                hub_core::layout::bar_digit("infra").map_or(String::new(), |d| format!("{d} ")),
+                "  14 days of runs.jsonl; a run's log: {}, h on {}",
+                hub_core::layout::bar_label("infra"),
                 r.name
             ),
             p,
@@ -799,13 +799,12 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         // the count and the way there.
         Extras::SentinelWatches { watches } => {
             let trip = watches.iter().filter(|x| x.state == "TRIP").count();
-            let key =
-                hub_core::layout::bar_digit("alerts").map_or(String::new(), |d| format!("{d} "));
+            let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
                     "WATCHES",
                     format!(
-                        "  {} watches, {trip} tripped: {key}Alerts, Watches",
+                        "  {} watches, {trip} tripped: {alerts}, Watches",
                         watches.len()
                     ),
                     p,
