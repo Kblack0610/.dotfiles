@@ -114,13 +114,15 @@ find_firefox_dir() {
 # every write below.
 check_bundle_writable() {
     [[ "$(uname -s)" == Darwin ]] || return 0
+    # A wrong password fails the probe too, so ask sudo first and say which one failed.
+    sudo -v || { echo "Error: sudo did not accept the password."; exit 1; }
     local probe="$1/.dotfiles-write-probe"
     if sudo touch "$probe" 2>/dev/null; then
         sudo rm -f "$probe"
         return 0
     fi
     echo "Error: macOS refused a write into $1."
-    echo "  System Settings > Privacy & Security > App Management: allow your terminal, then rerun."
+    echo "  System Settings > Privacy & Security > App Management: allow your terminal, quit and reopen it, then rerun."
     exit 1
 }
 
