@@ -236,14 +236,21 @@ cmd_forges() {
   local map dir name r rc forge repo mirror remotes rn
   map="$(project_map_file)"
   [ -r "$map" ] || die "no registry at $map"
+  local lib; lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
+  # shellcheck source=../lib/origin-repo.sh
+  . "$lib/origin-repo.sh"
   # shellcheck source=../lib/session-outcomes.sh
-  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
+  . "$lib/session-outcomes.sh"
+  # Read the Forgejo host list once, not once per row (so_forgejo_hosts sources a conf).
+  local hosts; hosts="$(so_forgejo_hosts)"
+  local SO_FORGEJO_HOSTS="$hosts"
   {
     printf 'PROJECT\tFORGE\tREPO\tMIRROR\tREMOTES\n'
     while IFS=$'\t' read -r name dir; do
       mirror=- remotes=-
       if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        printf '%s\tabsent\t%s\t-\t-\n' "$name" "$dir"
+        if [ -d "$dir" ]; then forge=not-git; else forge=absent; fi
+        printf '%s\t%s\t%s\t-\t-\n' "$name" "$forge" "$dir"
         continue
       fi
       rc=0 r="$(so_forge_remote "$dir")" || rc=$?
@@ -251,7 +258,8 @@ cmd_forges() {
         0) forge=forgejo repo=${r#* } ;;
         2) forge=broken repo="mirror marker but no remote on $(so_forgejo_hosts)" ;;
         *) if repo="$(origin_repo "$dir")"; then
-             forge="$(origin_host "$dir")" repo="$forge/$repo"
+             forge="$(origin_host "$dir")"
+             forge=${forge:-local} repo="$forge/$repo"
              [ "$forge" != github.com ] || forge=github
            else
              forge=none repo=-
@@ -260,7 +268,8 @@ cmd_forges() {
       forge_canonical "$(git -C "$dir" rev-parse --show-toplevel)" && mirror=github
       remotes=''
       for rn in $(git -C "$dir" remote); do
-        remotes+="${remotes:+ }$rn=$(url_host "$(git -C "$dir" remote get-url "$rn")")"
+        r="$(url_host "$(git -C "$dir" remote get-url "$rn")")"
+        remotes+="${remotes:+ }$rn=${r:-local}"
       done
       printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$forge" "$repo" "$mirror" "${remotes:--}"
     done < <(jq -r '.paths | to_entries | sort_by(.value)[] | "\(.value)\t\(.key)"' "$map")

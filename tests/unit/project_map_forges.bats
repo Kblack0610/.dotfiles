@@ -58,3 +58,21 @@ row() { grep -E "^$1 " <<<"$output" | tr -s ' '; }
   run "$PM" forges extra
   assert_failure 2
 }
+
+@test "forges: a registered directory that is not a git checkout is not-git, a missing one absent" {
+  mkdir -p "$R/plain"
+  jq --arg r "$R" '.paths[$r+"/plain"] = "plain"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$PM" forges
+  assert_success
+  [ "$(row plain)" = "plain not-git $R/plain - -" ]
+  [ "$(row gone)" = "gone absent $R/gone - -" ]
+}
+
+@test "forges: a local-path origin is forge local, never an empty column" {
+  git init -q -b main "$R/loc"
+  git -C "$R/loc" remote add origin /srv/git/o/loc.git
+  jq --arg r "$R" '.paths[$r+"/loc"] = "loc"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$PM" forges
+  assert_success
+  [ "$(row loc)" = "loc local local/o/loc - origin=local" ]
+}

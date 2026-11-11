@@ -357,7 +357,8 @@ fj_detect() {
   case $rc in
     0) ;;
     1) return 0 ;;
-    *) die "$(git rev-parse --show-toplevel 2>/dev/null) is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf" ;;
+    2) die "$(git rev-parse --show-toplevel 2>/dev/null) is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf" ;;
+    *) die "picking the forge failed (so_forge_remote rc $rc)" ;;
   esac
   remote=${r%% *} fj=${r#* } api=Forgejo forge=Forgejo
 }

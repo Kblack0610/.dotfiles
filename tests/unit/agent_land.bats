@@ -154,7 +154,7 @@ EOF
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
 board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
 # ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
-ran() { grep -v -x -e 'git -C . rev-parse --show-toplevel' "$LOG" || true; }
+ran() { grep -v -x -E 'git( -C [^ ]+)? rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
 not_recorded() { grep -v '^notes ingest record ' "$LOG" || true; }
 
