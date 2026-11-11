@@ -99,7 +99,7 @@ const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
   states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "lead", n: 1, q: "kind:lead" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, on: false, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
@@ -143,7 +143,8 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.match(h, /who spent what on <a href="#costs">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
-  assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind">/, "kind's dropdown sits under its header");
+  assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
 });
 
 test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
