@@ -40,6 +40,11 @@ pub fn fleet_cost() -> PathBuf {
     fleet_state().with_file_name("fleet-cost.json")
 }
 
+/// `agent-usage budget --json`'s file, which fleet-bench's budget step writes beside fleet-cost.json.
+pub fn budget() -> PathBuf {
+    fleet_state().with_file_name("budget.json")
+}
+
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))

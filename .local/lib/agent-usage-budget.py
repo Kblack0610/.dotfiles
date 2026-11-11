@@ -26,8 +26,8 @@ The split: each subscription's fee goes to projects and lanes by its account's s
 list-price work (the snapshots' fleet_cost.by_session: account, project, origin as the lane); a session
 with no project, or an account with no work, goes to `unattributed`. by_project and by_lane each sum to
 total.spent exactly. `check` reads $BUDGET_JSON (the fleet-bench step writes it from --json) and exits 1
-on a file older than 2h, a capped metered line or product over pace (spend over cap * elapsed share + $15,
-or over 90% of the cap: the gh-actions-budget-pace rule), a metered line whose month projection (AWS's own
+(the fleet-budget-pace watch) on a file older than 2h, or on any of these, which --json also writes as `needs` for the Costs tab: a capped metered line or product over pace (spend over cap * elapsed share + $15,
+or over 90% of the cap), a metered line whose month projection (AWS's own
 forecast on aws) passes its cap, or a line unread for 24h (unread_since is carried over from the previous
 file, the only record of how long a reader has failed). Fixed fees are never a trigger: they are spent whole.
 """
@@ -53,7 +53,7 @@ PROJECT_MAP = ENV.get("PROJECT_MAP", f"{HOME}/.config/shared-hooks/project-map.j
 CLAUDE_ACCT_STALE_SECS = 3600  # hub-core burn::STALE_AFTER_SECS, the same textfile
 FILE_STALE_SECS = 2 * 3600     # hub-core fleet_cost::STALE_SECS, the fleet-bench step's 30-minute file
 UNREAD_DAYS = 1
-PACE_SLACK_USD = 15            # about one heavy merge day of Actions (gh-actions-budget-pace, 2026-09-28)
+PACE_SLACK_USD = 15            # about one heavy merge day of Actions (set for Actions pace, 2026-09-28)
 CAP_WARN = 0.9
 UNATTRIBUTED = "unattributed"
 SCHEMA = 2
@@ -293,11 +293,19 @@ def read_bill(b, frac, work, month):
                         products={k: {"cap": v, "spent": round(by_sku.get(k, 0), 2)} for k, v in sorted(caps.items())},
                         by_repo=by_repo)
         elif b["kind"] == "aws":
-            vals = {r["metric"].get("kind"): float(r["value"][1]) for r in prom("ci_governor_budget_usd")}
+            rows = prom('{__name__=~"ci_governor_budget_(usd|ok)"}')
+            # The governor keeps serving its last figure after a failed AWS Budgets read: not a current one.
+            if any(r["metric"].get("__name__") == "ci_governor_budget_ok" and float(r["value"][1]) == 0 for r in rows):
+                raise Unread('the governor\'s last AWS Budgets read failed (runbook, "budget read")')
+            vals = {r["metric"]["kind"]: float(r["value"][1]) for r in rows if "kind" in r["metric"]}
             if "actual" not in vals:
                 raise Unread("no ci_governor_budget_usd{kind=actual} in Prometheus")
-            line.update(cap=vals.get("limit"), spent=vals["actual"], projected=vals.get("forecast", pace(vals["actual"], frac)),
-                        note="AWS's own forecast" if "forecast" in vals else "")
+            # AWS forecasts from history; on a new account it can sit below what is already spent.
+            fc = vals.get("forecast")
+            if fc is not None and fc < vals["actual"]:
+                fc = None
+            line.update(cap=vals.get("limit"), spent=vals["actual"], projected=pace(vals["actual"], frac) if fc is None else fc,
+                        note="AWS's own forecast" if fc is not None else "")
         elif b["kind"] == "digitalocean":
             spent = float(run_json(["doctl", "balance", "get", "-o", "json"])["month_to_date_usage"])
             line.update(spent=spent, projected=pace(spent, frac))
@@ -328,7 +336,7 @@ def budget(now):
     by = split(lines, cells, work)
     for x in lines:
         x.pop("by_repo", None)
-    return {
+    d = {
         "schema": SCHEMA,
         "month": f"{month[0]:04d}-{month[1]:02d}",
         "as_of": now.isoformat(timespec="seconds"),
@@ -347,6 +355,8 @@ def budget(now):
         "by_lane": rollup(by, 1, spent),
         "lines": lines,
     }
+    d["needs"] = reasons(d, now)
+    return d
 
 
 def carry_unread(lines, now):
@@ -373,6 +383,12 @@ def check(now):
     age = now.timestamp() - d["as_of_epoch"]
     if age > FILE_STALE_SECS:
         return [f"{os.path.basename(BUDGET_JSON)} is {age / 3600:.1f}h old (the fleet-bench budget step)"]
+    return reasons(d, now)
+
+
+def reasons(d, now):
+    """What `check` trips on in one budget, other than its age; the file carries them as `needs`, which
+    the Costs Budget tab shows, so the tab and the watch say the same thing."""
     why, el = [], d["elapsed"]
     for x in d.get("lines") or []:
         if x.get("paid_by"):

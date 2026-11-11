@@ -638,7 +638,7 @@ fn change(now: f64, prev: f64) -> String {
     format!("{:+.0}%", (now - prev) / prev * 100.0)
 }
 
-fn month_name(ym: &str) -> String {
+pub(crate) fn month_name(ym: &str) -> String {
     const NAMES: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

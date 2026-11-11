@@ -221,6 +221,8 @@ pub struct Costs {
     pub snapshots: Vec<Snapshot>,
     /// The whole fleet's 24h cost; `why` says so when its file could not be read.
     pub fleet_cost: FleetCost,
+    /// The Budget inner tab: this month's cash by bill; `why` says so when its file could not be read.
+    pub budget: crate::budget::Budget,
     /// The History section: the fleet's dollars per day, month and year from every snapshot.
     pub history: crate::spend_history::History,
     /// Every snapshot day with its session rows, for the day table; too big to send whole.
@@ -248,6 +250,8 @@ pub struct Paths {
     pub headroom: PathBuf,
     /// `agent-usage fleet-cost`'s file.
     pub fleet_cost: PathBuf,
+    /// `agent-usage budget`'s file.
+    pub budget: PathBuf,
     /// `claude-acct gateway`'s snapshot.
     pub gateway: PathBuf,
 }
@@ -260,6 +264,7 @@ impl Paths {
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
             fleet_cost: crate::boards::fleet_cost(),
+            budget: crate::boards::budget(),
             gateway: crate::boards::gateway_snapshot(),
         }
     }
@@ -338,6 +343,10 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
         Ok(f) => crate::fleet_cost::build(&f, now),
         Err(e) => crate::fleet_cost::missing(e),
+    };
+    c.budget = match crate::budget::load(&paths.budget) {
+        Ok(f) => crate::budget::build(&f, now),
+        Err(e) => crate::budget::missing(e),
     };
 }
 
@@ -978,6 +987,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub fleet_cost: FleetCost,
+    pub budget: crate::budget::Budget,
     pub history: crate::spend_history::History,
     /// One day's sessions ranked by cost, and the opened session's own days.
     pub day: crate::spend_history::DayView,
@@ -988,7 +998,7 @@ pub struct Board {
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
     /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
-    /// Langfuse with no figures or stale.
+    /// Langfuse with no figures or stale, and a Budget that needs a look or was not read.
     pub amber: Vec<&'static str>,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
     /// the window (the snapshots are nightly).
@@ -1028,6 +1038,9 @@ fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> 
         if t.stale || t.langfuse.figures.is_none() {
             out.push("langfuse");
         }
+    }
+    if c.budget.flagged() {
+        out.push("budget");
     }
     out
 }
@@ -1159,6 +1172,7 @@ pub fn board(
             .filter(|t| t.window != "24h")
             .collect(),
         fleet_cost: c.fleet_cost.clone(),
+        budget: c.budget.clone(),
         history: c.history.clone(),
         day: crate::spend_history::day_view(&c.spend_days, spend),
         totals_note: TOTALS_NOTE,
@@ -1214,6 +1228,7 @@ mod tests {
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
@@ -1889,6 +1904,7 @@ not json
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();

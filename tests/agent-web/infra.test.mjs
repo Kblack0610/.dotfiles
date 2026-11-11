@@ -130,3 +130,21 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);
   assert.deepEqual(r("#jobs"), ["infra", "jobs", "jobs"]);
 });
+
+test("the Cloud card's month is a link to Costs, Budget; AWS's stops and emails stay", () => {
+  const g = run(`governorIndex({ governor: [
+    { labels: { __name__: "ci_governor_budget_ok" }, value: 1 },
+    { labels: { __name__: "ci_governor_budget_updated" }, value: 1700000000 },
+    { labels: { __name__: "ci_governor_budget_usd", kind: "actual" }, value: 113 },
+    { labels: { __name__: "ci_governor_budget_usd", kind: "limit" }, value: 600 },
+    { labels: { __name__: "ci_governor_budget_alert", basis: "actual", usd: "450" }, value: 1 },
+    { labels: { __name__: "ci_governor_budget_action_usd", type: "stop", status: "STANDBY" }, value: 550 },
+  ] })`);
+  const h = run(`budgetLines(${JSON.stringify(g)})`);
+  assert.match(h, /Month: <a href="#costs\/budget">Costs, Budget<\/a>/);
+  assert.doesNotMatch(h, /\$113|of \$600|forecast/, "the dollars are Costs, Budget's, not a second home");
+  assert.match(h, /Emails at \$450/);
+  assert.match(h, /at \$550 AWS stops it and blocks starts/);
+  assert.doesNotMatch(h, /READ FAILED/);
+  assert.match(run(`budgetLines(${JSON.stringify({ ...g, budget_ok: 0 })})`), /READ FAILED/);
+});

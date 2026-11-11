@@ -208,8 +208,10 @@ pub const TABS: [Tab; 13] = [
             "tokens",
             "langfuse",
             "sections",
+            "budget",
         ],
-        // The 24h fleet figure stays above the strip; the strip splits the three questions.
+        // The 24h fleet figure stays above the strip; the strip splits the four questions. Budget
+        // is cash (the bills we pay); the 24h figure and the rest of the tab are list price.
         pinned: &["fleet"],
         inner: &[
             Inner {
@@ -226,6 +228,11 @@ pub const TABS: [Tab; 13] = [
                 id: "models",
                 title: "Models",
                 sections: &["tokens", "langfuse", "sections"],
+            },
+            Inner {
+                id: "budget",
+                title: "Budget",
+                sections: &["budget"],
             },
         ],
     },
@@ -602,7 +609,7 @@ mod tests {
         for t in &TABS {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
-        assert_eq!(resolve("costs").unwrap().inner.len(), 3);
+        assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 4);
     }
 
