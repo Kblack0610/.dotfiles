@@ -1,6 +1,6 @@
 "use strict";
-// The Infra tab, as the hub's Infra tab: one MACHINES table, CI, Jobs (jobs.js), cloud runners and
-// the governor, exceptions first; what is red and the health chips are on Alerts (alerts.js). /api/infra asks Prometheus the board's own
+// The Infra tab, as the hub's Infra tab, by inner tab: Machines (the MACHINES table, the governor), CI,
+// Jobs (jobs.js) and Cloud runners, exceptions first; what is red and the health chips are on Alerts (alerts.js). /api/infra asks Prometheus the board's own
 // queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
@@ -433,9 +433,10 @@ function renderInfra() {
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
   html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`);
+  html += innerWrap("infra", "governor", governorPanel(inst));
   html += innerWrap("infra", "ci", ciSection(cc, inst, t1, d.ci));
   paint(el, html, ist.open);
-  paint(tail, innerWrap("infra", "governor", governorPanel(inst)) + innerWrap("infra", "cloud", cloudCard(inst)));
+  paint(tail, innerWrap("infra", "cloud", cloudCard(inst)));
   seekSection();
 }
 
