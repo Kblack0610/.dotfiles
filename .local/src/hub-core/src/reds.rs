@@ -41,6 +41,9 @@ pub const SETTLED: [&str; 7] = [
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Red {
     pub slug: String,
+    /// The queue item's project; empty when the item names none.
+    #[serde(default)]
+    pub project: String,
     /// `<area> <name>` (`watch playground-nightly`), else the item's title.
     #[serde(default)]
     pub red: String,

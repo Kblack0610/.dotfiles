@@ -111,6 +111,8 @@ pub struct Watch {
     /// TRIP, OK, ERROR, or `new` before its first run.
     pub state: String,
     pub severity: String,
+    /// Its `project:`, a canonical project name; empty for a fleet-wide watch.
+    pub project: String,
     pub since: Option<i64>,
     pub lastrun: Option<i64>,
     pub lasttrip: Option<i64>,
@@ -572,6 +574,7 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
             Some(Watch {
                 state: if st.is_empty() { "new".into() } else { st },
                 severity,
+                project: field(&yaml, "project"),
                 since: read(&name, "since").parse().ok(),
                 lastrun: read(&name, "lastrun").parse().ok(),
                 lasttrip: read(&name, "lasttrip").parse().ok(),

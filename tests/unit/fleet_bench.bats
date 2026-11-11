@@ -2290,6 +2290,23 @@ red_item() {
   assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
 }
 
+@test "reds: each row carries the project of its queue item, so the Alerts tab can file a fix under it" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  jq -c '. + {project: "home-config"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.project' <<<"$output")" home-config
+  # an item naming no project reads as "", never null: hub-core's Red.project is a String
+  jq -c 'del(.project)' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.project' <<<"$output")" '""'
+}
+
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"

@@ -162,6 +162,7 @@ test("with a project open every card is read, and an answer for a list no longer
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
   needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
+  alerts: { says: "2 watches, 1 firing", level: "bad" },
   systems: [
     { id: "ui", head: "ui  25%  1 feature, 0 done  criteria 5 of 7", closed: "+1 closed, 1 verified", epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true, leaves: [
       { id: "de-1", line: "[ ] de-1  feat: wire the pause key  m", done: false },
@@ -186,6 +187,7 @@ test("an opened card reads its page once and shows Needs you, then open folds wi
   await settle();
   head = box("p-head").innerHTML;
   assert.match(head, /flow: ideas 3 \| briefs 1/);
+  assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
   assert.match(head, /Needs you <span class="muted">1<\/span><\/h2><div class="card"><div class="qlate">verify: Saves/);
   // Build by system is always shown, above Needs you: a fold per system with an epic, a fold per
   // epic over its tasks, an open task a link to its row, a system with no epic only its line.
