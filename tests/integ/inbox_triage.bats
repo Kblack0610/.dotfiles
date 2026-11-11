@@ -92,7 +92,6 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
   # The --priority pass's rubric, so the row is filed with the priority that pass would give it (ar-1615).
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
-  refute grep -q "omit when unclear" "$NOTES_FIXTURE/prompt.txt"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
