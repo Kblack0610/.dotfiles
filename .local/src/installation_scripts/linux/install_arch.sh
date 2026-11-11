@@ -288,9 +288,10 @@ setup_printing() {
 setup_3d_printing() {
     log_section "Setting up 3D printing (native OrcaSlicer)"
 
-    # Native build from the AUR. A Docker wrapper at ~/.local/bin/orca-slicer
+    # Upstream AppImage from the AUR (-bin), which tracks releases faster than
+    # the source-built orca-slicer. A Docker wrapper at ~/.local/bin/orca-slicer
     # was retired 2026-11-04; it shadowed this binary on PATH.
-    install_aur_package "orca-slicer"
+    install_aur_package "orca-slicer-bin"
 
     # Presets live in home-config (apps/orcaslicer/profiles); desktop-link.sh
     # links them into ~/.config/OrcaSlicer and fills the A1 LAN code from SOPS.

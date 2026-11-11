@@ -5,7 +5,7 @@ Native OrcaSlicer from the AUR slices for the Neptune 4 Pro and the Bambu A1. Th
 ## Quick Setup
 
 ```bash
-paru -S orca-slicer
+paru -S orca-slicer-bin
 ~/dev/home/home-config/apps/orcaslicer/desktop-link.sh   # OrcaSlicer closed
 ```
 
@@ -13,7 +13,7 @@ paru -S orca-slicer
 
 | Package | Source | Purpose |
 |---------|--------|---------|
-| `orca-slicer` | AUR | The slicer, `/usr/bin/orca-slicer` |
+| `orca-slicer-bin` | AUR | The slicer (upstream AppImage), `/usr/bin/orca-slicer` |
 | `sops`, `age` | pacman | `desktop-link.sh` decrypts the A1 LAN code |
 
 ## Configuration
