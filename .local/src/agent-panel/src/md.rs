@@ -14,7 +14,14 @@ const DEFAULT_WIDTH: usize = 100;
 pub fn width() -> usize {
     ["FZF_PREVIEW_COLUMNS", "COLUMNS"]
         .iter()
-        .find_map(|v| std::env::var(v).ok()?.trim().parse::<usize>().ok().filter(|&w| w > 0))
+        .find_map(|v| {
+            std::env::var(v)
+                .ok()?
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&w| w > 0)
+        })
         .unwrap_or(DEFAULT_WIDTH)
         .clamp(MIN_WIDTH, MAX_WIDTH)
 }
@@ -36,7 +43,11 @@ pub fn plain(text: &str, width: usize) -> String {
         if fence {
             // Code keeps its blank lines: only prose has its blank runs made one.
             let code = line.trim_end();
-            out.push(if code.is_empty() { String::new() } else { format!("  {code}") });
+            out.push(if code.is_empty() {
+                String::new()
+            } else {
+                format!("  {code}")
+            });
             continue;
         }
         if t.starts_with('|') {
@@ -79,7 +90,9 @@ fn push(out: &mut Vec<String>, line: String) {
 
 /// A `---`, `***` or `___` line: three or more of one mark, spaces between them allowed.
 fn is_rule(t: &str) -> bool {
-    ['-', '*', '_'].iter().any(|&c| t.chars().all(|x| x == c || x == ' ') && t.chars().filter(|&x| x == c).count() >= 3)
+    ['-', '*', '_'].iter().any(|&c| {
+        t.chars().all(|x| x == c || x == ' ') && t.chars().filter(|&x| x == c).count() >= 3
+    })
 }
 
 /// A line with its `#` heading marks gone.
@@ -158,7 +171,8 @@ fn pair(s: &str, m: &str) -> Option<(usize, usize)> {
     let after = |i: usize| s[i + m.len()..].chars().next();
     let starts: Vec<usize> = s.match_indices(m).map(|(i, _)| i).collect();
     let open = starts.iter().copied().find(|&i| {
-        !before(i).is_some_and(char::is_alphanumeric) && after(i).is_some_and(|c| !c.is_whitespace() && c != m.as_bytes()[0] as char)
+        !before(i).is_some_and(char::is_alphanumeric)
+            && after(i).is_some_and(|c| !c.is_whitespace() && c != m.as_bytes()[0] as char)
     })?;
     let close = starts.iter().copied().find(|&i| {
         i > open + m.len()
@@ -177,7 +191,9 @@ fn cells(row: &str) -> Vec<String> {
     let mut chars = inner.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '\\' if chars.peek() == Some(&'|') => cells.last_mut().unwrap().push(chars.next().unwrap()),
+            '\\' if chars.peek() == Some(&'|') => {
+                cells.last_mut().unwrap().push(chars.next().unwrap())
+            }
             '`' => {
                 code = !code;
                 cells.last_mut().unwrap().push(c);
@@ -194,7 +210,8 @@ fn cells(row: &str) -> Vec<String> {
 
 /// A `|---|:--:|` separator row.
 fn is_separator(row: &[String]) -> bool {
-    row.iter().all(|c| !c.is_empty() && c.chars().all(|x| matches!(x, '-' | ':' | ' ')))
+    row.iter()
+        .all(|c| !c.is_empty() && c.chars().all(|x| matches!(x, '-' | ':' | ' ')))
 }
 
 /// A table as one line per body row, `header: value` pairs joined by `; ` (an empty cell left
@@ -265,13 +282,19 @@ mod tests {
     #[test]
     fn drops_headings_bold_backticks_and_fences_keeping_the_code() {
         let md = "## Result\n\nMerged **#12** with `make test` green.\n\n```bash\nmake -C tests\n```\nDone.";
-        assert_eq!(plain(md, 0), "Result\n\nMerged #12 with make test green.\n\n  make -C tests\nDone.");
+        assert_eq!(
+            plain(md, 0),
+            "Result\n\nMerged #12 with make test green.\n\n  make -C tests\nDone."
+        );
     }
 
     #[test]
     fn renders_a_table_as_one_header_value_line_per_row() {
         let md = "Before\n| Check | Result |\n|---|:--:|\n| unit | **ok** |\n| ui |  |\nAfter";
-        assert_eq!(plain(md, 0), "Before\nCheck: unit; Result: ok\nCheck: ui\nAfter");
+        assert_eq!(
+            plain(md, 0),
+            "Before\nCheck: unit; Result: ok\nCheck: ui\nAfter"
+        );
         // Negative control: with no separator row there is no header to pair with.
         assert_eq!(plain("| a | b |\n| c | d |", 0), "a; b\nc; d");
     }
@@ -284,14 +307,26 @@ mod tests {
             "- one two three\n  four five six\n12. alpha beta\n    gamma delta"
         );
         // Width 0 folds nothing.
-        assert_eq!(plain(md, 0), "- one two three four five six\n12. alpha beta gamma delta");
+        assert_eq!(
+            plain(md, 0),
+            "- one two three four five six\n12. alpha beta gamma delta"
+        );
     }
 
     #[test]
     fn keeps_marks_that_do_not_pair_and_code_as_written() {
-        assert_eq!(plain("Edit `__init__.py` and `a**b`, then **ship**.", 0), "Edit __init__.py and a**b, then ship.");
-        assert_eq!(plain("a ** b, snake__case, __bold__, a lone ` tick", 0), "a ** b, snake__case, bold, a lone ` tick");
-        assert_eq!(plain("| cmd | why |\n|---|---|\n| `a | b` | x \\| y |", 0), "cmd: a | b; why: x | y");
+        assert_eq!(
+            plain("Edit `__init__.py` and `a**b`, then **ship**.", 0),
+            "Edit __init__.py and a**b, then ship."
+        );
+        assert_eq!(
+            plain("a ** b, snake__case, __bold__, a lone ` tick", 0),
+            "a ** b, snake__case, bold, a lone ` tick"
+        );
+        assert_eq!(
+            plain("| cmd | why |\n|---|---|\n| `a | b` | x \\| y |", 0),
+            "cmd: a | b; why: x | y"
+        );
         // A fence keeps its blank lines; prose around it still has one at most.
         assert_eq!(plain("```\na\n\n\nb\n```", 0), "  a\n\n\n  b");
     }

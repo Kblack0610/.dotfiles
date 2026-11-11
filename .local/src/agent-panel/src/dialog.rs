@@ -59,17 +59,28 @@ impl Dialog {
 
 /// The dialog open at the foot of a `capture-pane -p` capture, or None when it shows none.
 pub fn parse(capture: &str) -> Option<Dialog> {
-    let lines: Vec<&str> = capture.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = capture
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     plan(&lines).or_else(|| question(&lines))
 }
 
 fn plan(lines: &[&str]) -> Option<Dialog> {
-    let head = lines.iter().rposition(|l| l.contains("plan") && l.contains(PLAN_PROMPT))?;
+    let head = lines
+        .iter()
+        .rposition(|l| l.contains("plan") && l.contains(PLAN_PROMPT))?;
     if lines.len() - head > PLAN_PROMPT_FOOT {
         return None;
     }
     let options = options(&lines[head + 1..]);
-    (!options.is_empty()).then(|| Dialog { kind: Kind::Plan, title: vec![], tabs: String::new(), options })
+    (!options.is_empty()).then(|| Dialog {
+        kind: Kind::Plan,
+        title: vec![],
+        tabs: String::new(),
+        options,
+    })
 }
 
 fn question(lines: &[&str]) -> Option<Dialog> {
@@ -83,7 +94,10 @@ fn question(lines: &[&str]) -> Option<Dialog> {
     // is one, is the left-arrow line above it.
     let bar = |l: &str| l.trim_start().starts_with('│');
     let last_bar = body.iter().rposition(|l| bar(l))?;
-    let first_bar = body[..=last_bar].iter().rposition(|l| !bar(l)).map_or(0, |i| i + 1);
+    let first_bar = body[..=last_bar]
+        .iter()
+        .rposition(|l| !bar(l))
+        .map_or(0, |i| i + 1);
     let title = body[first_bar..=last_bar]
         .iter()
         .map(|l| l.trim_start().trim_start_matches('│').trim().to_string())
@@ -96,12 +110,19 @@ fn question(lines: &[&str]) -> Option<Dialog> {
         .map(|l| l.trim().to_string())
         .unwrap_or_default();
     let options = options(&body[last_bar + 1..]);
-    (!options.is_empty()).then_some(Dialog { kind: Kind::Question, title, tabs, options })
+    (!options.is_empty()).then_some(Dialog {
+        kind: Kind::Question,
+        title,
+        tabs,
+        options,
+    })
 }
 
 /// Width of a line's lead, the selection marker counted as blank.
 fn indent(l: &str) -> usize {
-    l.chars().take_while(|c| c.is_whitespace() || *c == '\u{276f}').count()
+    l.chars()
+        .take_while(|c| c.is_whitespace() || *c == '\u{276f}')
+        .count()
 }
 
 /// `N. text` lines at the dialog's option indent, each with the more indented lines under it.
@@ -128,7 +149,9 @@ fn options(lines: &[&str]) -> Vec<Opt> {
                     detail: vec![],
                 },
             )),
-            (_, Some((at, last))) if lead > *at + 1 && !rest.starts_with("──") => last.detail.push(rest.to_string()),
+            (_, Some((at, last))) if lead > *at + 1 && !rest.starts_with("──") => {
+                last.detail.push(rest.to_string())
+            }
             _ => {}
         }
     }
@@ -152,12 +175,27 @@ pub trait Keys: send::Pane {
 
 /// Press option `key` of the dialog open in `pane`, after checking it still reads `expect`; a
 /// free-text option then gets `text` typed into the field it opens and Enter.
-pub fn answer(pane: &mut impl Keys, key: char, expect: &str, text: &str, polls: u32) -> Result<Answered> {
+pub fn answer(
+    pane: &mut impl Keys,
+    key: char,
+    expect: &str,
+    text: &str,
+    polls: u32,
+) -> Result<Answered> {
     let before = pane.capture();
-    let Some(d) = parse(&before) else { return Ok(Answered::Gone("no dialog is open there now".into())) };
-    let Some(opt) = d.option(key) else { return Ok(Answered::Gone(format!("the dialog has no option {key} now"))) };
+    let Some(d) = parse(&before) else {
+        return Ok(Answered::Gone("no dialog is open there now".into()));
+    };
+    let Some(opt) = d.option(key) else {
+        return Ok(Answered::Gone(format!(
+            "the dialog has no option {key} now"
+        )));
+    };
     if !expect.is_empty() && opt.text != expect {
-        return Ok(Answered::Gone(format!("option {key} now reads \"{}\"", opt.text)));
+        return Ok(Answered::Gone(format!(
+            "option {key} now reads \"{}\"",
+            opt.text
+        )));
     }
     if opt.free && text.is_empty() {
         bail!("option {key} takes a typed answer");
@@ -198,7 +236,12 @@ impl Keys for send::TmuxPane<'_> {
         } else {
             vec!["send-keys", "-t", local, key]
         };
-        if !Command::new("tmux").args(["-L", server]).args(&args).status()?.success() {
+        if !Command::new("tmux")
+            .args(["-L", server])
+            .args(&args)
+            .status()?
+            .success()
+        {
             bail!("tmux {} failed on {}", args[0], self.target);
         }
         Ok(())
@@ -207,14 +250,19 @@ impl Keys for send::TmuxPane<'_> {
 
 /// The live Claude at a `<server>/<session>:<window>` target: a Codex row has no Claude dialog.
 fn agent(target: &str) -> Result<crate::chooser::Agent> {
-    crate::chooser::collect().into_iter().find(|a| a.target == target && !a.codex).with_context(|| format!("no live agent at {target}"))
+    crate::chooser::collect()
+        .into_iter()
+        .find(|a| a.target == target && !a.codex)
+        .with_context(|| format!("no live agent at {target}"))
 }
 
 /// `agent-panel dialog <target>`: the card for the dialog open in that session, or with
 /// `options` its options as `<key>\t<free 0|1>\t<text>` lines. Exits 1 when it shows none.
 pub fn run_card(target: &str, options: bool) -> Result<()> {
     let a = agent(target)?;
-    let Some(d) = parse(&tmux::capture_pane(&a.pane, false, 0)) else { std::process::exit(1) };
+    let Some(d) = parse(&tmux::capture_pane(&a.pane, false, 0)) else {
+        std::process::exit(1)
+    };
     if options {
         for o in &d.options {
             println!("{}\t{}\t{}", o.key, u8::from(o.free), o.text);
@@ -223,7 +271,16 @@ pub fn run_card(target: &str, options: bool) -> Result<()> {
     }
     let color = std::env::var("AGENT_ASK_COLOR").is_ok_and(|v| v == "1");
     let plan = Plan::of(&d, a.jsonl.as_deref().and_then(crate::jsonl::open_plan_at));
-    print!("{}", card(&d, &format!("{}  {}", a.target, a.project), plan, color, crate::md::width()));
+    print!(
+        "{}",
+        card(
+            &d,
+            &format!("{}  {}", a.target, a.project),
+            plan,
+            color,
+            crate::md::width()
+        )
+    );
     Ok(())
 }
 
@@ -254,7 +311,11 @@ impl Plan {
 /// pages, so it follows the options.
 pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> String {
     use std::fmt::Write;
-    let (bold, dim, off) = if color { ("\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "") };
+    let (bold, dim, off) = if color {
+        ("\x1b[1m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
     let mut s = String::new();
     let _ = match d.kind {
         Kind::Plan => writeln!(s, "{bold}plan waiting for your approval{off}"),
@@ -269,15 +330,26 @@ pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> Str
     }
     s.push('\n');
     for o in &d.options {
-        let typed = if o.free { format!("  {dim}(t types it){off}") } else { String::new() };
+        let typed = if o.free {
+            format!("  {dim}(t types it){off}")
+        } else {
+            String::new()
+        };
         let _ = writeln!(s, " {bold}{}{off}  {}{typed}", o.key, o.text);
         for l in &o.detail {
             let _ = writeln!(s, "    {dim}{l}{off}");
         }
     }
     let _ = match plan {
-        Plan::Text(text) => writeln!(s, "\n{bold}the plan{off}\n\n{}", crate::md::plain(&text, width)),
-        Plan::Unread => writeln!(s, "\n{dim}(the plan text is in its session; g goes there){off}"),
+        Plan::Text(text) => writeln!(
+            s,
+            "\n{bold}the plan{off}\n\n{}",
+            crate::md::plain(&text, width)
+        ),
+        Plan::Unread => writeln!(
+            s,
+            "\n{dim}(the plan text is in its session; g goes there){off}"
+        ),
         Plan::None => Ok(()),
     };
     s
@@ -287,7 +359,13 @@ pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> Str
 /// 4 the dialog is gone or changed (the reason on stderr).
 pub fn run_answer(target: &str, key: char, expect: &str, text: &str) -> Result<()> {
     let a = agent(target)?;
-    match answer(&mut send::TmuxPane { target: &a.pane }, key, expect, text, send::POLLS)? {
+    match answer(
+        &mut send::TmuxPane { target: &a.pane },
+        key,
+        expect,
+        text,
+        send::POLLS,
+    )? {
         Answered::Sent => Ok(()),
         Answered::NotTaken => {
             eprintln!("{target} did not take option {key}");
@@ -350,14 +428,30 @@ Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel
     #[test]
     fn the_card_puts_the_options_before_the_plan_and_reads_the_plan_as_plain_text() {
         let d = parse(PLAN_PANE).unwrap();
-        let c = card(&d, "hub/s:1  dotfiles", Plan::Text("## Context\n\n**Bold** `code`".into()), false, 40);
-        assert!(c.starts_with("plan waiting for your approval\nhub/s:1  dotfiles\n"), "{c}");
-        let (opts, plan) = (c.find(" 3  Tell Claude what to change  (t types it)").unwrap(), c.find("the plan").unwrap());
+        let c = card(
+            &d,
+            "hub/s:1  dotfiles",
+            Plan::Text("## Context\n\n**Bold** `code`".into()),
+            false,
+            40,
+        );
+        assert!(
+            c.starts_with("plan waiting for your approval\nhub/s:1  dotfiles\n"),
+            "{c}"
+        );
+        let (opts, plan) = (
+            c.find(" 3  Tell Claude what to change  (t types it)")
+                .unwrap(),
+            c.find("the plan").unwrap(),
+        );
         assert!(opts < plan, "{c}");
         assert!(c.ends_with("the plan\n\nContext\n\nBold code\n"), "{c}");
         // Negative control: no plan in the transcript says where it is; a question has no plan line.
-        assert!(card(&d, "x", Plan::Unread, false, 40).contains("(the plan text is in its session; g goes there)"));
-        assert!(!card(&parse(QUESTION_PANE).unwrap(), "x", Plan::None, false, 40).contains("the plan"));
+        assert!(card(&d, "x", Plan::Unread, false, 40)
+            .contains("(the plan text is in its session; g goes there)"));
+        assert!(
+            !card(&parse(QUESTION_PANE).unwrap(), "x", Plan::None, false, 40).contains("the plan")
+        );
     }
 
     #[test]
@@ -367,20 +461,46 @@ Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel
         let keys: Vec<(char, bool)> = d.options.iter().map(|o| (o.key, o.free)).collect();
         assert_eq!(keys, [('1', false), ('2', false), ('3', true)]);
         assert_eq!(d.options[1].text, "Yes, manually approve edits");
-        assert_eq!(d.options[2].detail, ["shift+tab to approve with this feedback"]);
+        assert_eq!(
+            d.options[2].detail,
+            ["shift+tab to approve with this feedback"]
+        );
         // An old dialog scrolled far above the foot is not open any more.
-        assert_eq!(parse(&format!("{PLAN_PANE}{}", "output\n".repeat(PLAN_PROMPT_FOOT))), None);
+        assert_eq!(
+            parse(&format!(
+                "{PLAN_PANE}{}",
+                "output\n".repeat(PLAN_PROMPT_FOOT)
+            )),
+            None
+        );
     }
 
     #[test]
     fn reads_the_question_dialog() {
         let d = parse(QUESTION_PANE).unwrap();
         assert_eq!(d.kind, Kind::Question);
-        assert_eq!(d.title, ["What should the drones do? This decides indoor vs outdoor", "apply."]);
+        assert_eq!(
+            d.title,
+            [
+                "What should the drones do? This decides indoor vs outdoor",
+                "apply."
+            ]
+        );
         assert!(d.tabs.contains("Mission"));
         let texts: Vec<&str> = d.options.iter().map(|o| o.text.as_str()).collect();
-        assert_eq!(texts, ["Outdoor yard patrol", "Indoor house patrol", "Type something.", "Chat about this"]);
-        assert_eq!(d.options[0].detail, ["Scheduled flights around the property."]);
+        assert_eq!(
+            texts,
+            [
+                "Outdoor yard patrol",
+                "Indoor house patrol",
+                "Type something.",
+                "Chat about this"
+            ]
+        );
+        assert_eq!(
+            d.options[0].detail,
+            ["Scheduled flights around the property."]
+        );
         assert!(d.options[2].free && !d.options[3].free);
     }
 
@@ -420,24 +540,40 @@ Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel
         }
     }
     fn script(screens: &[&str]) -> Script {
-        Script { screens: screens.iter().map(|s| s.to_string()).collect(), at: 0, log: vec![] }
+        Script {
+            screens: screens.iter().map(|s| s.to_string()).collect(),
+            at: 0,
+            log: vec![],
+        }
     }
 
     #[test]
     fn presses_the_digit_when_the_option_still_reads_the_same() {
         let mut p = script(&[PLAN_PANE, "working..."]);
-        assert_eq!(answer(&mut p, '2', "Yes, manually approve edits", "", 5).unwrap(), Answered::Sent);
+        assert_eq!(
+            answer(&mut p, '2', "Yes, manually approve edits", "", 5).unwrap(),
+            Answered::Sent
+        );
         assert_eq!(p.log, ["copy-mode-exit", "2"]);
     }
 
     #[test]
     fn refuses_when_the_dialog_changed_or_closed() {
         let mut p = script(&[PLAN_PANE]);
-        assert!(matches!(answer(&mut p, '2', "Yes, auto-accept edits", "", 5).unwrap(), Answered::Gone(_)));
+        assert!(matches!(
+            answer(&mut p, '2', "Yes, auto-accept edits", "", 5).unwrap(),
+            Answered::Gone(_)
+        ));
         let mut p = script(&["just output"]);
-        assert!(matches!(answer(&mut p, '1', "", "", 5).unwrap(), Answered::Gone(_)));
+        assert!(matches!(
+            answer(&mut p, '1', "", "", 5).unwrap(),
+            Answered::Gone(_)
+        ));
         let mut p = script(&[PLAN_PANE]);
-        assert!(matches!(answer(&mut p, '7', "", "", 5).unwrap(), Answered::Gone(_)));
+        assert!(matches!(
+            answer(&mut p, '7', "", "", 5).unwrap(),
+            Answered::Gone(_)
+        ));
         // Nothing was pressed on any of them.
         assert!(p.log.is_empty());
     }
@@ -447,10 +583,26 @@ Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel
         let field = format!("{PLAN_PANE}\n\u{2500}\u{2500}\n> \n\u{2500}\u{2500}\n");
         let typed = format!("{PLAN_PANE}\n\u{2500}\u{2500}\n> split it in two\n\u{2500}\u{2500}\n");
         let mut p = script(&[PLAN_PANE, &field, &field, &typed, &typed, "working..."]);
-        assert_eq!(answer(&mut p, '3', "Tell Claude what to change", "split it in two", 5).unwrap(), Answered::Sent);
-        assert_eq!(p.log, ["copy-mode-exit", "3", "paste split it in two", "Enter"]);
+        assert_eq!(
+            answer(
+                &mut p,
+                '3',
+                "Tell Claude what to change",
+                "split it in two",
+                5
+            )
+            .unwrap(),
+            Answered::Sent
+        );
+        assert_eq!(
+            p.log,
+            ["copy-mode-exit", "3", "paste split it in two", "Enter"]
+        );
         let mut p = script(&[PLAN_PANE]);
-        assert!(answer(&mut p, '3', "", "", 5).is_err(), "a free-text option needs the text");
+        assert!(
+            answer(&mut p, '3', "", "", 5).is_err(),
+            "a free-text option needs the text"
+        );
     }
 
     #[test]
