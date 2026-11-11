@@ -89,7 +89,7 @@ impl AlertsView {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let (style, word) = match a.level {
             Level::Red => (p.status(Some(2.0)).0, "FIRING"),
-            Level::Warn => (p.status(Some(1.0)).0, "ERRORS ONLY"),
+            Level::Warn => (p.status(Some(1.0)).0, "WARN"),
             Level::Ok => (p.status(Some(0.0)).0, "ALL CLEAR"),
             Level::Nodata => (p.status(None).0, "NO DATA"),
         };
@@ -146,8 +146,8 @@ impl AlertsView {
             heading(
                 "FIRING",
                 format!(
-                    "  {}: {} trip, {} error, {} no owner",
-                    c.firing, c.tripped, c.errors, c.no_owner
+                    "  {}: {} trip, {} error, {} no owner, {} alertmanager",
+                    c.firing, c.tripped, c.errors, c.no_owner, c.alertmanager
                 ),
                 p,
             ),

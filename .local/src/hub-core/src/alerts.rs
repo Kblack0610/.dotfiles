@@ -6,13 +6,16 @@
 //! - `fleet::runner::watches`: every Sentinel watch and its state files;
 //! - `reds::read` (`fleet-bench reds --json`, the caller's, cached): the fix item queued for
 //!   each red;
-//! - the agent-notify ledger (`actions::parse_notify`): the pages the alert senders wrote.
+//! - the agent-notify ledger (`actions::parse_notify`): the pages the alert senders wrote;
+//! - `alertmanager::read` (asked inside `infra::gather`, so cached with it): what the cluster's
+//!   rules have firing, one row per alert.
 //!
 //! A source that cannot be read is an error line on the tab, never an empty (green) section.
 
 use serde::Serialize;
 
 use crate::actions::{self, Action};
+use crate::alertmanager::Firing;
 use crate::fleet::runner::{self, Watch};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
@@ -27,6 +30,9 @@ pub const DAYS: i64 = reds::DAYS as i64;
 /// senders (the nightly report, Needs you) page about work, which Log's Actions keeps.
 pub const ALERT_SENDERS: [&str; 1] = ["sentinel"];
 
+/// The source name of a row from Alertmanager.
+pub const ALERTMANAGER: &str = "alertmanager";
+
 /// One thing firing now.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Alert {
@@ -35,8 +41,9 @@ pub struct Alert {
     pub sev: String,
     /// The watch's name, or the red item as Prometheus words it.
     pub what: String,
-    /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`) or `infra` (the
-    /// machinery: down runners, stuck runs, the exporter or GitHub not answering).
+    /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`), `infra` (the
+    /// machinery: down runners, stuck runs, the exporter or GitHub not answering) or
+    /// `alertmanager` (a cluster rule firing).
     pub source: String,
     /// When it went red, epoch seconds; none for a Prometheus row, which has no start.
     pub since: Option<i64>,
@@ -60,6 +67,23 @@ pub struct Alert {
 impl Alert {
     fn error(&self) -> bool {
         self.state == "error"
+    }
+
+    /// The hue this row gives the tab (rule 5). A watch that cannot check is amber and any other
+    /// red row is red, but an Alertmanager rule says its own: critical is broken, a warning
+    /// needs a look and info is neither.
+    fn hue(&self) -> Level {
+        if self.error() {
+            return Level::Warn;
+        }
+        if self.source != ALERTMANAGER {
+            return Level::Red;
+        }
+        match self.sev.as_str() {
+            "urgent" | "high" => Level::Red,
+            "normal" => Level::Warn,
+            _ => Level::Ok,
+        }
     }
 }
 
@@ -170,20 +194,23 @@ pub struct Counts {
     pub watches_error: usize,
     pub watches_ok: usize,
     pub watches_new: usize,
+    pub alertmanager: usize,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Alerts {
     /// When it was read, epoch seconds.
     pub at: i64,
-    /// The tab's hue: red while anything trips, amber when only errors fire, no data when
-    /// nothing fires but a firing source could not be read, else ok.
+    /// The tab's hue: red while anything trips (an Alertmanager row only at critical), amber
+    /// when only errors or Alertmanager warnings fire, no data when nothing does but a firing
+    /// source could not be read, else ok.
     pub level: Level,
     /// `cc:domain_status`, in Home's strip order.
     pub health: Vec<Chip>,
     /// The components (`cc:component_status`) that are not green: why a domain chip is.
     pub components: Vec<Component>,
-    /// Tripped and error watches first, then `cc:red_now`, then the machinery; see `order`.
+    /// Tripped and error watches first, then `cc:red_now`, the machinery and Alertmanager;
+    /// see `order`.
     pub firing: Vec<Alert>,
     /// The fix items of the last `DAYS`, open worst first and settled newest first.
     pub fixes: Reds,
@@ -320,13 +347,15 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
     .into();
 }
 
-/// Firing's order: tripped watches, error watches, `cc:red_now`, the machinery; within each the
-/// worst severity, then the longest red, then by name.
+/// Firing's order: tripped watches, error watches, `cc:red_now`, the machinery, Alertmanager
+/// (the cluster's own rules, which page through ntfy without the fleet); within each the worst
+/// severity, then the longest red, then by name.
 fn order(a: &Alert) -> (usize, usize, i64, String) {
     let kind = match (a.source.as_str(), a.error()) {
         ("sentinel", false) => 0,
         ("sentinel", true) => 1,
         ("red_now", _) => 2,
+        (ALERTMANAGER, _) => 4,
         _ => 3,
     };
     (
@@ -335,6 +364,57 @@ fn order(a: &Alert) -> (usize, usize, i64, String) {
         a.since.unwrap_or(i64::MAX),
         a.what.clone(),
     )
+}
+
+/// An Alertmanager rule's `severity` in the watches' words: `critical` pages (ntfy-critical)
+/// as a high watch does.
+fn am_sev(sev: &str) -> &str {
+    match sev {
+        "critical" => "high",
+        "warning" => "normal",
+        "info" => "low",
+        s => label(s),
+    }
+}
+
+/// One Alertmanager alert as a firing row. Nothing files a fix for one by its name, so it has
+/// no owner; what it checks, where and what to do come from its rule.
+fn am_row(f: &Firing, fixes: Option<&[Red]>) -> Alert {
+    let about = [f.name.as_str(), f.description.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ");
+    let place = f
+        .labels
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let runbook = if f.runbook.is_empty() {
+        String::new()
+    } else {
+        format!("runbook {}; ", f.runbook)
+    };
+    let mut a = Alert {
+        sev: am_sev(&f.severity).into(),
+        what: if f.summary.is_empty() {
+            f.name.clone()
+        } else {
+            f.summary.clone()
+        },
+        source: ALERTMANAGER.into(),
+        since: f.since,
+        about,
+        place,
+        action: format!(
+            "{runbook}routed to {}; a silence in Alertmanager says known, leave it",
+            label(&f.receivers.join(", "))
+        ),
+        ..Default::default()
+    };
+    owner(&mut a, None, fixes);
+    a
 }
 
 /// The tab from what each source returned; `read` gathers them.
@@ -423,6 +503,11 @@ pub fn join(
             firing.push(a);
         }
     }
+    match &infra.alertmanager {
+        Some(Ok(list)) => firing.extend(list.iter().map(|f| am_row(f, open))),
+        Some(Err(e)) => errors.push(format!("alertmanager: {e}")),
+        None => {}
+    }
     firing.sort_by_cached_key(order);
 
     let mut history: Vec<Action> = match notify {
@@ -456,12 +541,18 @@ pub fn join(
         watches_error: n("ERROR"),
         watches_ok: n("OK"),
         watches_new: n("new"),
+        alertmanager: firing.iter().filter(|a| a.source == ALERTMANAGER).count(),
     };
-    let level = if counts.tripped > 0 {
+    let hue = |l: Level| firing.iter().any(|a| a.hue() == l);
+    let level = if hue(Level::Red) {
         Level::Red
-    } else if counts.errors > 0 {
+    } else if hue(Level::Warn) {
         Level::Warn
-    } else if !infra_ok || errors.iter().any(|e| e.starts_with("watches:")) {
+    } else if !infra_ok
+        || errors
+            .iter()
+            .any(|e| e.starts_with("watches:") || e.starts_with("alertmanager:"))
+    {
         Level::Nodata
     } else {
         Level::Ok
@@ -853,6 +944,104 @@ mod tests {
         assert!(a.history.iter().all(|h| h.actor == "sentinel"));
         assert_eq!(a.history[0].text, "w0 back to normal after 4m.");
         assert!(a.history.windows(2).all(|p| p[0].at >= p[1].at));
+    }
+
+    fn am(name: &str, sev: &str, summary: &str) -> Firing {
+        Firing {
+            name: name.into(),
+            severity: sev.into(),
+            since: Some(NOW - 120),
+            summary: summary.into(),
+            labels: [("namespace".to_string(), "freqtrade".to_string())].into(),
+            receivers: vec!["ntfy".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn alertmanager_rows_fire_last_and_take_their_rules_hue() {
+        // Info alone gives the tab no hue: the negative control for the two below.
+        let mut i = infra(&[]);
+        i.alertmanager = Some(Ok(vec![am("CPUThrottlingHigh", "info", "")]));
+        let a = join(
+            &i,
+            Ok(ok_watches()),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            NOW,
+        );
+        assert_eq!(
+            (a.counts.firing, a.counts.alertmanager, a.level),
+            (1, 1, Level::Ok)
+        );
+        assert_eq!(
+            (
+                a.firing[0].what.as_str(),
+                a.firing[0].sev.as_str(),
+                a.firing[0].state.as_str()
+            ),
+            ("CPUThrottlingHigh", "low", "no owner"),
+            "no summary: the rule's name"
+        );
+
+        i.alertmanager = Some(Ok(vec![
+            am("CPUThrottlingHigh", "info", ""),
+            am("NodeOomKill", "warning", "n1 killed 2 processes"),
+        ]));
+        let a = join(
+            &i,
+            Ok(ok_watches()),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            NOW,
+        );
+        assert_eq!(a.level, Level::Warn, "a warning needs a look");
+
+        i.alertmanager = Some(Ok(vec![
+            am("NodeOomKill", "warning", "n1 killed 2 processes"),
+            am(
+                "HomelabBackupStale",
+                "critical",
+                "Backup stale: freqtrade/lab",
+            ),
+        ]));
+        let mut ws = ok_watches();
+        ws.push(watch("delta", "TRIP", "low", Some(NOW - 60)));
+        let a = join(&i, Ok(ws), Ok(Reds::default()), Ok(String::new()), NOW);
+        assert_eq!(a.level, Level::Red);
+        let got: Vec<(&str, &str, &str)> = a
+            .firing
+            .iter()
+            .map(|r| (r.what.as_str(), r.source.as_str(), r.sev.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("delta", "sentinel", "low"),
+                ("Backup stale: freqtrade/lab", "alertmanager", "high"),
+                ("n1 killed 2 processes", "alertmanager", "normal"),
+            ]
+        );
+        let r = &a.firing[1];
+        assert_eq!(r.about, "HomelabBackupStale");
+        assert_eq!(r.place, "namespace=freqtrade");
+        assert!(r.action.contains("routed to ntfy"), "{}", r.action);
+        assert_eq!((a.counts.tripped, a.counts.no_owner), (3, 3));
+    }
+
+    #[test]
+    fn alertmanager_unread_is_an_error_line_and_not_all_clear() {
+        let mut i = infra(&[]);
+        i.alertmanager = Some(Err("cannot read https://am".into()));
+        let a = join(
+            &i,
+            Ok(ok_watches()),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            NOW,
+        );
+        assert_eq!(a.errors, ["alertmanager: cannot read https://am"]);
+        assert_eq!(a.level, Level::Nodata);
     }
 
     #[test]

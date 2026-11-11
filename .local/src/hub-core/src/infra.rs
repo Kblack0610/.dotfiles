@@ -1,12 +1,14 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
 //! TUI's Infra tab (and Home's health line) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
-//! Grafana's kb-command-center does, so none of them judges anything itself.
+//! Grafana's kb-command-center does, so none of them judges anything itself. Alertmanager is
+//! asked in the same gather (`alertmanager::read`), so the Alerts tab's rules ride this cadence.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
@@ -106,6 +108,11 @@ pub struct Infra {
     pub down: Vec<Series>,
     /// The CI runners board, built once here for both surfaces (`ci::build`).
     pub ci: Ci,
+    /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
+    /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
+    /// leaves it out.
+    #[serde(skip)]
+    pub alertmanager: Option<Result<Vec<Firing>, String>>,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -129,26 +136,34 @@ pub fn gather() -> Infra {
         grafana: grafana(),
         ..Default::default()
     };
-    let base = match prom::base() {
-        Ok(b) => b,
-        Err(e) => {
-            out.error = Some(e);
-            return out;
-        }
-    };
-    let answers: Vec<_> = std::thread::scope(|s| {
-        let handles: Vec<_> = instant_queries()
-            .into_iter()
-            .map(|(name, q)| {
-                let base = &base;
-                (name, s.spawn(move || prom::instant(base, &q)))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|(name, h)| (name, h.join().unwrap_or_else(|_| Err("panicked".into()))))
-            .collect()
+    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
+    // Alerts tab shows each source's answer on its own.
+    let base = prom::base();
+    let (am, answers) = std::thread::scope(|s| {
+        let am = s.spawn(alertmanager::read);
+        let answers: Vec<_> = match &base {
+            Ok(base) => {
+                let handles: Vec<_> = instant_queries()
+                    .into_iter()
+                    .map(|(name, q)| (name, s.spawn(move || prom::instant(base, &q))))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|(name, h)| (name, h.join().unwrap_or_else(|_| Err("panicked".into()))))
+                    .collect()
+            }
+            Err(_) => vec![],
+        };
+        (
+            am.join().unwrap_or_else(|_| Err("panicked".into())),
+            answers,
+        )
     });
+    out.alertmanager = Some(am);
+    if let Err(e) = base {
+        out.error = Some(e);
+        return out;
+    }
     let mut errors = vec![];
     for (name, res) in answers {
         match res {
