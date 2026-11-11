@@ -3164,10 +3164,13 @@ held_state() {
   printf '%s %s\n' "$since" "$(cat "$dir/held_why" 2>/dev/null)"
 }
 
-# held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the night and
-# plan counts, the item that waits, the run-out forecast and the parentheses.
+# held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the pass's
+# notes ahead of its gate (night and plan counts, a judge that could not judge), the item that
+# waits, the run-out forecast and the parentheses.
 held_short() {
-  sed -E 's/^(queued [0-9]+ for the night|tagged [0-9]+ for a plan); //g
+  # A judge's reason can hold its own parentheses ("left-out row(s)") but never "; ". A "budget:"
+  # lead is the stop itself (a pass with nothing else to do) and stays, the notes after it go.
+  sed -E 's/^(budget: could not judge the new rows[^;]*; )?((queued [0-9]+ for the night|tagged [0-9]+ for a plan|could not judge the new rows[^;]*); )+/\1/
     s/,? (queue item [^ ]+|every queue item) waits$//
     s/, runs out [^,]* at this rate//
     s/ \([^)]*\)//g' <<<"$1"
@@ -3181,6 +3184,7 @@ held_clears() {
     "finding firing"*) echo "Clears when its finding stops firing" ;;
     "fleet-assess says HOLD"* | "load "* | "real idle "*) echo "Clears when the machine's load falls" ;;
     "github budget"*) echo "Clears when the GitHub API budget refills" ;;
+    "budget: could not judge"*) echo "Clears when dispatch-judge's daily budget resets" ;;
     *) echo "fleet-dispatch run --dry-run names the gate" ;;
   esac
 }
@@ -3764,7 +3768,10 @@ settle() {
   esac
   case "${JUDGE_RC:-0}:$1:$2" in
     0:* | *:"could not judge"*) ;;
-    "$EX_BUDGET":NOOP:* | "$EX_BUDGET":BLOCKED:*) set -- BLOCKED "budget: $(judge_failed); $2" ;;
+    "$EX_BUDGET":NOOP:*) set -- BLOCKED "budget: $(judge_failed); $2" ;;
+    # A gate held the pass, so the gate is its reason and the judge's stop a note before it: as a
+    # "budget:" lead it named the judge's daily cap as the stop on every surface (ar-1675).
+    "$EX_BUDGET":BLOCKED:*) set -- BLOCKED "$(judge_failed); $2" ;;
     *:NOOP:* | *:BLOCKED:*) set -- FAILED "$(judge_failed); $2" ;;
     *) set -- "$1" "$(judge_failed); $2" ;;
   esac
