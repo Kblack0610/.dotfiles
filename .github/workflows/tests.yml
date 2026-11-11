@@ -308,6 +308,8 @@ jobs:
     name: rust crates (test + clippy + fmt)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -317,19 +319,28 @@ jobs:
       # `rustup component add` is idempotent and only guards against an image that ships
       # cargo without clippy/rustfmt; rust.sh degrades to advisory on those two anyway.
       - name: Toolchain
+        id: toolchain
         run: |
           rustup component add clippy rustfmt || true
           cargo --version && cargo clippy --version && cargo fmt --version
-      # Keyed on the lockfiles, which ARE tracked here (and rust.sh passes --locked, so a
-      # stale lockfile fails rather than silently resolving a newer dependency).
-      - name: Cache cargo
-        uses: actions/cache@v4
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
+      # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
+      # crates and their dependencies from scratch: 248 s of a 292 s job, the critical path of a
+      # full-tier run (43014231625, 312 s). Keyed on the toolchain and the lockfiles, which ARE
+      # tracked here (rust.sh passes --locked): those fix every dependency build, and a fresh
+      # checkout's mtimes make cargo rebuild this repo's own crates, so a cache never serves stale
+      # code. Only main pushes, the schedule and a manual run save it; a pull request restores
+      # main's and writes none, so a PR never queues its own copy of a GB-sized cache.
+      - name: Restore cargo
+        id: cargo
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+            .local/src/*/target
+          key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
       # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
       - name: Rust gate
         env:
@@ -346,6 +357,15 @@ jobs:
           NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
         run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
+      - name: Save cargo
+        if: github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .local/src/*/target
+          key: ${{ steps.cargo.outputs.cache-primary-key }}
 
   skills:
     name: skill lint (frontmatter + house rules)
