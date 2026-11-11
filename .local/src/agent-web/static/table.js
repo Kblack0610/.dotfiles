@@ -1,8 +1,8 @@
 "use strict";
 // The shared data table (docs/dashboards.md rule 7). The server applies hub_core::table and
 // sends its summary beside the rows (`table`: the query, each state chip's count, each
-// header's sort and the sort a click on it gives, each dropdown's values and the query that
-// picks one). This file only draws that and turns a click or a keystroke into the view keys
+// header's sort and the sort a click on it gives, each facet's values with their counts and
+// the query a tick on each gives). This file only draws that and turns a click or a keystroke into the view keys
 // the server reads; what a query means is decided in hub-core alone.
 
 // The view keys, in the tab's URL query (`#infra?q=source:unity&s=failed&sort=started&dir=asc`)
@@ -56,6 +56,9 @@ function tblFacet(f) {
 // the rest: a column the tab does not show, or every facet when no header was drawn (no rows), so
 // a filter that empties the table can still be taken off. A caller draws the body before the bar.
 const tblDrawn = new WeakMap();
+// Draw a table's body before its bar, forgetting what an earlier draw put in the header, so a body
+// that now draws no header (no rows) leaves every facet to the bar.
+const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map(tblFacet).join(""); };
 // One count chip, here and on the tabs that still filter their own lists.
 const chipBtn = (on, attr, val, label, n) =>
@@ -127,7 +130,7 @@ function tblPatch(e) {
 
 // A native control whose pick is done: it lets go of focus so the redraw can replace it. A facet's
 // checkbox is not one; its menu stays open for the next tick (tblMenuKeep).
-const tblDropdown = (el) => el?.type !== "checkbox" && (el?.dataset?.tq !== undefined || el?.dataset?.tsv !== undefined || (el?.dataset?.twin !== undefined && el.dataset.tval === undefined));
+const tblDropdown = (el) => el?.dataset?.tsv !== undefined || (el?.dataset?.twin !== undefined && el.dataset.tval === undefined);
 
 // One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
 //   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
@@ -171,7 +174,7 @@ function tblTab(o) {
     const v = table(), f = document.activeElement;
     if (!v || !$(id + "-body")) return false;
     if (f?.id !== id + "-q" && (!tblDropdown(f) || !f.closest?.(`#${id}-facets`))) return false;
-    paint($(id + "-body"), o.body(t));
+    paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
     if (f.id === id + "-q") paint($(id + "-facets"), facets(v));
     if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
     around();
@@ -180,13 +183,13 @@ function tblTab(o) {
   // The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
   t.redraw = () => {
     const v = table();
-    paint($(id + "-body"), o.body(t));
+    paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
     if ($(id + "-facets")) paint($(id + "-facets"), facets(v));
     if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
     around();
   };
   const wrap = o.wrap || ((html) => html);
-  t.html = () => { const body = part("body", o.body); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + body) + part("tail", o.tail); };
+  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + body) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;
@@ -212,7 +215,7 @@ function tblTab(o) {
     t.refresh();
   };
   // The bar's, the headers' and the more button's events from this table's own block. A picked
-  // dropdown lets go of focus, so the answer redraws it with the new counts.
+  // sort or day dropdown lets go of focus, so the answer redraws it; a facet's menu is reopened.
   for (const ev of ["input", "change", "click"]) $(o.on || elId).addEventListener(ev, (e) => {
     if (tblOf(e) !== pre || !shown()) return;
     if (e.type === "click" && e.target.dataset?.all) { t.all = true; if (o.pages) t.refresh(); else t.render(); return; }
@@ -248,11 +251,11 @@ function tblStamp(table) {
   }
 }
 
-// The facet menu open, by its table block (data-tbl) and column, and the value last ticked: a
-// tick re-reads the table and the redraw replaces the menu, so each new draw opens it again with
-// focus on that box. One menu is open at a time.
+// The facet menu open, by its tab, table block (data-tbl), part and column, with the value last
+// ticked and how far it is scrolled: a tick or a push re-reads the table and the redraw replaces
+// the menu, so each new draw opens it again where it was. One menu is open at a time.
 let tblMenu = null;
-const tblWhere = (d) => d.closest("[data-tbl]")?.dataset.tbl || "";
+const tblWhere = (d) => `${typeof st === "undefined" ? "" : st.tab}|${d.closest("[data-tbl]")?.dataset.tbl || ""}|${d.closest("[id]")?.id || ""}`;
 
 // A menu sits in a scrolling panel, so it is fixed to the page under its pill rather than clipped.
 function tblPlace(d) {
@@ -269,8 +272,10 @@ function tblMenuKeep(root) {
   if (!d) return;
   d.open = true;
   tblPlace(d);
+  const m = d.querySelector(".tfmenu");
+  if (m && tblMenu.top) m.scrollTop = tblMenu.top;
   const box = [...d.querySelectorAll("input[data-fv]")].find((i) => i.dataset.fv === tblMenu.fv);
-  box?.focus({ preventScroll: true });
+  (box || d.querySelector("summary"))?.focus({ preventScroll: true });
 }
 
 function tblMenuShut(except) {
@@ -290,7 +295,7 @@ if (typeof document !== "undefined" && document.addEventListener) {
   }, true);
   document.addEventListener("change", (e) => {
     const d = e.target.closest?.("details.tfacet");
-    if (d && e.target.dataset.fv != null) tblMenu = { tbl: tblWhere(d), key: d.dataset.fkey, fv: e.target.dataset.fv };
+    if (d && e.target.dataset.fv != null) tblMenu = { ...tblMenu, tbl: tblWhere(d), key: d.dataset.fkey, fv: e.target.dataset.fv };
   }, true);
   document.addEventListener("click", (e) => {
     if (!e.target.closest?.("details.tfacet")) { tblMenu = null; tblMenuShut(); }
@@ -302,8 +307,11 @@ if (typeof document !== "undefined" && document.addEventListener) {
     d.open = false;
     d.querySelector("summary")?.focus();
   });
-  const follow = () => document.querySelectorAll("details.tfacet[open]").forEach(tblPlace);
-  document.addEventListener("scroll", follow, true);
+  // Only while a menu is open: the menu's own scroll is remembered, any other moves it with its pill.
+  const follow = () => { if (tblMenu) document.querySelectorAll("details.tfacet[open]").forEach(tblPlace); };
+  document.addEventListener("scroll", (e) => {
+    if (tblMenu && e.target.classList?.contains("tfmenu")) tblMenu.top = e.target.scrollTop; else follow();
+  }, true);
   if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", follow);
 }
 

@@ -94,16 +94,6 @@ test("an event in the second table's block moves only that table's keys", () => 
   assert.equal(run("one.all"), false);
 });
 
-test("with a dropdown in use only what is around it repaints", () => {
-  run(`one.render()`);
-  box("tt").innerHTML = "the bar in use";
-  doc.activeElement = { id: "", dataset: { tq: "" }, closest: (sel) => (sel === "#tt-facets" ? {} : null) };
-  run(`one.data.rows = ["z"]; one.all = false; one.render()`);
-  doc.activeElement = null;
-  assert.equal(box("tt").innerHTML, "the bar in use");
-  assert.match(box("tt-body").innerHTML, /rows z/);
-});
-
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
 const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i, querySelector: () => null }));
 const trOf = (c) => ({ cells: c, dataset: {}, textContent: c.map((x) => x.textContent).join(""), classList: { add(k) { this[k] = true; } } });
@@ -326,4 +316,28 @@ test("the filter row is never stamped as a phone row", () => {
   assert.equal(filters.dataset.phone, "filters");
   assert.deepEqual(filters.cells.map((c) => c.dataset.role), [undefined, undefined]);
   assert.equal(row.dataset.phone, "row");
+});
+
+test("a body drawn again with no header leaves every facet to the bar", () => {
+  ctx.t = facetTable();
+  run(`tblHead(t, { a: ["a"], b: ["b"] })`);
+  assert.doesNotMatch(run("tblFacets(t)"), /data-fkey="a"/);
+  run(`tblBodyFirst(t, () => "No rows.")`);
+  assert.match(run("tblFacets(t)"), /data-fkey="a"/, "the filter that emptied the table can still be taken off");
+});
+
+test("a menu kept open on one tab never opens the same column on another, and keeps its scroll", () => {
+  run(`st.tab = "tt"; tblMenu = { tbl: "tt|n|", key: "a", fv: null, top: 120 }`);
+  const list = { scrollTop: 0 };
+  const mine = menuOf("a", "n", ["x"]);
+  mine.querySelector = (sel) => (sel === ".tfmenu" ? list : sel === "summary" ? mine.summary : null);
+  ctx.root = { querySelectorAll: () => [mine] };
+  run("tblMenuKeep(root)");
+  assert.equal(mine.open, true);
+  assert.equal(list.scrollTop, 120, "a push redraw keeps where the menu was scrolled");
+  assert.equal(mine.summary.focused, true, "with nothing ticked yet, focus goes back to the pill");
+  const elsewhere = menuOf("a", "n", ["x"]);
+  ctx.root = { querySelectorAll: () => [elsewhere] };
+  run(`st.tab = "queue"; tblMenuKeep(root); st.tab = "tt"; tblMenu = null`);
+  assert.equal(elsewhere.open, false);
 });

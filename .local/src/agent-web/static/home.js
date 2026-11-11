@@ -108,7 +108,7 @@ function propBody(h) {
 function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
-  const body = propBody(h);
+  const body = tblBodyFirst(t, () => propBody(h));
   return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
@@ -253,7 +253,7 @@ function drawHome() {
     `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
     h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
   const t = h.table;
-  const body = needsBody(h);
+  const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
   // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.

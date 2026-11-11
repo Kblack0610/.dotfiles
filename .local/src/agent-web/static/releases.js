@@ -276,8 +276,7 @@ function buildsHead(d) {
 function releaseBuilds() {
   if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
   if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
-  // The body first: its header row takes the facets it draws, and the bar draws the rest (tblFacets).
-  const body = buildsBody(bld.data);
+  const body = tblBodyFirst(bld.data.table, () => buildsBody(bld.data));
   return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
     `<div id="bld-body">${body}</div></div>`;
 }
@@ -382,7 +381,7 @@ function testsHead(d) {
 function releaseTests() {
   if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>`;
-  const body = testsBody(tst.data);
+  const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
   return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
     `<div id="tst-body">${body}</div></div>`;
 }
