@@ -867,8 +867,10 @@ cmd_textfile() {
 # gateway [--out FILE] -> one JSON snapshot of who spends on the gateway, read with the viewer key
 # (harnesses.json gateway.reader_key_file): teams and keys with their spend, budget and the
 # metadata.consumer and metadata.priority the keys were minted with; the sources file's rows; and the
-# config's model_group_alias and fallbacks (the viewer key reads neither, so they come from the file
-# CLAUDE_ACCT_GATEWAY_CONFIG or harnesses.json gateway.config names, null when it names none). Only
+# config's model_group_alias and fallbacks (the viewer key reads neither, so they come from
+# apps/litellm/config.yaml at the home-config clone's upstream tip, ${HOME_CONFIG:-~/dev/home/home-config},
+# not its working tree, which may sit on a branch; CLAUDE_ACCT_GATEWAY_CONFIG names a file instead;
+# null when neither reads). Only
 # named fields are copied, so a key's secret and token hash never reach the file. Written to a temp
 # file and renamed; a team or key list that cannot be read leaves the old snapshot and exits 1.
 cmd_gateway() {
@@ -883,17 +885,21 @@ cmd_gateway() {
     reader=${reader/#\~/$HOME}
     teams=$(gateway_get "$reader" /team/list) && keys=$(gateway_get "$reader" "/key/list?return_full_object=true&size=100") ||
         { echo "claude-acct: gateway: the team or key list could not be read; $out is unchanged" >&2; return 1; }
-    conf=${CLAUDE_ACCT_GATEWAY_CONFIG:-$(jq -r '.gateway.config // empty' "$HARNESSES" 2>/dev/null)}
-    conf=${conf/#\~/$HOME}
-    if [[ -z "$conf" ]]; then
-        echo "claude-acct: gateway: no gateway config named (CLAUDE_ACCT_GATEWAY_CONFIG or gateway.config); aliases and fallbacks are null" >&2
+    local hc=${HOME_CONFIG:-$HOME/dev/home/home-config} yml
+    if [[ -n "${CLAUDE_ACCT_GATEWAY_CONFIG:-}" ]]; then
+        conf=$CLAUDE_ACCT_GATEWAY_CONFIG; yml=$(cat "$conf" 2>/dev/null)
+    else
+        conf="$hc @{upstream}:apps/litellm/config.yaml"; yml=$(git -C "$hc" show '@{upstream}:apps/litellm/config.yaml' 2>/dev/null)
+    fi
+    if [[ -z "$yml" ]]; then
+        echo "claude-acct: gateway: $conf could not be read; aliases and fallbacks are null" >&2; conf=''
     elif ! routing=$(python3 -I -c '
 import json, sys, yaml
-r = (yaml.safe_load(open(sys.argv[1])) or {}).get("router_settings") or {}
+r = (yaml.safe_load(sys.stdin) or {}).get("router_settings") or {}
 fb = {}
 for edge in r.get("fallbacks") or []:
     fb.update(edge)
-print(json.dumps({"aliases": r.get("model_group_alias") or {}, "fallbacks": fb}))' "$conf" 2>/dev/null); then
+print(json.dumps({"aliases": r.get("model_group_alias") or {}, "fallbacks": fb}))' <<<"$yml" 2>/dev/null); then
         echo "claude-acct: gateway: $conf could not be read; aliases and fallbacks are null" >&2; routing=null; conf=''
     fi
     # A litellm-key source names its key by file; its alias, which the key list carries, comes from

@@ -2039,9 +2039,29 @@ EOS
   assert_output 0
 }
 
-@test "gateway: no config named leaves aliases and fallbacks null and still writes the snapshot" {
+@test "gateway: the config comes from the home-config clone's upstream tip, not its working tree" {
   gw_setup
   unset CLAUDE_ACCT_GATEWAY_CONFIG
+  export HOME_CONFIG="$SRC/hc"
+  git init -q --bare "$SRC/hc.git"
+  git clone -q "$SRC/hc.git" "$HOME_CONFIG" 2>/dev/null
+  mkdir -p "$HOME_CONFIG/apps/litellm"
+  cp "$SRC/litellm.yaml" "$HOME_CONFIG/apps/litellm/config.yaml"
+  git -C "$HOME_CONFIG" -c user.name=t -c user.email=t@t add -A
+  git -C "$HOME_CONFIG" -c user.name=t -c user.email=t@t commit -qm tip
+  git -C "$HOME_CONFIG" push -q origin HEAD 2>/dev/null
+  git -C "$HOME_CONFIG" branch -q -u "origin/$(git -C "$HOME_CONFIG" branch --show-current)"
+  echo 'router_settings: {}' > "$HOME_CONFIG/apps/litellm/config.yaml"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  run jq -c '[(.aliases | length > 0), (.fallbacks | length > 0)]' "$SRC/gw.json"
+  assert_output '[true,true]'
+}
+
+@test "gateway: no config to read leaves aliases and fallbacks null and still writes the snapshot" {
+  gw_setup
+  unset CLAUDE_ACCT_GATEWAY_CONFIG
+  export HOME_CONFIG="$SRC/no-such-clone"
   run "$ACCT" gateway --out "$SRC/gw.json"
   assert_success
   assert_output --partial 'aliases and fallbacks are null'
