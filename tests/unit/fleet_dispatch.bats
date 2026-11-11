@@ -4788,7 +4788,7 @@ fix_ended() {
 codex_end_item() {
   local d="$HOME/.codex/sessions/2026/11/09"
   mkdir -p "$d" "$HOME/.local/lib"
-  cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/"
+  cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/codex-rollout.jq"
   CODEX_SESSIONS="$HOME/.codex/sessions"; CODEX_ROLLOUT_JQ="$HOME/.local/lib/codex-rollout.jq"
   jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
