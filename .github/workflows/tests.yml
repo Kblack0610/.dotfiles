@@ -45,6 +45,8 @@ jobs:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      APT_PKGS: parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
     strategy:
       fail-fast: false
       matrix:
@@ -58,14 +60,45 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
         run: make -C tests bootstrap
+      # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
+      # A miss goes to the mirror with bounded Acquire timeouts, and the step has its own cap:
+      # a hung mirror (10 min on 2026-11-10, run 42763517511) fails here by name in 3 minutes
+      # instead of eating the job's cap before any test runs. The step takes about 10 s.
+      # The save is its own step so a red test run still keeps the debs.
+      - name: Runner image
+        id: image
+        run: echo "version=${ImageOS:?}-${ImageVersion:?}" >>"$GITHUB_OUTPUT"
+      - name: Restore apt debs
+        id: apt-debs
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ steps.image.outputs.version }}-${{ env.APT_PKGS }}
       # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
       # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
       # sqlite3: session_outcomes.bats builds a fixture opencode DB.
       # stow: dotfiles_deploy.bats checks its links against stow itself.
       - name: GNU parallel, inotify-tools, sqlite3, stow
+        timeout-minutes: 3
         run: |
-          { command -v parallel && command -v inotifywait && command -v sqlite3 && command -v stow; } >/dev/null ||
-            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools sqlite3 stow; }
+          have() { dpkg -s $APT_PKGS >/dev/null 2>&1; }
+          have && exit 0
+          debs=~/apt-debs
+          if compgen -G "$debs/*.deb" >/dev/null; then
+            sudo dpkg -i "$debs"/*.deb >/dev/null && have && exit 0
+            echo "::warning::the cached apt debs did not install on this image; fetching from the mirror"
+          fi
+          net=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          mkdir -p "$debs"
+          sudo apt-get update -qq "${net[@]}"
+          sudo apt-get install -y -qq -f "${net[@]}" -o Dir::Cache::archives="$debs" $APT_PKGS
+          sudo chown -R "$USER" "$debs"   # apt wrote it as root; the save runs as the runner user
+      - name: Save apt debs
+        if: steps.apt-debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt-debs.outputs.cache-primary-key }}
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.

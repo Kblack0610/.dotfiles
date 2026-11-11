@@ -1,5 +1,5 @@
 //! Inner tabs (`hub_core::layout::Inner`): the strip of sub-views under a tab, drawn and named
-//! the same way on every tab that has one (Costs, Releases), as agent-web's `innerStrip` draws it.
+//! the same way on every tab that has one (Costs, Releases, Infra), as agent-web's `innerStrip` draws it.
 
 use hub_core::layout::{self, Tab};
 use ratatui::text::{Line, Span};
@@ -49,4 +49,19 @@ pub fn strip(tab: &Tab, on: &str, flagged: &[&str], p: Palette, w: usize) -> Lin
     }
     s.push(Span::styled("  <- -> switch", p.dim()));
     clip_line(Line::from(s), w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_is_strict_so_a_pinned_or_unknown_word_keeps_the_inner_tab_shown() {
+        let infra = layout::resolve("infra").unwrap();
+        assert_eq!(named(infra, "ci"), Some("machines"));
+        assert_eq!(named(infra, " Cloud "), Some("cloud"));
+        assert_eq!(named(infra, "red"), None);
+        assert_eq!(named(infra, "nope"), None);
+        assert_eq!(step(infra, "reds", true), "cloud");
+    }
 }

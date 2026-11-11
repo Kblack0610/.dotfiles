@@ -93,10 +93,33 @@ pub const TABS: [Tab; 12] = [
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
-            "health", "red", "fixes", "machines", "ci", "jobs", "cloud", "governor",
+            "health", "red", "fixes", "machines", "ci", "governor", "jobs", "cloud",
         ],
-        pinned: &[],
-        inner: &[],
+        // Health and what is red now stay above the strip (exceptions first); the governor
+        // powers machines on and off, so it sits with them.
+        pinned: &["health", "red"],
+        inner: &[
+            Inner {
+                id: "reds",
+                title: "Reds",
+                sections: &["fixes"],
+            },
+            Inner {
+                id: "machines",
+                title: "Machines",
+                sections: &["machines", "ci", "governor"],
+            },
+            Inner {
+                id: "jobs",
+                title: "Jobs",
+                sections: &["jobs"],
+            },
+            Inner {
+                id: "cloud",
+                title: "Cloud",
+                sections: &["cloud"],
+            },
+        ],
     },
     Tab {
         id: "log",
@@ -473,6 +496,20 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
+    }
+
+    #[test]
+    fn infra_pins_health_and_red_and_old_links_open_their_inner_tab() {
+        let infra = resolve("infra").unwrap();
+        assert_eq!(infra.pinned, ["health", "red"]);
+        let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
+        assert_eq!(at(None), Some("reds"));
+        assert_eq!(at(Some("ci")), Some("machines"));
+        assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("jobs")), Some("jobs"));
+        // a retired tab name that became a section lands on the inner tab holding it
+        assert_eq!(at(section("ci")), Some("machines"));
     }
 
     #[test]
