@@ -940,6 +940,11 @@ EOF
   assert_output --partial 'no readable schema'
   assert [ ! -e "$NOTES_FIXTURE/schema.json" ]
   assert [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ]
+  # and so does one whose verdicts are not where the reply puts them
+  echo '{"type":"object","properties":{"rows":{"type":"array"}}}' > "$SANDBOX/moved.json"; DISPATCH_SCHEMA="$SANDBOX/moved.json"
+  run judge "$(c a)"
+  assert_failure
+  assert [ ! -e "$NOTES_FIXTURE/schema.json" ]
 }
 
 @test "judge: a failed call is an error verdict for every row, with its reason, and the rows are judged again" {

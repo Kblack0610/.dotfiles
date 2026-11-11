@@ -1079,8 +1079,9 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # Claude Code checks the reply against this schema and hands a short one back to the model in
   # the same call, so a dropped row is answered there instead of recorded as an error verdict.
   if [ -n "$DISPATCH_SCHEMA" ]; then
-    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
-      { rm -rf -- "$wd"; JUDGE_WHY="no readable schema at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+    jq -e --argjson n "$n" 'select(.properties.verdicts.type == "array")
+        | .properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+      { rm -rf -- "$wd"; JUDGE_WHY="no readable schema with a verdicts array at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
     schema=(--schema "$wd/schema.json")
   fi
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
