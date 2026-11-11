@@ -12,5 +12,5 @@
 
 full|1|2|1|as-today|high
 reserved|0|1|0|paused|low
-shared|1|2|0|as-today|mid
+shared|0|2|0|as-today|mid
 open|0|2|1|as-today|mid

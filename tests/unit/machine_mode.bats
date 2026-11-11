@@ -86,7 +86,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   "$MM" reserved
   run "$MM" shared
   assert_success
-  assert_equal "$(pin)" '{"slots":1}'
+  assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_SLOTS)" 2
   assert_equal "$(state UNITY_BURST_SLOTS)" 0
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
