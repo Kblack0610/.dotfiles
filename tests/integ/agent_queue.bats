@@ -1998,8 +1998,8 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_output 0
 }
 
-# tr-71 and tr-129 (2026-11-11): added by hand with --from board:, their rows were never marked, so
-# the merge left them open and merged_open_rows past its bound.
+# tr-71 and tr-129: added by hand with --from board:, their rows were never marked, so the merge left
+# them open (merged_open_rows).
 @test "an item promoted from a board row (from: board:, no row:) marks that row run like a row: item" {
   story_notes
   "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
@@ -2013,9 +2013,9 @@ notes --profile bnb ptask level --agent start lv-9'
 notes --profile bnb ptask level --agent start lv-4'
 }
 
-# ar-1597 (2026-11-11): ar-1566-recheck-2 filed and started its story row, then `set row=` pointed it
-# at ar-1588, and ar-1597 sat started with no item: board_orphan_started past its bound.
-@test "set row= on an active item un-starts the row it leaves, unless another active item names it" {
+# ar-1597: an item re-pointed with set row= left its first row started with no item, which read as
+# board_orphan_started until the orphan pass.
+@test "set row= or from=board: un-starts the row the item leaves and marks the one it works now" {
   story_notes
   "$AQ" add --project game --epic lv-3 --slug repoint "feat(menu): repoint" >/dev/null
   [ "$(field "$(item queued repoint)" row)" = level:lv-9 ]
@@ -2023,25 +2023,44 @@ notes --profile bnb ptask level --agent start lv-4'
   run "$AQ" set repoint row=level:lv-2
   assert_success; assert_output --partial "board row lv-9 on level un-started"
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
-  assert_output 'notes --profile bnb ptask level --agent unstart lv-9'
-  # The same row again leaves nothing.
+  assert_output 'notes --profile bnb ptask level --agent unstart lv-9
+notes --profile bnb ptask level --agent start lv-2'
+  # The same row again writes nothing.
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" set repoint row=level:lv-2 >/dev/null
   run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # The left row is un-started on the profile and lane it was on, even when the set moves both.
+  "$AQ" move repoint running >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-8 profile=work lane=human >/dev/null
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent unstart lv-2
+notes --profile work ptask level run lv-8'
+  # A failed un-start warns with the command; the set stands and succeeds.
+  printf '#!/usr/bin/env bash\n[[ " $* " != *" unstart "* ]]\n' > "$SANDBOX/bin/notes"
+  run "$AQ" set repoint row=level:lv-1
+  assert_success; assert_output --partial "left board row lv-8 on level, not un-started"
+  [ "$(field "$(item running repoint)" row)" = level:lv-1 ]
+  story_notes
+  # A board-promoted item re-pointed by from= leaves its row the same way.
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set promoted from=board:level:lv-6 >/dev/null
+  run grep -c 'ptask level --agent unstart lv-4$' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
   # A row another active item works stays started.
   "$AQ" add --project game --from board:level:lv-5 --slug holder "fix(menu): holder" >/dev/null
-  "$AQ" set repoint row=level:lv-5 >/dev/null
+  "$AQ" set promoted from=board:level:lv-5 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
-  "$AQ" set repoint row=level:lv-6 >/dev/null
-  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
-  assert_output 0
-  # A done item's row is its close's business.
-  "$AQ" move holder done --status cancelled >/dev/null
-  "$AQ" move repoint done --status failed >/dev/null
-  : > "$NOTES_FIXTURE/calls.log"
-  "$AQ" set repoint row=level:lv-7 >/dev/null
+  "$AQ" set promoted from=board:level:lv-7 >/dev/null
   run grep -c ' unstart ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A done item's rows are its close's business.
+  "$AQ" move promoted done --status failed >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set promoted from=board:level:lv-3 >/dev/null
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
 

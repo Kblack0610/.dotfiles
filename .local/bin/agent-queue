@@ -130,8 +130,8 @@ fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
 
 # item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
 # `row:`, else the board row it was promoted from (`from: board:`), else nothing. Every reader of an
-# item file's row goes through it: mark_row once read only `row:`, so a `--from board:` item added
-# by hand never started its row, and nothing closed that row when the item merged (tr-71, tr-129).
+# item file's row goes through it, so a `--from board:` item added by hand marks and closes its row
+# like a `row:` one.
 item_row() {
   local row
   row="$(fm_get "$1" row)"
@@ -1403,8 +1403,11 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
-  local left_row=""
-  case " $* " in *" row="*) left_row="$(item_row "$f")" ;; esac
+  # The row it works before the set, with the profile and lane that row is on (item_row).
+  local left_row="" left_prof="" left_lane=""
+  case " $* " in *" row="* | *" from="*)
+    left_row="$(item_row "$f")" left_prof="$(fm_get "$f" profile)" left_lane="$(fm_get "$f" lane)" ;;
+  esac
   # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
   # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
   case " $* " in
@@ -1422,25 +1425,28 @@ cmd_set() {
   done
   item_event item-set "$f" --why "$*"
   echo "$slug: $*"
-  [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || unstart_left_row "$slug" "$f" "$left_row"
+  [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
 }
 
-# unstart_left_row <slug> <file> <row> -- an active item re-pointed to another row (`set row=`) no
-# longer works <row>, so the row it left is un-started now, as reap's orphan pass would after
-# DISPATCH_ORPHAN_HOURS: left started, it read as board_orphan_started (ar-1597, left by
-# ar-1566-recheck-2, 2026-11-11). A row another active item names is that item's, and a done item's
-# row is its close's business. Through notes, which leaves a row no longer started as it is.
-unstart_left_row() {
-  local slug=$1 f=$2 row=$3 prof flag=() other
+# repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
+# (`set row=` or `from=board:`) no longer works <row> (on <profile> and <lane>, as it was before the
+# set), so that row is un-started now instead of reading as board_orphan_started until reap's orphan
+# pass, and the row it works now is marked as a move to its state would mark it (mark_row). A row
+# another active item names is that item's, and a done item's rows are its close's business.
+repoint_row() {
+  local slug=$1 f=$2 row=$3 prof=$4 flag=() other
   [ "$(state_of "$f")" != done ] && command -v notes >/dev/null || return 0
+  case "$5" in '' | agent) flag=(--agent) ;; esac
   other="$(collect $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
     { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
-  [ -z "$other" ] || return 0
-  prof="$(fm_get "$f" profile)"
-  case "$(fm_get "$f" lane)" in '' | agent) flag=(--agent) ;; esac
   [ -n "${AQ_LOCKED-}" ] || exec 8>&-
-  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1 &&
+  if [ -n "$other" ]; then :
+  elif notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1; then
     echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
+  else
+    echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}" >&2
+  fi
+  case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
