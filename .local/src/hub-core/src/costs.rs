@@ -372,10 +372,9 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
-/// is an empty queue, not a hold. `fleet-dispatch headroom` itself walks the live units and takes
-/// seconds, so it stays off this path (the Sessions header runs it).
+/// is an empty queue, not a hold, and a stale pass holds nothing.
 fn held(path: &std::path::Path) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let v = crate::capacity::headroom(path).ok()?;
     v["held_kind"].as_str()?;
     v["held"].as_str().map(String::from)
 }

@@ -824,12 +824,18 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
+        Queue::from_reads(list(runner, "all"), stats(runner))
+    }
+
+    /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
+    /// failure named as `read` names it.
+    pub fn from_reads(items: Result<Vec<Item>, String>, stats: Result<Stats, String>) -> Queue {
         let mut q = Queue::default();
-        match list(runner, "all") {
+        match items {
             Ok(items) => q.items = items,
             Err(e) => q.errors.push(format!("{LIST_FAILED}: {e}")),
         }
-        match stats(runner) {
+        match stats {
             Ok(s) => q.stats = Some(s),
             Err(e) => q.errors.push(e),
         }

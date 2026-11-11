@@ -6,18 +6,79 @@
 //! `candidates`; its Promote posts the board's Start (`POST /api/board`). Every call is plain
 //! arguments, never a shell, and agent-queue's stderr comes back as the error the page shows.
 
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use hub_core::queue::{self as hub_queue, Candidates, Item, QueueRow};
+use hub_core::queue::{self as hub_queue, Candidates, Item, QueueRow, Stats};
 use hub_core::session_actions::System;
 use hub_core::table::View;
 use serde::Deserialize;
+use tokio::sync::broadcast;
 
-use crate::{bad, ApiResult};
+use crate::cache::EventCache;
+use crate::{bad, ApiResult, Shared};
 
 /// How many days back, today included, the page's Done section reaches.
 const DONE_DAYS: i64 = 7;
+/// A queue change is an event, so this only bounds a read kept while the watcher is down.
+const QUEUE_SECS: u64 = 60;
+const KINDS: [&str; 1] = ["queue"];
+
+type Read<T> = Result<T, String>;
+
+/// Every agent-queue read the pages make, kept until the queue changes. Home, the pipeline
+/// line, this tab's list and its stats each ran agent-queue (one to four seconds apiece on a
+/// loaded machine) on every queue event, once per open page; now one read per change serves
+/// them all. A failed read is shown and not kept.
+pub struct Cache {
+    all: EventCache<Read<Vec<Item>>, QUEUE_SECS>,
+    since: EventCache<Read<Vec<Item>>, QUEUE_SECS, String>,
+    stats: EventCache<Read<Stats>, QUEUE_SECS>,
+}
+
+impl Cache {
+    pub fn new(events: &broadcast::Sender<String>) -> Self {
+        Cache {
+            all: EventCache::new(events.subscribe(), &KINDS),
+            since: EventCache::new(events.subscribe(), &KINDS),
+            stats: EventCache::new(events.subscribe(), &KINDS),
+        }
+    }
+
+    async fn stats(&self) -> Read<Stats> {
+        let r = self
+            .stats
+            .get_if((), || hub_queue::stats(&System), Result::is_ok);
+        r.await.and_then(|s| (*s).clone())
+    }
+
+    /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.
+    pub async fn queue(&self) -> hub_queue::Queue {
+        let all = self
+            .all
+            .get_if((), || hub_queue::list(&System, "all"), Result::is_ok);
+        let (all, stats) = tokio::join!(all, self.stats());
+        hub_queue::Queue::from_reads(all.and_then(|l| (*l).clone()), stats)
+    }
+
+    /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
+    async fn recent(&self) -> Read<Vec<Item>> {
+        let since = hub_queue::days_ago(DONE_DAYS - 1);
+        let key = since.clone();
+        let read = move || hub_queue::list_since(&System, "all", &since);
+        self.since
+            .get_if(key, read, Result::is_ok)
+            .await
+            .and_then(|l| (*l).clone())
+    }
+
+    /// After a write from this page, so its own refresh shows it.
+    async fn clear(&self) {
+        self.all.clear().await;
+        self.since.clear().await;
+        self.stats.clear().await;
+    }
+}
 
 /// The table view over the list: the same keys the page keeps in its URL (`#queue?q=&s=&sort=&dir=`).
 #[derive(Deserialize, Default)]
@@ -31,14 +92,15 @@ pub struct QueueQuery {
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
 /// then filtered and sorted by `hub_core::table` so the page only draws (`render`).
-pub async fn list(Query(q): Query<QueueQuery>) -> ApiResult<Json<serde_json::Value>> {
-    tokio::task::spawn_blocking(|| {
-        hub_queue::list_since(&System, "all", &hub_queue::days_ago(DONE_DAYS - 1))
-    })
-    .await
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map(|items| Json(render(items, &q, chrono::Utc::now())))
-    .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+pub async fn list(
+    State(s): State<Shared>,
+    Query(q): Query<QueueQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    s.queue
+        .recent()
+        .await
+        .map(|items| Json(render(items, &q, chrono::Utc::now())))
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
 /// The rows the view keeps, each worded by `item_view`, and the controls that drew them
@@ -100,10 +162,11 @@ fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value 
 }
 
 /// The window's line and what sits now, worded by hub-core as the hub TUI words them.
-pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
-    let s = tokio::task::spawn_blocking(|| hub_queue::stats(&System))
+pub async fn stats(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let s = s
+        .queue
+        .stats()
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
     // The prose lines for the folded detail, and the typical times for the page's folded
     // detail.
@@ -165,13 +228,17 @@ pub async fn act(
 }
 
 /// Queue a task; a plan item starts its session at once (agent-queue does that, not this).
-pub async fn add(Json(b): Json<hub_queue::Add>) -> ApiResult<Json<serde_json::Value>> {
+pub async fn add(
+    State(s): State<Shared>,
+    Json(b): Json<hub_queue::Add>,
+) -> ApiResult<Json<serde_json::Value>> {
     // A refusal is the request's fault; agent-queue failing to run is the server's.
     hub_queue::add_argv(&b).map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
     let out = tokio::task::spawn_blocking(move || hub_queue::add(&System, &b))
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    s.queue.clear().await;
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 
@@ -182,12 +249,20 @@ pub struct SlugBody {
     priority: String,
 }
 
-pub async fn cancel(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
-    act(move || hub_queue::cancel(&System, &b.slug)).await
+pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
+    let r = act(move || hub_queue::cancel(&System, &b.slug)).await;
+    if r.is_ok() {
+        s.queue.clear().await;
+    }
+    r
 }
 
-pub async fn bump(Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
-    act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await
+pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
+    let r = act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await;
+    if r.is_ok() {
+        s.queue.clear().await;
+    }
+    r
 }
 
 /// The projects a task may be queued for: the names in project-map.json, which is also what

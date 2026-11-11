@@ -50,7 +50,7 @@ set -uo pipefail
 # A PR's check rollup as NONE, PENDING, FAIL or PASS (ci), and its red job ids (red): CI_JQ.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
-# FLEET_MAIN_TTL: seconds a gh answer (pr_states' PR list, sibling_pr's PR view) is reused across passes: every caller
+# FLEET_MAIN_TTL: seconds a gh answer (sibling_pr's PR view) is reused across passes: every caller
 # (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
 # spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
 : "${FLEET_MAIN_TTL:=300}"
@@ -59,7 +59,6 @@ set -uo pipefail
 . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
 
 # --- thresholds (env overrides) --------------------------------------------------------
-: "${FLEET_PR_WINDOW:=100}"  # newest PRs of any state read per repo; a full window adds every open PR (prs_for)
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -619,36 +618,28 @@ unreadable() { echo "$1" >> "$CACHE/unreadable"; }
 # pass, so tick keeps that row's last cells (keep_blind). Every read of a failed source calls it.
 blind_row() { : > "$CACHE/blind_row"; }
 
-# PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
-# A clone on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) has no gh PRs,
-# never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
-# The newest FLEET_PR_WINDOW of any state; when that window is full, every open PR not in it
-# follows, since an open PR is unlanded work however old. 2026-11-11 the playground's newest 100
-# began at #2215, so sessions with open PRs #1536..#2102 read "no PR" and were told to open one.
-# The PR store (queue item release-data-pr-store) replaces both calls.
+# PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
+# from the PR store (`schedules-sync prs --checks`, unreadable once 30 minutes stale): ci is the run ledger's
+# reading of the head commit, red the job archive's failed job ids (- for none it has yet). A clone
+# on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) reads its host/owner/repo,
+# and one the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass),
+# as has a GitHub mirror of a Forgejo-canonical repo (forge_canonical: its PRs are on Forgejo); any
+# other GitHub repo it does not list is unreadable (day-log-ci is the list).
 prs_for() {
-  local dir="$1" key host rows
+  local dir="$1" key host repo out rc=0
   key="$CACHE/$(repo_slug "$dir")" || return 0
-  if [ -f "$key" ]; then :
-  elif host="$(origin_host "$dir")" && [ -n "$host" ] && [[ " $(so_forgejo_hosts) " == *" $host "* ]]; then : > "$key"
-  elif ! rows="$(pr_rows "$dir" all "$FLEET_PR_WINDOW")"; then
-    : > "$key.failed"; printf '%s\n' "$rows" | grep . > "$key" || :; unreadable "gh pr list ($(basename "$dir"))"
-  else
-    printf '%s\n' "$rows" | grep . > "$key" || :
-    if [ "$(wc -l < "$key")" -ge "$FLEET_PR_WINDOW" ]; then
-      if rows="$(pr_rows "$dir" open 1000)"; then
-        printf '%s\n' "$rows" | grep . | awk -F'\t' 'NR == FNR { seen[$2] = 1; next } !($2 in seen)' "$key" - >> "$key"
-      else : > "$key.failed"; unreadable "gh pr list --state open ($(basename "$dir"))"; fi
-    fi
+  if [ ! -f "$key" ]; then
+    repo="$(origin_repo "$dir")" || return 0
+    host="$(origin_host "$dir")"
+    [[ " $(so_forgejo_hosts) " != *" $host "* ]] || repo="$host/$repo"
+    out="$("$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null)" || rc=$?
+    if [ "$rc" = 0 ] && jq -r '.[] | [.branch // "-", .number, .state, .ci, .head_sha // "-", .red] | @tsv' \
+         <<<"$out" > "$key" 2>/dev/null; then :
+    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir"; }; then : > "$key"
+    else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
   [ ! -f "$key.failed" ] || blind_row
   cat "$key"
-}
-
-# pr_rows <dir> <state> <limit> -> prs_for's rows from one gh pr list, newest first.
-pr_rows() {
-  (cd "$1" && gh pr list --state "$2" --limit "$3" --json number,state,headRefName,headRefOid,statusCheckRollup \
-    -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null)
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
@@ -780,7 +771,7 @@ re_quote() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
 # can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). A Forgejo PR
 # (host/owner/repo) is skipped: gh cannot read its CI. Its CI is one
-# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes, as pr_states is; a failed call is
+# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes; a failed call is
 # (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
 sibling_pr() {
   local own repo n file failed view
@@ -829,44 +820,31 @@ main_state() {
     'map(select(.workflowName // "" | test($partial) | not)) | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
-# pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
-# reused for FLEET_MAIN_TTL seconds across passes (its definition says why). This
-# keys on the repo the PR is in, not the cwd: one session lands PRs in several. A failed call is
-# not cached, but it is not retried for every other session in this pass either.
+# pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's PRs as a JSON array of {number, state, mergedAt},
+# from the PR store, read once per pass: it keys on the repo the PR is in, not the cwd, since one session
+# lands PRs in several. A repo the store cannot answer for is rc 1, and not read again this pass.
 pr_states() {
-  local repo="$1" file prs failed
-  file="$MAIN_CACHE/prs_${repo//\//_}.json"
-  failed="$CACHE/prs_failed_${repo//\//_}"
-  if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
-    cat "$file"; return
+  local repo="$1" file
+  file="$CACHE/prs_${repo//\//_}.json"
+  if [ ! -f "$file" ]; then
+    "$SCHEDULES_SYNC" prs "$repo" 2>/dev/null | jq -c 'map({number, state, mergedAt: .merged_at})' > "$file" 2>/dev/null
   fi
-  [ -f "$failed" ] && return 1
-  if [[ "$repo" == */*/* ]]; then   # host/owner/repo is a Forgejo repo (session-outcomes.sh SO_PR_JQ)
-    prs="$(so_forgejo_pr_list "$repo" "$CACHE" 300 | jq -c 'map({number, state, mergedAt})')" \
-      && [ -n "$prs" ] || { : > "$failed"; return 1; }
-  else
-    prs="$(gh pr list --repo "$repo" --state all --limit 300 --json number,state,mergedAt 2>/dev/null)" \
-      || { : > "$failed"; return 1; }
-  fi
-  mkdir -p "$MAIN_CACHE"
-  printf '%s\n' "$prs" > "$file.$$" && mv "$file.$$" "$file"
-  printf '%s\n' "$prs"
+  [ -s "$file" ] && cat "$file"
 }
 
 # session_prs <transcript> -> the PRs this session opened or merged, as a JSON array of
 # {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state.
 session_prs() {
-  local f="$1" prs repo list states='{}'
+  local f="$1" prs repo
   [ -f "$f" ] || { echo '[]'; return; }
   prs="$(so_transcript_metrics "$f" | jq -c '.prs // []')"
   [ -n "$prs" ] || { echo '[]'; return; }
+  # a repo's whole PR list goes through a pipe, never argv: it outgrows an argument's 128 KB
   while IFS= read -r repo; do
-    list="$(pr_states "$repo")" || continue
-    states="$(jq -c --arg r "$repo" --argjson l "$list" \
-      '. + {($r): ($l | map({key: (.number | tostring), value: .}) | from_entries)}' <<<"$states")"
-  done < <(jq -r '.[].repo' <<<"$prs" | sort -u)
-  jq -c --argjson s "$states" 'map(. + {state: $s[.repo][.number | tostring].state,
-    merged_at: $s[.repo][.number | tostring].mergedAt})' <<<"$prs"
+    pr_states "$repo" | jq -c --arg r "$repo" '{($r): map({key: (.number | tostring), value: .}) | from_entries}' || :
+  done < <(jq -r '.[].repo' <<<"$prs" | sort -u) |
+    jq -sc --argjson p "$prs" '(add // {}) as $s | $p | map(. + {state: $s[.repo][.number | tostring].state,
+      merged_at: $s[.repo][.number | tostring].mergedAt})'
 }
 
 # prs_cell: session_prs output on stdin -> "<merged>/<total>", with a ? while any state is
@@ -1611,7 +1589,7 @@ transitions() {
 # keep_blind <previous cells file> <current cells file> <blind file> -> the current cells with each
 # row a failed source fed put back to its previous cells, so tick logs no blink for it and the next
 # good read is compared with the last good one. <blind file> holds session ids (a row's per-row
-# source failed: gh pr list, the run ledger, gh api jobs, gh pr view), "+" (a remote agent-panel
+# source failed: the PR store, the run ledger, gh api jobs, gh pr view), "+" (a remote agent-panel
 # read with a gap: the previous rows it did not list are kept, not gone) or "*" (the local
 # agent-panel failed: it feeds every row, so every row keeps its previous cells). A blind row with
 # no previous cells waits for a good read before it is new. Any other row is logged as read: one
