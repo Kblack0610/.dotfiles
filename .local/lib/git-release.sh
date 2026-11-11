@@ -74,9 +74,15 @@ git_tag_version() {
   printf '%s' "${ver#v}"
 }
 
+# _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
+# families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
+# pattern against the working directory, where an unquoted word would.
+_gr_pats() { read -ra _GR_PATS <<<"$1"; }
+
 _gr_highest() {
   local repo="$1" glob="$2" all="" stable=""
-  all=$(git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null) || return 0
+  _gr_pats "$glob"
+  all=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null) || return 0
   [ -n "$all" ] || return 0
   stable=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   if [ -n "$stable" ]; then
@@ -90,7 +96,8 @@ _gr_highest() {
 #
 # The one ladder behind git_latest_tag, git_product_tag and git_tags, so the newest tag and
 # the list it heads can never name different lines. An explicit <glob> (the registry's
-# `tagGlob`) is returned as is, matched or not: it is authoritative. Otherwise the first rung
+# `tagGlob`) is returned as is, matched or not: it is authoritative; it may hold several
+# space-separated patterns, which every reader here splits with _gr_pats. Otherwise the first rung
 # with a tag wins, and "" says none has one. <scoped> 0 is a project that IS its repo
 # (`<name>-v*`, then a bare `v*`); 1 is a product in a monorepo (`<product>-v*`,
 # `<product>-web-v*`, `<product>-*-v*`) with NO bare fallback, which would hand back a sibling
@@ -246,7 +253,8 @@ git_tags() {
   [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
-  git -C "$repo" -c versionsort.suffix=- tag --list "$g" --sort=-v:refname 2>/dev/null || true
+  _gr_pats "$g"
+  git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null || true
 }
 
 # git_prev_tag <repo> <name> <scoped> <glob> <tag> - the release before <tag> on its own
@@ -258,7 +266,8 @@ git_prev_tag() {
   [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
-  all=$(git -C "$repo" -c versionsort.suffix=- tag --list "$g" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
+  _gr_pats "$g"
+  all=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
   if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
     all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   fi
@@ -275,7 +284,8 @@ git_first_tag() {
   [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$sha" ] && command -v git >/dev/null 2>&1 || return 1
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
-  out=$(git -C "$repo" tag --list "$g" --contains "$sha" --sort=creatordate \
+  _gr_pats "$g"
+  out=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --contains "$sha" --sort=creatordate \
     --format='%(refname:short) %(creatordate:unix)' 2>/dev/null) || return 1
   printf '%s' "${out%%$'\n'*}"
 }
