@@ -123,20 +123,20 @@ default_branch() {
 
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v=""
-  case "$(jq -r '.pinned.deployed // false' <<<"$t")" in
-    manual)
-      # A channel moved by hand (Steam's public branch is set in Steamworks): nothing records a
-      # deploy there, so the pin is the reason the registry gives and live is the only fact.
-      jq -c '{value: null, source: "manual", reason: (.pinned.reason // null)}' <<<"$t"
-      return ;;
-  esac
-  if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
+  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v="" deployed
+  deployed="$(jq -r '.pinned.deployed // false' <<<"$t")"
+  if [ "$deployed" = manual ]; then
+    # A channel moved by hand (Steam's public branch is set in Steamworks): nothing records a
+    # deploy there, so the pin is the reason the registry gives and live is the only fact.
+    jq -c '{value: null, source: "manual", reason: (.pinned.reason // null)}' <<<"$t"
+    return
+  fi
+  if [ "$deployed" = true ]; then
     # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
     # newest successful upload said it put there. Source none is a channel nothing has recorded.
     jq -c 'if .error then {value: null, source: "github deployments", error: "deploy history unreadable"}
            else [.history[] | select(.state == "ok")][0] as $d
-             | if $d.version then {value: $d.version, source: "github deployments"} + (if $d.build then {build: $d.build} else {} end)
+             | if $d.version then {value: $d.version, source: "github deployments", build: $d.build}
                else {value: null, source: "none"} end
            end' <<<"$d"
     return
@@ -389,7 +389,7 @@ deploys() {
       at: ((.latestStatus.createdAt // .createdAt) | fromdate),
       url: (.latestStatus.logUrl | blank),
       sha: (.commitOid | blank),
-      build: ((.payload // "") | (fromjson? // {}) | objects | .build // null | if . == null then null else tostring | blank end)
+      build: ((.payload // "" | fromjson? | objects | .build | values | tostring | blank) // null)
     }] as $h
     | [$h[] | select(.state == "ok")] as $ok
     | {source: $s, error: null, history: $h,
@@ -467,17 +467,14 @@ row() {
   l="$(live "$t")"
   tel="$(telemetry "$t")"
   now="$(now_epoch)"
-  local pv lv lsrc psrc lver builds=""
+  local pv lv lsrc psrc lver pb lb
   pv="$(jq -r '.value // empty' <<<"$p")"
   psrc="$(jq -r '.source // empty' <<<"$p")"
   lver="$(jq -r '.version // empty' <<<"$l")"
   lv="$(jq -r '.value // empty' <<<"$l")"
   lsrc="$(jq -r '.source // empty' <<<"$l")"
-  # When the upload recorded the store's build number and the store reports one (TestFlight,
-  # Play), the build decides: two builds of one version are two deploys, and the version alone
-  # would call the older one live.
-  builds="$(jq -rn --argjson p "$p" --argjson l "$l" \
-    'if ($p.build // "") == "" or ($l.build // "") == "" then "" elif ($p.build | tostring) == ($l.build | tostring) then "same" else "differ" end')"
+  pb="$(jq -r '.build // empty' <<<"$p")"
+  lb="$(jq -r '.build // empty' <<<"$l")"
   if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
     status=unreleased
   elif [ -z "$pv" ] && { [ "$psrc" = none ] || [ "$psrc" = manual ]; } && [ -n "$lv" ]; then
@@ -490,10 +487,11 @@ row() {
     status=floating
   elif [ "$lsrc" = none ]; then
     status=released
-  elif [ "$builds" = same ]; then
-    status=ok
-  elif [ "$builds" = differ ]; then
-    status=drift
+  elif [ -n "$pb" ] && [ -n "$lb" ]; then
+    # The upload recorded the store's build number and the store reports one (TestFlight, Play,
+    # Steam's BuildID): the build decides, since two builds of one version are two deploys and
+    # the version alone would call the older one live.
+    if [ "$pb" = "$lb" ]; then status=ok; else status=drift; fi
   elif [ "$pv" = "$lv" ]; then
     status=ok
   elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
