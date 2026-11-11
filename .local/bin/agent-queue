@@ -261,7 +261,7 @@ finished_row_ok() {
 # promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
 # and a session working a queue item ($AGENT_QUEUE_ITEM) that adds one without --from, recorded as
 # `from: item:<its slug>` when admission gates it (an exempt or deferred add keeps `human`). Never held: --running (the caller's own work), a --plan not from a
-# machine filer (an approved plan), urgent, `red` and `#requested` items, and a session's add that
+# machine filer (an approved plan), urgent, `red`, `#requested` and `verify` items, and a session's add that
 # arrives held (--after, at:, pr:, ask:, hold:, nightly:): its own work later, not runnable inflow.
 # A held add writes no item, logs one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD. Drain is the
 # items started out of the queue (started after they were queued) over AQ_DRAIN_DAYS, a day.
@@ -301,9 +301,11 @@ admission_now() {
 }
 
 # admission_exempt <priority> <tags> -> true when admission never holds the add: admission is off,
-# or the item is urgent, `red` or `#requested`.
+# or the item is urgent, `red`, `#requested` or `verify`. A verify item (fleet-dispatch reconcile_epics)
+# closes an epic whose leaves have all landed: one per landed epic, and it shrinks the board, so a deep
+# queue holding it only keeps landed_unverified up.
 admission_exempt() {
-  [ "$AQ_ADMIT_DAYS" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* || " $2 " == *" #requested "* ]]
+  [ "$AQ_ADMIT_DAYS" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* || " $2 " == *" #requested "* || " $2 " == *" verify "* ]]
 }
 
 # admission_since -> the UTC start of the drain window.
