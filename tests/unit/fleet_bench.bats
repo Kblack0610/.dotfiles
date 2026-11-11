@@ -2397,6 +2397,23 @@ failed() {
   assert_output 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit (PR 5 at aaa11111): shell tests red at aaa11111: tests/integ/tool.bats #high'
 }
 
+@test "hold: a run ledger past the 128 KB argument limit still reads (ar-1619)" {
+  # NEGATIVE CONTROL: with runs passed as --argjson, jq failed to exec (Argument list too long) and no row was filed.
+  hold_setup
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  jq -c --arg at "$(date -u -d "@$((T0 - 90000))" +%FT%TZ)" '. + [range(1500) as $i | {id: (1000 + $i), event: "push",
+    name: "shell tests", status: "completed", conclusion: "success", head_sha: "fill\($i)\("0" * 32)", created_at: $at}]' \
+    "$GHD/runs" > "$GHD/runs.new" && mv "$GHD/runs.new" "$GHD/runs"
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  failed 2 integ/tool.bats
+  [ "$(jq -c 'map(select(.event == "push"))' "$GHD/runs" | wc -c)" -gt 131072 ]
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'Argument list too long'
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit (PR 5 at aaa11111)'
+}
+
 @test "hold: a merge whose own run stayed green still counts when its area goes red within the window" {
   hold_setup
   cleanup first -80000 5 aaa11111 .local/bin/tool
