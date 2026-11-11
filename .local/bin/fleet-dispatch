@@ -433,10 +433,14 @@ sig() { sha256sum | cut -c1-12; }
 # row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
 # squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
 # left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
-# to hundreds of rows at once (1,572 re-judges on 2026-11-10/11). The type(area) prefix stays: area is judged.
+# to hundreds of rows at once. The type(area) prefix stays: area is judged. Pure bash: it runs per row.
 row_sig() {
-  printf '%s\n' "${1%%<!--*}" |
-    awk '{ o = ""; for (i = 1; i <= NF; i++) if ($i !~ /^#(of\/.*|urgent|high|low)$/) o = o (o == "" ? "" : " ") $i; printf "%s", o }' | sig
+  local w o="" t=()
+  read -ra t <<<"${1%%<!--*}"
+  for w in "${t[@]+"${t[@]}"}"; do
+    case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
+  done
+  printf '%s' "$o" | sig
 }
 
 # policy_sig -> changes whenever the policy does. It dates a verdict (fresh or stale), it does not void
@@ -520,27 +524,31 @@ held() {
   grep -qxF -e "$k"$'\t'"$5"$'\t'"$6" -e "$k"$'\t'"$5"$'\t*' -e "$k"$'\t*\t*' <<<"$1"
 }
 
-# held_row <judged> <project> <lane> <key> <line> <dsig> <text> -- held, where <line> is row_sig. Until
-# every verdict carries a row_sig, one keyed on the raw line's sig (the key before 2026-11-11) still
-# holds, and the row goes to REKEY_OUT when the caller names it, for rekey to record it again.
+# held_row <judged> <project> <lane> <key> <line> <dsig> <text> -- held, where <line> is row_sig. A
+# verdict still keyed on the raw line's sig (the old key, until ar-1714 drops this) holds too, and the
+# row goes to REKEY_OUT when the caller names it, for rekey to record it again.
 held_row() {
   local raw
   held "$1" "$2" "$3" "$4" "$5" "$6" && return 0
   raw=$(printf '%s' "$7" | sig)
   held "$1" "$2" "$3" "$4" "$raw" "$6" || return 1
-  [ -z "${REKEY_OUT:-}" ] || printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$raw" "$5" >> "$REKEY_OUT"
+  [ -z "${REKEY_OUT:-}" ] || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$raw" "$5" "$6" >> "$REKEY_OUT"
+  return 0
 }
 
-# rekey <file> -- for each "<project>\t<lane>\t<key>\t<raw sig>\t<row_sig>" line held_row wrote, append
-# the row's latest dispatch or skip verdict under that raw sig again under its row_sig, as size_back
-# records a verdict for a row's new text, so the switch of key judges nothing twice.
+# rekey <file> -- for each "<project>\t<lane>\t<key>\t<raw sig>\t<row_sig>\t<dsig>" line held_row wrote,
+# append the latest verdict that held the row (judged_keys' test: usable under this policy, its dsig
+# the row's or none) again under its row_sig, as size_back records a verdict for a row's new text, so
+# the switch of key judges nothing twice.
 rekey() {
   local out
   [ -s "$1" ] && [ -f "$VERDICTS" ] || return 0
-  out=$(jq -c --rawfile r "$1" '
-    ($r | split("\n") | map(select(length > 0) | split("\t") | {key: (.[0:4] | join("\t")), value: .[4]}) | from_entries) as $to
-    | select(.verdict == "dispatch" or .verdict == "skip")
-    | $to["\(.project)\t\(.lane)\t\(.key)\t\(.line // "")"] as $n | select($n != null) | . + {line: $n}' "$VERDICTS" 2>/dev/null |
+  out=$(jq -c --rawfile r "$1" --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
+    ($r | split("\n") | map(select(length > 0) | split("\t") | {key: (.[0:4] | join("\t")), value: {line: .[4], dsig: .[5]}})
+      | from_entries) as $to
+    | select(.verdict == "dispatch" or .verdict == "skip") | select(.policy == $sig or usable($rules))
+    | $to["\(.project)\t\(.lane)\t\(.key)\t\(.line // "")"] as $n | select($n != null)
+    | select((.dsig // "") == "" or .dsig == $n.dsig) | . + {line: $n.line}' "$VERDICTS" 2>/dev/null |
     jq -sc 'group_by([.project, .lane, .key]) | map(last)[]')
   [ -n "$out" ] || return 0
   printf '%s\n' "$out" >> "$VERDICTS"
