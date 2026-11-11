@@ -219,6 +219,19 @@ def cmd_search(a):
     print(c(DIM, note))
 
 
+def first_ts(path):
+    """The first event timestamp in a transcript, in window_bound's UTC format, or None."""
+    try:
+        with path.open(errors="replace") as f:
+            for line in f:
+                ts = (parse_line(line) or {}).get("timestamp")
+                if isinstance(ts, str):
+                    return ts.replace("Z", "")[:19]
+    except OSError:
+        pass
+    return None
+
+
 def session_meta(path):
     """(sessionId, aiTitle, project, first_ts, last_ts, n_user_msgs)."""
     sid = path.stem
@@ -777,12 +790,20 @@ def cmd_stats(a):
         if kind in ("skill", "slash") + USE_KINDS:
             skill_sessions.setdefault(key, set()).add(session)
 
+    # oldest: how far back the transcripts reach, so a caller can tell a quiet window from a
+    # corpus that does not cover it (skill-drift --overrides refuses then). A file last written
+    # before the window holds only older events, so its mtime is bound enough; with none, it is
+    # the first event of the files read.
+    older, read = None, []
     for path in iter_files():
         try:
-            if path.stat().st_mtime < since_epoch:
-                continue
+            mtime = path.stat().st_mtime
         except OSError:
             continue
+        if mtime < since_epoch:
+            older = mtime if older is None else min(older, mtime)
+            continue
+        read.append(path)
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
@@ -841,8 +862,13 @@ def cmd_stats(a):
                 kept.append(r)
         rows = kept
 
+    if older is not None:
+        oldest = datetime.fromtimestamp(older, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        oldest = min(filter(None, map(first_ts, read)), default=None)
+
     if a.json:
-        print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
+        print(json.dumps({"since": since, "oldest": oldest, "origin": a.origin, "by": a.by or "",
                           "rows": rows,
                           "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
                          ensure_ascii=False))
