@@ -13,7 +13,7 @@ const cost = tblTab({
   state: { open: {}, tokWin: "week" }, open: () => cost.open,
   // The view keys past the table's: the cut, the window and the sessions sort.
   params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir", "day", "dq", "dsort", "ddir", "sid"]) if (v.get(k)) p.set(k, v.get(k)); },
-  head: (t) => costsHead(t.data),
+  head: (t) => costsHead(t.data), lead: () => innerStrip("costs"),
   // The table (its bar and rows) belongs to the Spend inner tab, with the switches above it.
   wrap: (html) => innerWrap("costs", "table", html),
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
@@ -144,21 +144,21 @@ function historySection(d) {
   const charts = `<div class="spendcharts"><div class="panel"><h3>$/day, last 30 days, click a day for its sessions ${SPEND_KEY}</h3>` +
     `<div id="spend-days">${columns(spendBars(h.chart, 7), { height: 160, sel: dv.day, yfmt: usd })}</div></div>` +
     (h.months.length ? `<div class="panel"><h3>By month</h3>${columns(spendBars(h.months, 1), { height: 160, yfmt: usd })}</div>` : "") + `</div>`;
-  const periods = `<details class="sec-d" data-k="spend-periods"${cost.open["spend-periods"] ? " open" : ""}><summary class="muted fold">Year, month and day rows</summary>` +
+  const periods = `<details class="sec-d" data-k="spend-periods"${secOpen(cost.open, "spend-periods") ? " open" : ""}><summary class="muted fold">Year, month and day rows</summary>` +
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">period</th><th class="n">total</th><th class="n">days</th><th class="n" data-role="glance" data-named>$/day</th><th class="n" data-role="glance" data-named>vs prev</th><th class="n" data-role="glance" data-named>est.</th></tr>` +
     h.rows.map(row).join("") + `</table>${h.older ? older(h.older) : ""}` +
     (h.missing ? `<div class="warn">${h.missing} days in the range have no figure and are not counted</div>` : "") +
     `</div><div class="muted fold">${esc(h.note)}</div></details>`;
   const dq = new URLSearchParams(st.views.costs || "").get("dq") || "";
-  return `<details class="csec" data-k="spend" id="sec-spend"${cost.open.spend !== false ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
+  return `<details class="csec" data-k="spend" id="sec-spend"${secOpen(cost.open, "spend") ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
     charts + dayTable(dv, dq) + periods + `</details>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
-// fleet's level, then the drip, when the accounts are back on pace and one row per source. Green
-// folds to its headline (dashboards rule 4); amber and red start open until the reader folds it,
-// except on a phone, where the headline is the verdict and the tables wait for a tap. A phone has
-// its own fold key, because paint remembers every fold it saw and its closed one would stick.
+// fleet's level, then the drip, when the accounts are back on pace and one row per source. It
+// starts open until the reader folds it (dashboards rule 4), except on a phone, where the headline
+// is the verdict and the tables wait for a tap. A phone has its own fold key, because paint
+// remembers every fold it saw and its closed one would stick.
 function burnPace(b) {
   const p = b.pace;
   if (p.on_pace) return "every source is on pace";
@@ -203,13 +203,12 @@ function burnRow(a, at, note, cols) {
 const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n, phone]) => `<th${n ? ' class="n"' : ""}${phone || ""}>${t}</th>`).join("")}</tr>` +
   rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + `</table>`;
 
-// The keys inside a pool, folded under its row. Amber starts open under its own fold key, because
-// paint remembers every fold it saw and the quiet key's memory would keep it shut.
+// The keys inside a pool, a fold under its row that starts open (dashboards rule 4).
 function burnKeys(b) {
   if (!b.keys) return "";
-  const warn = b.keys.level !== "ok", k = warn ? "burn-keys-warn" : "burn-keys";
+  const warn = b.keys.level !== "ok";
   const head = `KEYS <span class="${warn ? "warn" : "muted"}">${esc(b.keys.head)}</span>`;
-  return `<div class="panel scroll">${cfold(k, head, burnTable(b, KEY_COLS, b.accounts.filter((a) => a.nested)), { [k]: cost.open[k] ?? warn })}</div>`;
+  return `<div class="panel scroll">${cfold("burn-keys", head, burnTable(b, KEY_COLS, b.accounts.filter((a) => a.nested)), cost.open, true)}</div>`;
 }
 
 function costsBurn(d) {
@@ -217,7 +216,7 @@ function costsBurn(d) {
   if (!b || !b.accounts.length) return `<h2 class="sec" id="sec-burn">Burn</h2><div class="panel muted">no data from claude-acct</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
-  const key = isPhone() ? "burn-phone" : "burn", open = cost.open[key] ?? (b.level !== "ok" && !isPhone());
+  const key = isPhone() ? "burn-phone" : "burn", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
   return `<details class="csec" data-k="${key}" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
@@ -234,14 +233,13 @@ function tokensTable(title, rows) {
 
 const TOK_WINDOWS = { day: "yesterday", week: "7d" };
 
-// Where the tokens go: hub-core's `tokens` sums the snapshots; shut while fresh, open and amber
-// once stale (rule 4), which is its own fold key because paint remembers every fold it saw.
+// Where the tokens go: hub-core's `tokens` sums the snapshots; it starts open (rule 4), its head
+// amber once stale.
 // The dollars per tool are the tool cut of the table below, so this links there.
 function tokensSection(d) {
   const t = d.tokens;
   if (!t) return `<h2 class="sec" id="sec-tokens">Where the tokens go <span class="warn">no snapshot in ~/.agent/token-usage</span></h2>`;
-  const w = t[cost.tokWin], key = t.stale ? "tokens-stale" : "tokens";
-  const open = cost.open[key] ?? t.stale;
+  const w = t[cost.tokWin], key = "tokens", open = secOpen(cost.open, key);
   const week = `7d ${kfmt(t.week.context)}, tool output ${pct(t.week.carried_share)}`;
   const head = t.stale ? `<span class="warn">${week}, stale: newest snapshot ${esc(t.date)}</span>` : `<span class="muted">${week}</span>`;
   const seg = `<div class="seg fseg"><span class="muted">window</span>` + Object.entries(TOK_WINDOWS).map(([k, l]) =>
@@ -259,13 +257,13 @@ const lfMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
 const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLocaleString()}`).join(", ") : "none";
 
 // What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
-// and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. Shut while it
-// reads, open and amber when the reader failed that night or the snapshot is stale (rule 4). The
+// and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. It starts open (rule 4),
+// its head amber when the reader failed that night or the snapshot is stale. The
 // gateway's dollars are the gateway's alone; session cost is Fleet cost 24h, so none is summed here.
 function langfuseSection(d) {
   const t = d.tokens, lf = t?.langfuse;
   if (!t) return "";
-  const f = lf?.figures, bad = !f || t.stale, key = bad ? "langfuse-stale" : "langfuse", open = cost.open[key] ?? bad;
+  const f = lf?.figures, key = "langfuse", open = secOpen(cost.open, key);
   const title = `<h2 class="sec">What Langfuse sees `;
   if (!f) {
     return `<details class="csec" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="warn">no figures in snapshot ${esc(t.date)}</span></h2></summary>` +
@@ -284,28 +282,28 @@ function langfuseSection(d) {
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
-// the repo costs to build. Folded to the All PRs headline until opened; its headers sort apart from
+// the repo costs to build. It starts open under the All PRs headline; its headers sort apart from
 // the main table's (ssort/sdir), All PRs stays on top, and the note says what the figures cannot.
 function costsSections(d) {
   const b = d.sections;
   if (!b || !b.table) return "";
   const cells = (r, cls) => `<tr${cls}>` + r.map((c, i) => `<td class="${i ? "n" : ""}">${esc(c)}</td>`).join("") + `</tr>`;
   const shown = b.rows.slice(0, LOG_ROWS);
-  return `<details class="csec" data-k="sections" id="sec-sections"${cost.open.sections ? " open" : ""}><summary><h2 class="sec">Sections <span class="muted">${esc(b.head)}</span></h2></summary>` +
+  return `<details class="csec" data-k="sections" id="sec-sections"${secOpen(cost.open, "sections") ? " open" : ""}><summary><h2 class="sec">Sections <span class="muted">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel scroll"><table class="tbl">${tblHead(b.table, Object.fromEntries(b.columns.map((k, i) => [k, i ? [b.headers[i], "n"] : [b.headers[i]]])), "s")}` +
     cells(b.all, ' class="allrow"') + shown.map((r) => cells(r, "")).join("") + `</table>${older(b.rows.length - shown.length)}</div>` +
     `<div class="muted fold">${b.notes.map(esc).join(" ")}</div></details>`;
 }
 
-// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the fleet figure
-// pinned above the strip, then each section inside its inner tab's group in the layout's order
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first,
+// the fleet figure pinned under it on every inner tab, then each section inside its inner tab's group in the layout's order
 // (Limits: burn; Spend: history, totals, the table; Models: tokens, langfuse, sections).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
-  let html = fleetCostSection(d) + innerStrip("costs", d.amber) + innerWrap("costs", "burn", costsBurn(d)) +
+  let html = innerStrip("costs", d.amber) + fleetCostSection(d) + innerWrap("costs", "burn", costsBurn(d)) +
     innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

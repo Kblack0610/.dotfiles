@@ -107,9 +107,13 @@ function cardLine(parts) {
   const p = parts.filter(Boolean);
   return p.length ? `<div class="cline">${p.join(", ")}</div>` : "";
 }
+// Whether section k is open: every section starts open, and one the reader folded stays folded,
+// because paint records each fold's state in `open` (dashboards rule 4).
+const secOpen = (open, k) => !open || open[k] !== false;
 // A fold keyed by k, open when open[k] says so (paint or a toggle listener keeps open current).
-const cfold = (k, summary, inner, open) =>
-  `<details class="cfold" data-k="${esc(k)}"${open && open[k] ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+// A per-row detail starts shut; a section (`section` true) starts open, as secOpen says.
+const cfold = (k, summary, inner, open, section) =>
+  `<details class="cfold" data-k="${esc(k)}"${(section ? secOpen(open, k) : open && open[k]) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
 // A part of a tab that a phone folds to one line, so what needs attention comes first; a wider
 // screen always shows it and never sees the summary (app.css). summary is html and says the part's
 // state, because it is all a phone shows. PFOLD holds what was opened, so no tab keeps its own map.

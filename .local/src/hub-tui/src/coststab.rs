@@ -77,8 +77,8 @@ impl Default for CostsView {
             sort: String::new(),
             asc: false,
             typing: None,
-            sections_open: false,
-            history_open: false,
+            sections_open: true,
+            history_open: true,
             day_back: 0,
             sess_at: 0,
             sess_n: std::cell::Cell::new(0),
@@ -294,9 +294,9 @@ impl CostsView {
             return Some(self.history_open.then_some("spend"));
         }
         if code == KeyCode::Char('K') {
-            let keys = keys?;
+            keys?;
             let moved = self.reveal("burn");
-            self.keys = Some(moved || !keys_open(keys, self.keys));
+            self.keys = Some(moved || !keys_open(self.keys));
             return Some(None);
         }
         let t = t?;
@@ -314,7 +314,7 @@ impl CostsView {
             }
             KeyCode::Char('l') => {
                 let moved = self.reveal("langfuse");
-                let open = moved || !tokens::langfuse_open(t, self.langfuse);
+                let open = moved || !tokens::langfuse_open(self.langfuse);
                 self.langfuse = Some(open);
                 Some(open.then_some("langfuse"))
             }
@@ -365,7 +365,7 @@ impl CostsView {
     }
 
     /// The page, and where each of its sections starts (layout.rs's Costs sections, for `seek`):
-    /// the pinned fleet figure, the strip, then the sections of the inner tab shown.
+    /// the strip first, the pinned fleet figure under it, then the sections of the inner tab shown.
     pub fn lines(
         &self,
         c: &Costs,
@@ -374,9 +374,9 @@ impl CostsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
-        let mut out = fleet(&b.fleet_cost, p, now, w);
-        let mut at = vec![("fleet", 0)];
-        out.push(innertabs::strip(tab(), self.inner, &b.amber, p, w));
+        let mut out = vec![innertabs::strip(tab(), self.inner, &b.amber, p, w)];
+        let mut at = vec![("fleet", out.len())];
+        out.extend(fleet(&b.fleet_cost, p, now, w));
         let shown = layout::inner_tab(tab(), Some(self.inner)).map_or(&[][..], |i| i.sections);
         for sec in shown {
             at.push((sec, out.len()));
@@ -485,9 +485,9 @@ impl CostsView {
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
 /// badge, when each account is back on pace, and one row per source claude-acct reads.
-/// Amber starts open (dashboards rule 4); the reader's `K` wins after that.
-fn keys_open(k: &Keys, set: Option<bool>) -> bool {
-    set.unwrap_or(k.level != "ok")
+/// The keys start open (dashboards rule 4); the reader's `K` wins after that.
+fn keys_open(set: Option<bool>) -> bool {
+    set.unwrap_or(true)
 }
 
 /// Cells of the usage bar, brackets apart.
@@ -632,7 +632,7 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
     );
     out.extend(top.iter().filter_map(note));
     if let Some(k) = &b.keys {
-        let open = keys_open(k, keys_set);
+        let open = keys_open(keys_set);
         let head = if k.level == "ok" { p.dim() } else { p.warn() };
         out.push(clip_line(
             Line::from(vec![
@@ -1385,29 +1385,21 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_shows_one_inner_tab_under_the_pinned_fleet_figure_and_arrows_switch() {
+    fn the_strip_is_the_first_line_with_the_pinned_fleet_figure_under_it_and_arrows_switch() {
         let mut v = CostsView::default();
         let limits = screen_of(&burning(), &v, 80);
         let lines: Vec<&str> = limits.lines().collect();
-        assert!(limits.starts_with("FLEET COST 24H"), "{limits}");
-        let strip = lines
-            .iter()
-            .position(|l| l.contains("<- -> switch"))
-            .unwrap();
         assert!(
-            lines[strip].starts_with("[Limits 1] Spend  Models"),
-            "{}",
-            lines[strip]
+            lines[0].starts_with("[Limits 1] Spend  Models") && lines[0].contains("<- -> switch"),
+            "the strip is the first line: {limits}"
         );
+        let at = |head: &str| lines.iter().position(|l| l.starts_with(head));
+        let (fleet, burn) = (at("FLEET COST 24H").unwrap(), at("BURN").unwrap());
         assert!(
-            lines[strip + 1..].iter().any(|l| l.starts_with("BURN")),
-            "{limits}"
+            0 < fleet && fleet < burn,
+            "fleet is pinned under the strip: {limits}"
         );
         assert!(!limits.contains("window:") && !limits.contains("WHERE THE TOKENS GO"));
-        assert!(
-            lines.iter().take(strip).any(|l| l.contains("shepherd")),
-            "fleet is above the strip"
-        );
         assert!(v.key(KeyCode::Right));
         assert_eq!(v.inner, "spend");
         assert!(screen_of(&burning(), &v, 80).contains("window:"));
@@ -1420,6 +1412,24 @@ mod tests {
         v.q = "x".into();
         v.key(KeyCode::Esc);
         assert_eq!(v.inner, "models");
+    }
+
+    #[test]
+    fn a_section_starts_open_and_its_key_folds_it_and_the_fold_stays() {
+        let mut v = on("models");
+        let open = sections_screen(&v, 80);
+        assert!(open.lines().any(|l| l.starts_with("- SECTIONS")), "{open}");
+        assert!(open.contains("All PRs"), "open shows the table: {open}");
+        v.key(KeyCode::Char('e'));
+        let shut = sections_screen(&v, 80);
+        assert!(shut.lines().any(|l| l.starts_with("+ SECTIONS")), "{shut}");
+        assert!(
+            !shut.lines().any(|l| l.starts_with("- SECTIONS")),
+            "negative control"
+        );
+        v.key(KeyCode::Char('x'));
+        assert!(!v.sections_open, "a reset keeps the reader's fold");
+        assert!(sections_screen(&v, 80).contains("+ SECTIONS"));
     }
 
     #[test]
@@ -1458,7 +1468,11 @@ mod tests {
         let mut v = CostsView::default();
         v.key(KeyCode::Char('b'));
         assert_eq!(v.inner, "spend");
-        assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("spend")));
+        assert_eq!(
+            v.fold(KeyCode::Char('y'), None, None),
+            Some(None),
+            "on its own tab, y folds the open history"
+        );
         let mut v = CostsView::default();
         assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("spend")));
         assert!(
@@ -1501,6 +1515,8 @@ mod tests {
                 .join("\n")
         };
         let mut v = on("spend");
+        assert!(page(&v).contains("- SPEND  "), "it starts open");
+        assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(None));
         let shut = page(&v);
         assert!(
             shut.contains("+ SPEND  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"),
@@ -1628,7 +1644,10 @@ mod tests {
             .join("\n");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         assert!(
-            s.starts_with("FLEET COST 24H  about $849  measured $310  estimated $538  as of "),
+            s.starts_with("[Limits 1] Spend  Models")
+                && s.lines().nth(1).unwrap().starts_with(
+                    "FLEET COST 24H  about $849  measured $310  estimated $538  as of "
+                ),
             "{s}"
         );
         assert!(
@@ -1798,8 +1817,9 @@ mod tests {
     }
 
     #[test]
-    fn sections_are_a_headline_until_e_opens_them_then_all_prs_leads_both_caveats_show() {
+    fn sections_fold_to_a_headline_on_e_and_open_all_prs_leads_both_caveats_show() {
         let mut v = on("models");
+        v.key(KeyCode::Char('e'));
         let s = sections_screen(&v, 80);
         assert!(
             s.contains("+ SECTIONS  598 PRs in 7d, 52% first try"),
@@ -1822,7 +1842,6 @@ mod tests {
     #[test]
     fn t_sorts_the_sections_by_each_column_and_t_flips_it() {
         let mut v = on("models");
-        v.key(KeyCode::Char('e'));
         v.key(KeyCode::Char('t'));
         assert_eq!(v.ssort, "section");
         // Descending by name: docs before Assets, All PRs still first.
@@ -1956,6 +1975,15 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut v = CostsView::default();
+        assert!(
+            screen(&v, 200).iter().any(|l| l.starts_with("glm")),
+            "the keys start open"
+        );
+        assert_eq!(
+            v.fold(KeyCode::Char('K'), None, c.burn.keys.as_ref()),
+            Some(None),
+            "K folds them"
+        );
         let shut = screen(&v, 200);
         assert!(
             shut.iter().any(|l| l.starts_with("lazer")),
@@ -1989,15 +2017,9 @@ mod tests {
     }
 
     #[test]
-    fn a_warn_fold_starts_open_and_k_still_folds_it() {
-        let k = Keys {
-            head: "1 in lazer".into(),
-            level: "warn",
-        };
-        assert!(keys_open(&k, None));
-        assert!(!keys_open(&k, Some(false)));
-        let quiet = Keys { level: "ok", ..k };
-        assert!(!keys_open(&quiet, None), "negative control");
+    fn the_keys_fold_starts_open_and_k_folds_it() {
+        assert!(keys_open(None));
+        assert!(!keys_open(Some(false)), "the reader's fold is kept");
     }
 
     #[test]
