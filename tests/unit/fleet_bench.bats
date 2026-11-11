@@ -1530,6 +1530,15 @@ watch() {
   assert_equal "$output" "$first"
 }
 
+@test "triage: a probe of one OK or RED line a stage names its first RED line, not its last OK one" {
+  triage_setup
+  watch release-runs TRIP -25200 high
+  printf 'TRIP exit 1 (want 0)\nOK  release.yml: success on main\nRED steam.yml: failure on main\nRED ios-release.yml: failure on main\nOK  Multi (all) of a tag: no run in 72 h\n' > "$TRIAGE_WATCH_STATE/release-runs.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'expected: release-runs is healthy., why: RED steam.yml: failure on main, evidence:'
+}
+
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
@@ -1952,6 +1961,57 @@ fix_item() {
   assert_success
   assert_output --partial '1 queued as red fixes'
   refute_output --partial 'for the human'
+}
+
+# 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
+# and triage queued a second 4 minutes later; the next pass would page the human about fixes that
+# "did not hold" when no session was asked to clear the red.
+@test "triage: an alert or owned watch item that closed ok this trip stands for its cause; an earlier trip's does not" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  local want this before
+  want=$(printf '%s' 'check(watch):spend' | sha256sum | cut -c1-8)
+  this=$(date -u -d "@$((T0 - 3600))" +%FT%TZ); before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" --arg pr "${4:-}" \
+    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: (if $pr == "" then null else $pr end),
+      merged: (if $pr == "" then null else "abc" end)}' >> "$ITEMS"; }
+  watch_item ar-1 ok "$this"; watch_item ar-2 ok "${this%Z}.123Z"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  refute_output --partial 'for the human'
+  [ ! -s "$BOARD.agent-runtime" ]
+  # an owned route's item stands the same way
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' owned:ar-9 - 'its plan owns it'
+  : > "$ITEMS"; watch_item ar-1 ok "${this%Z}.5Z"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # one that merged a fix with the red still here did not hold, so it is queued again
+  : > "$ITEMS"; watch_item ar-1 ok "$this" o/r#5
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  : > "$PLOG"; : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
+  : > "$ITEMS"; watch_item ar-1 ok "$before"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  # an item that failed this trip did not do its job either
+  : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 failed "$this"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  # an agent route's red is the session's to clear: closed ok with it still red did not hold
+  : > "$TRIAGE_ROUTES"; : > "$ITEMS"; : > "$PLOG"
+  route 'watch.: (spend) tripped' agent - 'fix the spend'
+  watch_item ar-1 ok "$this"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
 }
 
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
@@ -2910,6 +2970,10 @@ LIB
   item fin3 done high board:game:g-4 '{"title":"","task":"ga-3: the fix\nthe rest","merged":"def456"}' >> "$DONE"
   run "$SUBJECT" chain
   assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
+  # negative control: a row an active item works is that item's to move, no orphan (apo-119, 2026-11-11)
+  item ga3 waiting high human '{"row":"game:ga-3","session":"s1"}' >> "$SANDBOX/items.jsonl"
+  run "$SUBJECT" chain --check
+  assert_success
   restore
   # a parent is looked up in the row's own project: t-1 is open on tools, not on game
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-8", parent: "t-1", tags: ["of/t-1"]}]' "$BJSON.ok" > "$BJSON"

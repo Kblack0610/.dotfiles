@@ -432,15 +432,14 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
 /// `projects` (project_order), so the browser draws the grid and computes neither. Each bench
-/// session carries `name`, its plan's (`plans::name`), so a row says what the session works on.
+/// session carries `name`, its plan's (`plans::named`), so a row says what the session works on.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
-    let mut names = crate::plans::Names::default();
     let bench = rec.get_mut("bench").and_then(|b| b.get_mut("sessions"));
     if let Some(ss) = bench.and_then(Value::as_array_mut) {
         for s in ss {
             let name = s["plan"]
                 .as_str()
-                .map(|p| names.get(&crate::plans::path(p)));
+                .map(|p| crate::plans::named(&crate::plans::path(p)));
             if let (Some(o), Some(name)) = (s.as_object_mut(), name) {
                 o.insert("name".into(), name.into());
             }

@@ -1774,7 +1774,8 @@ playtest_blame() {
 #     done item with merge proof (the done items merged_open_rows reads) names as its subject while
 #     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
 #     first line: its first word, or the one id in brackets. The item that worked the row itself is
-#     merged_open_rows; a merged PR reaches a row through its item.
+#     merged_open_rows; a merged PR reaches a row through its item. A row an active item works
+#     (BENCH_ITEMS_CMD) is that item's to move, so it is no orphan of the merged one.
 #   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
 #     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
 #   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
@@ -1782,27 +1783,29 @@ playtest_blame() {
 #   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
 #   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
 board_links() {
-  local t=$1 feed done verdicts blame
+  local t=$1 feed done verdicts blame active
   feed=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)') || return 1
+  active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
   done=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)" 2>/dev/null | jq -sc .) || done=null
   verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
   blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
   jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
-     --argjson blame "${blame:-[]}" "$JQ_LIB"'
+     --slurpfile a <(printf '%s' "$active") --argjson blame "${blame:-[]}" "$JQ_LIB"'
     def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
       | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
     def live: .state == "open" or .state == "doing";
-    $d[0] as $d | $v[0] as $v
+    $d[0] as $d | $v[0] as $v | ($a[0] | if . == null then null else map(rowkey | strings) | INDEX(.) end) as $worked
     | [.rows[] | select(.id != null and live)] as $live
     | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
     | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
     | [.rows[] | select(.automation != false)] as $rows
-    | {orphans: (if $d == null then null else
+    | {orphans: (if $d == null or $worked == null then null else
          [($rows[] | select(.id != null and live and .parent != null and $open["\(.project):\(.parent)"] == null)
              | {project, id, why: "its parent \(.parent) is closed"}),
           ($d[] | select((.merged // "") != "")
              | ((.title | select(. != "")) // (.task // "" | split("\n")[0]) // "" | subject) as $s | select($s != null) | $byid[$s][]? as $o
-             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null))
+             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null)
+                      and $worked["\($o.project):\($s)"] == null)
              | {project: $o.project, id: $s, why: "\(.slug) landed it"})]
          | unique_by([.project, .id]) end),
        blocked: (if $v == null then null else
@@ -3308,9 +3311,12 @@ triage_rows() {
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
-    # The last line of the redacted evidence is usually the error. Normalized, so a new pid or
-    # timestamp in it does not edit the row every pass.
-    why=$(grep -v '^[[:space:]]*$' "$TRIAGE_WATCH_STATE/$n.out" 2>/dev/null | tail -n 1 | log_norm | tr -d '#' | cut -c1-100)
+    # A probe that prints one OK or RED line a stage (unity-core-playground's release-ready.py)
+    # names its first RED line; otherwise the last line of the redacted evidence, usually the
+    # error. Normalized, so a new pid or timestamp in it does not edit the row every pass.
+    o="$TRIAGE_WATCH_STATE/$n.out"
+    why=$({ grep -m 1 -E '^RED[[:space:]]' "$o" || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
+      | log_norm | tr -d '#' | cut -c1-100)
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
@@ -3487,15 +3493,31 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
-# or closed with a PR that is not merged (it waits on a merge, and a second session would only
-# repeat it). Else how many items the window queued for it. Every row triage reads is red now, so
-# an item that closed cancelled, failed, or merged with its red still here did not hold.
+# cause_tries <items> <cause> [trip] -> -1 while an item stands for the cause: queued, running or
+# waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
+# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok with no PR since
+# then (its job was the ask or the owner, not the red; the TRIAGE_FIX_DAYS window bounds it, and the
+# watch re-pages on its own). Else how many items the window queued for it.
+# Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
+# red still here did not hold.
 cause_tries() {
-  jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+  jq --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
+                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
+                or ($trip != "" and .state == "done" and .status == "ok" and (.pr // "") == ""
+                    and ((.queued | ep) // 0) >= ($trip | tonumber)))
       then -1 else length end' <<<"$1"
+}
+
+# watch_trip <key> <route> -> the epoch an alert or owned watch row's watch tripped at; nothing for
+# any other row. 2026-11-11: playground-release-ready's alert item closed ok with the watch still
+# red, triage queued a second 4 minutes later, and the third pass would page "red fixes that did
+# not hold" for a red no session was asked to clear.
+watch_trip() {
+  [[ "$1" == 'check(watch): '* ]] || return 0
+  case "$2" in alert | owned:?*) ;; *) return 0 ;; esac
+  local n=${1#'check(watch): '}
+  sed -n '1{/^[0-9][0-9]*$/p}' "$TRIAGE_WATCH_STATE/${n%% *}.since" 2>/dev/null
 }
 
 # cause_slugs <items> <cause> -> the slugs of the window's items for the cause, oldest first, comma-joined
@@ -3529,7 +3551,7 @@ triage_promote() {
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    tries=$(cause_tries "$items" "$cause")
+    tries=$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")
     [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
@@ -3550,7 +3572,7 @@ triage_spent() {
     triage_queues "$key" "$route" || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue
+    [ "$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")" -ge "$TRIAGE_FIX_TRIES" ] || continue
     printf '%s\t%s (red fixes that did not hold: %s)\t%s\thuman:%s\n' "$key" "$text" "$(cause_slugs "$items" "$cause")" "$pri" "$KPI_BOARD"
   done <<<"$1"
 }
