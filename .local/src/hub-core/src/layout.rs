@@ -28,7 +28,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -88,22 +88,26 @@ pub const TABS: [Tab; 12] = [
         inner: &[],
     },
     Tab {
+        id: "alerts",
+        group: "Ops",
+        title: "Alerts",
+        question: "What is firing, who owns it, and what fired lately?",
+        // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
+        // alert pages of the week, then every watch (folded while none is red).
+        sections: &["health", "firing", "fixes", "history", "watches"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
         id: "infra",
         group: "Ops",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &[
-            "health", "red", "fixes", "machines", "ci", "governor", "jobs", "cloud",
-        ],
-        // Health and what is red now stay above the strip (exceptions first); the governor
-        // powers machines on and off, so it sits with them.
-        pinned: &["health", "red"],
+        sections: &["machines", "ci", "governor", "jobs", "cloud"],
+        // What is red and its fixes moved to Alerts (MOVED); the governor powers machines on
+        // and off, so it sits with them.
+        pinned: &[],
         inner: &[
-            Inner {
-                id: "reds",
-                title: "Reds",
-                sections: &["fixes"],
-            },
             Inner {
                 id: "machines",
                 title: "Machines",
@@ -266,17 +270,25 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "accounts", "costs", "burn"),
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
+    // Infra's health chips, Red now and Red fixes (with its Reds inner tab): what is firing and
+    // who owns it is Alerts' question, not the machinery's (2026-11-11).
+    ("infra", "health", "alerts", "health"),
+    ("infra", "red", "alerts", "firing"),
+    ("infra", "fixes", "alerts", "fixes"),
+    ("infra", "reds", "alerts", "fixes"),
 ];
 
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
 /// Board, which is `a` on Projects there.
 pub const OFF_BAR: [&str; 2] = ["daily", "board"];
 
-/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth.
+/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth; a tab past the tenth
+/// has none (Tab and Shift-Tab still reach it).
 pub fn bar_digit(id: &str) -> Option<usize> {
     TABS.iter()
         .filter(|t| !OFF_BAR.contains(&t.id))
         .position(|t| t.id == id)
+        .filter(|i| *i < 10)
         .map(|i| (i + 1) % 10)
 }
 
@@ -462,15 +474,37 @@ mod tests {
             "a runner is no section"
         );
         assert_eq!(moved("costs", "tokens"), None);
+        // Infra's old links (`#infra/red`, `hub tab infra fixes`) land on Alerts.
+        for (old, new) in [
+            ("red", "firing"),
+            ("reds", "fixes"),
+            ("fixes", "fixes"),
+            ("health", "health"),
+        ] {
+            assert_eq!(
+                moved("infra", old).map(|(t, s)| (t.id, s)),
+                Some(("alerts", new)),
+                "{old}"
+            );
+        }
+        assert_eq!(moved("infra", "machines"), None, "machines stayed");
         assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
     }
 
     #[test]
-    fn infra_shows_red_fixes_right_under_red_now() {
-        let infra = resolve("infra").unwrap().sections;
-        let at = |s: &str| infra.iter().position(|x| *x == s).unwrap();
-        assert_eq!(at("fixes"), at("red") + 1);
+    fn alerts_sits_just_before_infra_and_leads_with_what_is_firing() {
+        let at = |id: &str| TABS.iter().position(|t| t.id == id).unwrap();
+        assert_eq!(at("alerts") + 1, at("infra"));
+        let alerts = resolve("alerts").unwrap();
+        assert_eq!(
+            alerts.sections,
+            ["health", "firing", "fixes", "history", "watches"]
+        );
         assert_eq!(section("fixes"), None, "a new section is no retired name");
+        // The eleventh tab on the number row has no digit; the tenth is 0.
+        assert_eq!(bar_digit("costs"), Some(0));
+        assert_eq!(bar_digit("releases"), None);
+        assert_eq!(bar_digit("alerts"), Some(5));
     }
 
     #[test]
@@ -496,15 +530,15 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 3);
-        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 3);
     }
 
     #[test]
-    fn infra_pins_health_and_red_and_old_links_open_their_inner_tab() {
+    fn infra_pins_nothing_and_old_links_open_their_inner_tab() {
         let infra = resolve("infra").unwrap();
-        assert_eq!(infra.pinned, ["health", "red"]);
+        assert!(infra.pinned.is_empty());
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
-        assert_eq!(at(None), Some("reds"));
+        assert_eq!(at(None), Some("machines"));
         assert_eq!(at(Some("ci")), Some("machines"));
         assert_eq!(at(Some("governor")), Some("machines"));
         assert_eq!(at(Some("jobs")), Some("jobs"));

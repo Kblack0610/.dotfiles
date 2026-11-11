@@ -115,8 +115,14 @@ pub struct Watch {
     pub lastrun: Option<i64>,
     pub lasttrip: Option<i64>,
     /// What it looks at: the text of its `where:`.
-    #[serde(skip)]
     pub place: String,
+    /// What it checks: its `what:`.
+    pub what: String,
+    /// What to do when it trips: its `action:`.
+    pub action: String,
+    /// Its last probe output (`<state>/<name>.out`, kept only while it is red), the first
+    /// `EVIDENCE_LINES` lines.
+    pub evidence: String,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -510,13 +516,29 @@ pub fn watch_dirs(home: &str, var: impl Fn(&str) -> String) -> (PathBuf, PathBuf
     )
 }
 
-/// The text of a watch file's `where:`, a one-liner or a folded block.
-pub(crate) fn place(yaml: &str) -> String {
-    let mut lines = yaml.lines().skip_while(|l| !l.starts_with("where:"));
-    let first = lines.next().unwrap_or("");
-    let rest = lines.take_while(|l| l.starts_with(' ') || l.is_empty());
-    std::iter::once(first.trim_start_matches("where:"))
+/// How much of a red watch's probe output a row carries.
+pub const EVIDENCE_LINES: usize = 20;
+
+/// The text of a watch file's top-level `key:`, a one-liner or a folded block (`>-`, `|`), on
+/// one line.
+pub(crate) fn field(yaml: &str, key: &str) -> String {
+    let head = format!("{key}:");
+    let mut lines = yaml.lines().skip_while(|l| !l.starts_with(&head));
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let first = first[head.len()..].trim();
+    let first = if matches!(first, ">" | ">-" | ">+" | "|" | "|-" | "|+") {
+        ""
+    } else {
+        first
+    };
+    let rest = lines
+        .take_while(|l| l.starts_with(' ') || l.is_empty())
+        .map(str::trim);
+    std::iter::once(first)
         .chain(rest)
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -541,13 +563,21 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
             let st = read(&name, "state");
+            let out = read(&name, "out");
             Some(Watch {
                 state: if st.is_empty() { "new".into() } else { st },
                 severity,
                 since: read(&name, "since").parse().ok(),
                 lastrun: read(&name, "lastrun").parse().ok(),
                 lasttrip: read(&name, "lasttrip").parse().ok(),
-                place: place(&yaml),
+                place: field(&yaml, "where"),
+                what: field(&yaml, "what"),
+                action: field(&yaml, "action"),
+                evidence: out
+                    .lines()
+                    .take(EVIDENCE_LINES)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 name,
             })
         })
@@ -963,6 +993,11 @@ mod tests {
                 &format!("name: {n}\nseverity: {sev}\n"),
             );
         }
+        write(
+            &w.join("bravo.yaml"),
+            "name: bravo\nwhat: >-\n  The pool has a slot\n  free.\nwhere: one host\naction: >-\n  Free a slot.\nseverity: high\n",
+        );
+        write(&s.join("bravo.out"), "line one\nline two\n");
         write(&w.join("README.md"), "not a watch");
         write(&s.join("alpha.state"), "OK\n");
         write(&s.join("bravo.state"), "TRIP\n");
@@ -988,6 +1023,14 @@ mod tests {
                     (watches[0].severity.as_str(), watches[0].since),
                     ("high", Some(T - 60))
                 );
+                // The fields a row opens to: folded blocks on one line, the probe's output.
+                let b = &watches[0];
+                assert_eq!(
+                    (b.what.as_str(), b.place.as_str(), b.action.as_str()),
+                    ("The pool has a slot free.", "one host", "Free a slot.")
+                );
+                assert_eq!(b.evidence, "line one\nline two");
+                assert_eq!(watches[1].evidence, "", "no .out: nothing red to show");
             }
             e => panic!("{e:?}"),
         }

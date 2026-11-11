@@ -48,6 +48,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),

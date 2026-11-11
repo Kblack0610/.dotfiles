@@ -2,6 +2,7 @@
 //! Prefix i lands on Home through `hub tab`. Usage, keys and
 //! troubleshooting: README.md.
 
+mod alertstab;
 mod app;
 mod board;
 mod builds;
@@ -592,13 +593,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         return i32::from(!s.errors.is_empty());
     }
     let infra = hub_core::infra::gather();
-    let failed = !infra.ok;
+    let mut failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
-    // Red fixes are read off-thread in the live app; a printed page has no next frame, so read
-    // them here or Infra prints "reading".
+    // The reds and the Alerts join are read off-thread in the live app; a printed page has no
+    // next frame, so read them here or Alerts prints "reading".
+    if matches!(tab, None | Some(Tab::Alerts)) {
+        let reds = hub_core::reds::read(&hub_core::session_actions::System);
+        let now = hub_core::jobs::now();
+        a.alerts = (a.infra.as_ref()).map(|i| hub_core::alerts::read(i, reds.clone(), now));
+        a.reds = Some(reds);
+        // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
+        failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
+        a.tab = Tab::Alerts;
+        a.open_query(section.clone());
+    }
     if matches!(tab, None | Some(Tab::Infra)) {
-        a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
         // `--tab 'infra machines'` prints that inner tab; with none named, every one prints.
         a.tab = Tab::Infra;
         a.infra_all = section.is_none();
@@ -617,7 +627,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     let tabs = match tab {
         Some(t) => vec![t],
-        None => vec![Tab::Home, Tab::Infra],
+        None => vec![Tab::Home, Tab::Alerts, Tab::Infra],
     };
     for (n, t) in tabs.into_iter().enumerate() {
         if n > 0 {
@@ -674,6 +684,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
     std::fs::create_dir_all(&app.files.tokens).ok();
     std::fs::create_dir_all(&app.files.releases).ok();
+    std::fs::create_dir_all(&app.files.watches).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -707,6 +718,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if e.paths.iter().any(|p| boards.is_session_file(p)) {
             let _ = files.send(Msg::SessionFiles);
         }
+        if e.paths.iter().any(|p| boards.is_watch_file(p)) {
+            let _ = files.send(Msg::WatchFiles);
+        }
     });
     // Kept alive until hub exits; dropping it ends the watch.
     let _watcher = match watcher {
@@ -737,7 +751,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     if app.tab == Tab::Fleet {
         app.read_fleet();
     }
-    if app.tab == Tab::Infra {
+    if app.tab == Tab::Alerts {
         app.read_reds();
     }
     if app.tab == Tab::Schedules {

@@ -255,6 +255,7 @@ test("health shows only what is not green, and all green as one chip", () => {
   assert.match(mixed, /cchip warn">ci WARN<\/span> <span class="cchip ">prod NO DATA<\/span> <span class="muted">1 green<\/span>/);
   assert.doesNotMatch(mixed, /k3s/);
   assert.match(draw(home({ health: [chips[0]] })), /cchip ok">all green \(1\)<\/span>/);
+  assert.match(mixed, /green<\/span> <a href="#alerts">Alerts<\/a><\/div>/, "the chips open Alerts, which has every domain");
 });
 
 test("what could not be read is drawn as hub-core worded it", () => {
