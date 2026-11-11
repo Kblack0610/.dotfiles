@@ -83,3 +83,13 @@ STUB
   assert_success
   grep -q "install -d -m 0755 $FIREFOX_DIR/defaults/pref" "$HOME/sudo.log"
 }
+
+@test "on macOS a rejected sudo password is reported as that, not as App Management" {
+  printf '#!/usr/bin/env bash\necho Darwin\n' >"$HOME/bin/uname"
+  printf '#!/usr/bin/env bash\n[ "$1" = -v ] && exit 1\nexit 0\n' >"$HOME/bin/sudo"
+  chmod +x "$HOME/bin/uname" "$HOME/bin/sudo"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_failure
+  assert_output --partial "sudo did not accept the password"
+  refute_output --partial "App Management"
+}
