@@ -21,10 +21,20 @@ dbus_key() { sed -n "s/^$2=//p" "$1"; }
 }
 
 @test "FileManager1 starts the program Hyprland names as \$fileManager" {
-  fm=$(sed -n 's/^\$fileManager[[:space:]]*=[[:space:]]*//p' "$PROGRAMS")
+  fm=$(sed -n 's/^\$fileManager[[:space:]]*=[[:space:]]*//p' "$PROGRAMS"); fm=${fm%%[[:space:]]*}
   [ -n "$fm" ] || fail "no \$fileManager in $PROGRAMS"
   exe=$(dbus_key "$SERVICE" Exec); exe=${exe%% *}; exe=${exe##*/}
   unit=$(dbus_key "$SERVICE" SystemdService)
   assert_equal "${exe,,}" "${fm,,}"
   assert_equal "$unit" "${fm,,}.service"
+}
+
+# On a host with Thunar installed, the pin is the package's own definition, so a Thunar update
+# that renames its binary or unit fails here instead of breaking "show in folder" silently.
+@test "the pin matches the installed Thunar D-Bus service" {
+  pkg=/usr/share/dbus-1/services/org.xfce.Thunar.FileManager1.service
+  [ -f "$pkg" ] || skip "Thunar is not installed on this host"
+  for key in Name Exec SystemdService; do
+    assert_equal "$(dbus_key "$SERVICE" "$key")" "$(dbus_key "$pkg" "$key")"
+  done
 }
