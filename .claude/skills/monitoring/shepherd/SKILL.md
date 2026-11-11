@@ -1,7 +1,7 @@
 ---
 name: shepherd
 description: >-
-  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, close verdicts. Use for "which sessions are stuck", "which can close", "wind down the finished ones", "/shepherd triage". Load is fleet-pace; one pass is fleet-lead.
+  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases, close verdicts. Use for "which sessions are stuck", "nudge the stalled ones", "which can close", "/shepherd triage". Load is fleet-pace; one pass is fleet-lead.
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
@@ -36,7 +36,7 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 
 ## Verb: `triage`
 
-The close analysis, for "where is each session, can it close": `fleet-sessions close` (`--json` for a reader). One line per session, close-now first: verdict, session, bucket, phases done of total with percent, quiet minutes, `fleet-bench` eta, and why. The verdict (`now`, `after <step>`, `keep`) is the `close` field of the state document; its rules are the close table in `~/.local/src/docs/fleet-states.md`. Report it as counts per verdict, then the `now` rows by name, then the `after` rows with their step. It changes nothing: the session closes itself with `/wind-down auto`, and the human closes any row by hand.
+The close analysis, for "where is each session, can it close": `fleet-sessions close` (`--json` for a reader). One line per session, close-now first: verdict, session, bucket, phases done of total with percent, quiet minutes, `fleet-bench` eta, and why. The verdict (`now`, `after <step>`, `keep`) is the `close` field of the state document; its rules are the close table in `~/.local/src/docs/fleet-states.md`. Report it as counts per verdict, then the `now` rows by name, then the `after` rows with their step. It changes nothing and closes nothing.
 
 ## Verb: `nudge`
 

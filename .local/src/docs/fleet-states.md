@@ -60,16 +60,16 @@ Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default
 
 ## Close verdict
 
-Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `/wind-down auto` and the shepherd read it and never re-decide; `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`). The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
+Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`). The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
 
 | # | Facts | Verdict |
 |---|---|---|
 | 1 | label `manual` | keep: the human keeps it |
 | 2 | PARKED | keep: its claude is gone |
 | 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
-| 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, a conflict) | keep: land it |
-| 5 | WORKING, STALLED, or NEEDS with no ask of its own (a dialog in its pane) | keep |
-| 6 | hand-started and idle under `FLEET_HAND_ACTIVE_MIN` (60) | keep: the human was here |
+| 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |
+| 5 | WORKING, STALLED, or NEEDS on a dialog in its pane (its reason is not a pending ask) | keep |
+| 6 | not started by dispatch (no `@dispatch` flag or item `origin`) and quiet under `FLEET_HAND_ACTIVE_MIN` (60) | keep: the human was here |
 | 7 | `finished` and no ask of its own | now |
 | 8 | dispatched, and its own asks are its only blockers | now: the answer carries on without the window |
 | 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere) | now: the queue holds the rest |
@@ -78,7 +78,7 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 | 12 | an ask of its own is open | after: the human answers it |
 | 13 | anything else | keep: its first blocker |
 
-Dispatched is the `@dispatch` window flag, a queue item with an `origin`, or a session on `FLEET_DISPATCH_WORLD` (lab); anything else is hand-started. Quiet is the smaller of `idle_min` and `age_min`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
+Dispatched is the `@dispatch` window flag, a queue item with an `origin`, or a session on `FLEET_DISPATCH_WORLD` (lab); anything else is hand-started. Rule 6 counts only the flag and the origin, since a human may type in a lab window. Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0 as in `fleet-shepherd`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
 
 ## Schema (version 1)
 

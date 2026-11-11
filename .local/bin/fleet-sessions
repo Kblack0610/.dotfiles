@@ -1675,19 +1675,20 @@ explain() {
 # CLOSE_JQ: a row -> its `pct` (phases ticked, of the checklist) and `close` {verdict, why}:
 # whether the session may close now, after one named step, or must stay (keep). The one
 # definition of when a session closes, first match wins, in the close table of
-# .local/src/docs/fleet-states.md; /wind-down auto and the shepherd read it, never re-decide.
-# Dispatched is the `@dispatch` window flag, a queue item fleet-dispatch started (origin), or a
-# session on the dispatch world. Unlanded work reads from `blockers`, not raw git counts: a
-# squash-merged branch stays `ahead` of main with nothing left to land.
+# .local/src/docs/fleet-states.md. Dispatched is the `@dispatch` window flag, a queue item with an
+# origin, or a session on the dispatch world; only the first two lift the hand-active keep, since
+# a human may still type in a lab window. Unlanded work reads from `blockers` (work_blockers), not
+# raw git counts: a squash-merged branch stays `ahead` of main with nothing left to land. Quiet is
+# fleet-shepherd's: a null age_min reads 0, so an unknown age never closes.
 CLOSE_JQ='
-  def close_verdict($idle; $hand; $chat; $world):
-    ([.idle_min // 0, .age_min // .idle_min // 0] | min) as $quiet
-    | ((.dispatch != null) or ((.item.origin // null) != null)
-       or ((.target // "") | startswith($world + "/"))) as $disp
+  def close_verdict($hand; $chat; $world):
+    ([.idle_min // 0, .age_min // 0] | min) as $quiet
+    | ((.dispatch != null) or ((.item.origin // null) != null)) as $started
+    | ($started or ((.target // "") | startswith($world + "/"))) as $disp
     | ((.own_asks // 0) > 0) as $ask
-    | ((.blockers // []) | map(select(startswith("open ask ") | not))) as $other
+    | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other[0] // .reason // .bucket) as $first
-    | ($other | map(select(test("dirty file|not on the default branch|unlanded work|^PR .* open|conflicts")))[0])
+    | ($other | map(select(test("dirty file|not on the default branch|^PR #[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
     | if ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
       elif .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
@@ -1695,8 +1696,8 @@ CLOSE_JQ='
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
       elif .bucket == "WORKING" then {verdict: "keep", why: "working"}
       elif .bucket == "STALLED" then {verdict: "keep", why: "stalled: \($first)"}
-      elif .bucket == "NEEDS" and ($ask | not) then {verdict: "keep", why: "a dialog waits on the human"}
-      elif ($disp | not) and $quiet < $hand then {verdict: "keep", why: "the human was here \($quiet)m ago"}
+      elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
+      elif ($started | not) and $quiet < $hand then {verdict: "keep", why: "the human was here \($quiet)m ago"}
       elif .finished and ($ask | not) then {verdict: "now", why: "plan finished, nothing open"}
       elif $disp and $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer carries on without this window"}
       elif $disp and (.item.is // "") == "moved" then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
@@ -1707,26 +1708,38 @@ CLOSE_JQ='
       else {verdict: "keep", why: $first} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
-              else close_verdict($idle; $hand; $chat; $world) end)'
+              else close_verdict($hand; $chat; $world) end)'
 
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
-# document `tick` wrote a minute ago, so it costs no collect.
+# document `tick` wrote a minute ago, so it costs no collect; one read, so counts and rows agree.
+# A document older than FLEET_STATE_STALE_MIN, or one without verdicts, is named on stderr.
 close_view() {
   [ -r "$STATE_FILE" ] || { echo "fleet-sessions: no state document at $STATE_FILE" >&2; return 1; }
-  local q='[.sessions[] | select(.close != null) | select((.labels // []) | index("shepherd") | not)]
-    | sort_by((.close.verdict | {now: 0, after: 1, keep: 2}[.] // 3), -(.idle_min // 0))'
-  if [ "${1:-}" = --json ]; then jq -c "$q | .[]" "$STATE_FILE"; return; fi
-  jq -r "$q"' | group_by(.close.verdict) | map("\(.[0].close.verdict) \(length)") | join(", ")' "$STATE_FILE"
-  jq -r "$q"' | (.[] | [.close.verdict, (.target | sub("^[a-z]+/"; "")), .bucket,
+  local doc age
+  doc="$(jq -c --argjson now "$(date +%s)" '{age: (($now - (.generated_epoch // 0)) / 60 | floor),
+    rows: ([.sessions[] | select((.labels // []) | index("shepherd") | not)]),
+    } | .bare = (.rows | map(select(.close == null)) | length)
+      | .rows |= (map(select(.close != null))
+                  | sort_by((.close.verdict | {now: 0, after: 1, keep: 2}[.] // 3), -(.idle_min // 0)))' \
+    "$STATE_FILE")" || return 1
+  age="$(jq -r .age <<<"$doc")"
+  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ] \
+    || echo "fleet-sessions: the state document is ${age}m old: is fleet-state.timer running?" >&2
+  [ "$(jq -r .bare <<<"$doc")" = 0 ] \
+    || echo "fleet-sessions: $(jq -r .bare <<<"$doc") session(s) carry no verdict (a document from before close)" >&2
+  if [ "${1:-}" = --json ]; then jq -c '.rows[]' <<<"$doc"; return; fi
+  jq -r '.rows | [("now", "after", "keep") as $v | "\($v) \(map(select(.close.verdict == $v)) | length)"]
+    | join(", ")' <<<"$doc"
+  jq -r '.rows[] | [.close.verdict, (.target | sub("^[a-z]+/"; "")), .bucket,
       (if .phases_total then "\(.phases_done)/\(.phases_total) \(.pct)%" else "-" end),
-      "\(.idle_min // 0)m", (.eta // "-"), .close.why] | @tsv)' "$STATE_FILE" | column -t -s $'\t'
+      "\(.idle_min // 0)m", (.eta // "-"), .close.why] | @tsv' <<<"$doc" | column -t -s $'\t'
 }
 
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
 # its close verdict (CLOSE_JQ).
 json_rows() {
-  jq -cR --argjson idle "$FLEET_IDLE_MIN" --argjson hand "$FLEET_HAND_ACTIVE_MIN" \
+  jq -cR --argjson hand "$FLEET_HAND_ACTIVE_MIN" \
     --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" --arg world "$FLEET_DISPATCH_WORLD" 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
