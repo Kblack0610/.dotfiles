@@ -29,7 +29,7 @@ const CONTROL_CSS = "body { min-width: 900px !important; }";
 
 // Each tab's first data row; a tab with several tables names the one the brief measures, and a
 // tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`).
-const DATA_ROW = "tr:has(> td)";
+const DATA_ROW = "tr:has(> td):not(.tfilters)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
   { tab: "queue", row: `#queue tr.qr` },

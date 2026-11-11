@@ -22,7 +22,8 @@
 # Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
-# PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
+# PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
+# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
@@ -637,6 +638,34 @@ elif [ -n "$it_pr" ]; then
   # Apply the same one-PR-per-repo rule while the item is still open.
   once_done >/dev/null || exit $?
 fi
+# settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
+# merge commit before this one joins them. One recorded with none (its pr= set while it was open, or
+# merged outside agent-land) takes it from gh into prior_oid; one not merged refuses here, before
+# the merge, never after it. Why: private #762 merged and was left off its item, whose public #1794
+# had no merge recorded (2026-11-11).
+declare -A prior_oid=()
+settle_prior() {
+  local refs oids i out
+  read -ra refs <<<"$it_pr"
+  read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
+  # Space-split lists lose an empty slot, so a shorter merged: cannot say which PR lacks its merge.
+  [ "${#oids[@]}" -eq 0 ] || [ "${#oids[@]}" -ge "${#refs[@]}" ] ||
+    die "queue item $item records pr:${refs[*]} with merged:${oids[*]}, out of step: set both lists (agent-queue set $item pr=... merged=...), then re-run"
+  for i in "${!refs[@]}"; do
+    [ "${refs[i]}" != "$pr_ref" ] && [ "${refs[i]}" != "$pr" ] && [ -z "${oids[i]:-}" ] || continue
+    [[ "${refs[i]}" == */*#* ]] || die "queue item $item records pr:${refs[i]} with no merge, and a bare number names no repo to look it up in"
+    out=$(gh pr view "${refs[i]##*#}" -R "${refs[i]%#*}" --json state,mergeCommit -q '.mergeCommit.oid // .state' 2>&1) ||
+      die "gh pr view ${refs[i]}: $(lastline "$out")"
+    case "$out" in
+    MERGED) die "queue item $item records ${refs[i]}, which gh reads MERGED with no merge commit: record it (agent-queue set $item merged=<sha>), then re-run" ;;
+    CLOSED) die "queue item $item records ${refs[i]}, closed unmerged: drop it from the item's pr: (agent-queue set $item pr=...), then re-run" ;;
+    esac
+    [[ "$out" =~ ^[0-9a-f]{40}$ ]] ||
+      die "queue item $item records ${refs[i]}, which is $out: land it first (agent-land ${refs[i]##*#} --repo ${refs[i]%#*} --item $item --partial), then #$pr"
+    prior_oid[${refs[i]}]=$out
+  done
+}
+[ -n "$done_as" ] || settle_prior
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 stamp_item
@@ -697,7 +726,8 @@ case "$done_as" in
     if [ "${refs[i]}" = "$pr_ref" ] || [ "${refs[i]}" = "$pr" ]; then
       refs[i]=$pr_ref oids[i]=$merged found=1
     else
-      [ -n "${oids[i]:-}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
+      [ -n "${oids[i]:-}" ] || oids[i]=${prior_oid[${refs[i]}]:-}
+      [ -n "${oids[i]}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
     fi
   done
   if [ "$found" -eq 0 ]; then refs+=("$pr_ref"); oids+=("$merged"); fi

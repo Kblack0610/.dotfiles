@@ -62,6 +62,9 @@ const qStrip = () => qfl.data ? railHtml(qfl.data.line, qfl.node, qfl.data.grafa
   : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 const refreshQueue = coalesce(async () => {
+  // The window's line and what sits now, read beside the rows so a tick's answer waits for one read,
+  // not two; the list still shows when agent-queue stats fails.
+  const stats = api("/api/queue/stats").catch((e) => ({ week: `stats: ${e.message}` }));
   try {
     const q = tblParams(st.views.queue).toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
@@ -76,8 +79,7 @@ const refreshQueue = coalesce(async () => {
       if (!chip) st.section = arg;
     }
   }
-  // The window's line and what sits now; the list still shows when agent-queue stats fails.
-  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
+  qst.stats = await stats;
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
   if (st.tab === "queue") refreshFlow();

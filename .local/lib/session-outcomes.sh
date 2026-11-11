@@ -175,6 +175,19 @@ so_transcript_metrics() {
   ' < "$1"
 }
 
+# so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
+# name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
+# an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
+# every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
+# night (qmk_firmware, bnb-agents, binks-agent-orchestrator). With no registry to read
+# (project_known rc 2, or a resolver lib without it) the resolver's name stands.
+so_project_of() {
+  local p rc=0
+  p="$(resolve_project_name "$1")"
+  case "$p" in _*) ;; *) project_known "$p" 2>/dev/null || rc=$?; [ "$rc" -ne 1 ] || p=_unscoped ;; esac
+  printf '%s\n' "$p"
+}
+
 # so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
@@ -199,7 +212,7 @@ so_opencode_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/oc.projects.json" || return 1
   jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
@@ -246,7 +259,7 @@ so_codex_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/cx.projects.json" || return 1
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
