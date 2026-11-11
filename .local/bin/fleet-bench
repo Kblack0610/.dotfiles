@@ -3403,7 +3403,7 @@ triage_shape() {
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
 # whose ERE matches the row decides; no match, or a route it does not know, is route "-" and cause
-# "-", or for a watch the hash of its row key. The cause is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
+# "-", or for a watch check(watch):<name> hashed. The cause is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
 # names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
 # text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
 # line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
@@ -3420,14 +3420,16 @@ triage_route() {
         agent) note="fix${skill:+ with $skill}: $fix"; [ "$skill" != - ] || note="fix: $fix" ;;
         script) note="script: $fix" ;;
         human:?*) note="for the human: $fix" ;;
-        alert) note="the human decides: $fix; own it: file that decision as one agent-ask with a recommendation, and fix what is not theirs" ;;
-        owned:?*) note="owned by ${route#owned:}: $fix; get that work running, or fix it here" ;;
+        alert | owned:?*) note='' ;;
         *) say "triage: $TRIAGE_ROUTES: no such route: $route"; hit=0 ;;
       esac
     fi
     if [ "$hit" = 0 ]; then
-      # An unrouted watch is still queued (triage_queues), so it is a cause of its own, its row key.
-      [[ "$key" != 'check(watch): '* ]] || cause=$(printf '%s' "$key" | sha256sum | cut -c1-8)
+      # An unrouted watch is still queued (triage_queues), so it is a cause of its own, named as a
+      # capture-group line names it, so a line added for it later keeps its tries.
+      if [[ "$key" == 'check(watch): '* ]]; then
+        cause=${key#'check(watch): '}; cause=$(printf 'check(watch):%s' "${cause%% *}" | sha256sum | cut -c1-8)
+      fi
       printf '%s\t%s\t%s\t-\t%s\t\n' "$key" "$text" "$pri" "$cause"
       continue
     fi
@@ -3435,6 +3437,12 @@ triage_route() {
       if [[ "$text" == *:* ]]; then re="${text%%:*}:${BASH_REMATCH[1]}"; else re+=${BASH_REMATCH[1]}; fi
     fi
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
+    if [[ "$key" == 'check(watch): '* ]]; then
+      case "$route" in
+        alert) note="the human decides: $fix; own it: file that decision as one agent-ask with a recommendation, and fix what is not theirs" ;;
+        owned:?*) note="owned by ${route#owned:}: $fix; get that work running, or fix it here" ;;
+      esac
+    fi
     text+="${note:+; $note}"
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac

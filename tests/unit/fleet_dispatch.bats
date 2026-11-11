@@ -1844,7 +1844,7 @@ red_held_machine() {
   assert_equal "$(grep -o 'started queue item [a-z0-9]*' <<<"$output" | head -n 1)" 'started queue item w1'
 }
 
-@test "red floor: the watch slots count queued and running watch reds only, and a floor of 0 is off for them too" {
+@test "red floor: the watch slots count running and unheld queued watch reds only, and a floor of 0 is off for them too" {
   live_reds() { printf '%s\n' "${LIVE[@]}"; }
   export DISPATCH_RED_FLOOR=2
   LIVE=(a b c); RED_WATCH=2 RED_PASS=1 run red_floor_open; assert_success
@@ -1853,6 +1853,7 @@ red_held_machine() {
   agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
   agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
   agent-queue add --project game --slug p1 --tags 'watch' "plain p1" >/dev/null
+  agent-queue add --project game --slug w2 --after r1 --tags 'red watch cause:d' "check(watch): w2 tripped" >/dev/null
   run watch_reds
   assert_output 1
 }

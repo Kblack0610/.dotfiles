@@ -2049,6 +2049,31 @@ fix_item() {
   ! grep -q 'fix(logs)' "$PLOG"
 }
 
+@test "triage: an unrouted watch's cause is the one a capture-group line would give it, so a line added later keeps its tries" {
+  log_triage_setup
+  : > "$TRIAGE_ROUTES"
+  watch one TRIP -25200 high
+  want=$(printf 'check(watch):one' | sha256sum | cut -c1-8)
+  run "$SUBJECT" triage
+  assert_success
+  grep -q -- "--tags red watch cause:$want" "$PLOG"
+  : > "$PLOG"
+  route '^check\(watch\): (one|two) tripped' agent - 'fix it'
+  run "$SUBJECT" triage
+  assert_success
+  grep -q -- "--tags red watch cause:$want" "$PLOG"
+}
+
+@test "triage: an alert or owned route's owner note goes on a watch row only" {
+  log_triage_setup
+  route 'lock .* held by pid' alert - 'the human picks'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'held by pid'
+  refute_output --partial 'own it'
+  refute_output --partial 'the human decides'
+}
+
 @test "triage: a route the table does not know is unrouted, never a silent sink" {
   log_triage_setup
   route 'lock .* held by pid' agnet - 'typo'

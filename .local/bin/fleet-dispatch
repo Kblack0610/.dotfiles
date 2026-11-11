@@ -750,9 +750,9 @@ live_reds() {
 }
 
 # watch_reds -> how many red items of a tripped watch (tags `red watch`, fleet-bench triage) are
-# queued or running: each one widens the red floor by one.
+# running, or queued and not held: each one widens the red floor by one.
 watch_reds() {
-  agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "queued" or .state == "running")
+  agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
     | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null || echo 0
 }
 
