@@ -5,16 +5,17 @@
 //! pool. Under it the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
 //! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
-//! flips it. History (the fleet's dollars per day, month and year) is folded too: `y` opens it.
+//! flips it. Spend charts the fleet's last 30 days and ranks the picked day's sessions: `,` and `.`
+//! pick the day, `v` opens a session's own days, `y` opens the year, month and day rows.
 //! The sections sit in inner tabs (`hub_core::layout`, Limits, Spend, Models) under the pinned
 //! fleet figure: Left/Right switch them, and a key for a section on another one switches to it.
 
 use hub_core::burn::{self, Account, Burn, Keys};
 use hub_core::costs::{self, Board, Costs};
-use hub_core::fleet_cost::FleetCost;
+use hub_core::fleet_cost::{dollars, FleetCost};
 use hub_core::layout;
 use hub_core::sections::{self, Block};
-use hub_core::spend_history::History;
+use hub_core::spend_history::{self, Bar, DayView, History};
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Style;
@@ -35,8 +36,13 @@ pub struct CostsView {
     pub typing: Option<String>,
     /// The Sections block is open (it starts as its headline).
     pub sections_open: bool,
-    /// The History section is open (it starts as its headline).
+    /// The History section's year/month/day rows are open (the chart and the day's sessions
+    /// always show).
     pub history_open: bool,
+    /// The chart day picked, as days back from the newest (`,` and `.` step it).
+    pub day_back: usize,
+    /// The session opened in the day's table, 1-based (`v` steps it, 0 opens none).
+    pub sess_at: usize,
     /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
     pub ssort: String,
     pub sasc: bool,
@@ -71,6 +77,8 @@ impl Default for CostsView {
             typing: None,
             sections_open: false,
             history_open: false,
+            day_back: 0,
+            sess_at: 0,
             ssort: String::new(),
             sasc: false,
             tokens: TokensView::default(),
@@ -140,6 +148,7 @@ impl CostsView {
                 "q" => q.push(v.to_string()),
                 "ssort" => self.ssort = v.to_string(),
                 "sdir" => self.sasc = v == "asc",
+                "back" => self.day_back = v.parse().unwrap_or(0),
                 _ if word == "sections" => self.sections_open = true,
                 _ if word == "spend" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
@@ -252,6 +261,27 @@ impl CostsView {
         if self.typing.is_some() {
             return None;
         }
+        // The chart's day and the session opened in its table.
+        match code {
+            KeyCode::Char(',') => {
+                self.reveal("spend");
+                self.day_back = (self.day_back + 1).min(spend_history::CHART_DAYS - 1);
+                self.sess_at = 0;
+                return Some(Some("spend"));
+            }
+            KeyCode::Char('.') => {
+                self.reveal("spend");
+                self.day_back = self.day_back.saturating_sub(1);
+                self.sess_at = 0;
+                return Some(Some("spend"));
+            }
+            KeyCode::Char('v') => {
+                self.reveal("spend");
+                self.sess_at = (self.sess_at + 1) % (SESS_ROWS + 1);
+                return Some(Some("spend"));
+            }
+            _ => {}
+        }
         // A fold key for a section on another inner tab switches there and opens the fold.
         if code == KeyCode::Char('y') {
             let moved = self.reveal("spend");
@@ -287,10 +317,24 @@ impl CostsView {
         }
     }
 
+    /// The chart day `,` and `.` picked: `day_back` days before the newest.
+    fn picked<'a>(&self, c: &'a Costs) -> &'a str {
+        let chart = &c.history.chart;
+        chart
+            .len()
+            .checked_sub(1 + self.day_back)
+            .and_then(|i| chart.get(i))
+            .map_or("", |b| b.key.as_str())
+    }
+
     pub fn board(&self, c: &Costs) -> Board {
         let dir = if self.asc { "asc" } else { "desc" };
         let sdir = if self.sasc { "asc" } else { "desc" };
-        costs::board(
+        let mut pick = spend_history::Pick {
+            day: self.picked(c),
+            ..Default::default()
+        };
+        let mut b = costs::board(
             c,
             self.by,
             self.window,
@@ -298,7 +342,14 @@ impl CostsView {
             &self.sort,
             dir,
             (&self.ssort, sdir),
-        )
+            &pick,
+        );
+        if let Some(r) = self.sess_at.checked_sub(1).and_then(|i| b.day.rows.get(i)) {
+            let sid = r.sid.clone();
+            pick.sid = &sid;
+            b.day = spend_history::day_view(&c.spend_days, &pick);
+        }
+        b
     }
 
     /// The page, and where each of its sections starts (layout.rs's Costs sections, for `seek`):
@@ -319,7 +370,12 @@ impl CostsView {
             at.push((sec, out.len()));
             match *sec {
                 "burn" => out.extend(burn(&b.burn, self.keys, p, w)),
-                "spend" => out.extend(history(&b.history, self.history_open, p, w)),
+                "spend" => {
+                    out.extend(history(&b.history, self.history_open, p, w));
+                    out.extend(spend_chart(&b.history.chart, self.picked(c), p, w));
+                    out.extend(day_table(&b.day, self.sess_at, p, w));
+                    out.extend(history_rows(&b.history, self.history_open, p, w));
+                }
                 "totals" => self.totals(&b, p, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
                 "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w)),
@@ -712,14 +768,19 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
     }
     head.push(Span::raw(month.to_string()));
     if !open {
-        head.push(Span::styled("   y opens", p.dim()));
+        head.push(Span::styled("   y: by period", p.dim()));
     }
     let mut out = vec![clip_line(Line::from(head), w)];
     if !day.is_empty() {
         out.push(clip_line(Line::raw(format!("  {day}")), w));
     }
-    if !open {
-        out.push(Line::raw(""));
+    out
+}
+
+/// The year, month and day rows under the chart (`y` opens them), and the section's notes.
+fn history_rows(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    if h.why.is_some() || !open {
         return out;
     }
     let rows = h
@@ -767,6 +828,172 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
     let note: Vec<&str> = h.note.split(' ').collect();
     for l in wrap(&note, " ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
+/// Session rows the day's table draws in 80 columns; the web table has the rest under its query.
+const SESS_ROWS: usize = 12;
+/// Rows of the day chart, each worth an eighth of a row per block step.
+const CHART_ROWS: usize = 6;
+
+/// The `CHART_DAYS` bars, one column each with a space between, tallest at full height; the
+/// billed part of a bar in the normal colour, the estimated part dim, a day with no figure as a
+/// gap mark, and the picked day `sel` highlighted with its figure under the axis.
+fn spend_chart(bars: &[Bar], sel: &str, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if bars.iter().all(|b| b.usd.is_none()) {
+        return vec![];
+    }
+    let max = bars
+        .iter()
+        .filter_map(|b| b.usd)
+        .fold(0.0, f64::max)
+        .max(0.01);
+    let step = if w >= 2 * bars.len() + 9 { 2 } else { 1 };
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled("  $/DAY, LAST 30 DAYS  ", p.head()),
+            Span::styled(", and . pick a day   v opens a session", p.dim()),
+        ]),
+        w,
+    )];
+    const BLOCKS: [char; 9] = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
+    for row in (0..CHART_ROWS).rev() {
+        let axis = if row == CHART_ROWS - 1 {
+            format!("{:>7} ", dollars(max))
+        } else {
+            " ".repeat(8)
+        };
+        let mut spans = vec![Span::styled(axis, p.dim())];
+        for b in bars {
+            let units = |v: f64| v / max * CHART_ROWS as f64;
+            let total = units(b.usd.unwrap_or(0.0));
+            let fill = ((total - row as f64).clamp(0.0, 1.0) * 8.0).round() as usize;
+            let ch = if b.usd.is_none() && row == 0 {
+                '.'
+            } else {
+                BLOCKS[fill]
+            };
+            let style = if b.key == sel {
+                p.sel()
+            } else if units(b.measured) >= row as f64 + 0.5 {
+                Style::new()
+            } else {
+                p.dim()
+            };
+            spans.push(Span::styled(ch.to_string(), style));
+            if step == 2 {
+                spans.push(Span::raw(" "));
+            }
+        }
+        out.push(clip_line(Line::from(spans), w));
+    }
+    let first = bars.first().map_or("", |b| b.label.as_str());
+    let last = bars.last().map_or("", |b| b.label.as_str());
+    let span = step * bars.len();
+    out.push(clip_line(
+        Line::styled(
+            format!(
+                "{}{first}{}{last}",
+                " ".repeat(8),
+                " ".repeat(span.saturating_sub(first.len() + last.len() + 1))
+            ),
+            p.dim(),
+        ),
+        w,
+    ));
+    if let Some(b) = bars.iter().find(|b| b.key == sel) {
+        out.push(clip_line(Line::raw(format!("  {}", b.tip)), w));
+    }
+    out
+}
+
+/// The picked day's sessions, costliest first, and the opened one's own days as a one-line chart.
+fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    if let Some(why) = &d.why {
+        out.push(clip_line(
+            Line::styled(format!("  SESSIONS  {why}"), p.dim()),
+            w,
+        ));
+        out.push(Line::raw(""));
+        return out;
+    }
+    out.push(clip_line(
+        Line::from(vec![
+            Span::styled("  SESSIONS  ", p.head()),
+            Span::raw(d.head.clone()),
+        ]),
+        w,
+    ));
+    let rows = d
+        .rows
+        .iter()
+        .take(SESS_ROWS)
+        .enumerate()
+        .map(|(i, r)| {
+            let style = if i + 1 == at { p.sel() } else { Style::new() };
+            let opt = |s: &Option<String>| s.clone().unwrap_or_default();
+            vec![
+                cell(r.session.clone(), style),
+                cell(opt(&r.project), style),
+                cell(opt(&r.origin), style),
+                cell(dollars(r.cost), style),
+                cell(format!("{:.0}%", r.share), style),
+                cell(format!("{:.0}%", r.est), style),
+                cell(r.days.to_string(), style),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec![
+                "session", "project", "origin", "cost", "of day", "est.", "days",
+            ],
+            rows,
+            keep: vec![0, 3, 4, 1, 2, 5, 6],
+            right: vec![3, 4, 5, 6],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
+    if past > 0 {
+        out.push(Line::styled(
+            format!("+{past} more on the web table (#costs/spend), which takes a query"),
+            p.dim(),
+        ));
+    }
+    if let Some(s) = &d.series {
+        let max = s
+            .bars
+            .iter()
+            .filter_map(|b| b.usd)
+            .fold(0.0, f64::max)
+            .max(0.01);
+        let line: String = s
+            .bars
+            .iter()
+            .map(|b| match b.usd {
+                None => '.',
+                Some(v) => [
+                    '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}',
+                    '\u{2587}', '\u{2588}',
+                ][((v / max) * 7.0).round() as usize],
+            })
+            .collect();
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("  {}  ", s.session), p.head()),
+                Span::raw(line),
+                Span::styled(format!("  {} in 30 days", s.total), p.dim()),
+            ]),
+            w,
+        ));
     }
     out.push(Line::raw(""));
     out
@@ -1233,6 +1460,7 @@ mod tests {
             date: d.into(),
             usd,
             estimated: usd / 4.0,
+            ..Day::default()
         };
         let c = Costs {
             history: build(
@@ -1256,7 +1484,7 @@ mod tests {
         let mut v = on("spend");
         let shut = page(&v);
         assert!(
-            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)   y opens\n  11-01 $1,579"),
+            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"),
             "{shut}"
         );
         assert!(shut.lines().all(|l| l.chars().count() <= 80), "{shut}");
@@ -1274,13 +1502,99 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            row("2026-11"),
+            row("2026-11 "),
             ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]
         );
         assert_eq!(row("2026 "), ["2026", "$3,783", "3", "$1,261", "-", "25%"]);
         assert_eq!(
             row("10-31"),
             ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]
+        );
+    }
+
+    #[test]
+    fn spend_charts_the_days_and_ranks_the_picked_days_sessions_within_80_columns() {
+        use hub_core::spend_history::{build, Day, Sess};
+        let sess = |sid: &str, usd: f64, title: &str| Sess {
+            sid: sid.into(),
+            usd,
+            measured: usd,
+            origin: Some("runner".into()),
+            title: Some(title.into()),
+            ..Sess::default()
+        };
+        let days = vec![
+            Day {
+                date: "2026-11-07".into(),
+                usd: 30.0,
+                sessions: vec![sess("a", 20.0, "dream"), sess("b", 10.0, "shepherd")],
+                ..Day::default()
+            },
+            // 11-08 has no snapshot: a gap, not a $0 bar.
+            Day {
+                date: "2026-11-09".into(),
+                usd: 100.0,
+                estimated: 40.0,
+                sessions: vec![sess("b", 5.0, "shepherd"), sess("c", 90.0, "big run")],
+            },
+        ];
+        let c = Costs {
+            history: build(&days, "2026-11-10"),
+            spend_days: days,
+            ..burning()
+        };
+        let page = |v: &CostsView| {
+            v.lines(&c, Palette::default(), 1_000_000, 80)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut v = on("spend");
+        let s = page(&v);
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        assert!(s.contains("$/DAY, LAST 30 DAYS"), "{s}");
+        let base = s
+            .lines()
+            .rev()
+            .find(|l| l.starts_with("        ") && l.contains('.'))
+            .unwrap();
+        assert!(
+            base.trim_end().ends_with(". \u{2588}"),
+            "11-08 is a gap beside 11-09: {base:?}"
+        );
+        assert!(
+            s.contains("2026-11-09: $100 ($60 billed, $40 estimated), 2 sessions"),
+            "{s}"
+        );
+        let ranked: Vec<&str> = s
+            .lines()
+            .filter(|l| l.starts_with("big run") || l.starts_with("shepherd"))
+            .collect();
+        assert!(
+            ranked[0].starts_with("big run")
+                && ranked[0].contains("$90")
+                && ranked[0].contains("90%"),
+            "{s}"
+        );
+        assert_eq!(v.fold(KeyCode::Char(','), None, None), Some(Some("spend")));
+        let s = page(&v);
+        assert!(s.contains("2026-11-08: no figure"), "{s}");
+        assert!(
+            s.contains("SESSIONS  2026-11-09"),
+            "a day with no rows shows the newest that has them: {s}"
+        );
+        v.fold(KeyCode::Char(','), None, None);
+        let s = page(&v);
+        assert!(s.contains("SESSIONS  2026-11-07: 2 sessions"), "{s}");
+        v.fold(KeyCode::Char('v'), None, None);
+        v.fold(KeyCode::Char('v'), None, None);
+        let s = page(&v);
+        let line = s.lines().find(|l| l.contains("in 30 days")).expect(&s);
+        assert!(
+            line.trim_start().starts_with("shepherd") && line.contains("$15 in 30 days"),
+            "both days the session ran: {line}"
         );
     }
 

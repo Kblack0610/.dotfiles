@@ -31,6 +31,12 @@ pub struct CostsQuery {
     /// The Sections block's own sort, which a click on its headers sets.
     pub ssort: String,
     pub sdir: String,
+    /// The Spend day table: the day shown, its own query and sort, and the session opened.
+    pub day: String,
+    pub dq: String,
+    pub dsort: String,
+    pub ddir: String,
+    pub sid: String,
 }
 
 /// Drop the kept read, so the refresh a new token snapshot asks for reads it.
@@ -60,6 +66,13 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
         &q.sort,
         &q.dir,
         (&q.ssort, &q.sdir),
+        &hub_core::spend_history::Pick {
+            day: &q.day,
+            q: &q.dq,
+            sort: &q.dsort,
+            dir: &q.ddir,
+            sid: &q.sid,
+        },
     )))
 }
 
