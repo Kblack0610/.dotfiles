@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # shard.sh - split one fast tier's test files across CI runners, balanced by time.
 #
-#   shard.sh <unit|integ> <i>/<n>   the files of shard i of n, one a line, relative to tests/
+#   shard.sh <unit|integ> <i>/<n> [<list>]
+#                                   the files of shard i of n, one a line, relative to tests/;
+#                                   from <list> (tests/pick.sh output, `-` for stdin) when given,
+#                                   where a shard may come out empty, else the whole tier
 #   shard.sh --weights <log>...     a fresh shard-weights.tsv from bats --timing job logs
 #
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by
@@ -44,16 +47,22 @@ weights() {
   exit 0
 }
 
-[ $# -eq 2 ] || die "usage: shard.sh <unit|integ> <i>/<n> | --weights <log>..."
-tier=$1 spec=$2
+[ $# -eq 2 ] || [ $# -eq 3 ] || die "usage: shard.sh <unit|integ> <i>/<n> [<list>] | --weights <log>..."
+tier=$1 spec=$2 list=${3-}
 [[ $spec =~ ^([0-9]+)/([0-9]+)$ ]] || die "shard '$spec' is not <i>/<n>"
 i=$((10#${BASH_REMATCH[1]})) n=$((10#${BASH_REMATCH[2]}))
 ((n >= 1 && i >= 1 && i <= n)) || die "shard $spec is out of range"
 [ -d "$DIR/$tier" ] || die "no tier directory $DIR/$tier"
 [ -r "$WEIGHTS" ] || die "no weights table $WEIGHTS (tests/shard.sh --weights <job logs> writes one)"
 
-files=$(cd "$DIR" && printf '%s\n' "$tier"/*.bats)
-[ "$files" != "$tier/*.bats" ] || die "tier $tier has no .bats files"
+if [ -n "$list" ]; then
+  files=$(cat -- "$list") || die "cannot read list $list"
+  files=$(grep "^$tier/" <<<"$files" || true)
+  [ -n "$files" ] || exit 0
+else
+  files=$(cd "$DIR" && printf '%s\n' "$tier"/*.bats)
+  [ "$files" != "$tier/*.bats" ] || die "tier $tier has no .bats files"
+fi
 
 # The median of the weights listed for this tier, 1s when it lists none.
 med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
@@ -69,5 +78,6 @@ out=$(awk -F'\t' -v tier="$tier/" -v med="$med" '
       load[best] += $1; if (best == i) print $2 }
   ' | sort)
 
-[ -n "$out" ] || die "shard $spec of $tier has no files"
+[ -n "$out" ] || [ -n "$list" ] || die "shard $spec of $tier has no files"
+[ -n "$out" ] || exit 0
 printf '%s\n' "$out"

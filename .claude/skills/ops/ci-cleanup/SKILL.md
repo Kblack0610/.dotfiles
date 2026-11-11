@@ -5,14 +5,14 @@ description: >-
 metadata:
   category: ops
   tags: [ci, flaky, quarantine, testing, unity, playground]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-10"
 ---
 
 # CI cleanup
 
 One pass that leaves CI greener because causes were fixed, not hidden: a measured baseline, every bandaid listed with its real cause, the shared state behind batch-only reds, one fix per branch, each bandaid removed once its cause is gone, and the same numbers again at the end. The method (finding shape, in flight, baseline, one lever per PR, re-measure, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; this file holds what is specific to CI.
 
-It composes three skills and restates none of them: `ci-failures` counts reds, `ci-cost` counts time, `playground-headless-test` runs and gates. The repo's CI doc owns the rules (`docs/operations/ci.md` in unity-core-playground: gate, quarantine, timeouts, stop-the-line). When this file and the doc disagree, the doc wins and this file is fixed in the same turn.
+It composes three skills and restates none of them: `ci-failures` counts reds, `ci-cost` counts time, `playground-headless-test` runs and gates. The doctrine (gate, quarantine, reruns, timeouts, stop-the-line) is `~/.local/src/docs/ci.md`; the repo's CI doc owns its specifics (`docs/operations/ci.md` in unity-core-playground). When this file and either doc disagree, the doc wins and this file is fixed in the same turn.
 
 ## Scope and triggers
 
@@ -26,7 +26,7 @@ Not for one PR's red (`/my:fix-ci`), not for one recurring red (`ci-failures` th
 
 1. **In flight first.** `agent-queue list --state active`, `gh pr list`, the plans of sessions on CI (grep `~/.claude/plans` for ci, quarantine, nightly). Never edit a file on another session's open branch.
 2. **Baseline, from the scripts only.** `ci-failures` (3 days, all workflows) and `ci-cost` (`scripts/ci-cost.py --days 1` online, then its re-gate table) plus the local run ledger pass rate (`~/.local/state/unity-test-runs/runs.tsv`, and `test-failures.tsv` for the tests red on many unrelated branches). Record every number in the plan with its window. A cached `--offline` read must cover the window you quote. Pass 2 onward: the last pass's report is the baseline; re-read the original baseline's window and the last pass's window with today's scripts (`--until`, `--offline`), so a counting change (a new bucket) is not read as an improvement; every column of the report's table is today's re-read, never copied from the old report, since runs that finished after it was written shift its numbers. Check that the last pass's fixes have had a nightly: if none has run on them (a pass started hours after the last, or a nightly that died before its tests), the pass reads that nightly before its report, and says so when it cannot. Count batch-only reds with `batch-only.py --run <Tests run id>` (in this skill's folder), never by hand.
-3. **Bandaid inventory.** Each with file:line, the real cause, and an action. Grep list for the playground: the batch-then-solo rerun in `scripts/test/suite.sh`; `scripts/test/quarantine.txt` (expiries this week; remove a pure duplicate line in this pass yourself); raised ceilings in `PlayTestSession.cs` and their commits (`git log -S`); widened tolerances (`git log --grep 'allow\|tolerance\|lag'`); wall-clock deadlines the fixed-delay guard misses (`realtimeSinceStartup +`); host exclusions (`linux-only-classes.txt`); job and script timeouts (guards, keep). A bandaid that must stay gets an owner, an expiry and a written why.
+3. **Bandaid inventory.** Each with file:line, the real cause, and an action. Grep list for the playground: the batch-then-solo rerun in `scripts/test/suite.sh`; `scripts/test/quarantine.txt` (expiries this week; remove a pure duplicate line in this pass yourself); raised ceilings in `PlayTestSession.cs` and their commits (`git log -S`); widened tolerances (`git log --grep 'allow\|tolerance\|lag'`); wall-clock deadlines the fixed-delay guard misses (`realtimeSinceStartup +`); host exclusions (`linux-only-classes.txt`); job and script timeouts (guards, keep). A test bandaid that must stay becomes a quarantine by `ci.md` "Red handling"; a guard that stays (a timeout, a host exclusion) gets an owner, an expiry and a written why.
 4. **Architecture: what one class leaves for the next.** Batch-only reds come from shared state. Check, with file:line: is the session reset between classes, or does `SwapTo` the current game no-op; does a class that stops the server leave later classes to time out; statics reset once per launch instead of per class; runtime writes to static catalogs and settings that TearDown does not restore exactly; one saves folder for the launch; fixed ports. Prove a leak with a two-class batch in leak order: red before, green after.
 5. **Fix by cause, one area per branch, one gate each,** per `playground-headless-test` and the repo's ci.md. Fan independent areas out to background agents, each in its own `~/.worktrees/<repo>-<slug>`. Every PR lands with `agent-land` on the pass's item, which the session's `$AGENT_QUEUE_ITEM` hands to its agents: fix PRs with `agent-land <N> --partial` (it records the PR and keeps the item open), the report PR without, which closes it; agent briefs say so; a branch cut from `origin/main` tracks it, so push with `git push -u origin HEAD:<branch>`. A brief also says to wait for the gate's own result before reporting, since a background agent can stop while its Unity run still works. A fix PR's gate red that is not the branch's (an unowned flake) becomes this pass's next fix on its own branch, per ci.md's stop-the-line rule: never a rerun. Read the failure text before calling anything load; compare hosts within the same run (the plan balances batches), not across runs, before blaming a host. Pool caps and slot counts go to home-config by PR with a before and after.
 6. **Remove the bandaid** in the PR that fixes its cause, or the next one: lift the quarantine line, put the ceiling back, delete the rerun once `batch-only.py` reads zero batch-only reds on a nightly.
@@ -36,7 +36,6 @@ Not for one PR's red (`/my:fix-ci`), not for one recurring red (`ci-failures` th
 
 ## Do NOT
 
-- Do not widen the gate, rerun blind, or raise a timeout or ceiling to pass.
+- Do not break `~/.local/src/docs/ci.md` "Tiers" or "Red handling" to get a green.
 - Do not fix in another session's area; message it.
-- Do not quarantine without owner, expiry and the row the repo doc asks for.
-- Do not restate ci.md, ci-failures, ci-cost or playground-headless-test here; link them.
+- Do not restate `~/.local/src/docs/ci.md`, the repo's ci.md, ci-failures, ci-cost or playground-headless-test here; link them.
