@@ -93,6 +93,14 @@ harness_exec() {
   local cap; cap="$(budget_call_usd)"
   if [ "$print" = 1 ] && [ -n "$cap" ]; then flags+=(--max-budget-usd "$cap"); fi
   if [ "$print" = 1 ] && [ -n "${AGENT_SCHEMA:-}" ]; then flags+=(--json-schema "$(jq -c . "$AGENT_SCHEMA")"); fi
+  # A lean agent call (conf CALL_CONTEXT=lean) gets its PROMPT and input, without the skill listing,
+  # the CLAUDE.md files or the tool definitions a session loads: about 21k cached tokens a call that
+  # dispatch-judge never read (2026-11-11).
+  # Not --bare: that skips OAuth, which moves the call off the subscription.
+  if [ "$print" = 1 ] && [ "${AGENT_CALL_CONTEXT:-}" = lean ]; then
+    flags+=(--disable-slash-commands --tools "")
+    export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+  fi
   if [ "$print" = 1 ]; then
     flags+=(--append-system-prompt 'You are running headless on a timer with no human present. Never enter plan mode, never write a plan file, and never ask for approval - there is nobody to answer. Execute the task directly and report what you did.')
   else
@@ -103,6 +111,7 @@ harness_exec() {
     printf 'harness:     claude\nflags:      '
     printf ' %q' "${flags[@]}"
     printf '\n'
+    [ -z "${CLAUDE_CODE_DISABLE_CLAUDE_MDS:-}" ] || printf 'env:         CLAUDE_CODE_DISABLE_CLAUDE_MDS=1\n'
     return 0
   fi
   [ -z "$input" ] || exec 0<<<"$input"

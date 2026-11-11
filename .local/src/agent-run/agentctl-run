@@ -89,7 +89,7 @@ if [ -n "$agent" ]; then
   AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
   [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
   export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA \
-    AGENT_MAX_TOKENS AGENT_TEMPERATURE
+    AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT
   agent_otel_runner "$agent"
   # raw sends the PROMPT file as the system message itself (harnesses/raw.sh)
   if [ -z "$AGENTCTL_EXPLAIN" ] && [ "$harness" != raw ]; then

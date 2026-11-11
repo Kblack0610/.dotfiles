@@ -40,7 +40,7 @@ fake_claude() {
     echo '#!/usr/bin/env bash'
     echo "printf '%s\n' \"\$@\" > '$SANDBOX/claude.argv'"
     echo "[ -t 0 ] || cat > '$SANDBOX/claude.stdin'"
-    echo "printf 'OTEL=%s\nNAME=%s\n' \"\${OTEL_RESOURCE_ATTRIBUTES:-}\" \"\${AGENTCTL_NAME:-}\" > '$SANDBOX/claude.env'"
+    echo "printf 'OTEL=%s\nNAME=%s\nNO_MDS=%s\n' \"\${OTEL_RESOURCE_ATTRIBUTES:-}\" \"\${AGENTCTL_NAME:-}\" \"\${CLAUDE_CODE_DISABLE_CLAUDE_MDS:-}\" > '$SANDBOX/claude.env'"
     echo "case \" \$* \" in *' --output-format json '*) cat '$SANDBOX/claude.reply' ;; *) echo plain ;; esac"
   } > "$SANDBOX/bin/claude"
   chmod +x "$SANDBOX/bin/claude"
@@ -155,6 +155,35 @@ schema_conf() {
   assert_success
   run grep -Fx -- --json-schema "$SANDBOX/claude.argv"
   assert_failure
+}
+
+@test "a CALL_CONTEXT=lean agent drops the skills, the tools and the CLAUDE.md files from its call" {
+  printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge -p x
+  assert_success
+  run grep -Fx -A1 -- --tools "$SANDBOX/claude.argv"
+  assert_line --index 1 ''
+  run grep -Fx -- --disable-slash-commands "$SANDBOX/claude.argv"
+  assert_success
+  run grep -Fx NO_MDS=1 "$SANDBOX/claude.env"
+  assert_success
+}
+
+@test "an agent without CALL_CONTEXT keeps the full call context (negative control)" {
+  run "$RUN" --agent judge -p x
+  assert_success
+  run grep -Fx -e --tools -e --disable-slash-commands "$SANDBOX/claude.argv"
+  assert_failure
+  run grep -Fx NO_MDS= "$SANDBOX/claude.env"
+  assert_success
+}
+
+@test "a CALL_CONTEXT that is not lean is refused before the harness runs (negative control)" {
+  printf 'CALL_CONTEXT=bare\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge -p x
+  assert_failure
+  assert_output --partial "CALL_CONTEXT='bare' is not empty or lean"
+  assert [ ! -e "$SANDBOX/claude.argv" ]
 }
 
 @test "a SCHEMA that is not readable JSON is refused before the harness runs (negative control)" {
