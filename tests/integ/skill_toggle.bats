@@ -220,8 +220,10 @@ toggle_repo() {
   assert_output --partial 'opened #88 for review'
   [ ! -e "$SANDBOX/landed" ]
   # the item goes back to queued so dispatch gives it a session to review and land it
-  run tail -1 "$SANDBOX/aq.log"
-  assert_output "agent-queue move skill-toggle-$(date +%F) queued"
+  # with the PR recorded first, so that session's brief names it
+  run tail -2 "$SANDBOX/aq.log"
+  assert_line --index 0 --regexp "^agent-queue set skill-toggle-$(date +%F) pr=.*/origin#88$"
+  assert_line --index 1 "agent-queue move skill-toggle-$(date +%F) queued"
   run git -C "$DOTFILES" worktree list
   assert_equal "$(wc -l <<<"$output")" 1
 }

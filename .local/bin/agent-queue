@@ -1331,13 +1331,17 @@ cmd_cancel() {
 # good. Cancel closes it there, with the project and title of its add; no row is named.
 cancel_record_only() {
   local slug=$1 added
-  notes log --steps --json 2>/dev/null |
-    jq -e --arg s "$slug" 'any(.steps[]? | select(.step != "done"); (.items // []) | index($s))' >/dev/null ||
-    die "nothing active with slug $slug"
-  added=$(notes log --days 30 --item "$slug" --json 2>/dev/null | jq -sc 'map(select(.action == "item-added")) | last // {}')
+  record_active "$slug" || die "nothing active with slug $slug"
+  added=$(notes log --days 3650 --item "$slug" --json 2>/dev/null | jq -sc 'map(select(.action == "item-added")) | last // {}')
   chain_event queue item-cancelled "$(jq -r '.from // "-"' <<<"$added")" "$(jq -r '.text // "-"' <<<"$added")" \
     --item "$slug" --to done
+  # chain_event swallows a failed write, and here the write is the whole cancel
+  ! record_active "$slug" || die "$slug is still active in the record: notes ingest record did not close it"
   echo "cancelled $slug in the record: its file was already gone"
+}
+record_active() {
+  notes log --steps --json 2>/dev/null |
+    jq -e --arg s "$1" 'any(.steps[]? | select(.step != "done"); (.items // []) | index($s))' >/dev/null
 }
 
 cmd_bump() {

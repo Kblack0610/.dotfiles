@@ -1794,12 +1794,12 @@ board_links() {
     def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
       | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
     def live: .state == "open" or .state == "doing";
-    $d[0] as $d | $v[0] as $v | ($a[0] // [] | map(rowkey | strings) | INDEX(.)) as $worked
+    $d[0] as $d | $v[0] as $v | ($a[0] | if . == null then null else map(rowkey | strings) | INDEX(.) end) as $worked
     | [.rows[] | select(.id != null and live)] as $live
     | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
     | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
     | [.rows[] | select(.automation != false)] as $rows
-    | {orphans: (if $d == null then null else
+    | {orphans: (if $d == null or $worked == null then null else
          [($rows[] | select(.id != null and live and .parent != null and $open["\(.project):\(.parent)"] == null)
              | {project, id, why: "its parent \(.parent) is closed"}),
           ($d[] | select((.merged // "") != "")

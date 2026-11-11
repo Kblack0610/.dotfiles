@@ -1455,12 +1455,19 @@ EOF
 #!/usr/bin/env bash
 echo "notes $*" >> "$NOTES_FIXTURE/calls.log"
 case "$*" in
-  "log --steps --json") echo '{"steps":[{"step":"queued","items":["ghost"]},{"step":"done","items":["gone"]}]}' ;;
-  "log --days 30 --item ghost --json") echo '{"action":"item-added","from":"game","text":"probe","item":"ghost"}'
+  # the record replays a written cancel unless NOTES_DROP says the write was lost
+  "log --steps --json") if grep -q 'ingest record' "$NOTES_FIXTURE/calls.log" && [ -z "${NOTES_DROP:-}" ]; then
+      echo '{"steps":[{"step":"queued","items":[]},{"step":"done","items":["gone","ghost"]}]}'
+    else echo '{"steps":[{"step":"queued","items":["ghost"]},{"step":"done","items":["gone"]}]}'; fi ;;
+  "log --days 3650 --item ghost --json") echo '{"action":"item-added","from":"game","text":"probe","item":"ghost"}'
     echo '{"action":"item-set","from":"game","text":"probe","item":"ghost"}' ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/notes"
+  # a write the record never took is no cancel
+  NOTES_DROP=1 run "$AQ" cancel ghost
+  assert_failure; assert_output --partial "ghost is still active in the record"
+  : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" cancel ghost
   assert_success
   assert_output "cancelled ghost in the record: its file was already gone"

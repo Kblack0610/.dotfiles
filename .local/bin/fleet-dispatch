@@ -2003,7 +2003,8 @@ salvage_line() {
 # limit or after a partial landing, settle_item) without closing the item: the new session continues
 # that PR, or after a partial landing makes the rest, never a second PR for the same work.
 pr_line() {
-  local pr co; pr=$(jq -r '.pr // "" | split(" ")[0]' <<<"$1")
+  # `// ""` again: "" splits to [], whose [0] is null, which -r prints as "null" (ar-1583's brief)
+  local pr co; pr=$(jq -r '.pr // "" | split(" ")[0] // ""' <<<"$1")
   [ -n "$pr" ] || return 0
   if [ "$(jq -r '.partial // ""' <<<"$1")" = yes ]; then
     echo "An earlier run of this item merged $(jq -r .pr <<<"$1") as a partial landing (agent-land --partial): do the part that is left in the other repo, and land it with agent-land without --partial, which closes the item. If nothing is left, close it that way on $pr."
