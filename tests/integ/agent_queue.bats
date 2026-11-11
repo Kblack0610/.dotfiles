@@ -1449,6 +1449,29 @@ EOF
   assert_success
 }
 
+# 2026-11-10: two probe items deleted by hand sat queued in the record for days, chain_drift 2.
+@test "cancel of a slug whose file is gone closes it in the record while the record holds it active" {
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+echo "notes $*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in
+  "log --steps --json") echo '{"steps":[{"step":"queued","items":["ghost"]},{"step":"done","items":["gone"]}]}' ;;
+  "log --days 30 --item ghost --json") echo '{"action":"item-added","from":"game","text":"probe","item":"ghost"}'
+    echo '{"action":"item-set","from":"game","text":"probe","item":"ghost"}' ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" cancel ghost
+  assert_success
+  assert_output "cancelled ghost in the record: its file was already gone"
+  assert_called "notes ingest record --stage queue --action item-cancelled --from game --item ghost --to done -- probe"
+  # one the record has closed, or never held, is still nothing active
+  for s in gone never; do
+    run "$AQ" cancel "$s"
+    assert_failure; assert_output --partial "nothing active with slug $s"
+  done
+}
+
 # 2026-11-04: cancelling an item hand-started in a hub:dotfiles window killed hub:dotfiles and
 # every window in it. A hand start now records no hub session, but items that name one exist.
 @test "cancel of an item recorded on a hub:dotfiles window closes its window, never the session" {

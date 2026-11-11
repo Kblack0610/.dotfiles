@@ -205,11 +205,11 @@ toggle_repo() {
   assert_output --partial 'PR #77 is still open'
 }
 
-@test "a new change stops at its open PR: BLOCKED, the worktree gone, agent-land never called" {
+@test "a new change stops at its open PR: BLOCKED, the worktree gone, the item queued for a session, agent-land never called" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
   mkdir -p "$SANDBOX/ghbin"
   printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) echo https://github.com/o/r/pull/88 ;; esac\n' > "$SANDBOX/ghbin/gh"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/ghbin/agent-queue"
+  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
   printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/ghbin/agent-land"
   chmod +x "$SANDBOX"/ghbin/*
   rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue" "$HOME/.local/bin/agent-land"
@@ -219,6 +219,9 @@ toggle_repo() {
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'opened #88 for review'
   [ ! -e "$SANDBOX/landed" ]
+  # the item goes back to queued so dispatch gives it a session to review and land it
+  run tail -1 "$SANDBOX/aq.log"
+  assert_output "agent-queue move skill-toggle-$(date +%F) queued"
   run git -C "$DOTFILES" worktree list
   assert_equal "$(wc -l <<<"$output")" 1
 }

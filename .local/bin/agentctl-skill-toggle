@@ -9,7 +9,9 @@
 # six-signal use; a change is a queue item, a worktree, one commit and a PR, because the file is
 # tracked and stowed and an in-place write would dirty the main checkout. It stops at the PR: the
 # change is tier 3 (.config/fleet-dispatch/policy.md), and a runner with no model cannot write the
-# Review: line agent-land requires, so a session reviews and lands it and reap closes the item.
+# Review: line agent-land requires, so once the PR is open the item goes back to queued with a
+# review-and-land brief: dispatch gives it a session, which runs the review and agent-land. A
+# parked item with no session was ownerless_running on board-chain for days (#1598, ar-1583).
 # An earlier toggle PR still open stops the run, so one change waits for the human at a time.
 # Verdict: NOOP none needed, BLOCKED a PR is open and waits for review, FAILED otherwise.
 set -uo pipefail
@@ -72,7 +74,8 @@ day=$(date +%F)
 slug="skill-toggle-$day"
 branch="$BRANCH_PREFIX$day"
 wt="$HOME/.worktrees/dotfiles-$slug"
-agent-queue add --running --project dotfiles --from auto:skill-toggle --slug "$slug" --title "$title" "$title: $summary" >/dev/null ||
+agent-queue add --running --project dotfiles --from auto:skill-toggle --slug "$slug" --title "$title" \
+    "$title: $summary. Review the PR this item records (pr:) with /code-review high, then land it with agent-land <N> --item $slug." >/dev/null ||
     fail "agent-queue add $slug failed"
 queued=1
 git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git worktree add $wt failed"
@@ -94,5 +97,7 @@ repo=$(origin_repo "$wt") && agent-queue set "$slug" "pr=$repo#$n" >/dev/null ||
     echo "agentctl-skill-toggle: PR #$n is not recorded on $slug; land it with --item $slug" >&2
 git -C "$REPO" worktree remove "$wt" && git -C "$REPO" branch -q -D "$branch" ||
     echo "agentctl-skill-toggle: PR #$n is open, but $wt was not removed" >&2
-report BLOCKED "PR #$n waits for review and merge: $summary"
+agent-queue move "$slug" queued >/dev/null ||
+    echo "agentctl-skill-toggle: $slug is not queued; no session will review PR #$n" >&2
+report BLOCKED "PR #$n is queued for a session to review and land: $summary"
 echo "skill-toggle: opened #$n for review: $summary"

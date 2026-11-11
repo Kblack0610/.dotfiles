@@ -1774,7 +1774,8 @@ playtest_blame() {
 #     done item with merge proof (the done items merged_open_rows reads) names as its subject while
 #     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
 #     first line: its first word, or the one id in brackets. The item that worked the row itself is
-#     merged_open_rows; a merged PR reaches a row through its item.
+#     merged_open_rows; a merged PR reaches a row through its item. A row an active item works
+#     (BENCH_ITEMS_CMD) is that item's to move, so it is no orphan of the merged one.
 #   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
 #     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
 #   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
@@ -1782,17 +1783,18 @@ playtest_blame() {
 #   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
 #   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
 board_links() {
-  local t=$1 feed done verdicts blame
+  local t=$1 feed done verdicts blame active
   feed=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)') || return 1
+  active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
   done=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)" 2>/dev/null | jq -sc .) || done=null
   verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
   blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
   jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
-     --argjson blame "${blame:-[]}" "$JQ_LIB"'
+     --slurpfile a <(printf '%s' "$active") --argjson blame "${blame:-[]}" "$JQ_LIB"'
     def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
       | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
     def live: .state == "open" or .state == "doing";
-    $d[0] as $d | $v[0] as $v
+    $d[0] as $d | $v[0] as $v | ($a[0] // [] | map(rowkey | strings) | INDEX(.)) as $worked
     | [.rows[] | select(.id != null and live)] as $live
     | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
     | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
@@ -1802,7 +1804,8 @@ board_links() {
              | {project, id, why: "its parent \(.parent) is closed"}),
           ($d[] | select((.merged // "") != "")
              | ((.title | select(. != "")) // (.task // "" | split("\n")[0]) // "" | subject) as $s | select($s != null) | $byid[$s][]? as $o
-             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null))
+             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null)
+                      and $worked["\($o.project):\($s)"] == null)
              | {project: $o.project, id: $s, why: "\(.slug) landed it"})]
          | unique_by([.project, .id]) end),
        blocked: (if $v == null then null else
