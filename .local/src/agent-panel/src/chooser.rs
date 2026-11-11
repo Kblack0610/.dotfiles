@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort, tmux};
+use crate::{
+    account, asks, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort, tmux,
+};
 
 /// One detected Claude agent, ready to render.
 #[derive(Clone, Debug, Default)]
@@ -207,7 +209,11 @@ fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -
         short_target: render::short_target(&pane.session, &pane.window_index),
         project: render::project_from_path(&pane.current_path),
         repo_full: render::basename(&pane.current_path).to_string(),
-        summary: if item.is_empty() { "codex".into() } else { format!("codex: {item}") },
+        summary: if item.is_empty() {
+            "codex".into()
+        } else {
+            format!("codex: {item}")
+        },
         tags: pane.tags.clone(),
         stage: pane.stage.clone(),
         labels: pane.labels.clone(),
@@ -237,7 +243,10 @@ fn codex_rollout(proc_root: &Path, pid: u32) -> Option<PathBuf> {
     fs::read_dir(proc_root.join(pid.to_string()).join("fd"))
         .ok()?
         .filter_map(|e| fs::read_link(e.ok()?.path()).ok())
-        .find(|t| t.file_name().is_some_and(|n| thread_of_rollout(&n.to_string_lossy()).is_some()))
+        .find(|t| {
+            t.file_name()
+                .is_some_and(|n| thread_of_rollout(&n.to_string_lossy()).is_some())
+        })
 }
 
 /// `rollout-2026-11-09T10-00-00-<uuid>.jsonl` -> the uuid (the last five dash-separated fields).
@@ -355,7 +364,11 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
     let rows = write_rows(&agents, &map_file, saved_sort())?;
     // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
     let rows_text = match query.filter(|q| !q.trim().is_empty()) {
-        Some(q) => search::filter(&fs::read_to_string(search::notes_path(&map_file))?, q, &search::read_topics()),
+        Some(q) => search::filter(
+            &fs::read_to_string(search::notes_path(&map_file))?,
+            q,
+            &search::read_topics(),
+        ),
         None => rows_text(&rows),
     };
     // Position the cursor on the currently active agent, if it is listed.
@@ -427,8 +440,13 @@ fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec
     let (rows, map_lines) = render::build(agents, sort, now);
     write_whole(map_file, &map_lines.join("\n"))?;
     // A missing index leaves each note to its row text: search still works on what is shown.
-    let index = search::index_path().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
-    write_whole(&search::notes_path(map_file), &search::notes(&rows, agents, &search::index_notes(&index)))?;
+    let index = search::index_path()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    write_whole(
+        &search::notes_path(map_file),
+        &search::notes(&rows, agents, &search::index_notes(&index)),
+    )?;
     Ok(rows)
 }
 
@@ -455,7 +473,12 @@ fn rows_text(rows: &[render::Row]) -> String {
 ///
 /// `query` is the search box: the rows are filtered by it (`search::filter`), so a reload keeps
 /// what was typed.
-pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>, query: &str) -> Result<()> {
+pub fn run_rows(
+    map_file: &Path,
+    asking: bool,
+    step: Option<sort::Step>,
+    query: &str,
+) -> Result<()> {
     let mut sort = saved_sort();
     if let Some(step) = step {
         sort = sort.step(step);
@@ -491,12 +514,17 @@ fn print_matches(notes: &str, query: &str) {
 
 /// The sort the panel was last left in (`sort::state_file`), project when none.
 fn saved_sort() -> sort::Sort {
-    sort::state_file().map(|f| sort::load(&f)).unwrap_or_default()
+    sort::state_file()
+        .map(|f| sort::load(&f))
+        .unwrap_or_default()
 }
 
 /// The agents ctrl-y shows: all of them, or with `asking` only those that need the human.
 fn only_asking(agents: Vec<Agent>, asking: bool) -> Vec<Agent> {
-    agents.into_iter().filter(|a| !asking || a.needs_attention()).collect()
+    agents
+        .into_iter()
+        .filter(|a| !asking || a.needs_attention())
+        .collect()
 }
 
 /// Jump to one `<server>/<session>:<window>` target, for surfaces that list agents
@@ -524,7 +552,11 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
 pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
-    let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
+    let (agents, gaps) = if parked {
+        collect_all_read()
+    } else {
+        collect_read()
+    };
     for a in agents.into_iter().filter(|a| codex || !a.codex) {
         if !json {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
@@ -532,7 +564,10 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
         }
         let (info, mtime) = match &a.jsonl {
             Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
-            None => (jsonl::fleet_info(Path::new("")), mtime_secs(a.rollout.as_deref())),
+            None => (
+                jsonl::fleet_info(Path::new("")),
+                mtime_secs(a.rollout.as_deref()),
+            ),
         };
         let idle_since = idle_since(info.last_entry, mtime, a.started_at);
         let row = serde_json::json!({
@@ -598,24 +633,30 @@ fn idle_since(last_entry: Option<u64>, mtime: u64, started_at: Option<u64>) -> u
 
 /// Prefix G: jump to the next agent that needs the human, after the current one. With none, it
 /// says so in the message bar and stays put; jumping somewhere else would read as "this one".
+/// Asks no live session owns have nowhere to jump to, so the message counts them.
 pub fn run_next() -> Result<()> {
-    let agents = collect();
+    let (agents, gaps) = collect_read();
     let current = tmux::current_target();
+    // A partial read could take a live owner for a gone one, so it counts nothing (ar-916).
+    let orphans = || {
+        let live: HashSet<&str> = agents.iter().map(|a| a.session_id.as_str()).collect();
+        gaps.is_empty()
+            .then(|| asks::without_live_owner(&asks::root(), &live))
+    };
     match next_needing(&agents, current.as_deref()) {
         Next::Jump(target) => tmux::jump(target),
-        Next::OnlyHere => tmux::message("only this session needs you"),
-        Next::Nobody => tmux::message(&nobody_message(asks::pending_count(&asks::root()))),
+        Next::OnlyHere => tmux::message(&with_orphans("only this session needs you", orphans())),
+        Next::Nobody => tmux::message(&with_orphans("no session needs you", orphans())),
     }
     Ok(())
 }
 
-/// With no live session to jump to, every pending ask belongs to a session that ended or to a
-/// headless job (a live owner would have been a jump), so its only home is the Prefix y panel.
-fn nobody_message(orphan_asks: usize) -> String {
-    match orphan_asks {
-        0 => "no session needs you".to_string(),
-        1 => "no live session needs you: 1 question from an ended session waits in Prefix y".to_string(),
-        n => format!("no live session needs you: {n} questions from ended sessions wait in Prefix y"),
+/// `base`, plus how many asks wait in Prefix y with no live session to jump to.
+fn with_orphans(base: &str, orphans: Option<usize>) -> String {
+    match orphans {
+        Some(1) => format!("{base}; 1 ask with no live session in Prefix y"),
+        Some(n) if n > 1 => format!("{base}; {n} asks with no live session in Prefix y"),
+        _ => base.to_string(),
     }
 }
 
@@ -669,7 +710,8 @@ fn extract_target(row: &str) -> Option<String> {
     for tok in row.split_whitespace() {
         if let Some((a, b)) = tok.split_once(':') {
             if !a.is_empty()
-                && a.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '/')
+                && a.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '/')
                 && !b.is_empty()
                 && b.chars().all(|c| c.is_ascii_digit())
             {
@@ -686,7 +728,11 @@ fn extract_target(row: &str) -> Option<String> {
 fn lookup(map_file: &Path, target: &str) -> render::Facts {
     fs::read_to_string(map_file)
         .ok()
-        .and_then(|text| text.lines().map(render::Facts::parse).find(|(t, _)| t == target))
+        .and_then(|text| {
+            text.lines()
+                .map(render::Facts::parse)
+                .find(|(t, _)| t == target)
+        })
         .map(|(_, f)| f)
         .unwrap_or_default()
 }
@@ -698,12 +744,20 @@ mod tests {
     #[test]
     fn a_rollout_name_gives_its_thread_id_and_nothing_else_does() {
         assert_eq!(
-            thread_of_rollout("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl").as_deref(),
+            thread_of_rollout(
+                "rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl"
+            )
+            .as_deref(),
             Some("01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0")
         );
         assert_eq!(thread_of_rollout("rollout-x.jsonl"), None);
         assert_eq!(thread_of_rollout("abc.jsonl"), None);
-        assert_eq!(thread_of_rollout("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.json"), None);
+        assert_eq!(
+            thread_of_rollout(
+                "rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.json"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -712,8 +766,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let fd = root.join("300").join("fd");
         fs::create_dir_all(&fd).unwrap();
-        fs::write(root.join("300").join("environ"), b"TERM=x\0AGENT_QUEUE_ITEM=codex-parity-p6\0").unwrap();
-        let rollout = root.join("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl");
+        fs::write(
+            root.join("300").join("environ"),
+            b"TERM=x\0AGENT_QUEUE_ITEM=codex-parity-p6\0",
+        )
+        .unwrap();
+        let rollout =
+            root.join("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl");
         fs::write(&rollout, "").unwrap();
         std::os::unix::fs::symlink("/dev/null", fd.join("0")).unwrap();
         std::os::unix::fs::symlink(&rollout, fd.join("5")).unwrap();
@@ -731,7 +790,10 @@ mod tests {
         assert_eq!(a.status, "busy");
         assert_eq!(a.session_id, "01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0");
         assert_eq!(a.summary, "codex: codex-parity-p6");
-        assert_eq!((a.pane.as_str(), a.pid, a.account.as_str()), ("hub/%7", 300, "codex"));
+        assert_eq!(
+            (a.pane.as_str(), a.pid, a.account.as_str()),
+            ("hub/%7", 300, "codex")
+        );
         assert_eq!(a.rollout.as_deref(), Some(rollout.as_path()));
         assert!(a.jsonl.is_none() && !a.needs_attention());
         // No fds to read (macOS, or a process gone): still a row, with no thread id.
@@ -773,9 +835,21 @@ mod tests {
 
     #[test]
     fn plan_mode_counts_only_with_its_dialog_open() {
-        let plan_dialog = Agent { glyph: '!', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
-        let plan_idle = Agent { glyph: '✓', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
-        let plan_busy = Agent { glyph: '~', mode: jsonl::Mode::Plan, ..live_agent("hub", "b", false) };
+        let plan_dialog = Agent {
+            glyph: '!',
+            mode: jsonl::Mode::Plan,
+            ..live_agent("hub", "a", false)
+        };
+        let plan_idle = Agent {
+            glyph: '✓',
+            mode: jsonl::Mode::Plan,
+            ..live_agent("hub", "a", false)
+        };
+        let plan_busy = Agent {
+            glyph: '~',
+            mode: jsonl::Mode::Plan,
+            ..live_agent("hub", "b", false)
+        };
         assert!(plan_dialog.needs_attention());
         assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());
@@ -783,8 +857,14 @@ mod tests {
 
     #[test]
     fn prefix_g_jumps_only_to_what_needs_you() {
-        let quiet = |s| Agent { glyph: '✓', ..live_agent("hub", s, false) };
-        let prompt = |s| Agent { glyph: '!', ..live_agent("hub", s, false) };
+        let quiet = |s| Agent {
+            glyph: '✓',
+            ..live_agent("hub", s, false)
+        };
+        let prompt = |s| Agent {
+            glyph: '!',
+            ..live_agent("hub", s, false)
+        };
         // Nothing needs you: no jump, with or without a current window.
         let none = vec![quiet("a"), quiet("b")];
         assert_eq!(next_needing(&none, Some("hub/a:1")), Next::Nobody);
@@ -792,8 +872,14 @@ mod tests {
         assert_eq!(next_needing(&[], None), Next::Nobody);
         // The next one after the current, wrapping past the end.
         let agents = vec![prompt("a"), quiet("b"), prompt("c")];
-        assert_eq!(next_needing(&agents, Some("hub/a:1")), Next::Jump("hub/c:1"));
-        assert_eq!(next_needing(&agents, Some("hub/c:1")), Next::Jump("hub/a:1"));
+        assert_eq!(
+            next_needing(&agents, Some("hub/a:1")),
+            Next::Jump("hub/c:1")
+        );
+        assert_eq!(
+            next_needing(&agents, Some("hub/c:1")),
+            Next::Jump("hub/a:1")
+        );
         assert_eq!(next_needing(&agents, None), Next::Jump("hub/a:1"));
         // Only the current one: say so instead of jumping to itself.
         let solo = vec![prompt("a"), quiet("b")];
@@ -801,19 +887,45 @@ mod tests {
     }
 
     #[test]
-    fn prefix_g_with_nobody_live_points_at_the_orphaned_asks() {
-        assert_eq!(nobody_message(0), "no session needs you");
-        assert!(nobody_message(1).contains("1 question from an ended session waits in Prefix y"));
-        assert!(nobody_message(26).contains("26 questions from ended sessions wait in Prefix y"));
+    fn prefix_g_counts_the_asks_it_cannot_jump_to() {
+        assert_eq!(
+            with_orphans("no session needs you", Some(0)),
+            "no session needs you"
+        );
+        assert_eq!(
+            with_orphans("no session needs you", None),
+            "no session needs you",
+            "a partial read claims nothing"
+        );
+        assert_eq!(
+            with_orphans("no session needs you", Some(1)),
+            "no session needs you; 1 ask with no live session in Prefix y"
+        );
+        assert_eq!(
+            with_orphans("only this session needs you", Some(26)),
+            "only this session needs you; 26 asks with no live session in Prefix y"
+        );
     }
 
     #[test]
     fn ctrl_y_keeps_only_the_sessions_waiting_on_the_human() {
-        let prompt = Agent { glyph: '!', ..live_agent("hub", "a", false) };
-        let busy = Agent { glyph: '~', ..live_agent("hub", "b", false) };
-        let pending = Agent { ask: Some("x1".into()), ..live_agent("hub", "c", false) };
+        let prompt = Agent {
+            glyph: '!',
+            ..live_agent("hub", "a", false)
+        };
+        let busy = Agent {
+            glyph: '~',
+            ..live_agent("hub", "b", false)
+        };
+        let pending = Agent {
+            ask: Some("x1".into()),
+            ..live_agent("hub", "c", false)
+        };
         let agents = vec![pending, busy, prompt];
-        let kept: Vec<_> = only_asking(agents.clone(), true).into_iter().map(|a| a.target).collect();
+        let kept: Vec<_> = only_asking(agents.clone(), true)
+            .into_iter()
+            .map(|a| a.target)
+            .collect();
         assert_eq!(kept, ["hub/c:1", "hub/a:1"]);
         // Off: every agent, in order.
         assert_eq!(only_asking(agents, false).len(), 3);
@@ -824,7 +936,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-panel-map-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let map = dir.join("map");
-        fs::write(&map, "hub/a:1\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\tnotes\t\t\t\n").unwrap();
+        fs::write(
+            &map,
+            "hub/a:1\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\tnotes\t\t\t\n",
+        )
+        .unwrap();
         assert_eq!(lookup(&map, "hub/a:1").ask, "JSVBgC");
         assert_eq!(lookup(&map, "hub/b:1").ask, "");
         assert_eq!(lookup(&map, "hub/none:1").ask, "");

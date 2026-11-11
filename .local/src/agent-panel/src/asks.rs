@@ -6,7 +6,7 @@
 //! `claude_session: <id>` line. Only the asking session owns an ask; the tmux
 //! session name is not a fallback.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,11 +19,16 @@ pub fn root() -> PathBuf {
 
 /// The `question:` line of ask `id` under `root()`; empty when there is no such ask.
 pub fn question(id: &str) -> String {
-    let Ok(projects) = fs::read_dir(root()) else { return String::new() };
+    let Ok(projects) = fs::read_dir(root()) else {
+        return String::new();
+    };
     projects
         .flatten()
         .find_map(|p| fs::read_to_string(p.path().join(format!("{id}.md"))).ok())
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("question: ").map(str::to_string)))
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("question: ").map(str::to_string))
+        })
         .unwrap_or_default()
 }
 
@@ -80,10 +85,13 @@ pub fn pending_sessions(root: &Path) -> HashMap<String, String> {
     out
 }
 
-/// How many asks under `root` are pending, whether or not their session still runs: the
-/// Prefix y panel's ask rows, and the ask part of the status bar's `!N`.
-pub fn pending_count(root: &Path) -> usize {
-    pending(root).len()
+/// How many pending asks under `root` name none of the `live` Claude sessions: a session that
+/// ended, or no session at all (a headless job's). Prefix y is their only home.
+pub fn without_live_owner(root: &Path, live: &HashSet<&str>) -> usize {
+    pending(root)
+        .iter()
+        .filter(|(_, sessions)| !sessions.iter().any(|s| live.contains(s.as_str())))
+        .count()
 }
 
 #[cfg(test)]
@@ -125,18 +133,23 @@ mod tests {
         ask(&root, "other", "a7", "pending", "");
 
         let got = pending_sessions(&root);
-        let count = pending_count(&root);
+        let none_live = without_live_owner(&root, &HashSet::new());
+        let a1_live = without_live_owner(&root, &HashSet::from(["sid-pending"]));
         let _ = fs::remove_dir_all(&root);
         assert_eq!(
             got,
             HashMap::from([("sid-pending".to_string(), "a1".to_string())])
         );
-        assert_eq!(count, 2, "a1 and a7; the answered, cancelled, stale and non-.md files are not pending");
+        // a1 and a7 are the pending ones; a1 drops out once its session is live.
+        assert_eq!((none_live, a1_live), (2, 1));
     }
 
     #[test]
     fn missing_root_is_empty() {
         assert!(pending_sessions(Path::new("/nonexistent/agent-panel-asks")).is_empty());
-        assert_eq!(pending_count(Path::new("/nonexistent/agent-panel-asks")), 0);
+        assert_eq!(
+            without_live_owner(Path::new("/nonexistent/agent-panel-asks"), &HashSet::new()),
+            0
+        );
     }
 }
