@@ -47,4 +47,5 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
 
 - Do not quote a number you did not count in this session or read from the cost doc with its date.
 - Do not hand-count timings in a shell loop when `scripts/ci-cost.py` could own the number; a number only one session can reproduce cannot be compared later.
-- Do not drop coverage or cancel another session's gate to hit a target (`ci.md` "Tiers", "Gate correctness"); measure around it.
+- Do not drop coverage to hit a target (`ci.md` "Tiers").
+- Do not cancel another session's gate run; measure around it.

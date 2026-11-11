@@ -15,7 +15,7 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 - Each repo declares a p90 wall budget for its PR gate in its CI doc; the fleet default is 10 minutes. Why: "minutes" without a number cannot be checked, and the per-repo table below shows who has one.
 - `timeout-minutes` is a hang guard of at least 2 to 3 times the budget, never a lever to pass a slow run. Why: a generous timeout lets a hung job hold a runner for hours; playground job timeouts of 240 to 720 minutes did that (G2I digest, "Gate shape").
 - A gate that queues or runs past about an hour is a CI bug: report it and fix it, never reroute or restart it. Why: playground rule 9; the G2I digest counted 319 playground gate runs over an hour ("Gate shape").
-- Every budget has an alert that fires when p90 over the last N runs passes it. Why: a budget nobody watches erodes. Dotfiles tests grew from about 1,960 on 11-01 to 4,623 on 11-10; shards (#1414, 11-07) cut unit to about 3 minutes and it was back to about 8.5 three days later, with nothing watching.
+- Every budget has an alert that fires when p90 over the last N runs passes it. Why: a budget nobody watches erodes. Dotfiles tests grew from about 1,960 on 11-01 to 4,623 on 11-10; shards (#1414, 11-07) cut unit to about 3 minutes and it was back to about 8.5 three days later, with nothing watching (plan dotfiles-ci-minutes-doctrine, measured on run 42923495293).
 
 ## Speed levers, in this order
 
@@ -23,7 +23,7 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 2. Cut fixed per-job cost before adding shards. Why: each shard pays setup again; platform measured 4 shards at about 40 billed minutes a run against 26 for 2 (`PIPELINES.md`, 2026-09-24).
 3. Run cheap work first, with a draft tier. Why: most reds show in build, typecheck and unit, so the expensive tier starts only on a PR ready for review (platform `.github/actions/ci-tier`).
 4. Build once and fan out, with one build identity (version, target, flags) every consumer keys on. Why: a build per shard multiplies the slowest step (G2I digest, "Gate shape"; null-cookie-merry-cocke P10).
-5. Shard by weights measured from the last main run, never a hand table. Why: a committed weights file drifted until one dotfiles shard ran 514s against 301s predicted.
+5. Shard by weights measured from the last main run, never a hand table. Why: a committed weights file drifted until one dotfiles shard ran 514s against 301s predicted (same plan, same run).
 6. Only then add runners or slots, with a measured before and after. Why: capacity costs money every month and hides the first five problems, so a capacity change needs a measured benefit (null-cookie-merry-cocke "Spot and capacity").
 - Every lever ranks deletion first: a change that removes a step, knob or duplicate beats one that adds. Why: global Subtract First; playground rule 13.
 
@@ -40,7 +40,7 @@ One decision list. Walk it top to bottom for every red.
 
 1. Classify the red from its log and the same-commit history, never by rerunning it (`ci-failures` buckets: infra, timeout, test, check, derived, pending).
 2. A test red is fixed, its cause reverted, or quarantined with an owner, an expiry of at most two weeks, and a board row. Why: a quarantine without an expiry is permanent (`playground-nightly-fix`).
-3. A rerun is allowed only for a red classified infra with evidence (runner lost, network, rate limit, registry pull) and only after that infra cause is filed on the board or queue. A rerun never turns a test red green. Why: blanket reruns hide flakes until main is red every night (the G2I digest rejects a client auto-retry workflow for this reason).
+3. A rerun is allowed only for a red classified infra with evidence: the log shows a runner lost, a network or transport error, a rate limit or a registry pull failure, before the job's main work started. A test assertion or a timeout inside the tests is never infra. The infra cause is filed on the board or queue first. A rerun never turns a test red green. Why: blanket reruns hide flakes until main is red every night (the G2I digest rejects a client auto-retry workflow for this reason).
 4. No automatic retry, at the job or the test level. Why: the same.
 5. Never raise a timeout or a ceiling to pass. Why: it moves the hang guard into the budget (Budgets above).
 
@@ -65,7 +65,7 @@ One decision list. Walk it top to bottom for every red.
 | --- | --- | --- | --- | --- |
 | unity-core-playground | `~/dev/bnb/games/engine/unity-core-playground/docs/operations/ci.md` (cost: `ci-cost.md`) | not declared; plan null-cookie-merry-cocke targets 30 min, then 15 | affected classes on the pool, nightly runs every class | none yet |
 | platform | `~/dev/bnb/platform/docs/deployment/PIPELINES.md` | not declared (fleet default 10) | turbo affected plus draft tier, full on develop/main and nightly | none yet |
-| dotfiles | skill `shell-test-harness`, section 5 | 5 min | picked set plus broad set, full on main | planned (plan dotfiles-ci-minutes-doctrine P6) |
+| dotfiles | skill `shell-test-harness`, section 5 | 5 min (plan target; PR p90 was 561s on 2026-11-10) | picked set plus broad set, full on main | planned (plan dotfiles-ci-minutes-doctrine P6) |
 | dotfiles-private, home-config, unity-core, unity-core-harness, bnb-game-servers, dodginballs, binks-agent-orchestrator, personal-sites, crypto-indexer | none yet | fleet default 10 | none written | none yet |
 
 A repo that adds a CI doc adds its row here in the same PR.

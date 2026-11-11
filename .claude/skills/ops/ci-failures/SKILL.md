@@ -42,6 +42,7 @@ Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-ho
 
 ## Do NOT
 
+- Do not rerun a job to diagnose it (`ci.md` "Red handling" step 1).
 - Do not call a test flaky from one red, or from `green@sha` alone (step 5).
 - Do not quote a rate or count you did not get from the script in this session.
 - Do not fix here. Fixing is `/my:fix-ci` on one PR, or the owner's PR.
