@@ -109,10 +109,17 @@ pub fn section_title(section: Option<&str>) -> &'static str {
 
 /// Each row's section cell on a board: `NEXT UP (10)` over the first row of a section and blank
 /// under it, the way the sheet reads, while the rows are in the sheet's order; under any other
-/// sort each row names its own. The hub and agent-web both draw these.
+/// sort each row names its own. Closed rows run by the day they closed (`DONE 11-07 (12)`, or
+/// `DONE no day` for a row ticked with no `done:` marker), so the Done chip reads as a day log.
+/// The hub and agent-web both draw these.
 pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
-    fn of(r: &Row) -> Option<&str> {
-        r.section.as_deref()
+    fn of(r: &Row) -> (Option<&str>, Option<&str>) {
+        let closed = if r.state == "done" {
+            Some(r.closed.as_deref().unwrap_or(""))
+        } else {
+            None
+        };
+        (r.section.as_deref(), closed)
     }
     rows.iter()
         .enumerate()
@@ -125,7 +132,11 @@ pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
                 return String::new();
             }
             let n = rows[i..].iter().take_while(|x| of(x) == of(r)).count();
-            format!("{title} ({n})")
+            match of(r).1 {
+                Some("") => format!("{title} no day ({n})"),
+                Some(d) => format!("{title} {} ({n})", crate::text::short_day(d)),
+                None => format!("{title} ({n})"),
+            }
         })
         .collect()
 }
@@ -184,8 +195,14 @@ impl crate::table::Row for Row {
         "section", "priority", "project", "lane", "state", "id", "version", "size", "tier",
         "since", "when", "text", "profile", "tag",
     ];
-    const STATES: &'static [&'static str] =
-        &["all", "in progress", "filed today", "urgent", "requested"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        "in progress",
+        "filed today",
+        "urgent",
+        "requested",
+        "done",
+    ];
     const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority"];
     const LEAD: &'static str = "text";
     const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
@@ -223,6 +240,8 @@ impl crate::table::Row for Row {
             // Asks of work still open: a closed row is Done's, not the chip's.
             "urgent" => self.state != "done" && self.priority == "urgent",
             "requested" => self.state != "done" && self.requested,
+            // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
+            "done" => self.state == "done",
             _ => false,
         }
     }
@@ -804,6 +823,40 @@ mod tests {
         let closed: Vec<&Row> = closed.iter().collect();
         let on = |s: &str| View::new::<Row>("", s, "", "").apply(&closed).len();
         assert_eq!((on("urgent"), on("requested")), (0, 0));
+        // The Done chip is the reverse: closed rows only.
+        assert_eq!((shown("", "done"), on("done")), (0, 4));
+    }
+
+    #[test]
+    fn closed_rows_run_by_the_day_they_closed_then_by_project() {
+        let done = |project: &str, closed: Option<&str>| Row {
+            state: "done".into(),
+            section: Some("done".into()),
+            project: Some(project.into()),
+            closed: closed.map(Into::into),
+            text: project.into(),
+            ..Default::default()
+        };
+        let f = Feed {
+            rows: rows().rows,
+            done: vec![
+                done("old", None),
+                done("garden", Some("2026-11-05")),
+                done("demo", Some("2026-11-07")),
+                done("arena", Some("2026-11-07")),
+            ],
+            ..Default::default()
+        };
+        let all = f.board_rows(None);
+        let closed = &all[all.len() - 4..];
+        let names: Vec<&str> = closed.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(names, ["arena", "demo", "garden", "old"]);
+        assert_eq!(
+            section_labels(closed, false),
+            ["DONE 11-07 (2)", "", "DONE 11-05 (1)", "DONE no day (1)"]
+        );
+        // Under another sort each row names its own section, as the open ones do.
+        assert_eq!(section_labels(&closed[..1], true), ["DONE"]);
     }
 
     #[test]

@@ -93,7 +93,7 @@ const deliverables = {
 
 // Board: hub_core::tasks.
 const board = {
-  table: table(8, ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
+  table: table(8, ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested", "done"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
   rows: rows(8, (i) => ({ sheet: `~/.notes/lab/projects/current/${pick(PROJECTS, i)}/tasks.md`, raw: `- [ ] ${TEXT[i]}`, label: pick(["Now", "Next", "Later"], i), when: pick(["queued, ETA 14:10", "", "running 40m"], i), id: `ar-${1100 + i}`, priority: pick(["high", "normal", "low"], i), project: pick(PROJECTS, i), lane: pick(["agent", "human"], i), state: pick(["todo", "doing"], i), version: "0.2", game: "", size: pick(["s", "m"], i), tier: "", since: iso(ago(2000 + i * 300)), text: TEXT[i], tags: ["requested"], worker: i % 3 ? "" : `agent-${i}`, ask: "" })),
   projects: PROJECTS.slice(0, 5).map((project) => ({ profile: "personal", project, inbox: 2 })),
   focus: [{ profile: "personal", open: 12 }],

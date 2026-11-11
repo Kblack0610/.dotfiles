@@ -247,7 +247,7 @@ mod tests {
             .iter()
             .map(|r| r["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["NEXT UP (2)", "", "BACKLOG (1)", "DONE (1)"]);
+        assert_eq!(labels, ["NEXT UP (2)", "", "BACKLOG (1)", "DONE 11-05 (1)"]);
         assert_eq!(all["rows"][3]["when"], "11-05  pr 63");
         assert_eq!(all["today"], "2026-11-06");
         assert_eq!(all["table"]["total"], 4);
