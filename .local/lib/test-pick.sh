@@ -22,15 +22,24 @@ _test_pick_names() {
 }
 
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
-# status 0 when that test is picked. A test is picked when it changed, names a changed file's
-# basename (not as a stub or a directory), or names a directory a changed file sits under as
-# `<dir>/` or `<dir>/*...` (a glob such as `.claude/hooks/stop-post.d/*.sh`); a change to the
-# shared harness (helpers, fixtures, vendor, Makefile) picks every file.
+# status 0 when that test is picked. A test is picked when it or a file it loads from beside it
+# changed, or its text with what it loads names a changed file's basename (not as a stub or a
+# directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
+# `.claude/hooks/stop-post.d/*.sh`); a change to the shared harness (helpers, fixtures, vendor,
+# Makefile) picks every file.
 test_picked() {
   grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/Makefile$' <<<"$1" && return 0
   grep -qxF "$2" <<<"$1" && return 0
-  local text
+  local text rel inc
   text="$(cat)"
+  # A file the test loads from beside it (`load 'fleet_dispatch/common'`) is part of its text, and
+  # a change to it picks the test. The shared harness (../helpers, ../vendor) is matched above.
+  while read -r rel; do
+    case $rel in ../* | /*) continue ;; esac
+    inc="${2%/*}/$rel.bash"
+    grep -qxF "$inc" <<<"$1" && return 0
+    [ -r "$_TEST_PICK_REPO/$inc" ] && text+=$'\n'"$(cat "$_TEST_PICK_REPO/$inc")"
+  done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$text")
   # A basename counts where it can name the file. Dropped first: comment lines and @test titles
   # (prose), `stub <name>` (a fake stands in for it), `<name>/` (a directory of that name, such
   # as ~/.config/agentctl/) and `<name>@` (a systemd unit). A shared basename (README.md,

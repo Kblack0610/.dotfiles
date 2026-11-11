@@ -101,13 +101,21 @@ fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats
   # The same name run for real still picks it (negative control).
   run test_picked .local/bin/agentctl tests/x.bats <<<'  stub fleet-bench "exit 0"; run agentctl list'
   assert_success
-  # The real file: an agentctl change leaves fleet_dispatch.bats out, a fleet-dispatch change picks it.
-  run test_picked .local/bin/agentctl tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
-  assert_failure
-  run test_picked .local/bin/fleet-dispatch tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
-  assert_success
-  run test_picked tests/helpers/sandbox.bash tests/unit/fleet_dispatch.bats <"$REPO_ROOT/tests/unit/fleet_dispatch.bats"
-  assert_success
+  # The real files: an agentctl change leaves the fleet_dispatch*.bats files out; a fleet-dispatch
+  # change, sourced only in the fleet_dispatch/common.bash they load, picks every one.
+  local f n=0
+  for f in "$REPO_ROOT"/tests/unit/fleet_dispatch*.bats; do
+    n=$((n + 1))
+    run test_picked .local/bin/agentctl "tests/unit/${f##*/}" <"$f"
+    assert_failure
+    run test_picked .local/bin/fleet-dispatch "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/unit/fleet_dispatch/common.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/helpers/sandbox.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+  done
+  [ "$n" -gt 1 ]
 }
 
 @test "picker: a basename many files share counts only with its parent directory" {
