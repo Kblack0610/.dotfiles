@@ -48,12 +48,12 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
-  assert_line --regexp $'\tLIVE ucp:60 +[0-9]+m  long project[?]$'
-  assert_line --regexp $'\tLIVE demo:1 +[0-9]+m  short project[?]$'
-  assert_line --regexp $'\tLIVE demo   +[0-9]+m  no agent number[?]$'
+  assert_line --regexp $'\tnone ucp:60 +[0-9]+m  long project[?]$'
+  assert_line --regexp $'\tnone demo:1 +[0-9]+m  short project[?]$'
+  assert_line --regexp $'\tnone demo   +[0-9]+m  no agent number[?]$'
 }
 
-@test "a row says LIVE or dead before the name, and what the session is under the question" {
+@test "a row says LIVE, none or dead before the name, and what the session is under the question" {
   mkdir -p "$HOME/.claude/sessions" "$HOME/.agent/sessions/demo"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
   printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
@@ -69,8 +69,8 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   assert_line --regexp "^$live	LIVE demo +[0-9]+m  live[?]~ {15}live-work\$"
   assert_line --regexp "^$ended	dead demo +[0-9]+m  ended[?]~ {15}tidy-the-board\$"
   assert_line --regexp "^$untitled	dead demo +[0-9]+m  untitled[?]\$"
-  # Negative control: an ask with no session (intake, headless) has nobody gone, so it is LIVE.
-  assert_line --regexp "^$loose	LIVE demo +[0-9]+m  headless[?]\$"
+  # An ask with no session (intake, headless) is none, not LIVE: its card says no session is waiting.
+  assert_line --regexp "^$loose	none demo +[0-9]+m  headless[?]\$"
 }
 
 @test "live asks come first oldest first, then the open dialogs, then the dead asks oldest first" {
@@ -91,6 +91,10 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   # The oldest ask is dead, so it sorts below every live row and the dialog.
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live_old $live_new @hub/demo:2 $dead_old $dead_new "
   assert_line --index 2 --partial $'\tLIVE demo:2'
+  # live_old has no session: it reads none, and still sorts with the live asks.
+  assert_line --index 0 --partial $'\tnone demo:4'
+  assert_line --index 1 --partial $'\tLIVE demo:2'
+  assert_line --index 3 --partial $'\tdead demo:1'
 }
 
 # The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'

@@ -39,10 +39,11 @@ FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/flee
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "LIVE|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
+# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
 # session is (its registry title): short enough for the list column beside the card (a third of
-# the panel). dead is an ask whose session has ended (agent-ask live-sessions); an ask with no
-# session (intake, headless) and an open dialog are LIVE. Where an answer goes is on the card
+# the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
+# ask whose session has ended, none an ask no session filed (intake, headless), as its card says
+# "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts. Where an answer goes is on the card
 # (agent-ask answer_route), not the row: it reads the queue, 1.8 s, too slow for the open path
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
@@ -117,7 +118,7 @@ cmd_rows() {
         else if (match($1, /:[0-9]+$/)) who = who substr($1, RSTART)
         k = "p" FNR; W[k] = who; if (length(who) > w) w = length(who)
         e = now - $3 * 60
-        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e); M[k] = 1
+        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e); M[k] = 2
         tool = $4; sub(/:.*/, "", tool)
         if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval"
         else if (tool == "AskUserQuestion") Q[k] = "question waiting for an answer"
@@ -130,7 +131,7 @@ cmd_rows() {
         who = slug(n)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
-        M[NR] = ($16 == "" || index(live, " " $16 " ") > 0)
+        M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
         L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $NF, $1)
         A[NR] = age($NF); Q[NR] = $6
         S[NR] = (T[$16] != "") ? faint T[$16] off : ""
@@ -140,7 +141,7 @@ cmd_rows() {
       END {
         if (w > 12) w = 12
         for (i in W) {
-          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] ? bold "LIVE" off : faint "dead" off,
+          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : faint "dead" off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
           if (S[i] != "") printf "\037%*s%s", w + 11, "", S[i]
           print ""
