@@ -234,14 +234,13 @@ function buildQuarantine(d) {
   const q = d.quarantine || [];
   if (!q.length) return "";
   const row = (r) => `<tr><td>${esc(r.row)}</td><td class="n">${r.entries}</td><td>${esc(r.ends)}</td>` +
-    `<td class="n ${relClass(r.level)}">${r.days_left <= 0 ? "ended" : r.days_left + "d"}</td></tr>`;
+    `<td class="n ${relClass(r.level)}">${esc(r.left)}</td></tr>`;
   const head = "<tr><th>owner row</th><th>entries</th><th>ends</th><th>left</th></tr>";
   const lane = (l) => `<div class="cline ${relClass(l.level)}">${esc(l.says)}` +
     (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>` +
     (l.rows.length ? `<table class="tbl">${head}${l.rows.map(row).join("")}</table>` : "");
-  const worst = q.some((l) => l.level === "bad") ? "bad" : q.some((l) => l.level === "warn") ? "warn" : "";
-  const entries = q.reduce((n, l) => n + l.rows.reduce((m, r) => m + r.entries, 0), 0);
-  return cfold("bld-quar", `<b>Quarantine</b> <span class="${worst || "muted"}">${entries} entries in ${q.length} repo${q.length === 1 ? "" : "s"}</span>`,
+  const entries = q.reduce((n, l) => n + l.entries, 0);
+  return cfold("bld-quar", `<b>Quarantine</b> <span class="${relClass(d.quarantine_level) || "muted"}">${entries} entries in ${q.length} repo${q.length === 1 ? "" : "s"}</span>`,
     `<div class="panel scroll">${q.map(lane).join("")}</div>`, REL_OPEN, true);
 }
 

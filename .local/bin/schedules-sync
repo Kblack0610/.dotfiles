@@ -226,12 +226,16 @@ def gh_fail(path, text):
     return GhError(why, f"gh api {path}: {raw}")
 
 
-def gh(path, missing=None):
-    """gh api <path> as JSON. A 404 returns `missing` when one is given, else it is an error."""
+def gh_run(path, text=True):
     try:
-        p = subprocess.run([GH, "api", path], capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+        return subprocess.run([GH, "api", path], capture_output=True, text=text, timeout=GH_CALL_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise GhError(f"gh api {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+
+
+def gh(path, missing=None):
+    """gh api <path> as JSON. A 404 returns `missing` when one is given, else it is an error."""
+    p = gh_run(path)
     try:
         body = json.loads(p.stdout)
     except ValueError:
@@ -269,13 +273,14 @@ def gh_page(path, etag=None, missing=None):
 
 def gh_bytes(path):
     """gh api <path>'s raw body: an artifact's zip."""
-    try:
-        p = subprocess.run([GH, "api", path], capture_output=True, timeout=GH_CALL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raise GhError(f"gh api {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    p = gh_run(path, text=False)
     if p.returncode:
         raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"))
     return p.stdout
+
+
+def blob_bytes(repo, sha):
+    return base64.b64decode(gh(f"repos/{repo}/git/blobs/{sha}").get("content", ""))
 
 
 FJ_TOKEN = []
@@ -419,8 +424,7 @@ def scheduled_workflows(repo, base, prev):
         if seen.get(path) == sha:
             unscheduled[path] = sha
             continue
-        blob = gh(f"repos/{repo}/git/blobs/{sha}")
-        text = base64.b64decode(blob.get("content", "")).decode("utf-8", "replace")
+        text = blob_bytes(repo, sha).decode("utf-8", "replace")
         try:
             parsed = parse_workflow(text)
         except yaml.YAMLError:
@@ -831,8 +835,11 @@ def quarantine_report(repo, base, old, t):
     listing, etag = gh_page(f"repos/{repo}/contents/{QUARANTINE_DIR}?ref={base}", old.get("etag"), missing=[])
     cache = os.path.join(os.path.dirname(QUARANTINE), "quarantine", repo.replace("/", "_"))
     files = dict(old.get("files") or {})
+    today = t.astimezone().date().isoformat()
     if listing is None:  # unchanged since the last pass
         etag = old.get("etag")
+        if (old.get("report") or {}).get("today") == today:
+            return old["report"], etag, files  # same files, same day: the same report
     else:
         shas = {f.get("name"): f.get("sha") for f in listing if isinstance(f, dict) and f.get("type") == "file"}
         if not all(shas.get(n) for n in QUARANTINE_FILES):
@@ -843,10 +850,8 @@ def quarantine_report(repo, base, old, t):
         path = os.path.join(cache, name)
         if old.get("files", {}).get(name) == sha and os.path.isfile(path):
             continue
-        blob = gh(f"repos/{repo}/git/blobs/{sha}")
         with open(path, "wb") as f:
-            f.write(base64.b64decode(blob.get("content", "")))
-    today = t.astimezone().date().isoformat()
+            f.write(blob_bytes(repo, sha))
     p = subprocess.run([sys.executable, "-I", os.path.join(cache, "quarantine.py"), "report", "--json",
                         "--today", today, "--file", os.path.join(cache, "quarantine.txt")],
                        capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S, cwd=cache)

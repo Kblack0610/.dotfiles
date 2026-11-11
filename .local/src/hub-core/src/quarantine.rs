@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::builds::short_repo;
 use crate::releases::Level;
+use crate::text::short_day;
 
 /// An entry this many days from its end is amber: time to fix it or extend it.
 pub const SOON_DAYS: i64 = 3;
@@ -15,7 +17,6 @@ pub const SOON_DAYS: i64 = 3;
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
 pub struct File {
-    pub generated_at: String,
     pub repos: Vec<Lane>,
 }
 
@@ -24,9 +25,7 @@ pub struct File {
 #[serde(default)]
 pub struct Lane {
     pub repo: String,
-    pub base: String,
-    /// When this lane last read clean; an `error` lane keeps the numbers of that read.
-    pub synced_at: Option<String>,
+    /// Why the last read failed; the lane keeps the numbers of the read before it.
     pub error: Option<String>,
     pub report: Option<Report>,
     /// None until a finished nightly on the base uploaded its summary.
@@ -37,7 +36,6 @@ pub struct Lane {
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
 pub struct Report {
-    pub today: String,
     pub entries: u64,
     /// Grouped by (end date, owner row), the soonest end first.
     pub rows: Vec<OwnerRow>,
@@ -59,11 +57,8 @@ pub struct OwnerRow {
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
 pub struct Nightly {
-    pub run_id: u64,
-    pub attempt: u32,
     pub url: Option<String>,
     pub created_at: Option<String>,
-    pub conclusion: Option<String>,
     /// summary.txt's "N known red", every class summed.
     pub known: u64,
     /// Quarantined tests that passed; None when the run kept no suite logs to count them from.
@@ -81,25 +76,30 @@ impl OwnerRow {
             Level::Ok
         }
     }
+
+    /// Its days left as a row draws them: `ended`, else `Nd`.
+    pub fn left(&self) -> String {
+        if self.days_left <= 0 {
+            "ended".into()
+        } else {
+            format!("{}d", self.days_left)
+        }
+    }
 }
 
 impl Lane {
+    fn entries_where(&self, f: impl Fn(&OwnerRow) -> bool) -> u64 {
+        self.rows().iter().filter(|r| f(r)).map(|r| r.entries).sum()
+    }
+
     /// Entries whose end date has passed.
-    pub fn ended(&self) -> u64 {
-        self.rows()
-            .iter()
-            .filter(|r| r.days_left <= 0)
-            .map(|r| r.entries)
-            .sum()
+    fn ended(&self) -> u64 {
+        self.entries_where(|r| r.days_left <= 0)
     }
 
     /// Entries ending within `SOON_DAYS`, not yet ended.
-    pub fn soon(&self) -> u64 {
-        self.rows()
-            .iter()
-            .filter(|r| r.days_left > 0 && r.days_left <= SOON_DAYS)
-            .map(|r| r.entries)
-            .sum()
+    fn soon(&self) -> u64 {
+        self.entries_where(|r| r.days_left > 0 && r.days_left <= SOON_DAYS)
     }
 
     pub fn rows(&self) -> &[OwnerRow] {
@@ -120,7 +120,7 @@ impl Lane {
 
     /// One line: the count and its nearest end, then the nightly.
     pub fn says(&self) -> String {
-        let name = self.repo.rsplit('/').next().unwrap_or(&self.repo);
+        let name = short_repo(&self.repo);
         let mut out = match &self.report {
             Some(r) => format!(
                 "{name}: {} quarantined over {} owner rows",
@@ -138,15 +138,18 @@ impl Lane {
         }
         if let Some(next) = self.rows().iter().find(|r| r.days_left > 0) {
             out.push_str(&format!(
-                ", next end {} ({}d)",
-                short(&next.ends),
-                next.days_left
+                ", next end {} ({})",
+                short_day(&next.ends),
+                next.left()
             ));
         }
         out.push_str("; ");
         out.push_str(&match &self.nightly {
             Some(n) => {
-                let day = n.created_at.as_deref().map(short).unwrap_or("?");
+                let day = n
+                    .created_at
+                    .as_deref()
+                    .map_or("?", |c| short_day(c.get(..10).unwrap_or(c)));
                 let now = n.now_passing.map_or("now passing unread".to_string(), |p| {
                     format!("{p} now pass")
                 });
@@ -159,11 +162,6 @@ impl Lane {
         }
         out
     }
-}
-
-/// `2026-11-17` or `2026-11-17T03:00:00Z` -> `11-17`.
-fn short(d: &str) -> &str {
-    d.get(5..10).unwrap_or(d)
 }
 
 /// The lanes in `text`, or why the file did not parse.
@@ -189,14 +187,11 @@ mod tests {
     fn lane(rows: Vec<OwnerRow>) -> Lane {
         Lane {
             repo: "Org/playground".into(),
-            base: "main".into(),
             report: Some(Report {
-                today: "2026-11-11".into(),
                 entries: rows.iter().map(|r| r.entries).sum(),
                 rows,
             }),
             nightly: Some(Nightly {
-                run_id: 9,
                 created_at: Some("2026-11-11T08:00:00Z".into()),
                 known: 12,
                 now_passing: Some(627),
@@ -238,6 +233,8 @@ mod tests {
         assert_eq!(l.level(), Level::Bad);
         let levels: Vec<Level> = l.rows().iter().map(OwnerRow::level).collect();
         assert_eq!(levels, [Level::Bad, Level::Warn, Level::Ok]);
+        let left: Vec<String> = l.rows().iter().map(OwnerRow::left).collect();
+        assert_eq!(left, ["ended", "2d", "19d"]);
         assert!(
             l.says().contains(
                 "9 quarantined over 3 owner rows, 2 ended, 3 end within 3d, next end 11-13 (2d)"

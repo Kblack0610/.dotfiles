@@ -43,8 +43,9 @@ struct Shown<'a> {
     /// The Run times fold's money: a cost per `times` row, the idle and month lines.
     costs: RunCosts,
     errors: &'a [String],
-    /// The Quarantine fold: a lane per repo whose base carries a quarantine.
+    /// The Quarantine fold: a lane per repo whose base carries a quarantine, and its worst.
     quarantine: Vec<Quarantined<'a>>,
+    quarantine_level: Level,
     /// `Builds::needs_look`: the count on Releases' Builds inner tab.
     look: bool,
     table: Summary,
@@ -56,6 +57,7 @@ struct Quarantined<'a> {
     repo: &'a str,
     says: String,
     level: Level,
+    entries: u64,
     /// The nightly the counts came from.
     url: Option<&'a str>,
     rows: Vec<Owned<'a>>,
@@ -66,6 +68,7 @@ struct Owned<'a> {
     #[serde(flatten)]
     row: &'a OwnerRow,
     level: Level,
+    left: String,
 }
 
 fn quarantined(l: &Lane) -> Quarantined<'_> {
@@ -73,6 +76,7 @@ fn quarantined(l: &Lane) -> Quarantined<'_> {
         repo: &l.repo,
         says: l.says(),
         level: l.level(),
+        entries: l.report.as_ref().map_or(0, |r| r.entries),
         url: l.nightly.as_ref().and_then(|n| n.url.as_deref()),
         rows: l
             .rows()
@@ -80,6 +84,7 @@ fn quarantined(l: &Lane) -> Quarantined<'_> {
             .map(|row| Owned {
                 row,
                 level: row.level(),
+                left: row.left(),
             })
             .collect(),
     }
@@ -99,6 +104,12 @@ fn render(b: &Builds, q: &Query, rates: &Rates) -> String {
         costs: run_detail::costs(b, rates, now()),
         errors: &b.errors,
         quarantine: b.quarantine.iter().map(quarantined).collect(),
+        quarantine_level: b
+            .quarantine
+            .iter()
+            .map(Lane::level)
+            .min()
+            .unwrap_or_default(),
         look: b.needs_look(),
         table,
     };
@@ -269,6 +280,9 @@ mod tests {
         assert_eq!(q["rows"][0]["row"], "ucp-1");
         assert_eq!(q["rows"][0]["days_left"], 1);
         assert_eq!(q["rows"][0]["level"], "warn");
+        assert_eq!(q["rows"][0]["left"], "1d");
+        assert_eq!(q["entries"], 3);
+        assert_eq!(v["quarantine_level"], "warn");
     }
 
     #[test]

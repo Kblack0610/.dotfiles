@@ -350,16 +350,11 @@ fn quarantine(b: &Builds, p: Palette, w: usize) -> Vec<Line<'static>> {
             .rows()
             .iter()
             .map(|r| {
-                let left = if r.days_left <= 0 {
-                    "ended".to_string()
-                } else {
-                    format!("{}d", r.days_left)
-                };
                 vec![
                     r.row.clone().into(),
                     r.entries.to_string().into(),
                     r.ends.clone().into(),
-                    cell(left, level(r.level(), p)),
+                    cell(r.left(), level(r.level(), p)),
                 ]
             })
             .collect();
@@ -377,17 +372,10 @@ fn quarantine(b: &Builds, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// How far the `t` pane scrolls: its Run times rows and the Quarantine lines under them.
+/// How far the `t` pane scrolls: its Run times rows (or the line saying there are none) and the
+/// Quarantine lines under them, counted from what `quarantine` draws.
 pub fn times_rows(b: &Builds) -> usize {
-    let lanes: usize = b
-        .quarantine
-        .iter()
-        .map(|l| match l.rows().len() {
-            0 => 1,
-            n => 2 + n,
-        })
-        .sum();
-    b.times.len().max(1) + if lanes > 0 { 2 + lanes } else { 0 }
+    b.times.len().max(1) + quarantine(b, Palette { no_color: true }, 80).len()
 }
 
 fn time_row(t: &RunTime) -> Vec<Cell> {
