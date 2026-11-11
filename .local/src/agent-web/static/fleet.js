@@ -47,7 +47,7 @@ function evalTable(e) {
   const pc = (x) => pct(x == null ? null : x / 100);
   const live = (r) => (r.live ? "yes" : r.bar ? `no (${r.bar.labels}/${r.bar.need} to bar)` : "no");
   const rows = e.rules.map((r) => `<tr><td>${esc(r.rule)}</td><td class="n">${r.verdicts}</td><td class="n">${r.scored}</td><td class="n">${pc(r.precision)}</td><td class="n">${pc(r.false_defer_pct)}</td><td>${live(r)}</td></tr>`).join("");
-  return `<table class="tbl"><tr><th>rule</th><th class="n">calls</th><th class="n">scored</th><th class="n">prec</th><th class="n">false-defer</th><th>live</th></tr>${rows ||
+  return `<table class="tbl"><tr><th data-role="lead">rule</th><th class="n">calls</th><th class="n">scored</th><th class="n" data-role="glance" data-named>prec</th><th class="n" data-role="glance" data-named>false-defer</th><th data-role="glance" data-named>live</th></tr>${rows ||
     `<tr><td colspan="6" class="muted">no verdicts under prompt ${esc(e.prompt_sha)}</td></tr>`}</table>`;
 }
 
@@ -59,7 +59,7 @@ function registryLine(r) {
 }
 
 // Calls newest first, each with its Langfuse trace.
-const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><th class="n">took</th><th>model</th><th class="n">$</th><th class="n">tokens</th><th>ok</th><th>trace</th></tr>${recent.map((x) =>
+const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="lead">when</th><th class="n">took</th><th>model</th><th class="n" data-role="glance" data-named>$</th><th class="n">tokens</th><th data-role="glance">ok</th><th data-role="glance">trace</th></tr>${recent.map((x) =>
   `<tr><td class="n">${when(x.at)}</td><td class="n">${secs(x.ms / 1000)}</td><td class="muted">${esc(x.model)}</td><td class="n">${usd(x.cost)}</td><td class="n">${kTok(x.tokens)}</td>` +
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
@@ -108,7 +108,7 @@ function dispatchList(d) {
   const rows = d.recent.slice(0, LOG_ROWS).map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
     `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
     `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>row</th><th>verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
+  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
 }
 
 // The runner whose page draws a judge's tiles is the one whose conf names that extras block
@@ -141,7 +141,7 @@ function judgeList(j) {
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
   return `<div class="muted">7d: ${pct(j.week.live_pct)} answered, ${pct(j.week.coverage)} would answer, ${pct(j.week.precision)} right</div>${seg}` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th>said</th><th>question</th><th>why</th><th>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
+    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th>why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
 }
 
 function renderFleet() {
@@ -174,14 +174,14 @@ function runnerExtras(x) {
       const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
       return `<h2 class="sec">Intake <span class="muted">what it did with each line and why, from the ingest record; every step on <a href="#log">Log</a>, one line's path in <code>notes log --trace &lt;words&gt;</code></span></h2>` +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>action</th><th>from -&gt; to</th><th>by</th><th>line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
       const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
       const rows = x.watches.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="n">${when(w.lasttrip)}</td></tr>`).join("");
       const trip = x.watches.filter((w) => w.state === "TRIP").length;
       return `<h2 class="sec">Watches <span class="muted">${x.watches.length} watches, ${trip} tripped</span></h2>` +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th>watch</th><th>state</th><th>severity</th><th class="n">since</th><th class="n">last run</th><th class="n">last trip</th></tr>${rows}</table>` : `<div class="empty">No watch defined.</div>`}</div>`;
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th data-role="lead">watch</th><th data-role="glance">state</th><th>severity</th><th class="n" data-role="glance" data-named>since</th><th class="n">last run</th><th class="n" data-role="glance" data-named>last trip</th></tr>${rows}</table>` : `<div class="empty">No watch defined.</div>`}</div>`;
     }
     default:
       return "";
@@ -218,7 +218,7 @@ function renderRunner(el) {
     h += `<div class="empty">no run in 14 days${g.kind === "call" ? ` <span class="muted">(${esc(g.trigger)}; its calls are below)</span>` : ""}</div>`;
   } else {
     const rows = r.runs.map((j, i) => `<tr class="jr rr${jobKey(j) === rst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-i="${i}"><td class="n">${when(j.started)}</td><td class="n">${secs(j.secs)}</td>${resultCell(j)}<td class="muted">${esc(j.detail || "")}</td></tr>`).join("");
-    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n">started</th><th class="n">took</th><th>result</th><th>detail</th></tr>${rows}</table></div>` + older(r.runs_older);
+    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">started</th><th class="n" data-role="glance" data-named>took</th><th data-role="glance">result</th><th data-role="glance">detail</th></tr>${rows}</table></div>` + older(r.runs_older);
   }
   if (rst.log) h += `<h3 class="sub">Log <span class="muted">${esc(rst.log.title)}</span></h3><pre class="panel joblog">${esc(rst.log.text)}</pre>`;
 
@@ -226,7 +226,7 @@ function renderRunner(el) {
   const act = r.activity.map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
   h += `<h2 class="sec">Status and activity <span class="muted">its status file, then the newest activity.log lines</span></h2>` +
     `<div class="panel scroll">${status ? `<table class="tbl">${status}</table>` : `<div class="empty">No status file.</div>`}</div>` +
-    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n">when</th><th>outcome</th><th>text</th></tr>${act}</table></div>` : "");
+    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` : "");
 
   const plus = r.calls.partial ? "+" : "";
   const trow = (l, t, p = "") => `<tr><td>${l}</td><td class="n">${t.calls}${p}</td><td class="n${t.errors ? " bad" : ""}">${t.errors}${p}</td><td class="n">${kTok(t.tokens)}${p}</td><td class="n">${usd(t.cost)}${t.cost == null ? "" : p}</td><td class="n">${secs(t.p50_ms && t.p50_ms / 1000)}</td></tr>`;

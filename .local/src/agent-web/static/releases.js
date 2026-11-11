@@ -49,7 +49,7 @@ function channelRow(r) {
   return open ? row + releaseDetail(r) : row;
 }
 
-const CH_HEAD = "<tr><th>channel</th><th>id</th><th>live</th><th>pinned</th><th>status</th><th>where</th></tr>";
+const CH_HEAD = '<tr><th data-role="lead">channel</th><th data-role="glance">id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th>where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
 // The opened app: its headline env's channels, the other envs in a fold that starts open, then what its newest tag shipped.
@@ -220,7 +220,7 @@ function buildTimes(d) {
   const row = (w, i) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
     `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
     `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td><td class="n">${esc(cost[i] || "-")}</td></tr>`;
-  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th><th>$ per run</th></tr>";
+  const head = '<tr><th data-role="glance">repo</th><th data-role="lead">workflow</th><th>runs</th><th data-role="glance" data-named>usual</th><th>p90</th><th>longest</th><th data-role="glance" data-named>pass</th><th>running</th><th>$ per run</th></tr>';
   const money = (c.idle || []).map((l) => `<div class="cline">${esc(l)}</div>`).join("") +
     (c.month ? `<div class="cline${c.month_off ? " warn" : ""}">${esc(c.month)}</div>` : "") +
     (c.rates_error ? `<div class="cline warn">no rates: ${esc(c.rates_error)}</div>` : "");
