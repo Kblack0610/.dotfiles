@@ -2,6 +2,8 @@
 # tests/pick.sh: the files one CI run of the fast tier tests. A pull request gets the picked set
 # plus tests/broad.txt; anything the picker cannot judge gets the whole tier, and says why.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'

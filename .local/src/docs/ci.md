@@ -65,7 +65,7 @@ One decision list. Walk it top to bottom for every red.
 | --- | --- | --- | --- | --- |
 | unity-core-playground | `~/dev/bnb/games/engine/unity-core-playground/docs/operations/ci.md` (cost: `ci-cost.md`) | not declared; plan null-cookie-merry-cocke targets 30 min, then 15 | affected classes on the pool, nightly runs every class | none yet |
 | platform | `~/dev/bnb/platform/docs/deployment/PIPELINES.md` | not declared (fleet default 10) | turbo affected plus draft tier, full on develop/main and nightly | none yet |
-| dotfiles | skill `shell-test-harness`, section 5 | 5 min (plan target; PR p90 was 561s on 2026-11-10) | picked set plus broad set, full on main | planned (plan dotfiles-ci-minutes-doctrine P6) |
+| dotfiles | skill `shell-test-harness`, section 5 | 5 min, provisional (`rules.jsonl`; PR p90 was 9.0 min on 2026-11-10, before the picked gate) | picked set plus broad set, full on main; shards weighed by the last green main JUnit | Sentinel `dotfiles-gate-budget`, hourly |
 | dotfiles-private, home-config, unity-core, unity-core-harness, bnb-game-servers, dodginballs, binks-agent-orchestrator, personal-sites, crypto-indexer | none yet | fleet default 10 | none written | none yet |
 
 A repo that adds a CI doc adds its row here in the same PR.

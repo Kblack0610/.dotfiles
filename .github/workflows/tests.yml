@@ -43,10 +43,50 @@ concurrency:
 jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
   # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
-  # them across runners, balanced by the seconds in tests/shard-weights.tsv. A shard is bounded
-  # below by its heaviest file; unit/fleet_dispatch.bats, 40% of unit, is six files for that.
+  # them across runners, balanced by the seconds the weights job reads from the newest green
+  # main run's JUnit. A shard is bounded below by its heaviest file; unit/fleet_dispatch.bats,
+  # 40% of unit, is six files for that.
+  #
+  # The table is computed once, here, because two shards splitting by two tables can each leave
+  # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
+  # every shard weighs its files by @test count, said on the Summary page: that costs balance,
+  # never coverage.
+  weights:
+    name: shard weights
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      table: ${{ steps.junit.outputs.table }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/shard.sh
+          sparse-checkout-cone-mode: false
+      - name: Weights from the newest green main run
+        id: junit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          d=$RUNNER_TEMP/junit table=
+          id=$(gh run list -R "$GITHUB_REPOSITORY" -w tests.yml -b main -e push -s success -L 1 \
+            --json databaseId --jq '.[0].databaseId // empty') || id=
+          if [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -p 'junit-unit-*' -p 'junit-integ-*' -D "$d" &&
+            table=$(tests/shard.sh --junit unit "$d"/junit-unit-* && tests/shard.sh --junit integ "$d"/junit-integ-*); then
+            echo "Shard weights: $(grep -vc '^#' <<<"$table") files from main run $id" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            table=
+            echo "::warning::no JUnit from a green main run${id:+ (run $id)}; every shard weighs its files by @test count"
+            echo "Shard weights: none, so every shard weighs its files by @test count" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          { echo 'table<<EOF_TABLE'; [ -z "$table" ] || printf '%s\n' "$table"; echo EOF_TABLE; } >>"$GITHUB_OUTPUT"
+
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
+    needs: weights
+    if: ${{ !cancelled() }}   # a broken weights job falls back to test counts, it does not skip the gate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -112,19 +152,34 @@ jobs:
       # reaching for a real binary, this job is where that shows up.
       # The lists are taken first so a failed pick or split stops the step (bash -e). An empty
       # shard is a pick smaller than the matrix, not a failure; the first shard of each tier
-      # puts the pick line ("picked N of M" or "full: <why>") on the run's Summary page.
+      # puts the pick line ("picked N of M" or "full: <why>") on the run's Summary page, and
+      # every shard puts its predicted seconds beside the actual ones, so a skewed split shows.
       - name: Fast tier shard
         env:
           JUNIT: 1
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          WEIGHTS_TABLE: ${{ needs.weights.outputs.table }}
+          TAG: ${{ matrix.tier }} ${{ matrix.shard }}
         run: |
+          if [ -n "$WEIGHTS_TABLE" ]; then
+            printf '%s\n' "$WEIGHTS_TABLE" >"$RUNNER_TEMP/weights.tsv"
+            export SHARD_WEIGHTS=$RUNNER_TEMP/weights.tsv
+          fi
           tests/pick.sh ${{ matrix.tier }} $BASE >"$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/why"
           cat "$RUNNER_TEMP/why"
           case "${{ matrix.shard }}" in 1/*) cat "$RUNNER_TEMP/why" >>"$GITHUB_STEP_SUMMARY" ;; esac
-          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked")
-          [ -n "$files" ] || { echo "nothing picked for ${{ matrix.tier }} ${{ matrix.shard }}"; exit 0; }
-          echo "$(wc -l <<<"$files") files in ${{ matrix.tier }} ${{ matrix.shard }}"
-          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")"
+          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/split") ||
+            { cat "$RUNNER_TEMP/split"; exit 2; }
+          cat "$RUNNER_TEMP/split"
+          [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
+          start=$SECONDS rc=0
+          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
+          actual=$(tests/shard.sh --junit ${{ matrix.tier }} tests/artifacts/junit |
+            awk '!/^#/ { s += $1 } END { printf "%.0f", s }') || actual='?'
+          median=$(grep -c 'weighs the median' "$RUNNER_TEMP/split" || true) note=
+          [ "$median" = 0 ] || note=" ($median files not in the table, weighed at the median)"
+          echo "- $(sed -n 's/^shard.sh: //p' "$RUNNER_TEMP/split" | tail -1); actual ${actual}s of test time in $((SECONDS - start))s wall$note" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
       - name: Upload JUnit
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
