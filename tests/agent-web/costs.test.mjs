@@ -664,8 +664,8 @@ test("the Budget inner tab is this month's cash: head, what needs a look, one ro
       { name: "lazer", kind: "litellm", cap: "$50", spent: "$228", month: "$228", note: "over, paid by lazer, not in our total", status: "over" },
       { name: "max4", kind: "subscription", cap: "$200", spent: "$200", month: "$200", note: "$1,126 list work (6x)", status: "ok" },
     ],
-    by_project: [{ name: "unity-core-playground", usd: "$334", share: "40%" }, { name: "unattributed", usd: "$91", share: "11%" }],
-    by_lane: [{ name: "queue", usd: "$175", share: "21%" }],
+    by_project: [{ name: "unity-core-playground", usd: "$334" }, { name: "unattributed", usd: "$91" }],
+    by_lane: [{ name: "queue", usd: "$175" }],
     foot: "Cash: what we pay, not list price." };
   assert.equal(ctx.route("#costs/budget").arg, "budget", "the Infra Cloud card's link lands here");
   run("st.arg = 'budget'; st.section = null");

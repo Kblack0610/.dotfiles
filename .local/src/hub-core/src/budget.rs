@@ -12,9 +12,6 @@ use std::path::Path;
 
 use crate::fleet_cost::dollars;
 
-/// Older than this the tab says it is stale and `budget check` trips: four missed tries of the
-/// sampler's 30 minutes (`FILE_STALE_SECS` in agent-usage-budget.py, `fleet_cost::STALE_SECS`).
-pub const STALE_SECS: i64 = 2 * 3600;
 /// The schema `agent-usage budget --json` writes; another one is read as nothing.
 const SCHEMA: u32 = 2;
 
@@ -26,7 +23,6 @@ struct Total {
     spent: f64,
     projected: f64,
     caps: f64,
-    list_usd: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -101,7 +97,6 @@ pub struct Bill {
 pub struct Share {
     pub name: String,
     pub usd: String,
-    pub share: String,
 }
 
 /// The block both surfaces draw. `why` is set when there is nothing to show.
@@ -136,17 +131,6 @@ fn money(v: Option<f64>) -> String {
     v.map_or("-".into(), dollars)
 }
 
-fn month_name(month: &str) -> String {
-    const NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    month
-        .split_once('-')
-        .and_then(|(_, m)| m.parse::<usize>().ok())
-        .and_then(|m| NAMES.get(m.wrapping_sub(1)))
-        .map_or_else(|| month.to_string(), |n| n.to_string())
-}
-
 fn note(l: &Line) -> String {
     let mut parts: Vec<String> = vec![];
     if l.status != "ok" {
@@ -168,23 +152,18 @@ fn note(l: &Line) -> String {
     parts.join(", ")
 }
 
-fn shares(cuts: &[Cut], total: f64) -> Vec<Share> {
+fn shares(cuts: &[Cut]) -> Vec<Share> {
     cuts.iter()
         .map(|c| Share {
             name: c.name.clone(),
             usd: dollars(c.usd),
-            share: if total > 0.0 {
-                format!("{:.0}%", c.usd / total * 100.0)
-            } else {
-                "-".into()
-            },
         })
         .collect()
 }
 
 /// The block from the file.
 pub fn build(f: &File, now: i64) -> Budget {
-    let stale = now - f.as_of_epoch > STALE_SECS;
+    let stale = now - f.as_of_epoch > crate::fleet_cost::STALE_SECS;
     let mut needs = f.needs.clone();
     // A line off `ok` that the file's reasons do not name: someone else's bill past its cap, or a
     // reader that failed under a day ago (the watch waits a day; the tab says it now).
@@ -230,7 +209,7 @@ pub fn build(f: &File, now: i64) -> Budget {
     let t = &f.total;
     Budget {
         why: None,
-        month: format!("{}, day {} of {}", month_name(&f.month), f.day, f.days),
+        month: format!("{}, day {} of {}", crate::spend_history::month_name(&f.month), f.day, f.days),
         spent: dollars(t.spent),
         projected: format!("~{}", dollars(t.projected)),
         caps: dollars(t.caps),
@@ -250,8 +229,8 @@ pub fn build(f: &File, now: i64) -> Budget {
                 status: l.status.clone(),
             })
             .collect(),
-        by_project: shares(&f.by_project, t.spent),
-        by_lane: shares(&f.by_lane, t.spent),
+        by_project: shares(&f.by_project),
+        by_lane: shares(&f.by_lane),
         foot: FOOT,
     }
 }
@@ -273,7 +252,7 @@ mod tests {
     fn file(needs: &[&str]) -> File {
         serde_json::from_value(serde_json::json!({
             "schema": 2, "month": "2026-11", "as_of_epoch": NOW - 600, "day": 11, "days": 30,
-            "total": {"spent": 838.3, "projected": 1303.52, "caps": 1445.0, "list_usd": 13923.6},
+            "total": {"spent": 838.3, "projected": 1303.52, "caps": 1445.0},
             "partial": [], "needs": needs,
             "by_project": [{"name": "unity-core-playground", "usd": 334.31}, {"name": "unattributed", "usd": 91.18}],
             "by_lane": [{"name": "queue", "usd": 175.02}],
@@ -303,7 +282,6 @@ mod tests {
         assert_eq!(b.bills[1].spent, "-", "an unread bill is unknown, never $0");
         assert_eq!(b.bills[4].note, "$4,664 list work (23x)");
         assert_eq!(b.bills[0].note, "over, paid by lazer, not in our total, past its $50 cap");
-        assert_eq!(b.by_project[0].share, "40%");
         assert_eq!(b.by_project[1].name, "unattributed");
     }
 

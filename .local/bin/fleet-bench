@@ -658,8 +658,9 @@ cmd_sample() {
 
 # state_file_step <file> <every min> <timeout s> <name> <cmd...>: run cmd at most every <every> minutes
 # and keep its JSON (it must have .total) as <file>. A failed run keeps the last file and waits the
-# same interval (touch), so a Prometheus outage costs one attempt per interval; its as_of_epoch then
-# reads stale on the Costs tab, in the KPI and in `agent-usage budget check`.
+# same interval (touch), so a reader's outage (Prometheus, gh, a bill's API) costs one attempt per
+# interval; its as_of_epoch then reads stale on the Costs tab, in the KPI and in
+# `agent-usage budget check`.
 state_file_step() {
   local file=$1 every=$2 limit=$3 name=$4
   shift 4
