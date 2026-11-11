@@ -73,6 +73,22 @@ EOF
   assert_equal "$(jq '.mcp[0].spawn_ms >= 0' <<<"$row")" true
 }
 
+@test "under Codex: the preflight answers and no row is written, even with CLAUDE_* inherited" {
+  # Codex runs this hook too (codex/hooks.json); its rows had no ready time and blinded the watch.
+  # A live CLAUDE_PID from the launcher must not pass a Codex start off as a Claude one.
+  mkfifo "$SANDBOX/hold"
+  bash -c 'read -r _ <"$1"' _ "$SANDBOX/hold" &
+  FAKE=$!
+  cp "$(command -v bash)" "$SANDBOX/bin/codex"
+  export DEPLOY
+  CLAUDE_PID=$FAKE CLAUDE_CODE_EXECPATH=/opt/claude/versions/2.1.319 \
+    run "$SANDBOX/bin/codex" -c 'echo "{\"source\":\"startup\",\"session_id\":\"sid-1\"}" | bash "$DEPLOY/session-preflight.sh"'
+  echo >"$SANDBOX/hold"
+  assert_success
+  assert_output --partial 'Session Preflight: repo'
+  [ ! -e "$CLAUDE_STARTUP_LOG" ] || fail "row written under codex: $(cat "$CLAUDE_STARTUP_LOG")"
+}
+
 @test "a deploy without the telemetry lib keeps the preflight and writes no row" {
   rm "$DEPLOY/startup-telemetry.sh"
   run start
