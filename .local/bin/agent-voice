@@ -11,6 +11,8 @@
 # Typing goes only through `agent-panel send`, behind the one-pane guard in
 # .local/lib/agent-pane.sh: a dead target, a session in a dialog, or two panes for one target
 # type nothing (exit 2). Exit 3: the text sits in the pane's input box, unsent.
+# Nothing is lost: gungan logs every take before it is printed, so a take that was not sent is in
+# `gungan history`. A new: take is delivered once it is queued, even if it cannot start yet.
 set -euo pipefail
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
@@ -83,7 +85,7 @@ cmd_send() {
         die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
       fleet-dispatch start --item "$slug" ||
-        die "send: queued $slug, but it could not start now; the next dispatch pass starts it"
+        echo "queued $slug; it could not start now, so the next dispatch pass starts it"
       return 0 ;;
     tmux:?*) key=target ;;
     pane:?*) key=pane ;;
@@ -106,14 +108,14 @@ cmd_pick() {
   target="$(cmd_targets | fzf --delimiter '\t' --with-nth 2 --no-sort --header-first \
     --header "$(fold -s -w 100 <<<"$text")" --prompt 'say it to > ' | cut -f1)" || target=''
   if [ -z "$target" ]; then
-    toast "Voice: not sent" "The text is on the clipboard."
+    toast "Voice: not sent" "gungan history has the text."
     return 0
   fi
   out="$(cmd_send --to "$target" "$text" 2>&1)" || rc=$?
   case "$rc" in
     0) toast "Voice: sent" "$out" ;;
     3) toast "Voice: not submitted" "$out" ;;
-    *) toast "Voice: not sent" "$out" ;;
+    *) toast "Voice: not sent" "$out (gungan history has the text)" ;;
   esac
   return "$rc"
 }
