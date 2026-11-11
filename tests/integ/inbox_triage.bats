@@ -118,7 +118,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   # failed", because notes' stderr went to /dev/null.
   sheet '- the gun sound is off since the top-down patch\n' ''
   rm -f "$SANDBOX/bin/notes"
-  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "$NOTES_BIN" "$@"\n' >"$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
   run "$TRIAGE"
   assert_failure

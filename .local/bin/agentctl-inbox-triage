@@ -111,21 +111,6 @@ answered() {
   return 1
 }
 
-# read_board: `notes board --json` into BOARD. A failed read puts notes' own first error line in
-# the log and the pass's reason, so the red it raises names its cause.
-read_board() {
-  local err rc why
-  err="$(mktemp)"
-  BOARD="$(notes board --json 2>"$err")"; rc=$?
-  if [ "$rc" != 0 ]; then
-    why="$(grep -m1 '[^[:space:]]' "$err" | clean 120)"
-    why="notes board --json failed (exit $rc)${why:+: $why}"
-    say "$why"; proof_why "$why"
-  fi
-  rm -f -- "$err"
-  return "$rc"
-}
-
 # ask_line <raw> <text> <details>: a `#ask` outbox line. One read-only call answers it, `notes
 # outbox answer` writes question and answer to today's notes inbox and takes the line out of the
 # outbox. A failed call leaves the line to the next sweep; an answer that came back without its
