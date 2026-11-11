@@ -588,7 +588,8 @@ pub fn runner_page(
         heading(
             "RUNS",
             format!(
-                "  14 days of runs.jsonl; a run's log: 6 Infra, h on {}",
+                "  14 days of runs.jsonl; a run's log: {}Infra, h on {}",
+                hub_core::layout::bar_digit("infra").map_or(String::new(), |d| format!("{d} ")),
                 r.name
             ),
             p,
@@ -794,43 +795,23 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                 ));
             }
         }
+        // Every watch with what it checks, where and what to do is Alerts' Watches; here only
+        // the count and the way there.
         Extras::SentinelWatches { watches } => {
             let trip = watches.iter().filter(|x| x.state == "TRIP").count();
+            let key =
+                hub_core::layout::bar_digit("alerts").map_or(String::new(), |d| format!("{d} "));
             out.push(clip_line(
                 heading(
                     "WATCHES",
-                    format!("  {} watches, {trip} tripped", watches.len()),
+                    format!(
+                        "  {} watches, {trip} tripped: {key}Alerts, Watches",
+                        watches.len()
+                    ),
                     p,
                 ),
                 w,
             ));
-            let at = |t: Option<i64>| t.map_or("-".into(), |t| clock(t, now));
-            let rows = watches
-                .iter()
-                .map(|x| {
-                    let style = match x.state.as_str() {
-                        "TRIP" | "ERROR" => p.bad(),
-                        "OK" => p.good(),
-                        _ => p.dim(),
-                    };
-                    vec![
-                        x.name.clone().into(),
-                        cell(x.state.clone(), style),
-                        cell(x.severity.clone(), p.dim()),
-                        at(x.since).into(),
-                        at(x.lastrun).into(),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["WATCH", "STATE", "SEVERITY", "SINCE", "LAST RUN"],
-                    rows,
-                    keep: vec![0, 1, 3, 4, 2],
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
         }
     }
     out
@@ -1086,7 +1067,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 9 Costs",
+            "FLEET  3 of 3 rows, spend: 0 Costs",
             "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
             "KIND",
             "FOR",
@@ -1430,6 +1411,25 @@ pub mod tests {
         let lines = page_text(Some(&Err("no runner named dream".into())), 80);
         assert_eq!(lines[0], "no runner named dream");
         assert!(lines[1].contains("Esc all runners"));
+    }
+
+    #[test]
+    fn sentinels_page_counts_its_watches_and_sends_them_to_alerts() {
+        let mut r = runner_fixture();
+        let watch = |state: &str| hub_core::fleet::runner::Watch {
+            name: "dream".into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        r.extras = Extras::SentinelWatches {
+            watches: vec![watch("TRIP"), watch("OK")],
+        };
+        let lines = page_text(Some(&Ok(r)), 120);
+        assert!(
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 5 Alerts, Watches".to_string()),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");
     }
 
     #[test]

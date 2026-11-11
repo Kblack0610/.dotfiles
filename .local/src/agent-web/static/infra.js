@@ -1,23 +1,18 @@
 "use strict";
-// The Infra tab, as the hub's Infra tab: health, red now, one MACHINES table, CI, Jobs (jobs.js),
-// cloud runners and the governor, exceptions first. /api/infra asks Prometheus the board's own
+// The Infra tab, as the hub's Infra tab: one MACHINES table, CI, Jobs (jobs.js), cloud runners and
+// the governor, exceptions first; what is red and the health chips are on Alerts (alerts.js). /api/infra asks Prometheus the board's own
 // queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
 // (REFRESH_SECS=60): the rules evaluate every minute, and faster only redraws the same numbers.
 const INFRA_REFRESH_MS = 60e3;
-const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other"];
 // A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
 const FAILED_OPEN = 25;
 // Each failed group's folded state, which outlives the re-render on every refresh.
-const ist = { data: null, err: null, open: {}, reds: null, redsErr: null };
+const ist = { data: null, err: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
-  // The red fixes come from fleet-bench, not Prometheus, so a failed read of either leaves the
-  // other up; a failed reds read drops its rows rather than leave a stale list.
-  const reds = api("/api/reds").then((r) => { ist.reds = r; ist.redsErr = null; }, (e) => { ist.reds = null; ist.redsErr = e.message; });
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
-  await reds;
   if (st.tab === "infra") renderInfra();
 });
 
@@ -59,36 +54,9 @@ function kpis(cc) {
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
     tile("CI BUSY", `${busy}/${slots}`, "var(--c1)", `${where}, ${waiting} waiting`)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
-    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`)}${
+    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
-}
-
-// The health tiles, exceptions first: red, then amber, then no data each get a tile; the green
-// domains fold into one tile that names them.
-function domainSplit(cc) {
-  const dom = cc["cc:domain_status"] || {}, comp = cc["cc:component_status"] || {};
-  const shown = DOMAINS.filter((d) => d in dom || d === "k3s" || d === "ci");
-  const rank = (v) => (v === 2 ? 0 : v === 1 ? 1 : v === 0 ? 3 : 2);
-  const bad = shown.filter((d) => dom[d] !== 0).sort((a, b) => rank(dom[a]) - rank(dom[b]));
-  const green = shown.filter((d) => dom[d] === 0);
-  return { dom, comp, bad, green };
-}
-
-// A phone's one line for the tiles: what is not green, by name.
-function domainLine(cc) {
-  const { dom, bad, green } = domainSplit(cc);
-  if (!bad.length) return `<span class="chip sm" style="--c:var(--b-done)">all green ${green.length}</span>`;
-  return bad.map((d) => { const [word, c] = statusOf(dom[d]); return `<span class="chip sm" style="--c:${c}">${esc(d)} ${word}</span>`; }).join(" ") + ` <span class="muted">${green.length} green</span>`;
-}
-
-function domainTiles(cc) {
-  const { dom, comp, bad, green } = domainSplit(cc);
-  return `<div class="tiles roomy">${bad.map((d) => {
-    const [word, c] = statusOf(dom[d]);
-    const why = Object.entries(comp).filter(([k, v]) => k.startsWith(d + "/") && v > 0).map(([k, v]) => `${k.slice(d.length + 1)} ${statusOf(v)[0].toLowerCase()}`);
-    return `<div class="tile" style="--c:${c}"><span class="tl">${esc(d.toUpperCase())}</span><span class="tv sm">${word}</span>${why.length ? `<span class="ts1">${esc(why.join(", "))}</span>` : ""}</div>`;
-  }).join("")}${green.length ? `<div class="tile" style="--c:var(--b-done)"><span class="tl">GREEN ${green.length}</span><span class="tv sm">OK</span><span class="ts1">${esc(green.join(", "))}</span></div>` : ""}</div>`;
 }
 
 // Pools with slots or a queue, the longest queue first.
@@ -199,25 +167,6 @@ function queuedTable(ci) {
   }).join("")}</table>`;
 }
 const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
-
-// What is red: cc:red_now, the dashboard's table (watches, runners, nodes, feed, Sentinel) plus the
-// board's DOWN line (the down runners hub_core::infra::runners_down judged, stuck runs, the
-// exporter and GitHub).
-function redItems(d) {
-  const inst = d.instant;
-  const items = (inst.red || []).map((s) => s.labels.item).filter(Boolean).sort();
-  for (const r of d.down || []) items.push(`runner ${r.labels.name} ${r.labels.state}`);
-  for (const r of inst.waiting || []) if (r.labels.stuck === "true") items.push(`stuck run: ${r.labels.repo} ${r.labels.branch}, ${secs(r.value)}, no jobs`);
-  // The likeliest cause first, as the hub board's DOWN line: a missed scrape (exporter_up 0 or
-  // absent) blanks every exporter series, a spent rate limit leaves jobs and history unread,
-  // and api counts only the runner sources, so one repo's failed run list says nothing here.
-  const v = (q) => ((inst[q] || [])[0] || {}).value;
-  if (v("exporter_up") !== 1) items.unshift("runner exporter missed its last scrape: runner rows may be missing");
-  else if (v("rate_left") === 0) items.unshift("GitHub rate limit spent: runner jobs and history unread until it resets");
-  else if (v("api") !== 1) items.unshift("GitHub not answering the exporter: runner rows may be missing");
-  else if (!(inst.runners || []).length) items.push("no runner series from the exporter");
-  return items;
-}
 
 // Main's pass rate leads: a red on the default branch is everyone's problem, while a red gate on
 // a work branch is usually the gate doing its job (github_runs_finished's scope label).
@@ -465,68 +414,34 @@ $("infra").addEventListener("click", (e) => {
   setTimeout(() => { if (cst.armed === k) { cst.armed = ""; renderInfra(); } }, 4000);
 });
 
-// Red fixes: each red the triage queued as a fix in the last week, from /api/reds, which
-// (hub_core::reds) orders the open ones worst first and words the summary; the first LOG_ROWS
-// open ones show, then "+N more", and the settled ones fold to a count. A failed read says so here, never an empty list that reads as all fixed.
-const FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
-  fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
-function fixRow(r) {
-  const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
-  return `<div class="pr"><span class="chip sm" style="--c:${FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
-    `<span class="pt">${esc(r.red)}</span><span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
-}
-function fixesSection() {
-  const head = (sub) => `<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">${esc(sub)}</span></h2>`;
-  if (ist.redsErr) return head("read failed") + `<div class="panel down">${esc(ist.redsErr)}</div>`;
-  const r = ist.reds;
-  if (!r) return head("Loading...");
-  const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(fixRow).join("")}</div>` +
-    (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
-  const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${ist.open["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(fixRow).join("")}</div></details>` : "";
-  return head(r.summary) + open + settled;
-}
-
 function renderInfra() {
   const el = $("infra-main"), tail = $("infra-tail");
   const d = ist.data;
-  // The strip comes first on every path, then the pinned Health and Red now, then each section
-  // in its inner tab's group (hub_core::layout, app.js INNER_TABS). Jobs is its own element
-  // between main and the tail.
+  // The strip comes first on every path, then each section in its inner tab's group
+  // (hub_core::layout, app.js INNER_TABS). Jobs is its own element between main and the tail.
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
-  const reds = () => innerWrap("infra", "fixes", fixesSection());
-  if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? reds() : ""); tail.innerHTML = ""; return; }
+  if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; tail.innerHTML = ""; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${reds()}`; tail.innerHTML = ""; seekSection(); return; }
+  if (!d.ok) { el.innerHTML = strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`; tail.innerHTML = ""; seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
-  const red = redItems(d);
   // Home owns the asks; Infra shows their count as a badge that opens Home.
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += pfold("infra-health", domainLine(cc), `<div id="sec-health">${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}</div>`);
-  html += red.length
-    ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
-    : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;
-  html += reds();
-  html += innerWrap("infra", "machines", `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`);
+  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`);
   html += innerWrap("infra", "ci", ciSection(cc, inst, t1, d.ci));
   paint(el, html, ist.open);
   paint(tail, innerWrap("infra", "governor", governorPanel(inst)) + innerWrap("infra", "cloud", cloudCard(inst)));
   seekSection();
 }
 
-// The sections whose inner tab carries a count: open red fixes, and CI lines hub_core::ci judged
-// red (a queued job no online runner can take); the hub's App::infra_flagged reads the same two.
-function infraFlagged(d) {
-  const out = [];
-  if (ist.reds && ist.reds.open.length) out.push("fixes");
-  if (d && d.ci && (d.ci.red || []).length) out.push("ci");
-  return out;
-}
+// The sections whose inner tab carries a count: CI lines hub_core::ci judged red (a queued job no
+// online runner can take); the hub's App::infra_flagged reads the same.
+const infraFlagged = (d) => (d && d.ci && (d.ci.red || []).length ? ["ci"] : []);
 
 const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 

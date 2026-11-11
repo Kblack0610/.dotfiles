@@ -278,6 +278,13 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
 });
 
+test("the sentinel page is one count line linking to Alerts' Watches, never the watch table", async () => {
+  const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
+  const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });
+  assert.match(h, /<h2 class="sec">Watches <span class="muted"><a href="#alerts\/watches">3 watches, 1 tripped<\/a><\/span><\/h2>/);
+  assert.doesNotMatch(h, /<th>watch<\/th>/);
+});
+
 test("a runner with no runs says no run in 14 days, not an error", async () => {
   const h = await openPage("quiet", { quiet: runnerPage("quiet", { runs: [], runs_total: 0, failed_total: 0, days: [], status: {}, activity: [], extras: { kind: "none" } }) });
   assert.match(h, /<div class="empty">no run in 14 days<\/div>/);

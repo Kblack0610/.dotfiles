@@ -12,7 +12,7 @@
 #   agent-usage fleet-cost [--days 1] [--before DATE] [--json]    the whole fleet's measured and estimated dollars
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage export check [<age>]                              every queue session past <age> (1h) exports cost (the queue-cost-export watch)
-#   agent-usage budget [--json]                                    this month's cash, one line per bill in the budget ledger
+#   agent-usage budget [--json] / budget check                     this month's cash per bill, split by project and lane; check = needs a look
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.

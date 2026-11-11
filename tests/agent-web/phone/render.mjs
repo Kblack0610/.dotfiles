@@ -36,6 +36,7 @@ const TABS = [
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "board", row: `#board tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
+  { tab: "alerts", row: `#alerts tr.jr` },
   { tab: "infra", inner: "jobs", row: `#jobs tr.jr` },
   { tab: "log", row: `#log-work ${DATA_ROW}` },
   { tab: "fleet", row: `#fleet tr.wr` },
