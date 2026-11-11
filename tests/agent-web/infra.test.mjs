@@ -68,14 +68,15 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   const at = (s) => main.indexOf(s);
   assert.ok(main.startsWith('<div class="seg fseg istrip" role="tablist">'), main);
   for (const gone of ['id="sec-red"', 'id="sec-fixes"', 'id="sec-health"', 'data-itab="reds"']) assert.equal(at(gone), -1, `${gone} moved to Alerts`);
-  // The count: the red CI line on Machines; none on Jobs or Cloud.
-  assert.match(main, /data-itab="machines" class="on" [^>]*>Machines <span class="pill warn">1<\/span>/);
+  // The count: the red CI line on CI; none on Machines, Jobs or Cloud.
+  assert.match(main, /data-itab="ci" [^>]*>CI <span class="pill warn">1<\/span>/);
+  assert.match(main, /data-itab="machines" class="on" [^>]*>Machines<\/button>/);
   assert.match(main, /data-itab="jobs" [^>]*>Jobs<\/button>/);
   // The open inner tab shows; another one's sections are in the page, hidden.
   assert.match(main, /<div data-in="machines"><div class="tiles roomy">[\s\S]*<h2 class="sec" id="sec-machines">/);
   assert.match(main, /href="#alerts\/watches"/, "the watches tile opens Alerts' Watches");
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-ci">/);
-  assert.match(tail, /<div data-in="machines"><h2 class="sec" id="sec-governor">/);
+  assert.match(main, /<div data-in="ci" hidden><h2 class="sec" id="sec-ci">/);
+  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-governor">/);
   assert.match(tail, /<div data-in="cloud" hidden><h2 class="sec" id="sec-cloud">/);
   // Jobs is its own element (jobs.js paints it): it joins the Jobs group and hides here.
   assert.equal(els.jobs.dataset.in, "jobs");
@@ -83,7 +84,7 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   run(`st.arg = "jobs"; renderInfra()`);
   assert.equal(els.jobs.hidden, false);
   // "Done today, queues by pool" starts open like every section; a fold the reader closed stays closed.
-  run(`st.arg = "machines"; renderInfra()`);
+  run(`st.arg = "ci"; renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open>/);
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
@@ -116,7 +117,8 @@ test("a failed Prometheus read still draws the strip, so Jobs stays reachable", 
 test("old Infra links open the inner tab holding their section", () => {
   const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.section]; };
   assert.deepEqual(r("#infra"), ["infra", "", undefined]);
-  assert.deepEqual(r("#infra/ci"), ["infra", "machines", "ci"]);
+  assert.deepEqual(r("#infra/ci"), ["infra", "ci", undefined]);
+  assert.deepEqual(r("#infra/governor"), ["infra", "machines", "governor"]);
   assert.deepEqual(r("#infra/jobs"), ["infra", "jobs", undefined]);
   // Red now, Red fixes (and the Reds inner tab) and health moved to Alerts (layout::MOVED).
   assert.deepEqual(r("#infra/reds"), ["alerts", "", "fixes"]);
@@ -124,7 +126,7 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.deepEqual(r("#infra/red"), ["alerts", "", "firing"]);
   assert.deepEqual(r("#infra/health"), ["alerts", "", "health"]);
   // The retired #ci, #machines and #jobs tabs (layout::section) land on their inner tab too.
-  assert.deepEqual(r("#ci"), ["infra", "machines", "ci"]);
+  assert.deepEqual(r("#ci"), ["infra", "ci", "ci"]);
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);
   assert.deepEqual(r("#jobs"), ["infra", "jobs", "jobs"]);
 });
