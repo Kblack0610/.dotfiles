@@ -30,16 +30,26 @@ _test_pick_names() {
 test_picked() {
   grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/Makefile$' <<<"$1" && return 0
   grep -qxF "$2" <<<"$1" && return 0
-  local text rel inc
-  text="$(cat)"
+  local text rel inc new more seen=$'\n'
+  text="$(cat)" new=$text
   # A file the test loads from beside it (`load 'fleet_dispatch/common'`) is part of its text, and
-  # a change to it picks the test. The shared harness (../helpers, ../vendor) is matched above.
-  while read -r rel; do
-    case $rel in ../* | /*) continue ;; esac
-    inc="${2%/*}/$rel.bash"
-    grep -qxF "$inc" <<<"$1" && return 0
-    [ -r "$_TEST_PICK_REPO/$inc" ] && text+=$'\n'"$(cat "$_TEST_PICK_REPO/$inc")"
-  done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$text")
+  # a change to it picks the test; so is a file that one loads, to any depth. bats resolves `load
+  # x` against the test's own directory, as x.bash and then x. The shared harness (../helpers,
+  # ../vendor) is matched above.
+  while [ -n "$new" ]; do
+    more=
+    while read -r rel; do
+      case $rel in ../* | /*) continue ;; esac
+      grep -qxF -e "${2%/*}/$rel.bash" -e "${2%/*}/$rel" <<<"$1" && return 0
+      inc="${2%/*}/$rel.bash"
+      [ -f "$_TEST_PICK_REPO/$inc" ] || inc="${2%/*}/$rel"
+      [ -f "$_TEST_PICK_REPO/$inc" ] || continue
+      [[ $seen == *$'\n'"$inc"$'\n'* ]] && continue
+      seen+=$inc$'\n'
+      more+=$'\n'"$(cat "$_TEST_PICK_REPO/$inc")"
+    done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$new")
+    text+=$more new=$more
+  done
   # A basename counts where it can name the file. Dropped first: comment lines and @test titles
   # (prose), `stub <name>` (a fake stands in for it), `<name>/` (a directory of that name, such
   # as ~/.config/agentctl/) and `<name>@` (a systemd unit). A shared basename (README.md,
