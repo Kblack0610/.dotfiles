@@ -2265,7 +2265,7 @@ impl App {
     /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
     /// pick a row or a candidate, `/ f s S x` are the shared table's, Enter opens a row's detail
     /// and Esc closes it or clears the view, c arms a cancel and +/- move the priority of an
-    /// active item, C folds the candidates and p promotes one. The draw keeps the selected row
+    /// active item, C folds or opens the candidates (open at first) and p promotes one. The draw keeps the selected row
     /// in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
         // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
@@ -2426,6 +2426,7 @@ impl App {
             KeyCode::Char('A') => {
                 if !self.log_open.contains(&"actions") {
                     self.log_open.push("actions");
+                    self.read_log_folds();
                 }
                 self.log_work = false;
                 self.log_actions = true;
@@ -2954,7 +2955,7 @@ impl App {
     }
 
     /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
-    /// Apps, Enter opens the app's pane, `F` unfolds its other envs, `[` and `]` read an older or
+    /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
     /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
