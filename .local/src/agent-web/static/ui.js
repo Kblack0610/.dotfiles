@@ -15,7 +15,8 @@ async function reach(path, opts) {
     return await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
   } catch (e) {
     if (e && e.name === "AbortError") throw e;
-    throw new Error(`agent-web did not answer ${path.split("?")[0]}. It may be restarting: retry in a few seconds.`);
+    console.warn(path, e);
+    throw new Error(`agent-web did not answer ${path.split("?")[0]} (${(e && e.message) || e}). It may be restarting: retry in a few seconds.`);
   }
 }
 

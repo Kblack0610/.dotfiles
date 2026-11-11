@@ -209,18 +209,18 @@ async fn main() -> Result<()> {
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     eprintln!("agent-web: listening on {addr}");
-    serve_until(listener, app, stop_signal(), stop, DRAIN).await?;
+    serve_until(listener, app, stop_signal(term), stop, DRAIN).await?;
     Ok(())
 }
 
 /// How long a stop waits for the requests in flight: a cold project page reads for about 10s.
 const DRAIN: Duration = Duration::from_secs(30);
 
-/// SIGTERM (systemd's stop, so a rebuild's restart) or Ctrl-C.
-async fn stop_signal() {
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("agent-web: cannot listen for SIGTERM");
+/// SIGTERM (systemd's stop, so a rebuild's restart; installed before the listener serves, so a
+/// failure to install it stops the start) or Ctrl-C.
+async fn stop_signal(mut term: tokio::signal::unix::Signal) {
     tokio::select! {
         _ = term.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
@@ -1463,9 +1463,11 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
 
-    // The clock is paused, so a timeout fires only once every task is idle: the server still
-    // running then is a server waiting on the request, not one that was slow to be polled.
-    #[tokio::test(start_paused = true)]
+    // The clock is paused only while the request is in its handler and no socket has bytes in
+    // flight, so the timeout fires only once every task is idle: the server still running then is
+    // a server waiting on the request, not one that was slow to be polled. It resumes before the
+    // answer is written, so a socket wait never jumps the drain timer.
+    #[tokio::test]
     async fn a_stop_answers_the_request_in_flight_and_ends_the_live_stream() {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -1505,7 +1507,9 @@ mod tests {
         fire.send(()).unwrap();
         stopping.clone().wait_for(|s| *s).await.unwrap();
         assert_eq!(live.next().await, None, "the live stream ends on a stop");
+        tokio::time::pause();
         let early = tokio::time::timeout(Duration::from_secs(1), &mut server).await;
+        tokio::time::resume();
         assert!(
             early.is_err(),
             "the server stopped before the request in flight was answered"

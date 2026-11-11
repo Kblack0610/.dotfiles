@@ -19,3 +19,9 @@ pub async fn chains() -> Result<Arc<Vec<Chain>>, String> {
     LAST.get((), async { off(|| epics::all(&System)).await? })
         .await
 }
+
+/// Drop the kept read after a board or queue write from this server, so the page that wrote
+/// shows its own change instead of a chain up to `EPICS_SECS` old.
+pub async fn clear() {
+    LAST.clear().await;
+}

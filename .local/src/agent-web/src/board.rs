@@ -175,6 +175,7 @@ pub async fn write(Json(b): Json<WriteBody>) -> ApiResult<Json<serde_json::Value
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::CONFLICT, e))?;
+    crate::epics::clear().await;
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 

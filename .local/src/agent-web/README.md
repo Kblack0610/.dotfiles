@@ -76,7 +76,7 @@ systemctl --user enable --now agent-web   # unit lives in the private overlay
 
 `AGENT_WEB_ADDR` sets the listen address (default `0.0.0.0:8790`). The cluster ingress that fronts it is defined in home-config `apps/agents`.
 
-A stop (SIGTERM, so every rebuild's restart) takes no new connection, ends the live-update streams and answers the requests in flight for up to 30s before it exits. The journal gets one `agent-web: <METHOD> <path> ua=...` line for each request that failed (with the error), took over 2s (`slow`), or was dropped before it answered (the client went away or a restart cut it); a request that answered in time logs nothing.
+A stop (SIGTERM, so every rebuild's restart) takes no new connection, ends the live-update streams and answers the requests in flight for up to 30s before it exits. The journal gets one `agent-web: <METHOD> <path> ua=...` line for each request that failed (with the error), took over 2s (`slow`), or was dropped before its handler answered (the client went away or a restart cut it); the time is to the answer's head, so a body cut while it streams is not logged, and a request that answered in time logs nothing.
 
 ## Test
 

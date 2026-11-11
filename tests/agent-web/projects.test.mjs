@@ -417,7 +417,7 @@ test("a failed Deliverables read says so and never shows an empty table", async 
 test("a page read that gets no answer says agent-web did not answer, never a bare network error", async () => {
   ctx.answers["/api/projects/game/page?x=1"] = new TypeError("NetworkError when attempting to fetch resource.");
   await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx),
-    { message: "agent-web did not answer /api/projects/game/page. It may be restarting: retry in a few seconds." });
+    { message: "agent-web did not answer /api/projects/game/page (NetworkError when attempting to fetch resource.). It may be restarting: retry in a few seconds." });
   const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
   ctx.answers["/api/projects/game/page?x=1"] = abort;
   await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx), (e) => e === abort);

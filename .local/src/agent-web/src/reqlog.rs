@@ -1,8 +1,9 @@
-//! One journal line (stderr) for each request that failed, took longer than `SLOW`, or was
-//! dropped before it answered, with its user agent, so the next "network error" a page shows
-//! names its cause: a handler's own error, a read that ran long, or a client (or a restart) that
-//! went away mid-read. A request that answered in time says nothing. The path is logged without
-//! its query, which can carry a sign-in code.
+//! One journal line (stderr) for each request that failed, took longer than `SLOW` to answer, or
+//! was dropped before its handler answered, with its user agent, so the next "network error" a
+//! page shows names its cause: a handler's own error, a read that ran long, or a client (or a
+//! restart) that went away mid-read. The time is to the answer's head: a body cut while it
+//! streams is not seen here. A request that answered in time says nothing. The path is logged
+//! without its query, which can carry a sign-in code.
 
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,9 @@ use axum::response::Response;
 
 pub const SLOW: Duration = Duration::from_secs(2);
 
-/// The most of a failed answer's body logged, and kept: an error body is one line.
-const ERROR_BODY_MAX: usize = 64 * 1024;
+/// The largest failed answer whose body is read into the log line: an error body is one line. A
+/// larger one, or one of unknown length, is passed on untouched and logged without its words.
+const ERROR_BODY_MAX: u64 = 64 * 1024;
 
 /// What one request's line says, or None when it answered in time.
 fn verdict(status: Option<StatusCode>, took: Duration) -> Option<&'static str> {
@@ -64,15 +66,26 @@ pub async fn log(req: Request, next: Next) -> Response {
         said: String::new(),
     };
     let res = next.run(req).await;
-    if !res.status().is_server_error() {
-        seen.status = Some(res.status());
+    seen.status = Some(res.status());
+    let small = res
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+        .is_some_and(|n| n <= ERROR_BODY_MAX);
+    if !res.status().is_server_error() || !small {
         return res;
     }
     let (parts, body) = res.into_parts();
-    let bytes = to_bytes(body, ERROR_BODY_MAX).await.unwrap_or_default();
-    seen.status = Some(parts.status);
-    seen.said = format!(": {}", String::from_utf8_lossy(&bytes).trim());
-    Response::from_parts(parts, Body::from(bytes))
+    match to_bytes(body, ERROR_BODY_MAX as usize).await {
+        Ok(bytes) => {
+            seen.said = format!(": {}", String::from_utf8_lossy(&bytes).trim());
+            Response::from_parts(parts, Body::from(bytes))
+        }
+        Err(e) => {
+            seen.said = format!(" (its body could not be read: {e})");
+            Response::from_parts(parts, Body::empty())
+        }
+    }
 }
 
 #[cfg(test)]
