@@ -235,7 +235,7 @@ function buildQuarantine(d) {
   if (!q.length) return "";
   const row = (r) => `<tr><td>${esc(r.row)}</td><td class="n">${r.entries}</td><td>${esc(r.ends)}</td>` +
     `<td class="n ${relClass(r.level)}">${esc(r.left)}</td></tr>`;
-  const head = "<tr><th>owner row</th><th>entries</th><th>ends</th><th>left</th></tr>";
+  const head = '<tr><th data-role="lead">owner row</th><th data-role="glance" data-named>entries</th><th data-role="glance" data-named>ends</th><th data-role="glance" data-named>left</th></tr>';
   const lane = (l) => `<div class="cline ${relClass(l.level)}">${esc(l.says)}` +
     (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>` +
     (l.rows.length ? `<table class="tbl">${head}${l.rows.map(row).join("")}</table>` : "");
