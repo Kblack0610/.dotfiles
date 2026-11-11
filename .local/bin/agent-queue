@@ -261,7 +261,7 @@ finished_row_ok() {
 # promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
 # and a session working a queue item ($AGENT_QUEUE_ITEM) that adds one without --from, recorded as
 # `from: item:<its slug>` when admission gates it (an exempt or deferred add keeps `human`). Never held: --running (the caller's own work), a --plan not from a
-# machine filer (an approved plan), urgent, `red`, `#requested` and `verify` items, and a session's add that
+# machine filer (an approved plan), urgent, `red` and `#requested` items, auto:epics verify items, and a session's add that
 # arrives held (--after, at:, pr:, ask:, hold:, nightly:): its own work later, not runnable inflow.
 # A held add writes no item, logs one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD. Drain is the
 # items started out of the queue (started after they were queued) over AQ_DRAIN_DAYS, a day.
@@ -301,11 +301,9 @@ admission_now() {
 }
 
 # admission_exempt <priority> <tags> -> true when admission never holds the add: admission is off,
-# or the item is urgent, `red`, `#requested` or `verify`. A verify item (fleet-dispatch reconcile_epics)
-# closes an epic whose leaves have all landed: one per landed epic, and it shrinks the board, so a deep
-# queue holding it only keeps landed_unverified up.
+# or the item is urgent, `red` or `#requested`.
 admission_exempt() {
-  [ "$AQ_ADMIT_DAYS" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* || " $2 " == *" #requested "* || " $2 " == *" verify "* ]]
+  [ "$AQ_ADMIT_DAYS" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* || " $2 " == *" #requested "* ]]
 }
 
 # admission_since -> the UTC start of the drain window.
@@ -317,6 +315,9 @@ admission_since() { date -u -d "$AQ_DRAIN_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
 admit() {
   local from=$1 priority=$2 tags=$3 project=$4 slug=$5 title=$6 now r l d
   ! admission_exempt "$priority" "$tags" || return 0
+  # fleet-dispatch reconcile_epics files one verify item per landed epic: it closes an epic and shrinks
+  # the board, so holding it only keeps landed_unverified up.
+  [ "$from" != auto:epics ] || return 0
   now="$(admission_now)" && read -r r l d <<<"$now" && [[ "$r" =~ ^[0-9]+$ && "$l" =~ ^[0-9]+$ ]] ||
     { echo "agent-queue: admission could not read the queue, so this automated add goes in unchecked" >&2; return 0; }
   [ "$r" -ge "$l" ] || return 0

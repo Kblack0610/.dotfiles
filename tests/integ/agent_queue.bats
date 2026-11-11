@@ -2428,7 +2428,7 @@ started_item() {
   assert_success
 }
 
-@test "admission never holds a human, #requested, red, verify, urgent or --running add, at or over the limit" {
+@test "admission never holds a human, #requested, red, auto:epics verify, urgent or --running add, at or over the limit" {
   export AGENT_QUEUE_ADMIT_MIN=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --from auto:x --slug held "held"
@@ -2437,11 +2437,13 @@ started_item() {
   "$AQ" add --project game --from auto:x --tags '#requested' --slug asked "asked" >/dev/null
   "$AQ" add --project game --from auto:x --tags red --slug broken "broken" >/dev/null
   "$AQ" add --project game --from auto:epics --priority high --tags verify --slug verify-e-1 "verify e" >/dev/null
+  run "$AQ" add --project game --from auto:x --tags verify --slug other-verify "another filer's verify"
+  assert_failure 5
   "$AQ" add --project game --from auto:x --priority urgent --slug urgent "urgent" >/dev/null
   "$AQ" add --project game --from auto:x --running --session s1 --slug mine "mine" >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "asked,broken,human,mine,one,urgent,verify-e-1"
-  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 1 ]
+  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 2 ]
 }
 
 @test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral, urgent and --from human are not" {

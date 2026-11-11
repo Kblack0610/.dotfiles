@@ -3605,8 +3605,8 @@ reconcile_plans() {
 # landed epic (lifecycle.md, "Merged is not done"). Its slug carries the epic's done count, so a slug
 # the queue ever held is never queued again: a verify that failed or found gaps waits for a human or
 # for the gap rows to land, which raises the count and queues the next check. A profile with board
-# automation off gets none. Its `verify` tag passes agent-queue admission however deep the queue is
-# (admission_exempt). Its title's area, `epics`, names no
+# automation off gets none. Admission never holds its add (`from: auto:epics`, agent-queue admit),
+# however deep the queue: one item per landed epic. Its title's area, `epics`, names no
 # system, so the story row agent-queue files for it links under no standing epic: one that did would
 # be a leaf there, and its close would queue a verify of that epic in turn.
 reconcile_epics() {
@@ -3624,7 +3624,7 @@ reconcile_epics() {
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued $slug: every leaf of epic $id on $project has landed"
-    elif [ "$rc" -ne "$AQ_EX_HELD" ] && [ "$rc" -ne "$AQ_EX_FINISHED" ]; then
+    elif [ "$rc" -ne "$AQ_EX_FINISHED" ]; then
       say "could not queue the verify of epic $id on $project: ${out##*$'\n'}"
     fi
   done <<<"$landed"
