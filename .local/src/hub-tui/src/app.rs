@@ -633,7 +633,12 @@ impl App {
             day: None,
             log_days: false,
             hist_sel: 0,
-            log_open: vec![],
+            // Every fold starts open but Ranked, which reads every transcript (dashboards rule 10).
+            log_open: FOLDS
+                .iter()
+                .map(|f| f.0)
+                .filter(|n| *n != "ranked")
+                .collect(),
             ask_filter: 0,
             actions: None,
             actions_table: DataTable::default(),
@@ -841,8 +846,8 @@ impl App {
             .selected_release()
             .is_some_and(|r| r.project != self.rv.cl.project);
         if self.rv.open && other {
-            // Another app's pane starts folded and at its top.
-            self.rv.others = false;
+            // Another app's pane starts open and at its top.
+            self.rv.others = true;
             self.read_changelog(None);
         }
     }
@@ -2263,7 +2268,7 @@ impl App {
     /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
     /// pick a row or a candidate, `/ f s S x` are the shared table's, Enter opens a row's detail
     /// and Esc closes it or clears the view, c arms a cancel and +/- move the priority of an
-    /// active item, C folds the candidates and p promotes one. The draw keeps the selected row
+    /// active item, C folds or opens the candidates (open at first) and p promotes one. The draw keeps the selected row
     /// in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
         // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
@@ -2419,13 +2424,16 @@ impl App {
                 self.log_work = true;
                 self.seek = Some("work");
             }
-            KeyCode::Enter | KeyCode::Char('/')
-                if !self.log_actions && !self.log_work && self.log_open.contains(&"actions") =>
-            {
+            // Work leads the tab, so Enter and `/` are its; `A` gives the keys to Actions,
+            // opening it when the reader folded it.
+            KeyCode::Char('A') => {
+                if !self.log_open.contains(&"actions") {
+                    self.log_open.push("actions");
+                    self.read_log_folds();
+                }
                 self.log_work = false;
                 self.log_actions = true;
                 self.seek = Some("actions");
-                return k.code == KeyCode::Enter || self.actions_key(k);
             }
             KeyCode::Enter | KeyCode::Char('/') if !self.log_actions && !self.log_work => {
                 self.log_work = true;
@@ -2715,8 +2723,11 @@ impl App {
         if !self.infra_jobs {
             match k.code {
                 KeyCode::Left | KeyCode::Right => {
-                    self.infra_inner =
-                        crate::innertabs::step(infra_tab(), self.infra_inner, k.code == KeyCode::Left);
+                    self.infra_inner = crate::innertabs::step(
+                        infra_tab(),
+                        self.infra_inner,
+                        k.code == KeyCode::Left,
+                    );
                     // Another inner tab is another page: it opens at its top.
                     self.scroll = 0;
                 }
@@ -2947,7 +2958,7 @@ impl App {
     }
 
     /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
-    /// Apps, Enter opens the app's pane, `F` unfolds its other envs, `[` and `]` read an older or
+    /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
     /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
@@ -3000,7 +3011,7 @@ impl App {
             KeyCode::Char('F') if rv.open => rv.others = !rv.others,
             KeyCode::Enter => {
                 rv.open = !rv.open;
-                rv.others = false;
+                rv.others = true;
                 // Opening asks for the newest release again, whatever was read before.
                 rv.cl.project.clear();
             }
@@ -3262,7 +3273,7 @@ impl App {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
+                "[ ] day{}  h days  Enter work  A actions  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
@@ -3336,12 +3347,12 @@ impl App {
 
     /// Infra's sections needing a look, for the strip's counts: open red fixes, and CI lines
     /// `hub_core::ci` judged red (a queued job no online runner can take).
-    fn infra_flagged(&self, i: &hub_core::infra::Infra) -> Vec<&'static str> {
+    fn infra_flagged(&self, i: Option<&hub_core::infra::Infra>) -> Vec<&'static str> {
         let mut out = vec![];
         if matches!(&self.reds, Some(Ok(r)) if !r.open.is_empty()) {
             out.push("fixes");
         }
-        if !i.ci.red.is_empty() {
+        if i.is_some_and(|i| !i.ci.red.is_empty()) {
             out.push("ci");
         }
         out
@@ -3508,9 +3519,22 @@ impl App {
                 (day::history(&b.hist, self.hist_sel, self.p, w), vec![])
             }
             (Tab::Log, Some(b), _) => self.log_page(b, now, w),
-            (_, _, None) => reading("Prometheus"),
-            // Infra: the pinned sections, the strip, then the inner tab shown, each section in
-            // hub_core::layout order with a blank line between them.
+            // Infra: the strip first, while Prometheus is read too, then the pinned sections and
+            // the inner tab shown, each section in hub_core::layout order with a blank line
+            // between them.
+            (_, _, None) => {
+                let tab = infra_tab();
+                let strip = crate::innertabs::strip(
+                    tab,
+                    self.infra_inner,
+                    &self.infra_flagged(None),
+                    self.p,
+                    w,
+                );
+                let (mut l, at) = reading("Prometheus");
+                l.insert(0, strip);
+                (l, at)
+            }
             (_, _, Some(i)) => {
                 let tab = infra_tab();
                 // The layout lists the pinned sections first, then each inner tab's in turn.
@@ -3529,30 +3553,24 @@ impl App {
                 if shown.contains(&"jobs") {
                     secs.push(("jobs", self.jobs_section(w)));
                 }
-                let (mut l, mut at) = (vec![], vec![]);
+                let strip = crate::innertabs::strip(
+                    tab,
+                    self.infra_inner,
+                    &self.infra_flagged(Some(i)),
+                    self.p,
+                    w,
+                );
+                let (mut l, mut at) = (vec![strip], vec![]);
                 let mut put = |name: &'static str, l: &mut Vec<Line<'static>>| {
                     if let Some((_, lines)) = secs.iter_mut().find(|s| s.0 == name) {
-                        if !l.is_empty() {
+                        if l.len() > 1 {
                             l.push(Line::raw(""));
                         }
                         at.push((name, l.len()));
                         l.append(lines);
                     }
                 };
-                for name in tab.pinned {
-                    put(name, &mut l);
-                }
-                if !l.is_empty() {
-                    l.push(Line::raw(""));
-                }
-                l.push(crate::innertabs::strip(
-                    tab,
-                    self.infra_inner,
-                    &self.infra_flagged(i),
-                    self.p,
-                    w,
-                ));
-                for name in shown {
+                for name in tab.pinned.iter().chain(shown) {
                     put(name, &mut l);
                 }
                 (l, at)
@@ -4473,12 +4491,12 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.forecast = Some(forecast::tests::fixture());
-        assert!(screen(&mut a, 200, 60).contains("FORECAST  f opens it"));
-        a.handle(key('f'));
-        let s = screen(&mut a, 200, 120);
-        assert!(s.contains("FORECAST  f folds it"), "{s}");
+        let s = screen(&mut a, 200, 160);
+        assert!(s.contains("FORECAST  f folds it"), "it starts open: {s}");
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(s.contains("BURN-UP 24h"), "{s}");
+        a.handle(key('f'));
+        assert!(screen(&mut a, 200, 160).contains("FORECAST  f opens it"));
     }
 
     #[test]
@@ -4530,26 +4548,27 @@ mod tests {
     fn log_is_the_day_then_its_history_and_folds_in_layout_order() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
-        let s = screen(&mut a, 160, 60);
+        let s = screen(&mut a, 160, 200);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
+        // Every fold starts open but Ranked, which reads every transcript.
         let heads = [
             "HISTORY (0)  h lists the days",
-            "ACTIONS  a opens it",
+            "ACTIONS  a folds it",
             "CHANGES (",
-            "RUNDOWNS (0)  s opens it",
-            "JUDGES' VERDICTS  v opens it",
-            "FORECAST  f opens it",
+            "RUNDOWNS (0)  s folds it",
+            "JUDGES' VERDICTS  v folds it",
+            "FORECAST  f folds it",
             "RANKED SESSIONS  w opens it",
         ];
         for w in heads.windows(2) {
             assert!(at(w[0]) < at(w[1]), "{} is not above {}", w[0], w[1]);
         }
-        // Changes open in place, under their heading; c folds them again.
-        a.handle(key('c'));
-        let s = screen(&mut a, 160, 80);
+        // c folds the changes under their heading, and opens them again.
         assert!(s.contains("c folds it"), "{s}");
         a.handle(key('c'));
-        assert!(screen(&mut a, 160, 80).contains("c opens it"));
+        assert!(screen(&mut a, 160, 200).contains("c opens it"));
+        a.handle(key('c'));
+        assert!(screen(&mut a, 160, 200).contains("c folds it"));
         // h swaps the day for the day list, Esc brings the day back.
         a.handle(key('h'));
         assert!(a.log_days);
@@ -4572,6 +4591,7 @@ mod tests {
         a.tab = Tab::Log;
         let key =
             |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        a.log_open.clear();
         key(&mut a, 'V');
         assert_eq!(a.ask_filter, 0);
         a.log_open.push("verdicts");
@@ -4600,8 +4620,13 @@ mod tests {
             actions: vec![at(2, "nudge"), at(1, "failed")],
             ..Default::default()
         });
-        a.log_open.push("actions");
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.log_open = vec![];
+        a.handle(key('A'));
+        assert_eq!(
+            a.log_open,
+            ["actions"],
+            "A opens a folded Actions and gives it the keys"
+        );
         a.handle(key('f'));
         a.handle(key('f'));
         assert_eq!(a.actions_table.view.state, "failed");
@@ -4624,10 +4649,14 @@ mod tests {
             "the keys went back to Log"
         );
         a.log_open.retain(|n| *n != "forecast");
+        a.handle(key('A'));
         a.handle(key('/'));
         a.handle(key('n'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.actions_table.view.q, "n", "/ goes straight to the query");
+        assert_eq!(
+            a.actions_table.view.q, "n",
+            "after A, / is the Actions query"
+        );
         a.handle(key('/'));
         a.handle(key('q'));
         assert!(!a.quit, "q is typed into the query");
@@ -4660,6 +4689,7 @@ mod tests {
     fn logs_work_table_leads_takes_its_keys_and_steps_its_window() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
+        a.log_open.clear();
         assert!(screen(&mut a, 160, 60).contains("Reading the work..."));
         let today = chrono::Local::now().format("%Y-%m-%dT09:30").to_string();
         let row = |state, what: &str, when: String| hub_core::worklog::Work {
@@ -4710,10 +4740,9 @@ mod tests {
             a.log_open.contains(&"forecast"),
             "the keys went back to Log"
         );
-        a.log_open.clear();
         a.handle(key('/'));
         a.handle(key('q'));
-        assert!(!a.quit, "with Actions folded, / is Work's query");
+        assert!(!a.quit, "/ is Work's query, with Actions open too");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.work_table.view.q, "q");
     }
@@ -4723,6 +4752,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.tab = Tab::Home;
+        a.log_open.clear();
         let (t, q) = crate::tabreq::parse("actions").unwrap();
         a.handle(Msg::Tab(t, q));
         assert_eq!((a.tab, a.log_open.as_slice()), (Tab::Log, &["actions"][..]));
@@ -4872,9 +4902,8 @@ mod tests {
             !ran.iter().any(|c| c.contains("suggest")),
             "the snapshot is read, never a live suggest: {ran:?}"
         );
-        assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
+        assert!(screen(&mut a, 160, 40).contains("- CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        a.handle(key('C'));
         for _ in 0..5 {
             a.handle(key('j'));
         }
@@ -5040,11 +5069,14 @@ mod tests {
         assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
         let s = screen(&mut a, 140, 40);
         assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
-        assert!(s.contains("F opens it"), "{s}");
+        assert!(
+            a.pv.folds && !s.contains("F opens it"),
+            "the sections start open: {s}"
+        );
         assert!(s.lines().last().unwrap().contains("z/Z/F folds"), "{s}");
         a.handle(key('F'));
-        assert!(a.pv.folds);
-        assert!(!screen(&mut a, 140, 40).contains("F opens it"));
+        assert!(!a.pv.folds);
+        assert!(screen(&mut a, 140, 40).contains("F opens it"));
         a.handle(key('F'));
         // Z opens the first system's first epic and narrows the rows to its open tasks; Esc
         // widens them again.
@@ -5835,20 +5867,21 @@ mod tests {
     }
 
     #[test]
-    fn f_unfolds_the_other_envs_and_another_app_starts_folded() {
+    fn the_other_envs_start_open_f_folds_them_and_another_app_starts_open() {
         let (mut a, _rel, rx) = with_releases();
         press(&mut a, KeyCode::Char('F'));
-        assert!(!a.rv.others, "a closed pane has no fold to open");
+        assert!(!a.rv.others, "a closed pane has no fold to fold");
         press(&mut a, KeyCode::Enter);
         answer(&mut a, &rx);
+        assert!(a.rv.others, "the other envs start open");
         press(&mut a, KeyCode::Char('F'));
-        assert!(a.rv.others);
+        assert!(!a.rv.others);
         press(&mut a, KeyCode::Char('j'));
-        assert!(!a.rv.others, "beta's pane starts folded");
+        assert!(a.rv.others, "beta's pane starts open");
         answer(&mut a, &rx);
         press(&mut a, KeyCode::Char('F'));
         press(&mut a, KeyCode::Enter);
-        assert!(!a.rv.open && !a.rv.others, "closing folds it too");
+        assert!(!a.rv.open && a.rv.others, "closing resets the fold to open");
     }
 
     #[test]
@@ -5938,12 +5971,12 @@ mod tests {
         let k = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('K'))));
         let mut a = costs_app(true);
         assert_eq!(a.cv.consumers, None);
-        // A green section starts folded, so the first K opens it and the second folds it.
-        a.handle(k());
-        assert_eq!(a.cv.consumers, Some(true));
-        assert_eq!(a.cv.inner, "limits");
+        // Every section starts open, so the first K folds it and the second opens it.
         a.handle(k());
         assert_eq!(a.cv.consumers, Some(false));
+        assert_eq!(a.cv.inner, "limits");
+        a.handle(k());
+        assert_eq!(a.cv.consumers, Some(true));
     }
 
     #[test]
@@ -5967,10 +6000,17 @@ mod tests {
     }
 
     #[test]
-    fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
+    fn u_folds_and_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
         a.cv.inner = "models";
+        let s = screen(&mut a, 100, 60);
+        assert!(
+            s.contains("- WHERE THE TOKENS GO") && s.contains("u folds it"),
+            "it starts open: {s}"
+        );
+        a.handle(k(KeyCode::Char('u')));
+        assert_eq!(a.cv.tokens.open, Some(false));
         let s = screen(&mut a, 100, 60);
         assert!(
             s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
@@ -5998,11 +6038,7 @@ mod tests {
         let mut a = costs_app(true);
         a.cv.inner = "models";
         a.handle(k(KeyCode::Char('l')));
-        assert_eq!(
-            a.cv.langfuse,
-            Some(false),
-            "no figures opens it by default, so l folds it"
-        );
+        assert_eq!(a.cv.langfuse, Some(false), "it starts open, so l folds it");
         a.handle(k(KeyCode::Char('l')));
         assert_eq!((a.cv.langfuse, a.seek), (Some(true), Some("langfuse")));
         a.handle(k(KeyCode::Char('/')));
@@ -6067,8 +6103,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.forecast = Some(Forecast::read_with("hub-test-no-such-fleet-bench"));
-        a.handle(key('f'));
-        let s = screen(&mut a, 160, 80);
+        let s = screen(&mut a, 160, 200);
         assert!(
             s.contains("No forecast: hub-test-no-such-fleet-bench"),
             "{s}"
@@ -6160,8 +6195,8 @@ mod tests {
         a.handle(Msg::Reds(Err("reds: cannot read the queue".into())));
         let s = screen(&mut a, 160, 80);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
-        assert!(at("RED NOW") < at("[Reds]"), "{s}");
-        assert!(at("[Reds]") < at("RED FIXES  read failed"), "{s}");
+        assert!(at("[Reds]") < at("RED NOW"), "{s}");
+        assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
         assert!(
             !s.contains("MACHINE "),
             "Machines is another inner tab: {s}"
@@ -6252,7 +6287,7 @@ mod tests {
     }
 
     #[test]
-    fn infra_pins_health_and_red_above_a_strip_and_left_right_switch_its_inner_tabs() {
+    fn infra_leads_with_its_strip_pins_health_and_red_under_it_and_left_right_switch() {
         let mut a = infra_app();
         a.handle(key('5'));
         let s = screen(&mut a, 160, 200);
@@ -6261,20 +6296,20 @@ mod tests {
             bar.contains("4 Sessions  5 Infra") && !bar.contains("Machines"),
             "{s}"
         );
-        assert!(top(&s).starts_with("HEALTH"), "{s}");
-        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        assert!(at(&s, "HEALTH") < at(&s, "RED NOW") && at(&s, "RED NOW") < at(&s, "[Reds]"));
         assert!(
-            s.contains("[Reds] Machines  Jobs  Cloud   <- -> switch"),
-            "{s}"
+            top(&s).starts_with("[Reds] Machines  Jobs  Cloud   <- -> switch"),
+            "the strip is the first line: {s}"
         );
+        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
+        assert!(at(&s, "[Reds]") < at(&s, "HEALTH") && at(&s, "HEALTH") < at(&s, "RED NOW"));
         assert!(s.contains("RED FIXES") && !s.contains("CI RUNNERS"), "{s}");
         // Right: Machines holds the machines, the CI runners and the governor, in that order.
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         assert_eq!(a.infra_inner, "machines");
         let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with("HEALTH"), "pinned stays: {s}");
+        assert!(top(&s).starts_with(" Reds [Machines]"), "{s}");
+        assert!(at(&s, "[Machines]") < at(&s, "HEALTH"), "pinned stays: {s}");
         for w in ["MACHINE ", "CI RUNNERS", "GOVERNOR"].windows(2) {
             assert!(at(&s, w[0]) < at(&s, w[1]), "{} after {}: {s}", w[0], w[1]);
         }
@@ -6302,6 +6337,15 @@ mod tests {
         let (t, q) = crate::tabreq::parse("infra red").unwrap();
         a.handle(Msg::Tab(t, q));
         assert_eq!((a.infra_inner, a.seek), ("reds", Some("red")));
+    }
+
+    #[test]
+    fn infra_draws_its_strip_first_while_prometheus_is_still_read() {
+        let mut a = app(Tab::Infra);
+        a.infra = None;
+        let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
+        assert!(body[0].starts_with("[Reds] Machines"), "{body:?}");
+        assert_eq!(body[1], "Reading Prometheus...");
     }
 
     #[test]

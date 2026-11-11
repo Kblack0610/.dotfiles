@@ -110,7 +110,8 @@ const tblDropdown = (el) => el?.dataset?.tq !== undefined || el?.dataset?.tsv !=
 //   pre    the view keys' prefix (tblParams), for a tab's second table; its block carries data-tbl
 //   api    the path read with the view keys, plus what params(p, t) adds; with no api the tab reads
 //          itself and `refresh` is that read
-//   hint   the search box's placeholder; wait: what shows before the first read; chips: false
+//   hint   the search box's placeholder; wait: what shows before the first read, under lead(), the
+//          html that leads the tab on that path too (an inner strip); chips: false
 //          for a tab whose overview tiles are its chips; days(t): what tblDays draws in the bar
 //   pages  the server caps the rows, so "+N more" reads them again with params asking for all
 //   head, body, tail (t)  the html above the bar, the rows and below them; wrap(html): around the bar and rows (Costs' inner tab); table(t): the summary
@@ -167,7 +168,7 @@ function tblTab(o) {
     if (!table()) {
       const why = t.err || (t.data?.errors || [])[0];
       // A failed read looks like one, never like an empty table.
-      paint(el, why ? `<div class="card err">${esc(why)}</div>` : `<div class="empty">${o.wait || "Loading..."}</div>`);
+      paint(el, (o.lead ? o.lead() : "") + (why ? `<div class="card err">${esc(why)}</div>` : `<div class="empty">${o.wait || "Loading..."}</div>`));
       return;
     }
     if (t.repaint()) return;

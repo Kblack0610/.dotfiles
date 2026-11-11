@@ -332,7 +332,7 @@ function ciSection(cc, inst, t1, ci) {
   if (failed) html += `<h3 class="sec">Failed, last 24h</h3>${failedList(inst)}`;
   // Workflows with a failure or a cancel get a row; the green ones are one line under them.
   if (fin.body) html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h3><div class="panel scroll">${fin.body}</div>`;
-  const open = ist.open["ci-more"] ? " open" : "";
+  const open = secOpen(ist.open, "ci-more") ? " open" : "";
   html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today, queues by pool</summary>` +
     doneToday(inst, t1) +
     `<h3 class="sec">Queues by pool</h3><div class="panel scroll">${queuesTable(cc)}</div></details>`;
@@ -489,14 +489,16 @@ function fixesSection() {
 function renderInfra() {
   const el = $("infra-main"), tail = $("infra-tail");
   const d = ist.data;
-  // Health and Red now are pinned; the strip and each section in its inner tab's group follow
-  // (hub_core::layout, app.js INNER_TABS). Jobs is its own element between main and the tail.
+  // The strip comes first on every path, then the pinned Health and Red now, then each section
+  // in its inner tab's group (hub_core::layout, app.js INNER_TABS). Jobs is its own element
+  // between main and the tail.
   innerHide("infra", "jobs", $("jobs"));
-  const reds = () => innerStrip("infra", infraFlagged(d)) + innerWrap("infra", "fixes", fixesSection());
-  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? reds() : ""); tail.innerHTML = ""; return; }
+  const strip = innerStrip("infra", infraFlagged(d));
+  const reds = () => innerWrap("infra", "fixes", fixesSection());
+  if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? reds() : ""); tail.innerHTML = ""; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${reds()}`; tail.innerHTML = ""; seekSection(); return; }
+  if (!d.ok) { el.innerHTML = strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${reds()}`; tail.innerHTML = ""; seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
@@ -504,7 +506,7 @@ function renderInfra() {
   // Home owns the asks; Infra shows their count as a badge that opens Home.
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
-  let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
+  let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
   html += pfold("infra-health", domainLine(cc), `<div id="sec-health">${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}</div>`);
   html += red.length
     ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
