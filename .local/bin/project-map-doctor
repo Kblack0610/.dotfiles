@@ -96,20 +96,58 @@ done < <(jq -r '(.trackers // {}) as $t | $t | to_entries[] | select(.value | ty
   | @tsv' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n board relations name a sheet" || skip "no board relations to check"
 
-# --- 4. aliases point at real projects, and never shadow one ------------------------
-n=0
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  a="${line%%	*}"; target="${line#*	}"
-  n=$((n + 1))
-  is_known "$target" || fail "alias \"$a\" points at \"$target\", which is not a registered project"
-  # An alias whose own name is a project name is unreachable-or-worse: resolution order
-  # decides which wins, and the loser is invisible.
-  if jq -e --arg a "$a" '[(.paths // {}) | to_entries[] | .value] | index($a)' "$MAP_FILE" >/dev/null 2>&1; then
-    fail "alias \"$a\" collides with a project of the same name"
-  fi
-done < <(jq -r '(.aliases // {}) | to_entries[] | "\(.key)\t\(.value)"' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n aliases resolve and none shadow a project" || skip "no aliases to check"
+# --- 4. every spelling names one project, and every spelling in use resolves ---------
+# The name index (project_lookup; rule: docs/operations/release-state.md, "Project identity")
+# maps a key, each tracker's `names`, its `github`/`forgejo` slugs and each checkout basename to
+# one key. A spelling two keys claim resolves to whichever the index order reaches first, and
+# the other project silently loses its rows.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $p | .value
+  | (select(.names != null and ((.names | type) != "array" or any(.names[]; type != "string" or . == "")))
+     | "trackers.\($p).names is not a list of non-empty strings"),
+    ((.github, .forgejo) | select(. != null) | select(type != "string" or (test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not))
+     | "trackers.\($p) slug \(tojson) is not owner/repo")' "$MAP_FILE" 2>/dev/null)
+spellings="$(project_spellings)"
+while IFS=$'\t' read -r spelling claims; do
+  [ -n "$spelling" ] || continue
+  fail "spelling \"$spelling\" names more than one project: $claims (drop it from all but one)"
+done < <(awk -F'\t' '!seen[$1 SUBSEP $2]++ { k[$1]++; c[$1] = c[$1] (c[$1] ? ", " : "") $2 " (" $3 ")" }
+  END { for (s in k) if (k[s] > 1) print s "\t" c[s] }' <<<"$spellings" | sort)
+n="$(awk -F'\t' 'NF && !s[$1]++ { n++ } END { print n + 0 }' <<<"$spellings")"
+[ "$n" -gt 0 ] && pass "all $n spellings in the name index name one project" || skip "no name index to check"
+
+# --- 4d. every spelling the runtime has written resolves ------------------------------
+# The queue's `project:`, CI's runs.jsonl `repo` and each outcome's PR `repo` are written as
+# they were spelled at the time and never rewritten; a reader joins them through the index. One
+# the index does not know reads as a project of its own: add it to its project's `names`, or
+# its forge slug to the tracker.
+RUNS_FILE="${CI_RUNS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/ci/runs.jsonl}"
+observed="$(
+  [ -d "$AGENT_DIR/queue" ] && find "$AGENT_DIR/queue" -name '*.md' -print0 \
+    | xargs -0 -r awk 'FNR == 1 { d = 0 } !d && /^project:/ { sub(/^project: */, ""); print "queue\t" $0; d = 1 }'
+  [ -f "$RUNS_FILE" ] && jq -r '.repo // empty | "runs.jsonl\t" + .' "$RUNS_FILE" 2>/dev/null
+  for f in "$AGENT_DIR"/outcomes/*/*.jsonl; do
+    [ -f "$f" ] && jq -r '.prs[]?.repo // empty | "outcomes\t" + .' "$f" 2>/dev/null
+  done
+)"
+if [ -z "$observed" ]; then
+  skip "no queue, runs.jsonl or outcomes to read spellings from"
+else
+  idx="$(project_index_json)"
+  n=0; bad=0
+  while IFS=$'\t' read -r src spelling count hit; do
+    [ -n "$spelling" ] || continue
+    n=$((n + 1))
+    if [ -z "$hit" ]; then
+      fail "\"$spelling\" ($count in $src) names no project: add it to its tracker's names, or the forge slug to the tracker"
+      bad=$((bad + 1))
+    fi
+  done < <(jq -nRr --argjson i "$idx" "$_PN_JQ_DEFS"'
+    [inputs | split("\t") | select(length == 2 and .[1] != "")] | group_by(.[1])[]
+    | [(map(.[0]) | unique | join(",")), .[0][1], length, (.[0][1] | _pn_lookup($i) // "")] | @tsv' <<<"$observed")
+  [ "$bad" -eq 0 ] && pass "all $n spellings in the queue, runs.jsonl and outcomes resolve"
+fi
 
 # --- 4b. every row-id `code` is well formed and unique -------------------------------
 # `notes ptask add` stamps `<!-- id:<code>-<n> -->` from trackers.<p>.code. Two projects
@@ -210,6 +248,10 @@ if [ -d "$AGENT_DIR" ]; then
     [ -n "$name" ] || continue
     n=$((n + 1))
     if ! is_known "$name"; then
+      if key="$(project_lookup "$name")"; then
+        fail "runtime key \"$name\" ($kinds) under ~/.agent is another spelling of $key; readers look under $key, so move its files there"
+        bad=$((bad + 1)); continue
+      fi
       fail "runtime key \"$name\" ($kinds) under ~/.agent names no registered project: register its repo in paths, or move it under ~/.agent/_archive/"
       bad=$((bad + 1))
     fi

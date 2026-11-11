@@ -230,10 +230,10 @@ EOF
 # the live map, so the test names what it expects.
 projmap() {
   export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/project-map.json"
-  printf '%s' '{"paths":{"/x/dotfiles":"dotfiles"},"aliases":{"waybar":"dotfiles","engine":"unity-core-playground"},"trackers":{"_comment_lab":"x","agent-runtime":{}}}' > "$AGENT_QUEUE_PROJECT_MAP"
+  printf '%s' '{"paths":{"/x/dotfiles":"dotfiles"},"trackers":{"_comment_lab":"x","agent-runtime":{},"dotfiles":{"names":["waybar"]},"unity-core-playground":{"names":["engine"]}}}' > "$AGENT_QUEUE_PROJECT_MAP"
 }
 
-@test "project accepts a canonical name, a lab project and a name an alias resolves to" {
+@test "project accepts a paths key, a lab project and a tracker key" {
   projmap
   for p in dotfiles agent-runtime unity-core-playground; do
     base; echo "project: $p" >> "$M"
@@ -248,7 +248,7 @@ projmap() {
   assert_success
 }
 
-@test "project refuses an unknown name, an alias, a comment key and an empty value" {
+@test "project refuses an unknown name, another spelling of a project, a comment key and an empty value" {
   projmap
   for p in dotfils waybar _comment_lab; do
     base; echo "project: $p" >> "$M"

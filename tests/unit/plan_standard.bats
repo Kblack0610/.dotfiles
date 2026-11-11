@@ -15,7 +15,7 @@ setup() {
   ln -s "$(cd "$ROOT" && pwd)/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
   : > "$HOME/docs/standards.md"
   cat > "$HOME/.config/shared-hooks/project-map.json" <<'JSON'
-{"paths": {}, "aliases": {}, "trackers": {
+{"paths": {}, "trackers": {
   "agame": {"type": "game"}, "anapp": {"type": "app"}, "aninfra": {"type": "infra"},
   "untyped": {}, "gig": {"client": "acme"}}}
 JSON
