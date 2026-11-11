@@ -1973,14 +1973,27 @@ fix_item() {
   local want this before
   want=$(printf '%s' 'check(watch):spend' | sha256sum | cut -c1-8)
   this=$(date -u -d "@$((T0 - 3600))" +%FT%TZ); before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
-  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" \
-    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: null, merged: null}' >> "$ITEMS"; }
-  watch_item ar-1 ok "$this"; watch_item ar-2 ok "$this"
+  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" --arg pr "${4:-}" \
+    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: (if $pr == "" then null else $pr end),
+      merged: (if $pr == "" then null else "abc" end)}' >> "$ITEMS"; }
+  watch_item ar-1 ok "$this"; watch_item ar-2 ok "${this%Z}.123Z"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
   refute_output --partial 'for the human'
   [ ! -s "$BOARD.agent-runtime" ]
+  # an owned route's item stands the same way
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' owned:ar-9 - 'its plan owns it'
+  : > "$ITEMS"; watch_item ar-1 ok "${this%Z}.5Z"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # one that merged a fix with the red still here did not hold, so it is queued again
+  : > "$ITEMS"; watch_item ar-1 ok "$this" o/r#5
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  : > "$PLOG"; : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
   # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
   : > "$ITEMS"; watch_item ar-1 ok "$before"
   run "$SUBJECT" triage
