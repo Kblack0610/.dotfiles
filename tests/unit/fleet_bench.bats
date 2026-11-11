@@ -5194,6 +5194,19 @@ epics_fixture() {
   assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
 }
 
+@test "chain: wants_unstamped counts a named runner's want-stamped filing as a human channel; a runner's own row is no channel" {
+  chain_fixture
+  local day; day=$(date -d "@$((T0 - 86400))" +%F)
+  jq -cn --arg d "$day" '
+    {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): typed by hand"},
+    {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "filed", from: "game", by: "inbox-triage", want: "outbox", text: "an outbox line"},
+    {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "added", from: "game", by: "ask-sweep", want: "ask", text: "an answered ask"},
+    {ts: "\($d)T10:03:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", text: "check(watch): a runner row"}' > "$BENCH_INGEST"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'wants_unstamped: 1 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/3)'
+}
+
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {
   chain_fixture
   jq -cn '{rows: [
