@@ -27,7 +27,8 @@ const WIDE = { width: 1280, height: 800 };
 const NAV = { menu: "kb-shell .kb-menu", nav: "kb-shell .kb-nav", group: ".kb-nav .kb-group", item: ".kb-nav > [id^=tab-]", cur: "kb-shell .kb-cur", script: "kb-shell.js" };
 const CONTROL_CSS = "body { min-width: 900px !important; }";
 
-// Each tab's first data row; a tab with several tables names the one the brief measures.
+// Each tab's first data row; a tab with several tables names the one the brief measures, and a
+// tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`).
 const DATA_ROW = "tr:has(> td)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
@@ -35,11 +36,11 @@ const TABS = [
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "board", row: `#board tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
-  { tab: "infra", row: `#jobs tr.jr` },
+  { tab: "infra", inner: "jobs", row: `#jobs tr.jr` },
   { tab: "log", row: `#log-work ${DATA_ROW}` },
   { tab: "fleet", row: `#fleet tr.wr` },
   { tab: "schedules", row: `#schedules tr.jr` },
-  { tab: "costs", row: `#costs-body ${DATA_ROW}` },
+  { tab: "costs", inner: "spend", row: `#costs-body ${DATA_ROW}` },
   { tab: "releases", row: `#releases tr.jr` },
 ];
 
@@ -157,7 +158,7 @@ async function renderTab(browser, spec, page0) {
   await wire(context, page, page0, seen);
   const result = { tab: spec.tab, pageOverflowX: null, firstRowTop: null, tableOverflowX: null, leadVisible: null, leadMethod: null };
   try {
-    await page.goto(`${ORIGIN}/#${spec.tab}`, { waitUntil: "load" });
+    await page.goto(`${ORIGIN}/#${spec.tab}${spec.inner ? "/" + spec.inner : ""}`, { waitUntil: "load" });
     if (control) await page.addStyleTag({ content: CONTROL_CSS });
     await page.waitForLoadState("networkidle");
     if (spec.open) await page.evaluate((id) => { document.getElementById(id).open = true; }, spec.open);
