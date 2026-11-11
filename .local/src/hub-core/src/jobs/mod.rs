@@ -165,7 +165,7 @@ impl crate::table::Row for Job {
         "state", "source", "name", "started", "took", "result", "detail",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "done", "failed"];
-    const FACETS: &'static [&'static str] = &["source", "result"];
+    const FACETS: &'static [&'static str] = &["state", "source", "result"];
     const LEAD: &'static str = "name";
     const GLANCE: &'static [&'static str] = &["state", "started", "result"];
 
@@ -485,8 +485,9 @@ mod tests {
         let v = View::new::<Job>("done", "", "", "");
         assert_eq!(v.apply(&jobs).len(), 1, "state is the chips' to filter");
         let v = View::new::<Job>("source:ag", "", "", "");
-        let f = &v.facets(&jobs)[0];
-        assert_eq!(f.on.as_deref(), Some("ag"));
+        let fs = v.facets(&jobs);
+        let f = fs.iter().find(|f| f.key == "source").unwrap();
+        assert_eq!(f.on, ["ag"]);
         assert!(
             f.values.iter().any(|x| x.value == "ag" && x.n == 1),
             "a prefix is its own option"

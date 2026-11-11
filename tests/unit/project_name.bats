@@ -32,8 +32,7 @@ write_map() {
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "mono-canon" },
-  "aliases": { "aliased-dir": "from-alias" },
-  "trackers": $(jq -c '. + {"_comment": "a string value"}' <<<"$trackers")
+  "trackers": $(jq -c '{"from-alias": {"names": ["aliased-dir"]}} + . + {"_comment": "a string value"}' <<<"$trackers")
 }
 EOF
 }
@@ -82,7 +81,7 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
   assert_output '_unscoped'
 }
 
-@test "an aliases entry resolves a bare basename outside any repo" {
+@test "a names entry resolves a bare basename outside any repo" {
   write_map
   mkdir -p "$HOME/aliased-dir"
   run resolve_project_name "$HOME/aliased-dir"
@@ -290,7 +289,6 @@ write_tracker_map() {
     "/repos/toolrepo": "toolrepo",
     "/repos/monorepo": "monorepo"
   },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
     "monorepo":   { "system": "clickup" },
@@ -448,7 +446,6 @@ write_release_map() {
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "monorepo" },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
     "monorepo":  { "system": "board" },

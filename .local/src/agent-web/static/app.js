@@ -302,14 +302,15 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "board", "sessions", "infra", "log", "fleet", "schedules", "costs", "releases"];
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "fleet", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
-const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "projects/all": ["board", ""] };
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
+  "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"], "projects/all": ["board", ""] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn"]],["spend","Spend",["spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]]]}};
+const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","governor"]],["ci","CI",["ci"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
 // holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
@@ -364,7 +365,10 @@ function route(hash) {
   if (name === "outbox" && !arg) arg = "outbox";
   const moved = MOVED[name + "/" + arg.toLowerCase()];
   if (moved) return innerRoute({ name, tab: moved[0], arg: "", query, section: moved[1] });
-  return innerRoute({ name, tab: tabOf(name), arg, query });
+  // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
+  const tab = tabOf(name);
+  if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
+  return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
 // the groups' visibility and the strip's marks flip without a repaint.
@@ -395,7 +399,17 @@ function innerStrip(tab, flagged) {
 function innerWrap(tab, section, html) {
   const home = homeOf(tab, section);
   if (!home || !html) return html;
-  return `<div data-in="${home[0]}"${home[0] === innerOf(tab, st.arg)[0] ? "" : " hidden"}>${html}</div>`;
+  return `<div data-in="${home[0]}"${innerShown(tab, home) ? "" : " hidden"}>${html}</div>`;
+}
+// Whether inner tab `home` (a homeOf entry) of `tab` is the one open.
+const innerShown = (tab, home) => home[0] === innerOf(tab, st.arg)[0];
+// innerWrap for an element the page keeps rather than draws (Infra's #jobs, which jobs.js paints
+// on its own timer): it joins its section's group, hidden while another inner tab is open.
+function innerHide(tab, section, el) {
+  const home = homeOf(tab, section);
+  if (!home || !el) return;
+  el.dataset.in = home[0];
+  el.hidden = !innerShown(tab, home);
 }
 // A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to the ends.
 document.addEventListener("click", (e) => {

@@ -2,10 +2,6 @@
 
 The cases step 6 and step 7 of `../SKILL.md` name by section. Read the one the run is in.
 
-## Forgejo repo (home-config)
-
-`gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<owner>/home-config#<N> merged=<sha>; agent-queue move <slug> done --status ok` (reap proves that sha in the checkout project-map `paths` has for the repo the ref names, then closes the row), and tick the plan phase by hand. With `--pr-only`, whoever merges records it: `agent-queue set <slug> merged=<sha>; agent-queue move <slug> done --status ok`.
-
 ## Work that can only run later
 
 Work that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.

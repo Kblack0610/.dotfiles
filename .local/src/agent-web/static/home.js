@@ -108,8 +108,9 @@ function propBody(h) {
 function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  const body = tblBodyFirst(t, () => propBody(h));
   return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
-    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${propBody(h)}</div>`;
+    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
 
 // Accept or reject through agent-propose. What it says on failure stays on the page.
@@ -252,14 +253,15 @@ function drawHome() {
     `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
     h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
   const t = h.table;
+  const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
-  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
+  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
   // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.
   // On a phone they are one line saying whether anything is wrong, so Needs you comes first.
   const warn = (t) => `<span class="warn">${esc(t)}</span>`;
   const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
   paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)} <a href="#alerts">Alerts</a></div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

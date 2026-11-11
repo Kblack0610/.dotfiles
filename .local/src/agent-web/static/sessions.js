@@ -175,11 +175,9 @@ function pagePart(p) {
 }
 
 // The Details view. The parts are hub-core's; what is drawn here is the card for a session still in
-// the state document, and the folds. An ended session's card is what it was opened for, so it
-// starts open.
+// the state document, and the folds, each open until the reader folds it.
 function pageHtml(p) {
   const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
-  wst.open["page-outcome"] ??= true;
   const outcome = p.outcome ? fold("page-outcome", "Outcome card", `<pre class="joblog">${esc(p.outcome)}</pre>`) : pageRow("Outcome card", "after it ends");
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +

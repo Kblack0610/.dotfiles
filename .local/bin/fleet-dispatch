@@ -66,7 +66,7 @@ unset _k _v
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle); the conf holds the human's floor
 : "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
-: "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
+: "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets before it goes to the human sheet (fix_red_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
@@ -81,6 +81,8 @@ unset _k _v
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# Its reply shape is the conf's SCHEMA; each call holds it to exactly the rows it sends (judge).
+: "${DISPATCH_SCHEMA:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${SCHEMA:-}")}"
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
@@ -751,15 +753,23 @@ live_reds() {
   return 0
 }
 
+# watch_reds -> how many red items of a tripped watch (tags `red watch`, fleet-bench triage) are
+# running, or queued and not held: each one widens the red floor by one.
+watch_reds() {
+  agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
+    | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null || echo 0
+}
+
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
-# and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR. Real idle,
-# load, fleet-assess and the weekly pace do not hold it; agent-hold, the reserve, the cluster and the
-# github budget still do. RED_LIVE is cmd_run's count before its first start, as FLOOR_LIVE.
+# and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR plus one for
+# each tripped watch's red item. Real idle, load, fleet-assess and the weekly pace do not hold it;
+# agent-hold, the reserve, the cluster and the github budget still do. RED_LIVE and RED_WATCH are
+# cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
   [ "${RED_PASS:-0}" = 1 ] || return 1
   [ "${DISPATCH_RED_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
-  local live=${RED_LIVE:-$(live_reds | grep -c . || true)}
-  [ $(( live + ${RED_STARTED:-0} )) -lt "$DISPATCH_RED_FLOOR" ]
+  local live=${RED_LIVE:-$(live_reds | grep -c . || true)} watch=${RED_WATCH:-$(watch_reds)}
+  [ $(( live + ${RED_STARTED:-0} )) -lt $(( DISPATCH_RED_FLOOR + watch )) ]
 }
 
 # busy_projects -> the projects with a running, waiting or review queue item, one a line. A hand or plan start
@@ -1034,10 +1044,12 @@ cmd_candidates() {
 
 # judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache. Each
 # names the policy rule that decided it (`rule`, an id judge_rules reads from the policy) and its
-# call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
-# saying why: the call failed, the reply named no rule of the policy, or it left the row out.
+# call (`judge_call`, its calls.jsonl line). Rows the reply left out are asked for once more in a
+# call of their own: on 2026-11-11 ucp-469 was left out at 07:18 and judged at 07:33, but its error
+# verdict held runner-score red for 24h. A row the calls could not judge gets an `error` verdict
+# saying why: the call failed, the reply named no rule of the policy, or both calls left it out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows
+  local cands="$1" verdicts cid rc missing rules
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -1049,11 +1061,50 @@ judge() {
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
       | sort_by(.round, (.row.cleanup // 1), .i) | .[:$max][].row' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
+  [ -z "$DISPATCH_SCHEMA" ] || jq -e '.properties.verdicts.type == "array"' "$DISPATCH_SCHEMA" >/dev/null 2>&1 ||
+    { JUDGE_WHY="no readable schema with a verdicts array at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+  mkdir -p "$DIR"
+  cid=$(judge_call_id)
+  judge_ask "$cands" "$cid" "$rules"; rc=$?
+  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
+  if [ "$rc" = "$EX_BUDGET" ]; then touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
+  # A pass that could not judge must not read as "no row qualifies".
+  if [ "$rc" != 0 ] || [ -z "$JUDGE_VERDICTS" ]; then
+    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
+    say "judge $JUDGE_WHY for $(wc -l <<<"$cands") row(s)${JUDGE_REPLY:+: $JUDGE_REPLY}"; return 1
+  fi
+  verdicts=$JUDGE_VERDICTS
+  printf '%s\n' "$verdicts" >> "$VERDICTS"
+  size_back "$cands" "$verdicts"
+  missing=$(judge_missing "$cands" "$verdicts")
+  [ -n "$missing" ] || return 0
+  say "judge: the reply left out $(wc -l <<<"$missing") row(s), asking again for them"
+  cid=$(judge_call_id)
+  judge_ask "$missing" "$cid" "$rules"; rc=$?
+  # A retry stopped at its budget leaves no error line either; the pass names the stop (settle).
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="the retry for $(wc -l <<<"$missing") left-out row(s) $JUDGE_WHY"; say "judge: $JUDGE_WHY"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then
+    verdict_errors "$missing" "the reply had no verdict for this row, and the retry $JUDGE_WHY" "$cid" >> "$VERDICTS"
+    return 0
+  fi
+  [ -z "$JUDGE_VERDICTS" ] || { printf '%s\n' "$JUDGE_VERDICTS" >> "$VERDICTS"; size_back "$missing" "$JUDGE_VERDICTS"; }
+  verdict_errors "$(judge_missing "$missing" "$JUDGE_VERDICTS")" "neither the reply nor its retry had a verdict for this row" "$cid" >> "$VERDICTS"
+}
+
+# judge_ask <rows> <call id> <policy rule ids> -- one model call for <rows>; on success sets
+# JUDGE_VERDICTS to the reply's verdict lines for <rows> (a rule the policy lacks is an `error` line;
+# a verdict on a row not asked is dropped, so a retry cannot re-record one judged already), else
+# JUDGE_WHY to why and returns the call's code (EX_BUDGET for a budget stop). JUDGE_REPLY is the
+# reply's head, for the log line of a reply with no verdicts.
+judge_ask() {
+  local rows n prompt wd out rc err schema=()
+  JUDGE_VERDICTS='' JUDGE_REPLY=''
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
-  # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
-  # The count is of the numbered lines themselves, so the two never disagree.
+  # each dropping one row whole (hc-122, ar-269), and a dropped row is asked for again.
+  # The count is of the numbered lines themselves, so the two never disagree. Asking was not
+  # enough (2026-11-11, ucp-469 dropped from 41), so the call's schema holds the reply to it too.
   rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
-    + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
+    + (if (.details // "") != "" then {details} else {} end)' <<<"$1" | awk '{ print NR ". " $0 }')
   n=$(grep -c . <<<"$rows")
   prompt="## Rows to judge
 
@@ -1066,47 +1117,41 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
-  cid=$(judge_call_id)
+  # Claude Code checks the reply against this schema and hands a short one back to the model in
+  # the same call, so a dropped row is usually answered there; judge asks once more for the rest.
+  if [ -n "$DISPATCH_SCHEMA" ]; then
+    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+      { rm -rf -- "$wd"; JUDGE_WHY="could not read the schema at $DISPATCH_SCHEMA"; return 1; }
+    schema=(--schema "$wd/schema.json")
+  fi
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD -p "$prompt" 2>"$wd/err")
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$2" $DISPATCH_JUDGE_CMD ${schema[@]+"${schema[@]}"} -p "$prompt" 2>"$wd/err")
   rc=$?
   err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
-  mkdir -p "$DIR"
-  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
-  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
-  if [ "$rc" != 0 ]; then
-    JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge $JUDGE_WHY"; return 1
-  fi
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then JUDGE_WHY="call failed (exit $rc)${err:+: $err}"; return "$rc"; fi
   # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
-  verdicts=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
-    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
-      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$cands")" '
+  JUDGE_VERDICTS=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
+    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$2" --argjson rules "$3" \
+      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$1")" '
       select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
-      | ([.project, .lane, .key] | tostring) as $k
+      | ([.project, .lane, .key] | tostring) as $k | select(any($c[]; .k == $k))
       | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
          policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first),
          dsig: ([$c[] | select(.k == $k) | .dsig] | first), judge_call: $call}
       | . as $v | if any($rules[]; . == $v.rule) then $v
         else {project, lane, key, verdict: "error", reason: "rule \(.rule // "" | tojson) is not in the policy",
               at, policy, line, judge_call} end')
-  # A pass that could not judge must not read as "no row qualifies".
-  if [ -z "$verdicts" ]; then
-    JUDGE_WHY="the reply had no verdicts"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
-  fi
-  missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
-    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$cands")
-  {
-    printf '%s\n' "$verdicts"
-    verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
-  } >> "$VERDICTS"
-  size_back "$cands" "$verdicts"
+  [ -n "$JUDGE_VERDICTS" ] || { JUDGE_WHY="the reply had no verdicts"; JUDGE_REPLY=${out:0:200}; }
+}
+
+# judge_missing <rows> <verdicts> -> each of <rows> no verdict line names.
+judge_missing() {
+  jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$2")" \
+    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$1"
 }
 
 # size_back <candidates> <verdicts> -- tag each unsized row (with an id) the judge sized with that
@@ -1891,8 +1936,7 @@ ask_decisions() {
 # slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
 # resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
-# (salvage_line). A repo whose canonical forge is Forgejo (forge_canonical) cannot run agent-land, so
-# its brief names one-shot's Forgejo landing instead.
+# (salvage_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
@@ -1946,8 +1990,6 @@ item_brief() {
     proof_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")" "$harness"
     return
   fi
-  local forgejo=
-  forge_canonical "$(repo_dir "$(jq -r .project <<<"$it")")" && forgejo=1
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
@@ -1956,16 +1998,12 @@ item_brief() {
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
-    if [ -n "$forgejo" ]; then
-      echo "This repo's canonical forge is Forgejo, where agent-land cannot run: land it as ~/.claude/skills/one-shot/references/landing.md \"Forgejo repo\" says, recording the PR and merged: on $slug."
-    else
-      echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
-    fi
+    echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   if headless "$harness"; then
     echo "Right after the PR opens, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
-    [ -n "$pr_only$forgejo" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
+    [ -n "$pr_only" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Run final-pass (~/.claude/skills/final-pass/SKILL.md) on the diff before the PR opens; skip only its /simplify call. Skip wind-down (this run ends when you stop) and any other step that needs a Claude slash command, and name each step you skipped in the PR body."
     no_human "$slug"
     return
@@ -2000,7 +2038,8 @@ salvage_line() {
 # limit or after a partial landing, settle_item) without closing the item: the new session continues
 # that PR, or after a partial landing makes the rest, never a second PR for the same work.
 pr_line() {
-  local pr co; pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$1")
+  # `// ""` again: "" splits to [], whose [0] is null, which -r prints as "null" (ar-1583's brief)
+  local pr co; pr=$(jq -r '.pr // "" | split(" ")[0] // ""' <<<"$1")
   [ -n "$pr" ] || return 0
   if [ "$(jq -r '.partial // ""' <<<"$1")" = yes ]; then
     echo "An earlier run of this item merged $(jq -r .pr <<<"$1") as a partial landing (agent-land --partial): do the part that is left in the other repo, and land it with agent-land without --partial, which closes the item. If nothing is left, close it that way on $pr."
@@ -2382,11 +2421,12 @@ settle_item() {
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
     # when it exited, and the next start resumes its thread there (resume_thread). A run started before
-    # its `after:` item finished (a hand start does not check holds) waits for that item the same way.
+    # its `after:` items finished (a hand start does not check holds) waits for them the same way.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
-    after=$(jq -r '.after // ""' <<<"$it")
-    [ -z "$after" ] || case "$(item_state "$after")" in queued | running | waiting | review)
-      requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    for after in $(jq -r '.after // ""' <<<"$it"); do
+      case "$(item_state "$after")" in queued | running | waiting | review)
+        requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    done
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
@@ -2478,11 +2518,13 @@ run_queue() {
   why=$(gate)
   if [ -n "$why" ]; then
     RUN_GATED=1
-    # A red the machine gates hold may still start on the red floor; then only reds start this pass.
+    # A red the machine gates hold may still start on the red floor; then only reds start this pass,
+    # a tripped watch's first, so the floor slot its item adds is not taken by another red.
     # Its start goes past those gates without proving them open, so the hold stands (start_item).
     if is_red "$head" && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; then
-      say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"
-      RED_PASS=1 FLOOR_GATE=$why; start_items "$(jq -c 'select((" " + (.tags // "") + " ") | contains(" red "))' <<<"$items")" "$2"
+      say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR, plus ${RED_WATCH:-0} for tripped watches)"
+      RED_PASS=1 FLOOR_GATE=$why; start_items "$(jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" red ")))
+        | sort_by((" " + (.tags // "") + " ") | contains(" watch ") | not)[]' <<<"$items")" "$2"
       local rc=$?; RED_PASS=0 FLOOR_GATE=''; return "$rc"
     fi
     # A project nothing is working on may start one item past real idle: one busy
@@ -2899,13 +2941,9 @@ item_repo() {
   printf '%s' "${url%.git}"
 }
 
-# scope_dir <project> -> the checkout of a fleet-bench project name, which may be an alias
+# scope_dir <project> -> the checkout of a fleet-bench project name, which may be another spelling
 # (`platform`) the queue never uses.
-scope_dir() {
-  local p
-  p=$(jq -r --arg s "$1" '.aliases[$s] // $s' "$DISPATCH_PROJECT_MAP" 2>/dev/null) || p=$1
-  repo_dir "${p:-$1}"
-}
+scope_dir() { repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_canonical "$1")"; }
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
 # comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all
@@ -3300,10 +3338,10 @@ board_starved() {
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
 # here raises a limit.
 cmd_headroom() {
-  local live hand slots load cores idle runnable why could=0 floor_live red_live starts pend
+  local live hand slots load cores idle runnable why could=0 floor_live red_live red_watch starts pend
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
-  red_live=$(live_reds | grep -c . || true)
+  red_live=$(live_reds | grep -c . || true) red_watch=$(watch_reds)
   hand=$(live_hand | grep -c . || true)
   slots=$(( DISPATCH_MAX_LIVE - live ))
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
@@ -3320,7 +3358,7 @@ cmd_headroom() {
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
-    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" \
+    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
     --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" \
     --arg focus "$FOCUS_ONLY" --argjson focus_held "${focus_held:-0}" '
     def num: if . == "" then null else tonumber end;
@@ -3328,7 +3366,7 @@ cmd_headroom() {
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
-     idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_live: $red_live,
+     idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
      project_floor: $project_floor, idle_projects: $idle_projects,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_held: $focus_held,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
@@ -3346,7 +3384,7 @@ cmd_headroom() {
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
-        "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red",
+        "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
         (if (.focus | length) > 0 then "  focus:     only \(.focus | join(" ")); \(.focus_held) queued item(s) held off focus (reds, urgent and #requested still run)" else empty end)'
     fi
@@ -3833,7 +3871,7 @@ cmd_run() {
   live=$(units_on '' <<<"$runs")
   FLOOR_LIVE=$(grep -c . <<<"$runs" || true)
   probe_hosts "$runs"
-  RED_LIVE=$(live_reds | grep -c . || true)
+  RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
   BUSY_PROJECTS=$(busy_projects)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   demand_pass "$runs"

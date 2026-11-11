@@ -3,6 +3,8 @@
 // /api/releases (hub_core::releases). The table is the shared one (table.js): the server filters
 // and sorts by the view in the URL. An opened app lists its headline env's channels, the other
 // envs in a fold under them, then its changelog. A new snapshot pushes the `releases` event.
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
+// table and an opened app), Builds, Tests, the strip above them.
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
@@ -11,8 +13,15 @@ const REL_OPEN = {};
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
   open: () => REL_OPEN,
-  head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds() + releaseTests(),
+  head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
+  lead: () => innerStrip("releases", relFlagged()),
+  body: (t) => releasesBody(t.data),
+  wrap: (html) => innerWrap("releases", "table", html),
+  tail: () => innerWrap("releases", "builds", releaseBuilds()) + innerWrap("releases", "tests", releaseTests()),
 });
+// The sections needing a look, the strip's counts: each read says its own (Releases::needs_look,
+// Builds::needs_look, a failed suite in the run on show).
+const relFlagged = () => [relst.data?.look && "table", bld.data?.look && "builds", tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
 const relKey = (a) => a.project;
 const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
@@ -20,13 +29,14 @@ const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn"
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], last_deploy: ["last deploy"] };
+const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
 function releaseRow(a) {
   const open = relKey(a) === relst.sel;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
     `<td>${esc(a.project)}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
-    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
+    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="muted">${esc(a.released_text)}</td>` +
+    `<td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
   return open ? row + appDetail(a) : row;
 }
 
@@ -43,14 +53,31 @@ function channelRow(r) {
 const CH_HEAD = "<tr><th>channel</th><th>id</th><th>live</th><th>pinned</th><th>status</th><th>where</th></tr>";
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
-// The opened app: its headline env's channels, the other envs folded, then what its newest tag shipped.
+// The opened app: its headline env's channels, the other envs in a fold that starts open, its
+// release history, then what the picked tag shipped.
 function appDetail(a) {
   const lead = a.channels.slice(0, a.lead), rest = a.channels.slice(a.lead);
   const others = rest.length
-    ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN)
+    ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
-  return `<tr class="wdet"><td colspan="5"><div class="sdet">${chTable(lead)}${others}` +
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${chTable(lead)}${others}${releaseHistory(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
+}
+
+// Which tags a history lists, as the collector named the line.
+const LINE_SAYS = { release: "release tags", build: "build tags (no release tag yet)" };
+
+// The opened app's releases, newest first: when each was tagged, the one before it, and the
+// channels it reached (hub_core::release_graph). A click shows that tag's changelog below.
+function releaseHistory(a) {
+  const h = a.history || [];
+  if (!h.length) return `<div class="cline"><b>Releases</b> <span class="muted">no tags read</span></div>`;
+  const shown = relcl.project === a.project ? relcl.data?.tag : null;
+  const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
+    `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
+    `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td></tr>`).join("");
+  const body = `<div class="scroll"><table class="tbl"><tr><th>release</th><th>released</th><th>prev</th><th>reached</th></tr>${rows}</table></div>`;
+  return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
 }
 
 function releaseSide(s, text) {
@@ -128,13 +155,13 @@ function releasesHead(d) {
   return html;
 }
 
-// The Builds section under the channels: CI runs of the last 30 days from /api/builds
+// The Builds inner tab: CI runs of the last 30 days from /api/builds
 // (hub_core::builds), its own table with its own view keys (bq, bs, bsort, bdir). It draws inside
 // this tab's page, so its render is the tab's and its refresh reads only its own rows.
 const BUILDS_PRE = "b";
 const BUILDS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests";
 const bld = tblTab({
-  tab: "releases", id: "bld", pre: BUILDS_PRE, el: "releases", api: "/api/builds", hint: BUILDS_HINT, state: { log: null },
+  tab: "releases", id: "bld", pre: BUILDS_PRE, el: "releases", api: "/api/builds", hint: BUILDS_HINT, state: { log: null, detail: null },
   head: (t) => buildsHead(t.data), body: (t) => buildsBody(t.data),
   render: () => relst.render(),
 });
@@ -168,7 +195,32 @@ function buildDetail(r) {
   const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="wdet"><td colspan="9"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
     line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
-    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) + log + `</div></td></tr>`;
+    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) +
+    (bld.detail && bld.detail.key === bldKey(r) ? runJobs(bld.detail) : "") + log + `</div></td></tr>`;
+}
+
+// The opened run's header, jobs and their steps (/api/builds/detail, hub_core::run_detail), read
+// when the row opens. Each cell carries its label, so a phone stacks a job into labelled lines.
+function runJobs(o) {
+  if (o.err) return `<div class="cline down">${esc(o.err)}</div>`;
+  const d = o.d;
+  if (!d) return `<div class="cline">Loading jobs...</div>`;
+  const k = o.key;
+  const cell = (label, v, cls = "") => `<td data-label="${label}"${cls ? ` class="${cls}"` : ""}>${esc(v)}</td>`;
+  const job = (j) => `<tr>${cell("job", j.name, "wrap")}${cell("class", j.class, "muted")}${cell("wait", j.wait_text, "n")}` +
+    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}${cell("$", j.price.text, "n")}</tr>`;
+  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th><th>$ basis</th></tr>";
+  const jobs = (d.jobs || []).length
+    ? `<table class="tbl rdjobs">${head}${d.jobs.map(job).join("")}</table>` : "";
+  const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
+  const shas = d.tested_sha && d.workflow_sha && d.tested_sha !== d.workflow_sha
+    ? `tested ${esc(d.tested_sha.slice(0, 7))}, workflow from ${esc(d.workflow_sha.slice(0, 7))}` : "";
+  const cover = `<div class="cline">${esc(d.coverage_text)}</div>` + (shas ? `<div class="cline">${shas}</div>` : "") +
+    ((d.attempts || []).length > 1 ? `<div class="cline"><b>Attempts</b> ${d.attempts.join(", ")}</div>` : "");
+  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
+    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "") + jobs +
+    (steps ? cfold(`bld-steps:${k}`, `<b>Steps</b>`, steps, REL_OPEN) : "") +
+    cfold(`bld-cover:${k}`, `<b>Coverage</b> <span class="muted">${esc(d.coverage)}</span>`, cover, REL_OPEN);
 }
 
 function buildsBody(d) {
@@ -182,12 +234,32 @@ function buildsBody(d) {
 function buildTimes(d) {
   const t = d.times || [];
   if (!t.length) return "";
-  const row = (w) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
+  const c = d.costs || {}, cost = c.times || [];
+  const row = (w, i) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
     `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
-    `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td></tr>`;
-  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th></tr>";
+    `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td><td class="n">${esc(cost[i] || "-")}</td></tr>`;
+  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th><th>$ per run</th></tr>";
+  const money = (c.idle || []).map((l) => `<div class="cline">${esc(l)}</div>`).join("") +
+    (c.month ? `<div class="cline${c.month_off ? " warn" : ""}">${esc(c.month)}</div>` : "") +
+    (c.rates_error ? `<div class="cline warn">no rates: ${esc(c.rates_error)}</div>` : "");
   return cfold("bld-times", `<b>Run times</b> <span class="muted">${t.length} workflows, 30 days, finished runs (cancelled left out); usual is the median, - under 3 runs</span>`,
-    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN);
+    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table>${money}</div>`, REL_OPEN, true);
+}
+
+// Each repo's test quarantine: its line (entries, the nearest end, the last nightly's KNOWN and
+// now-passing counts), then its owner rows, soonest end first. No repo with one draws nothing.
+function buildQuarantine(d) {
+  const q = d.quarantine || [];
+  if (!q.length) return "";
+  const row = (r) => `<tr><td>${esc(r.row)}</td><td class="n">${r.entries}</td><td>${esc(r.ends)}</td>` +
+    `<td class="n ${relClass(r.level)}">${esc(r.left)}</td></tr>`;
+  const head = "<tr><th>owner row</th><th>entries</th><th>ends</th><th>left</th></tr>";
+  const lane = (l) => `<div class="cline ${relClass(l.level)}">${esc(l.says)}` +
+    (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>` +
+    (l.rows.length ? `<table class="tbl">${head}${l.rows.map(row).join("")}</table>` : "");
+  const entries = q.reduce((n, l) => n + l.entries, 0);
+  return cfold("bld-quar", `<b>Quarantine</b> <span class="${relClass(d.quarantine_level) || "muted"}">${entries} entries in ${q.length} repo${q.length === 1 ? "" : "s"}</span>`,
+    `<div class="panel scroll">${q.map(lane).join("")}</div>`, REL_OPEN, true);
 }
 
 function buildsHead(d) {
@@ -197,24 +269,28 @@ function buildsHead(d) {
   if (bld.err) html += `<div class="panel down">${esc(bld.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   // In the head, so a repaint while the search box has focus refreshes it too.
-  return html + buildTimes(d);
+  return html + buildTimes(d) + buildQuarantine(d);
 }
 
 // The channels' tail: the Builds block, once it has been read.
 function releaseBuilds() {
   if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
   if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
+  const body = tblBodyFirst(bld.data.table, () => buildsBody(bld.data));
   return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
-    `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
+    `<div id="bld-body">${body}</div></div>`;
 }
 
-// A run's failed-job log, read when its row opens and never before.
+// A run's jobs and its failed-job log, read when its row opens and never before.
 async function openBuild(key, r) {
   bld.sel = key;
   bld.log = { key, text: "Loading..." };
+  bld.detail = { key, d: null };
   relst.render();
-  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, id: r.id, attempt: r.attempt });
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
+  const detail = api("/api/builds/detail?" + q).then((d) => { bld.detail.d = d; }, (e) => { bld.detail.err = e.message; });
   try { bld.log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { bld.log.text = e.message; }
+  await detail;
   if (st.tab === "releases" && bld.sel === key) relst.render();
 }
 
@@ -224,12 +300,12 @@ $("releases").addEventListener("click", (e) => {
   const tr = t.closest("tr.br");
   if (!tr) return;
   const key = tr.dataset.bkey;
-  if (bld.sel === key) { bld.sel = null; bld.log = null; relst.render(); return; }
+  if (bld.sel === key) { bld.sel = null; bld.log = null; bld.detail = null; relst.render(); return; }
   const r = (bld.data.rows || []).find((x) => bldKey(x) === key);
   if (r) openBuild(key, r);
 });
 
-// The Tests section under Builds: the suites of one finished tests.yml run from /api/tests
+// The Tests inner tab: the suites of one finished tests.yml run from /api/tests
 // (hub_core::junit), the newest unless the picker names another. Its own view keys are tq, ts,
 // tsort and tdir, and the run is trun. A suite's tests are read when its row opens, never before.
 const TESTS_PRE = "t";
@@ -305,8 +381,9 @@ function testsHead(d) {
 function releaseTests() {
   if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>`;
+  const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
   return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
-    `<div id="tst-body">${testsBody(tst.data)}</div></div>`;
+    `<div id="tst-body">${body}</div></div>`;
 }
 
 // A suite's tests, read when its row opens.
@@ -335,6 +412,8 @@ $("releases").addEventListener("click", (e) => {
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
+  const rh = t.closest("tr.rh");
+  if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }
   const ch = t.closest("tr.rc");
   if (ch) { relCh = relCh === ch.dataset.ch ? null : ch.dataset.ch; relst.render(); return; }
   if (t.closest(".wdet")) return;

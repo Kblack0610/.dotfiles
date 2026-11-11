@@ -344,6 +344,43 @@ ledger() {
   assert_output 'own:a,b'
 }
 
+@test "an item parked in review owns its open PR: the session is DONE and finished, a running one still blocks" {
+  # 2026-11-11: sessions that parked their item read "PR open" as unfinished, so wind-down refused
+  # and fleet-dispatch's reap, which gives a red parked PR a fix-ci session once the session ends, never ran
+  local v r='review:ucp-355 pr 9'
+  for v in 'FAIL' 'PENDING' 'PASS'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN "$v" 1 - - - - - - - "$r"
+    assert_output 'DONE PR #9 parked for review, its item ucp-355 owns it'
+    session_finished idle 0 0 0 30 1 0 2 9 OPEN "$v" 1 - - - - - - - "$r"
+    [ -z "$(work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN "$v" 1 - - - - - - - "$r")" ]
+  done
+  # a plan still decides: a phase left is LANDED and named, a ticked or queued one is DONE
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - 1/3 'Phase 2' - - - - "$r"
+  assert_output 'LANDED PR #9 parked for review, its item ucp-355 owns it, next phase: Phase 2'
+  run work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - 1/3 'Phase 2' - - - - "$r"
+  assert_output 'next phase: Phase 2'
+  session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - 3/3 - - - - - "$r"
+  session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - none - - - - - "$r"
+  # negative controls: a running item, no item, another PR than the item's, dirt, or HEAD outside the PR
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'own:ucp-355'
+  assert_output 'STALLED PR #9 CI red'
+  run work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'own:ucp-355'
+  assert_output 'PR #9 open, CI FAIL; no plan file and nothing merged; its item ucp-355 is running here'
+  ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - -
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'review:ucp-355 pr 5'
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'review:ucp-355 pr -'
+  assert_output 'STALLED PR #9 CI red'
+  ! session_finished idle 0 0 0 30 1 3 2 9 OPEN FAIL 1 - - - - - - - "$r"
+  ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 0 - - - - - - - "$r"
+  # parked with no PR open is not handed off: files off the branch are still its own
+  run work_blockers '' idle 0 0 0 30 1 0 2 - - - 1 - - - - - - - "$r"
+  assert_output '2 file(s) not on the default branch, no PR; no plan file and nothing merged'
+  # an open ask still decides first
+  run b idle 0 1 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$r"
+  assert_output 'NEEDS 1 pending ask(s)'
+}
+
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
   local start=1000 t=$'\t'
   qi() { printf '%s\n' "$@"; }
@@ -359,6 +396,15 @@ ledger() {
   assert_output 'own:b'
   run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "waiting${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
   assert_output 'here:b'
+  # parked in review here is review:, below running and waiting here, above one that moved on
+  run item_of "$(qi "done${t}lab:s2${t}sid-9${t}a${t}500" "review${t}lab:s1${t}-${t}b${t}0${t}42")" sid-9 lab:s1 1 "$start"
+  assert_output 'review:b pr 42'
+  run item_of "$(qi "review${t}lab:s1${t}-${t}b${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'review:b pr -'
+  run item_of "$(qi "review${t}lab:s1${t}-${t}b${t}0" "waiting${t}lab:s1${t}-${t}c${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'here:c'
+  run item_of "$(qi "review${t}lab:s1${t}-${t}b${t}0" "running${t}lab:s1${t}-${t}c${t}0")" sid-9 lab:s1 1 "$start"
+  assert_output 'own:c'
   # an item added by hand records no session:, only this Claude session: it runs here, even in a
   # tmux session shared by several claudes; one that names another Claude session is not this one's
   run item_of "$(qi "running${t}-${t}sid-9${t}c${t}0")" sid-9 hub:dotfiles 4 "$start"
@@ -2476,6 +2522,18 @@ SH
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
 }
 
+@test "--write: rows and asks past the 128 KB one-argument cap still build the document" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json" q
+  q="$(head -c 70000 /dev/zero | tr '\0' q)"
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 --context "$q" 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --session s2 --context "$q" 'hold it?' >/dev/null
+  [ "$("$AGENT_ASK" list --all --pending | wc -c)" -gt 131072 ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
+}
+
 @test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"
@@ -2652,6 +2710,34 @@ GH
   open_pr_gh '[{"conclusion":"FAILURE"},{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: an open PR older than the newest 100 is still the session's PR" {
+  # 2026-11-11: the playground's newest 100 PRs began at #2215, so open #1536..#2102 were not
+  # found and four sessions read "files not on the default branch, no PR"
+  landed_fixture
+  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  jq -c '[range(400; 300; -1) as $n | {number: $n, state: "MERGED", headRefName: "other-\($n)", headRefOid: "0", statusCheckRollup: []}]' \
+    <<<null > "$SANDBOX/newest.json"
+  cat > "$SANDBOX/bin/gh" <<GH
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/gh.log"
+f="$SANDBOX/prs.json"; case " \$* " in *" --state all "*) f="$SANDBOX/newest.json" ;; *" --state open "*) [ ! -e "$SANDBOX/OPEN_FAIL" ] || exit 1 ;; esac
+while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "\$f"; exit; }; shift; done
+GH
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  # negative control: a window that is not full already holds every open PR, so no second call
+  : > "$SANDBOX/gh.log"
+  FLEET_PR_WINDOW=101 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  ! grep -q -- '--state open' "$SANDBOX/gh.log"
+  # a failed open-PR call marks the repo unreadable and keeps the window it did read
+  touch "$SANDBOX/OPEN_FAIL"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  grep -q -- '--state open' "$SANDBOX/gh.log"
 }
 
 # gate <run title> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x

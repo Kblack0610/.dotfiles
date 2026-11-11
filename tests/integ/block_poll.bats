@@ -109,7 +109,7 @@ allowed() { assert_success; assert_output ""; }
 }
 
 # A live background run holds its tasks/<id>.output open; the guard scans /proc for that holder (lsof where there is no /proc).
-# The id is unique to the test, since the unit tier runs tests in parallel and every process is scanned.
+# The id is unique to the test, since the fast tiers run tests in parallel and every process is scanned.
 live_task() {
   TASK_ID="bp${$}x${BATS_TEST_NUMBER}x${RANDOM}"
   OUT="$BATS_TEST_TMPDIR/sess/tasks/$TASK_ID.output"

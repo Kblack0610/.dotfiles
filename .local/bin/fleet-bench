@@ -84,13 +84,16 @@
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
 #                                cc:red_now item nothing here reads, plus one per red that started
 #                                within HOLD_HOURS after a cleanup merge; TRIAGE_ROUTES decides where
-#                                each one goes, and an agent route queues a red fix. --route prints
+#                                each one goes, and an agent route or any watch route but a human's
+#                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cancelled (closed cancelled
+#                                came back (red again after the merge), alert route (red, but
+#                                TRIAGE_ROUTES sends it to alert: its watch pages on a KPI no merge
+#                                clears, so reds_unfixed leaves it out), cancelled (closed cancelled
 #                                with no merge, as when handed to an owner), cleared (ok with no PR)
 #                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
@@ -139,7 +142,8 @@
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
+#                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
 set -uo pipefail
 # shellcheck source=../lib/end-reasons.sh
@@ -201,7 +205,7 @@ set -uo pipefail
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
-: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
+: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together but a tripped watch's (one item a watch at a time bounds those)
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: the window a cause's fix items are counted in
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
@@ -211,7 +215,7 @@ set -uo pipefail
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
-: "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
+: "${TRIAGE_WATCH_AFTER:=1800}"      # triage: seconds a watch must stay TRIP before it is a row and a red item: two dispatch passes, so its owner runs the hour it trips (human, 2026-11-10, ar-1531)
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_forgejo_pr
@@ -257,11 +261,21 @@ set -uo pipefail
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+# A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
+# none. ledger_coverage, untracked_merged_prs, wants_unstamped and reds_unfixed count from the later of
+# their window start and this, so a watch's fixed red stops counting the events before its fix; a row
+# with no readable time still counts, so a watermark never hides it. The step ages and the other
+# chain KPIs read the state now, which a watermark would only hide.
+FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINEL_SINCE; fi
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
 : "${BENCH_FLEET_COST_EVERY_MIN:=30}"
 : "${BENCH_FLEET_COST_TIMEOUT:=240}"
+: "${BENCH_BUDGET_CMD:=agent-usage budget --json}"   # this month's cash, by bill: the Costs Budget tab and fleet-budget-pace read the file
+: "${BENCH_BUDGET_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/budget.json}"
+: "${BENCH_BUDGET_EVERY_MIN:=30}"
+: "${BENCH_BUDGET_TIMEOUT:=120}"
 : "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
@@ -404,8 +418,8 @@ def fleet_finish: {median_p50: (map(.finish_p50) | median | if . == null then nu
 # queue items in (enriched by forecast_json: phases, P and S seconds a phase, start, live, after,
 # why) -> each item placed on $K dispatcher slots on track $k ("P" or "S"). Running items hold a
 # slot until they end (the finish of its live session when that is on the schedule). Each time
-# the earliest slot frees, it goes to the first queued item in queue order whose after: parent
-# has ended by then, or else to the one ready soonest: fleet-dispatch starts the runnable head.
+# the earliest slot frees, it goes to the first queued item in queue order whose after: parents
+# have all ended by then, or else to the one ready soonest: fleet-dispatch starts the runnable head.
 # Items with a why, and those behind one, stay unplaced.
 def qplace($t; $K; $k):
   (map(select(.state == "running")
@@ -418,8 +432,8 @@ def qplace($t; $K; $k):
   | until((.todo | length) == 0 or .stuck;
       . as $s
       | ($s.free[0] // $t) as $slot
-      | [$s.todo | to_entries[] | select(.value.after == null or $s.done[.value.after] != null)
-         | . + {ready: ([$s.done[.value.after // ""] // $t, $t] | max)}] as $can
+      | [$s.todo | to_entries[] | (.value.after // []) as $par | select(all($par[]; $s.done[.] != null))
+         | . + {ready: ([$par[] | $s.done[.]] + [$t] | max)}] as $can
       | (($can | map(select(.ready <= $slot)) | first) // ($can | min_by(.ready))) as $pick
       | if $pick == null then .stuck = true
         else $pick.value as $it
@@ -619,6 +633,7 @@ cmd_sample() {
     findings_run "$t"
     epics_step "$t"
     fleet_cost_step
+    budget_step
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -637,23 +652,42 @@ cmd_sample() {
   findings_run "$t"
   epics_step "$t"
   fleet_cost_step
+  budget_step
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
 }
 
-# fleet_cost_step: the whole fleet's estimate, tried at most every BENCH_FLEET_COST_EVERY_MIN. A failed
-# run keeps the last file and waits the same interval (touch), so a Prometheus outage costs one
-# attempt per interval; its as_of_epoch then reads stale on the Costs tab and in the KPI.
-fleet_cost_step() {
-  [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
-  mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
-  local tmp="$BENCH_FLEET_COST_FILE.$$.tmp"
-  if timeout "$BENCH_FLEET_COST_TIMEOUT" $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
-    mv "$tmp" "$BENCH_FLEET_COST_FILE"
+# state_file_step <file> <every min> <timeout s> <name> <cmd...>: run cmd at most every <every> minutes
+# and keep its JSON (it must have .total) as <file>. A failed run keeps the last file and waits the
+# same interval (touch), so a reader's outage (Prometheus, gh, a bill's API) costs one attempt per
+# interval; its as_of_epoch then reads stale on the Costs tab, in the KPI and in
+# `agent-usage budget check`.
+state_file_step() {
+  local file=$1 every=$2 limit=$3 name=$4
+  shift 4
+  [ -z "$(find "$file" -mmin "-$every" 2>/dev/null)" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  local tmp="$file.$$.tmp"
+  if timeout "$limit" "$@" > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$file"
   else
     rm -f "$tmp"
-    touch -c "$BENCH_FLEET_COST_FILE"
-    say "fleet-cost: the estimate failed; the last one stays"
+    touch -c "$file"
+    say "$name: the run failed; the last file stays"
   fi
+}
+
+# fleet_cost_step: the whole fleet's list-price estimate over 24h.
+fleet_cost_step() {
+  # shellcheck disable=SC2086  # the command is words
+  state_file_step "$BENCH_FLEET_COST_FILE" "$BENCH_FLEET_COST_EVERY_MIN" "$BENCH_FLEET_COST_TIMEOUT" fleet-cost $BENCH_FLEET_COST_CMD
+}
+
+# budget_step: this month's cash by bill. A bill its reader cannot read is an `unread` line in a fresh
+# file, never the last good figure; BUDGET_JSON points the command at this file, whose unread_since it
+# carries forward (the only record of how long a reader has failed).
+budget_step() {
+  # shellcheck disable=SC2086  # the command is words
+  BUDGET_JSON=$BENCH_BUDGET_FILE state_file_step "$BENCH_BUDGET_FILE" "$BENCH_BUDGET_EVERY_MIN" "$BENCH_BUDGET_TIMEOUT" budget $BENCH_BUDGET_CMD
 }
 
 # epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is
@@ -1671,11 +1705,13 @@ ledger_counts() {
 # request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
 # BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
-# (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
-# carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
-# `ptask --want`) was stamped by the writer.
+# (ingest.jsonl: an added or filed event the human wrote by hand, writer "human" or unnamed, or one
+# naming its channel, `want` from `ptask --want`, whichever runner wrote it; only an agent row can
+# carry #requested), the share that carry no #requested. A `want` event was stamped by the writer.
+# A runner's own row is not a channel: `notes` names its writer (AGENTCTL_NAME) since #1688.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
-# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
+# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
+# leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
@@ -1690,9 +1726,9 @@ KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
 wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
-  jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" '
-    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
-         | {from: (.from // "?"), stamped: ((.want // "") != "" or ((.text // "") | test("#requested")))}] as $w
+  jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" --argjson fix "$FIX_SINCE" "$JQ_LIB"'
+    [inputs | fromjson? | ((.want // "") != "") as $want | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch $fix) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and (((.by // "") | IN("", "human")) or $want))
+         | {from: (.from // "?"), stamped: ($want or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
 }
@@ -1770,7 +1806,8 @@ playtest_blame() {
 #     done item with merge proof (the done items merged_open_rows reads) names as its subject while
 #     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
 #     first line: its first word, or the one id in brackets. The item that worked the row itself is
-#     merged_open_rows; a merged PR reaches a row through its item.
+#     merged_open_rows; a merged PR reaches a row through its item. A row an active item works
+#     (BENCH_ITEMS_CMD) is that item's to move, so it is no orphan of the merged one.
 #   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
 #     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
 #   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
@@ -1778,27 +1815,29 @@ playtest_blame() {
 #   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
 #   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
 board_links() {
-  local t=$1 feed done verdicts blame
+  local t=$1 feed done verdicts blame active
   feed=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)') || return 1
+  active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
   done=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)" 2>/dev/null | jq -sc .) || done=null
   verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
   blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
   jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
-     --argjson blame "${blame:-[]}" "$JQ_LIB"'
+     --slurpfile a <(printf '%s' "$active") --argjson blame "${blame:-[]}" "$JQ_LIB"'
     def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
       | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
     def live: .state == "open" or .state == "doing";
-    $d[0] as $d | $v[0] as $v
+    $d[0] as $d | $v[0] as $v | ($a[0] | if . == null then null else map(rowkey | strings) | INDEX(.) end) as $worked
     | [.rows[] | select(.id != null and live)] as $live
     | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
     | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
     | [.rows[] | select(.automation != false)] as $rows
-    | {orphans: (if $d == null then null else
+    | {orphans: (if $d == null or $worked == null then null else
          [($rows[] | select(.id != null and live and .parent != null and $open["\(.project):\(.parent)"] == null)
              | {project, id, why: "its parent \(.parent) is closed"}),
           ($d[] | select((.merged // "") != "")
              | ((.title | select(. != "")) // (.task // "" | split("\n")[0]) // "" | subject) as $s | select($s != null) | $byid[$s][]? as $o
-             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null))
+             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null)
+                      and $worked["\($o.project):\($s)"] == null)
              | {project: $o.project, id: $s, why: "\(.slug) landed it"})]
          | unique_by([.project, .id]) end),
        blocked: (if $v == null then null else
@@ -1860,9 +1899,9 @@ chain_notes() {
 # tag}]}, the release link over `notes projects --stats --json` (stages.md, "Versions"). overdue: a project
 # whose own sheet counter owns its version (project_version_owner) still due a day after its due date, so
 # a wave-roll pass had all day to cut it; its `.release.due` already means done rows waited out the
-# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
-# the tag plus one patch, the version wave-roll opens. A game waiting on its first tag counts in neither,
-# and so does a profile with `automation = false`.
+# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor a
+# next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
+# tag counts in neither, and so does a profile with `automation = false`.
 release_kpis() {
   local today prof name ver due_on shipped
   today=$(date -d "@$1" +%F)
@@ -1872,7 +1911,8 @@ release_kpis() {
     case "$(project_version_owner "$name" "$shipped")" in
       sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
                jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
-      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] && [ "$ver" != "${shipped%.*}.$(( ${shipped##*.} + 1 ))" ] &&
+      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
+             project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
              jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
     esac
     :   # a project that counts in neither is no failed pass, under pipefail
@@ -1887,8 +1927,8 @@ chain_counts() {
   done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
   board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
-  ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
-    'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))')
+  ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" --argjson fix "$FIX_SINCE" \
+    'map(select(.merged_epoch > ([$t - $d * 86400, $fix] | max) and .merged_epoch <= $t))')
   links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
@@ -2173,8 +2213,10 @@ comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
-# human_answered_per_day: asks the human answered in the window, a day. An answer with no answered_by
-# is an in-session capture from before the field existed, so the human's.
+# human_answered_per_day: asks the human answered in the window, a day, outside the chat that asked
+# them, so it counts interrupts: an answer typed into the asking session (answer_note "in session: ",
+# closed_reason "replied in session") or with no answered_by (an in-session capture from before the
+# field existed) is the conversation, not an interrupt (the human's pick in ask Go78lB, 2026-11-10).
 # ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
 # pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
 # A cancelled ask was withdrawn by its asker and waited on no one.
@@ -2184,12 +2226,13 @@ ask_kpi() {
   jq -nc --argjson t "$1" --rawfile a <(printf '%s' "$asks") "$JQ_LIB"'
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;   # nearest rank
     [$a | split("\n")[] | select(length > 0) | split("\t")
-     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // "")}
+     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // ""),
+        chat: (((.[23] // "") | startswith("in session")) or ((.[14] // "") | test("replied in session")))}
      | select(.c != "")
      | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
      | .x |= (if . == "" then null else ask_epoch end)] as $r
     | def w($d): ($t - $d * 86400) as $s
-        | {human_answered_per_day: ([$r[] | select(.status == "answered" and (.by == "" or .by == "human")
+        | {human_answered_per_day: ([$r[] | select(.status == "answered" and .by == "human" and (.chat | not)
                                                   and .a != null and .a > $s and .a <= $t)] | length / $d | round1),
            ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
                                | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};
@@ -2400,8 +2443,10 @@ def pnum: (capture("-p(?<n>[0-9]+)$").n | tonumber) // null;
 def asked: .priority == "urgent" and (.from == "human" or .from == "shepherd");
 def live: .state != "done";
 def open: any(.[]; live and asked);
+def afters: .after // "" | split(" ") | map(select(. != ""));
 def keyed: . as $all | map(. as $i | ($i.slug | prefix) as $p
-  | . + {key: (if any($all[]; (.slug == $i.after or .after == $i.slug) and (.slug | prefix) == $p)
+  | . + {key: (if any($all[]; . as $o | (($i | afters | index([$o.slug])) != null or ($o | afters | index([$i.slug])) != null)
+                 and ($o.slug | prefix) == $p)
                then $p else $i.slug end)});
 def session_row($c): ($c.sessions // "" | split(" ") | map(select(. != ""))) as $ids
   | [$sessions[0][] | select(.session_id as $s | $ids | index($s))] | last;
@@ -3301,9 +3346,12 @@ triage_rows() {
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
-    # The last line of the redacted evidence is usually the error. Normalized, so a new pid or
-    # timestamp in it does not edit the row every pass.
-    why=$(grep -v '^[[:space:]]*$' "$TRIAGE_WATCH_STATE/$n.out" 2>/dev/null | tail -n 1 | log_norm | tr -d '#' | cut -c1-100)
+    # A probe that prints one OK or RED line a stage (unity-core-playground's release-ready.py)
+    # names its first RED line; otherwise the last line of the redacted evidence, usually the
+    # error. Normalized, so a new pid or timestamp in it does not edit the row every pass.
+    o="$TRIAGE_WATCH_STATE/$n.out"
+    why=$({ grep -m 1 -E '^RED[[:space:]]' "$o" || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
+      | log_norm | tr -d '#' | cut -c1-100)
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
@@ -3401,8 +3449,8 @@ triage_shape() {
 }
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
-# whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
-# is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
+# whose ERE matches the row decides; no match, or a route it does not know, is route "-" and cause
+# "-", or for a watch check(watch):<name> hashed. The cause is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
 # names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
 # text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
 # line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
@@ -3424,13 +3472,24 @@ triage_route() {
       esac
     fi
     if [ "$hit" = 0 ]; then
-      printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
+      # An unrouted watch is still queued (triage_queues), so it is a cause of its own, named as a
+      # capture-group line names it, so a line added for it later keeps its tries.
+      if [[ "$key" == 'check(watch): '* ]]; then
+        cause=${key#'check(watch): '}; cause=$(printf 'check(watch):%s' "${cause%% *}" | sha256sum | cut -c1-8)
+      fi
+      printf '%s\t%s\t%s\t-\t%s\t\n' "$key" "$text" "$pri" "$cause"
       continue
     fi
     if [[ "$text" =~ $re ]] && [ -n "${BASH_REMATCH[1]:-}" ]; then
       if [[ "$text" == *:* ]]; then re="${text%%:*}:${BASH_REMATCH[1]}"; else re+=${BASH_REMATCH[1]}; fi
     fi
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
+    if [[ "$key" == 'check(watch): '* ]]; then
+      case "$route" in
+        alert) note="the human decides: $fix; own it: file that decision as one agent-ask with a recommendation, and fix what is not theirs" ;;
+        owned:?*) note="owned by ${route#owned:}: $fix; get that work running, or fix it here" ;;
+      esac
+    fi
     text+="${note:+; $note}"
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
@@ -3439,9 +3498,21 @@ triage_route() {
   done <<<"$1"
 }
 
-# triage_filed <rows> -> the rows for the agent board. An alert, an owned red and a human's red take
-# no agent row: dispatch would read an open one as work.
-triage_filed() { awk -F'\t' '$4 == "-" || $4 == "agent" || $4 == "script"' <<<"$1"; }
+# triage_queues <key> <route>: the row is queued as a red item. An agent route is; so is a tripped
+# watch on any route but a human's, so every tripped watch has an owner (TRIAGE_WATCH_AFTER): an
+# alert or owned watch's session files the decision or chases the owner.
+triage_queues() { [ "$2" = agent ] || { [[ "$1" == 'check(watch): '* ]] && [[ "$2" != human:* ]]; }; }
+
+# triage_filed <rows> -> the rows for the agent board: every one triage_queues, and an unrouted or
+# script row. Any other alert, owned or human red takes no agent row: dispatch would read an open one as work.
+triage_filed() {
+  local line key route
+  while IFS= read -r line; do
+    IFS=$'\t' read -r key _ _ route _ <<<"$line"
+    case "$route" in - | script) ;; *) triage_queues "$key" "$route" || continue ;; esac
+    printf '%s\n' "$line"
+  done <<<"$1"
+}
 
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
@@ -3457,15 +3528,31 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
-# or closed with a PR that is not merged (it waits on a merge, and a second session would only
-# repeat it). Else how many items the window queued for it. Every row triage reads is red now, so
-# an item that closed cancelled, failed, or merged with its red still here did not hold.
+# cause_tries <items> <cause> [trip] -> -1 while an item stands for the cause: queued, running or
+# waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
+# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok with no PR since
+# then (its job was the ask or the owner, not the red; the TRIAGE_FIX_DAYS window bounds it, and the
+# watch re-pages on its own). Else how many items the window queued for it.
+# Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
+# red still here did not hold.
 cause_tries() {
-  jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+  jq --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
+                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
+                or ($trip != "" and .state == "done" and .status == "ok" and (.pr // "") == ""
+                    and ((.queued | ep) // 0) >= ($trip | tonumber)))
       then -1 else length end' <<<"$1"
+}
+
+# watch_trip <key> <route> -> the epoch an alert or owned watch row's watch tripped at; nothing for
+# any other row. 2026-11-11: playground-release-ready's alert item closed ok with the watch still
+# red, triage queued a second 4 minutes later, and the third pass would page "red fixes that did
+# not hold" for a red no session was asked to clear.
+watch_trip() {
+  [[ "$1" == 'check(watch): '* ]] || return 0
+  case "$2" in alert | owned:?*) ;; *) return 0 ;; esac
+  local n=${1#'check(watch): '}
+  sed -n '1{/^[0-9][0-9]*$/p}' "$TRIAGE_WATCH_STATE/${n%% *}.since" 2>/dev/null
 }
 
 # cause_slugs <items> <cause> -> the slugs of the window's items for the cause, oldest first, comma-joined
@@ -3478,45 +3565,49 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
-# triage_promote <rows> -> how many agent routes were queued as red fixes. A red fix opens its PR at
+# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
-# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, an item in hand
-# stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in the window.
+# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
+# item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
+# the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
+# so the watches bound it, and fleet-dispatch widens its red floor by one for each.
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
 # whose tries are spent goes to the human (triage_spent).
 triage_promote() {
-  local board key raw route cause tags items used tries more n=0 seen=' '
+  local board key raw route cause tags items used tries more kind n=0 capped=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
-    '[.[] | select(((" " + (.tags // "") + " ") | contains(" red ")) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
-    [ "$route" = agent ] || continue
-    [ $((used + n)) -lt "$TRIAGE_FIX_CAP" ] || break
+    triage_queues "$key" "$route" || continue
+    kind=''; [[ "$key" == 'check(watch): '* ]] && kind=' watch'
+    [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    tries=$(cause_tries "$items" "$cause")
+    tries=$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")
     [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
 }
 
-# triage_spent <rows> -> a human route row on the KPI board's sheet for each agent route whose cause
+# triage_spent <rows> -> a human route row on the KPI board's sheet for each row triage_queues whose cause
 # had TRIAGE_FIX_TRIES items in the window and is red still: those sessions did not hold it, so the
 # next step is the human's. triage_human files it and pages once.
 triage_spent() {
   local items key text pri route cause seen=' '
   items=$(triage_items) || return 0
   while IFS=$'\t' read -r key text pri route cause _; do
-    [ "$route" = agent ] || continue
+    triage_queues "$key" "$route" || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue
+    [ "$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")" -ge "$TRIAGE_FIX_TRIES" ] || continue
     printf '%s\t%s (red fixes that did not hold: %s)\t%s\thuman:%s\n' "$key" "$text" "$(cause_slugs "$items" "$cause")" "$pri" "$KPI_BOARD"
   done <<<"$1"
 }
@@ -3608,13 +3699,14 @@ hold_test() {
 # against a merge: one landed at or before the first red and within HOLD_HOURS of it. A merge's time
 # is its own run's, since the item finishes after the push. The failed bats files narrow that to the
 # merges whose area they are, the ones the Stop hook would pick for what each changed; a red that names none (lint, rust, a timeout) leaves only the merges
-# in last green..first red.
+# in last green..first red. The runs reach jq by file, since main's push runs pass the 128 KB
+# one-argument limit (ar-1619).
 hold_streak() {
   local repo=$1 streak=$2 near id failed sha msha m f paths hits unread=0
   local -A body
-  near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+  near=$(jq -c --arg repo "$repo" --argjson s "$streak" --slurpfile runs <(printf '%s\n' "$3") --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
-    | . as $m | .at = (([$runs[] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
+    | . as $m | .at = (([$runs[0][] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
     | select(.at <= $red and $red - .at <= $h)' <<<"$4")
   [ -n "$near" ] || return 0
   id=$(jq -r .red.id <<<"$streak")
@@ -3721,15 +3813,27 @@ red_titles() {
     { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
 }
 
+# alert_titles <items> -> the titles of the red items whose row TRIAGE_ROUTES sends to alert, as a
+# JSON array: their watch pages the human on a KPI past its bound, so no merge can clear it.
+alert_titles() {
+  jq -r "$JQ_LIB"'.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")' <<<"$1" | sort -u |
+    while IFS= read -r title; do
+      if triage_line "$title" && [ "$route" = alert ]; then printf '%s\n' "$title"; fi
+    done | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
 # reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS, then
 # per merged cleanup item (cleanup: true, its outcome the hold: the reds line of the usage above): what
 # was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
-# after the merge is "came back", red the whole time is "still red". Counted, never judged.
+# after the merge is "came back", red the whole time is "still red", and red now with its row routed
+# to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
+# Counted, never judged.
 reds_json() {
-  local t="$1" items holds live watches='{}' f n parsed
+  local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
   parsed=$(red_titles "$items") || return 1
+  alerted=$(alert_titles "$items") || return 1
   holds=$(hold_reds "$t" "$items" | jq -cs .)
   live=$(reds_live "$(jq -c '.[]' <<<"$holds")" | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
@@ -3738,12 +3842,12 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
     | ([.[] | select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != "")
-        | {slug, red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
+        | {slug, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
            fix_min: null, cleanup: true,
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
@@ -3753,7 +3857,7 @@ reds_json() {
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
-    | {slug, red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+    | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
        queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
@@ -3761,6 +3865,7 @@ reds_json() {
          elif .state == "running" or .state == "review" or .state == "waiting" then "fixing"
          elif .merged != null then
            (if $red | not then "fixed"
+            elif $t | gsub("\n"; " ") | IN($alerted[]) then "alert route"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
             else "still red" end)
          elif .status == "cancelled" then "cancelled"
@@ -3774,7 +3879,8 @@ reds_json() {
 reds_counts() {
   local rows
   rows=$(reds_json "$1" | jq -cs .) || { echo "reds_unfixed=?"; echo "red_fix_min_p50=?"; return 0; }
-  jq -r '"reds_unfixed=\([.[] | select(.outcome == "still red" or .outcome == "came back")] | length)",
+  jq -r --argjson fix "$FIX_SINCE" "$JQ_LIB"'"reds_unfixed=\([.[] | select((.outcome == "still red" or .outcome == "came back")
+      and ((.finished | ep) // $fix) >= $fix)] | length)",
     "red_fix_min_p50=\([.[] | .fix_min // empty] | sort | if length == 0 then "?" else .[(length - 1) / 2 | floor] end)"' <<<"$rows"
 }
 
@@ -3952,8 +4058,8 @@ prom_snapshot() {
 # time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
 # failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is an app inside
 # a repo (project-name.sh resolves a bnb-platform worktree to its app) or a progress line written before
-# rows carried their project, a worktree's `<repo>-<slug>`: the longest registered checkout basename or
-# alias it starts with names it, and its merges count under that name.
+# rows carried their project, a worktree's `<repo>-<slug>`: the longest spelling in the name index
+# (project_index_json) it starts with names it, and its merges count under that name.
 merge_rows() {
   local until="$1" since="${2:-$(($1 - 86400))}" p path head
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
@@ -3964,15 +4070,14 @@ merge_rows() {
     head=$(git -C "$path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || head=origin/main
     if ! timeout 30 git -C "$path" fetch -q origin "${head#origin/}" 2>/dev/null; then printf '!%s\n' "$p"; continue; fi
     git -C "$path" log "$head" --first-parent --since="$since" --until="$until" --format=%ct | sed "s/^/$p\t/"
-  done < <(jq -rn --argjson since "$since" --slurpfile m "$BENCH_PROJECT_MAP" '
+  done < <(jq -rn --argjson since "$since" --slurpfile m "$BENCH_PROJECT_MAP" \
+      --argjson idx "$(PROJECT_MAP_FILE="$BENCH_PROJECT_MAP" project_index_json)" '
     ($m[0].paths | to_entries | map({key: .value, value: .key}) | from_entries) as $path
-    | ($m[0].aliases // {}) as $alias
-    | ([$m[0].paths | to_entries[] | {b: (.key | split("/") | last | ltrimstr(".")), p: .key}]
-       + [$alias | to_entries[] | {b: .key, p: ($path[.value] // "")}] | map(select(.b != "" and .p != ""))) as $bases
+    | [$idx | to_entries[] | {b: .key, p: ($path[.value] // "")} | select(.b != "" and .p != "")] as $bases
     | [inputs | select(.epoch >= $since) | .project | select(. != "")] | unique
-    | [.[] | . as $n | ($path[$alias[$n] // $n] // "") as $direct
+    | [.[] | . as $n | ($path[$idx[$n | ascii_downcase] // $n] // "") as $direct
        | if $direct != "" then "\($n) \($direct)"
-         else ([$bases[] | select(.b as $b | $n | startswith($b + "-"))] | max_by(.b | length)) as $hit
+         else ([$bases[] | select(.b as $b | $n | ascii_downcase | startswith($b + "-"))] | max_by(.b | length)) as $hit
            | if $hit then "\($hit.b) \($hit.p)" else "\($n) " end end] | unique[]' "$PROGRESS")
 }
 
@@ -4298,16 +4403,16 @@ forecast_json() {
           | ($it | map(
               (($map[0].trackers // {})[.project].repo // .project) as $repo
               | ($prp[$repo] // $flp) as $pp
-              | (.hold // "") as $h | ($h | sub("^after "; "")) as $par
+              | (.hold // "") as $h | ($h | sub("^after "; "") | sub(" closed .*$"; "") | split(" ")) as $pars
               | {slug, project, state, mode,
                  phases: ((.phases // "" | [splits(" +")] | map(select(. != "")) | length | select(. > 0)) // $ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
                  P: $pp.P, S: $pp.S, basis: $pp.basis,
                  start: ((.started // .queued) | fromdateiso8601? // $t),
                  live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
-                 after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
+                 after: (if ($h | startswith("after ")) and all($pars[]; $active[.] != null) then $pars else null end),
                  why: (if .state == "waiting" then "waiting on you"
                        elif .state == "review" then "on a PR"
-                       elif ($h | startswith("after ")) and $active[$par] == null then "after \($par), which did not finish ok"
+                       elif ($h | startswith("after ")) and any($pars[]; $active[.] == null) then "after \($pars | join(" ")), which did not finish ok"
                        elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
                        else null end)})) as $e
           | ($e | qplace($t; $K; "P")) as $a | ($e | qplace($t; $K; "S")) as $b

@@ -72,6 +72,27 @@ kinds() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind body,read,scr
   assert_output '[2,{"alpha":1,"beta":1,"delta":1,"gamma":1,"zeta":1}]'
 }
 
+@test "stats covered_from: per root, an mtime before the window, else the first event read, and the latest root wins" {
+  transcripts
+  cov() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind skill | jq -r .covered_from; }
+  run cov
+  assert_output '2026-10-20T10:00:00'
+  # a file written inside the window whose first event predates it covers back to that event
+  echo '{"type":"user","timestamp":"2026-09-20T00:00:00Z"}' > "$CLAUDE_TRANSCRIPTS/-home-u-proj/s2.jsonl"
+  run cov
+  assert_output '2026-09-20T00:00:00'
+  # a file last written before the window bounds it by its mtime
+  echo '{"type":"user","timestamp":"2026-08-01T00:00:00Z"}' > "$CLAUDE_TRANSCRIPTS/-home-u-proj/s0.jsonl"
+  touch -d '2026-08-02 00:00:00 UTC' "$CLAUDE_TRANSCRIPTS/-home-u-proj/s0.jsonl"
+  run cov
+  assert_output '2026-08-02T00:00:00'
+  # a second root that starts inside the window holds coverage back, however far the first reaches
+  mkdir -p "$SANDBOX/work/-home-u-w"
+  echo '{"type":"user","timestamp":"2026-10-25T00:00:00Z"}' > "$SANDBOX/work/-home-u-w/w1.jsonl"
+  CLAUDE_TRANSCRIPTS="$CLAUDE_TRANSCRIPTS:$SANDBOX/work" run cov
+  assert_output '2026-10-25T00:00:00'
+}
+
 @test "the default stats kinds leave the four use kinds out" {
   transcripts
   run bash -c "'$RECALL' stats --since 2026-10-01 --json --top 0 | jq -r '.rows[].kind' | sort -u"
@@ -82,8 +103,8 @@ kinds() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind body,read,scr
 # skill-drift --overrides against a stub claude-recall that reports $FIXTURE_USED as used:
 # "name" is a use in 11 sessions, past the default listing bar of 10; "name:N" is N sessions.
 overrides() {
-  printf '#!/usr/bin/env bash\njq -n --arg u "$FIXTURE_USED" %s\n' \
-    "'{rows: [], skill_sessions: (\$u | split(\" \") | map(select(length > 0) | split(\":\") | {(.[0]): ((.[1] // \"11\") | tonumber)}) | add // {})}'" > "$SANDBOX/recall"
+  printf '#!/usr/bin/env bash\njq -n --arg u "$FIXTURE_USED" --arg o "${FIXTURE_COVERED-2026-09-01T00:00:00}" %s\n' \
+    "'{since: \"2026-10-01T00:00:00\", covered_from: (if \$o == \"\" then null else \$o end), rows: [], skill_sessions: (\$u | split(\" \") | map(select(length > 0) | split(\":\") | {(.[0]): ((.[1] // \"11\") | tonumber)}) | add // {})}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   CLAUDE_RECALL="$SANDBOX/recall" SKILL_SETTINGS="$SANDBOX/settings.json" "$DRIFT" --overrides --json
 }
@@ -150,6 +171,17 @@ overrides() {
   assert_output --partial 'no use counted'
 }
 
+@test "transcripts that do not reach back the whole window refuse with exit 3" {
+  echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
+  FIXTURE_COVERED=2026-10-15T00:00:00 FIXTURE_USED="alpha" run overrides
+  assert_failure 3
+  assert_output --partial 'covered from 2026-10-15T00:00:00, not the 30d window'
+  # no covered_from at all (no transcript) is not coverage either
+  FIXTURE_COVERED= FIXTURE_USED="alpha" run overrides
+  assert_failure 3
+  assert_output --partial 'covered from nothing'
+}
+
 # agentctl-skill-toggle reads origin/main of a fixture repo; the stub recall stands in for use.
 # The settings file is written in jq's format unless $2 is raw.
 toggle_repo() {
@@ -161,7 +193,7 @@ toggle_repo() {
   git -C "$DOTFILES" -c user.email=t@t -c user.name=t commit -qm init
   git -C "$DOTFILES" remote add origin "$SANDBOX/origin.git"
   git -C "$DOTFILES" push -q origin main
-  printf '#!/usr/bin/env bash\njq -n %s\n' "'{rows: [], skill_sessions: ([\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({(.): 11}) | add)}'" > "$SANDBOX/recall"
+  printf '#!/usr/bin/env bash\njq -n --arg o "${FIXTURE_COVERED:-2026-09-01T00:00:00}" %s\n' "'{since: \"2026-10-01T00:00:00\", covered_from: \$o, rows: [], skill_sessions: ([\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({(.): 11}) | add)}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   export CLAUDE_RECALL="$SANDBOX/recall"
 }
@@ -205,11 +237,11 @@ toggle_repo() {
   assert_output --partial 'PR #77 is still open'
 }
 
-@test "a new change stops at its open PR: BLOCKED, the worktree gone, agent-land never called" {
+@test "a new change stops at its open PR: BLOCKED, the worktree gone, the item queued for a session, agent-land never called" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
   mkdir -p "$SANDBOX/ghbin"
   printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) echo https://github.com/o/r/pull/88 ;; esac\n' > "$SANDBOX/ghbin/gh"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/ghbin/agent-queue"
+  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
   printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/ghbin/agent-land"
   chmod +x "$SANDBOX"/ghbin/*
   rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue" "$HOME/.local/bin/agent-land"
@@ -219,6 +251,11 @@ toggle_repo() {
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'opened #88 for review'
   [ ! -e "$SANDBOX/landed" ]
+  # the item goes back to queued so dispatch gives it a session to review and land it
+  # with the PR recorded first, so that session's brief names it
+  run tail -2 "$SANDBOX/aq.log"
+  assert_line --index 0 --regexp "^agent-queue set skill-toggle-$(date +%F) pr=.*/origin#88$"
+  assert_line --index 1 "agent-queue move skill-toggle-$(date +%F) queued"
   run git -C "$DOTFILES" worktree list
   assert_equal "$(wc -l <<<"$output")" 1
 }
@@ -228,4 +265,40 @@ toggle_repo() {
   run "$TOGGLE" --dry-run
   assert_failure
   assert_output --partial "not in jq's format"
+}
+
+@test "a window the transcripts do not cover is BLOCKED and makes nothing" {
+  toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
+  rm -f "$HOME/.local/lib/agent-proof.sh"
+  printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  FIXTURE_COVERED=2026-10-15T00:00:00 run "$TOGGLE"
+  assert_success
+  assert_output --partial 'verdict BLOCKED'
+  assert_output --partial 'covered from 2026-10-15'
+  run git -C "$DOTFILES" worktree list
+  assert_equal "$(wc -l <<<"$output")" 1
+}
+
+@test "a hide past the cap opens its PR for the human: the item goes to review, never queued for a session" {
+  toggle_repo '{"skillOverrides":{}}'
+  # zeta is the one unused skill; a cap of 0 makes hiding it a large change
+  SKILL_TOGGLE_HIDE_CAP=0 run "$TOGGLE" --dry-run
+  assert_success
+  assert_output --partial 'would open a PR for the human (hide 1 is past the cap of 0)'
+  mkdir -p "$SANDBOX/ghbin"
+  printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) printf "%%s\\n" "$*" > %q; echo https://github.com/o/r/pull/89 ;; esac\n' "$SANDBOX/pr.txt" > "$SANDBOX/ghbin/gh"
+  printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
+  chmod +x "$SANDBOX"/ghbin/*
+  rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue"
+  printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  SKILL_TOGGLE_HIDE_CAP=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  assert_success
+  assert_output --partial 'verdict BLOCKED'
+  assert_output --partial 'opened #89 for the human (hide 1, cap 0)'
+  run tail -1 "$SANDBOX/aq.log"
+  assert_output "agent-queue move skill-toggle-$(date +%F) review"
+  run grep -c 'queued' "$SANDBOX/aq.log"
+  assert_output 0
+  run grep -c 'waits for the human' "$SANDBOX/pr.txt"
+  assert_output 1
 }

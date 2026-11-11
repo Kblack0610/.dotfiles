@@ -43,11 +43,17 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 0
 fi
 
-mapfile -t CRATES < <(tests/rust-crates.sh)
+# Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
+if [ $# -gt 0 ]; then
+  CRATES=("$@")
+else
+  mapfile -t CRATES < <(tests/rust-crates.sh)
+fi
 
 # An empty list is a BROKEN GATE, not a clean tree -- the exact bug this whole file was
-# written to close. Four crates are tracked; zero can only mean rust-crates.sh could not
-# enumerate them, and exiting 0 here would report "clean" having compiled nothing.
+# written to close. Six crates are tracked; zero can only mean rust-crates.sh could not
+# enumerate them, and exiting 0 here would report "clean" having compiled nothing. A pick that
+# names no crate never calls this script (the CI rust job says "no crate picked" instead).
 [ "${#CRATES[@]}" -gt 0 ] || {
   echo "rust: refusing to pass - the crate list came back EMPTY (see rust-crates.sh)" >&2
   exit 1

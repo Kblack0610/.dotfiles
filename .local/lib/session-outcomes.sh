@@ -175,6 +175,19 @@ so_transcript_metrics() {
   ' < "$1"
 }
 
+# so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
+# name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
+# an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
+# every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
+# night (qmk_firmware, bnb-agents, binks-agent-orchestrator). With no registry to read
+# (project_known rc 2, or a resolver lib without it) the resolver's name stands.
+so_project_of() {
+  local p rc=0
+  p="$(resolve_project_name "$1")"
+  case "$p" in _*) ;; *) project_known "$p" 2>/dev/null || rc=$?; [ "$rc" -ne 1 ] || p=_unscoped ;; esac
+  printf '%s\n' "$p"
+}
+
 # so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
@@ -199,7 +212,7 @@ so_opencode_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/oc.projects.json" || return 1
   jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
@@ -246,7 +259,7 @@ so_codex_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/cx.projects.json" || return 1
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
@@ -324,28 +337,40 @@ so_forgejo_pr() {
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
 }
 
-# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state}],
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, context}],
 # so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
-# failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
+# failure, and warning is a pass (Forgejo's own combined state does not fail on it). After so_forgejo_auth.
 so_forgejo_checks() {
   local st
   st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
-  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]' <<<"$st"
+  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
 }
 
-# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts
-# lists (home-config's is `forgejo`, its origin the GitHub mirror); rc 1 when none is.
-so_forgejo_repo() {
-  local name url host hosts
+# so_forgejo_remote CHECKOUT [REMOTE...] - "<remote> HOST/OWNER/REPO" of the first REMOTE (default:
+# each of the checkout's remotes) whose URL is on a host so_forgejo_hosts lists; rc 1 when none is.
+so_forgejo_remote() {
+  local dir="$1" name url host hosts
+  shift
   hosts=" $(so_forgejo_hosts) "
-  for name in $(git -C "$1" remote 2>/dev/null); do
-    url="$(git -C "$1" remote get-url "$name" 2>/dev/null)" || continue
+  [ -n "${hosts// /}" ] || return 1
+  # shellcheck disable=SC2046 # one remote name a word
+  [ $# -gt 0 ] || set -- $(git -C "$dir" remote 2>/dev/null)
+  for name; do
+    url="$(git -C "$dir" remote get-url "$name" 2>/dev/null)" || continue
     host="$(url_host "$url")"
     [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
-    printf '%s/%s\n' "$host" "$(url_repo "$url")"
+    printf '%s %s/%s\n' "$name" "$host" "$(url_repo "$url")"
     return 0
   done
   return 1
+}
+
+# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of so_forgejo_remote (home-config's remote is `forgejo`,
+# its origin the GitHub mirror); rc 1 when no remote is on a listed host.
+so_forgejo_repo() {
+  local r
+  r="$(so_forgejo_remote "$1")" || return 1
+  printf '%s\n' "${r#* }"
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
@@ -362,11 +387,12 @@ so_forgejo_auth() {
   fi
 }
 
-# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API read, after so_forgejo_auth
+# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API call, after so_forgejo_auth; on
+# an HTTP error it fails and still prints the body, which carries Forgejo's reason (.message).
 so_forgejo_get() {
   local repo="$1" path="$2"; shift 2
   printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-    "${SO_CURL:-curl}" -sSf -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
+    "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:

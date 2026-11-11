@@ -22,13 +22,10 @@
 # Model calls: the registered agents `version-summary` and `version-rewrite`
 # (`agentctl-run --agent <name> -p`). Their confs pick the route and model; their prompts are
 # ~/.config/notes-cockpit/prompts/. Each call is a line in ~/.local/state/agentctl/calls.jsonl.
-# Config (machine-local, not committed - see ~/.config/notes-cockpit/README.md):
-#   ~/.config/notes-cockpit/repos     project=/abs/repo[:pathfilter]  (optional; git-log source)
+# The git-log source is the project's checkout and `path` from the registry (project_repo_path).
 
 set -uo pipefail
 
-CONF_DIR="${NOTES_COCKPIT_CONF:-$HOME/.config/notes-cockpit}"
-REPOS_FILE="$CONF_DIR/repos"
 # What this summarizes is the personal notes vault, so the agents' confs say DATA_CLASS=personal
 # and agentctl-run refuses any route not safe for it. A fallback model that crossed that line
 # sent the vault to a paid client proxy on 2026-08-09; the route, not this script, now decides.
@@ -42,21 +39,17 @@ REWRITE=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
+# shellcheck source=/dev/null
+. "${NVS_HOOKS:-$HOME/.config/shared-hooks/project-name.sh}" 2>/dev/null && project_release_lib \
+  || die "cannot load project-name.sh and git-release.sh"
+
 # ── config resolution ───────────────────────────────────────────────
-# repo_of <project> -> sets REPO + PATHFILTER from the repos map (case-insensitive key).
+# repo_of <project> -> sets REPO + PATHFILTER: the registry's checkout for the project's repo and
+# its `path` inside it ("" when the project is the whole repo, or has no checkout here).
 repo_of() {
-  REPO=""; PATHFILTER=""
-  [ -f "$REPOS_FILE" ] || return 0
-  local line val
-  line="$(awk -F= -v k="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
-    '!/^[[:space:]]*#/ { key=tolower($1); gsub(/[[:space:]]/,"",key); if (key==k){ sub(/^[^=]*=/,""); print; exit } }' \
-    "$REPOS_FILE")"
-  [ -z "$line" ] && return 0
-  val="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-  REPO="${val%%:*}"
-  case "$val" in *:*) PATHFILTER="${val#*:}" ;; esac
-  # ~ expansion
-  REPO="${REPO/#\~/$HOME}"
+  local p; p="$(project_canonical "$1")"
+  REPO="$(project_repo_path "$p")"
+  PATHFILTER="$(project_field "$p" path)"
 }
 
 # ── source gathering ────────────────────────────────────────────────
@@ -73,18 +66,18 @@ note_body() {
   ' "$1"
 }
 
-# git_subjects <repo> <pathfilter> <prevtag> <tag> -> commit subjects for the version range.
-# Uses <prevtag>..<tag> when both tags resolve, else recent commits touching the pathfilter.
+# git_subjects <repo> <project> <pathfilter> <prevver> <ver> -> commit subjects for the version
+# range. Each version resolves to its tag through git_tag_for_version in the project's tag
+# family (project_tag_scope, else the product ladder), so `portfolio-v1.6.4` answers v1.6.4.
+# Uses <prev>..<tag> when both resolve, else recent commits touching the pathfilter.
 git_subjects() {
-  local repo="$1" pf="$2" prev="$3" tag="$4"
+  local repo="$1" proj="$2" pf="$3" glob="" tag prev="" range=""
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-  local range=""
-  if git -C "$repo" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
-    if [ -n "$prev" ] && git -C "$repo" rev-parse -q --verify "refs/tags/$prev" >/dev/null 2>&1; then
-      range="$prev..$tag"
-    else
-      range="$tag"  # only the end tag known — cap the window below
-    fi
+  project_tag_scope "$proj" 2>/dev/null && glob="$_PTS_GLOB"
+  tag="$(git_tag_for_version "$repo" "$proj" "$5" "$glob")"
+  if [ -n "$tag" ]; then
+    [ -n "$4" ] && prev="$(git_tag_for_version "$repo" "$proj" "$4" "$glob")"
+    range="${prev:+$prev..}$tag"  # only the end tag known: cap the window below
   fi
   if [ -n "$range" ]; then
     if [ -n "$pf" ]; then
@@ -236,7 +229,7 @@ process_file() { # $1=profile $2=project $3=file $4=versions-list
   prev="$(prev_of "$ver" "$vlist")"
   body="$(note_body "$file")"
   repo_of "$project"
-  subjects="$(git_subjects "$REPO" "$PATHFILTER" "$prev" "$ver")"
+  subjects="$(git_subjects "$REPO" "$project" "$PATHFILTER" "$prev" "$ver")"
   tickets="$(extract_tickets "$body"$'\n'"$subjects")"
 
   # rewrite the body first (if asked), then summarize from the CLEAN version

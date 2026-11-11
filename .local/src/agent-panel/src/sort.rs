@@ -58,7 +58,11 @@ impl Sort {
     }
 
     pub fn line(self) -> String {
-        let word = KEYS.iter().find(|(k, _, _)| *k == self.key).map(|k| k.1).unwrap_or("project");
+        let word = KEYS
+            .iter()
+            .find(|(k, _, _)| *k == self.key)
+            .map(|k| k.1)
+            .unwrap_or("project");
         if self.reverse {
             format!("{word} reverse")
         } else {
@@ -68,7 +72,11 @@ impl Sort {
 
     /// How the list header names the sort, e.g. `longest open first, reversed`.
     pub fn label(self) -> String {
-        let label = KEYS.iter().find(|(k, _, _)| *k == self.key).map(|k| k.2).unwrap_or("");
+        let label = KEYS
+            .iter()
+            .find(|(k, _, _)| *k == self.key)
+            .map(|k| k.2)
+            .unwrap_or("");
         if self.reverse {
             format!("{label}, reversed")
         } else {
@@ -79,10 +87,19 @@ impl Sort {
     /// C-o moves to the next key in its natural direction; A-o flips the direction.
     pub fn step(self, step: Step) -> Sort {
         match step {
-            Step::Reverse => Sort { reverse: !self.reverse, ..self },
+            Step::Reverse => Sort {
+                reverse: !self.reverse,
+                ..self
+            },
             Step::Next => {
-                let i = KEYS.iter().position(|(k, _, _)| *k == self.key).unwrap_or(0);
-                Sort { key: KEYS[(i + 1) % KEYS.len()].0, reverse: false }
+                let i = KEYS
+                    .iter()
+                    .position(|(k, _, _)| *k == self.key)
+                    .unwrap_or(0);
+                Sort {
+                    key: KEYS[(i + 1) % KEYS.len()].0,
+                    reverse: false,
+                }
             }
         }
     }
@@ -91,23 +108,36 @@ impl Sort {
     /// orders itself. A row with no open time (a parked one) goes last either way, and ties
     /// keep the longest open first, then the order the agents were found in (a stable sort).
     pub fn order(self, agents: &mut [&Agent]) {
-        let vocab = if self.key == Key::Stage { Vocab::read() } else { Vocab::default() };
+        let vocab = if self.key == Key::Stage {
+            Vocab::read()
+        } else {
+            Vocab::default()
+        };
         self.order_by(agents, &vocab);
     }
 
     /// `order`, with the stage order given by state.json's `vocab`.
     pub fn order_by(self, agents: &mut [&Agent], vocab: &Vocab) {
         let dir = |o: Ordering| if self.reverse { o.reverse() } else { o };
-        let open = |a: &&Agent, b: &&Agent| a.started_at.is_none().cmp(&b.started_at.is_none()).then(a.started_at.cmp(&b.started_at));
+        let open = |a: &&Agent, b: &&Agent| {
+            a.started_at
+                .is_none()
+                .cmp(&b.started_at.is_none())
+                .then(a.started_at.cmp(&b.started_at))
+        };
         match self.key {
             Key::Project => {}
             Key::Open => agents.sort_by(|a, b| {
-                a.started_at.is_none().cmp(&b.started_at.is_none()).then_with(|| dir(a.started_at.cmp(&b.started_at)))
+                a.started_at
+                    .is_none()
+                    .cmp(&b.started_at.is_none())
+                    .then_with(|| dir(a.started_at.cmp(&b.started_at)))
             }),
-            Key::Status => agents.sort_by(|a, b| dir(status_rank(a).cmp(&status_rank(b))).then_with(|| open(a, b))),
-            Key::Stage => {
-                agents.sort_by(|a, b| dir(vocab.rank(&a.stage).cmp(&vocab.rank(&b.stage))).then_with(|| open(a, b)))
-            }
+            Key::Status => agents
+                .sort_by(|a, b| dir(status_rank(a).cmp(&status_rank(b))).then_with(|| open(a, b))),
+            Key::Stage => agents.sort_by(|a, b| {
+                dir(vocab.rank(&a.stage).cmp(&vocab.rank(&b.stage))).then_with(|| open(a, b))
+            }),
         }
     }
 }
@@ -136,7 +166,11 @@ pub fn load(file: &Path) -> Sort {
     match fs::read_to_string(file) {
         Err(_) => Sort::default(),
         Ok(text) => Sort::parse(text.trim()).unwrap_or_else(|| {
-            eprintln!("agent-panel: unknown sort in {}: {:?}, using project", file.display(), text.trim());
+            eprintln!(
+                "agent-panel: unknown sort in {}: {:?}, using project",
+                file.display(),
+                text.trim()
+            );
             Sort::default()
         }),
     }
@@ -182,20 +216,44 @@ mod tests {
 
     #[test]
     fn open_puts_the_longest_open_first_and_parked_last_both_ways() {
-        let open = Sort { key: Key::Open, reverse: false };
-        assert_eq!(targets(open, &fleet()), ["busy-old", "needs-mid", "idle-new", "parked"]);
+        let open = Sort {
+            key: Key::Open,
+            reverse: false,
+        };
+        assert_eq!(
+            targets(open, &fleet()),
+            ["busy-old", "needs-mid", "idle-new", "parked"]
+        );
         let newest = open.step(Step::Reverse);
-        assert_eq!(targets(newest, &fleet()), ["idle-new", "needs-mid", "busy-old", "parked"]);
+        assert_eq!(
+            targets(newest, &fleet()),
+            ["idle-new", "needs-mid", "busy-old", "parked"]
+        );
     }
 
     #[test]
     fn status_and_stage_put_the_worst_first() {
-        let status = Sort { key: Key::Status, reverse: false };
-        assert_eq!(targets(status, &fleet()), ["needs-mid", "busy-old", "idle-new", "parked"]);
-        let stage = Sort { key: Key::Stage, reverse: false };
-        assert_eq!(targets(stage, &fleet()), ["needs-mid", "idle-new", "busy-old", "parked"]);
+        let status = Sort {
+            key: Key::Status,
+            reverse: false,
+        };
+        assert_eq!(
+            targets(status, &fleet()),
+            ["needs-mid", "busy-old", "idle-new", "parked"]
+        );
+        let stage = Sort {
+            key: Key::Stage,
+            reverse: false,
+        };
+        assert_eq!(
+            targets(stage, &fleet()),
+            ["needs-mid", "idle-new", "busy-old", "parked"]
+        );
         let stage_rev = stage.step(Step::Reverse);
-        assert_eq!(targets(stage_rev, &fleet()), ["parked", "busy-old", "idle-new", "needs-mid"]);
+        assert_eq!(
+            targets(stage_rev, &fleet()),
+            ["parked", "busy-old", "idle-new", "needs-mid"]
+        );
     }
 
     #[test]
@@ -206,7 +264,10 @@ mod tests {
 
     #[test]
     fn next_cycles_every_key_in_its_natural_direction() {
-        let mut sort = Sort { key: Key::Project, reverse: true };
+        let mut sort = Sort {
+            key: Key::Project,
+            reverse: true,
+        };
         let mut seen = Vec::new();
         for _ in 0..KEYS.len() {
             sort = sort.step(Step::Next);
@@ -221,7 +282,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-panel-sort-{}", std::process::id()));
         let file = dir.join("panels/agent-panel.sort");
         assert_eq!(load(&file), Sort::default(), "no file is project");
-        let sort = Sort { key: Key::Open, reverse: true };
+        let sort = Sort {
+            key: Key::Open,
+            reverse: true,
+        };
         save(&file, sort).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "open reverse\n");
         assert_eq!(load(&file), sort);

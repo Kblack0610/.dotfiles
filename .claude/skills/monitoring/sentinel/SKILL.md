@@ -93,6 +93,8 @@ renders and what a page carries, and a watch nobody can read is a watch nobody a
 
 `who` is the existing `source:` field - don't add another.
 
+Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
+
 ```yaml
 name: prod-api
 what: GET https://api.myapp.com/health answers 200.
@@ -150,9 +152,10 @@ Answers "what are you watching / is Sentinel running". Read-only.
 ```sh
 watch-companion-loop recheck <name>...   # probe now, whatever the interval
 watch-companion-loop recheck --tripped   # every TRIP or ERROR watch
+watch-companion-loop resolve <name> --pr OWNER/REPO#N   # its fix merged: the probe counts from the merge, then a recheck
 ```
 
-The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. Operate commands: `~/.config/agentctl/SENTINEL.md`.
+The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. `resolve` writes the merge time to `<name>.resolved`, and the loop passes it to a command probe as `SENTINEL_SINCE` (0 for none), so a windowed probe stops counting the events its fix already answered and only a new one trips it again. Operate commands: `~/.config/agentctl/SENTINEL.md`.
 
 ## Verb: `stop` / `remove <name>`
 

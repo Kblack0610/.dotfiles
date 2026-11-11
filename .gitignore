@@ -48,9 +48,6 @@ Media/Music
 
 .config/nvim/lazy-lock.json
 
-.config/OrcaSlicer
-!.config/OrcaSlicer/OrcaSlicer.conf
-
 # Windsurf - ignore everything except settings
 .config/Windsurf/*
 !.config/Windsurf/User/

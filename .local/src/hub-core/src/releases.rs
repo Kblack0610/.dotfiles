@@ -2,7 +2,7 @@
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
-//! exceptions-first order. The Builds section under the apps is its own reader's.
+//! exceptions-first order. The Builds inner tab beside the apps is its own reader's.
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::pipeline::stamp;
 
 use crate::layout;
+use crate::release_graph::{self, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 
@@ -60,6 +61,10 @@ pub struct Side {
     pub source: String,
     pub error: Option<String>,
     pub image: Option<String>,
+    /// A gitops pin only: when the file took this value (the commit that set it) and the value
+    /// it held before.
+    pub at: Option<i64>,
+    pub prev: Option<String>,
 }
 
 impl Side {
@@ -292,6 +297,14 @@ pub struct App {
     pub lead: usize,
     /// The folded envs in one line: `preview 2 ok; beta 1 released; internal 1 not read`.
     pub others_text: String,
+    /// Which tags the history reads: `release` (its own family), `build` (per-build tags, the
+    /// registry's `buildTags`) or `none`.
+    pub line: String,
+    /// Every tag the collector kept, newest first, each joined to the channels it reached
+    /// (`hub_core::release_graph`).
+    pub history: Vec<Shipment>,
+    /// The RELEASED cell: the newest tag and when it was made, `v1.19.0 10-27`; `-` with none.
+    pub released_text: String,
 }
 
 impl App {
@@ -309,6 +322,7 @@ impl Row for App {
         "live",
         "status",
         "channels",
+        "released",
         "last_deploy",
         "channel",
         "id",
@@ -333,6 +347,7 @@ impl Row for App {
             "live" => text(&self.live_text),
             "status" => text(&self.status_text),
             "channels" => text(&self.channels_text),
+            "released" => text(&self.released_text),
             "last_deploy" => text(&self.last_deploy_text),
             "channel" => every(|r| r.channel.as_str()),
             "id" => every(|r| r.id.as_str()),
@@ -360,6 +375,7 @@ impl Row for App {
             self.live_text.clone(),
             self.status_text.clone(),
             self.channels_text.clone(),
+            self.released_text.clone(),
             self.last_deploy_text.clone(),
         ];
         for r in &self.channels {
@@ -390,6 +406,12 @@ impl Row for App {
     fn rank(&self, col: &str) -> Val {
         match col {
             "status" => Val::Num(-(rank(&self.status) as f64)),
+            // Newest release first on the first click, by when, not by the tag's spelling.
+            "released" => self
+                .history
+                .first()
+                .and_then(|h| h.at)
+                .map_or(Val::None, |a| Val::Num(a as f64)),
             _ => self.val(col),
         }
     }
@@ -413,6 +435,12 @@ pub struct Releases {
 }
 
 impl Releases {
+    /// An app's word is bad (a drift, a tripped watch) or the snapshot could not be read: the
+    /// Apps inner tab's count (`layout::inner_count`), so it shows while another one is open.
+    pub fn needs_look(&self) -> bool {
+        !self.errors.is_empty() || self.apps.iter().any(|a| a.level == Level::Bad)
+    }
+
     /// The snapshot is older than the collector's cadence can explain.
     pub fn stale(&self, now: i64) -> bool {
         self.at > 0 && now - self.at > STALE_SECS
@@ -424,6 +452,8 @@ impl Releases {
 struct Snapshot {
     generated_epoch: i64,
     rows: Vec<Release>,
+    /// Each project's tag history, keyed by project (`release-state refresh`).
+    releases: HashMap<String, Line>,
 }
 
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
@@ -485,8 +515,8 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     rows
 }
 
-/// One project's settled channels as its app.
-fn app(project: &str, mut channels: Vec<Release>) -> App {
+/// One project's settled channels as its app, with its tag history joined to them.
+fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
     channels.sort_by(|a, b| {
         let key = |r: &Release| (r.unread(), r.level, rank(&r.status));
         (env_rank(&a.channel), key(a), &a.id).cmp(&(env_rank(&b.channel), key(b), &b.id))
@@ -548,6 +578,9 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
+    let history = line.map_or(vec![], |l| {
+        release_graph::history(l, &channels, chrono::Local::now().timestamp())
+    });
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {
@@ -571,18 +604,32 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         deploy_level: last.map_or(Level::Ok, |r| r.deploy_level),
         others_text: others.join("; "),
         lead,
+        line: line.map_or("none".into(), |l| l.line.clone()),
+        // A release tag reads as its version (`v1.19.0`); a build tag is its own name.
+        released_text: history.first().map_or("-".into(), |h| {
+            let tag = if line.is_some_and(|l| l.line == "release") && !h.version.is_empty() {
+                format!("v{}", h.version)
+            } else {
+                h.tag.clone()
+            };
+            format!("{tag} {}", h.at_text)
+        }),
+        history,
         channels,
     }
 }
 
 /// The settled channels grouped into apps, exceptions first, then by name.
-fn apps(rows: &[Release]) -> Vec<App> {
+fn apps(rows: &[Release], lines: &HashMap<String, Line>) -> Vec<App> {
     let mut names: Vec<&str> = rows.iter().map(|r| r.project.as_str()).collect();
     names.sort_unstable();
     names.dedup();
     let mut out: Vec<App> = names
         .into_iter()
-        .map(|p| app(p, rows.iter().filter(|r| r.project == p).cloned().collect()))
+        .map(|p| {
+            let channels = rows.iter().filter(|r| r.project == p).cloned().collect();
+            app(p, channels, lines.get(p))
+        })
         .collect();
     out.sort_by(|a, b| {
         let key = |x: &App| (x.level, rank(&x.status));
@@ -662,7 +709,7 @@ pub fn read(runner: &dyn Runner) -> Releases {
     match show(runner, None) {
         Ok(s) => {
             let rows = settle(s.rows);
-            let apps = apps(&rows);
+            let apps = apps(&rows, &s.releases);
             Releases {
                 at: s.generated_epoch,
                 question,
@@ -703,7 +750,7 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    apps(rows).into_iter().next().map(|a| {
+    apps(rows, &HashMap::new()).into_iter().next().map(|a| {
         let live = if a.live_text == "-" {
             String::new()
         } else {
@@ -1109,6 +1156,8 @@ mod tests {
             chan("app", "app-api-prod", "prod", Some("v2"), "drift"),
             chan("zed", "zed-prod", "prod", None, "unknown"),
         ]));
+        // A bad app is what puts a count on the Apps inner tab; unread and floating ones do not.
+        assert!(r.needs_look() && !shipped().needs_look());
         v = r.apps;
         assert_eq!((v[0].project.as_str(), v[0].level), ("app", Level::Bad));
         assert_eq!(v[0].status_text, "drift");
@@ -1241,5 +1290,34 @@ mod tests {
         assert_eq!(r.errors, Vec::<String>::new());
         assert_eq!(r.rows[0].pinned_text, "-");
         assert_eq!(r.rows[0].live_text, "-");
+        assert_eq!(
+            (r.apps[0].line.as_str(), r.apps[0].released_text.as_str()),
+            ("none", "-")
+        );
+    }
+
+    #[test]
+    fn an_app_reads_its_tag_history_joined_to_its_channels() {
+        let raw = r#"{"generated_epoch": 7, "rows": [{"project": "pmp", "id": "pmp-web-prod",
+          "channel": "prod", "pinned": {"value": "v1.19.0", "source": "repo:origin/main:f.yaml",
+          "at": 1793111939, "prev": "v1.18.0"}, "live": {"value": "v1.19.0", "source": "k8s"},
+          "status": "ok", "deploys": {"source": "none", "history": []}}],
+          "releases": {"pmp": {"line": "release", "glob": "pmp-v*", "error": null, "tags": [
+            {"tag": "pmp-v1.19.0", "version": "1.19.0", "sha": "fc99", "at": 1793081423, "prev": "pmp-v1.18.0"},
+            {"tag": "pmp-v1.18.0", "version": "1.18.0", "sha": "ab12", "at": 1792000000, "prev": null}]}}}"#;
+        let r = read(&Fake(Ok(raw.into())));
+        let a = &r.apps[0];
+        assert_eq!(a.line, "release");
+        assert_eq!(a.history.len(), 2);
+        assert!(
+            a.released_text.starts_with("v1.19.0 "),
+            "{}",
+            a.released_text
+        );
+        assert_eq!(a.history[0].prev.as_deref(), Some("pmp-v1.18.0"));
+        // The prod pin names v1.19.0, so the newest release reached it; the older one did not.
+        assert_eq!(a.history[0].reached[0].how, "pin");
+        assert_eq!(a.history[1].reached_text, "not recorded");
+        assert_eq!(r.rows[0].pinned.prev.as_deref(), Some("v1.18.0"));
     }
 }

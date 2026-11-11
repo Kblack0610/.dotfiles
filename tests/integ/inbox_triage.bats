@@ -90,6 +90,10 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ "$(grep -c 'fix(audio)' "$SHEET")" = 1 ] || fail "filed more than once: $(cat "$SHEET")"
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
   grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
+  # The --priority pass's rubric, so the row is filed with the priority that pass would give it (ar-1615).
+  grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
+  # An agent-lane row is #requested, so the rubric makes it high; filed without one, the --priority pass re-tags it (ar-1633).
+  grep -q 'lane agent is filed #requested, so the person asked for it: it is #high' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the agent-lane priority"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -106,6 +110,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx FAILED "$st/last-outcome"
   grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
   grep -q '"action":"sweep-stopped".*"why":"model call failed: You have hit your weekly limit - resets 7pm"' "$HOME/.local/state/notes/ingest.jsonl" || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  inbox | grep -q 'the gun sound is off'
+}
+
+@test "a failed board read names notes' own error in the log and the outcome" {
+  # 2026-11-10: the board read failed for 15 hours and the log said only "notes board --json
+  # failed", because notes' stderr went to /dev/null.
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes board --json failed (exit 2): error: sheet other: bad heading'
+  grep -q 'outcome=FAILED .*notes board --json failed (exit 2): error: sheet other: bad heading' "$HOME/.local/state/agentctl/inbox-triage/activity.log"
   inbox | grep -q 'the gun sound is off'
 }
 

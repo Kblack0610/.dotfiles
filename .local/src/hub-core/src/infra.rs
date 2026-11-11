@@ -1,16 +1,19 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
 //! TUI's Infra tab (and Home's health line) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
-//! Grafana's kb-command-center does, so none of them judges anything itself.
+//! Grafana's kb-command-center does, so none of them judges anything itself. Alertmanager is
+//! asked in the same gather (`alertmanager::read`), so the Alerts tab's rules ride this cadence.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
 use crate::prom::{self, Series, W};
+use crate::run_detail::Rates;
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
 const LOCAL_FRESH: &str =
@@ -21,6 +24,11 @@ const LOCAL_FRESH: &str =
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+
+/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
+/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str =
+    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -49,6 +57,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
+        // Each host's emptiest real filesystem, free share: the NodeDisk* alerts' recording
+        // rule, keyed by host through cc:host_instance. A CI host with no row here (the AWS
+        // hosts, never scraped) has no disk reading at all, and the machines table says so.
+        ("disk", "min by (host) (device:node_filesystem_avail:ratio * on (instance) group_left (host) cc:host_instance)".into()),
         // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
@@ -67,6 +79,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
+        ("rates", RATES_QUERY.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -78,8 +91,10 @@ pub const OPTIONAL: &[&str] = &[
     "runner_cores",
     "withheld",
     "power",
+    "disk",
     "governor",
     "job_usual",
+    "rates",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -98,6 +113,11 @@ pub struct Infra {
     pub down: Vec<Series>,
     /// The CI runners board, built once here for both surfaces (`ci::build`).
     pub ci: Ci,
+    /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
+    /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
+    /// leaves it out.
+    #[serde(skip)]
+    pub alertmanager: Option<Result<Vec<Firing>, String>>,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -116,6 +136,18 @@ fn grafana_base(url: &str) -> String {
 /// Ask every query at once (each is a curl with its own timeout) and keep what answered.
 /// Any required query failing, or no `cc:overall_status`, makes the whole answer an error.
 pub fn gather() -> Infra {
+    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
+    // Alerts tab shows each source's answer on its own.
+    let (am, mut out) = std::thread::scope(|s| {
+        let am = s.spawn(alertmanager::read);
+        let out = prometheus();
+        (am.join().unwrap_or_else(|_| Err("panicked".into())), out)
+    });
+    out.alertmanager = Some(am);
+    out
+}
+
+fn prometheus() -> Infra {
     let mut out = Infra {
         at: crate::jobs::now().max(0) as u64,
         grafana: grafana(),
@@ -173,6 +205,21 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 }
 
 impl Infra {
+    /// The rates the board read, or why there are none.
+    pub fn rates(&self) -> Rates {
+        match self.instant.get("rates") {
+            Some(s) => Rates::from_series(s),
+            None => Rates {
+                error: Some(
+                    self.error
+                        .clone()
+                        .unwrap_or_else(|| "no rate series".into()),
+                ),
+                ..Default::default()
+            },
+        }
+    }
+
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
@@ -352,6 +399,26 @@ mod tests {
     }
 
     #[test]
+    fn the_rates_come_from_the_boards_answer_or_say_why_not() {
+        let mut i = Infra::default();
+        i.instant.insert(
+            "rates",
+            vec![
+                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
+                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
+            ],
+        );
+        let r = i.rates();
+        assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
+        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        let none = Infra {
+            error: Some("cannot read prom".into()),
+            ..Default::default()
+        };
+        assert_eq!(none.rates().error.as_deref(), Some("cannot read prom"));
+    }
+
+    #[test]
     fn only_the_extras_are_optional() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
@@ -366,8 +433,10 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
+                "disk",
                 "governor",
-                "job_usual"
+                "job_usual",
+                "rates"
             ]
         );
     }

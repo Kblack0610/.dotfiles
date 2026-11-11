@@ -24,6 +24,8 @@ case "$1 $2" in
   case "$*" in
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
   # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
+  # prior.json: an earlier PR the item records, asked for its state and merge commit (open by default)
+  *state,mergeCommit*) { cat "$NOTES_FIXTURE/prior.json" 2>/dev/null || echo '{"state":"OPEN","mergeCommit":null}'; } | jq -r "${@: -1}" || exit 1 ;;
   # url: the PR's URL (o/r #42 by default)
   *baseRefName*) printf '{"state":"%s","baseRefName":"main","url":"%s","headRefOid":"%s","isCrossRepository":%s,"headRefName":"%s"}' "$(cat "$NOTES_FIXTURE/state")" \
     "$(cat "$NOTES_FIXTURE/url" 2>/dev/null || echo https://github.com/o/r/pull/42)" \
@@ -83,8 +85,12 @@ rev-list)
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
-# origin.url: this checkout's origin (o/r over ssh by default)
-remote) cat "$NOTES_FIXTURE/origin.url" 2>/dev/null || echo git@github.com:o/r.git ;;
+# remotes: what `git remote` lists (origin by default); <name>.url: that remote's URL, and
+# origin.url this checkout's origin (o/r over ssh by default)
+remote) case "$2" in
+  '') cat "$NOTES_FIXTURE/remotes" 2>/dev/null || echo origin ;;
+  *) cat "$NOTES_FIXTURE/${*: -1}.url" 2>/dev/null || cat "$NOTES_FIXTURE/origin.url" 2>/dev/null || echo git@github.com:o/r.git ;;
+  esac ;;
 # remote.tip: origin's tip of the asked branch, as `git ls-remote` prints it (nothing when absent)
 # remote.fail: the call fails (no network); a decoy ref that only tail-matches comes first
 ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to access' >&2; exit 128; }
@@ -119,6 +125,8 @@ exit "$(cat "$NOTES_FIXTURE/autopull.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/dotfiles-autopull"
   export DOTFILES_AUTOPULL="$SANDBOX/bin/dotfiles-autopull"
+  # The Forgejo hosts agent-land may send the token to: none, so a GitHub origin stays on gh.
+  export SO_FORGEJO_HOSTS=''
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
@@ -135,6 +143,8 @@ EOF
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
 board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
+# ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
+ran() { grep -v -x -e 'git rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
 not_recorded() { grep -v '^notes ingest record ' "$LOG" || true; }
 
@@ -498,6 +508,7 @@ landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
+git rev-parse --show-toplevel
 gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
 git -C . remote get-url origin
 git rev-parse HEAD
@@ -818,7 +829,7 @@ EOF2
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "9. missing"
   assert_failure 2
   assert_output --partial '0 unchecked lines'
-  run cat "$LOG"
+  run ran
   assert_output ''
 }
 
@@ -837,7 +848,7 @@ EOF2
   assert_line --index 9 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
   assert_line --index 10 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
   assert_line --index 11 --partial 'plan: tick'
-  run cat "$LOG"
+  run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
   assert_output 0
@@ -1301,6 +1312,9 @@ real_notes_board() {
   run "$LAND" 42 --item ship
   assert_success
   assert_line 'live: ~/.dotfiles: fast-forwarded main 01234567..fedcba98'
+  printf '%s\n' '~/.dotfiles: fast-forwarded main 01234567..fedcba98' '~: rebuilt agent-web (cargo build --release)' >"$NOTES_FIXTURE/autopull.out"
+  run "$LAND" 42 --item ship
+  assert_line 'live: ~: rebuilt agent-web (cargo build --release)'
   run grep 'pr merge 42\|^dotfiles-autopull' "$LOG"
   assert_line --index 0 --partial 'pr merge 42'
   assert_line --index 1 'dotfiles-autopull --now .'
@@ -1357,6 +1371,46 @@ real_notes_board() {
   assert_output --partial 'done ship it --proof pr:43'
 }
 
+@test "an earlier PR recorded with no merge takes its merge commit from gh, so this PR is recorded beside it" {
+  # NEGATIVE CONTROL: before ar-781 this merged #42, then failed "no merge recorded for o/p#1794"
+  # and left #42 off the item (private #762, 2026-11-11).
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line 'item: ship partial with pr:o/r#42, left open for the final landing'
+  run grep -c '^gh pr view 1794 -R o/p --json state,mergeCommit -q .mergeCommit.oid // .state$' "$LOG"
+  assert_output 1
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged] | join("|")' <<<"$output")" \
+    'running|yes|o/p#1794 o/r#42|abcdef0123456789abcdef0123456789abcdef01 fedcba9876543210fedcba9876543210fedcba98'
+}
+
+@test "an earlier PR that is not merged refuses before the merge, leaving the PR and item untouched" {
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  run "$LAND" 42 --item ship --partial
+  assert_failure 2
+  assert_output --partial 'queue item ship records o/p#1794, which is OPEN: land it first (agent-land 1794 --repo o/p --item ship --partial), then #42'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .pr, (.merged // ""), (.partial // "")] | join("|")' <<<"$output")" 'running|o/p#1794||'
+}
+
+@test "an earlier PR closed unmerged, or lists out of step, refuse before the merge with the way out" {
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  echo '{"state":"CLOSED","mergeCommit":null}' >"$NOTES_FIXTURE/prior.json"
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'queue item ship records o/p#1794, closed unmerged: drop it from'
+  agent-queue set ship 'pr=o/p#1794 o/q#7' merged=abcdef0123456789abcdef0123456789abcdef01 >/dev/null
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'out of step'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+}
+
 @test "partial protects an already merged PR and refuses a finished item or plan phase" {
   echo MERGED >"$NOTES_FIXTURE/state"
   run "$LAND" 42 --item ship --partial
@@ -1398,4 +1452,147 @@ real_notes_board() {
   run "$LAND" 43 --item ship
   assert_success
   assert_output --partial 'board: closed "ship it" with pr:43'
+}
+
+# A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,
+# head.oid, merge.oid); fj.status is the head's combined status (one green check by default) and
+# fj.files the changed files. Each call logs as "curl METHOD <path under repos/o/r/> [data]".
+forgejo() {
+  export SO_FORGEJO_HOSTS=forgejo.example SO_RBW="$SANDBOX/bin/rbw"
+  printf '#!/usr/bin/env bash\necho tok\n' >"$SANDBOX/bin/rbw"
+  cat >"$SANDBOX/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+F=$NOTES_FIXTURE
+grep -q 'Authorization: token tok' || { echo 'curl: no token on stdin' >&2; exit 2; }
+url=${*: -1} method=GET data=''
+while [ $# -gt 1 ]; do
+  case "$1" in -X) method=$2 && shift ;; --data-binary) data=$2 && shift ;; esac
+  shift
+done
+path=${url#https://forgejo.example/api/v1/repos/o/r/}
+printf 'curl %s %s%s\n' "$method" "$path" "${data:+ $data}" >>"$F/calls.log"
+case "$method $path" in
+'GET pulls/42')
+  jq -n --arg st "$(cat "$F/state")" --arg body "$(cat "$F/body")" --arg h "$(cat "$F/head.oid" 2>/dev/null || echo 0123456789abcdef)" \
+    --arg m "$(cat "$F/merge.oid" 2>/dev/null || echo fedcba9876543210fedcba9876543210fedcba98)" \
+    '{number: 42, state: (if $st == "OPEN" then "open" else "closed" end), merged: ($st == "MERGED"), body: $body,
+      base: {ref: "main", repo: {full_name: "o/r"}}, head: {sha: $h, ref: "pr-42", repo: {full_name: "o/r"}},
+      html_url: "https://forgejo.example/o/r/pulls/42", mergeable: true,
+      merge_commit_sha: (if $st == "MERGED" then $m else null end)}' ;;
+'PATCH pulls/42') jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
+'GET commits/'*'/status') cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
+# fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
+'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
+  cp "$F/merged.state" "$F/state" ;;
+'GET branch_protections') cat "$F/fj.protections" 2>/dev/null || echo '[]' ;;
+'GET pulls/42/files'*) cat "$F/fj.files" 2>/dev/null || echo '[{"filename":"a.sh"}]' ;;
+*) echo "curl: (22) The requested URL returned error: 404" >&2 && exit 22 ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/rbw" "$SANDBOX/bin/curl"
+}
+
+@test "a PR on a Forgejo origin (bnb-game-servers): merged through the API pinned to HEAD, recorded on the item, no gh" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'item-line: added "Item: ship" to the body'
+  assert_line 'checks: green'
+  assert_line 'merge: #42 MERGED at 01234567'
+  assert_line 'item: ship done with pr:o/r#42'
+  assert_line --index -1 'landed #42'
+  run grep -c '^gh ' "$LOG"
+  assert_output 0
+  run grep -c '^curl POST pulls/42/merge {"Do":"squash","head_commit_id":"0123456789abcdef"}$' "$LOG"
+  assert_output 1
+  run grep -c '^git -C . fetch -q origin +refs/heads/main:refs/remotes/origin/main$' "$LOG"
+  assert_output 1
+  run grep -c '^curl GET pulls/42/files?limit=50&page=1$' "$LOG"
+  assert_output 1
+  run agent-queue show ship --json
+  assert_output --partial '"pr":"o/r#42"'
+  assert_output --partial '"merged":"fedcba9876543210fedcba9876543210fedcba98"'
+  assert_output --partial '"state":"done"'
+}
+
+@test "a Forgejo-canonical checkout (home-config): its forgejo remote, not the GitHub origin, carries every git step" {
+  forgejo
+  mkdir -p "$SANDBOX/hc/.forgejo/workflows"
+  : >"$SANDBOX/hc/.forgejo/workflows/mirror-to-github.yaml"
+  printf '%s\n' "$SANDBOX/hc" >"$NOTES_FIXTURE/toplevel"
+  printf 'forgejo\norigin\n' >"$NOTES_FIXTURE/remotes"
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/forgejo.url"
+  printf '1\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship --merge-commit
+  assert_success
+  assert_line 'fetch: merged forgejo/main (1 behind) into the head and pushed it'
+  assert_line 'proof: evidence commit 0123456789abcdef is an ancestor of forgejo/main'
+  run grep -c '^gh \|origin' "$LOG"
+  assert_output 0
+  run grep -c '^git push -q forgejo HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+  run grep -c '"Do":"merge"' "$LOG"
+  assert_output 1
+}
+
+@test "a Forgejo check that failed stops at checks, naming it; nothing merged" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"statuses":[{"status":"success","context":"lint"},{"status":"failure","context":"checks / test"}]}' >"$NOTES_FIXTURE/fj.status"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: checks / test'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  export AGENT_LAND_CHECKS_TRIES=1 AGENT_LAND_CHECKS_POLL=0
+  echo '[{"rule_name":"main","enable_status_check":true,"block_on_outdated_branch":false}]' >"$NOTES_FIXTURE/fj.protections"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'origin/main requires checks, so Forgejo would refuse the merge'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+  echo '[{"rule_name":"release","enable_status_check":true}]' >"$NOTES_FIXTURE/fj.protections"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: none reported'
+}
+
+@test "a Forgejo merge refusal ends with Forgejo's reason, not only curl's status line" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"message":"Please try again later","url":"https://forgejo.example/api/swagger"}' >"$NOTES_FIXTURE/fj.refuse"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'Forgejo: Please try again later'
+}
+
+@test "a Forgejo dry run reads no token and calls nothing" {
+  forgejo
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/rbw"
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship --dry-run
+  assert_success
+  assert_line --partial 'forge: Forgejo forgejo.example/o/r on remote origin'
+  run grep -c '^curl ' "$LOG"
+  assert_output 0
+}
+
+@test "a Forgejo-canonical checkout with no remote on a listed host stops before anything, never falling back to gh" {
+  forgejo
+  export SO_FORGEJO_HOSTS=elsewhere.example
+  mkdir -p "$SANDBOX/hc/.forgejo/workflows"
+  : >"$SANDBOX/hc/.forgejo/workflows/mirror-to-github.yaml"
+  printf '%s\n' "$SANDBOX/hc" >"$NOTES_FIXTURE/toplevel"
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists'
+  run grep -c '^gh \|^curl ' "$LOG"
+  assert_output 0
 }

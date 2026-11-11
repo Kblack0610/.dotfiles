@@ -1026,6 +1026,17 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
+@test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
+  oc_db
+  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
+  run "$SUBJECT" run
+  assert_success
+  [ ! -e "$SO_OUT/bnb-agents" ]
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | jq -rs 'map(.session_id) | join(" ")')" ses_stray
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
+}
+
 @test "an opencode session's Forgejo PR: a POST to the pulls API that printed its html_url is claimed" {
   oc_db
   fj_setup
@@ -1291,6 +1302,27 @@ cx_rollouts() {
   assert_equal "$(r '.cost_usd')" null
   assert_equal "$(r '[.prs[].number] | join(" ")')" '12 13'
   assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
+}
+
+@test "a codex session in a repo the registry does not know files under _unscoped, never a stray key the doctor fails" {
+  cx_rollouts
+  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  local t0
+  t0=$(date -u -d "@$((STOP - 60))" +%Y-%m-%dT%H:%M:%S.000Z)
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: "/w/qmk_firmware", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "trackball speed"}}
+  ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-cx-stray.jsonl"
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  [ ! -e "$SO_OUT/qmk_firmware" ]
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | jq -rs 'map(.session_id) | join(" ")')" cx-stray
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("cx-"))] | join(" ")')" cx-root
+  # the next run reads the _unscoped line as seen and writes nothing more
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | grep -c .)" 1
 }
 
 # cx_item_rollouts -- the item format 0.164 writes for a run the fleet starts: UserMessage and

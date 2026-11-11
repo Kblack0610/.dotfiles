@@ -40,7 +40,7 @@ A row's `Applies` narrows it inside its system: a `ui` row for `game` only skips
 | System | Applies | Criterion | Check | Why |
 | --- | --- | --- | --- | --- |
 | ci | base | A CI workflow in the repo runs on every PR | `ls "$REPO"/.github/workflows/*.y*ml "$REPO"/.forgejo/workflows/*.y*ml 2>/dev/null \| grep -q .` | A check that only runs on a laptop is skipped on the day it matters |
-| ci | base | The merge gate finishes in minutes; the full suite runs on main or nightly | not yet: needs the forge API (`ci-cost` measures it by hand) | A gate past an hour holds every PR behind it |
+| ci | base | The merge gate finishes in minutes; the full suite runs on main or nightly | not yet: needs the forge API (`ci-cost` measures it by hand) | A gate past an hour holds every PR behind it; the doctrine and each repo's budget are in `~/.local/src/docs/ci.md` |
 | tests | base | Automated tests are in the repo | `git -C "$REPO" ls-files \| grep -Eqi '(^\|/)(tests?\|__tests__\|spec)/\|\.(test\|spec)\.\|Tests?\.cs$'` | Untested code is re-broken by the next change to it |
 | tests | game | A play test loads the game and plays a round headless | not yet: `EveryGameLoadsPlayTests` covers the load only | Most game breaks only show once a round is running |
 | deploy | base | Deploys are a script or workflow, never hand steps | not yet | A hand step is the one that gets skipped under pressure |

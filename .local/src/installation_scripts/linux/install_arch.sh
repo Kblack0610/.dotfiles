@@ -285,27 +285,6 @@ setup_printing() {
 }
 
 # Override: Setup Sunshine game streaming with GPU auto-detection
-setup_3d_printing() {
-    log_section "Setting up 3D printing (native OrcaSlicer)"
-
-    # Native build from the AUR. A Docker wrapper at ~/.local/bin/orca-slicer
-    # was retired 2026-11-04; it shadowed this binary on PATH.
-    install_aur_package "orca-slicer"
-
-    # Presets live in home-config (apps/orcaslicer/profiles); desktop-link.sh
-    # links them into ~/.config/OrcaSlicer and fills the A1 LAN code from SOPS.
-    local link="$HOME/dev/home/home-config/apps/orcaslicer/desktop-link.sh"
-    if [[ -L "$HOME/.config/OrcaSlicer/user/default/process" ]]; then
-        log_info "OrcaSlicer presets already linked to home-config"
-    elif [[ ! -x "$link" ]]; then
-        log_warning "Manual step: clone home-config to ~/dev/home/home-config, then run $link"
-    elif [[ ! -f "$HOME/.config/sops/age/keys.txt" ]]; then
-        log_warning "Manual step: restore the age key to ~/.config/sops/age/keys.txt, then run $link"
-    else
-        "$link" || log_warning "desktop-link.sh failed - see ~/.config/orcaslicer/README.md"
-    fi
-}
-
 setup_sunshine() {
     log_section "Setting up Sunshine (game streaming)"
 
@@ -764,6 +743,56 @@ setup_freerdp_avd() {
 }
 
 # Override main installation to include AUR
+# Static-check tools for the trader repo (Kblack0610/freqtrade_trading_attempt).
+#
+# Its package.json runs `python -m mypy` and `python -m ruff`, and the
+# 20-node-checks stop hook runs those through `pnpm typecheck` / `pnpm lint` on the
+# system python, which ships neither. The pins live in the repo's
+# lab/requirements-dev.txt (CI installs the same file), so this reads that file
+# instead of copying the versions. The system python is externally managed, so the
+# pins go into the user site-packages with uv --target.
+#
+# Idempotent: skips when the checkout is absent, and installs only when a pin is
+# missing or at another version.
+setup_trader_checks() {
+    log_section "Setting up trader static-check tools (mypy, ruff)"
+
+    local reqs="${TRADER_DIR:-$HOME/dev/crypto/freqtrade_trading_attempt}/lab/requirements-dev.txt"
+    if [[ ! -f "$reqs" ]]; then
+        log_info "No trader checkout at $reqs - skipping"
+        return 0
+    fi
+
+    command -v uv &>/dev/null || install_pacman_package uv
+
+    local site
+    site=$(python -c 'import site; print(site.getusersitepackages())')
+
+    if python - "$reqs" <<'PY'
+import sys
+from importlib.metadata import PackageNotFoundError, version
+
+for line in open(sys.argv[1]):
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    name, _, pin = line.partition("==")
+    try:
+        if version(name) != pin:
+            sys.exit(1)
+    except PackageNotFoundError:
+        sys.exit(1)
+PY
+    then
+        log_info "trader check pins already installed in $site"
+        return 0
+    fi
+
+    log_info "Installing $reqs into $site"
+    uv pip install --python "$(command -v python)" --target "$site" --upgrade -r "$reqs"
+    log_info "trader checks ready - see .config/trader-checks/README.md"
+}
+
 install_all() {
     step base        create_directories
     step base        update_system
@@ -786,7 +815,6 @@ install_all() {
     step containers  setup_kubernetes
 
     step printing    setup_printing
-    step printing    setup_3d_printing
 
     # Game streaming
     step streaming   setup_sunshine
@@ -806,6 +834,7 @@ install_all() {
     step shell       install_fonts
     step dotfiles    setup_git
     step dev         install_npm_packages
+    step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
 
     # Must come after apply_dotfiles

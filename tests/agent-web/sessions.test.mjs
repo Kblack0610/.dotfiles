@@ -42,7 +42,7 @@ const ROWS = [
   row("lab/x:1", { bucket: "STALLED", idle_min: 1980 }),
   row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex" }),
 ];
-const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: "", values: [{ q: "project:dotfiles", value: "dotfiles", n: 3 }] }],
+const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
   states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1 }, { name: "stalled", n: 1 }, { name: "done today", n: 1 }],
   columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
@@ -87,7 +87,7 @@ test("the table is the server's rows in its order, with the overview tiles and t
   assert.match(html, /<button class="tile" data-ts="done today" style="--c:var\(--b-done\)"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
   assert.doesNotMatch(html, /data-ts="all"|sessions-chips/, "the tiles are the chips, so the small chip row is gone");
   assert.ok(html.indexOf("stiles") < html.indexOf("capline"), "the overview row leads the tab");
-  assert.match(html, /<option value="project:dotfiles">dotfiles \(3\)/);
+  assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
   assert.match(html, /title="sort by harness">harness<\/button>/, "the harness is a column");
@@ -200,7 +200,7 @@ test("a page draws hub-core's parts: links, amber, errors, the open outcome card
   await run(`loadPage()`);
   assert.match(boxes.scroll.innerHTML, /after it ends/);
   assert.doesNotMatch(boxes.scroll.innerHTML, /page-outcome/);
-  assert.match(boxes.scroll.innerHTML, /data-k="page-state"/);
+  assert.match(boxes.scroll.innerHTML, /data-k="page-state" open/);
 });
 
 test("a page that cannot be read says why, and one for a session left since is not drawn", async () => {
@@ -268,14 +268,18 @@ test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's 
   for (const t of ["--b-parked", "--b-chat"]) assert.equal(css.split(t + ":").length, 3, `${t} in both themes`);
 });
 
-test("under the table fold the last day and the shepherd; the changes and the rundowns are Log's", () => {
+test("under the table the last day and the shepherd start open; the changes and the rundowns are Log's", () => {
   setup();
   run("sst.render()");
   const html = boxes.scroll.innerHTML;
-  for (const k of ["lanes", "shep"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}">`));
+  for (const k of ["lanes", "shep"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}" open>`));
   for (const k of ["changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
   assert.match(html, /data-chat>Chat: open hub\/shep:1/);
   assert.match(html, /Skipped on purpose, in Actions/);
+  run(`wst.open.shep = false; sst.render()`);
+  assert.match(boxes.scroll.innerHTML, /<details class="ovsec" data-k="shep"><summary>/, "a fold the reader closed stays closed");
+  assert.match(boxes.scroll.innerHTML, /<details class="ovsec" data-k="lanes" open>/);
+  run(`delete wst.open.shep`);
 });
 
 test("Log's ranked sessions list the week worst first, and an open row shows its card", () => {
@@ -299,7 +303,7 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   assert.equal(html.match(/joblog/g).length, 1, "only the open row shows a card");
 });
 
-test("an open session's facts are its fleet-state card, folded to one line, and the page shows them itself", () => {
+test("an open session's facts are its fleet-state card, open until folded to one line, and the page shows them itself", () => {
   setup();
   run("st.sel = st.agents[0]");
   ctx.renderFacts();
@@ -307,7 +311,7 @@ test("an open session's facts are its fleet-state card, folded to one line, and 
   run(`st.view = "transcript"`);
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, false);
-  assert.match(boxes.facts.innerHTML, /<details data-k="facts"><summary>.*WORKING.*PR #12/);
+  assert.match(boxes.facts.innerHTML, /<details data-k="facts" open><summary>.*WORKING.*PR #12/);
   run("st.sel = st.agents[3]");
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);

@@ -54,7 +54,7 @@ function jobsHead(d) {
   const hours = Math.round((d.window_secs || 86400) / 3600);
   let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
     ` <span class="muted">${d.table.shown} of ${d.table.total} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
-  if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#releases">${esc(d.ci.says)}</a></div>`;
+  if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#releases/builds">${esc(d.ci.says)}</a></div>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

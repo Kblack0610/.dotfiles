@@ -32,14 +32,14 @@ setup() {
 # write_map <json> -- the whole map, so each test states exactly the shape it is pinning.
 write_map() { cat > "$MAP" > /dev/null; }
 
-# A registry with one repo, one app, one alias, one repo-relation. Everything resolves.
+# A registry with one repo, one app, one other spelling, one forge slug, one repo-relation.
+# Everything resolves.
 clean_map() {
   cat > "$MAP" <<'EOF'
 {
   "paths":  { "/tmp/mono": "mono-canon", "/tmp/other": "other-canon" },
-  "aliases":{ "mono": "mono-canon" },
   "trackers": {
-    "mono-canon": { "system": "board" },
+    "mono-canon": { "system": "board", "names": ["mono"], "github": "Org/mono-canon" },
     "alpha":      { "repo": "mono-canon", "path": "apps/alpha" },
     "labonly":    { "repo": "other-canon" },
     "default":    { "system": "board" }
@@ -147,22 +147,46 @@ EOF
   refute_output --partial 'code "'
 }
 
-@test "an alias pointing at nothing fails" {
+@test "a names that is not a list of names, or a slug that is not owner/repo, fails" {
   clean_map
-  jq '.aliases.mono = "vanished"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  jq '.trackers["mono-canon"].names = "mono" | .trackers.alpha.forgejo = "alpha"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'points at "vanished"'
+  assert_output --partial 'trackers.mono-canon.names is not a list of non-empty strings'
+  assert_output --partial 'trackers.alpha slug "alpha" is not owner/repo'
 }
 
-@test "an alias that shadows a real project fails" {
-  # Resolution order decides which wins and the loser is invisible, so this is banned
-  # outright rather than left to the resolver.
+@test "a spelling two projects claim fails and names both; the clean map has none" {
+  # The index order decides which wins and the loser silently loses its rows, so it is banned
+  # outright rather than left to the lookup.
   clean_map
-  jq '.aliases["other-canon"] = "mono-canon"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'spellings in the name index name one project'
+  refute_output --partial 'names more than one project'
+  jq '.trackers.alpha.names = ["mono"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'collides with a project of the same name'
+  assert_output --partial 'spelling "mono" names more than one project: alpha'
+  assert_output --partial 'mono-canon'
+}
+
+@test "every spelling the queue, runs.jsonl and outcomes wrote resolves, or the doctor names it" {
+  clean_map
+  mkdir -p "$AGENT_DIR/queue/queued" "$AGENT_DIR/outcomes/mono-canon" "$XDG_STATE_HOME/ci"
+  printf -- '---\nproject: mono\n---\nproject: not-this-line\n' > "$AGENT_DIR/queue/queued/a.md"
+  printf '%s\n' '{"repo":"Org/mono-canon"}' '{"repo":"other"}' > "$XDG_STATE_HOME/ci/runs.jsonl"
+  printf '%s\n' '{"prs":[{"repo":"Org/alpha"}]}' > "$AGENT_DIR/outcomes/mono-canon/2026-11.jsonl"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 4 spellings in the queue, runs.jsonl and outcomes resolve'
+  printf -- '---\nproject: mono-old\n---\n' > "$AGENT_DIR/queue/queued/b.md"
+  printf '%s\n' '{"repo":"mono-old"}' >> "$XDG_STATE_HOME/ci/runs.jsonl"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial '"mono-old" (2 in queue,runs.jsonl) names no project'
+  refute_output --partial '"not-this-line"'
+  jq '.trackers["mono-canon"].names += ["mono-old"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 5 spellings in the queue, runs.jsonl and outcomes resolve'
 }
 
 @test "an ~/.agent key under an unregistered name fails, and names it with its kinds" {
@@ -173,6 +197,14 @@ EOF
   run "$DOCTOR" "$MAP"
   assert_failure
   assert_output --partial 'runtime key "ghost-project" (lessons plans sessions) under ~/.agent'
+}
+
+@test "an ~/.agent key that is another spelling of a project names the key its files belong under" {
+  clean_map
+  mkdir -p "$AGENT_DIR/plans/mono"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'runtime key "mono" (plans) under ~/.agent is another spelling of mono-canon; readers look under mono-canon'
 }
 
 @test "registered keys, an anchor's decisions log and reserved _ keys pass" {
@@ -212,10 +244,11 @@ EOF
 @test "the tracker fallback 'default' is not treated as a project" {
   # Otherwise every typo would resolve to it and the whole doctor would be a no-op.
   clean_map
-  jq '.aliases.bad = "default"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  mkdir -p "$AGENT_DIR/queue/queued"
+  printf -- '---\nproject: default\n---\n' > "$AGENT_DIR/queue/queued/a.md"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'points at "default"'
+  assert_output --partial '"default" (1 in queue) names no project'
 }
 
 # -- lab and type: the schema, and lab dirs match the registry both ways --
@@ -441,7 +474,8 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   lab_map
   local repo="$HOME/mono" r
   git init -q "$repo"
-  git -C "$repo" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+  # Dated before RELEASE_NOTES_SINCE, so these tags are history that needs no note.
+  GIT_COMMITTER_DATE=2026-01-01T00:00:00 git -C "$repo" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
   [ -z "$2" ] || git -C "$repo" tag "alpha-$2"
   jq --arg r "$repo" '.paths = {($r): "mono-canon"}' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   r="$(lab_root personal)/alpha"
@@ -478,6 +512,59 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   refute_output --partial 'behind its shipped tag'
 }
 
+tag_since() { # $1=tag version, on a commit dated after RELEASE_NOTES_SINCE
+  GIT_COMMITTER_DATE=2026-11-12T00:00:00 git -C "$HOME/mono" -c user.email=t@e -c user.name=t commit -q --allow-empty -m "$1"
+  git -C "$HOME/mono" tag "alpha-$1"
+}
+
+@test "release: every tag since the notes began has its versions note" {
+  tagged_app v1.3.0 v1.2.0
+  tag_since v1.2.1
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'lab project "alpha" tag v1.2.1 has no versions/v1.2.1.md (run: agentctl-wave-roll alpha)'
+  # NEGATIVE CONTROL: v1.2.0 predates the notes, so its missing note is not a finding.
+  refute_output --partial 'tag v1.2.0 has no'
+  mkdir -p "$(lab_root personal)/alpha/versions"
+  : > "$(lab_root personal)/alpha/versions/v1.2.1.md"
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'and a note for each tag since 2026-11-11'
+}
+
+@test "release: the tag the sheet sits on is the roll's WARN, not a missing note" {
+  tagged_app v1.2.1 v1.2.0
+  tag_since v1.2.1
+  run "$DOCTOR" "$MAP"
+  assert_success
+  assert_output --partial 'sheet v1.2.1 is the shipped tag'
+  refute_output --partial 'has no versions/'
+}
+
+@test "release: a sheet behind its tags is one finding, not one per tag" {
+  tagged_app v1.2.0 v1.1.0
+  tag_since v1.2.0
+  tag_since v1.2.1
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'sheet v1.2.0 is behind its shipped tag v1.2.1'
+  refute_output --partial 'has no versions/'
+}
+
+@test "release: a profile with automation off is not asked for tag notes" {
+  tagged_app v1.3.0 v1.2.0
+  tag_since v1.2.1
+  printf '[{"profile":"personal","name":"alpha","automation":false}]\n' > "$NOTES_FIXTURE/stats.json"
+  run "$DOCTOR" "$MAP"
+  assert_success
+  refute_output --partial 'has no versions/'
+  # NEGATIVE CONTROL: automation on, the same missing note fails.
+  printf '[{"profile":"personal","name":"alpha"}]\n' > "$NOTES_FIXTURE/stats.json"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'tag v1.2.1 has no versions/v1.2.1.md'
+}
+
 @test "release: a shipping app with no Version line fails" {
   tagged_app "" v1.2.0
   run "$DOCTOR" "$MAP"
@@ -490,4 +577,23 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   run "$DOCTOR" "$MAP"
   assert_success
   assert_output --partial 'SKIP  no app or game here has a sheet and a release tag to compare'
+}
+
+@test "a repo whose games declare buildTags must declare its own tagGlob, one owner per tag" {
+  cat > "$MAP" <<'EOF'
+{
+  "paths":    { "/tmp/mono": "mono-canon" },
+  "trackers": {
+    "mono-canon": { "system": "board" },
+    "game":       { "repo": "mono-canon", "buildTags": ["v*-game*"] }
+  }
+}
+EOF
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.mono-canon has no tagGlob'
+  # Negative control: the same map with the repo's family declared passes that check.
+  sed -i 's/"mono-canon": { "system": "board" }/"mono-canon": { "system": "board", "tagGlob": "v*" }/' "$MAP"
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'has no tagGlob'
 }

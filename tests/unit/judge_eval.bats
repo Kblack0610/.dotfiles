@@ -64,7 +64,7 @@ ask() {
     printf 'id: %s\nproject: demo\nquestion: %s?\n' "$id" "$id"
     for kv in "$@"; do printf '%s: %s\n' "${kv%%=*}" "${kv#*=}"; done
     printf 'options: yes|no\nrecommend: yes\nstatus: answered\nanswered_by: human\n'
-    printf 'judge_rule: taste\njudge_call: c1\njudged_at: %s\nanswered_at: %s\n' "$NOW_ISO" "$NOW_ISO"
+    printf 'judge_type: agent_policy\njudge_rule: agent_policy\njudge_call: c1\njudged_at: %s\nanswered_at: %s\n' "$NOW_ISO" "$NOW_ISO"
   } > "$HOME/.agent/asks/demo/$id.md"
 }
 
@@ -118,17 +118,24 @@ ask_fixture() {
   assert_output '[2,1,1,4,{"answer naming no option":3,"cancelled unanswered":1}]'
 }
 
-@test "ask-judge: a deferral of a hard-stop type is no false-defer, one of a type that can go live is" {
+@test "ask-judge: a deferral of a hard-stop type or rule, or of no type, is no false-defer; one of a type that can go live is" {
   ask hs_fn judge=human judge_type=product_taste answer=yes
   ask hs_tn judge=human judge_type=human_physical_action answer=no
   ask hs_ans judge=take-recommend judge_type=product_taste answer=yes
+  # a human criterion decided it: the policy sends the ask to the human whatever its type
+  ask crit_fn judge=human judge_type=ship_deploy judge_rule=external answer=yes
+  ask crit_tn judge=human judge_type=agent_policy judge_rule=knowledge answer=no
+  # the judge before 2026-11-06 recorded no type, so the hard-stop check cannot be made
+  ask old_fn judge=human judge_type= judge_rule= answer=yes
+  # a hard-stop rule names the cause even with no type: a gate the judge saw
+  ask gate_c1 judge=human judge_type= judge_rule=gate answer=yes
   ask live_fn judge=human judge_type=ci_capacity_ops answer=yes
   ask live_tn judge=human judge_type=agent_policy answer=no
   run "$JUDGE_EVAL" ask-judge --json
   assert_success
-  # hs_fn and hs_tn are unscorable; hs_ans still scores the judge's own answer
-  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .false_defer_pct]' <<<"$output"
-  assert_output '[1,1,1,2,50]'
+  # hs_fn, hs_tn, crit_fn, crit_tn and gate_c1 are hard stops, old_fn untyped; hs_ans still scores the judge's own answer
+  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .false_defer_pct, .unscorable_by]' <<<"$output"
+  assert_output '[1,1,1,6,50,{"hard stop":5,"untyped deferral":1}]'
 }
 
 @test "ask-judge: an answer assumed after its wait is counted, and an override on it is an fp" {
@@ -149,12 +156,12 @@ ask_fixture() {
   ask_fixture
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [.total.precision_lo, .total.precision_hi, .live,
-    (.rules[] | select(.rule == "taste") | [.live, .bar.labels, .bar.need, .bar.met]),
+    (.rules[] | select(.rule == "agent_policy") | [.live, .bar.labels, .bar.need, .bar.met]),
     (.rules[] | select(.rule == "fast") | .live), (.misses | map(.id) | sort)]' <<<"$output"
   assert_output '[15,85,["fast"],[false,2,30,false],true,["fp1","live_over"]]'
   run "$JUDGE_EVAL" ask-judge
   assert_success
-  assert_line --regexp '^  taste .* 2/30$'
+  assert_line --regexp '^  agent_policy .* 2/30$'
   assert_line --regexp '^  fast .* live$'
   assert_line --partial 'calls 1, 0 failed'
 }
@@ -221,15 +228,18 @@ ask_fixture() {
   run "$JUDGE_EVAL" kpi --json
   assert_success
   run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
-  # judge_precision needs 10 scored answers in a rule: none here. 3 of 12 asks were answered live.
-  assert_output '[2,null,25,33.3,8.3]'
+  # judge_precision needs 10 scored answers in a rule, and a false-defer percent 10 scored defers: 3
+  # here (the lane's own 33.3 is in the first test). 3 of 12 asks were answered live.
+  assert_output '[2,null,25,null,8.3]'
 }
 
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
   ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
   ask would judge=take-recommend answer=no
+  # a human criterion (knowledge) decided pass, so it scores nothing; skip was the judge's own call
   ask pass judge=human judge_rule=knowledge judge_type=agent_policy judge_reason=only-you answer=yes
+  ask skip judge=human answer=yes
   ask wait judge=human status=pending answer=
   ask old judge=human judge_call=c0 answer=no
   ask err1 judge=error judge_rule= answer=yes
@@ -239,10 +249,10 @@ ask_fixture() {
   run "$JUDGE_EVAL" log --json
   assert_success
   run jq -c 'sort_by(.id) | map([.id, .said, .you, .score])' <<<"$output"
-  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["old","passed","no","right"],["pass","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
+  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["old","passed","no","right"],["pass","passed","yes","-"],["skip","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
   run "$JUDGE_EVAL" log passed --json
   run jq -c 'map(.id) | sort' <<<"$output"
-  assert_output '["old","pass","wait"]'
+  assert_output '["old","pass","skip","wait"]'
   run "$JUDGE_EVAL" log wrong --limit 1 --json
   run jq 'length' <<<"$output"
   assert_output 1
@@ -255,7 +265,7 @@ ask_fixture() {
   # The dashboards read the same rows, with the week beside them; the scores stay current-prompt.
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [(.verdicts | length), .week.verdicts, .week.live_answered, .week.live_pct, .total.verdicts]' <<<"$output"
-  assert_output '[7,7,2,33.3,6]'
+  assert_output '[8,8,2,28.6,7]'
 }
 
 @test "nothing to score reads as no verdicts, and an unknown lane is a usage error" {
@@ -436,6 +446,32 @@ SH
   # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young
   run jq -c '.agents[0].total | [.deferred, .fn, .tn, .pending, .false_defer_pct]' <<<"$output"
   assert_output '[7,2,4,1,33.3]'
+  # 6 scored defers is under the KPI's floor of 10, where one defer swings it 10+ points
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":33.3,"28d":33.3}'
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":null,"28d":null}'
+  { v skip q1 '-5 days'; v skip q2 '-5 days'; v skip q3 '-5 days'; v skip q4 '-5 days'; } >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":20,"28d":20}'
+}
+
+@test "SENTINEL_SINCE: a window starts at a watch's fix, and an error after the fix still counts (negative control)" {
+  local at; at="$(date -d '-2 days' -Iseconds)"
+  printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$at" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # the fix merged a day ago: the error before it is out of both windows
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":0,"28d":0}'
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" dispatch-judge --any-prompt --days 7 --json
+  assert_equal "$(jq -c '.agents[0].total.errors' <<<"$output")" '0'
+  # a watermark older than the window leaves the window as it is, and a non-number is ignored
+  SENTINEL_SINCE="$(date -d '-10 days' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  SENTINEL_SINCE=yesterday run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # negative control: an error after the fix is a new failure
+  printf '{"verdict":"error","project":"p","key":"k2","at":"%s"}\n' "$(date -Iseconds)" >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
 }

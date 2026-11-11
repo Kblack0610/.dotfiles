@@ -88,7 +88,7 @@ creds() {
   usage alt 10 70 "$r2"
   run "$ACCT" pick
   assert_line "$ALT"
-  usage main 94 75 "$r1"
+  usage main 89 75 "$r1"
   run --separate-stderr "$ACCT" pick
   assert_output ''
 }
@@ -483,6 +483,34 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
+@test "an idle or waiting session is live but burns nothing; busy, shell and unregistered ones work" {
+  # 2026-11-11 (ar-1682): max4 carried 27 claudes, 11 of them idle, and its burn read 1.4/h against
+  # a measured 1.0/h; bnb read committed only through its idle and waiting ones, and dispatch stopped.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # 1 point an hour to spare
+  mkdir -p "$HOME/.claude/sessions"
+  local p
+  for p in 1:idle 2:waiting 3:busy 4:shell 5:none 6:idle 7:idle 8:idle 9:idle 10:idle 11:idle 12:idle; do
+    IFS=: read -r pid st <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo claude > "$SANDBOX/proc/$pid/comm"
+    printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
+    # the registry writes compact JSON; pid 2 is spaced, which the match allows too
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","updatedAt":1}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" > "$HOME/.claude/sessions/$pid.json"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .live <<<"$output")" = 12 ]
+  [ "$(field alt .working <<<"$output")" = 3 ]
+  [ "$(field alt '.burn * 10 | round' <<<"$output")" = 3 ]
+  [ "$(field alt .room.ok <<<"$output")" = true ]
+  # counted live, 12 x 0.1 would read committed
+  for p in 1 2 6 7 8 9 10 11 12; do sed -i -E 's/"status": ?"[a-z]*"/"status":"busy"/' "$HOME/.claude/sessions/$p.json"; done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .working <<<"$output")" = 12 ]
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+}
+
 @test "live_of forks no tool per process" {
   # pick runs this loop on every agentctl-run call; a fork per /proc entry cost 2.3s of 2.5s (ar-1007).
   local p
@@ -644,7 +672,7 @@ live() {
   live "" 12
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'live sessions use the rest of its week before the reset'* ]]
+  [[ "$stderr" == *'working sessions use the rest of its week before the reset'* ]]
   # a hand start is told, never refused
   run --separate-stderr "$ACCT" pick
   assert_success
@@ -653,7 +681,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *live_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -687,7 +715,7 @@ STUB
   assert_output 1
   run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -cF 'avg_over_time((max by (account) (claude_account_live_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_working_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
@@ -734,7 +762,7 @@ STUB
   week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 10% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: with none, an account refused while within its weekly pace is named too, not only the closest" {
@@ -746,7 +774,7 @@ STUB
   live "$ALT" 13
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 live sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 working sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
   # an account over its pace is not named again: the closest already says what pace refuses
   rm -rf "${CLAUDE_ACCT_PROC:?}"/*
   # its 5h window alone: named, with no week clock, which is not what refuses it
@@ -796,16 +824,16 @@ STUB
   week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'94% of its week used, inside the last 7% kept for the human'* ]] || fail "$stderr"
+  [[ "$stderr" == *'94% of its week used, inside the last 13% kept for the human'* ]] || fail "$stderr"
 }
 
 @test "room: the reserve holds late in the week, even under pace" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 95 2
+  week main 90 2
   week alt 97 2
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  week main 94 2
+  week main 89 2
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -978,7 +1006,7 @@ seen_claude() {
   [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 6048))" ]
 }
 
-@test "status: the fleet line sums live, burn and what the weeks carry, and names the first back on pace" {
+@test "status: the fleet line sums live, burn and what the pool carries, says when it runs into the reserve, and names the first back on pace" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 80 84
   week alt 80 84
@@ -987,7 +1015,9 @@ seen_claude() {
   run "$ACCT" status
   assert_success
   assert_line --partial 'after-reset'
-  assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.5/h sustainable \(4\.2x, carries ~4\), back on pace: not at this burn; if idle (main|alt) '
+  # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
+  # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1050,7 +1080,7 @@ seen_claude() {
   week main 97 141
   run --separate-stderr "$ACCT" room --json
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == reserve,pace ]]
-  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 5% kept for the human' ]]
+  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 10% kept for the human' ]]
   week main 10 84
   run --separate-stderr "$ACCT" room --json
   assert_success
@@ -1065,7 +1095,7 @@ seen_claude() {
   CLAUDE_ACCT_PACE_SLACK_PCT=100 CLAUDE_ACCT_RESERVE_PCT=0 run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
-  [[ "$(field main .room.reserve <<< "$output")" == 5 ]]
+  [[ "$(field main .room.reserve <<< "$output")" == 10 ]]
   run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
   assert_failure
 }
@@ -1276,19 +1306,19 @@ budget() {
 @test "sources: the fleet line sums Claude accounts only, a codex point is another budget" {
   # 2026-11-09: codex in the sum read 1.6/h vs 1.7/h, carries ~52; Claude alone was 1.3 vs 1.15.
   src_setup
-  week main 80 84   # 20 left over 84h: 0.24 an hour
+  week main 80 84   # 10 above the reserve over 84h: 0.12 an hour
   rollout 1 0 84    # codex: 99 left, 1.18 an hour, which the old sum added
   run --separate-stderr "$ACCT" status
   assert_success
   assert_line --regexp '^codex '
-  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.2/h sustainable'
+  assert_line --regexp '^fleet: 0 live \(0 working\), burn 0/h vs 0\.1/h sustainable .*, lasts to the resets, '
 }
 
 @test "sources: the textfile publishes the fleet line's own sum, and no burn when no Claude row is read" {
   # ar-1149: hub-core burn.rs re-summed the rows with its own copy of this filter; it reads these now.
   src_setup
   export CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 80 84   # 20 left over 84h: 0.24 an hour
+  week main 80 84   # 10 above the reserve over 84h: 0.12 an hour
   rollout 1 0 84    # codex: 99 left, 1.18 an hour, another budget
   live "" 3
   live "$ALT" 2     # alt has no usage read: its sessions are live, its burn is not summed
@@ -1298,11 +1328,15 @@ budget() {
   run cat "$SANDBOX/prom/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
   assert_line 'claude_fleet_live_sessions 5'
+  assert_line 'claude_fleet_working_sessions 5'
+  assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
-  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.238'
+  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
+  # 10 points at 0.3 an hour: 33.3h, before main's reset in 84h
+  assert_line 'claude_fleet_run_out_timestamp_seconds 1800120000'
   run --separate-stderr "$ACCT" status
-  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.2/h sustainable'
+  assert_line --regexp '^fleet: 5 live \(5 working\), burn 0\.3/h vs 0\.1/h sustainable'
   # negative control: with no Claude account read, live stays and burn and sustain are not written
   rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
   "$ACCT" textfile "$SANDBOX/prom"
@@ -1311,6 +1345,7 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   refute_line --partial 'claude_fleet_burn'
   refute_line --partial 'claude_fleet_sustain'
+  refute_line --partial 'claude_fleet_run_out'
 }
 
 @test "sources: a week whose reset has passed reads as unused" {
@@ -1608,6 +1643,19 @@ pro_rollout() {
   assert_failure 1
 }
 
+@test "sources: two rows on one Codex plan split it by reserve, and room --source --json prints the row" {
+  src_setup
+  printf 'codex-core codex %s/codex reserve=5\n' "$SRC" >> "$SANDBOX/sources"
+  sed -i '/^codex /s/reserve=5/reserve=30/' "$SANDBOX/sources"
+  grep -q '^codex .*reserve=30' "$SANDBOX/sources" || fail "fixture: the codex row did not take reserve=30"
+  rollout 75 10 84
+  run --separate-stderr "$ACCT" room --source codex --json
+  assert_failure 1
+  jq -e '.name == "codex" and (.room.reasons | index("reserve"))' <<<"$output" >/dev/null || fail "codex at 75% is not held by its 30% reserve: $output"
+  run --separate-stderr "$ACCT" room --source codex-core --json
+  jq -e '.name == "codex-core" and (.room.reasons | index("reserve") | not)' <<<"$output" >/dev/null || fail "codex-core at 75% is held by a reserve: $output"
+}
+
 @test "sources: a key at its cap has no room" {
   src_setup
   budget sk-lazer key 10 100
@@ -1761,6 +1809,60 @@ pro_rollout() {
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
   [[ "$stderr" == *"res: unknown option 'alert=maybe'"* ]] || fail "$stderr"
+}
+
+@test "check pace: the Claude accounts are one pool, so one past its own line trips nothing while the pool lasts to the resets" {
+  # 2026-11-10 (ar-1529): main, alt and bnb past their own lines kept the watch red for days while
+  # the four weeks, each refilled at its reset, carried the fleet's burn.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 81 50   # 70% of its week gone: past its line
+  week alt 93 27    # inside its reserve
+  live "" 1
+  live "$ALT" 1
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  assert_output 'every source on pace (2 sources)'
+  # dispatch still keeps to each account's own room
+  run --separate-stderr "$ACCT" room --json
+  [[ "$(field main .room.reason <<< "$output") $(field alt .room.reason <<< "$output")" == "pace reserve" ]] || fail "$output"
+  # 9 points above the reserve at 1 an hour last 9h, before alt's reset in 27h: that trips
+  live "" 4
+  live "$ALT" 4
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}, before the resets$'
+}
+
+@test "check pace: a cached read from before its reset counts a fresh week once, not its old left as well" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 81 50    # 9 above the reserve, resets in 50h
+  week alt 40 -1     # read before its reset an hour ago: fresh now, 90 above the reserve
+  live "" 13
+  live "$ALT" 12     # 2.5 an hour: 99 points last 39.6h, short of main's reset in 50h
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve '
+  # negative control: at 1 an hour the 99 points last past main's reset, and the 189 after it past alt's
+  rm -rf "$CLAUDE_ACCT_PROC"/*
+  live "" 5
+  live "$ALT" 5
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+}
+
+@test "check pace: the pool keeps the machine-mode level's reserve, as each room does" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 85 20    # 5 above the mid reserve, 2 above the reserved level's 13
+  week alt 90 100
+  live "" 3          # 0.3 an hour: 5 points last 16.7h, 2 last 6.7h; main resets in 20h
+  live "$ALT" 0
+  echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"   # high: 7 kept back, 11 points last 36.7h
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve '
 }
 
 @test "check pace: no source at all is nothing read, never a quiet green" {
@@ -1972,4 +2074,97 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
   grep -q 'sk-res' "$SANDBOX/curl.stdin"
   ! grep -q 'sk-other' "$SANDBOX/curl.stdin"
   ! grep -q 'anthropic' "$SANDBOX/curl.argv"
+}
+
+# gw_setup -- src_setup with a viewer key, a gateway config, and a gateway that answers the team and
+# key lists in the live shape: a key object carries its secret (token, key_name) beside the fields kept.
+gw_setup() {
+  src_setup
+  echo sk-viewer > "$SRC/viewer.key"
+  jq --arg r "$SRC/viewer.key" '.gateway.reader_key_file = $r' "$CLAUDE_ACCT_HARNESSES" > "$SRC/h.json" && mv "$SRC/h.json" "$CLAUDE_ACCT_HARNESSES"
+  printf 'codex codex %s/codex reserve=30 priority=low\ncore litellm-team %s/lazer.key\nres litellm-key %s/res.key parent=core\n' "$SRC" "$SRC" "$SRC" > "$CLAUDE_ACCT_SOURCES"
+  cat > "$SRC/litellm.yaml" <<'EOS'
+router_settings:
+  model_group_alias: {fast: "fast (gpt-oss-120b)"}
+  fallbacks:
+    - {"fast (gpt-oss-120b)": ["assist (gemini-flash)"]}
+EOS
+  export CLAUDE_ACCT_GATEWAY_CONFIG="$SRC/litellm.yaml"
+  echo '[{"team_id":"t1","team_alias":"lazer-pool","spend":60,"max_budget":50,"blocked":false,"budget_duration":"1mo","metadata":{"priority":"low"}}]' > "$SANDBOX/gw/team-list.json"
+  echo '{"keys":[{"token":"hash-abc123","key_name":"sk-...wxyz","key_alias":"comms-triage","team_id":"t1","spend":1.5,"max_budget":25,"blocked":false,"budget_duration":"30d","models":["fast"],"metadata":{"consumer":"comms tier 2","priority":"must"}}]}' > "$SANDBOX/gw/key-list.json"
+  cat > "$SANDBOX/bin/curl" <<'EOS'
+#!/usr/bin/env bash
+cat > /dev/null
+case "${*: -1}" in
+  */team/list) cat "$SANDBOX/gw/team-list.json" ;;
+  */key/list*) cat "$SANDBOX/gw/key-list.json" ;;
+  */key/info) echo '{"info":{"key_alias":"comms-triage","token":"hash-abc123"}}' ;;
+  *) exit 22 ;;
+esac
+EOS
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "gateway: the snapshot joins teams, keys, sources and the config's fallbacks, with no key secret" {
+  gw_setup
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  run jq -c '[.keys[0].alias, .keys[0].team, .keys[0].priority, .teams[0].priority, (.sources | map([.priority, .key])), .fallbacks["fast (gpt-oss-120b)"][0], .aliases.fast]' "$SRC/gw.json"
+  assert_output '["comms-triage","lazer-pool","must","low",[["low",null],[null,null],[null,"comms-triage"]],"assist (gemini-flash)","fast (gpt-oss-120b)"]'
+  run grep -c 'hash-abc123\|wxyz\|sk-' "$SRC/gw.json"
+  assert_output 0
+}
+
+@test "gateway: a gateway that cannot be read keeps the old snapshot and exits 1" {
+  gw_setup
+  echo '{"old":true}' > "$SRC/gw.json"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_failure 1
+  assert_output --partial 'is unchanged'
+  run cat "$SRC/gw.json"
+  assert_output '{"old":true}'
+  run bash -c 'ls -A "$1" | grep -c "^.gateway"' _ "$SRC"
+  assert_output 0
+}
+
+@test "gateway: a key list longer than one page keeps the old snapshot and exits 1" {
+  gw_setup
+  echo '{"old":true}' > "$SRC/gw.json"
+  jq -c '. + {total_count: 101, current_page: 1, total_pages: 2}' "$SANDBOX/gw/key-list.json" > "$SRC/kl.json" && mv "$SRC/kl.json" "$SANDBOX/gw/key-list.json"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_failure 1
+  assert_output --partial 'more keys than one page'
+  run cat "$SRC/gw.json"
+  assert_output '{"old":true}'
+}
+
+@test "gateway: the config comes from the home-config clone's upstream tip, not its working tree" {
+  gw_setup
+  unset CLAUDE_ACCT_GATEWAY_CONFIG
+  export HOME_CONFIG="$SRC/hc"
+  git init -q --bare "$SRC/hc.git"
+  git clone -q "$SRC/hc.git" "$HOME_CONFIG" 2>/dev/null
+  mkdir -p "$HOME_CONFIG/apps/litellm"
+  cp "$SRC/litellm.yaml" "$HOME_CONFIG/apps/litellm/config.yaml"
+  git -C "$HOME_CONFIG" -c user.name=t -c user.email=t@t add -A
+  git -C "$HOME_CONFIG" -c user.name=t -c user.email=t@t commit -qm tip
+  git -C "$HOME_CONFIG" push -q origin HEAD 2>/dev/null
+  git -C "$HOME_CONFIG" branch -q -u "origin/$(git -C "$HOME_CONFIG" branch --show-current)"
+  echo 'router_settings: {}' > "$HOME_CONFIG/apps/litellm/config.yaml"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  run jq -c '[(.aliases | length > 0), (.fallbacks | length > 0)]' "$SRC/gw.json"
+  assert_output '[true,true]'
+}
+
+@test "gateway: no config to read leaves aliases and fallbacks null and still writes the snapshot" {
+  gw_setup
+  unset CLAUDE_ACCT_GATEWAY_CONFIG
+  export HOME_CONFIG="$SRC/no-such-clone"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  assert_output --partial 'aliases and fallbacks are null'
+  run jq -c '[.aliases, .fallbacks, .keys[0].alias]' "$SRC/gw.json"
+  assert_output '[null,null,"comms-triage"]'
 }

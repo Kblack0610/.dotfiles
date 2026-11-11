@@ -13,7 +13,8 @@ const FLOW_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
 const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 // Which folds are open, by data-k: a section (`sec:candidates`) or a task (`task:<slug>`).
-// Re-renders come with every event, so the page keeps what the human opened. Candidates start shut.
+// Re-renders come with every event, so the page keeps what the human folded or opened. Sections
+// (Candidates, Stats detail) start open; a task's details start shut.
 // items: the rows the view keeps; table: hub-core's controls for them; aliases: old section id ->
 // state chip; needs: every item waiting on the human, whatever the view; sel: the opened row.
 // The read is the tab's own (refreshQueue): it also follows old section links and reads the stats.
@@ -25,8 +26,8 @@ const qst = tblTab({
     stats: null, projects: [], busy: false, msg: "", draft: null,
     cands: null, candErr: null, candMsg: "", promoting: null,
     // The Candidates filter: a reason chip ("" is every row) and the search words.
-    candReason: "", candQ: "", candAutoOpened: false,
-    open: { "sec:candidates": false },
+    candReason: "", candQ: "",
+    open: {},
   },
   head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + qFlow() + qTableHead(),
   // Candidates sit under the table and are drawn only with the whole list: a repaint while the
@@ -44,11 +45,6 @@ const qst = tblTab({
 // takes its row out of the file), never on a queue event.
 const refreshCands = coalesce(async () => {
   try { qst.cands = await api("/api/queue/candidates"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
-  // An #urgent row nothing will start opens the fold, once; shut again, it stays shut.
-  if (qst.cands && qst.cands.urgent_blocked > 0 && !qst.candAutoOpened) {
-    qst.candAutoOpened = true;
-    qst.open["sec:candidates"] = true;
-  }
   if (st.tab === "queue") qst.render();
 });
 
@@ -66,6 +62,9 @@ const qStrip = () => qfl.data ? railHtml(qfl.data.line, qfl.node, qfl.data.grafa
   : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 const refreshQueue = coalesce(async () => {
+  // The window's line and what sits now, read beside the rows so a tick's answer waits for one read,
+  // not two; the list still shows when agent-queue stats fails.
+  const stats = api("/api/queue/stats").catch((e) => ({ week: `stats: ${e.message}` }));
   try {
     const q = tblParams(st.views.queue).toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
@@ -80,8 +79,7 @@ const refreshQueue = coalesce(async () => {
       if (!chip) st.section = arg;
     }
   }
-  // The window's line and what sits now; the list still shows when agent-queue stats fails.
-  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
+  qst.stats = await stats;
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
   if (st.tab === "queue") refreshFlow();
@@ -182,14 +180,14 @@ function qBody() {
     tblMore(more) + `</div>`;
 }
 
-// The stats window's prose, folded under the flow line; the chips above the table are the counts.
+// The stats window's prose, a fold under the flow line that starts open; the chips above the table are the counts.
 function qFlowTail() {
   const s = qst.stats || {};
   const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
   const typical = [["typical wait", s.wait_minutes_median], ["typical run", s.run_minutes_median], ["typical to PR", s.to_pr_minutes_median]]
     .filter(([, v]) => v != null).map(([k, v]) => `${k} ${qMin(v)}`).join(", ");
   const body = [prose, typical && esc(typical)].filter(Boolean).join("<br>");
-  return body ? cfold("stats", "Stats detail", `<div class="muted">${body}</div>`, qst.open) : "";
+  return body ? cfold("stats", "Stats detail", `<div class="muted">${body}</div>`, qst.open, true) : "";
 }
 
 // An opened row: every header, the stages with the minutes between them (hub-core's `timeline`),
@@ -248,6 +246,7 @@ function renderQueue() {
     qst.render();
     return;
   }
+  if (qst.repaint()) return;
   el.innerHTML = pfold("q-add", "Add to the queue", qCompose()) + `<div id="q-list"></div>`;
   qst.render();
 }
@@ -303,7 +302,7 @@ function qCandBody() {
 // The Candidates fold: counts in the heading; chips for each reason a row is blocked, with how
 // many it blocks; a search box; the projects worked on today that no worker covers; the rows.
 function qCandidates() {
-  const k = "sec:candidates", open = !!qst.open[k];
+  const k = "sec:candidates", open = secOpen(qst.open, k);
   const c = qst.cands;
   const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}${c.as_of ? `, as of ${esc(c.as_of)}` : ""}`
     : qst.candErr ? "unread" : "reading";

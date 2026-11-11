@@ -1,5 +1,5 @@
 "use strict";
-// The Log tab: the hub's Log tab (Prefix i, then 7) for the browser. It reads day-log's
+// The Log tab: the hub's Log tab (Prefix i, then 6) for the browser. It reads day-log's
 // records through /api/log and /api/log/history; every number here is in the record already.
 
 // The charts show this many days; the day picker can step back through the fetched history.
@@ -126,7 +126,7 @@ function renderLog() {
   html += waiting(nWait);
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d"><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
   paint(el, html, lst.open);
 }
 

@@ -111,6 +111,9 @@ pub struct Page {
     pub shipped: Vec<String>,
     /// The channels' one-line badge, linking to the Releases tab; None with no channels.
     pub releases: Option<crate::releases::Badge>,
+    /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
+    /// filtered to it; None when no watch does.
+    pub alerts: Option<crate::releases::Badge>,
     /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
     pub timeline: Option<crate::timeline::Timeline>,
     pub errors: Vec<String>,
@@ -251,12 +254,12 @@ pub fn needs(c: &Chain) -> Vec<String> {
         })
         .collect();
     let plans = &c.unlinked.plans;
-    out.extend(
-        plans
-            .iter()
-            .take(PLANS_SHOWN)
-            .map(|p| format!("plan with no epic: {}", crate::plans::base(p))),
-    );
+    out.extend(plans.iter().take(PLANS_SHOWN).map(|p| {
+        format!(
+            "plan with no epic: {}",
+            crate::plans::named(&crate::plans::path(p))
+        )
+    }));
     if plans.len() > PLANS_SHOWN {
         out.push(format!(
             "+{} more plans with no epic",
@@ -558,6 +561,7 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         vec![]
     });
     p.releases = crate::releases::badge(&channels);
+    p.alerts = crate::alerts::project_badge_here(name);
     let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
     p.timeline = timeline;
     p.errors.extend(errors);

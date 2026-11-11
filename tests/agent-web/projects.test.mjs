@@ -50,7 +50,7 @@ const listTable = (kept, total = kept.length, o = {}) => ({
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
   columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "stage", on: "", clear: "", values: [{ value: "alpha", n: kept.length, q: "stage:alpha" }] }], ...o,
+  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
@@ -63,7 +63,7 @@ const tableOf = (q, total, kept) => ({
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
   columns: ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "lane", on: "", clear: "", values: [{ value: "agent", n: 1, q: "lane:agent" }] }],
+  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, on: false, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
@@ -115,7 +115,7 @@ test("the list is one table row per project with its counts, and the card's word
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
-  assert.match(cards, /Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
+  assert.match(cards, /<details data-k="unlinked" open><summary><h2 class="sec">Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
 });
 
 test("the list's view goes to the server, and a view that keeps nothing says so", async () => {
@@ -141,7 +141,8 @@ test("a re-read keeps the search box the human is typing in", () => {
   ctx.document.activeElement = undefined;
   assert.equal(box("p-cards").innerHTML, "the box in use");
   assert.match(box("projects-chips").innerHTML, /in flight/);
-  assert.match(box("projects-facets").innerHTML, /every stage/);
+  assert.match(box("projects-facets").innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
+  assert.doesNotMatch(box("projects-facets").innerHTML, /data-fkey="stage"/, "stage's dropdown is in the filter row under its header, not again in the bar");
 });
 
 test("with a project open every card is read, and an answer for a list no longer on screen is dropped", async () => {
@@ -162,6 +163,7 @@ test("with a project open every card is read, and an answer for a list no longer
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
   needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
+  alerts: { says: "2 watches, 1 firing", level: "bad" },
   systems: [
     { id: "ui", head: "ui  25%  1 feature, 0 done  criteria 5 of 7", closed: "+1 closed, 1 verified", epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true, leaves: [
       { id: "de-1", line: "[ ] de-1  feat: wire the pause key  m", done: false },
@@ -177,7 +179,7 @@ const page = {
   ] },
 };
 
-test("an opened card reads its page once and shows Needs you, then folds with their counts", async () => {
+test("an opened card reads its page once and shows Needs you, then open folds with their counts", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
   const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", note_says: "model-written, 2026-11-05" });
@@ -186,12 +188,13 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   await settle();
   head = box("p-head").innerHTML;
   assert.match(head, /flow: ideas 3 \| briefs 1/);
+  assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
   assert.match(head, /Needs you <span class="muted">1<\/span><\/h2><div class="card"><div class="qlate">verify: Saves/);
   // Build by system is always shown, above Needs you: a fold per system with an epic, a fold per
   // epic over its tasks, an open task a link to its row, a system with no epic only its line.
   assert.match(head, /<h2 class="sec">Build by system <span class="muted">1 systems, 1 open epics \(2 rows with no epic\)<\/span><\/h2>.*Needs you/s);
-  assert.match(head, /data-k="pg:sys:ui"><summary><b>ui  25%  1 feature, 0 done  criteria 5 of 7<\/b><\/summary>/);
-  assert.match(head, /data-k="pg:ep:de-9"><summary><span class="pep qlate">Menus  25%  \[rows\]  behind<\/span><\/summary>/);
+  assert.match(head, /data-k="pg:sys:ui" open><summary><b>ui  25%  1 feature, 0 done  criteria 5 of 7<\/b><\/summary>/);
+  assert.match(head, /data-k="pg:ep:de-9" open><summary><span class="pep qlate">Menus  25%  \[rows\]  behind<\/span><\/summary>/);
   assert.match(head, /<div class="pleaf"><a href="#" data-leaf="de-1">\[ \] de-1  feat: wire the pause key  m<\/a><\/div>/);
   assert.match(head, /<div class="pleaf muted">\[x\] de-2  fix: &lt;menu&gt; flicker  s  pr 7<\/div>/, "a done task is no link");
   assert.match(head, /<\/details><div class="pep muted">\+1 closed, 1 verified<\/div><\/details><div class="psys"><b>ci  criteria 1 of 2<\/b><\/div>/);
@@ -202,7 +205,8 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   assert.match(head, /<div class="ptl">3h  PR      #7 opened: &lt;menu&gt;<\/div><div class="muted more">\+3 older<\/div>/, "a non-http url is not a link");
   assert.match(head, /In flight<\/b> <span class="muted">1 running, 0 waiting, 0 queued; 1 rows #requested.*wire the bar/s);
   assert.match(head, /Agent note<\/b> <span class="muted">model-written, 2026-11-05.*landed it/s);
-  assert.doesNotMatch(head, /<details[^>]* open/, "every fold starts shut");
+  for (const k of ["sys:ui", "ep:de-9", "next", "shipped", "timeline", "flight", "note"]) assert.match(head, new RegExp(`data-k="pg:${k}" open>`), `${k} starts open`);
+  assert.doesNotMatch(head, /<details(?![^>]* open)[^>]*>/, "no fold starts shut");
 });
 
 test("a task under an epic filters the rows to its id and opens its row", async () => {
@@ -338,4 +342,72 @@ test("rows past the cap wait behind a button, and a view with nothing says so", 
   assert.match(read().rows, />r204</);
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
+});
+
+// The Summary hub_core::table sends beside the Deliverables rows.
+const deliv = (o = {}) => {
+  const rows = [
+    { project: "demo", profile: "bnb", id: "de-9", title: "Menus <fast>", system: "ui", done: 3, total: 4, percent: 75, done_says: "75% 3/4", eta: 1794537535, eta_day: "11-13", track: "behind" },
+    { project: "garden", profile: "personal", id: "ga-1", title: "Water", system: "save", done: 2, total: 2, percent: 100, done_says: "100% 2/2", eta: null, eta_day: "", track: "verify" },
+  ];
+  return {
+    rows, says: "Deliverables (2 open, 1 ready to verify, 0 on track, 1 behind)",
+    coverage_says: "Coverage: 74 linked / 79 open rows (94%); no feature epic: home-config", legend: "percent is by size, then rows done/all",
+    table: {
+      q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
+      states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
+      columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
+      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, on: false, q: "sys:ui" }] }],
+    },
+    ...o,
+  };
+};
+const drawDeliv = async (d) => {
+  ctx.answers = { "/api/deliverables": d, "/api/projects": list() };
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  await settle(); await settle();
+  return box("p-deliv").innerHTML;
+};
+
+test("Deliverables is a table over the project list: the head, one row per epic, then the coverage line", async () => {
+  const html = await drawDeliv(deliv());
+  assert.match(html, /^<div data-tbl="d">.*id="sec-deliverables">Deliverables \(2 open, 1 ready to verify, 0 on track, 1 behind\)<\/h2>/s);
+  assert.match(html, /id="p-del-q".*id="p-del-chips"/s);
+  assert.match(html, />all <.*>behind <.*>on track <.*>verify </s);
+  assert.match(html, /data-tsort="project".*data-tsort="epic".*data-tsort="sys".*data-tsort="done".*data-tsort="eta".*data-tsort="track"/s);
+  assert.match(html, /home-config; percent is by size, then rows done\/all/);
+  assert.match(html, /<tr class="jr" tabindex="0" data-open="bnb\/demo" data-epic="de-9" data-sys="ui"><td>demo<\/td><td class="wrap" title="de-9">Menus &lt;fast&gt;<\/td><td>ui<\/td><td class="n" title="3 of 4 rows done; the percent is by size">75% 3\/4<\/td><td class="n">11-13<\/td><td class="warn">behind<\/td><\/tr>/);
+  assert.match(html, /<td>save<\/td>.*<td class="n">-<\/td><td>verify<\/td>/s, "no ETA is a dash and only behind is amber");
+  assert.match(html, /Coverage: 74 linked \/ 79 open rows \(94%\); no feature epic: home-config/);
+});
+
+test("the Deliverables view keys are d-prefixed, so the project list keeps the plain ones", async () => {
+  await drawDeliv(deliv());
+  ctx.answers = { "/api/deliverables?dq=sys%3Aui": deliv({ rows: [deliv().rows[0]] }) };
+  ctx.sent = [];
+  const target = { dataset: { tsearch: "" }, value: "sys:ui", closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "d" } } : null) };
+  for (const f of box("p-deliv").on.input) f({ type: "input", target });
+  assert.equal(vm.runInContext(`st.views.projects`, ctx), "dq=sys%3Aui");
+  await settle(); await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui"));
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")), "the list's view is not the deliverables'");
+});
+
+test("a Deliverables row opens its project's card with its system and epic folds open", async () => {
+  await drawDeliv(deliv());
+  ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
+  const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
+  const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
+  for (const f of box("projects").on.click) f({ type: "click", target });
+  assert.equal(vm.runInContext(`pst.open`, ctx), "bnb/demo");
+  assert.equal(vm.runInContext(`pst.folds["pg:sys:ui"] + "|" + pst.folds["pg:ep:de-9"]`, ctx), "true|true");
+});
+
+test("a failed Deliverables read says so and never shows an empty table", async () => {
+  ctx.answers = { "/api/deliverables": "fleet-bench: not found", "/api/projects": list() };
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  await settle(); await settle();
+  const html = box("p-deliv").innerHTML;
+  assert.match(html, /class="card err".*fleet-bench: not found/);
+  assert.doesNotMatch(html, /<table/);
 });

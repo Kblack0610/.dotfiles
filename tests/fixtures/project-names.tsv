@@ -1,0 +1,35 @@
+# spelling<TAB>what it resolves to, against tests/fixtures/project-names.json.
+# Read by tests/unit/project_names.bats (project_canonical in project-name.sh) and by the
+# project-map crate's cargo test (project_map::Registry::canonical), so the shell and Rust
+# lookups cannot diverge. A spelling no registry entry names keeps its last path segment,
+# leading dot stripped and case kept.
+dotfiles	dotfiles
+DOTFILES	dotfiles
+.dotfiles	dotfiles
+Kblack0610/.dotfiles	dotfiles
+kblack0610/.DOTFILES	dotfiles
+waybar	dotfiles
+platform	bnb-platform
+Studio/platform	bnb-platform
+kblack0610/platform	bnb-platform
+git.example.com/kblack0610/platform	bnb-platform
+monorepo	bnb-platform
+bnb-platform	bnb-platform
+shopapp	shopapp
+shop-app	shopapp
+freqtrade_trading_attempt	trader
+Kblack0610/freqtrade_trading_attempt	trader
+freqtrade	trader
+fleet-platform	brightsign-fleet-platform
+brightsign-fleet-platform	brightsign-fleet-platform
+engine	unity-core-playground
+unity-playground	unity-core-playground
+unity-core-playground	unity-core-playground
+Other	Other
+someone/.thing	thing
+default	default
+_comment	_comment
+someone/thing//	thing
+..dots	.dots
+# Two keys one case apart: the lower path wins on both sides, whatever order the file lists them in.
+CASE-TWIN	Case-Twin

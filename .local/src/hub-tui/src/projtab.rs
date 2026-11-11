@@ -6,6 +6,7 @@
 //! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
 //! nothing.
 
+use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
@@ -36,7 +37,7 @@ const HEADER: [&str; 19] = [
     "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
 ];
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProjView {
     /// The list's search, chip and sort, and its selected row.
     pub table: DataTable,
@@ -44,11 +45,31 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened card's folded sections are open (`F`).
+    /// The opened card's sections are open; `F` folds them.
     pub folds: bool,
     /// The system open under Build by system (`z`), and its epic open to its tasks (`Z`).
     pub sys: Option<String>,
     pub epic: Option<String>,
+    /// The Deliverables table's search, chip and sort, and its selected row.
+    pub dv: DataTable,
+    /// The Deliverables table has the keys (`d`), not the project list.
+    pub dfocus: bool,
+}
+
+impl Default for ProjView {
+    /// The card's sections start open (dashboards rule 4).
+    fn default() -> ProjView {
+        ProjView {
+            table: DataTable::default(),
+            open: false,
+            want: None,
+            folds: true,
+            sys: None,
+            epic: None,
+            dv: DataTable::default(),
+            dfocus: false,
+        }
+    }
 }
 
 impl ProjView {
@@ -138,7 +159,12 @@ impl ProjView {
             tv.only = None;
             return;
         };
-        match pg.systems.iter().flat_map(|s| &s.epics).find(|e| e.id == want) {
+        match pg
+            .systems
+            .iter()
+            .flat_map(|s| &s.epics)
+            .find(|e| e.id == want)
+        {
             Some(e) => {
                 tv.only = Some(
                     e.leaves
@@ -173,6 +199,46 @@ impl ProjView {
         }
     }
 
+    /// The deliverables the view keeps, in its order.
+    pub fn dshown<'a>(&self, d: &'a Deliverables) -> Vec<&'a Deliverable> {
+        self.dv.view.apply(&d.rows)
+    }
+
+    /// The Deliverables table's keys while it has them: the shared table keys and moves, Enter
+    /// opens the selected epic's project with its system and epic open, Esc clears the view and
+    /// then gives the keys back to the list, as `d` does at once.
+    pub fn dkey(
+        &mut self,
+        tv: &mut TaskView,
+        k: KeyEvent,
+        cards: &[Card],
+        d: &Deliverables,
+        page: usize,
+    ) -> bool {
+        if self.dv.key::<Deliverable>(k.code) != Took::No
+            || self.dv.moves(k, self.dshown(d).len(), page)
+        {
+            return true;
+        }
+        match k.code {
+            KeyCode::Enter => {
+                let shown = self.dshown(d);
+                let want = shown.get(self.dv.sel.min(shown.len().saturating_sub(1)));
+                if let Some(r) = want.filter(|r| cards.iter().any(|c| same(c, r))) {
+                    let (key, sys, id) = (r.key(), r.system.clone(), r.id.clone());
+                    self.dfocus = false;
+                    self.go(tv, cards, &key);
+                    self.sys = Some(sys).filter(|s| !s.is_empty());
+                    self.epic = Some(id);
+                }
+            }
+            KeyCode::Esc if !self.dv.is_default() => self.dv.clear(),
+            KeyCode::Esc | KeyCode::Char('d') => self.dfocus = false,
+            _ => return false,
+        }
+        true
+    }
+
     /// The list's keys; false for one it does not take.
     pub fn key(&mut self, tv: &mut TaskView, k: KeyEvent, cards: &[Card], page: usize) -> bool {
         if self.table.key::<Card>(k.code) != Took::No
@@ -187,11 +253,17 @@ impl ProjView {
                 }
             }
             KeyCode::Char('a') => self.open(tv, None),
+            KeyCode::Char('d') => self.dfocus = true,
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             _ => return false,
         }
         true
     }
+}
+
+/// The card a deliverable's project is.
+fn same(c: &Card, r: &Deliverable) -> bool {
+    c.profile == r.profile && c.name == r.project
 }
 
 /// The warning style when `b`, else none.
@@ -392,6 +464,15 @@ pub fn open_lines(
             w,
         ));
     }
+    if let Some(b) = &pg.alerts {
+        out.extend(wrapped(
+            "  alerts   ",
+            &format!("{} (A opens)", b.says),
+            crate::releases::alert(b.level, p),
+            p,
+            w,
+        ));
+    }
     for e in &pg.errors {
         out.extend(wrapped("  ", e, p.warn(), p, w));
     }
@@ -513,8 +594,139 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
     ]
 }
 
-/// The list, and the line the selected row is on (the app keeps it in view).
+/// How many deliverables show at once; the rest scroll under the selection once `d` has the keys.
+const DELIVERABLE_ROWS: usize = 12;
+
+const DHEADER: [&str; 6] = ["PROJECT", "EPIC", "SYS", "DONE", "ETA", "TRACK"];
+
+/// The Deliverables section: its head, the chips, the table, the coverage line, a blank line;
+/// and the line the selected row is on when `d` has the keys. A failed read says so, never an
+/// empty table.
+fn deliverables(
+    dl: Option<&Result<Deliverables, String>>,
+    pv: &ProjView,
+    p: Palette,
+    w: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let head = |says: &str, hint: &str| {
+        clip_line(
+            Line::from(vec![
+                Span::styled(says.to_string(), p.head()),
+                Span::styled(hint.to_string(), p.dim()),
+            ]),
+            w,
+        )
+    };
+    let mut out = vec![];
+    let mut at = None;
+    match dl {
+        None => out.push(head("Deliverables", "  reading fleet-bench epics")),
+        Some(Err(e)) => {
+            out.push(head("Deliverables", ""));
+            out.extend(wrapped("", e, p.warn(), p, w));
+        }
+        Some(Ok(d)) => {
+            let hint = if pv.dfocus {
+                "  Enter opens the epic's project, Esc back"
+            } else {
+                "  d browses them"
+            };
+            out.push(head(&d.says, hint));
+            out.push(clip_line(Line::from(pv.dv.status(&d.rows, p)), w));
+            let shown = pv.dshown(d);
+            if shown.is_empty() {
+                let none = if d.rows.is_empty() {
+                    "No open feature epics."
+                } else {
+                    "No deliverable matches."
+                };
+                out.push(Line::styled(none, p.dim()));
+            } else {
+                let sel = pv.dv.sel.min(shown.len() - 1);
+                let top = if pv.dfocus {
+                    (sel + 1).saturating_sub(DELIVERABLE_ROWS)
+                } else {
+                    0
+                };
+                let seen: Vec<&&Deliverable> =
+                    shown.iter().skip(top).take(DELIVERABLE_ROWS).collect();
+                let mut t = Table {
+                    header: DHEADER.to_vec(),
+                    rows: seen.iter().map(|r| drow(r, p)).collect(),
+                    keep: vec![1, 0, 5, 3, 4, 2],
+                    right: vec![3, 4],
+                    cap: vec![(0, 16), (1, 44)],
+                    mark: pv.dv.mark::<Deliverable>(),
+                    ..Default::default()
+                }
+                .fit(w, p.head());
+                if pv.dfocus {
+                    if let Some(l) = t.get_mut(sel - top + 1) {
+                        l.style = p.sel();
+                        at = Some(out.len() + sel - top + 1);
+                    }
+                }
+                out.append(&mut t);
+                let (before, after) = (top, shown.len() - top - seen.len());
+                if before + after > 0 {
+                    out.push(Line::styled(
+                        format!("  {before} above, {after} below"),
+                        p.dim(),
+                    ));
+                }
+            }
+            out.push(clip_line(
+                Line::styled(format!("{}; {}", d.coverage_says, d.legend), p.dim()),
+                w,
+            ));
+        }
+    }
+    out.push(Line::raw(""));
+    (out, at)
+}
+
+/// One deliverable's cells, the same words as agent-web's row.
+fn drow(r: &Deliverable, p: Palette) -> Vec<Cell> {
+    let dash = |s: &str| {
+        if s.is_empty() {
+            "-".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    vec![
+        r.project.clone().into(),
+        r.title.clone().into(),
+        dash(&r.system).into(),
+        r.done_says.clone().into(),
+        dash(&r.eta_day).into(),
+        cell(dash(&r.track), warn_if(r.track == "behind", p)),
+    ]
+}
+
+/// The list, and the line the selected row is on (the app keeps it in view); the Deliverables
+/// section comes first.
 pub fn page(
+    pr: &Projects,
+    feed: Option<&Feed>,
+    dl: Option<&Result<Deliverables, String>>,
+    pv: &ProjView,
+    p: Palette,
+    w: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let (mut out, dat) = deliverables(dl, pv, p, w);
+    let (mut list, at) = list(pr, feed, pv, p, w);
+    let at = if pv.dfocus {
+        dat
+    } else {
+        at.map(|a| a + out.len())
+    };
+    out.append(&mut list);
+    (out, at)
+}
+
+/// The project list under the Deliverables section.
+fn list(
     pr: &Projects,
     feed: Option<&Feed>,
     pv: &ProjView,
@@ -582,7 +794,8 @@ pub fn page(
             ..Default::default()
         }
         .fit_wrapped(w, p.head());
-        if let Some(&start) = starts.get(pv.at(shown.len())) {
+        // The Deliverables table has the keys: the list keeps no highlight.
+        if let (false, Some(&start)) = (pv.dfocus, starts.get(pv.at(shown.len()))) {
             t[start].style = p.sel();
             at = Some(out.len() + start);
         }
@@ -654,6 +867,7 @@ pub(crate) mod tests {
         Page {
             project: "garden".into(),
             releases: None,
+            alerts: None,
             flow_line: Some(
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
@@ -748,6 +962,17 @@ pub(crate) mod tests {
                 "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
                 "AGENT NOTE  model-written, 2026-11-05  F opens it",
             ]
+        );
+        let mut watched = a_page();
+        watched.alerts = Some(hub_core::releases::Badge {
+            says: "2 watches, 1 firing".into(),
+            level: hub_core::releases::Level::Bad,
+        });
+        assert!(
+            draw(Some(&watched), false)
+                .iter()
+                .any(|l| l == "  alerts   2 watches, 1 firing (A opens)"),
+            "the count line leads to Alerts"
         );
         let open = draw(Some(&pg), true).join("\n");
         assert!(!open.contains("Menus"), "F opens the folds, not a system");
@@ -914,7 +1139,7 @@ pub(crate) mod tests {
             TaskView::default(),
         );
         assert_eq!(pv.selected(&pr.cards).unwrap().name, "demo");
-        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
         assert!(plain(&l[at.unwrap()]).starts_with("demo"));
         pv.key(&mut tv, key('k'), &pr.cards, 10);
         assert_eq!(pv.table.sel, 0, "k moves from the row on screen");
@@ -952,12 +1177,12 @@ pub(crate) mod tests {
 
         pv.key(&mut tv, key('s'), &pr.cards, 10);
         assert_eq!(pv.table.view.sort, "project");
-        let (l, _) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let (l, _) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
         assert!(s.iter().any(|l| l.starts_with("PROJECT v")), "{s:?}");
         pv.key(&mut tv, key('f'), &pr.cards, 10);
         assert_eq!(pv.shown(&pr.cards).len(), 0, "none is in flight");
-        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
         let s = l.iter().map(plain).collect::<Vec<_>>().join("\n");
         assert!(s.contains("0 of 2 projects"), "{s}");
         assert!(s.contains("No project matches."), "{s}");
@@ -978,8 +1203,11 @@ pub(crate) mod tests {
             },
             ..Default::default()
         };
-        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
+        // The Deliverables section is on top and still reading; the list follows it.
+        assert_eq!(s[0], "Deliverables  reading fleet-bench epics");
+        let s = s[2..].to_vec();
         assert!(
             s[0].starts_with("PROJECTS  2 projects, 1 in flight"),
             "{s:?}"
@@ -995,7 +1223,7 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(
-            s[at.unwrap()].split_whitespace().collect::<Vec<_>>(),
+            s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
                 "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
                 "0", "0", "0", "0", "0", "-"
@@ -1008,10 +1236,230 @@ pub(crate) mod tests {
         );
         assert!(tail.ends_with("  dotfiles: fix the hook"), "{tail}");
 
-        let narrow = page(&pr, None, &pv, Palette { no_color: true }, 40).0;
+        let narrow = page(&pr, None, None, &pv, Palette { no_color: true }, 40).0;
         assert!(narrow.iter().all(|l| plain(l).len() <= 40));
         let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
         let head = head.expect("the header stays");
         assert!(head.contains("PCT"), "{head}");
+    }
+
+    fn deliverable(project: &str, id: &str, title: &str, system: &str, track: &str) -> Deliverable {
+        Deliverable {
+            project: project.into(),
+            profile: "personal".into(),
+            id: id.into(),
+            title: title.into(),
+            system: system.into(),
+            done: 8,
+            total: 19,
+            percent: Some(60),
+            done_says: "60% 8/19".into(),
+            eta: Some(1),
+            eta_day: "11-13".into(),
+            track: track.into(),
+        }
+    }
+
+    fn delivs() -> Result<Deliverables, String> {
+        Ok(Deliverables {
+            rows: vec![
+                deliverable("garden", "g-1", "school days", "gameplay", "behind"),
+                deliverable("demo", "d-1", "Lobby", "netcode", "on track"),
+            ],
+            says: "Deliverables (2 open, 0 ready to verify, 1 on track, 1 behind)".into(),
+            coverage_says: "Coverage: 4 linked / 9 open rows (44%)".into(),
+            legend: hub_core::deliverables::LEGEND,
+            ..Default::default()
+        })
+    }
+
+    fn lines(l: &[Line<'static>]) -> Vec<String> {
+        l.iter().map(plain).collect()
+    }
+
+    #[test]
+    fn deliverables_sit_above_the_list_with_the_webs_words() {
+        let pr = fixture();
+        let d = delivs();
+        let (l, at) = page(
+            &pr,
+            None,
+            Some(&d),
+            &ProjView::default(),
+            Palette { no_color: true },
+            120,
+        );
+        let s = lines(&l);
+        assert!(
+            s[0].starts_with("Deliverables (2 open, 0 ready to verify, 1 on track, 1 behind)"),
+            "{s:?}"
+        );
+        assert_eq!(s[1], "all 2  behind 1  on track 1  verify 0");
+        assert_eq!(
+            s[2].split_whitespace().collect::<Vec<_>>(),
+            ["PROJECT", "EPIC", "SYS", "DONE", "ETA", "TRACK"]
+        );
+        // worst first, the web's cell words: percent, then done/all
+        assert_eq!(
+            s[3].split_whitespace().collect::<Vec<_>>(),
+            ["garden", "school", "days", "gameplay", "60%", "8/19", "11-13", "behind"]
+        );
+        assert!(
+            s[5].starts_with("Coverage: 4 linked / 9 open rows (44%); percent is"),
+            "{s:?}"
+        );
+        let list = s.iter().position(|l| l.starts_with("PROJECTS ")).unwrap();
+        assert!(list > 5, "the list is under the section: {s:?}");
+        // the list's own row is the highlighted one until `d` moves the keys
+        assert!(at.unwrap() > list);
+    }
+
+    #[test]
+    fn a_failed_read_says_so_and_a_missing_one_says_reading() {
+        let pr = fixture();
+        let pv = ProjView::default();
+        let p = Palette { no_color: true };
+        let bad: Result<Deliverables, String> = Err("fleet-bench epics: exit 2".into());
+        let s = lines(&page(&pr, None, Some(&bad), &pv, p, 120).0);
+        assert_eq!(s[0], "Deliverables");
+        assert_eq!(s[1], "fleet-bench epics: exit 2");
+        assert!(
+            !s.iter()
+                .any(|l| l.starts_with("PROJECT ") && l.contains("EPIC")),
+            "{s:?}"
+        );
+        let none = Ok(Deliverables::default());
+        let s = lines(&page(&pr, None, Some(&none), &pv, p, 120).0);
+        assert!(s.iter().any(|l| l == "No open feature epics."), "{s:?}");
+    }
+
+    #[test]
+    fn d_gives_the_table_the_keys_and_enter_opens_the_epics_project_with_its_folds() {
+        let pr = fixture();
+        let d = delivs();
+        let mut tv = TaskView::default();
+        let mut pv = ProjView::default();
+        let key = |c| KeyEvent::from(c);
+        assert!(pv.key(&mut tv, key(KeyCode::Char('d')), &pr.cards, 20));
+        assert!(pv.dfocus);
+        let (l, at) = page(&pr, None, Some(&d), &pv, Palette { no_color: true }, 120);
+        let s = lines(&l);
+        assert_eq!(s[at.unwrap()].split_whitespace().next(), Some("garden"));
+        // j moves in the table, not the project list
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Char('j')),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        assert_eq!((pv.dv.sel, pv.table.sel), (1, 0));
+        // the shared keys work: f steps the chip
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Char('f')),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        assert_eq!(pv.dv.view.state, "behind");
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Char('x')),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        pv.dv.sel = 0;
+        // Enter: the project's rows open with the system and epic open
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Enter),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        assert!(pv.open && !pv.dfocus);
+        assert_eq!(tv.project, Some(("personal".into(), "garden".into())));
+        assert_eq!(
+            (pv.sys.as_deref(), pv.epic.as_deref()),
+            (Some("gameplay"), Some("g-1"))
+        );
+        // Esc from the table: clear the view first, then back to the list
+        pv.close(&mut tv);
+        pv.dfocus = true;
+        pv.dv.view.q = "zzz".into();
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Esc),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        assert!(pv.dfocus && pv.dv.is_default());
+        assert!(pv.dkey(
+            &mut tv,
+            key(KeyCode::Esc),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20
+        ));
+        assert!(!pv.dfocus);
+    }
+
+    #[test]
+    fn an_epic_whose_project_has_no_card_opens_nothing() {
+        let pr = fixture();
+        let d: Result<Deliverables, String> = Ok(Deliverables {
+            rows: vec![deliverable("ghost", "x-1", "Lost", "ui", "behind")],
+            ..Default::default()
+        });
+        let mut tv = TaskView::default();
+        let mut pv = ProjView {
+            dfocus: true,
+            ..Default::default()
+        };
+        pv.dkey(
+            &mut tv,
+            KeyEvent::from(KeyCode::Enter),
+            &pr.cards,
+            d.as_ref().unwrap(),
+            20,
+        );
+        assert!(!pv.open && pv.epic.is_none());
+    }
+
+    #[test]
+    fn a_long_table_shows_a_window_that_follows_the_selection() {
+        let pr = fixture();
+        let rows: Vec<Deliverable> = (0..30)
+            .map(|i| {
+                deliverable(
+                    "garden",
+                    &format!("g-{i}"),
+                    &format!("epic {i:02}"),
+                    "ui",
+                    "on track",
+                )
+            })
+            .collect();
+        let d = Ok(Deliverables {
+            rows,
+            says: "Deliverables (30 open)".into(),
+            ..Default::default()
+        });
+        let p = Palette { no_color: true };
+        let mut pv = ProjView::default();
+        let s = lines(&page(&pr, None, Some(&d), &pv, p, 120).0);
+        assert!(
+            s.iter().any(|l| l.contains("epic 00")) && !s.iter().any(|l| l.contains("epic 20"))
+        );
+        assert!(s.iter().any(|l| l.contains("0 above, 18 below")), "{s:?}");
+        pv.dfocus = true;
+        pv.dv.sel = 25;
+        let (l, at) = page(&pr, None, Some(&d), &pv, p, 120);
+        let s = lines(&l);
+        assert!(s[at.unwrap()].contains("epic 25"), "{:?}", s[at.unwrap()]);
+        assert!(!s.iter().any(|l| l.contains("epic 00")));
     }
 }

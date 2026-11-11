@@ -3,6 +3,7 @@
 //! the session that owns its branch. The ledger is append-only (a run is written again each time
 //! it changes), so a run is its last line. A failed run's log is fetched only when the row is
 //! opened (docs/dashboards.md rule 10), through the fetch and cache `jobs::read_log` already has.
+//! The opened run's jobs, steps and cost are `detail` (`run_detail`), read from local files only.
 //!
 //! | fact                | home                                                           |
 //! |---------------------|----------------------------------------------------------------|
@@ -10,6 +11,8 @@
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
+//! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
+//! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -18,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{self, LogRef};
+use crate::quarantine;
 use crate::releases::Level;
+use crate::run_detail::{self, Rates, RunDetail};
 use crate::table::{Row, Val};
 
 /// How long the ledger keeps a run, and so how far back this section reaches.
@@ -35,6 +40,10 @@ pub struct Paths {
     pub ledger: PathBuf,
     pub sync: PathBuf,
     pub fleet: PathBuf,
+    /// The job archive: every job of each run, keyed as the ledger is.
+    pub jobs: PathBuf,
+    /// Each repo's test quarantine and its last nightly's counts.
+    pub quarantine: PathBuf,
 }
 
 impl Paths {
@@ -49,14 +58,18 @@ impl Paths {
         let ledger = env("SCHEDULES_RUNS_LEDGER").unwrap_or_else(|| state.join("ci/runs.jsonl"));
         Paths {
             sync: ledger.with_file_name("sync.json"),
+            quarantine: env("SCHEDULES_QUARANTINE")
+                .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
             ledger,
             fleet: crate::boards::fleet_state(),
+            jobs: env("SCHEDULES_JOBS_LEDGER").unwrap_or_else(|| state.join("ci/jobs.jsonl")),
         }
     }
 
-    /// Whether a changed file is the ledger or its sync record: what wakes the section.
+    /// Whether a changed file is the ledger, its sync record, the job archive or the quarantine:
+    /// what wakes the section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync
+        p == self.ledger || p == self.sync || p == self.jobs || p == self.quarantine
     }
 }
 
@@ -75,6 +88,8 @@ pub struct Run {
     pub branch: String,
     pub event: String,
     pub sha: String,
+    /// The commit the jobs checked out, when the workflow records one apart from `sha`.
+    pub tested_sha: String,
     pub status: String,
     pub conclusion: Option<String>,
     pub created_at: String,
@@ -133,14 +148,10 @@ pub struct RunTime {
 }
 
 impl RunTime {
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
-}
-
-/// The repo as a person names it: the part after the owner.
-pub fn short_repo(repo: &str) -> &str {
-    repo.rsplit('/').next().unwrap_or(repo)
 }
 
 impl Run {
@@ -158,8 +169,9 @@ impl Run {
         matches!(self.state.as_str(), "green" | "red" | "other")
     }
 
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
 }
 
@@ -169,6 +181,8 @@ impl Run {
 pub struct RunKey {
     pub forge: String,
     pub repo: String,
+    /// `run_id` in the job archive and on `/api/builds/detail`.
+    #[serde(alias = "run_id")]
     pub id: u64,
     pub attempt: u32,
 }
@@ -192,7 +206,7 @@ impl Row for Run {
         };
         match col {
             "started" => Val::Num(self.started as f64),
-            "repo" => text(self.short_repo()),
+            "repo" => text(&self.project()),
             "forge" => text(&self.forge),
             "workflow" => text(&self.workflow),
             "branch" => text(&self.branch),
@@ -290,9 +304,20 @@ pub struct Builds {
     pub times: Vec<RunTime>,
     /// Why the ledger or a repo could not be read: a red line, never a silent blank.
     pub errors: Vec<String>,
+    /// Each archived run's finished jobs, for the Run times fold's money (`run_detail::costs`).
+    #[serde(skip)]
+    pub job_times: HashMap<RunKey, Vec<run_detail::JobTime>>,
+    /// Each repo's test quarantine: the Quarantine fold, none when no repo has one.
+    pub quarantine: Vec<quarantine::Lane>,
 }
 
 impl Builds {
+    /// A run went red in the last `RECENT_SECS`, or the ledger did not read: the Builds inner
+    /// tab's count on Releases. Older reds are history, as `Counts::level` says.
+    pub fn needs_look(&self) -> bool {
+        !self.errors.is_empty() || self.counts.level() == Level::Bad
+    }
+
     pub fn summary(&self) -> String {
         self.counts.says()
     }
@@ -471,6 +496,22 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(format!("owner session: {e}")),
     }
+    // The job archive is optional until schedules-sync writes it: runs then price as no record.
+    if let Ok(text) = read_text(&paths.jobs) {
+        let (records, bad) = run_detail::archive(&text, |_| true);
+        if bad > 0 {
+            out.errors
+                .push(format!("jobs.jsonl: {bad} unreadable line(s) skipped"));
+        }
+        out.job_times = run_detail::job_times(&records, now - (KEEP_DAYS + 1) * 86400);
+    }
+    // The quarantine is absent until a repo has one: no file is no fold, not an error.
+    if let Ok(text) = read_text(&paths.quarantine) {
+        match quarantine::parse(&text) {
+            Ok(lanes) => out.quarantine = lanes,
+            Err(e) => out.errors.push(e),
+        }
+    }
     out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
     out
@@ -562,17 +603,14 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
         })
         .collect();
     // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
-    out.sort_by(|a, b| {
-        let k = |t: &RunTime| {
-            (
-                short_repo(&t.repo).to_string(),
-                std::cmp::Reverse(t.runs),
-                t.workflow.clone(),
-                t.repo.clone(),
-                t.forge.clone(),
-            )
-        };
-        k(a).cmp(&k(b))
+    out.sort_by_cached_key(|t| {
+        (
+            t.project(),
+            std::cmp::Reverse(t.runs),
+            t.workflow.clone(),
+            t.repo.clone(),
+            t.forge.clone(),
+        )
     });
     let usual: HashMap<Key, Usual> = out
         .iter()
@@ -654,6 +692,33 @@ pub fn log(
     }
 }
 
+/// The run `key` names, opened: its jobs, steps and cost from the job archive, priced with
+/// `rates`. Only the ledger and the archive are read, so an open never asks a provider.
+pub fn detail(paths: &Paths, rates: &Rates, key: &RunKey, now: i64) -> Result<RunDetail, String> {
+    let (rows, _) = parse(&read_text(&paths.ledger)?, now);
+    let run = rows
+        .iter()
+        .find(|r| r.key() == *key)
+        .ok_or("that run is not in the ledger (older than 30 days, or never synced)")?;
+    let mut attempts: Vec<u32> = rows
+        .iter()
+        .filter(|r| (&r.forge, &r.repo, r.id) == (&run.forge, &run.repo, run.id))
+        .map(|r| r.attempt)
+        .collect();
+    attempts.sort_unstable();
+    // A missing archive is no record: the run reads pending or unavailable.
+    let text = std::fs::read_to_string(&paths.jobs).unwrap_or_default();
+    let id = key.id.to_string();
+    let (records, _) = run_detail::archive(&text, |l| l.contains(&id));
+    Ok(run_detail::build(
+        run,
+        records.get(key),
+        attempts,
+        rates,
+        now,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,6 +798,18 @@ mod tests {
             (1, Level::Ok),
             "an old red is history"
         );
+        // A recent red or an unread ledger puts a count on Releases' Builds inner tab; an old
+        // red does not.
+        let builds = |counts| Builds {
+            counts,
+            ..Default::default()
+        };
+        assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let unread = Builds {
+            errors: vec!["runs.jsonl: unreadable".into()],
+            ..Default::default()
+        };
+        assert!(unread.needs_look());
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 
@@ -794,6 +871,8 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let b = read(&p, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -815,6 +894,8 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -842,6 +923,8 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -856,6 +939,215 @@ mod tests {
             got.contains("Attempt 1 was re-run") && got.contains("/attempts/1"),
             "{got}"
         );
+    }
+
+    #[test]
+    fn the_quarantine_rides_the_read_silent_when_absent_and_red_when_unreadable() {
+        let (d, p) = opened("quar", &[], "");
+        assert!(
+            p.is_ledger_file(&p.quarantine),
+            "a new quarantine wakes the section"
+        );
+        let none = read(&p, NOW);
+        assert!(none.quarantine.is_empty());
+        assert!(
+            !none.errors.iter().any(|e| e.contains("quarantine")),
+            "{:?}",
+            none.errors
+        );
+        std::fs::write(
+            &p.quarantine,
+            r#"{"repos":[{"repo":"Org/app","base":"main","report":{"entries":3,"rows":[]}}]}"#,
+        )
+        .unwrap();
+        let some = read(&p, NOW);
+        std::fs::write(&p.quarantine, "{").unwrap();
+        let bad = read(&p, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(some.quarantine[0].repo, "Org/app");
+        assert_eq!(some.quarantine[0].report.as_ref().unwrap().entries, 3);
+        assert!(bad.quarantine.is_empty());
+        assert!(
+            bad.errors.iter().any(|e| e.starts_with("quarantine.json:")),
+            "{:?}",
+            bad.errors
+        );
+    }
+
+    /// A run ledger and job archive in a fresh directory, and the paths that read them.
+    fn opened(name: &str, runs: &[String], jobs: &str) -> (PathBuf, Paths) {
+        let d = std::env::temp_dir().join(format!("hub-builds-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("runs.jsonl"), runs.join("\n")).unwrap();
+        std::fs::write(d.join("jobs.jsonl"), jobs).unwrap();
+        let p = Paths {
+            ledger: d.join("runs.jsonl"),
+            sync: d.join("sync.json"),
+            fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
+        };
+        (d, p)
+    }
+
+    fn job(name: &str, runner: &str, start: i64, secs: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": start, "name": name, "conclusion": "success", "runner_name": runner,
+            "labels": ["self-hosted", "unity"], "created_at": iso(start - 60),
+            "started_at": iso(start), "completed_at": iso(start + secs), "url": "https://x/job",
+            "steps": [{"number": 1, "name": "checkout", "conclusion": "success",
+                       "started_at": iso(start), "completed_at": iso(start + 2)}],
+        })
+    }
+
+    fn record(id: u64, complete: bool, jobs: Vec<serde_json::Value>) -> String {
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "run_id": id, "attempt": 1,
+            "source": "exporter", "complete": complete, "fetched_at": iso(NOW - 60), "jobs": jobs,
+        })
+        .to_string()
+    }
+
+    fn key(id: u64) -> RunKey {
+        RunKey {
+            forge: "github".into(),
+            repo: "Org/app".into(),
+            id,
+            attempt: 1,
+        }
+    }
+
+    #[test]
+    fn an_opened_run_reads_its_jobs_and_prices_them_from_local_files_only() {
+        let start = NOW - 3000;
+        let jobs = vec![
+            job("shard 2", "aws-burst-1-unity-pool-3", start, 32 * 60 + 45),
+            job("report", "hp-victus-light-1", start + 10, 12),
+            job("plan", "razer-laptop-light-2", start, 84),
+        ];
+        let (d, p) = opened(
+            "detail",
+            &[line(9, "completed", Some("failure"), 3060, "b")],
+            &record(9, true, jobs),
+        );
+        // Only the paths and the rates go in: no Prometheus base, no GitHub token, no fetch.
+        let got = detail(&p, &run_detail::tests::rates(), &key(9), NOW);
+        let missing = detail(&p, &run_detail::tests::rates(), &key(10), NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let got = got.unwrap();
+        assert!(missing.unwrap_err().contains("not in the ledger"));
+        assert_eq!(got.coverage, "complete");
+        assert_eq!(got.jobs.len(), 3);
+        let shard = &got.jobs[0];
+        assert_eq!(
+            (shard.class.as_str(), shard.took_text.as_str()),
+            ("aws/on-demand", "32m45")
+        );
+        assert_eq!(shard.price.text, "0.20 (1/5 of $1.855/h)");
+        assert_eq!(
+            got.jobs[1].price.text, "no rate",
+            "hp-victus has slots and no rate"
+        );
+        assert_eq!(got.jobs[2].class, "light/owned");
+        assert_eq!(got.jobs[2].price.text, "0.00 owned");
+        assert_eq!(got.cost.text, "$0.20 + no rate");
+        assert_eq!(shard.steps_text, "checkout 2s");
+        assert!(
+            got.header
+                .starts_with("end to end 33m45 | before first job 1m |"),
+            "{}",
+            got.header
+        );
+        assert!(
+            got.header.ends_with("| tested abc | complete"),
+            "{}",
+            got.header
+        );
+        assert!(got.title.contains("$0.20 + no rate"), "{}", got.title);
+        assert_eq!(got.attempts, [1]);
+    }
+
+    #[test]
+    fn an_interrupted_fetch_reads_partial_and_a_run_without_a_record_pending_then_unavailable() {
+        let runs = [
+            line(1, "completed", Some("success"), 600, "b"),
+            line(2, "completed", Some("success"), 600, "b"),
+            line(3, "completed", Some("success"), 7200, "b"),
+        ];
+        let (d, p) = opened(
+            "cover",
+            &runs,
+            &record(1, false, vec![job("a", "x-1", NOW - 600, 60)]),
+        );
+        let r = run_detail::tests::rates();
+        let got: Vec<String> = [1, 2, 3]
+            .map(|id| detail(&p, &r, &key(id), NOW).unwrap().coverage)
+            .into();
+        std::fs::remove_dir_all(&d).unwrap();
+        // Run 2 ended 90s after it began 600s ago: the next import can still bring it.
+        assert_eq!(got, ["partial", "pending", "unavailable"]);
+    }
+
+    #[test]
+    fn a_run_of_130_jobs_reads_every_one() {
+        let jobs: Vec<serde_json::Value> = (0..130)
+            .map(|i| {
+                job(
+                    &format!("shard {i}"),
+                    "razer-laptop-unity-pool-1",
+                    NOW - 3000 + i,
+                    60,
+                )
+            })
+            .collect();
+        let (d, p) = opened(
+            "many",
+            &[line(4, "completed", Some("success"), 3060, "b")],
+            &record(4, true, jobs),
+        );
+        let got = detail(&p, &run_detail::tests::rates(), &key(4), NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let got = got.unwrap();
+        assert_eq!(got.jobs.len(), 130);
+        assert_eq!(got.jobs[129].name, "shard 129");
+        assert_eq!(got.cost.text, "$0.00 owned");
+    }
+
+    #[test]
+    fn the_run_times_fold_prices_each_workflow_and_reconciles_the_month() {
+        let runs: Vec<String> = (1..=3)
+            .map(|i| timed(i, "Tests", "success", 1965))
+            .collect();
+        let archive: Vec<String> = (1..=3)
+            .map(|i| {
+                record(
+                    i,
+                    true,
+                    vec![job(
+                        "shard",
+                        "aws-burst-1-unity-pool-3",
+                        NOW - 3600 - i as i64,
+                        1965,
+                    )],
+                )
+            })
+            .collect();
+        let (d, p) = opened("times", &runs, &archive.join("\n"));
+        let b = read(&p, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let c = run_detail::costs(&b, &run_detail::tests::rates(), NOW);
+        assert_eq!(c.times, ["$0.20 (3 priced)"]);
+        let idle = &c.idle[0];
+        assert!(
+            idle.starts_with("aws-burst-1: powered 2.0h today $3.71"),
+            "{idle}"
+        );
+        assert!(c
+            .month
+            .as_deref()
+            .unwrap()
+            .contains("jobs priced $0.61, AWS actual $10.00, off by"));
+        assert!(c.month_off);
     }
 
     /// A finished run of `workflow` that took `secs`, begun an hour before `NOW`.

@@ -44,6 +44,8 @@ PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
 CHANGELOG_LINES=100
 # How many deployments a row keeps: what the opened row lists, and how far back PREV can look.
 DEPLOY_HISTORY=10
+# How many tags a project's release history keeps, newest first.
+HISTORY_TAGS=20
 # The read-only store credentials: one rbw entry per store, each a single line. Never the release
 # keys the upload workflows use. Formats: docs/operations/release-state.md, "Store credentials".
 RBW_STEAM=release_state_steam
@@ -119,9 +121,9 @@ default_branch() {
   printf '%s' "${b#origin/}"
 }
 
-# pinned <project> <target-json> <deploys-json> -> {value, source, error}
+# pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" d="$3" repo path key image branch dir blob v=""
+  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v=""
   if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
     # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
     # newest successful upload said it put there. Source none is a channel nothing has recorded.
@@ -132,9 +134,8 @@ pinned() {
     return
   fi
   if [ "$(jq -r '.pinned.tag // false' <<<"$t")" = true ]; then
-    v="$(project_release_tag "$proj" 2>/dev/null || true)"
-    if [ -n "$v" ]; then
-      jq -nc --arg v "$v" '{value: $v, source: "newest release tag"}'
+    if [ -n "$tag" ]; then
+      jq -nc --arg v "$tag" '{value: $v, source: "newest release tag"}'
     else
       jq -nc '{value: null, source: "newest release tag", error: "no release tag"}'
     fi
@@ -155,6 +156,32 @@ pinned() {
   fetch_branch "$dir" "$branch" || { jq -nc --arg s "$src" '{value: null, source: $s, error: "fetch failed"}'; return; }
   blob="$(git -C "$dir" show "origin/$branch:$path" 2>/dev/null)" \
     || { jq -nc --arg s "$src" '{value: null, source: $s, error: "file not on branch"}'; return; }
+  v="$(pin_value "$blob" "$image" "${key:-tag}")"
+  if [ -z "$v" ]; then
+    jq -nc --arg s "$src" --arg k "${image:-${key:-tag}}" '{value: null, source: $s, error: "no \($k) in file"}'
+    return
+  fi
+  # When the pin took this value: the newest commit on the branch that changed how often the
+  # value appears in the file, and the value the file held just before it. That is the date the
+  # gitops PR merged, not the moment the cluster applied it.
+  # -S also hits a commit that moved another pin holding the same string (two images in one
+  # file), so the newest hit whose parent pinned something else for THIS key is the one.
+  local hit at="" was=""
+  while read -r hit; do
+    blob="$(git -C "$dir" show "${hit%% *}^:$path" 2>/dev/null)" || blob=""
+    was="$(pin_value "$blob" "$image" "${key:-tag}")"
+    [ "$was" = "$v" ] && continue
+    at="${hit#* }"
+    break
+  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "origin/$branch" -- "$path" 2>/dev/null)
+  [ -n "$at" ] || was=""
+  jq -nc --arg v "$v" --arg s "$src" --arg at "$at" --arg was "$was" \
+    '{value: $v, source: $s, at: ($at | tonumber? // null), prev: (if $was == "" then null else $was end)}'
+}
+
+# pin_value <file-text> <image> <key> -> the version a gitops file pins, or "".
+pin_value() {
+  local blob="$1" image="$2" key="$3" v
   if [ -n "$image" ]; then
     # A kustomize `images:` override (`- name: <image>` then `newTag:`) wins over the
     # `image: <image>:<tag>` it rewrites, as it does when kustomize builds the manifest.
@@ -164,15 +191,10 @@ pinned() {
       /^[^[:space:]-]/ { on = 0 }' <<<"$blob")"
     [ -n "$v" ] || v="$(grep -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
   else
-    key="${key:-tag}"
     v="$(grep -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" | head -1 \
       | sed -E "s/^[[:space:]-]*${key}:[[:space:]]*\"?([^\"[:space:]#]+).*/\1/")"
   fi
-  if [ -n "$v" ]; then
-    jq -nc --arg v "$v" --arg s "$src" '{value: $v, source: $s}'
-  else
-    jq -nc --arg s "$src" --arg k "${image:-$key}" '{value: null, source: $s, error: "no \($k) in file"}'
-  fi
+  printf '%s' "$v"
 }
 
 play_credentials() {
@@ -368,6 +390,44 @@ deploys() {
   printf '%s' "$read_ok"
 }
 
+# history <project> -> {line, glob, error, tags}: the project's tags, newest first, at most
+# HISTORY_TAGS, each {tag, version, sha, at, prev}. line is `release` for its own release family
+# (tagGlob or git-release.sh's ladder), `build` when it has none yet and the registry's
+# `buildTags` names its per-build tags, `none` when neither has a tag. at is git's creatordate
+# (a lightweight tag's commit date, a lower bound); prev is git_prev_tag, the same range the
+# changelog reads. Raw facts only: which channel shipped a tag is hub_core::release_graph's join.
+history() {
+  local proj="$1" repo glob line=release tags="" t sha_at out="[]"
+  if ! project_tag_scope "$proj"; then
+    jq -nc '{line: "none", glob: null, error: "no checkout", tags: []}'
+    return
+  fi
+  repo="$_PTS_REPO"
+  glob="$(_gr_glob "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
+  [ -n "$glob" ] && tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
+  if [ -z "$tags" ] && [ -n "$_PTS_BUILDS" ]; then
+    line=build glob="$_PTS_BUILDS"
+    tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
+    # Several build families (barrage, shapecity) have no common version order: newest by date, then version.
+    [ -n "$tags" ] && tags="$(git -C "$repo" for-each-ref --sort=-v:refname --sort=-creatordate --format='%(refname:short)' refs/tags |
+      grep -Fxf <(printf '%s\n' "$tags"))"
+  fi
+  if [ -z "$tags" ]; then
+    jq -nc --arg g "$glob" '{line: "none", glob: (if $g == "" then null else $g end), error: null, tags: []}'
+    return
+  fi
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    sha_at="$(git_tag_at "$repo" "$t")"
+    out="$(jq -c --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sha_at" \
+      --arg p "$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$t")" '
+      ($sa | split(" ")) as $f
+      | . + [{tag: $t, version: $v, sha: ($f[0] // null), at: ($f[1] // "" | tonumber? // null),
+              prev: (if $p == "" then null else $p end)}]' <<<"$out")"
+  done < <(head -n "$HISTORY_TAGS" <<<"$tags")
+  jq -nc --arg l "$line" --arg g "$glob" --argjson tags "$out" '{line: $l, glob: $g, error: null, tags: $tags}'
+}
+
 # telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
 telemetry() {
   local t="$1" w st since out="[]"
@@ -386,15 +446,15 @@ telemetry() {
   printf '%s' "$out"
 }
 
-# row <project> <target-json> <previous-state-json> -> one snapshot row
+# row <project> <target-json> <previous-state-json> <release-tag> -> one snapshot row. The tag
+# is the project's newest shipped one (project_release_tag), read once per project by the caller.
 row() {
-  local proj="$1" t="$2" prev="$3" p l d status tel id tag drift_since="" now
+  local proj="$1" t="$2" prev="$3" tag="$4" p l d status tel id drift_since="" now
   id="$(jq -r '.id' <<<"$t")"
   d="$(deploys "$proj" "$t")"
-  p="$(pinned "$proj" "$t" "$d")"
+  p="$(pinned "$proj" "$t" "$d" "$tag")"
   l="$(live "$t")"
   tel="$(telemetry "$t")"
-  tag="$(project_release_tag "$proj" 2>/dev/null || true)"
   now="$(now_epoch)"
   local pv lv lsrc psrc lver
   pv="$(jq -r '.value // empty' <<<"$p")"
@@ -438,7 +498,8 @@ row() {
 
 # refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
 refresh_snapshot() {
-  local only="$*" prev="{}" rows tmp line proj t targets summary
+  local only="$*" prev="{}" rows releases tmp line proj t targets summary
+  local -A tag_of=()
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   exec 9>"$STATE_DIR/.lock" || die "cannot open $STATE_DIR/.lock"
   flock -w 120 9 || die "another refresh holds $STATE_DIR/.lock"
@@ -455,17 +516,25 @@ refresh_snapshot() {
     t="$(jq -c '.target' <<<"$line")"
     # A target with no id cannot be joined across refreshes or named by check.
     [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
-    row "$proj" "$t" "$prev" >>"$tmp"
+    [ -v "tag_of[$proj]" ] || tag_of[$proj]="$(project_release_tag "$proj" 2>/dev/null || true)"
+    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp"
   done <<<"$targets"
   rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
+  : >"$tmp"
+  while IFS= read -r proj; do
+    [ -n "$proj" ] || continue
+    history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp"
+  done < <(jq -r '.project' <<<"$targets" | sort -u)
+  releases="$(jq -sc 'from_entries' "$tmp")" || { rm -f "$tmp"; die "cannot read the release history"; }
   rm -f "$tmp"
   local out="$STATE_DIR/.state.$$"
-  jq -n --argjson rows "$rows" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
+  jq -n --argjson rows "$rows" --argjson releases "$releases" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
     ($only | split(" ") | map(select(. != ""))) as $o
     | { generated_at: ($now | todate), generated_epoch: $now,
         rows: ((if ($o | length) > 0
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
-                else [] end) + $rows) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+                else [] end) + $rows),
+        releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
   summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
     || { rm -f "$out"; die "cannot summarize $out"; }
   mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }
@@ -576,7 +645,7 @@ changelog_section() {
 }
 
 cmd_changelog() {
-  local json=0 list=0 proj="" tag="" repo path branch all prev ver text="" source="" range ref file root_changelog
+  local json=0 list=0 proj="" tag="" repo path branch glob all prev ver text="" source="" range ref file root_changelog
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -589,15 +658,21 @@ cmd_changelog() {
   [ -n "$proj" ] || usage
   project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
   repo="$_PTS_REPO"
-  all="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
-  [ -n "$all" ] || die "$proj has no release tags"
+  glob="$_PTS_GLOB"
+  all="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
+  # A game with no release family yet reads its per-build tags, as history does.
+  if [ -z "$all" ] && [ -n "$_PTS_BUILDS" ]; then
+    glob="$_PTS_BUILDS"
+    all="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
+  fi
+  [ -n "$all" ] || die "$proj has no release tags${_PTS_BUILDS:+ and no build tags}"
   if [ "$list" = 1 ]; then printf '%s\n' "$all"; return; fi
   # The newest release: the first tag that is not a prerelease, else the newest of all.
   [ -n "$tag" ] || tag="$(grep -vE -- "$_GR_PRERELEASE" <<<"$all" | head -1 || true)"
   [ -n "$tag" ] || tag="$(head -1 <<<"$all")"
   # Only a tag of this project's line: the argument reaches git, so it is never taken as typed.
   grep -Fxq -- "$tag" <<<"$all" || die "$tag is not a release tag of $proj"
-  prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB" "$tag")"
+  prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$tag")"
   path="$(project_field "$proj" path)"
   branch="$(project_field "$proj" branch)"
   [ -n "$branch" ] || branch="$(default_branch "$repo")"

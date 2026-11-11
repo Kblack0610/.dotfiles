@@ -225,3 +225,65 @@ EOF
   run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s|%s' \"\$W_subject\" \"\$W_trip\""
   assert_output "Home cluster nodes|A node is not Ready"
 }
+
+# `project:` files a watch under one project; none is fleet-wide. The registry is a copy, never
+# the live map, so the test names what it expects.
+projmap() {
+  export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/project-map.json"
+  printf '%s' '{"paths":{"/x/dotfiles":"dotfiles"},"trackers":{"_comment_lab":"x","agent-runtime":{},"dotfiles":{"names":["waybar"]},"unity-core-playground":{"names":["engine"]}}}' > "$AGENT_QUEUE_PROJECT_MAP"
+}
+
+@test "project accepts a paths key, a lab project and a tracker key" {
+  projmap
+  for p in dotfiles agent-runtime unity-core-playground; do
+    base; echo "project: $p" >> "$M"
+    run "$SM" validate "$M"
+    assert_success
+  done
+}
+
+@test "a watch with no project is fleet-wide and valid" {
+  projmap; base
+  run "$SM" validate "$M"
+  assert_success
+}
+
+@test "project refuses an unknown name, another spelling of a project, a comment key and an empty value" {
+  projmap
+  for p in dotfils waybar _comment_lab; do
+    base; echo "project: $p" >> "$M"
+    run "$SM" validate "$M"
+    assert_failure
+    assert_output --partial "project '$p' is not a canonical project"
+  done
+  base; echo 'project:' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'project is empty'
+}
+
+@test "project is not checked on a host with no project map, and an unreadable map fails" {
+  base; echo 'project: anything' >> "$M"
+  export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/absent.json"
+  run "$SM" validate "$M"
+  assert_success
+  echo '{not json' > "$AGENT_QUEUE_PROJECT_MAP"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'unreadable'
+}
+
+@test "env carries the project for the bash caller" {
+  base; echo 'project: dotfiles' >> "$M"
+  run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s' \"\$W_project\""
+  assert_output "dotfiles"
+}
+
+@test "project says so when the registry is a directory, not a traceback" {
+  projmap; rm -f "$AGENT_QUEUE_PROJECT_MAP"; mkdir "$AGENT_QUEUE_PROJECT_MAP"
+  base; echo 'project: dotfiles' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'cannot check project'
+  refute_output --partial Traceback
+}

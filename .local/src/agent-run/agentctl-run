@@ -23,6 +23,7 @@
 #   ROLE=build HARNESS=claude agentctl-run -p "<prompt>" [--max-turns N ...]
 #   agentctl-run --role observe --harness claude -p "<prompt>"
 #   agentctl-run --agent ask-judge -p "<input>"   # a registered agent: its conf sets role, model, prompt
+#   agentctl-run --agent dispatch-judge --schema <file> -p "<rows>"   # this call's reply shape over the conf's SCHEMA
 #   agentctl-run --explain build            # print the resolved invocation, run nothing
 #
 # Roles:    ~/.config/agentctl/roles/<role>.role   (override: $AGENTCTL_ROLES)
@@ -46,7 +47,7 @@ role="${ROLE:-${AGENTCTL_ROLE:-}}"
 AGENTCTL_MODEL="${AGENTCTL_MODEL:-${MODEL:-}}"
 harness="${HARNESS:-${AGENTCTL_HARNESS:-claude}}"
 args=()
-agent="" cli_role="" cli_route="" cli_class="" cli_harness=""
+agent="" cli_role="" cli_route="" cli_class="" cli_harness="" cli_schema=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
     --route)      cli_route="${2:?--route needs a value}"; shift 2 ;;
     --data-class) cli_class="${2:?--data-class needs a value}"; shift 2 ;;
     --harness) cli_harness="${2:?--harness needs a value}"; harness="$cli_harness"; shift 2 ;;
+    --schema)  cli_schema="${2:?--schema needs a value}"; shift 2 ;;
     --explain) AGENTCTL_EXPLAIN=1; [ -n "${2:-}" ] && [ "${2:0:1}" != "-" ] && { cli_role="$2"; shift; }; shift ;;
     *)         args+=("$1"); shift ;;
   esac
@@ -75,7 +77,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 
 # --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE,
-# DATA_CLASS and HARNESS replace whatever a parent runner's conf left in the environment;
+# DATA_CLASS, SOURCE and HARNESS replace whatever a parent runner's conf left in the environment;
 # only this call's own flags (--role, --route, --data-class, --harness) still win over it.
 if [ -n "$agent" ]; then
   agent_load "$agent"
@@ -83,6 +85,7 @@ if [ -n "$agent" ]; then
   AGENTCTL_MODEL="$AGENT_MODEL"
   ROUTE="$AGENT_ROUTE"
   DATA_CLASS="$AGENT_DATA_CLASS"
+  SOURCE="$AGENT_SOURCE"
   AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
   [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
   export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA \
@@ -97,6 +100,13 @@ fi
 [ -n "$cli_role" ]  && role="$cli_role"
 [ -n "$cli_route" ] && AGENTCTL_ROUTE="$cli_route"
 [ -n "$cli_class" ] && AGENTCTL_DATA_CLASS="$cli_class"
+# --schema <file>: this call's reply shape, over the conf's SCHEMA. A caller that knows more than
+# the conf, such as how many verdicts this call must return, says it here (fleet-dispatch judge).
+if [ -n "$cli_schema" ]; then
+  jq -e . "$cli_schema" >/dev/null 2>&1 || role_die "--schema $cli_schema is not a readable JSON file"
+  AGENT_SCHEMA="$cli_schema"
+  export AGENT_SCHEMA
+fi
 
 # Every caller of this script is a runner on a timer with no human attached — that
 # is the premise the whole role contract rests on (see harnesses/claude.sh, which

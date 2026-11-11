@@ -13,8 +13,10 @@ use serde::Serialize;
 
 use crate::prom::Series;
 
-/// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "4 Sessions";
+/// Where the dispatch hold is explained (the Sessions header), as `costs::spend_badge` names Costs.
+pub fn hold_badge() -> String {
+    crate::layout::bar_label("sessions")
+}
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -254,6 +256,9 @@ pub struct Fleet {
     pub rate: Option<f64>,
     /// Sessions the weeks can carry at that rate.
     pub carries: Option<u32>,
+    /// When the accounts, pooled with each reset's refill, run into the reserve at this burn
+    /// (claude-acct's `run_out`); None is that they last to the resets.
+    pub run_out: Option<i64>,
 }
 
 /// Dispatch starts, counted from log.md.
@@ -284,8 +289,9 @@ pub struct Burn {
     /// The headline and the drip, worded here so both surfaces print the same.
     pub head: String,
     pub drip_line: String,
-    /// `bad` when the fleet is over, `warn` when one account is, no row has room or none can
-    /// be read, `ok`, or `none` with no data.
+    /// `bad` when the pooled accounts run into the reserve before the resets, `warn` when the
+    /// fleet or one account burns over its line, no row has room or none can be read, `ok`, or
+    /// `none` with no data.
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
     pub stale: Option<&'static str>,
@@ -481,15 +487,21 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         over: (sustain > 0.0).then(|| burn / sustain),
         rate,
         carries: rate.map(|r| (sustain / r).floor() as u32),
+        run_out: sum("run_out_timestamp_seconds")
+            .filter(|_| summed.is_some())
+            .map(|t| t as i64),
     };
     let level = if accounts.is_empty() {
         "none"
     } else if summed.is_none() {
         // Accounts exist but none can be read (or the textfile is stale): a quiet fleet is not what this means.
         "warn"
-    } else if burn > sustain {
+    } else if fleet.run_out.is_some() {
+        // The pool runs into the human's reserve before the resets refill it. Burning above the
+        // long-run rate while the pool lasts to the resets is the amber below, not red.
         "bad"
-    } else if accounts.iter().any(Account::is_over)
+    } else if burn > sustain
+        || accounts.iter().any(Account::is_over)
         || matches!(no_room(&accounts), (n, of) if of > 0 && n == of)
     {
         "warn"
@@ -541,13 +553,17 @@ impl Burn {
         let carries = f
             .carries
             .map_or(String::new(), |n| format!(", carries ~{n}"));
+        let out = f.run_out.map_or(String::new(), |t| match t - self.at {
+            s if s < 3600 => ", into the reserve within the hour".into(),
+            s => format!(", into the reserve in {}h", (s + 1800) / 3600),
+        });
         let room = match no_room(&self.accounts) {
             (0, _) => String::new(),
             (n, of) if n == of => ", no room on any".into(),
             (n, of) => format!(", no room on {n} of {of}"),
         };
         format!(
-            "{:.1} pts/h vs {:.1} sustainable{ratio}{room}, {} live{carries}",
+            "{:.1} pts/h vs {:.1} sustainable{ratio}{out}{room}, {} live{carries}",
             f.burn, f.sustain, f.live
         )
     }
@@ -690,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_sums_to_the_fleet_line_and_is_over() {
+    fn the_fixture_sums_to_the_fleet_line_and_over_its_line_is_amber() {
         let b = build(&fixture(), quiet(), NOW);
         assert_eq!(b.fleet.live, 39);
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
@@ -701,12 +717,38 @@ mod tests {
             Some(11),
             "floor, as claude-acct's fleet line"
         );
+        // over the long-run line, but the pool lasts to the resets: amber, not red
+        assert_eq!(b.level, "warn");
+        assert_eq!(
+            b.head,
+            "4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live, carries ~11"
+        );
+        assert_eq!(b.drip_line, "15 started in 1h, 349 in 24h");
+    }
+
+    #[test]
+    fn the_pool_running_into_the_reserve_before_the_resets_is_red() {
+        let mut s = fixture();
+        s.push(fleet("run_out_timestamp_seconds", (NOW + 5 * 3600) as f64));
+        let b = build(&s, quiet(), NOW);
+        assert_eq!(b.fleet.run_out, Some(NOW + 5 * 3600));
         assert_eq!(b.level, "bad");
         assert_eq!(
             b.head,
-            "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11"
+            "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, into the reserve in 5h, 39 live, carries ~11"
         );
-        assert_eq!(b.drip_line, "15 started in 1h, 349 in 24h");
+        // a stale file's run-out is not what is true now
+        s.retain(|x| !x.label("__name__").ends_with(AGE_KEY));
+        s.push(age(99_999.0));
+        let b = build(&s, quiet(), NOW);
+        assert_eq!(b.fleet.run_out, None);
+        assert_ne!(b.level, "bad");
+        // under an hour, or a file a little older than the run-out, is not "in 0h"
+        let mut s = fixture();
+        s.push(fleet("run_out_timestamp_seconds", (NOW - 60) as f64));
+        assert!(build(&s, quiet(), NOW)
+            .head
+            .contains(", into the reserve within the hour,"));
     }
 
     #[test]
@@ -863,16 +905,6 @@ mod tests {
         );
         let d = drip(&log, at, None);
         assert_eq!((d.hour, d.day), (1, 2));
-    }
-
-    #[test]
-    fn the_hold_badge_names_the_sessions_key() {
-        assert_eq!(
-            crate::layout::bar_digit("sessions")
-                .map(|d| format!("{d} Sessions"))
-                .as_deref(),
-            Some(HOLD_BADGE)
-        );
     }
     fn reason(account: &str, why: &str) -> Series {
         let mut s = series(account, "room_reason", 1.0);

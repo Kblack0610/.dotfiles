@@ -24,6 +24,7 @@ let body = {};
 let builds = {};
 let tests = {};
 let cases = {};
+let detail = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -37,7 +38,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds") ? builds : body;
+    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -73,6 +74,10 @@ const unread = {
 const binks = {
   project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
+  line: "release", released_text: "v2 11-05", history: [
+    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded" },
+  ],
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
@@ -118,29 +123,43 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: what is live, its word, its channels amber when one was not read, its last deploy", () => {
   show();
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="muted">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app to open");
 });
 
-test("opening an app lists its headline env's channels, folds the other envs, and clicking again closes it", () => {
+test("opening an app lists its headline env's channels, the other envs in a fold that starts open, and clicking again closes it", () => {
   show();
   body = changelog();
   clickApp();
   const b = box.innerHTML;
   assert.match(b, /<tr class="rc" data-ch="binks\|binks-prod"><td>prod<\/td><td class="wrap">binks-prod<\/td><td class="bad">v1<\/td><td>v2<\/td><td class="bad">drift<\/td><td class="wrap muted">home-k3s<\/td><\/tr>/);
-  assert.match(b, /<details class="cfold" data-k="rel-env:binks"><summary><b>1 other channel<\/b> <span class="muted">beta 1 not read<\/span><\/summary>/);
+  assert.match(b, /<details class="cfold" data-k="rel-env:binks" open><summary><b>1 other channel<\/b> <span class="muted">beta 1 not read<\/span><\/summary>/);
   assert.match(b, /<td class="warn">not read<\/td><td class="wrap muted"><span class="warn">steam GetAppBetas failed<\/span>/);
   assert.ok(b.indexOf("binks-prod") < b.indexOf("rel-env:binks"), "the headline env is above the fold");
   clickApp();
   assert.doesNotMatch(box.innerHTML, /binks-prod/);
 });
 
-test("an open fold of other envs stays open across a repaint", () => {
+test("a fold of other envs the reader closed stays closed across a repaint", () => {
   show();
-  run("REL_OPEN['rel-env:binks'] = true; relst.sel = 'binks'; relst.render()");
-  assert.match(box.innerHTML, /data-k="rel-env:binks" open>/);
-  run("delete REL_OPEN['rel-env:binks']");
+  run("REL_OPEN['rel-env:binks'] = false; relst.sel = 'binks'; relst.render()");
+  assert.match(box.innerHTML, /data-k="rel-env:binks"><summary>/);
+  run("delete REL_OPEN['rel-env:binks']; relst.render()");
+  assert.match(box.innerHTML, /data-k="rel-env:binks" open>/, "with no remembered state it is open");
+  run("relst.sel = null");
+});
+
+test("the strip is the first element of the page, before the first read and after it", () => {
+  Object.assign(relst, { data: null, err: null, sel: null });
+  run("st.tab = 'releases'; st.arg = ''; relst.render()");
+  assert.match(box.innerHTML, /^<div class="seg fseg istrip" role="tablist">.*Loading/, "loading");
+  Object.assign(relst, { err: "fetch failed" });
+  run("relst.render()");
+  assert.match(box.innerHTML, /^<div class="seg fseg istrip" role="tablist">.*fetch failed/, "a failed read");
+  relst.err = null;
+  show();
+  assert.match(box.innerHTML, /^<div id="rel-head"><div class="seg fseg istrip" role="tablist">/, "read");
 });
 
 test("clicking a channel opens its versions, every watch and its deps, and clicking again closes it", () => {
@@ -181,6 +200,30 @@ test("opening an app reads its newest changelog and draws it under a tag picker"
   assert.match(b, /<option>binks-v3<\/option><option selected>binks-v2<\/option><option>binks-v1<\/option>/);
   assert.match(b, /binks-v1\.\.binks-v2, from merged PRs/);
   assert.match(b, /fix the <strong>probe<\/strong> \(#7\)/);
+});
+
+test("an opened app lists its releases newest first with when, the one before and where each reached", async () => {
+  await open();
+  const b = box.innerHTML;
+  assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
+  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">-<\/td><td class="wrap muted">not recorded<\/td><\/tr>/);
+  assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
+  // Clicking a release reads its changelog, and the app stays open.
+  asked.length = 0;
+  const rh = { dataset: { project: "binks", tag: "binks-v1" } };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.rh" ? rh : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/changelog?project=binks&tag=binks-v1"]);
+  assert.equal(relst.sel, "binks");
+});
+
+test("an app with no tags read says so where its history would be", async () => {
+  show(data({ rows: [{ ...binks, history: [], line: "none" }] }));
+  body = changelog();
+  clickApp();
+  await settled();
+  assert.match(box.innerHTML, /<b>Releases<\/b> <span class="muted">no tags read<\/span>/);
 });
 
 test("opening a channel inside the app does not read the changelog again", async () => {
@@ -240,7 +283,7 @@ const bdata = (o = {}) => ({
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
-const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null }); run("relst.render()"); };
+const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
 const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: key } } : null) });
 const BKEY = "github.com|binks|77|2";
 
@@ -270,13 +313,76 @@ test("opening a run reads its log then, and only then; clicking again closes it"
   asked.length = 0;
   fire("click", { type: "click", target: brow(BKEY) });
   await settled();
-  assert.deepEqual(asked, ["/api/builds/log?forge=github.com&repo=binks&id=77&attempt=2"]);
+  const q = "forge=github.com&repo=binks&run_id=77&attempt=2";
+  assert.deepEqual(asked, [`/api/builds/detail?${q}`, `/api/builds/log?${q}`]);
   const b = box.innerHTML;
   assert.match(b, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
   assert.match(b, /<b>Run<\/b> github.com binks #77 attempt 2/);
   assert.match(b, /<b>PRs<\/b> #12/);
   fire("click", { type: "click", target: brow(BKEY) });
   assert.doesNotMatch(box.innerHTML, /joblog/);
+});
+
+const job = (i, o = {}) => ({
+  name: `PlayMode ${i}`, class: "aws/on-demand", wait_text: "1m", took_text: "32m45", runner: "aws-burst-1-pool-2",
+  price: { usd: 0.2, basis: "on-demand", text: "$0.20 (1/5 of $1.855/h)" }, steps_text: "checkout 2s, PlayMode 32m40", ...o,
+});
+const rdetail = (o = {}) => ({
+  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
+  header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
+  coverage_text: "partial: the archive holds 2 of the run's jobs so far", tested_sha: "abc1234ff", workflow_sha: "def5678aa", attempts: [1, 2],
+  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
+});
+
+test("an opened run shows its header, every job with its price, the steps and the coverage", async () => {
+  detail = rdetail({ jobs: Array.from({ length: 130 }, (_, i) => job(i)) });
+  showBuilds();
+  fire("click", { type: "click", target: brow(BKEY) });
+  await settled();
+  const b = box.innerHTML;
+  assert.match(b, /<b>#77 Tests red 46m \$0.20 \+ no rate<\/b>/);
+  assert.match(b, /end to end 46m \| before first job 2m/);
+  assert.equal((b.match(/<td data-label="job"/g) || []).length, 130, "every job, none capped");
+  assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
+  assert.match(b, /<b>Steps<\/b>/);
+  assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
+  assert.match(b, /tested abc1234, workflow from def5678/);
+  assert.match(b, /<b>Attempts<\/b> 1, 2/);
+  fire("click", { type: "click", target: brow(BKEY) });
+  detail = rdetail();
+  fire("click", { type: "click", target: brow(BKEY) });
+  await settled();
+  assert.match(box.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
+  fire("click", { type: "click", target: brow(BKEY) });
+});
+
+test("the Run times fold prices each workflow and flags a month off the AWS actual", () => {
+  showBuilds(bdata({
+    times: [{ repo: "o/binks", workflow: "Tests", runs: 3, pass: 66, longest: 600, usual: { median: 300, p90: 500 } }],
+    costs: { times: ["$0.20 (3 priced)"], idle: ["aws-burst-1: powered 2.0h today $3.71, jobs $1.00, idle $2.71"], month: "month to date: jobs priced $4.00, AWS actual $10.00, off by 60%", month_off: true },
+  }));
+  const b = box.innerHTML;
+  assert.match(b, /<th>\$ per run<\/th>/);
+  assert.match(b, /<td class="n">\$0.20 \(3 priced\)<\/td>/);
+  assert.match(b, /aws-burst-1: powered 2.0h today/);
+  assert.match(b, /<div class="cline warn">month to date: jobs priced \$4.00/);
+});
+
+test("the Quarantine fold says each repo's line, links its nightly and colours each owner row by its end", () => {
+  showBuilds(bdata({
+    quarantine_level: "bad",
+    quarantine: [{ repo: "o/play", level: "bad", entries: 5, url: "https://github.com/o/play/actions/runs/9",
+      says: "play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass",
+      rows: [{ row: "ucp-1", entries: 2, ends: "2026-11-10", days_left: -1, level: "bad", left: "ended" }, { row: "ucp-2", entries: 3, ends: "2026-11-30", days_left: 19, level: "ok", left: "19d" }] }],
+  }));
+  const b = box.innerHTML;
+  assert.match(b, /data-k="bld-quar"[^>]*><summary><b>Quarantine<\/b> <span class="bad">5 entries in 1 repo<\/span>/);
+  assert.match(b, /<div class="cline bad">play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass <a href="https:\/\/github.com\/o\/play\/actions\/runs\/9"/);
+  assert.match(b, /<td>ucp-1<\/td><td class="n">2<\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td>/);
+  assert.match(b, /<td>ucp-2<\/td><td class="n">3<\/td><td>2026-11-30<\/td><td class="n ">19d<\/td>/);
+  assert.ok(b.indexOf("bld-quar") < b.indexOf("bld-body"), "in the head, above the runs");
+  showBuilds(bdata({ quarantine: [] }));
+  assert.doesNotMatch(box.innerHTML, /bld-quar/, "no repo with a quarantine draws no fold");
 });
 
 test("the Builds table sorts and filters under its own view keys", async () => {
@@ -410,3 +516,35 @@ test("showing the tab reads the view in the URL, which a Projects badge links to
   run("st.views.releases = ''");
 });
 
+
+// Inner tabs: Apps (the table and an opened app), Builds and Tests, over hub_core::layout's groups.
+const shownIn = (h, id) => !new RegExp(`data-in="${id}" hidden`).test(h) && new RegExp(`data-in="${id}"`).test(h);
+const relOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); showBuilds(); Object.assign(run("tst"), { data: tdata(), err: null }); run("relst.render()"); return box.innerHTML; };
+
+test("Releases opens on Apps, and a URL naming Builds or Tests opens that one with the others hidden", () => {
+  // An empty arg is the first inner tab (Apps); a section id is the inner tab holding it.
+  for (const [hash, arg] of [["#releases", ""], ["#releases/builds", "builds"], ["#releases/tests", "tests"], ["#releases/detail", "apps"], ["#releases/table", "apps"], ["#releases?q=project:binks", ""]]) {
+    assert.equal(ctx.route(hash).arg, arg, hash);
+  }
+  const apps = relOn("");
+  assert.ok(shownIn(apps, "apps") && !shownIn(apps, "builds") && !shownIn(apps, "tests"));
+  assert.match(apps, /data-itab="apps" class="on" aria-selected="true"/);
+  const b = relOn("builds");
+  assert.ok(shownIn(b, "builds") && !shownIn(b, "apps") && !shownIn(b, "tests"));
+  const t = relOn("tests");
+  assert.ok(shownIn(t, "tests") && !shownIn(t, "builds"));
+  run("st.arg = ''");
+});
+
+test("a count shows beside an inner tab needing a look: a bad app, a recent red build, a failed suite", () => {
+  const h = relOn("");
+  assert.doesNotMatch(h, />Apps <span class="pill/);
+  assert.match(h, />Tests <span class="pill warn">1<\/span>/);
+  assert.doesNotMatch(h, />Builds <span class="pill/, "a build without look set counts nothing");
+  Object.assign(relst.data, { look: true });
+  Object.assign(run("bld").data, { look: true });
+  run("relst.render()");
+  assert.match(box.innerHTML, />Apps <span class="pill warn">1<\/span>/);
+  assert.match(box.innerHTML, />Builds <span class="pill warn">1<\/span>/);
+  run("st.arg = ''");
+});

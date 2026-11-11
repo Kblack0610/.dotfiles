@@ -9,7 +9,7 @@
 #   1. App inside a repo (see below): a `trackers` entry with `repo` + `path`.
 #   2. Exact path lookup in project-map.json `paths`.
 #   3. The containing repo's canonical name.
-#   4. basename (leading dot stripped) looked up in `aliases`.
+#   4. basename (leading dot stripped) looked up in the name index (project_lookup).
 #   5. Under the worktree root with no checkout left: the registered repo its
 #      <repo>-<slug> name starts with.
 #   6. basename (leading dot stripped): a repo's checkout name, or outside any repo
@@ -56,6 +56,74 @@ project_map_file() {
   printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 }
 
+# --- the name index: any spelling of a project -> its key ---
+#
+# A key names itself; then, per tracker sorted by key, each of its `names` and each `/`-suffix of
+# its `github` and `forgejo` slugs; then each `paths` checkout's basename. First entry wins, every
+# spelling lowercased, a leading dot also stripped. A lookup tries each `/`-suffix of the name,
+# longest first. The Rust copy is the `project-map` crate; tests/fixtures/project-names.tsv is
+# read by a test of each (rule: docs/operations/release-state.md, "Project identity").
+# shellcheck disable=SC2016
+_PN_JQ_DEFS='
+def _pn_sfx: ascii_downcase | split("/") | map(select(. != "")) as $s
+  | range(0; $s | length) as $i | $s[$i:] | join("/") | (., ltrimstr(".")) | select(. != "");
+def _pn_pairs:
+  . as $m
+  | ($m.trackers // {} | to_entries | map(select(.key != "default" and (.value | type) == "object")) | sort_by(.key)) as $t
+  | ((($m.paths // {} | to_entries | sort_by(.key)[] | .value | strings), ($t[] | .key)) | [ascii_downcase, ., "key"]),
+    ($t[] | .key as $k | .value
+      | ((.names // [] | arrays | .[] | strings | ascii_downcase | [., $k, "names"]),
+         ((.github, .forgejo) | strings | _pn_sfx | [., $k, "slug"]))),
+    ($m.paths // {} | to_entries | sort_by(.key)[] | .value as $k | select($k | type == "string")
+      | .key | split("/") | last | ascii_downcase | (., ltrimstr(".")) | select(. != "") | [., $k, "path"]);
+def _pn_index: reduce _pn_pairs as $p ({}; if has($p[0]) then . else .[$p[0]] = $p[1] end);
+def _pn_lookup($i): first(_pn_sfx | $i[.] // empty) // empty;
+def _pn_canon($i): . as $n | (_pn_lookup($i) // ($n | split("/") | map(select(. != "")) | last // "" | ltrimstr(".")));
+'
+
+# project_lookup <name> -> the key <name> spells, or "" (status 1) when no entry names it.
+project_lookup() {
+  local map_file hit; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 1
+  hit=$(jq -r --arg n "$1" "$_PN_JQ_DEFS"' _pn_index as $i | $n | _pn_lookup($i)' "$map_file" 2>/dev/null) || true
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$hit"
+}
+
+# project_canonical <name> -> the key <name> spells, else its last path segment without a leading
+# dot (`Kblack0610/.dotfiles` -> `dotfiles`). The one shell answer to "which project is this name".
+project_canonical() {
+  project_lookup "$1" && return 0
+  local n="$1"
+  while [ "${n%/}" != "$n" ]; do n="${n%/}"; done
+  n="${n##*/}"; printf '%s\n' "${n#.}"
+}
+
+# project_index_json -> the name index as one {"<spelling>": "<key>"} object, for a jq program
+# that resolves many names in one pass (`--argjson idx`, then `$idx[<lowercased name>]`).
+project_index_json() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || { echo '{}'; return 0; }
+  jq -c "$_PN_JQ_DEFS"' _pn_index' "$map_file" 2>/dev/null || echo '{}'
+}
+
+# project_spellings -> every index entry as `<spelling>\t<key>\t<source>` (key, names, slug,
+# path), including the ones a first entry shadowed: what project-map-doctor checks for a
+# spelling that names two keys.
+project_spellings() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r "$_PN_JQ_DEFS"' _pn_pairs | @tsv' "$map_file" 2>/dev/null || true
+}
+
+# project_of_code <code> -> the project whose row ids carry <code> (`ar` -> agent-runtime), or "".
+project_of_code() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg c "$1" 'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' \
+    "$map_file" 2>/dev/null || true
+}
+
 # resolve_project [dir] -> the canonical project for <dir> (default $PWD). The one entry point
 # for a script that wants "the project I am in"; four scripts each wrapped resolve_project_name
 # with their own copy and their own basename fallback. A hook passes "${CLAUDE_PROJECT_DIR:-$PWD}".
@@ -63,7 +131,7 @@ resolve_project() {
   resolve_project_name "${1:-$PWD}"
 }
 
-# ── the registry's OTHER relation: project -> repo ────────────────────────────
+# --- the registry's OTHER relation: project -> repo ---
 #
 # resolve_project_name answers "what project is this PATH", which is the question
 # the hooks ask. The three functions below answer the inverse, which is the
@@ -115,19 +183,15 @@ project_repo_path() {
   printf '%s' "$repo"
 }
 
-# project_of_repos_json <repo-name>... -> {"<repo>": "<project>"} for GitHub repo names
-# (`.dotfiles`, `freqtrade_trading_attempt`), the question a PR list asks; one jq call.
-# A repo is the project its registered checkout (`paths`, matched by basename) names,
-# else its alias, else its name without a leading dot - the same steps
-# resolve_project_name takes for a repo root, without a checkout or its branch.
+# project_of_repos_json <repo-name>... -> {"<repo>": "<project>"} for forge repo names
+# (`.dotfiles`, `Studio/platform`), the question a PR list asks; one jq call over the
+# name index, each name project_canonical's answer.
 project_of_repos_json() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] || map_file=/dev/null
-  printf '%s\n' "$@" | jq -Rn --slurpfile m <(cat "$map_file" 2>/dev/null; echo '{}') '
-    ($m[0] // {}) as $map
-    | ($map.paths // {} | to_entries | map({key: (.key | split("/") | last), value}) | from_entries) as $by_base
-    | [inputs | select(. != "") | ltrimstr(".") as $b
-       | {key: ., value: ($by_base[.] // $map.aliases[.] // $map.aliases[$b] // $b)}] | from_entries'
+  printf '%s\n' "$@" | jq -Rn --slurpfile m <(cat "$map_file" 2>/dev/null; echo '{}') "$_PN_JQ_DEFS"'
+    ($m[0] // {} | _pn_index) as $i
+    | [inputs | select(. != "") | {key: ., value: _pn_canon($i)}] | from_entries'
 }
 
 # project_slug <project> -> a short name for a row that has no room: `trackers.<project>.slug`
@@ -146,7 +210,7 @@ project_slug() {
   printf '%s\n' "${name:0:8}"
 }
 
-# ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
+# --- the registry's THIRD relation: project -> the version it has SHIPPED ---
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
 #
@@ -178,20 +242,39 @@ project_release_tag() {
   fi
 }
 
-# project_tag_scope <project> -> sets _PTS_REPO, _PTS_SCOPED (0: the project IS its repo, 1: a
-# product inside one) and _PTS_GLOB (the registry's tagGlob), and loads git-release.sh. Returns
-# 1 when the project has no checkout or the library is missing. The one place that decides which
-# tag family a project owns, for the newest tag and for the list.
-project_tag_scope() {
-  local lib
-  _PTS_REPO="$(project_repo_path "$1")"
-  [ -n "$_PTS_REPO" ] && [ -d "$_PTS_REPO/.git" ] || return 1
-  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
+# project_release_lib - load git-release.sh ($GIT_RELEASE_LIB, else the stowed copy) into the
+# calling shell; 1 when it is missing. The one loader, for project_tag_scope and for a caller
+# that needs the library's pure helpers (git_version_ge, git_tag_date) in its own shell.
+project_release_lib() {
+  local lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
   [ -f "$lib" ] || return 1
   # shellcheck source=/dev/null
-  . "$lib" 2>/dev/null || return 1
+  . "$lib" 2>/dev/null
+}
+
+# project_tag_scope <project> -> sets _PTS_REPO, _PTS_SCOPED (0: the project IS its repo, 1: a
+# product inside one), _PTS_GLOB (the registry's tagGlob) and _PTS_BUILDS (its `buildTags`
+# globs, space-separated), and loads git-release.sh. Returns 1 when the project has no checkout
+# or the library is missing. The one place that decides which tag family a project owns, for the
+# newest tag and for the list. `buildTags` names per-build tags (`v0.5.0-shapecity3`) that are
+# history only: they never own the version, so a game keeps waiting for its own
+# `<game>-vX.Y.Z` family (project_version_owner). One owner per tag: a declared tagGlob loses
+# every other project's buildTags in the same repo (`v* !v*-shapecity*`, _gr_pats), so the
+# playground's `v*` no longer lists a game's build. A ladder glob is never that broad here.
+project_tag_scope() {
+  local repo not
+  _PTS_REPO="$(project_repo_path "$1")"
+  [ -n "$_PTS_REPO" ] && [ -d "$_PTS_REPO/.git" ] || return 1
+  project_release_lib || return 1
+  repo="$(project_repo_name "$1")"
   _PTS_GLOB="$(project_field "$1" tagGlob)"
-  if [ "$(project_repo_name "$1")" = "$1" ]; then _PTS_SCOPED=0; else _PTS_SCOPED=1; fi
+  { IFS= read -r _PTS_BUILDS; IFS= read -r not; } < <(jq -r --arg n "$1" --arg r "$repo" '
+    (.trackers // {}) as $t
+    | ($t[$n].buildTags // [] | arrays | join(" ")),
+      ([$t | to_entries[] | select(.key != $n and (.value | type) == "object" and (.value.repo // .key) == $r)
+        | .value.buildTags // [] | arrays | .[] | "!" + .] | join(" "))' "$(project_map_file)" 2>/dev/null) || true
+  [ -n "$_PTS_GLOB" ] && [ -n "$not" ] && _PTS_GLOB="$_PTS_GLOB $not"
+  if [ "$repo" = "$1" ]; then _PTS_SCOPED=0; else _PTS_SCOPED=1; fi
 }
 
 # project_release_version <project> -> `v1.11.0`, or "" if it ships nothing.
@@ -220,6 +303,23 @@ project_release_version() {
   [ -n "$tag" ] || return 0
   # Both tag shapes (`shipper-v1.11.0`, `v2.3.4`) give `v<version>`; see git_tag_version.
   printf 'v%s' "$(git_tag_version "$tag")"
+}
+
+# The day each new release tag started getting its own lab version note (agentctl-wave-roll).
+# A tag before it with no note is history the notes never recorded, not a gap to fill.
+RELEASE_NOTES_SINCE="${RELEASE_NOTES_SINCE:-2026-11-11}"
+
+# project_release_tags_since <project> [YYYY-MM-DD] -> `vX.Y.Z` of each release tag in the
+# project's family (project_tag_scope) tagged on or after the day (default RELEASE_NOTES_SINCE),
+# lowest first. Releases only: a prerelease or a build tag names no version of its own.
+project_release_tags_since() {
+  local t v
+  project_tag_scope "$1" || return 0
+  while IFS= read -r t; do
+    v="v$(git_tag_version "$t")"
+    [[ $v =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$v"
+  done < <(git_tags_since "$_PTS_REPO" "$1" "$_PTS_SCOPED" "$_PTS_GLOB" "${2:-$RELEASE_NOTES_SINCE}")
+  return 0
 }
 
 # project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
@@ -315,16 +415,13 @@ project_anchor_keys() {
     | select(($t | type) != "object" or ($t.repo // "") == "" or ($t.path // "") != "")'
 }
 
-# project_known <name> -> 0 when <name> is a canonical project in the registry (a repo's
-# project, a tracker, or what an alias resolves to), 1 when it is not (an alias
-# itself, such as monorepo or waybar, or an unknown name), 2 when there is no registry.
+# project_known <name> -> 0 when <name> is itself a project key (a `paths` value or an object
+# tracker other than `default`), 1 when it is not (another spelling of one, such as monorepo or
+# waybar, or an unknown name), 2 when there is no registry.
 project_known() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 2
-  jq -e --arg n "$1" '
-    [(.paths // {} | .[]),
-     (.trackers // {} | to_entries[] | select(.value | type == "object") | .key),
-     (.aliases // {} | .[])] | index($n) != null' "$map_file" >/dev/null 2>&1
+  jq -e --arg n "$1" "$_PN_JQ_DEFS"' _pn_index[$n | ascii_downcase] == $n' "$map_file" >/dev/null 2>&1
 }
 
 resolve_project_name() {
@@ -348,7 +445,7 @@ resolve_project_name() {
         base="${repo##*/}"; base="${base#.}"
 
         repo_name=$(jq -r --arg p "$repo" '.paths[$p] // empty' "$map_file" 2>/dev/null || true)
-        [ -n "$repo_name" ] || repo_name=$(jq -r --arg b "${repo##*/}" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
+        [ -n "$repo_name" ] || repo_name=$(project_lookup "${repo##*/}" || true)
 
         if [ -n "$repo_name" ]; then
           # (a) longest repo-relative path prefix -> app
@@ -395,7 +492,7 @@ resolve_project_name() {
 
     if [ -n "$repo_name" ]; then echo "$repo_name"; return 0; fi
 
-    hit=$(jq -r --arg b "$base" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
+    hit=$(project_lookup "$base" || true)
     if [ -n "$hit" ]; then echo "$hit"; return 0; fi
 
     # A path under the worktree root that is no checkout (reaped while its session ran,

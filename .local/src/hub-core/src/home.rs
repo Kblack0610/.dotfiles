@@ -330,12 +330,13 @@ pub struct Running {
     pub phases: Option<boards::Phases>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Ok,
     Warn,
     Red,
+    #[default]
     Nodata,
 }
 
@@ -523,12 +524,16 @@ pub fn needs(
                 && i.session.as_deref().is_some_and(|s| tmux_name(s) == name)
         })
     };
-    // The Rust twin of `agent-queue dependents`: queued items whose `after:` is this one.
+    // Queued items whose `after:` names this one, whether or not another slug there holds them too:
+    // what this item holds up (`agent-queue dependents` lists only the ones its close releases).
     let dependents = |slug: Option<&str>| {
         slug.map_or(0, |slug| {
             items
                 .iter()
-                .filter(|i| i.state == State::Queued && i.after.as_deref() == Some(slug))
+                .filter(|i| {
+                    i.state == State::Queued
+                        && i.after.as_deref().is_some_and(|a| a.split_whitespace().any(|s| s == slug))
+                })
                 .count() as u64
         })
     };
@@ -1150,13 +1155,19 @@ mod tests {
         st["main"] = json!([]);
         let mut parent = item("parent", State::Waiting, None);
         parent.started = Some("2026-11-05T08:40:00-0800".into());
-        let kid = |slug: &str| {
+        let kid = |slug: &str, after: &str| {
             let mut i = item(slug, State::Queued, None);
-            i.after = Some("parent".into());
+            i.after = Some(after.into());
             i
         };
+        // `after:` is a list: k2 waits on parent among others; k3 names only a look-alike slug.
         let q = Queue {
-            items: vec![parent, kid("k1"), kid("k2")],
+            items: vec![
+                parent,
+                kid("k1", "parent"),
+                kid("k2", "other parent"),
+                kid("k3", "parent-old"),
+            ],
             ..Default::default()
         };
         let h = build(&st, Some(&q), None, None);

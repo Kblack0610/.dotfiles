@@ -15,10 +15,37 @@
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
-  state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "", leaf: null },
-  head: (t) => pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  state: { open: null, unlinked: true, page: {}, folds: {}, viewed: "", leaf: null },
+  head: (t) => `<h2 class="sec" id="sec-projects">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
+
+// Deliverables: one row per open feature epic across every project (/api/deliverables,
+// hub_core::deliverables, the rows and words the hub TUI draws), above the project list. Its view
+// keys are d-prefixed (dq, ds, dsort, ddir) because the list below keeps the plain ones. A row
+// opens its project's card with that epic's system and the epic open (pClick).
+const D_COLS = { project: ["project"], epic: ["epic"], sys: ["sys"], done: ["done", "n"], eta: ["eta", "n"], track: ["track"] };
+const dst = tblTab({
+  tab: "projects", id: "p-del", el: "p-deliv", pre: "d", api: "/api/deliverables", hint: "search, or sys:ui track:behind -project:x",
+  shown: () => st.tab === "projects" && !pst.open, wait: "Reading fleet-bench epics (about 10s when cold)...",
+  draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
+  head: (t) => `<h2 class="sec" id="sec-deliverables">${esc(t.data.says)}</h2>`,
+  body: (t) => dBody(t.data),
+});
+
+const dLine = (r) => `<tr class="jr" tabindex="0" data-open="${esc(r.profile + "/" + r.project)}" data-epic="${esc(r.id)}" data-sys="${esc(r.system)}">` +
+  `<td>${esc(r.project)}</td><td class="wrap" title="${esc(r.id)}">${esc(r.title)}</td><td>${pDash(r.system)}</td>` +
+  `<td class="n" title="${r.done} of ${r.total} rows done; the percent is by size">${esc(r.done_says)}</td>` +
+  `<td class="n">${pDash(r.eta_day)}</td><td${r.track === "behind" ? ` class="warn"` : ""}>${pDash(r.track)}</td></tr>`;
+
+// The rows (or why there are none), then the coverage line.
+function dBody(d) {
+  const t = d.table;
+  return (d.rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, D_COLS)}${d.rows.map(dLine).join("")}</table></div>`
+    : `<div class="card muted">${t.total ? "No deliverable matches." : "No open feature epics."}</div>`) +
+    `<div class="muted qstats">${esc(d.coverage_says)}; ${esc(d.legend)}</div>`;
+}
 
 // With something open, or a deep link on its way, the URL's view is the rows', so every card is
 // read: pDeep and the opened card need theirs whatever the list was showing. An answer for what
@@ -60,9 +87,10 @@ const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><t
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td><td class="n">${c.held}</td>` +
   `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
-// A fold of the opened card: its title and what it holds, kept open across redraws by pst.folds.
+// A fold of the opened card: its title and what it holds; it starts open, and one the reader
+// folded stays folded across redraws (pst.folds).
 const pFold = (k, title, says, inner) =>
-  cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds);
+  cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds, true);
 const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
 // The Timeline fold: its notes, then one line per event newest first, colored by its level,
 // linked to its PR, run or deploy when it has one, then how many older ones the cap left out.
@@ -72,7 +100,7 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
 }).join("") + older(t.older);
 
 // Build by system, always shown: one fold per system with an epic, its head carrying its percent,
-// each epic a fold of its own over its tasks. An open task is a link that opens its row below
+// each epic a fold of its own over its tasks, every fold open until the reader folds it. An open task is a link that opens its row below
 // (pLeaf); a done one is only a line.
 const pLeafLine = (l) => l.done ? `<div class="pleaf muted">${esc(l.line)}</div>`
   : `<div class="pleaf"><a href="#" data-leaf="${esc(l.id)}">${esc(l.line)}</a></div>`;
@@ -82,8 +110,8 @@ const pSystems = (pg) => `<h2 class="sec">Build by system <span class="muted">${
     if (!s.epics.length && !s.closed) return `<div class="psys">${head}</div>`;
     return cfold(`pg:sys:${s.id}`, head, s.epics.map((e) =>
       cfold(`pg:ep:${e.id}`, `<span class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</span>`,
-        e.leaves.length ? e.leaves.map(pLeafLine).join("") : `<div class="pleaf muted">no tasks yet</div>`, pst.folds)).join("") +
-      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : ""), pst.folds);
+        e.leaves.length ? e.leaves.map(pLeafLine).join("") : `<div class="pleaf muted">no tasks yet</div>`, pst.folds, true)).join("") +
+      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : ""), pst.folds, true);
   }).join("")}</div>`;
 
 // The opened card, over its rows: the card, its goal and Flow, Build by system and what needs the
@@ -98,6 +126,7 @@ function pOpened(c) {
   const pg = got.data;
   if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
   if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
+  if (pg.alerts) html += `<div class="cline">alerts: <a class="${pg.alerts.level === "ok" ? "" : pg.alerts.level}" href="#alerts?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.alerts.says)}</a></div>`;
   html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
   html += pSystems(pg);
   html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
@@ -178,9 +207,9 @@ function pGo(key) {
 
 function renderProjects() {
   const cardsEl = $("p-cards"), rowsEl = $("p-rows");
-  cardsEl.hidden = !!pst.open;
+  cardsEl.hidden = $("p-deliv").hidden = !!pst.open;
   rowsEl.hidden = !pst.open;
-  if (!pst.open) { pst.render(); return; }
+  if (!pst.open) { pst.render(); dst.render(); return; }
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   if (pst.leaf && bst.feed && bst.feed !== pst.leaf.feed) {
     // Only the read that has the row answers: one already in flight when the click came may not.
@@ -204,10 +233,16 @@ $("projects").addEventListener("click", (e) => {
   const leaf = e.target.closest("[data-leaf]");
   if (leaf) { e.preventDefault(); pLeaf(leaf.dataset.leaf); return; }
   const o = e.target.closest("[data-open]");
-  if (o && !e.target.closest("#b-root")) pGo(o.dataset.open);
+  if (o && !e.target.closest("#b-root")) pOpenAt(o);
 });
-$("p-cards").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
+// A row's project opens; a deliverable's row carries its epic and system too, and they open in
+// the card's Build by system (the folds pg:sys:<system> and pg:ep:<epic>).
+function pOpenAt(o) {
+  if (o.dataset.epic) { pst.folds["pg:sys:" + o.dataset.sys] = true; pst.folds["pg:ep:" + o.dataset.epic] = true; }
+  pGo(o.dataset.open);
+}
+for (const id of ["p-deliv", "p-cards"]) $(id).addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pOpenAt(e.target);
 });
 $("projects").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
@@ -215,10 +250,10 @@ $("projects").addEventListener("toggle", (e) => {
 
 TABS.projects = {
   // Back on the tab, what was open stays open and the URL names it again.
-  show() { bMount("p-rows"); if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
+  show() { bMount("p-rows"); if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); dst.refresh(); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
-    if (["watch", "queue", "resync"].includes(ev.kind)) refreshProjects();
+    if (["watch", "queue", "resync"].includes(ev.kind)) { refreshProjects(); dst.refresh(); }
     if (ev.kind === "resync") refreshBoard();
   },
 };

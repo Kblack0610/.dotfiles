@@ -121,22 +121,31 @@ struct Out {
     projects: Vec<Chain>,
 }
 
+/// `fleet-bench epics --json` with `extra` after it, parsed.
+fn read_all(runner: &dyn Runner, extra: &[&str]) -> Result<Vec<Chain>, String> {
+    let mut argv: Vec<String> = ["fleet-bench", "epics", "--json"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    argv.extend(extra.iter().map(|s| s.to_string()));
+    let out = runner.run(&argv)?;
+    let o: Out =
+        serde_json::from_str(&out).map_err(|e| format!("fleet-bench epics --json: {e}"))?;
+    Ok(o.projects)
+}
+
+/// `fleet-bench epics --json`: every project's chain, for the Deliverables table.
+pub fn all(runner: &dyn Runner) -> Result<Vec<Chain>, String> {
+    read_all(runner, &[])
+}
+
 /// `fleet-bench epics --json --project <name>`. A project the reader does not list (no roadmap,
 /// or no such name) is an error that says so, never an empty chain.
 pub fn chain(runner: &dyn Runner, name: &str) -> Result<Chain, String> {
     if !crate::projects::safe_name(name) {
         return Err(format!("refusing project name {name:?}"));
     }
-    let out = runner.run(&[
-        "fleet-bench".into(),
-        "epics".into(),
-        "--json".into(),
-        "--project".into(),
-        name.into(),
-    ])?;
-    let o: Out =
-        serde_json::from_str(&out).map_err(|e| format!("fleet-bench epics --json: {e}"))?;
-    o.projects
+    read_all(runner, &["--project", name])?
         .into_iter()
         .find(|c| c.project == name)
         .ok_or_else(|| format!("fleet-bench epics lists no project {name}"))

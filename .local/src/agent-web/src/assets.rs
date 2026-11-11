@@ -48,6 +48,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
@@ -464,15 +465,44 @@ mod tests {
         let got: serde_json::Value =
             serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
         assert_eq!(got, serde_json::Value::Object(want));
-        // Every section a group names is one the page draws a board section for.
-        let costs = include_str!("../static/costs.js");
-        for i in hub_core::layout::resolve("costs").expect("costs").inner {
-            for s in i.sections {
+        // Every section a group names is one the page wraps in its inner tab's group, so a
+        // section never shows under every inner tab or under none. Releases is checked per
+        // inner tab below: its table and detail share one group.
+        let pages = [
+            ("costs", include_str!("../static/costs.js").to_string()),
+            ("infra", include_str!("../static/infra.js").to_string()),
+        ];
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+        {
+            let (_, js) = pages
+                .iter()
+                .find(|p| p.0 == t.id)
+                .unwrap_or_else(|| panic!("{} has inner tabs but no page here", t.id));
+            for s in t.inner.iter().flat_map(|i| i.sections) {
+                let at = format!("(\"{}\", \"{s}\"", t.id);
                 assert!(
-                    costs.contains(&format!("\"{s}\"")) || costs.contains(&format!("sec-{s}")),
-                    "costs.js never draws {s}"
+                    js.contains(&format!("innerWrap{at}"))
+                        || js.contains(&format!("innerHide{at}")),
+                    "{}'s page never puts {s} in its inner tab",
+                    t.id
                 );
             }
+        }
+        // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
+        let releases = include_str!("../static/releases.js");
+        for i in hub_core::layout::resolve("releases")
+            .expect("releases")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| releases.contains(&format!("innerWrap(\"releases\", \"{s}\""))),
+                "releases.js never draws the {} inner tab",
+                i.id
+            );
         }
     }
 

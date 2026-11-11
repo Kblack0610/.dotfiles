@@ -204,7 +204,7 @@ test("a dropdown in use in one table repaints around it, and the other table who
   const needs = [{ kind: "ask", need: "ask", project: "p", text: "Ship it?", id: "a1" }];
   const first = draw(home({ needs, proposals: [prop("a1")], proposals_table: table(1) }));
   delete parts["home-prop-body"];
-  doc.activeElement = { dataset: { tq: "" }, closest: (sel) => (sel === "#home-need-facets" ? {} : null), matches: () => false };
+  doc.activeElement = { dataset: { tsv: "" }, closest: (sel) => (sel === "#home-need-facets" ? {} : null), matches: () => false };
   ctx.input = home({ needs: [...needs, { kind: "ask", need: "ask", project: "p", text: "Second", id: "a2" }], proposals: [prop("a1")], proposals_table: table(1) });
   const again = vm.runInContext(`hst.data = input; renderHome(); $("home").innerHTML`, ctx);
   doc.activeElement = undefined;
@@ -255,6 +255,7 @@ test("health shows only what is not green, and all green as one chip", () => {
   assert.match(mixed, /cchip warn">ci WARN<\/span> <span class="cchip ">prod NO DATA<\/span> <span class="muted">1 green<\/span>/);
   assert.doesNotMatch(mixed, /k3s/);
   assert.match(draw(home({ health: [chips[0]] })), /cchip ok">all green \(1\)<\/span>/);
+  assert.match(mixed, /green<\/span> <a href="#alerts">Alerts<\/a><\/div>/, "the chips open Alerts, which has every domain");
 });
 
 test("what could not be read is drawn as hub-core worded it", () => {

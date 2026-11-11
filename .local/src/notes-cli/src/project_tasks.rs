@@ -619,7 +619,7 @@ fn new_rows(
     details: &[String],
 ) -> Result<Vec<String>> {
     let today = chrono::Local::now().date_naive();
-    let code = crate::registry::Registry::load().and_then(|r| r.code(name));
+    let code = project_map::Registry::load().and_then(|r| r.code(name));
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
@@ -959,7 +959,7 @@ fn link_standing(
         .map(|t| crate::standing::wants_link(t))
         .collect();
     if areas.iter().all(Option::is_none)
-        || crate::registry::Registry::load()
+        || project_map::Registry::load()
             .and_then(|r| r.code(name))
             .is_none()
     {
@@ -1967,7 +1967,7 @@ fn start_as(
     running: bool,
 ) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
-    let id = crate::registry::Registry::load()
+    let id = project_map::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
     let today = chrono::Local::now().format("%m%d").to_string();
@@ -3570,7 +3570,6 @@ mod inbox_tests {
         }
     }
 
-    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     #[test]
     fn row_writes_leave_a_record_with_id_words_and_lane() {
         let v = vault(
@@ -3829,6 +3828,90 @@ mod inbox_tests {
         .is_err());
     }
 
+    /// nc-1: a row aimed at a later release sits in `## Tasks` like any other, so `edit` and
+    /// `drop` reach it by its exact line, its words or its id, and it keeps its release tag.
+    /// Seen 2026-11-04, before `--migrate-rows` folded the old `## Wave` sections into
+    /// `## Tasks`: an exact `edit` on a planned row said "no open task matches".
+    #[test]
+    fn edit_and_drop_reach_a_row_aimed_at_a_later_release() {
+        let planned = "- [ ] fix(net): rotate the token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(
+            sheet::is_later(planned, Some((0, 1, 0))),
+            "the fixture's row is planned"
+        );
+        let v = vault(
+            "planned",
+            "",
+            &format!("- [ ] fix(ui): the menu flickers #high <!-- id:sc-1 -->\n{planned}\n"),
+        );
+        let edited = |pick: Pick, text: Option<&str>, details: &[String]| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &pick,
+                text,
+                None,
+                details,
+                false,
+                None,
+                Lane::Human,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            edited(
+                Pick::new(planned, true).unwrap(),
+                Some("fix(net): rotate the host token"),
+                &[]
+            ),
+            0
+        );
+        let row = "- [ ] fix(net): rotate the host token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(v.read().contains(row), "{}", v.read());
+        assert_eq!(
+            edited(
+                Pick::new("host token", false).unwrap(),
+                None,
+                &["out of git".into()]
+            ),
+            0
+        );
+        assert!(
+            v.read().contains(&format!("{row}\n  out of git\n")),
+            "{}",
+            v.read()
+        );
+        assert_eq!(
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id("sc-2".into()),
+                Some("moot"),
+                None,
+                Lane::Human
+            )
+            .unwrap(),
+            0
+        );
+        let sheet = v.read();
+        let closed = sheet.lines().find(|l| l.contains("id:sc-2")).unwrap();
+        assert!(
+            closed.starts_with("- [x] fix(net): rotate the host token"),
+            "{sheet}"
+        );
+        assert!(
+            closed.contains("#v0.2.0") && closed.contains("dropped: moot"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("- [ ] fix(ui): the menu flickers"),
+            "{sheet}"
+        );
+    }
+
+    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

@@ -1238,6 +1238,7 @@ cmd_settle_session() {
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
     if [ -z "$opts" ] && ! not_an_answer "$full"; then
+      set_field "$f" answer_note "in session: $text"
       record_answer "$f" human "in session: ${text:-(no text)}"
     elif [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
