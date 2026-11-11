@@ -188,3 +188,23 @@ PY
   assert_failure
   refute_output --partial '"total"'
 }
+
+@test "every priced session is a row, dearest first, summing to the total less the gateway, helper and id-less lines" {
+  turn unbilled claude-opus-5-5 1000000 1000000 0 0
+  ENTRY=sdk-cli turn billed claude-opus-5-5 1 1 1 1
+  printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":9,"cost_src":"price","project":"p","title":"t"}\n' "$NOW" > "$OUTCOMES_ROOT/p/2026.jsonl"
+  printf '{"session_id":"billed","agent":"dream","account":"/h/.claude-bnb"}\n' > "$AGENTCTL_STATE_DIR/calls.jsonl"
+  printf '{"session_id":"","harness":"codex","updated_epoch":%s,"cost_usd":3}\n' "$NOW" >> "$OUTCOMES_ROOT/p/2026.jsonl"
+  run cost '[[.by_session[] | [.sid, .usd, .measured, .harness]], (([.by_session[].usd] | add) + .other_harness.gateway.usd + .total.helper_usd + 3 == .total.usd)]'   # the $3 with no session id counts, with no row
+  assert_success
+  assert_output '[[["unbilled",24,0,"claude"],["billed",10,10,"claude"],["x",9,0,"codex"],["ghost",2,2,"claude"]],true]'
+  run cost '[.by_session[] | select(.sid == "billed" or .sid == "x") | [.origin, .agent, .account, .project, .title]]'
+  assert_output '[["runner","dream","claude-bnb",null,null],["interactive",null,null,"p","t"]]'
+}
+
+@test "a session that cost nothing has no row, never a \$0 one" {
+  turn free claude-noisy-1 1000 1000 0 0   # an unpriced model: tokens, no dollars
+  run cost '[.by_session[] | .sid] | index("free")'
+  assert_success
+  assert_output 'null'
+}
