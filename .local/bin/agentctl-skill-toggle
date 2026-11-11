@@ -46,9 +46,11 @@ fail() { undo; report FAILED "$1"; echo "agentctl-skill-toggle: $1" >&2; exit 1;
 # skill-drift by path beside this script, so a worktree run counts with the worktree's copy.
 DRIFT="$(dirname "$(readlink -f "$0")")/skill-drift"
 
+[[ "$HIDE_CAP" =~ ^[0-9]+$ ]] || fail "SKILL_TOGGLE_HIDE_CAP=$HIDE_CAP is not a whole number"
 git -C "$REPO" fetch -q origin main || fail "git fetch origin main failed in $REPO"
-base=$(mktemp) && err=$(mktemp) || fail "mktemp failed"
+base='' err=''
 trap 'rm -f "$base" "$err"' EXIT
+base=$(mktemp) && err=$(mktemp) || fail "mktemp failed"
 git -C "$REPO" show origin/main:.claude/settings.json > "$base" || fail "origin/main has no .claude/settings.json"
 # The new file is written by jq, so one already in jq's format keeps the PR to skillOverrides.
 jq . "$base" | cmp -s - "$base" || fail "origin/main .claude/settings.json is not in jq's format; a rewrite would reformat all of it"

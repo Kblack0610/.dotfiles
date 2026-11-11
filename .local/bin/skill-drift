@@ -126,9 +126,9 @@
 #                                Prints the hide and restore lists; --json adds the object. The
 #                                nightly skill-toggle runner opens the PR (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
-#                                "nothing used". Exit 3 when the transcripts do not reach back
-#                                the whole window (claude-recall stats "oldest" after "since"):
-#                                a skill used only before the oldest transcript reads as unused.
+#                                "nothing used". Exit 3 when a transcript root does not reach
+#                                back the whole window (claude-recall stats "covered_from" after
+#                                "since"): a skill used only before then would read as unused.
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
 #                                ~/.local/src/docs, the agentctl runbooks, every
@@ -581,8 +581,8 @@ check_stale() {
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
 declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
-# The window start and how far back the transcripts reach, from the last load_usage.
-USAGE_SINCE="" USAGE_OLDEST=""
+# The window start and the time every transcript root reaches back to, from the last load_usage.
+USAGE_SINCE="" USAGE_COVERED=""
 # load_usage [days] [bypass]: every skill with a use in the window (default USAGE_DAYS) into USED,
 # as the number of sessions that used it by any of USE_KINDS. With "bypass" the same scan fills
 # BYPASS (sessions with a call matching the skill's metadata.replaces) and BYPASS_COVERED (those
@@ -591,7 +591,8 @@ load_usage() {
   local s n c kinds="$USE_KINDS" json
   [ "${2:-}" = bypass ] && kinds="$kinds,bypass,denied"
   json="$("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$kinds" --top 0 --json 2>/dev/null)"
-  IFS=$'\t' read -r USAGE_SINCE USAGE_OLDEST < <(jq -r '[.since // "", .oldest // ""] | @tsv' <<<"$json" 2>/dev/null)
+  # "|", not a tab: whitespace IFS would collapse an empty since into covered_from's slot.
+  IFS='|' read -r USAGE_SINCE USAGE_COVERED < <(jq -r '"\(.since // "")|\(.covered_from // "")"' <<<"$json" 2>/dev/null)
   while IFS=$'\t' read -r s n; do
     [ -n "$s" ] && USED[$s]=$n
   done < <(jq -r '.skill_sessions // {} | to_entries[] | select(.value > 0) | "\(.key)\t\(.value)"' <<<"$json" 2>/dev/null)
@@ -826,8 +827,8 @@ if [ "$MODE" = overrides ]; then
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
   # Both are UTC in one format, so they compare as strings.
-  if [ -z "$USAGE_OLDEST" ] || [[ "$USAGE_OLDEST" > "$USAGE_SINCE" ]]; then
-    echo "skill-drift --overrides: the transcripts reach back to ${USAGE_OLDEST:-nothing}, not the ${TOGGLE_DAYS}d window from $USAGE_SINCE, so a skill used before then would read as unused" >&2
+  if [ -z "$USAGE_SINCE" ] || [ -z "$USAGE_COVERED" ] || [[ "$USAGE_COVERED" > "$USAGE_SINCE" ]]; then
+    echo "skill-drift --overrides: the transcripts are covered from ${USAGE_COVERED:-nothing}, not the ${TOGGLE_DAYS}d window from ${USAGE_SINCE:-an unknown start}, so a skill used before then would read as unused" >&2
     exit 3
   fi
   # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.

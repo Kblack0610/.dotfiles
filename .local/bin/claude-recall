@@ -224,7 +224,8 @@ def first_ts(path):
     try:
         with path.open(errors="replace") as f:
             for line in f:
-                ts = (parse_line(line) or {}).get("timestamp")
+                rec = parse_line(line)
+                ts = rec.get("timestamp") if isinstance(rec, dict) else None
                 if isinstance(ts, str):
                     return ts.replace("Z", "")[:19]
     except OSError:
@@ -790,20 +791,22 @@ def cmd_stats(a):
         if kind in ("skill", "slash") + USE_KINDS:
             skill_sessions.setdefault(key, set()).add(session)
 
-    # oldest: how far back the transcripts reach, so a caller can tell a quiet window from a
-    # corpus that does not cover it (skill-drift --overrides refuses then). A file last written
-    # before the window holds only older events, so its mtime is bound enough; with none, it is
-    # the first event of the files read.
-    older, read = None, []
+    # covered_from: the time from which every transcript root with a file has transcripts, so a
+    # caller can tell a quiet window from a corpus that does not cover it (skill-drift
+    # --overrides refuses then). Per root, since one account reaching back does not cover
+    # another that was wiped. A file last written before the window holds only older events, so
+    # its mtime is an upper bound on the root's reach; with none, the root's first event read.
+    older, read = {}, {}
     for path in iter_files():
         try:
             mtime = path.stat().st_mtime
         except OSError:
             continue
+        root = next((r for r in ROOTS if path.is_relative_to(r)), None)
         if mtime < since_epoch:
-            older = mtime if older is None else min(older, mtime)
+            older[root] = min(older.get(root, mtime), mtime)
             continue
-        read.append(path)
+        read.setdefault(root, []).append(path)
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
@@ -862,13 +865,13 @@ def cmd_stats(a):
                 kept.append(r)
         rows = kept
 
-    if older is not None:
-        oldest = datetime.fromtimestamp(older, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    else:
-        oldest = min(filter(None, map(first_ts, read)), default=None)
+    reach = [datetime.fromtimestamp(older[r], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+             if r in older else min(filter(None, map(first_ts, read[r])), default=None)
+             for r in set(older) | set(read)]
+    covered_from = None if not reach or None in reach else max(reach)
 
     if a.json:
-        print(json.dumps({"since": since, "oldest": oldest, "origin": a.origin, "by": a.by or "",
+        print(json.dumps({"since": since, "covered_from": covered_from, "origin": a.origin, "by": a.by or "",
                           "rows": rows,
                           "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
                          ensure_ascii=False))
