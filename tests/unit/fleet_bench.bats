@@ -5201,7 +5201,9 @@ epics_fixture() {
     {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): typed by hand"},
     {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "filed", from: "game", by: "inbox-triage", want: "outbox", text: "an outbox line"},
     {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "added", from: "game", by: "ask-sweep", want: "ask", text: "an answered ask"},
-    {ts: "\($d)T10:03:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", text: "check(watch): a runner row"}' > "$BENCH_INGEST"
+    {ts: "\($d)T10:03:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", text: "check(watch): a runner row"},
+    {ts: "\($d)T10:04:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", want: "", text: "an empty want is no channel"},
+    {ts: "\($d)T10:05:00.1-08:00", lane: "human", action: "filed", from: "game", by: "inbox-triage", want: "outbox", text: "a sheet row is never counted"}' > "$BENCH_INGEST"
   run "$SUBJECT" chain
   assert_success
   assert_line 'wants_unstamped: 1 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/3)'
