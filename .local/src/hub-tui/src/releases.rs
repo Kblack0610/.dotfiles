@@ -26,7 +26,14 @@ pub(crate) fn alert(l: Level, p: Palette) -> Style {
 
 /// `App::COLUMNS` in capitals, in its order, the sort mark placed by that index; `project` is
 /// drawn as APP. `channel` and `id` filter without a column: the pane says them.
-const HEADER: [&str; 5] = ["APP", "LIVE", "STATUS", "CHANNELS", "LAST DEPLOY"];
+const HEADER: [&str; 6] = [
+    "APP",
+    "LIVE",
+    "STATUS",
+    "CHANNELS",
+    "RELEASED",
+    "LAST DEPLOY",
+];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 9;
 /// APP and LIVE at 80 columns and at their widest: each takes half of whatever a wider terminal
@@ -35,8 +42,12 @@ const APP_FIT: (usize, usize) = (16, 26);
 const LIVE_FIT: (usize, usize) = (16, 28);
 const STATUS_CAP: usize = 10;
 const CHANNELS_CAP: usize = 31;
+/// `v1.19.0 10-27 15:02`; a longer build tag clips.
+const RELEASED_CAP: usize = 24;
 /// `10-26 15:02 fail`.
 const LAST_DEPLOY_CAP: usize = 16;
+/// How many releases the pane lists before it says how many more there are.
+const HISTORY_LINES: usize = 8;
 
 /// The changelog read for the opened app: whose it is, whether a worker is still on it (one at a
 /// time, so holding a key over many apps asks for the last one only), and what came back, None
@@ -207,15 +218,16 @@ impl ReleasesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|a| row(a, p)).collect(),
-            // LAST DEPLOY goes first when it is narrow: a wide terminal has the room.
-            keep: vec![0, 2, 1, 3, 4],
+            // Columns drop from the end of `keep` when narrow: LAST DEPLOY (blank until a recorder writes), then RELEASED.
+            keep: vec![0, 2, 1, 3, 4, 5],
             right: vec![],
             cap: vec![
                 (0, fit(APP_FIT)),
                 (1, fit(LIVE_FIT)),
                 (2, STATUS_CAP),
                 (3, CHANNELS_CAP),
-                (4, LAST_DEPLOY_CAP),
+                (4, RELEASED_CAP),
+                (5, LAST_DEPLOY_CAP),
             ],
             mark,
             ..Default::default()
@@ -243,6 +255,7 @@ fn row(a: &App, p: Palette) -> Vec<Cell> {
         a.live_text.clone().into(),
         cell(a.status_text.clone(), level(a.level, p)),
         channels,
+        cell(a.released_text.clone(), p.dim()),
         tinted(&a.last_deploy_text, a.deploy_level),
     ]
 }
@@ -376,6 +389,47 @@ pub fn detail(
         }
     }
     let plain = Style::default();
+    // The releases, newest first: when each was tagged, the one before it, where it reached
+    // (hub_core::release_graph), as the web's history table says them.
+    if a.history.is_empty() {
+        out.extend(wrapped(
+            &format!("  {:<LABEL$} ", "Releases"),
+            "no tags read",
+            p.dim(),
+            p,
+            w,
+        ));
+    } else {
+        let kind = match a.line.as_str() {
+            "build" => "build tags (no release tag yet)",
+            _ => "release tags",
+        };
+        out.extend(wrapped(
+            &format!("  {:<LABEL$} ", "Releases"),
+            &format!("{} {kind}", a.history.len()),
+            p.dim(),
+            p,
+            w,
+        ));
+        for h in a.history.iter().take(HISTORY_LINES) {
+            let line = format!(
+                "    {}  {}  prev {}  reached {}",
+                h.tag,
+                h.at_text,
+                h.prev.as_deref().unwrap_or("-"),
+                h.reached_text
+            );
+            let style = if h.reached.is_empty() { p.dim() } else { plain };
+            out.push(clip_line(Line::styled(line, style), w));
+        }
+        if a.history.len() > HISTORY_LINES {
+            let more = a.history.len() - HISTORY_LINES;
+            out.push(Line::styled(
+                format!("    and {more} older; [ ] walks them in the changelog"),
+                p.dim(),
+            ));
+        }
+    }
     let mut part = |label: &str, text: &str, style: Style| {
         out.extend(wrapped(&format!("  {label:<LABEL$} "), text, style, p, w));
     };
@@ -696,6 +750,49 @@ mod tests {
         assert!(lines.iter().any(|l| l.trim() == "### Added"));
         assert!(lines.iter().any(|l| l.contains("(#2)")), "{lines:?}");
         assert!(lines.iter().all(|l| l.chars().count() <= 40), "{lines:?}");
+    }
+
+    #[test]
+    fn the_pane_lists_the_releases_with_when_the_one_before_and_where_each_reached() {
+        use hub_core::release_graph::Shipment;
+        let s = sample();
+        let mut a = app(&s, "binks").clone();
+        assert!(pane(&a, false, None, 80)
+            .iter()
+            .any(|l| l.contains("Releases") && l.contains("no tags read")));
+        a.line = "build".into();
+        a.history = (0..10)
+            .map(|i| Shipment {
+                tag: format!("v0.5.0-binks{}", 10 - i),
+                at_text: "11-10".into(),
+                prev: (i < 9).then(|| format!("v0.5.0-binks{}", 9 - i)),
+                reached_text: if i == 0 {
+                    "binks-steam-beta 11-10".into()
+                } else {
+                    "not recorded".into()
+                },
+                ..Default::default()
+            })
+            .collect();
+        let lines = pane(&a, false, None, 80);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("10 build tags (no release tag yet)")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(
+                "v0.5.0-binks10  11-10  prev v0.5.0-binks9  reached binks-steam-beta 11-10"
+            )),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("and 2 older")), "{lines:?}");
+        let at = |k: &str| lines.iter().position(|l| l.contains(k)).unwrap();
+        assert!(
+            at("Releases") < at("Changelog"),
+            "the history sits above the changelog"
+        );
     }
 
     #[test]
