@@ -110,33 +110,34 @@ pub fn section_title(section: Option<&str>) -> &'static str {
 /// Each row's section cell on a board: `NEXT UP (10)` over the first row of a section and blank
 /// under it, the way the sheet reads, while the rows are in the sheet's order; under any other
 /// sort each row names its own. Closed rows run by the day they closed (`DONE 11-07 (12)`, or
-/// `DONE no day` for a row ticked with no `done:` marker), so the Done chip reads as a day log.
-/// The hub and agent-web both draw these.
+/// `DONE no day` for a row ticked with no `done:` marker), so the Done chip reads as a day log;
+/// under another sort a closed row still names its day. The hub and agent-web both draw these.
 pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
-    fn of(r: &Row) -> (Option<&str>, Option<&str>) {
-        let closed = if r.state == "done" {
-            Some(r.closed.as_deref().unwrap_or(""))
-        } else {
-            None
-        };
-        (r.section.as_deref(), closed)
+    /// A row's run: its section and, on a closed row, the day it closed (None: no marker).
+    fn of(r: &Row) -> (Option<&str>, Option<Option<&str>>) {
+        let day = (r.state == "done").then_some(r.closed.as_deref());
+        (r.section.as_deref(), day)
     }
     rows.iter()
         .enumerate()
         .map(|(i, r)| {
-            let title = section_title(r.section.as_deref());
+            let title = match of(r).1 {
+                Some(Some(d)) => format!(
+                    "{} {}",
+                    section_title(r.section.as_deref()),
+                    crate::text::short_day(d)
+                ),
+                Some(None) => format!("{} no day", section_title(r.section.as_deref())),
+                None => section_title(r.section.as_deref()).to_string(),
+            };
             if sorted {
-                return title.to_string();
+                return title;
             }
             if i > 0 && of(rows[i - 1]) == of(r) {
                 return String::new();
             }
             let n = rows[i..].iter().take_while(|x| of(x) == of(r)).count();
-            match of(r).1 {
-                Some("") => format!("{title} no day ({n})"),
-                Some(d) => format!("{title} {} ({n})", crate::text::short_day(d)),
-                None => format!("{title} ({n})"),
-            }
+            format!("{title} ({n})")
         })
         .collect()
 }
@@ -360,6 +361,7 @@ impl Feed {
             b.closed
                 .cmp(&a.closed)
                 .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.profile.cmp(&b.profile))
         });
         let mut rows = self.open_rows(scope);
         rows.extend(done);
@@ -855,8 +857,11 @@ mod tests {
             section_labels(closed, false),
             ["DONE 11-07 (2)", "", "DONE 11-05 (1)", "DONE no day (1)"]
         );
-        // Under another sort each row names its own section, as the open ones do.
-        assert_eq!(section_labels(&closed[..1], true), ["DONE"]);
+        // Under another sort each row names its own section and day, with no count.
+        assert_eq!(
+            section_labels(&[closed[0], closed[3]], true),
+            ["DONE 11-07", "DONE no day"]
+        );
     }
 
     #[test]
