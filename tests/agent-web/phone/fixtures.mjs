@@ -23,7 +23,7 @@ const pick = (list, i) => list[i % list.length];
 
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 function facet(key, values) {
-  return { key, on: null, clear: "", values: values.map((value, i) => ({ value, n: values.length - i, q: `${key}:${value}` })) };
+  return { key, on: [], clear: "", values: values.map((value, i) => ({ value, n: values.length - i, on: false, q: `${key}:${value}` })) };
 }
 // A hub_core::table Summary as it serializes; the first state chip keeps every row.
 function table(n, columns, states = ["all"], facets = {}) {
