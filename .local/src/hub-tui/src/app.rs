@@ -2421,13 +2421,15 @@ impl App {
                 self.log_work = true;
                 self.seek = Some("work");
             }
-            KeyCode::Enter | KeyCode::Char('/')
-                if !self.log_actions && !self.log_work && self.log_open.contains(&"actions") =>
-            {
+            // Work leads the tab, so Enter and `/` are its; `A` gives the keys to Actions,
+            // opening it when the reader folded it.
+            KeyCode::Char('A') => {
+                if !self.log_open.contains(&"actions") {
+                    self.log_open.push("actions");
+                }
                 self.log_work = false;
                 self.log_actions = true;
                 self.seek = Some("actions");
-                return k.code == KeyCode::Enter || self.actions_key(k);
             }
             KeyCode::Enter | KeyCode::Char('/') if !self.log_actions && !self.log_work => {
                 self.log_work = true;
@@ -2717,8 +2719,11 @@ impl App {
         if !self.infra_jobs {
             match k.code {
                 KeyCode::Left | KeyCode::Right => {
-                    self.infra_inner =
-                        crate::innertabs::step(infra_tab(), self.infra_inner, k.code == KeyCode::Left);
+                    self.infra_inner = crate::innertabs::step(
+                        infra_tab(),
+                        self.infra_inner,
+                        k.code == KeyCode::Left,
+                    );
                     // Another inner tab is another page: it opens at its top.
                     self.scroll = 0;
                 }
@@ -3264,7 +3269,7 @@ impl App {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
+                "[ ] day{}  h days  Enter work  A actions  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
@@ -4611,8 +4616,13 @@ mod tests {
             actions: vec![at(2, "nudge"), at(1, "failed")],
             ..Default::default()
         });
-        a.log_open = vec!["actions"];
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.log_open = vec![];
+        a.handle(key('A'));
+        assert_eq!(
+            a.log_open,
+            ["actions"],
+            "A opens a folded Actions and gives it the keys"
+        );
         a.handle(key('f'));
         a.handle(key('f'));
         assert_eq!(a.actions_table.view.state, "failed");
@@ -4635,10 +4645,14 @@ mod tests {
             "the keys went back to Log"
         );
         a.log_open.retain(|n| *n != "forecast");
+        a.handle(key('A'));
         a.handle(key('/'));
         a.handle(key('n'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.actions_table.view.q, "n", "/ goes straight to the query");
+        assert_eq!(
+            a.actions_table.view.q, "n",
+            "after A, / is the Actions query"
+        );
         a.handle(key('/'));
         a.handle(key('q'));
         assert!(!a.quit, "q is typed into the query");
@@ -4722,10 +4736,9 @@ mod tests {
             a.log_open.contains(&"forecast"),
             "the keys went back to Log"
         );
-        a.log_open.clear();
         a.handle(key('/'));
         a.handle(key('q'));
-        assert!(!a.quit, "with Actions folded, / is Work's query");
+        assert!(!a.quit, "/ is Work's query, with Actions open too");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.work_table.view.q, "q");
     }
