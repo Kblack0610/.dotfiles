@@ -421,7 +421,7 @@ pub fn build(
     if let Some(q) = queue {
         out.errors.extend(q.errors.iter().cloned());
         let by_slug: HashMap<&str, &Item> = q.items.iter().map(|i| (i.slug.as_str(), i)).collect();
-        for r in home::running(state, q) {
+        for r in home::running(state, q, feed) {
             let item = by_slug[r.slug.as_str()];
             match owner(item, &labs).and_then(|o| at(&mut cards, &o)) {
                 Some(k) => cards[k].running.push(r),
@@ -597,6 +597,7 @@ mod tests {
             started: None,
             target: None,
             phases: None,
+            ..Default::default()
         }];
         let names = |q: &str, s: &str, sort: &str, dir: &str| -> Vec<String> {
             View::new::<Card>(q, s, sort, dir)

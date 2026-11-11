@@ -83,6 +83,14 @@ fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
 
 /// A PR as a link: a URL as it is, `owner/repo#N` on GitHub, anything else (a bare number, a
 /// list) none, since it names no repo.
+/// A GitHub PR page's checks tab, where its CI runs are listed. None for any other forge, whose
+/// PR page is the only link a row has until the PR store carries its runs.
+pub fn checks_url(pr_url: &str) -> Option<String> {
+    let url = pr_url.trim_end_matches('/');
+    (url.starts_with("https://github.com/") && url.contains("/pull/"))
+        .then(|| format!("{url}/checks"))
+}
+
 pub fn pr_url(pr: &str) -> Option<String> {
     let pr = pr.trim();
     if pr.starts_with("https://") || pr.starts_with("http://") {

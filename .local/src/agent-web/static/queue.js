@@ -77,7 +77,13 @@ const refreshQueue = coalesce(async () => {
       st.arg = "";
       if (chip && !tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); refreshQueue(); } else { setQuery(st.views.queue); }
       if (!chip) st.section = arg;
-    }
+    } else if ((qst.items || []).some((i) => i.slug === arg)) {
+      // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
+      st.arg = ""; qst.sel = arg; setQuery(st.views.queue);
+    } else if (tblParams(st.views.queue).get("q") !== arg) {
+      // Not in this view: search for it once, and the read that answers opens it.
+      setQuery(tblSet(st.views.queue, { q: arg, s: "" })); refreshQueue();
+    } else st.arg = "";
   }
   qst.stats = await stats;
   if (st.tab === "queue") renderQueue();

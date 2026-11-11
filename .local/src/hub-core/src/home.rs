@@ -316,8 +316,10 @@ fn machine_can_answer(kind: &str, judge: &str) -> bool {
         && (judge == "take-recommend" || judge.starts_with("answer:"))
 }
 
-/// One running queue item, with its plan's progress when its session has a checklist.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// One running queue item, with its plan's progress when its session has a checklist, and each
+/// thing it links to, joined at read time from the store that owns it (lifecycle.md: nothing
+/// stores a link): its board row and that row's epic (`#of/`), its session's PR and CI.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Running {
     pub slug: String,
     pub title: String,
@@ -328,6 +330,113 @@ pub struct Running {
     pub target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phases: Option<boards::Phases>,
+    /// The board row's id (`ar-1494`): the item's `row:`, else its `from: board:`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
+    /// The epic the row's `#of/` names, when the board feed was read and has the row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epic: Option<String>,
+    /// The PR as a row prints it (`#1871`) and its page: the session's, else the item's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// The session's PR state (`open`, `merged`), lower case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_state: Option<String>,
+    /// The session's CI on that PR as fleet-sessions read it, lower case, and where its checks are.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_url: Option<String>,
+    /// Its phase ETA is behind the state's clock.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub overdue: bool,
+}
+
+impl Running {
+    /// `2/4`, or empty with no checklist.
+    pub fn phase(&self) -> String {
+        self.phases
+            .as_ref()
+            .map_or(String::new(), |p| format!("{}/{}", p.done, p.total))
+    }
+
+    /// fleet-sessions writes the PR's CI as `PASS`, `FAIL`, `PENDING` or `NONE` (fleet-states.md).
+    pub fn ci_failing(&self) -> bool {
+        self.ci.as_deref() == Some("fail")
+    }
+}
+
+impl crate::table::Row for Running {
+    const COLUMNS: &'static [&'static str] = &[
+        "item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since",
+    ];
+    const STATES: &'static [&'static str] = &["all", "Overdue", "CI failing", "No session"];
+    const FACETS: &'static [&'static str] = &["project", "epic", "ci"];
+    const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "item";
+    const GLANCE: &'static [&'static str] = &["project", "eta", "since"];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: Option<&str>| match s {
+            Some(s) if !s.is_empty() => Val::Text(s.to_string()),
+            _ => Val::None,
+        };
+        match col {
+            "item" => text(Some(&self.title)),
+            "project" => text(Some(&self.project)),
+            "row" => text(self.row.as_deref()),
+            "epic" => text(self.epic.as_deref()),
+            "phase" => text(Some(&self.phase())),
+            "eta" => self
+                .phases
+                .as_ref()
+                .and_then(|p| p.eta_epoch)
+                .map_or(Val::None, |e| Val::Num(e as f64)),
+            "pr" => text(self.pr.as_deref()),
+            "ci" => text(self.ci.as_deref()),
+            "since" => text(self.started.as_deref()),
+            _ => Val::None,
+        }
+    }
+
+    /// The phase sorts by how far through it is, not by its text (`10/12` after `2/4`).
+    fn rank(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        match (col, &self.phases) {
+            ("phase", Some(p)) if p.total > 0 => Val::Num(p.done as f64 / p.total as f64),
+            _ => self.val(col),
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "Overdue" => self.overdue,
+            "CI failing" => self.ci_failing(),
+            "No session" => self.target.is_none(),
+            _ => false,
+        }
+    }
+
+    /// A bare word searches the title, the slug, the project, the row, the epic and the next phase.
+    fn text(&self) -> String {
+        let next = self.phases.as_ref().and_then(|p| p.next.as_deref());
+        [
+            Some(self.title.as_str()),
+            Some(self.slug.as_str()),
+            Some(self.project.as_str()),
+            self.row.as_deref(),
+            self.epic.as_deref(),
+            next,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -466,27 +575,86 @@ fn target_in(sessions: &[&Value], name: &str) -> Option<String> {
     m.next().is_none().then(|| first.to_string())
 }
 
-/// The running queue items, each with its session's plan progress when it has a checklist:
-/// Home's running section and each Projects card's in-flight list.
-pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
+/// The session's PR as (label, page): fleet-sessions writes a bare number for the branch's own PR
+/// and `owner/repo#N` for one in another repo. With no session PR, the item's own (`agent-land`'s).
+fn pr_of(live: Option<&Value>, item: &Item) -> Option<(String, Option<String>)> {
+    let said = live.and_then(|s| match &s["pr"] {
+        Value::String(p) if !p.is_empty() && p != "-" => Some(p.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    });
+    match said.as_deref().map(|p| p.trim_start_matches('#')) {
+        Some(p) if p.contains('#') => crate::queue::pr_link_of(p),
+        Some(n) => Some((
+            format!("#{n}"),
+            crate::session_page::pr_url(n, live, Some(item)),
+        )),
+        None => item.pr_link(),
+    }
+}
+
+/// A lower-case session field, None when fleet-sessions could not say (`null`, `-`, `NONE`).
+fn said_lower(live: Option<&Value>, k: &str) -> Option<String> {
+    let v = live?[k].as_str()?.to_lowercase();
+    (!v.is_empty() && v != "-" && v != "none").then_some(v)
+}
+
+/// The running queue items, each with its session's plan progress when it has a checklist and
+/// the links a row opens: Home's running section and each Projects card's in-flight list. `board`
+/// gives each row's epic; without it the epic is left blank, never guessed.
+pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
     let sessions: Vec<&Value> = state["sessions"]
         .as_array()
         .map(|a| a.iter().collect())
         .unwrap_or_default();
     let phases = boards::phases(state);
+    let now = state["generated_epoch"].as_i64();
+    let parents: std::collections::HashMap<(String, &str), &str> = board
+        .into_iter()
+        .flat_map(|f| f.rows.iter().chain(&f.done))
+        .filter_map(|r| {
+            Some((
+                (r.project.as_deref()?.to_lowercase(), r.id.as_deref()?),
+                r.parent.as_deref()?,
+            ))
+        })
+        .collect();
     q.in_state(State::Running)
         .map(|i| {
             let target = i
                 .session
                 .as_deref()
                 .and_then(|s| target_in(&sessions, tmux_name(s)));
+            let live = target
+                .as_deref()
+                .and_then(|t| sessions.iter().copied().find(|s| str_of(s, "target") == t));
+            let phases = target.as_ref().and_then(|t| phases.get(t).cloned());
+            let board_row = i.board_row();
+            let epic = board_row
+                .and_then(|(p, id)| parents.get(&(p.to_lowercase(), id)).map(|e| e.to_string()));
+            let (pr, pr_url) = pr_of(live, i).map_or((None, None), |(l, u)| (Some(l), u));
+            let ci = said_lower(live, "ci").filter(|_| pr.is_some());
             Running {
                 slug: i.slug.clone(),
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                phases: target.as_ref().and_then(|t| phases.get(t).cloned()),
+                overdue: matches!(
+                    (phases.as_ref().and_then(|p| p.eta_epoch), now),
+                    (Some(e), Some(n)) if e < n
+                ),
+                phases,
                 target,
+                row: board_row.map(|(_, id)| id.to_string()),
+                epic,
+                ci_url: ci
+                    .as_ref()
+                    .and_then(|_| pr_url.as_deref())
+                    .and_then(crate::reds::checks_url),
+                ci,
+                pr_state: said_lower(live, "pr_state").filter(|_| pr.is_some()),
+                pr,
+                pr_url,
             }
         })
         .collect()
@@ -532,7 +700,9 @@ pub fn needs(
                 .iter()
                 .filter(|i| {
                     i.state == State::Queued
-                        && i.after.as_deref().is_some_and(|a| a.split_whitespace().any(|s| s == slug))
+                        && i.after
+                            .as_deref()
+                            .is_some_and(|a| a.split_whitespace().any(|s| s == slug))
                 })
                 .count() as u64
         })
@@ -895,7 +1065,7 @@ pub fn build(
     h.needs = needs(state, queue, board.and_then(|b| b.as_ref().ok()), infra);
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
-        h.running = running(state, q);
+        h.running = running(state, q, board.and_then(|b| b.as_ref().ok()));
     }
     if let Some(c) = state["counts"].as_object() {
         let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -1109,6 +1279,85 @@ mod tests {
         assert_eq!(h.flow.chips[3].text(), "running 1");
         assert_eq!(h.flow.chips[2].text(), "queued 0");
         assert_eq!(h.errors, ["Prometheus: reading"]);
+    }
+
+    #[test]
+    fn a_running_row_carries_its_board_row_epic_pr_and_ci_and_sorts_and_filters() {
+        let mut st = state();
+        let s = &mut st["sessions"][2];
+        s["eta_epoch"] = json!(NOW - 60);
+        s["pr"] = json!("12");
+        s["pr_state"] = json!("OPEN");
+        s["ci"] = json!("FAIL");
+        s["prs"] = json!([{"repo": "o/r", "number": 12, "state": "OPEN"}]);
+        // Promoted from a row (`from: board:`), with the row's epic on the board.
+        let mut busy = item("busy", State::Running, Some("lab:repo-agent-2"));
+        busy.from = Some("board:Trader:tr-9".into());
+        // No session: its PR is its own, a Forgejo one with no checks page, and no CI is said.
+        let mut lone = item("lone", State::Running, None);
+        lone.row = Some("trader:tr-50".into());
+        lone.pr = Some("https://forge.example.internal/k/r/pulls/3".into());
+        let q = Queue {
+            items: vec![busy, lone],
+            ..Default::default()
+        };
+        let mut feed = board().unwrap();
+        feed.rows[6].parent = Some("tr-1".into());
+        let h = build(&st, Some(&q), Some(&Ok(feed)), None);
+        let r = &h.running[0];
+        assert_eq!(
+            (
+                r.row.as_deref(),
+                r.epic.as_deref(),
+                r.pr.as_deref(),
+                r.pr_url.as_deref()
+            ),
+            (
+                Some("tr-9"),
+                Some("tr-1"),
+                Some("#12"),
+                Some("https://github.com/o/r/pull/12")
+            )
+        );
+        assert_eq!(
+            (
+                r.pr_state.as_deref(),
+                r.ci.as_deref(),
+                r.ci_url.as_deref(),
+                r.overdue
+            ),
+            (
+                Some("open"),
+                Some("fail"),
+                Some("https://github.com/o/r/pull/12/checks"),
+                true
+            )
+        );
+        let l = &h.running[1];
+        assert_eq!((l.row.as_deref(), l.epic.as_deref()), (Some("tr-50"), None));
+        assert_eq!(
+            (l.pr.as_deref(), l.ci.as_deref(), l.ci_url.as_deref()),
+            (Some("#3"), None, None)
+        );
+        assert!(!l.overdue && l.target.is_none());
+        // Without the board the epic is blank, never guessed; the rest still joins.
+        let bare = running(&st, &q, None);
+        assert_eq!(
+            (bare[0].epic.as_deref(), bare[0].row.as_deref()),
+            (None, Some("tr-9"))
+        );
+        let shown = |q: &str, s: &str| -> Vec<String> {
+            crate::table::View::new::<Running>(q, s, "", "")
+                .apply(&h.running)
+                .iter()
+                .map(|r| r.slug.clone())
+                .collect()
+        };
+        assert_eq!(shown("", "CI failing"), ["busy"]);
+        assert_eq!(shown("", "No session"), ["lone"]);
+        assert_eq!(shown("", "Overdue"), ["busy"]);
+        assert_eq!(shown("epic:tr-1", ""), ["busy"]);
+        assert_eq!(shown("tr-50", ""), ["lone"]);
     }
 
     #[test]

@@ -291,6 +291,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     });
     let rows = [
         phone_table::<crate::home::Need>(),
+        phone_table::<crate::home::Running>(),
         phone_table::<crate::proposals::Proposal>(),
         phone_table::<crate::queue::QueueRow<'static>>(),
         phone_table::<crate::tasks::Row>(),

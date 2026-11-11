@@ -289,6 +289,18 @@ impl Item {
         Some((now - from).num_minutes().max(0))
     }
 
+    /// The board row the item works as (project, id): its `row:`, else the row it was promoted
+    /// from (`from: board:<project>:<id>`), the same order as agent-queue's `item_row`.
+    pub fn board_row(&self) -> Option<(&str, &str)> {
+        let row = self
+            .row
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .or_else(|| self.from.as_deref()?.strip_prefix("board:"))?;
+        row.split_once(':')
+            .filter(|(p, id)| !p.is_empty() && !id.is_empty())
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
     /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
@@ -1784,6 +1796,23 @@ mod tests {
         assert!(!canary.unproven());
         assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
+    }
+
+    #[test]
+    fn the_board_row_is_the_items_row_else_the_row_it_was_promoted_from() {
+        let mut i = Item {
+            from: Some("board:trader:tr-9".into()),
+            ..Default::default()
+        };
+        assert_eq!(i.board_row(), Some(("trader", "tr-9")));
+        i.row = Some("agent-runtime:ar-1".into());
+        assert_eq!(i.board_row(), Some(("agent-runtime", "ar-1")));
+        // An empty row falls back; a promotion from anything but a board row is no row.
+        i.row = Some(String::new());
+        i.from = Some("ask:abc".into());
+        assert_eq!(i.board_row(), None);
+        i.from = Some("board:tr-9".into());
+        assert_eq!(i.board_row(), None, "a row names its project");
     }
 
     #[test]
