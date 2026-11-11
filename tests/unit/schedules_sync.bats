@@ -453,24 +453,30 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
 
 # ---- Forgejo ----
 
-# fj_task <id> <run> <status> <created> [workflow]
+# fj_task <id> <run> <status> <created> [workflow] [updated]
 fj_task() {
   printf '{"id":%s,"name":"job%s","head_branch":"develop","head_sha":"f00","run_number":%s,"event":"push","display_title":"r%s","status":"%s","workflow_id":"%s","url":"https://git.x/o/fj/actions/runs/%s","created_at":"%s","updated_at":"%s","run_started_at":"%s"}' \
-    "$1" "$1" "$2" "$2" "$3" "${5:-ci.yml}" "$2" "$4" "$4" "$4"
+    "$1" "$1" "$2" "$2" "$3" "${5:-ci.yml}" "$2" "$4" "${6:-$4}" "$4"
 }
 fj_page() { local IFS=,; printf '{"total_count":0,"workflow_runs":[%s]}' "$*"; }
 fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr '/?&=' '____')"; }
+# fj_run <run> <stopped>: serves o/fj's actions/runs?run_number=<run>
+fj_run() {
+  printf '{"total_count":1,"workflow_runs":[{"index_in_repo":%s,"status":"success","stopped":"%s"}]}' "$1" "$2" \
+    > "$FJD/$(echo "repos/o/fj/actions/runs?run_number=$1" | tr '/?&=' '____')"
+}
 
 @test "forgejo: jobs group into one row per run, failed when one job failed; the token goes in on stdin" {
   printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
   fj_page "$(fj_task 9 5 running 2025-11-06T11:50:00Z)" "$(fj_task 8 5 success 2025-11-06T11:49:00Z)" \
           "$(fj_task 7 4 failure 2025-11-06T11:00:00Z)" "$(fj_task 6 4 success 2025-11-06T10:59:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
   run "$SUBJECT"
   assert_success
   run jq -sc 'map([.forge, .repo, .id, .attempt, .status, .conclusion, .created_at, .ended_at, .workflow, .url])' "$LEDGER"
   assert_output '[["forgejo","o/fj",5,1,"in_progress",null,"2025-11-06T11:49:00Z",null,"ci.yml","https://git.x/o/fj/actions/runs/5"],["forgejo","o/fj",4,1,"completed","failure","2025-11-06T10:59:00Z","2025-11-06T11:00:00Z","ci.yml","https://git.x/o/fj/actions/runs/4"]]'
   run grep -c 'stdin: header = "Authorization: token fjtok"' "$FJD/calls"
-  assert_output 1
+  assert_output 2  # the jobs page and run 4's stop
   run grep -c 'argv: [^|]*fjtok' "$FJD/calls"
   assert_output 0
   run grep -c 'argv: .* https://fj.test/api/v1/repos/o/fj/actions/tasks?limit=50&page=1 |' "$FJD/calls"
@@ -483,6 +489,7 @@ fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr
   printf 'forgejo:fj.test/o/fj develop\nforgejo:fj.test/o/private develop\n' > "$SANDBOX/repos"
   touch "$FJD/locked"
   fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
   run "$SUBJECT"
   assert_failure 1
   assert_output --partial 'no token'
@@ -498,6 +505,7 @@ fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr
   echo '{"repos":{"forgejo:o/fj":{"synced_at":"2025-11-06T11:50:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
   page=(); for i in $(seq 50 -1 1); do page+=("$(fj_task $((100 + i)) $((i / 2)) success "$(date -ud "@$((1762430400 - (50 - i) * 120))" +%FT%TZ)")"); done
   fj_page "${page[@]}" | fj_serve 1
+  for n in $(seq 0 25); do fj_run "$n" 2025-11-06T11:00:00Z; done
   run "$SUBJECT"
   assert_success
   run grep -c 'page=2' "$FJD/calls"
@@ -505,6 +513,26 @@ fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr
   # page 1 reaches 10:22, past the 10:50 stop; run 0 (its last job) may have more on page 2
   run jq -sc 'map(.id) | [length, max, min]' "$LEDGER"
   assert_output '[25,25,1]'
+}
+
+@test "forgejo: a finished run ends when the run stopped, not when a log transfer rewrote a job; read once" {
+  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  # job 7's updated_at is the next midnight, when transfer_lingering_logs moved its log
+  fj_page "$(fj_task 7 4 success 2025-11-06T10:01:00Z ci.yml 2025-11-08T00:00:00Z)" \
+          "$(fj_task 6 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T10:05:00Z
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map([.id, .status, .ended_at])' "$LEDGER"
+  assert_output '[[4,"completed","2025-11-06T10:05:00Z"]]'
+  # the next pass keeps the recorded end and asks the run no more
+  rm "$FJD/$(echo 'repos/o/fj/actions/runs?run_number=4' | tr '/?&=' '____')"
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'run_number=4' "$FJD/calls"
+  assert_output 1
+  run jq -sc 'map(.ended_at) | unique' "$LEDGER"
+  assert_output '["2025-11-06T10:05:00Z"]'
 }
 
 # lrow <id> <attempt> <branch> <created> <conclusion>: one ledger row of o/game

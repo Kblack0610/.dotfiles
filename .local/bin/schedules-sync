@@ -18,7 +18,9 @@ started_at, ended_at, queue_wait_s, prs, url. A reader dedupes on the key and ke
 row; a torn last line is skipped. Rows whose run was created more than 30 days ago are pruned
 by an atomic rewrite, which also drops superseded rows once they outnumber the live ones.
 Forgejo has no attempt (always 1) and lists jobs, not runs: a run is its jobs grouped by run
-number, failed when one failed. Its API is https://<host>/api/v1, the host named in the
+number, failed when one failed. A finished run's end is the run's own `stopped`, read once per
+run: a job's updated_at is no end, since Forgejo's midnight transfer_lingering_logs cron rewrites
+it a day or more after the job stopped. Its API is https://<host>/api/v1, the host named in the
 private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`,
 sent in curl's stdin config, never argv; with neither, a public repo still reads.
 
@@ -443,10 +445,19 @@ def gh_row(repo, r):
             "url": r.get("html_url")}
 
 
-def forgejo_rows(host, repo, entry, open_since, t):
+def fj_stopped(host, repo, n):
+    """When Forgejo run <n> stopped, from the run itself, or None."""
+    got = fj(host, f"repos/{repo}/actions/runs?run_number={n}")
+    runs = got.get("workflow_runs") or [] if isinstance(got, dict) else []
+    return next((r.get("stopped") for r in runs if when(r.get("stopped"))), None)
+
+
+def forgejo_rows(host, repo, entry, open_since, t, last):
     """Every Forgejo run back to window(), one row per run from its jobs (actions/tasks lists
     jobs, newest first). When paging stops before the list ends, the oldest run seen may be
-    cut by the page edge, so it is left out; a pass that saw it whole wrote its row."""
+    cut by the page edge, so it is left out; a pass that saw it whole wrote its row. A finished
+    run's end is the one `last` (the ledger) holds, else fj_stopped(): a job's updated_at moves
+    when Forgejo's midnight log transfer rewrites the job, a day or more after it stopped."""
     stop, tasks, whole = window(entry, open_since, t), [], False
     for page in range(1, MAX_PAGES + 1):
         got = fj(host, f"repos/{repo}/actions/tasks?limit={FJ_PAGE}&page={page}")
@@ -472,7 +483,10 @@ def forgejo_rows(host, repo, entry, open_since, t):
             conclusion = next((c for c in ("failure", "cancelled", "success") if c in st), "skipped")
         created = min((j.get("created_at") for j in jobs if when(j.get("created_at"))), default=None)
         started = min((j.get("run_started_at") for j in jobs if when(j.get("run_started_at"))), default=None)
-        ended = max((j.get("updated_at") for j in jobs if when(j.get("updated_at"))), default=None) if done else None
+        ended = None
+        if done:
+            had = last.get(("forgejo", repo, n, 1)) or {}
+            ended = (had.get("status") == "completed" and had.get("ended_at")) or fj_stopped(host, repo, n)
         j = jobs[0]
         rows.append({"forge": "forgejo", "repo": repo, "id": n, "attempt": 1,
                      "workflow": j.get("workflow_id"), "path": j.get("workflow_id"), "title": j.get("display_title"),
@@ -899,7 +913,7 @@ def main(argv):
             if forge == "forgejo" and "/" not in repo:
                 raise GhError(f"forgejo:{host}/{repo}: want forgejo:<host>/<owner/name>")
             if forge == "forgejo":
-                rows.extend(forgejo_rows(host, repo, entry, opened.get((forge, repo)), t))
+                rows.extend(forgejo_rows(host, repo, entry, opened.get((forge, repo)), t, last))
             elif forge == "github":
                 since = [opened[(forge, repo)]] if (forge, repo) in opened else []
                 since += [parse_iso(r["created_at"]) for w in (p or {}).get("workflows", [])
