@@ -131,7 +131,10 @@ tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advi
 
 The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
 
-CI (`.github/workflows/tests.yml`): `fast` on the runner, split into shards by `tests/shard.sh` and the per-file seconds in `tests/shard-weights.tsv` (a shard near its 10-minute cap: regenerate the table with `tests/shard.sh --weights <job logs>`, or add a shard to the matrix; never raise the timeout), `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
+CI (`.github/workflows/tests.yml`), under the doctrine in `~/.local/src/docs/ci.md`; this repo's PR budget is a p90 of 5 minutes, and `timeout-minutes: 10` is the hang guard, never a lever:
+- `fast` on the runner. A pull request runs what `tests/pick.sh` picks (the `test_picked` function the Stop hook uses) plus `tests/broad.txt`; main, the schedule and a dispatch run the whole tier, and so does a PR that touches the harness or whose diff cannot be read. The pick line ("picked N of M" or "full: <why>") is on the run's Summary page. A PR green and main red means the picker missed a dependency: teach `test_picked` it, with a case in `tests/integ/shell_tests_scope.bats`.
+- `tests/shard.sh` splits the files across the matrix by the per-file seconds the `weights` job reads from the newest green main run's JUnit (`shard.sh --junit`), so there is no table to regenerate. Each shard writes its predicted and actual seconds to the Summary. A shard near its cap: split its heaviest file (a file never spans shards) or add a shard to the matrix.
+- `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
 
 ## 6. Land it
 
