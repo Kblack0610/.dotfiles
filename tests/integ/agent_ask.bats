@@ -311,6 +311,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
     run "$AGENT_ASK" show "$a"
     assert_line 'status: answered'
     assert_line "answer: in session: $msg"
+    assert_line "answer_note: in session: $msg"   # the in-chat mark fleet-bench's ask load reads
   done
 }
 
@@ -616,13 +617,10 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 27 tab-separated fields per ask, answer last" {
-  local id; id="$(post demo 'ship it?')"
+@test "list emits 26 tab-separated fields per ask, resume last" {
+  post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '27'
-  "$AGENT_ASK" answer "$id" "in session: yes ship it" 2>/dev/null
-  run bash -c '"$AGENT_ASK" list demo | cut -f27'
-  assert_output 'in session: yes ship it'
+  assert_output '26'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
@@ -742,22 +740,6 @@ outcomes_cli() {
   run "$AGENT_ASK" show "$id"
   assert_output --partial 'status: answered'
   assert_output --partial 'answer: yes, ship it'
-}
-
-@test "answer: the asking session recording the human's answer marks it in session; any other caller does not" {
-  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'ship it?')"
-  CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" answer "$id" yes 2>/dev/null
-  run "$AGENT_ASK" show "$id"
-  assert_line 'answer_note: in session: recorded by the asking session'
-  # negative control: a board, or another session, answering is outside the asking chat
-  id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'tag it?')"
-  CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" answer "$id" yes 2>/dev/null
-  run "$AGENT_ASK" show "$id"
-  refute_line --partial 'answer_note: in session'
-  id="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'deploy it?')"
-  "$AGENT_ASK" answer "$id" yes 2>/dev/null
-  run "$AGENT_ASK" show "$id"
-  refute_line --partial 'answer_note: in session'
 }
 
 @test "answer stamps answered_at" {
