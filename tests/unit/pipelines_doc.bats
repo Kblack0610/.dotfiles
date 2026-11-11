@@ -66,5 +66,6 @@ doc_launch_files() {
   rm -rf "$h"
   assert_success
   refute_output --partial 'Invalid'
-  assert_line --index 0 '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |'
+  # The exact columns are integ/agentctl_list.bats's to pin; here the first line is the header.
+  assert_line --index 0 --regexp '^\| Runner \| .* \| Purpose \|$'
 }
