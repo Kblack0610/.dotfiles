@@ -54,6 +54,10 @@ fixture() {
   run --separate-stderr "$SUBJECT" unit 1/1
   assert_success
   assert_output "$(printf '%s\n' unit/c.bats unit/b.bats unit/d.bats unit/a.bats)"
+  # the CI path: a picked list on stdin in any order, split two ways (c+a | b+d)
+  run --separate-stderr "$SUBJECT" unit 1/2 - <<<"$(printf '%s\n' unit/a.bats unit/d.bats unit/c.bats unit/b.bats)"
+  assert_success
+  assert_output "$(printf '%s\n' unit/c.bats unit/a.bats)"
 }
 
 @test "a file the table does not list weighs the tier's median, said on stderr; no table weighs @test counts" {
