@@ -129,21 +129,20 @@ no_checks() {
 }
 # fj_wait_checks: Forgejo has no watch, and no event a script can await, so the head's combined
 # commit status is read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL
-# apart while none is reported yet. warning passes, as Forgejo's own combined state reads it.
+# apart while none is reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes).
 fj_wait_checks() {
   local try st head
   head=$(git rev-parse HEAD)
   for ((try = 1; ; try++)); do
-    st=$(fj_api "commits/$head/status" 2>&1) || fail checks "Forgejo status read: $(lastline "$st")"
-    case "$(jq -r '[.statuses // [] | .[].status] | if length == 0 then "none" elif any(. == "failure" or . == "error") then "fail"
-                   elif any(. == "pending") then "pending" else "green" end' <<<"$st")" in
-    green)
+    st=$(so_forgejo_checks "$fj" "$head" 2>&1) || fail checks "Forgejo status read: $(lastline "$st")"
+    case "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | ci' <<<"$st")" in
+    PASS)
       echo "checks: green"
       had_checks=yes
       return 0
       ;;
-    fail) fail checks "$(jq -r '[.statuses[] | select(.status == "failure" or .status == "error") | .context] | join(", ")' <<<"$st")" ;;
-    pending)
+    FAIL) fail checks "$(jq -r 'map(select(.state == "FAILURE" or .state == "ERROR") | .context) | join(", ")' <<<"$st")" ;;
+    PENDING)
       try=0
       sleep "$CHECKS_WATCH_INTERVAL"
       ;;
@@ -187,7 +186,7 @@ own_head() {
       [ "$try" -lt "$CHECKS_TRIES" ] || break
       sleep "$CHECKS_POLL"
     done
-    fail head "HEAD ${here:0:8} is $remote's $head_ref, but the PR still reads $seen after $try polls: re-run once ${fj:+Forgejo}${fj:-GitHub} catches up"
+    fail head "HEAD ${here:0:8} is $remote's $head_ref, but the PR still reads $seen after $try polls: re-run once $forge catches up"
   fi
   wt=$(git worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/$head_ref" '/^worktree /{p = substr($0, 10)} $0 == b { print p; exit }')
   top=$(git rev-parse --show-toplevel 2>/dev/null || true)
@@ -341,45 +340,35 @@ R=()
 # listed host stops here: gh would land on its GitHub mirror, which the next mirror push erases.
 # shellcheck source=../lib/session-outcomes.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/session-outcomes.sh"
-fj='' remote=origin api=gh
+# shellcheck source=../lib/pr-ci.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/pr-ci.sh"
+fj='' remote=origin api=gh forge=GitHub
 fj_detect() {
-  local top name url host names=origin hosts
-  hosts=" $(so_forgejo_hosts) "
+  local top r
   top=$(git rev-parse --show-toplevel 2>/dev/null) || top=''
-  ! forge_canonical "$top" || names=$(git remote 2>/dev/null)
-  for name in $names; do
-    url=$(git remote get-url "$name" 2>/dev/null) || continue
-    host=$(url_host "$url")
-    [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
-    fj=$host/$(url_repo "$url") remote=$name api=Forgejo
-    return 0
-  done
-  ! forge_canonical "$top" || die "$top is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf"
+  if forge_canonical "$top"; then
+    r=$(so_forgejo_remote .) || die "$top is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf"
+  else
+    r=$(so_forgejo_remote . origin) || return 0
+  fi
+  remote=${r%% *} fj=${r#* } api=Forgejo forge=Forgejo
 }
 fj_detect
 fj_repo=${fj#*/}
 [ -z "$fj" ] || [ -z "$repo" ] || [ "${repo,,}" = "${fj_repo,,}" ] ||
   die "#$pr is in $repo ($repo_from), but this checkout's Forgejo repo is $fj_repo: run from a checkout of $repo"
-# fj_api PATH [CURL ARG...]: one authed call to the PR's Forgejo repo; why it failed goes to stderr.
-fj_api() {
-  so_forgejo_auth "$fj" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
-  so_forgejo_get "$fj" "$@"
-}
-# fj_send METHOD PATH: fj_api with stdin as its JSON body. A file, since curl reads the token on stdin.
+# The token is read once, in this shell, so every $(...) below inherits it.
+[ -z "$fj" ] || so_forgejo_auth "$fj" || die "$SO_FORGEJO_ERR"
+# fj_send METHOD PATH JSON: one authed write to the PR's Forgejo repo; why it failed goes to stderr.
 fj_send() {
-  local data rc=0
-  data=$(mktemp)
-  cat >"$data"
-  fj_api "$2" -X "$1" -H 'Content-Type: application/json' --data-binary "@$data" >/dev/null || rc=$?
-  rm -f "$data"
-  return "$rc"
+  so_forgejo_get "$fj" "$2" -X "$1" -H 'Content-Type: application/json' --data-binary "$3" >/dev/null
 }
 # pr_view FIELDS JQ: `gh pr view --json FIELDS -q JQ`; on Forgejo the API's PR in gh's field names,
 # so one query reads both. Forgejo's mergeable has no unknown state.
 pr_view() {
   [ -n "$fj" ] || { gh pr view "$pr" "${R[@]}" --json "$1" -q "$2"; return; }
   local raw
-  raw=$(fj_api "pulls/$pr") || return 1
+  raw=$(so_forgejo_get "$fj" "pulls/$pr") || return 1
   jq -r '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
           baseRefName: .base.ref, url: .html_url, headRefOid: .head.sha, headRefName: .head.ref,
           isCrossRepository: (.head.repo.full_name != .base.repo.full_name), body: (.body // ""),
@@ -389,18 +378,18 @@ pr_view() {
 # pr_edit_body: stdin becomes the PR body.
 pr_edit_body() {
   [ -n "$fj" ] || { gh pr edit "$pr" "${R[@]}" --body-file -; return; }
-  jq -Rsc '{body: .}' | fj_send PATCH "pulls/$pr"
+  fj_send PATCH "pulls/$pr" "$(jq -Rsc '{body: .}')"
 }
 # pr_merge HEAD: merge pinned to HEAD, the full sha (Forgejo answers 409 to a short one).
 pr_merge() {
   [ -n "$fj" ] || { gh pr merge "$pr" "${R[@]}" "$method" --match-head-commit "$1"; return; }
-  jq -nc --arg do "${method#--}" --arg h "$1" '{Do: $do, head_commit_id: $h}' | fj_send POST "pulls/$pr/merge"
+  fj_send POST "pulls/$pr/merge" "$(jq -nc --arg do "${method#--}" --arg h "$1" '{Do: $do, head_commit_id: $h}')"
 }
 # pr_files: the PR's changed paths, one a line.
 pr_files() {
   [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename'; return; }
   local page=1 got
-  while got=$(fj_api "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
+  while got=$(so_forgejo_get "$fj" "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
     jq -r '.[].filename' <<<"$got"
     [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || return 0
     page=$((page + 1))
@@ -458,7 +447,7 @@ score_body() {
 # wrong graph, or pass on an unrelated PR that shares the number.
 own_repo() {
   local here want=${pr_ref%#*}
-  if [ -n "$fj" ]; then here=${fj#*/}; else here=$(origin_repo .) || here=""; fi
+  if [ -n "$fj" ]; then here=$fj_repo; else here=$(origin_repo .) || here=""; fi
   [ -n "$here" ] || { echo "repo: not checked, this checkout has no origin"; return 0; }
   [[ "$pr_ref" == */*#* && "${here,,}" != "${want,,}" ]] || return 0
   fail repo "#$pr is $pr_ref (${repo_from:-the repo gh picks here}), but this checkout's origin is $here: run from a checkout of ${pr_ref%#*}${repo_from:+, or pass --repo $here for $here#$pr}"

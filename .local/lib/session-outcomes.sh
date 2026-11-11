@@ -324,28 +324,40 @@ so_forgejo_pr() {
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
 }
 
-# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state}],
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, context}],
 # so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
-# failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
+# failure, and warning is a pass (Forgejo's own combined state does not fail on it). After so_forgejo_auth.
 so_forgejo_checks() {
   local st
   st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
-  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]' <<<"$st"
+  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
 }
 
-# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts
-# lists (home-config's is `forgejo`, its origin the GitHub mirror); rc 1 when none is.
-so_forgejo_repo() {
-  local name url host hosts
+# so_forgejo_remote CHECKOUT [REMOTE...] - "<remote> HOST/OWNER/REPO" of the first REMOTE (default:
+# each of the checkout's remotes) whose URL is on a host so_forgejo_hosts lists; rc 1 when none is.
+so_forgejo_remote() {
+  local dir="$1" name url host hosts
+  shift
   hosts=" $(so_forgejo_hosts) "
-  for name in $(git -C "$1" remote 2>/dev/null); do
-    url="$(git -C "$1" remote get-url "$name" 2>/dev/null)" || continue
+  [ -n "${hosts// /}" ] || return 1
+  # shellcheck disable=SC2046 # one remote name a word
+  [ $# -gt 0 ] || set -- $(git -C "$dir" remote 2>/dev/null)
+  for name; do
+    url="$(git -C "$dir" remote get-url "$name" 2>/dev/null)" || continue
     host="$(url_host "$url")"
     [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
-    printf '%s/%s\n' "$host" "$(url_repo "$url")"
+    printf '%s %s/%s\n' "$name" "$host" "$(url_repo "$url")"
     return 0
   done
   return 1
+}
+
+# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of so_forgejo_remote (home-config's remote is `forgejo`,
+# its origin the GitHub mirror); rc 1 when no remote is on a listed host.
+so_forgejo_repo() {
+  local r
+  r="$(so_forgejo_remote "$1")" || return 1
+  printf '%s\n' "${r#* }"
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets

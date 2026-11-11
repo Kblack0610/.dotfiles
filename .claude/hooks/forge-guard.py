@@ -69,8 +69,9 @@ API_MSG = (
     "it merges through that API, pinned to the head, and records the PR on the item. A PR already "
     "merged: the same command records it."
 )
-API_MERGE = re.compile(r"/pulls/([^/\s]+)/merge/?(?:\?|$)")
+API_MERGE = re.compile(r"/pulls/([^/\s]+)/merge/?(?=\?|$)")
 DATA_FLAGS = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--json", "-F", "--form")
+DATA_PREFIXES = tuple(f + "=" for f in DATA_FLAGS if f.startswith("--"))
 
 
 def _strip_heredocs():
@@ -289,10 +290,10 @@ def check_gh(cwd, argv, env):
 def api_merge(head, argv):
     """API_MSG when argv is a write to a PR's merge endpoint: curl with a non-GET method or a body,
     or `gh api` with a non-GET method. A GET there only asks whether the PR merged."""
-    m = next((API_MERGE.search(a) for a in argv[1:] if API_MERGE.search(a)), None)
+    m = next(filter(None, map(API_MERGE.search, argv[1:])), None)
     if not m:
         return None
-    method, i = None, 1
+    method, i, curl = None, 1, head == "curl"
     while i < len(argv):
         a = argv[i]
         if a in ("-X", "--request", "--method") and i + 1 < len(argv):
@@ -300,15 +301,15 @@ def api_merge(head, argv):
             i += 1
         elif a.startswith(("--request=", "--method=")):
             method = a.split("=", 1)[1].upper()
-        elif head == "curl" and a.startswith("-X") and len(a) > 2:
+        elif curl and a.startswith("-X") and len(a) > 2:
             method = a[2:].upper()
-        elif head == "curl" and (a in DATA_FLAGS or a.startswith(tuple(f + "=" for f in DATA_FLAGS if f.startswith("--")))):
+        elif curl and (a in DATA_FLAGS or a.startswith(DATA_PREFIXES)):
             method = method or "POST"
         i += 1
     if method in (None, "GET", "HEAD"):
         return None
     pr = m.group(1) if m.group(1).isdigit() else "<N>"
-    return API_MSG.format(what="`%s ... %s`" % (head, m.group(0).rstrip("?")), pr=pr)
+    return API_MSG.format(what="`%s ... %s`" % (head, m.group(0)), pr=pr)
 
 
 def check(head, argv, env, cwd):
@@ -365,7 +366,7 @@ def main():
     if data.get("tool_name", "Bash") != "Bash":
         return
     cmd = (data.get("tool_input") or {}).get("command") or ""
-    if not any(w in cmd for w in ("push", "gh", "merge")):
+    if not any(w in cmd for w in ("push", "gh", "/merge")):
         return
     r = reason(cmd, data.get("cwd") or os.getcwd())
     if r:

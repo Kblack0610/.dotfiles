@@ -141,8 +141,8 @@ EOF
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
 board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
-# ran -> the call log without the two reads that pick the forge (fj_detect), which run before any step
-ran() { grep -v -x -e 'git rev-parse --show-toplevel' -e 'git remote get-url origin' "$LOG" || true; }
+# ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
+ran() { grep -v -x -e 'git rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
 not_recorded() { grep -v '^notes ingest record ' "$LOG" || true; }
 
@@ -507,7 +507,6 @@ EOF
   run cat "$LOG"
   assert_output - <<'EOF'
 git rev-parse --show-toplevel
-git remote get-url origin
 gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
 git -C . remote get-url origin
 git rev-parse HEAD
@@ -1425,7 +1424,7 @@ F=$NOTES_FIXTURE
 grep -q 'Authorization: token tok' || { echo 'curl: no token on stdin' >&2; exit 2; }
 url=${*: -1} method=GET data=''
 while [ $# -gt 1 ]; do
-  case "$1" in -X) method=$2 && shift ;; --data-binary) data=$(cat "${2#@}") && shift ;; esac
+  case "$1" in -X) method=$2 && shift ;; --data-binary) data=$2 && shift ;; esac
   shift
 done
 path=${url#https://forgejo.example/api/v1/repos/o/r/}
