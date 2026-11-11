@@ -1768,9 +1768,12 @@ impl App {
         {
             let c = self.costs.as_ref();
             let t = c.and_then(|c| c.tokens.as_ref());
-            let keys = c.and_then(|c| c.burn.keys.as_ref());
+            // Only `K` needs the Consumers level, so only `K` builds the section for it.
+            let level = (k.code == KeyCode::Char('K'))
+                .then(|| c.map(|c| hub_core::costs::consumers(c, "", "").level))
+                .flatten();
             let was = self.cv.inner;
-            if let Some(seek) = self.cv.fold(k.code, t, keys) {
+            if let Some(seek) = self.cv.fold(k.code, t, level) {
                 self.seek = seek;
                 // Another inner tab is another page: it opens at its top, not at this offset.
                 if self.cv.inner != was {
@@ -5778,19 +5781,16 @@ mod tests {
     }
 
     #[test]
-    fn big_k_reaches_the_keys_fold_on_costs() {
+    fn big_k_folds_consumers_on_costs() {
         let k = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('K'))));
         let mut a = costs_app(true);
+        assert_eq!(a.cv.consumers, None);
+        // A green section starts folded, so the first K opens it and the second folds it.
         a.handle(k());
-        assert_eq!(a.cv.keys, None, "no fold on the page, nothing to open");
-        a.costs.as_mut().unwrap().burn.keys = Some(hub_core::burn::Keys {
-            head: "1 in lazer".into(),
-            level: "ok",
-        });
+        assert_eq!(a.cv.consumers, Some(true));
+        assert_eq!(a.cv.inner, "limits");
         a.handle(k());
-        assert_eq!(a.cv.keys, Some(true));
-        a.handle(k());
-        assert_eq!(a.cv.keys, Some(false));
+        assert_eq!(a.cv.consumers, Some(false));
     }
 
     #[test]

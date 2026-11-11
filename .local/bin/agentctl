@@ -516,8 +516,48 @@ cmd_skill() {
     esac
 }
 
+# list --json: one object per runner with what it runs on, for the Costs tab's Consumers (hub-core
+# gateway.rs): name, enabled, role, priority, harness, model, the route it resolves (route.sh
+# route_resolve) with that route's transport, model, key source and payer, and the claude-acct source
+# it spends from (SOURCE, else its harness's `source` in harnesses.json, else codex for the codex
+# harness). A conf that does not load is {name, invalid: true}.
+cmd_list_json() {
+    local lib name harnesses="${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/harnesses.json"
+    lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib"
+    for name in $(list_agent_names); do
+        if ! load_agent "$name" >/dev/null 2>&1; then
+            jq -nc --arg n "$name" '{name: $n, invalid: true}'; continue
+        fi
+        (
+            unset ROLE ROUTE MODEL HARNESS SOURCE PRIORITY ENABLED DESCRIPTION
+            # shellcheck disable=SC1090
+            source "$CONFIG_DIR/$name.conf"
+            harness=${HARNESS:-claude}
+            SELF_DIR="$lib/.."
+            # shellcheck source=../src/agent-run/lib/route.sh
+            . "$lib/route.sh"
+            route=$(AGENTCTL_ROUTE='' route_resolve)
+            src=${SOURCE:-$(jq -r --arg h "$harness" '.harnesses[$h].source // empty' "$harnesses" 2>/dev/null || true)}
+            [ -n "$src" ] || [ "$harness" != codex ] || src=codex
+            ROUTE_TRANSPORT='' ROUTE_MODEL_RAW='' ROUTE_MODEL_CLAUDE='' ROUTE_KEY_SOURCE='' ROUTE_PAYER=''
+            f=$(route_file "$route") && { . "$f" 2>/dev/null || true; }
+            jq -nc --arg name "$name" --arg enabled "${ENABLED:-yes}" --arg role "${ROLE:-}" \
+                --arg priority "${PRIORITY:-}" --arg harness "$harness" --arg model "${MODEL:-}" \
+                --arg route "$route" --arg source "$src" --arg desc "${DESCRIPTION:-}" \
+                --arg transport "$ROUTE_TRANSPORT" --arg rmodel "${ROUTE_MODEL_RAW:-$ROUTE_MODEL_CLAUDE}" \
+                --arg key "$ROUTE_KEY_SOURCE" --arg payer "$ROUTE_PAYER" '
+                def n: if . == "" then null else . end;
+                {name: $name, enabled: ($enabled == "yes"), role: ($role | n), priority: ($priority | n),
+                 harness: $harness, model: ($model | n), route: $route, source: ($source | n),
+                 description: $desc, route_transport: ($transport | n), route_model: ($rmodel | n),
+                 route_key: ($key | n), route_payer: ($payer | n)}'
+        )
+    done | jq -s .
+}
+
 cmd_list() {
     [ "${1:-}" = --md ] && { cmd_list_md; return; }
+    [ "${1:-}" = --json ] && { cmd_list_json; return; }
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     local -a names=()
@@ -1018,6 +1058,7 @@ agentctl — manage named long-running Claude agents via systemd
 Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
+  agentctl list --json           Each runner's priority, harness, model, route and source as JSON (the Costs tab's Consumers)
   agentctl status <name>         Detailed status for one agent
   agentctl skill <name>          The skill its conf names (SKILL=); --dangling lists those that name nothing
   agentctl budget                Spend against each runner's caps today (lib/budget.sh)

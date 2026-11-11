@@ -11,6 +11,7 @@
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
+//! | every LLM consumer: priority, what it runs on, budget, spend, fallback (Consumers) | `claude-acct gateway`'s snapshot and `agentctl list --json` | `gateway::read` |
 //! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | the outcomes read above |
 //!
 //! The query filters slices (a session's cost on one model) before grouping, so `-model:opus`
@@ -222,6 +223,8 @@ pub struct Costs {
     pub history: crate::spend_history::History,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
+    pub consumers: crate::gateway::Read,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
     pub sections: Sections,
     /// Where the tokens go and what Langfuse sees, summed from `snapshots`; None with no snapshot.
@@ -240,6 +243,8 @@ pub struct Paths {
     pub headroom: PathBuf,
     /// `agent-usage fleet-cost`'s file.
     pub fleet_cost: PathBuf,
+    /// `claude-acct gateway`'s snapshot.
+    pub gateway: PathBuf,
 }
 
 impl Paths {
@@ -250,6 +255,7 @@ impl Paths {
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
             fleet_cost: crate::boards::fleet_cost(),
+            gateway: crate::boards::gateway_snapshot(),
         }
     }
 }
@@ -302,6 +308,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
+    c.consumers = crate::gateway::read(runner, &paths.gateway);
     c
 }
 
@@ -969,6 +976,8 @@ pub struct Board {
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    /// The Consumers section in its own order; a surface re-sorts it with `gateway::build`.
+    pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
     /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
     /// Langfuse with no figures or stale.
@@ -996,10 +1005,13 @@ pub struct Board {
 }
 
 /// The sections of the tab that need a look (`Board::amber`).
-fn amber(c: &Costs) -> Vec<&'static str> {
+fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> {
     let mut out = vec![];
     if matches!(c.burn.level, "warn" | "bad") {
         out.push("burn");
+    }
+    if matches!(consumers.level, "warn" | "bad") {
+        out.push("consumers");
     }
     if let Some(t) = &c.tokens {
         if t.stale {
@@ -1010,6 +1022,11 @@ fn amber(c: &Costs) -> Vec<&'static str> {
         }
     }
     out
+}
+
+/// The Consumers section of one read under a sort (blank: its own order).
+pub fn consumers(c: &Costs, sort: &str, dir: &str) -> crate::gateway::Consumers {
+    crate::gateway::build(&c.consumers, &c.burn, c.at, sort, dir)
 }
 
 /// A cut or window the tab knows, else its default, so a stale link still opens.
@@ -1119,6 +1136,7 @@ pub fn board(
             .filter(|f| !f.values.is_empty())
             .collect(),
     };
+    let consumers = consumers(c, "", "");
     Board {
         at: c.at,
         by: by.into(),
@@ -1134,7 +1152,8 @@ pub fn board(
         totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
-        amber: amber(c),
+        amber: amber(c, &consumers),
+        consumers,
         tokens: c.tokens.clone(),
         sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
@@ -1183,6 +1202,7 @@ mod tests {
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
         // Negative control: no snapshot, no tokens and no error.
@@ -1223,6 +1243,11 @@ mod tests {
         assert_eq!(amber_of(&c), ["burn"]);
         c.burn.level = "bad";
         assert_eq!(amber_of(&c), ["burn"]);
+        // A Consumers input that could not be read needs a look on its own.
+        c.consumers
+            .errors
+            .push("agentctl list --json: not found".into());
+        assert_eq!(amber_of(&c), ["burn", "consumers"]);
     }
 
     #[test]
@@ -1662,6 +1687,7 @@ not json
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
         // Negative control: no file says so, and shows no figure.

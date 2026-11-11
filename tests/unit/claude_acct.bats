@@ -1986,3 +1986,65 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
   ! grep -q 'sk-other' "$SANDBOX/curl.stdin"
   ! grep -q 'anthropic' "$SANDBOX/curl.argv"
 }
+
+# gw_setup -- src_setup with a viewer key, a gateway config, and a gateway that answers the team and
+# key lists in the live shape: a key object carries its secret (token, key_name) beside the fields kept.
+gw_setup() {
+  src_setup
+  echo sk-viewer > "$SRC/viewer.key"
+  jq --arg r "$SRC/viewer.key" '.gateway.reader_key_file = $r' "$CLAUDE_ACCT_HARNESSES" > "$SRC/h.json" && mv "$SRC/h.json" "$CLAUDE_ACCT_HARNESSES"
+  printf 'codex codex %s/codex reserve=30 priority=low\ncore litellm-team %s/lazer.key\nres litellm-key %s/res.key parent=core\n' "$SRC" "$SRC" "$SRC" > "$CLAUDE_ACCT_SOURCES"
+  cat > "$SRC/litellm.yaml" <<'EOS'
+router_settings:
+  model_group_alias: {fast: "fast (gpt-oss-120b)"}
+  fallbacks:
+    - {"fast (gpt-oss-120b)": ["assist (gemini-flash)"]}
+EOS
+  export CLAUDE_ACCT_GATEWAY_CONFIG="$SRC/litellm.yaml"
+  echo '[{"team_id":"t1","team_alias":"lazer-pool","spend":60,"max_budget":50,"blocked":false,"budget_duration":"1mo","metadata":{"priority":"low"}}]' > "$SANDBOX/gw/team-list.json"
+  echo '{"keys":[{"token":"hash-abc123","key_name":"sk-...wxyz","key_alias":"comms-triage","team_id":"t1","spend":1.5,"max_budget":25,"blocked":false,"budget_duration":"30d","models":["fast"],"metadata":{"consumer":"comms tier 2","priority":"must"}}]}' > "$SANDBOX/gw/key-list.json"
+  cat > "$SANDBOX/bin/curl" <<'EOS'
+#!/usr/bin/env bash
+cat > /dev/null
+case "${*: -1}" in
+  */team/list) cat "$SANDBOX/gw/team-list.json" ;;
+  */key/list*) cat "$SANDBOX/gw/key-list.json" ;;
+  */key/info) echo '{"info":{"key_alias":"comms-triage","token":"hash-abc123"}}' ;;
+  *) exit 22 ;;
+esac
+EOS
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "gateway: the snapshot joins teams, keys, sources and the config's fallbacks, with no key secret" {
+  gw_setup
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  run jq -c '[.keys[0].alias, .keys[0].team, .keys[0].priority, .teams[0].priority, (.sources | map([.priority, .key])), .fallbacks["fast (gpt-oss-120b)"][0], .aliases.fast]' "$SRC/gw.json"
+  assert_output '["comms-triage","lazer-pool","must","low",[["low",null],[null,null],[null,"comms-triage"]],"assist (gemini-flash)","fast (gpt-oss-120b)"]'
+  run grep -c 'hash-abc123\|wxyz\|sk-' "$SRC/gw.json"
+  assert_output 0
+}
+
+@test "gateway: a gateway that cannot be read keeps the old snapshot and exits 1" {
+  gw_setup
+  echo '{"old":true}' > "$SRC/gw.json"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_failure 1
+  assert_output --partial 'is unchanged'
+  run cat "$SRC/gw.json"
+  assert_output '{"old":true}'
+  run bash -c 'ls -A "$1" | grep -c "^.gateway"' _ "$SRC"
+  assert_output 0
+}
+
+@test "gateway: no config named leaves aliases and fallbacks null and still writes the snapshot" {
+  gw_setup
+  unset CLAUDE_ACCT_GATEWAY_CONFIG
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_success
+  assert_output --partial 'aliases and fallbacks are null'
+  run jq -c '[.aliases, .fallbacks, .keys[0].alias]' "$SRC/gw.json"
+  assert_output '[null,null,"comms-triage"]'
+}

@@ -12,6 +12,11 @@
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
+#   claude-acct gateway [--out FILE]
+#                        # snapshot the gateway's teams, keys (never a key's secret or hash), the
+#                        # sources and the config's aliases and fallbacks into FILE (default
+#                        # $CACHE/gateway.json) for the Costs tab's Consumers; a gateway that cannot
+#                        # be read keeps the old file and exits 1
 #   claude-acct room [--json]
 #                        # for automatic starts: the account with room, as pick prints it; --json
 #                        # prints every account's verdict (ok, reason, every refusal, why, points
@@ -48,7 +53,7 @@
 #                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
-# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off]`
+# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low]`
 # per line, for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
 # from the newest rollout), litellm-key (ref: a key file; its budget from /key/info), litellm-team
@@ -102,11 +107,11 @@ accounts() {
     done < "$CONF"
 }
 
-# sources -> "name US kind US ref US reserve US max_live US parent US alert" per line of the sources file. A
+# sources -> "name US kind US ref US reserve US max_live US parent US alert US priority" per line of the sources file. A
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
     [[ -f "$SRC_CONF" ]] || return 0
-    local name kind ref opts opt reserve max_live parent alert seen=''
+    local name kind ref opts opt reserve max_live parent alert priority seen=''
     while read -r name kind ref opts; do
         [[ -z "$name" || "$name" == \#* ]] && continue
         if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ || -z "$kind" || -z "$ref" ]]; then
@@ -119,29 +124,30 @@ sources() {
             echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
         fi
         seen+=" $name"
-        reserve='' max_live='' parent='' alert=''
+        reserve='' max_live='' parent='' alert='' priority=''
         for opt in $opts; do
             case "$opt" in
                 reserve=*) reserve=${opt#reserve=} ;;
                 max_live=*) max_live=${opt#max_live=} ;;
                 parent=*) parent=${opt#parent=} ;;
                 alert=on|alert=off) alert=${opt#alert=} ;;
+                priority=must|priority=low) priority=${opt#priority=} ;;
                 *) echo "claude-acct: $SRC_CONF: $name: unknown option '$opt'" >&2 ;;
             esac
         done
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert"
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority"
     done < "$SRC_CONF"
 }
 
-# rows_in -> "name US kind US ref US reserve US max_live US parent US alert" for every row usage_json reads:
+# rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
 rows_in() {
     local name dir row
     while IFS=$'\037' read -r name dir; do
         usage_wants "$name" || continue
-        printf '%s\037claude\037%s\037\037\037\037\n' "$name" "$dir"
+        printf '%s\037claude\037%s\037\037\037\037\037\n' "$name" "$dir"
     done < <(accounts)
     if [[ "${USAGE_SOURCES:-0}" == 1 ]]; then
         while IFS= read -r row; do
@@ -562,7 +568,7 @@ usage_json() {
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
-    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert; do
+    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _; do
         case "$kind" in
             claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
@@ -856,6 +862,67 @@ cmd_textfile() {
     fi
     rm -f "$tmp"
     return 1
+}
+
+# gateway [--out FILE] -> one JSON snapshot of who spends on the gateway, read with the viewer key
+# (harnesses.json gateway.reader_key_file): teams and keys with their spend, budget and the
+# metadata.consumer and metadata.priority the keys were minted with; the sources file's rows; and the
+# config's model_group_alias and fallbacks (the viewer key reads neither, so they come from the file
+# CLAUDE_ACCT_GATEWAY_CONFIG or harnesses.json gateway.config names, null when it names none). Only
+# named fields are copied, so a key's secret and token hash never reach the file. Written to a temp
+# file and renamed; a team or key list that cannot be read leaves the old snapshot and exits 1.
+cmd_gateway() {
+    local out="$CACHE/gateway.json" reader teams keys conf routing=null srcs tmp name kind ref reserve parent priority alias
+    case "${1:-}" in
+        --out) out=${2:?usage: claude-acct gateway [--out FILE]} ;;
+        "") ;;
+        *) echo "usage: claude-acct gateway [--out FILE]" >&2; return 2 ;;
+    esac
+    reader=$(jq -er '.gateway.reader_key_file' "$HARNESSES" 2>/dev/null) ||
+        { echo "claude-acct: gateway: $HARNESSES names no gateway.reader_key_file" >&2; return 1; }
+    reader=${reader/#\~/$HOME}
+    teams=$(gateway_get "$reader" /team/list) && keys=$(gateway_get "$reader" "/key/list?return_full_object=true&size=100") ||
+        { echo "claude-acct: gateway: the team or key list could not be read; $out is unchanged" >&2; return 1; }
+    conf=${CLAUDE_ACCT_GATEWAY_CONFIG:-$(jq -r '.gateway.config // empty' "$HARNESSES" 2>/dev/null)}
+    conf=${conf/#\~/$HOME}
+    if [[ -z "$conf" ]]; then
+        echo "claude-acct: gateway: no gateway config named (CLAUDE_ACCT_GATEWAY_CONFIG or gateway.config); aliases and fallbacks are null" >&2
+    elif ! routing=$(python3 -I -c '
+import json, sys, yaml
+r = (yaml.safe_load(open(sys.argv[1])) or {}).get("router_settings") or {}
+fb = {}
+for edge in r.get("fallbacks") or []:
+    fb.update(edge)
+print(json.dumps({"aliases": r.get("model_group_alias") or {}, "fallbacks": fb}))' "$conf" 2>/dev/null); then
+        echo "claude-acct: gateway: $conf could not be read; aliases and fallbacks are null" >&2; routing=null; conf=''
+    fi
+    # A litellm-key source names its key by file; its alias, which the key list carries, comes from
+    # /key/info on that key, so the Consumers row of the key can show the source's room.
+    srcs=$(sources | while IFS=$'\037' read -r name kind ref reserve _ parent _ priority; do
+        alias=''
+        [[ "$kind" == litellm-key ]] && alias=$(gateway_get "$ref" /key/info | jq -r '.info.key_alias // empty' 2>/dev/null)
+        jq -nc --arg name "$name" --arg kind "$kind" --arg reserve "$reserve" --arg parent "$parent" \
+            --arg priority "$priority" --arg key "$alias" 'def n: if . == "" then null else . end;
+            {name: $name, kind: $kind, reserve: ($reserve | tonumber? // null), parent: ($parent | n),
+             priority: ($priority | n), key: ($key | n)}'
+    done | jq -s .)
+    mkdir -p "$(dirname "$out")" || return 1
+    tmp=$(mktemp "$(dirname "$out")/.gateway.json.XXXXXX") || return 1
+    if jq -n --argjson teams "$teams" --argjson keys "$keys" --argjson srcs "$srcs" --argjson routing "$routing" \
+        --arg url "$(jq -r .gateway.url "$HARNESSES")" --arg conf "$conf" --argjson at "${CLAUDE_ACCT_NOW:-$(date +%s)}" '
+        def budget: {spend, max_budget, blocked: (.blocked // false), budget_duration, budget_reset_at};
+        ($teams | if type == "array" then . else (.teams // .data // []) end) as $t
+        | ($t | map({(.team_id): .team_alias}) | add // {}) as $alias
+        | {at: $at, url: $url, config: (if $conf == "" then null else $conf end),
+           teams: [$t[] | {alias: .team_alias, id: .team_id} + budget
+                   + {priority: .metadata.priority, note: .metadata.note}],
+           keys: [($keys.keys // [])[] | select(type == "object") | {alias: .key_alias, team: $alias[.team_id // ""]} + budget
+                  + {models: (.models // []), consumer: .metadata.consumer, priority: .metadata.priority, note: .metadata.note}],
+           sources: $srcs, aliases: $routing.aliases, fallbacks: $routing.fallbacks}' > "$tmp"; then
+        mv "$tmp" "$out"
+    else
+        rm -f "$tmp"; echo "claude-acct: gateway: the answer was not the expected JSON; $out is unchanged" >&2; return 1
+    fi
 }
 
 # room_source <name> [--json] -> the verdict of one source (a Claude account or a row of the sources
@@ -1685,6 +1752,7 @@ case "${1:-}" in
     run)    shift; cmd_run "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
+    gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
     cost)   cmd_cost ;;

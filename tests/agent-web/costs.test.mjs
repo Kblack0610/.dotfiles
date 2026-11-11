@@ -73,7 +73,7 @@ const board = (o = {}) => ({
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
-const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) ? { dataset: attrs } : null });
+const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) || (sel === "[data-csort]" && "csort" in attrs) ? { dataset: attrs } : null });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
   const h = show(board());
@@ -110,25 +110,64 @@ test("with no direct rows the direct tile says unknown, never $0 or blank", () =
   assert.doesNotMatch(h, /unpriced<\/span>, /);
 });
 
-test("the keys fold under their pool, and only a key refusing on its own starts open", () => {
+test("Burn points at Consumers for the keys inside a pool, and lists the pool only", () => {
   const key = acct("glm", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
   const pool = acct("lazer", { kind: "litellm-team", unpaced: true, used: 90, used_text: "90% $226/$250", gone: null });
   const paced = acct("alt", { used: 80, gone: 64 });
   const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest glm 96%", level } }) }));
   const quiet = page("ok");
-  assert.match(quiet, /<details class="cfold" data-k="burn-keys"><summary>KEYS <span class="muted">1 in lazer, 0 live, tightest glm 96%/, "closed by default");
-  assert.ok(quiet.indexOf("<td>lazer</td>") < quiet.indexOf('data-k="burn-keys"'), "the fold is under the pool");
-  assert.equal([...quiet.matchAll(/<td>glm<\/td>/g)].length, 1, "the key is listed once, in the fold");
-  assert.ok(quiet.indexOf("<td>glm</td>") > quiet.indexOf('data-k="burn-keys"'));
-  assert.match(quiet, /<tr><th data-role="lead">source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n" data-role="glance" data-named>used<\/th><th class="n">reserve<\/th><th data-role="glance">room<\/th><th>resets<\/th><th class="n">\$24h<\/th><\/tr>/);
+  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest glm 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
+  assert.ok(quiet.includes("<td>lazer</td>"), "the pool is a Burn row");
+  assert.doesNotMatch(quiet, /<td>glm<\/td>/, "the key is a Consumers row, not a Burn one");
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
-  assert.doesNotMatch(quiet, /<td>glm<\/td>.*?<i style/, "a dollar budget has none");
-  // negative control: the same key with a warn level opens, under the key paint has not remembered
-  assert.match(page("warn"), /<details class="cfold" data-k="burn-keys-warn" open><summary>KEYS <span class="warn">/);
-  cost.open["burn-keys"] = true;
-  assert.match(page("ok"), /data-k="burn-keys" open>/, "the reader's open wins");
-  delete cost.open["burn-keys"];
-  delete cost.open["burn-keys-warn"];
+  assert.match(page("warn"), /KEYS<\/span> <span class="warn">/, "a key refusing on its own is amber");
+  assert.equal(ctx.route("#costs/consumers").arg, "limits", "the pointer opens the inner tab holding Consumers");
+});
+
+// hub_core::gateway::Consumers as serialized: one runner on the core key, one on the low pool.
+const consumer = (o) => ({ consumer: "version-summary", kind: "runner", priority: "must", runs_on: "raw fast via gateway-fast", budget: "lazer-core (key comms-triage)", spent: "$0.02/$25.00 30d", fallback: "gemini-flash", status: "ok", who: null, mismatch: false, level: "ok", ...o });
+const CONSUMER_COLS = ["consumer", "priority", "runs_on", "budget", "spent", "fallback", "status"];
+const consumers = (o = {}) => ({
+  head: "2 consumers: must 1, low 1 | lazer-core $0.50/$200", level: "ok", stale: null, errors: [], columns: CONSUMER_COLS,
+  headers: ["CONSUMER", "PRI", "RUNS ON", "BUDGET", "SPENT", "FALLBACK", "STATUS"],
+  rows: [consumer(), consumer({ consumer: "claude-reserve", kind: "key", priority: "low", budget: "lazer-pool", status: "team at cap" })],
+  pools: ["team must lazer-core $0.50/$200 per 1mo", "team low lazer-pool $228/$50.00 AT CAP per 1mo"],
+  routes: "aliases: fast -> gpt-oss-120b; fallbacks: gpt-oss-120b -> gemini-flash",
+  legend: [["PRI", "the priority its conf or key declares: must, low, off"]],
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [], columns: CONSUMER_COLS.map((k) => col(k)), facets: [] }, ...o,
+});
+
+test("green Consumers fold to their headline after Burn; a MISMATCH opens red under its own fold key", () => {
+  const quiet = show(board({ consumers: consumers() }));
+  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers"><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is shut");
+  assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="spend"'), "after Burn, before Spend");
+  for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
+  assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
+  assert.match(quiet, /<div>team low lazer-pool \$228\/\$50\.00 AT CAP per 1mo<\/div><div>aliases: fast -&gt; gpt-oss-120b; fallbacks: gpt-oss-120b -&gt; gemini-flash<\/div>/);
+  assert.match(quiet, /pri: the priority its conf or key declares/);
+  const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
+  const h = show(board({ consumers: red }));
+  assert.match(h, /data-k="consumers-bad" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="burn bad">1 MISMATCH \| /);
+  assert.match(h, /<td class="bad">nightly-thing<\/td>.*?<td class="bad">MISMATCH: lazer-pool is low priority<\/td>/);
+  // negative control: the reader's fold wins over the amber default, and a stale read says why
+  cost.open["consumers-warn"] = false;
+  const stale = show(board({ consumers: consumers({ level: "warn", stale: "stale: the gateway snapshot is 3h old (claude-acct gateway, timer claude-acct-usage)" }) }));
+  assert.match(stale, /data-k="consumers-warn" id="sec-consumers"><summary>/);
+  assert.match(stale, /<div class="warn">stale: the gateway snapshot is 3h old/);
+  delete cost.open["consumers-warn"];
+  assert.doesNotMatch(show(board()), /sec-consumers/, "no Consumers data draws no section");
+});
+
+test("a Consumers header click sorts it apart from the main table", async () => {
+  asked = [];
+  body = board({ consumers: consumers() });
+  run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
+  fire("click", { type: "click", target: target({ csort: "priority", cdir: "desc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority");
+  fire("click", { type: "click", target: target({ csort: "priority", cdir: "asc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority&cdir=asc");
 });
 
 test("a dollar source is a burn row with its kind, dollars and reserve, and no pace cells", () => {

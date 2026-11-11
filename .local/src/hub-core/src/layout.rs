@@ -138,7 +138,15 @@ pub const TABS: [Tab; 12] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
-            "fleet", "burn", "spend", "totals", "table", "tokens", "langfuse", "sections",
+            "fleet",
+            "burn",
+            "consumers",
+            "spend",
+            "totals",
+            "table",
+            "tokens",
+            "langfuse",
+            "sections",
         ],
         // The 24h fleet figure stays above the strip; the strip splits the three questions.
         pinned: &["fleet"],
@@ -146,7 +154,7 @@ pub const TABS: [Tab; 12] = [
             Inner {
                 id: "limits",
                 title: "Limits",
-                sections: &["burn"],
+                sections: &["burn", "consumers"],
             },
             Inner {
                 id: "spend",
@@ -544,6 +552,7 @@ mod tests {
             |id: &str, f: &[&str]| inner_count(costs.inner.iter().find(|i| i.id == id).unwrap(), f);
         assert_eq!(n("limits", &[]), 0);
         assert_eq!(n("limits", &["burn"]), 1);
+        assert_eq!(n("limits", &["burn", "consumers"]), 2);
         assert_eq!(n("models", &["tokens", "langfuse", "burn"]), 2);
         assert_eq!(n("spend", &["burn"]), 0);
     }

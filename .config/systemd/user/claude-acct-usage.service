@@ -6,4 +6,6 @@ ConditionPathIsDirectory=/var/lib/node_exporter/textfile
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/claude-acct textfile /var/lib/node_exporter/textfile
-TimeoutStartSec=60
+# The Consumers snapshot (Costs tab) rides the same 15 min timer.
+ExecStart=%h/.local/bin/claude-acct gateway
+TimeoutStartSec=90

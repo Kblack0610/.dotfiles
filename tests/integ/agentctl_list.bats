@@ -203,3 +203,15 @@ skill_fixture() {
   assert_line --regexp '^\| zed \|'
   refute_output --partial '| alpha |'
 }
+
+@test "list --json gives each runner its priority, route and source, and an invalid conf only its name" {
+  printf 'PRIORITY=must\nHARNESS=codex\nMODEL=gpt-x\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
+  printf 'PRIORITY=low\nSOURCE=codex-core\n' >> "$HOME/.config/agentctl/agents/beta.conf"
+  printf 'NAME=gamma\nKIND=oneshot\n' > "$HOME/.config/agentctl/agents/gamma.conf"
+  run "$AGENTCTL_BIN" list --json
+  assert_success
+  run jq -c '.[] | [.name, .priority, .harness, .route, .source, .route_transport, .invalid]' <<< "$output"
+  assert_line '["alpha","must","codex","chatgpt","codex","openai-native",null]'
+  assert_line '["beta","low","claude","subscription","codex-core","anthropic-native",null]'
+  assert_line '["gamma",null,null,null,null,null,true]'
+}
