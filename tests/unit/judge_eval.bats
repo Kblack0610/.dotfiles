@@ -418,6 +418,19 @@ SH
   assert_line '["p-resplit","p-twice"]'
 }
 
+@test "a started queue item with an empty row: line is an item with no row, not a crash" {
+  ev planned p-whole "$(ago '-2 days')" > "$INGEST"
+  {
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "human", row: "", started: $s, origin: "hand"}'
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "", started: $s, origin: "run"}'
+  } > "$QUEUE"
+  run "$JUDGE_EVAL" inbox-plan --json
+  assert_success
+  # the board item keys by its from: p-whole started after its plan
+  run jq -c '.agents[0].total | [.verdicts, .tp]' <<<"$output"
+  assert_output '[1,1]'
+}
+
 @test "dispatch-judge: a skip is a false defer when the row is started by hand after its skips began" {
   v() { jq -cn --arg v "$1" --arg k "$2" --arg at "$(date -d "$3" -Iseconds)" '{verdict: $v, project: "p", key: $k, at: $at, rule: "too-big", judge_call: "d1"}'; }
   st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {origin: $o} end)'; }

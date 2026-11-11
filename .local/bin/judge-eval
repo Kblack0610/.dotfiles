@@ -72,7 +72,9 @@ eval_json() {
   zcat -f -- "$AGENTCTL_CALLS"* 2>/dev/null | jq -sc --arg a "$AGENTS" \
     '[.[] | objects | select(.agent as $x | $a | split(" ") | index($x))]' > "$tmp/calls" 2>/dev/null
   jq -sc '[.[] | objects]' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$tmp/verdicts" 2>/dev/null
-  $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
+  # An item with no story row writes `row:` empty, and agent-queue reads that as no row: so does this.
+  $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | if (.row // "") == "" then del(.row) else . end
+    | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
   $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
     "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/"))))
     | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
