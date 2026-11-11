@@ -37,7 +37,7 @@ const HEADER: [&str; 19] = [
     "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
 ];
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProjView {
     /// The list's search, chip and sort, and its selected row.
     pub table: DataTable,
@@ -45,7 +45,7 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened card's folded sections are open (`F`).
+    /// The opened card's sections are open; `F` folds them.
     pub folds: bool,
     /// The system open under Build by system (`z`), and its epic open to its tasks (`Z`).
     pub sys: Option<String>,
@@ -54,6 +54,22 @@ pub struct ProjView {
     pub dv: DataTable,
     /// The Deliverables table has the keys (`d`), not the project list.
     pub dfocus: bool,
+}
+
+impl Default for ProjView {
+    /// The card's sections start open (dashboards rule 4).
+    fn default() -> ProjView {
+        ProjView {
+            table: DataTable::default(),
+            open: false,
+            want: None,
+            folds: true,
+            sys: None,
+            epic: None,
+            dv: DataTable::default(),
+            dfocus: false,
+        }
+    }
 }
 
 impl ProjView {

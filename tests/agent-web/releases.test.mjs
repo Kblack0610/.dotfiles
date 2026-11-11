@@ -123,24 +123,38 @@ test("an app is one row: what is live, its word, its channels amber when one was
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app to open");
 });
 
-test("opening an app lists its headline env's channels, folds the other envs, and clicking again closes it", () => {
+test("opening an app lists its headline env's channels, the other envs in a fold that starts open, and clicking again closes it", () => {
   show();
   body = changelog();
   clickApp();
   const b = box.innerHTML;
   assert.match(b, /<tr class="rc" data-ch="binks\|binks-prod"><td>prod<\/td><td class="wrap">binks-prod<\/td><td class="bad">v1<\/td><td>v2<\/td><td class="bad">drift<\/td><td class="wrap muted">home-k3s<\/td><\/tr>/);
-  assert.match(b, /<details class="cfold" data-k="rel-env:binks"><summary><b>1 other channel<\/b> <span class="muted">beta 1 not read<\/span><\/summary>/);
+  assert.match(b, /<details class="cfold" data-k="rel-env:binks" open><summary><b>1 other channel<\/b> <span class="muted">beta 1 not read<\/span><\/summary>/);
   assert.match(b, /<td class="warn">not read<\/td><td class="wrap muted"><span class="warn">steam GetAppBetas failed<\/span>/);
   assert.ok(b.indexOf("binks-prod") < b.indexOf("rel-env:binks"), "the headline env is above the fold");
   clickApp();
   assert.doesNotMatch(box.innerHTML, /binks-prod/);
 });
 
-test("an open fold of other envs stays open across a repaint", () => {
+test("a fold of other envs the reader closed stays closed across a repaint", () => {
   show();
-  run("REL_OPEN['rel-env:binks'] = true; relst.sel = 'binks'; relst.render()");
-  assert.match(box.innerHTML, /data-k="rel-env:binks" open>/);
-  run("delete REL_OPEN['rel-env:binks']");
+  run("REL_OPEN['rel-env:binks'] = false; relst.sel = 'binks'; relst.render()");
+  assert.match(box.innerHTML, /data-k="rel-env:binks"><summary>/);
+  run("delete REL_OPEN['rel-env:binks']; relst.render()");
+  assert.match(box.innerHTML, /data-k="rel-env:binks" open>/, "with no remembered state it is open");
+  run("relst.sel = null");
+});
+
+test("the strip is the first element of the page, before the first read and after it", () => {
+  Object.assign(relst, { data: null, err: null, sel: null });
+  run("st.tab = 'releases'; st.arg = ''; relst.render()");
+  assert.match(box.innerHTML, /^<div class="seg fseg istrip" role="tablist">.*Loading/, "loading");
+  Object.assign(relst, { err: "fetch failed" });
+  run("relst.render()");
+  assert.match(box.innerHTML, /^<div class="seg fseg istrip" role="tablist">.*fetch failed/, "a failed read");
+  relst.err = null;
+  show();
+  assert.match(box.innerHTML, /^<div id="rel-head"><div class="seg fseg istrip" role="tablist">/, "read");
 });
 
 test("clicking a channel opens its versions, every watch and its deps, and clicking again closes it", () => {

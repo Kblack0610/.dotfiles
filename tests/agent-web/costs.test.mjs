@@ -137,9 +137,9 @@ const consumers = (o = {}) => ({
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [], columns: CONSUMER_COLS.map((k) => col(k)), facets: [] }, ...o,
 });
 
-test("green Consumers fold to their headline after Burn; a MISMATCH opens red under its own fold key", () => {
+test("Consumers start open after Burn, green or red, and the reader's fold stays", () => {
   const quiet = show(board({ consumers: consumers() }));
-  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers"><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is shut");
+  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is open");
   assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="spend"'), "after Burn, before Spend");
   for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
   assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
@@ -147,14 +147,14 @@ test("green Consumers fold to their headline after Burn; a MISMATCH opens red un
   assert.match(quiet, /pri: the priority its conf or key declares/);
   const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
   const h = show(board({ consumers: red }));
-  assert.match(h, /data-k="consumers-bad" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="burn bad">1 MISMATCH \| /);
+  assert.match(h, /data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="burn bad">1 MISMATCH \| /);
   assert.match(h, /<td class="bad">nightly-thing<\/td>.*?<td class="bad">MISMATCH: lazer-pool is low priority<\/td>/);
-  // negative control: the reader's fold wins over the amber default, and a stale read says why
-  cost.open["consumers-warn"] = false;
+  // negative control: the reader's fold wins over the open default, and a stale read says why
+  cost.open.consumers = false;
   const stale = show(board({ consumers: consumers({ level: "warn", stale: "stale: the gateway snapshot is 3h old (claude-acct gateway, timer claude-acct-usage)" }) }));
-  assert.match(stale, /data-k="consumers-warn" id="sec-consumers"><summary>/);
+  assert.match(stale, /data-k="consumers" id="sec-consumers"><summary>/);
   assert.match(stale, /<div class="warn">stale: the gateway snapshot is 3h old/);
-  delete cost.open["consumers-warn"];
+  delete cost.open.consumers;
   assert.doesNotMatch(show(board()), /sec-consumers/, "no Consumers data draws no section");
 });
 
@@ -247,11 +247,11 @@ test("every term hub-core's burn::LEGEND defines, bar the headline's unit, is a 
   }
 });
 
-test("a green burn folds to its headline, and a fold the reader set is kept", () => {
+test("a green burn starts open like every section, and a fold the reader set is kept", () => {
   const ok = board({ burn: burn({ level: "ok", head: "0.5 pts/h vs 1.4 sustainable, 0.4x, 5 live" }) });
-  assert.match(show(ok), /<details class="csec" data-k="burn" id="sec-burn"><summary>/, "green starts folded");
-  cost.open.burn = true;
-  assert.match(show(ok), /data-k="burn" id="sec-burn" open>/, "the reader's open wins");
+  assert.match(show(ok), /<details class="csec" data-k="burn" id="sec-burn" open><summary>/, "green starts open");
+  cost.open.burn = false;
+  assert.match(show(ok), /<details class="csec" data-k="burn" id="sec-burn"><summary>/, "the reader's fold wins");
   cost.open = {};
 });
 
@@ -290,9 +290,9 @@ const sections = (sort = null) => ({
   table: { ...board().table, total: 2, shown: 2, columns: SEC_KEYS.map((k) => (k === sort ? col(k, "desc", [k, "asc"]) : col(k, null, [k, "desc"]))) },
 });
 
-test("the Sections block is folded to its headline, with All PRs on top and both caveats", () => {
+test("the Sections block starts open under its headline, with All PRs on top and both caveats", () => {
   const h = show(board({ sections: sections() }));
-  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections"><summary><h2 class="sec">Sections <span class="muted">598 PRs in 7d, 52% first try/, "folded, headline in the summary");
+  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections" open><summary><h2 class="sec">Sections <span class="muted">598 PRs in 7d, 52% first try/, "open, headline in the summary");
   for (const k of ["section", "PRs", "first try", "gate reds/PR", "gate min/PR", "gate h", "greens lost", "cost/PR", "tokens/PR", "work min/PR"]) assert.match(h, new RegExp(`title="sort by ${k.replace("/", "\\/")}"`), `header ${k}`);
   assert.match(h, /data-ssort="prs" data-sdir="desc"/, "its headers sort apart from the main table's");
   assert.ok(h.indexOf("All PRs</td>") < h.indexOf("Assets/Playground/Tests</td>"), "All PRs is first");
@@ -322,17 +322,17 @@ test("no Sections data draws no block", () => {
   assert.doesNotMatch(show(board({ sections: { days: 7, head: "", columns: SEC_KEYS, headers: [], all: [], rows: [], notes: [], table: null } })), /sec-sections/);
 });
 
-test("a Sections fold the reader opened stays open through the repaint a sort click causes", () => {
+test("a Sections fold the reader closed stays closed through the repaint a sort click causes", () => {
   run("st.tab = 'costs'");
   Object.assign(cost, { open: {} });
   const d = board({ sections: sections() });
-  assert.doesNotMatch(show(d), /id="sec-sections" open/, "starts folded");
-  box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: true }];
-  run("cost.render()");
-  assert.match(box.innerHTML, /id="sec-sections" open/, "the reader's open survives the repaint");
+  assert.match(show(d), /id="sec-sections" open/, "starts open");
   box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: false }];
   run("cost.render()");
-  assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "and so does a fold they closed");
+  assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "the reader's fold survives the repaint");
+  box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: true }];
+  run("cost.render()");
+  assert.match(box.innerHTML, /id="sec-sections" open/, "and so does one they opened again");
   box.querySelectorAll = () => [];
 });
 
@@ -379,15 +379,15 @@ test("a Fleet link to a moved section opens Costs at that section", () => {
   assert.deepEqual([runner.tab, runner.arg, runner.section], ["fleet", "inbox-triage", undefined], "the control: a runner page stays on Fleet");
 });
 
-// Where the tokens go: hub_core::tokens's sums, folded while fresh.
+// Where the tokens go: hub_core::tokens's sums, open until the reader folds it.
 const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
 const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
 const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
 
-test("the tokens section is folded while fresh, with the week on its head", () => {
+test("the tokens section starts open while fresh, with the week on its head", () => {
   const h = tail(tokens());
-  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens"><summary>/);
+  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens" open><summary>/);
   assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
   assert.match(h, /by tool/);
   assert.match(h, /by Bash command/);
@@ -406,7 +406,7 @@ test("a stale snapshot opens the section with an amber head, until the human shu
   const h = tail(tokens({ stale: true }));
   assert.match(h, /id="sec-tokens" open>/);
   assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
-  run("cost").open["tokens-stale"] = false;
+  run("cost").open.tokens = false;
   assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
 });
 
@@ -440,18 +440,18 @@ test("a stale day names its date, not yesterday", () => {
   f.tokWin = "week";
 });
 
-test("the fold keeps what paint remembered, and going stale still opens it", () => {
+test("the fold keeps what paint remembered, fresh or stale, under one key", () => {
   const f = run("cost");
   f.open = { tokens: true };
   assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
   f.open = { tokens: false };
-  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
-  f.open = { tokens: false, "tokens-stale": false };
-  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/, "going stale does not undo the reader's fold");
+  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens" id="sec-tokens"><summary>.*class="warn"/, "the folded head still wears amber");
   f.open = {};
 });
 
-// What Langfuse sees: the newest snapshot's `.langfuse`, folded while it reads.
+// What Langfuse sees: the newest snapshot's `.langfuse`, open until the reader folds it.
 const lfFigures = () => ({
   tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
   tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
@@ -460,9 +460,9 @@ const lfFigures = () => ({
 });
 const lfTail = (t) => { const f = run("cost"); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
 
-test("the langfuse section is folded while it reads, with both error shares and the gateway's cost on its head", () => {
+test("the langfuse section starts open while it reads, with both error shares and the gateway's cost on its head", () => {
   const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
-  assert.doesNotMatch(h, /id="sec-langfuse" open>/);
+  assert.match(h, /id="sec-langfuse" open>/);
   assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
 });
 
@@ -477,14 +477,18 @@ test("open, it draws the slowest tools, the error classes and the dearest models
   f.open = {};
 });
 
-test("no figures opens the section amber and says why; a stale snapshot opens it too", () => {
+test("no figures is an amber head that says why; a stale snapshot is amber too; a fold the reader closed stays closed", () => {
   const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
-  assert.match(none, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(none, /data-k="langfuse" id="sec-langfuse" open>/);
   assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
   assert.match(none, /no key \(rbw langfuse-api\)/);
   const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
-  assert.match(stale, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(stale, /data-k="langfuse" id="sec-langfuse" open>/);
   assert.match(stale, /stale: newest snapshot 2026-11-05/);
+  const f = run("cost");
+  f.open = { langfuse: false };
+  assert.match(ctx.langfuseSection({ tokens: tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }) }), /data-k="langfuse" id="sec-langfuse"><summary>/);
+  f.open = {};
 });
 
 test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
@@ -588,9 +592,13 @@ test("a missing, unknown or pinned inner tab opens the first", () => {
   for (const hash of ["#costs", "#costs/nonsense", "#costs/fleet"]) assert.equal(ctx.route(hash).arg, "", hash);
   const h = innerOn("");
   assert.ok(shown(h, "limits") && !shown(h, "spend") && !shown(h, "models"));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("data-itab"), "the fleet figure is pinned above the strip");
+  assert.ok(h.indexOf("data-itab") < h.indexOf("sec-fleet"), "the strip leads the page, the fleet figure pinned under it");
   assert.match(h, /id="sec-fleet"/);
   assert.ok(!/data-in="[a-z]+"[^>]*><h2[^>]*id="sec-fleet"/.test(h), "the pinned section is in no group");
+});
+
+test("the strip is the first element of the page, on every inner tab", () => {
+  for (const arg of ["", "spend", "models"]) assert.match(innerOn(arg), /^<div id="costs-head"><div class="seg fseg istrip" role="tablist">/, arg || "first");
 });
 
 test("an old section link opens the inner tab that holds the section, and still scrolls to it", () => {

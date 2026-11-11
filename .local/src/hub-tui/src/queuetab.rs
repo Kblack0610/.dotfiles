@@ -35,7 +35,6 @@ pub enum Ask {
     Promote(String, Write),
 }
 
-#[derive(Default)]
 pub struct QueueView {
     /// The shared table's view (query, state chip, sort) and its selection, an index into the
     /// drawn rows, then into the candidates the open fold shows.
@@ -56,6 +55,21 @@ pub struct QueueView {
 /// `now` (unix seconds) as the time the rows are measured at.
 fn at(now: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(now, 0).unwrap_or_default()
+}
+
+impl Default for QueueView {
+    /// The candidates start open (dashboards rule 4).
+    fn default() -> QueueView {
+        QueueView {
+            table: DataTable::default(),
+            detail: false,
+            cands_open: true,
+            line: LineView::default(),
+            confirm: None,
+            running: None,
+            said: None,
+        }
+    }
 }
 
 impl QueueView {
@@ -1116,23 +1130,31 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn candidates_fold_shut_with_their_counts_below_the_queue() {
+    fn candidates_start_open_and_c_folds_them_to_their_counts_below_the_queue() {
         let q = fixture();
         let c = Ok(cands());
-        let s = text_with(&q, &QueueView::default(), Some(&c), 200);
+        assert!(
+            text_with(&q, &QueueView::default(), Some(&c), 200).contains("bar-17"),
+            "the candidates start open"
+        );
+        let shut = QueueView {
+            cands_open: false,
+            ..QueueView::default()
+        };
+        let s = text_with(&q, &shut, Some(&c), 200);
         assert!(s.contains("+ CANDIDATES (3, 2 auto)  C opens"), "{s}");
         assert!(
             s.find("Landed").unwrap() < s.find("CANDIDATES").unwrap(),
             "below the queue\n{s}"
         );
         assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
-        assert!(text(&q, &QueueView::default(), 200).contains("+ CANDIDATES  reading"));
+        assert!(text(&q, &shut, 200).contains("+ CANDIDATES  reading"));
         let err = Err("no snapshot yet, the next dispatch pass writes one".to_string());
         assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
             .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
         let mut stamped = cands();
         stamped.as_of = "08:07".into();
-        let s = text_with(&q, &QueueView::default(), Some(&Ok(stamped)), 200);
+        let s = text_with(&q, &shut, Some(&Ok(stamped)), 200);
         assert!(
             s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
             "{s}"
@@ -1143,8 +1165,7 @@ pub(crate) mod tests {
     fn open_candidates_list_ranked_rows_with_auto_or_man_and_held() {
         let q = fixture();
         let c = Ok(cands());
-        let mut v = QueueView::default();
-        assert_eq!(press(&mut v, &q, &cands().rows, 'C'), Ask::Done);
+        let v = QueueView::default();
         let s = text_with(&q, &v, Some(&c), 200);
         assert!(
             s.contains("- CANDIDATES (3, 2 auto)  C folds, p promotes"),
@@ -1183,6 +1204,7 @@ pub(crate) mod tests {
         let q = fixture();
         let c = cands().rows;
         let mut v = QueueView::default();
+        press(&mut v, &q, &c, 'C');
         assert_eq!(
             press(&mut v, &q, &c, 'p'),
             Ask::Done,

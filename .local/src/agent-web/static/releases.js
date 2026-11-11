@@ -14,6 +14,7 @@ const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
   open: () => REL_OPEN,
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
+  lead: () => innerStrip("releases", relFlagged()),
   body: (t) => releasesBody(t.data),
   wrap: (html) => innerWrap("releases", "table", html),
   tail: () => innerWrap("releases", "builds", releaseBuilds()) + innerWrap("releases", "tests", releaseTests()),
@@ -51,11 +52,11 @@ function channelRow(r) {
 const CH_HEAD = "<tr><th>channel</th><th>id</th><th>live</th><th>pinned</th><th>status</th><th>where</th></tr>";
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
-// The opened app: its headline env's channels, the other envs folded, then what its newest tag shipped.
+// The opened app: its headline env's channels, the other envs in a fold that starts open, then what its newest tag shipped.
 function appDetail(a) {
   const lead = a.channels.slice(0, a.lead), rest = a.channels.slice(a.lead);
   const others = rest.length
-    ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN)
+    ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
   return `<tr class="wdet"><td colspan="5"><div class="sdet">${chTable(lead)}${others}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
@@ -195,7 +196,7 @@ function buildTimes(d) {
     `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td></tr>`;
   const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th></tr>";
   return cfold("bld-times", `<b>Run times</b> <span class="muted">${t.length} workflows, 30 days, finished runs (cancelled left out); usual is the median, - under 3 runs</span>`,
-    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN);
+    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN, true);
 }
 
 function buildsHead(d) {

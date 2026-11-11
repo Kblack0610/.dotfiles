@@ -35,7 +35,6 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head
 .pill { font: 11px var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); white-space: nowrap; }
 .pill.here { background: var(--accent); color: #fff; }
 /* Inner tabs (app.js innerStrip): a count pill on a tab whose sections need a look. */
-.istrip { margin: 8px 0; }
 .istrip .pill.warn { background: var(--b-stalled); color: #fff; }
 [data-in][hidden] { display: none; }
 .pill.parked { background: var(--busy); color: #fff; }
@@ -217,6 +216,15 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .tdays { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .tdate { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
+/* Inner tabs (app.js innerStrip), the first row of their tab, as fleet-platform's SectionTabs: flush
+   left over one rule across the page, the open tab bright with an accent underline, the rest muted
+   until hovered. A phone scrolls the strip sideways inside itself; the page never does. Scoped to
+   .istrip, so the other .seg controls keep their boxes. */
+.seg.istrip { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 12px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.seg.istrip button { flex: none; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 16px; font-weight: 500; transition: color .15s, border-color .15s; }
+.seg.istrip button:hover { color: var(--ink); }
+.seg.istrip button.on { color: var(--ink); background: transparent; border-color: transparent; border-bottom-color: var(--accent); font-weight: 650; }
+.seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
 .muted { color: var(--muted); font-weight: normal; }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }

@@ -115,7 +115,7 @@ test("the list is one table row per project with its counts, and the card's word
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
-  assert.match(cards, /Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
+  assert.match(cards, /<details data-k="unlinked" open><summary><h2 class="sec">Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
 });
 
 test("the list's view goes to the server, and a view that keeps nothing says so", async () => {
@@ -177,7 +177,7 @@ const page = {
   ] },
 };
 
-test("an opened card reads its page once and shows Needs you, then folds with their counts", async () => {
+test("an opened card reads its page once and shows Needs you, then open folds with their counts", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
   const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", note_says: "model-written, 2026-11-05" });
@@ -190,8 +190,8 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   // Build by system is always shown, above Needs you: a fold per system with an epic, a fold per
   // epic over its tasks, an open task a link to its row, a system with no epic only its line.
   assert.match(head, /<h2 class="sec">Build by system <span class="muted">1 systems, 1 open epics \(2 rows with no epic\)<\/span><\/h2>.*Needs you/s);
-  assert.match(head, /data-k="pg:sys:ui"><summary><b>ui  25%  1 feature, 0 done  criteria 5 of 7<\/b><\/summary>/);
-  assert.match(head, /data-k="pg:ep:de-9"><summary><span class="pep qlate">Menus  25%  \[rows\]  behind<\/span><\/summary>/);
+  assert.match(head, /data-k="pg:sys:ui" open><summary><b>ui  25%  1 feature, 0 done  criteria 5 of 7<\/b><\/summary>/);
+  assert.match(head, /data-k="pg:ep:de-9" open><summary><span class="pep qlate">Menus  25%  \[rows\]  behind<\/span><\/summary>/);
   assert.match(head, /<div class="pleaf"><a href="#" data-leaf="de-1">\[ \] de-1  feat: wire the pause key  m<\/a><\/div>/);
   assert.match(head, /<div class="pleaf muted">\[x\] de-2  fix: &lt;menu&gt; flicker  s  pr 7<\/div>/, "a done task is no link");
   assert.match(head, /<\/details><div class="pep muted">\+1 closed, 1 verified<\/div><\/details><div class="psys"><b>ci  criteria 1 of 2<\/b><\/div>/);
@@ -202,7 +202,8 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   assert.match(head, /<div class="ptl">3h  PR      #7 opened: &lt;menu&gt;<\/div><div class="muted more">\+3 older<\/div>/, "a non-http url is not a link");
   assert.match(head, /In flight<\/b> <span class="muted">1 running, 0 waiting, 0 queued; 1 rows #requested.*wire the bar/s);
   assert.match(head, /Agent note<\/b> <span class="muted">model-written, 2026-11-05.*landed it/s);
-  assert.doesNotMatch(head, /<details[^>]* open/, "every fold starts shut");
+  for (const k of ["sys:ui", "ep:de-9", "next", "shipped", "timeline", "flight", "note"]) assert.match(head, new RegExp(`data-k="pg:${k}" open>`), `${k} starts open`);
+  assert.doesNotMatch(head, /<details(?![^>]* open)[^>]*>/, "no fold starts shut");
 });
 
 test("a task under an epic filters the rows to its id and opens its row", async () => {
