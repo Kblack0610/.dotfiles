@@ -5,14 +5,14 @@ description: >-
 metadata:
   category: ops
   tags: [ci, github-actions, failures, flaky, triage]
-  reviewed: "2026-11-03"
+  reviewed: "2026-11-10"
 ---
 
 # CI failures
 
 Turns "CI keeps going red" into a counted list: every red run in a window, the cause it belongs to, which causes recur, which are on the base branch (so every branch inherits them), and one owner for each. It explains and routes; it fixes nothing.
 
-The repo's CI doc owns what a red means, quarantine, and stop-the-line (`docs/operations/ci.md` in unity-core-playground, or what the repo's CLAUDE.md names). This file is only the procedure and restates none of those rules. When they disagree, the doc wins and this file gets fixed in the same turn.
+What a red means, reruns, quarantine and stop-the-line are `~/.local/src/docs/ci.md` "Red handling" and "Tiers"; the repo's CI doc holds its specifics (`docs/operations/ci.md` in unity-core-playground, or what the repo's CLAUDE.md names). This file is only the procedure and restates none of those rules. When they disagree, the doc wins and this file gets fixed in the same turn.
 
 ## Scope and triggers
 
@@ -30,8 +30,8 @@ Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-ho
    `~/.claude/skills/ci-failures/ci-failures.py --repo OWNER/NAME [--workflow test.yml]... --days 3`
    It prints red rate per workflow, red runs per bucket, a "where" table (workflow / job / failed step), and the signature table; `--json` has every record. The run list comes from the run ledger (`schedules-sync runs`, synced every 10 minutes, the repos in `~/.config/agentctl/day-log-ci`), so a repo outside that list reads as PARTIAL; the jobs, annotations and logs of red runs come from gh. The first pass fetches about three API calls per failed job (the account shares 5,000 an hour across sessions); after that, pass `--until <the first pass's end>` with `--offline` and reuse the cache. It exits 3 and says PARTIAL when gh failed partway, the ledger is stale, or a past `--until` is after its last sync: report that, do not present low counts as the answer.
 3. **Read the buckets.** `infra` (runner lost or killed, disk, network, rate limit, host key), `timeout`, `test`, `check` (lint, docs, build, a PR-body check), `derived` (failed only because an earlier job did, never counted), `pending` (a check red by design until another run finishes, such as the playground's gate line on a PR pushed before its gate; listed, and a run red only on those is not red). The script decides by fixed patterns at the top of `ci-failures.py`; when a bucket is wrong, fix the pattern there (with a fixture in `tests/fixtures/ci-failures/`), not the count in your answer. Write down the suspects you ruled out.
-4. **Base-branch reds come first.** A signature with `main: yes` is red on the base too, so it fails every branch. Find the first bad commit: `schedules-sync runs <repo> --branch main | jq -c '.[] | select(.workflow == "<wf>") | [.sha, .conclusion, .created_at]'` gives the last green and first red, and `git log <green>..<red>` the PRs between them. The repo's stop-the-line rule says what happens next.
-5. **Flaky needs evidence.** `green@sha: yes` means the same job also went green on the same commit. That is a lead, not a verdict: rule out a changed PR body, variable, secret, test pick (a dispatch input) or moving base between the two runs before calling it flaky. Never rerun a job to find out. Quarantine only by the repo CI doc's rule.
+4. **Base-branch reds come first.** A signature with `main: yes` is red on the base too, so it fails every branch. Find the first bad commit: `schedules-sync runs <repo> --branch main | jq -c '.[] | select(.workflow == "<wf>") | [.sha, .conclusion, .created_at]'` gives the last green and first red, and `git log <green>..<red>` the PRs between them. `ci.md` "Tiers" (a red on main stops the line) and the repo's doc say what happens next.
+5. **Flaky needs evidence.** `green@sha: yes` means the same job also went green on the same commit. That is a lead, not a verdict: rule out a changed PR body, variable, secret, test pick (a dispatch input) or moving base between the two runs before calling it flaky. Never rerun a job to find out, and quarantine only by `ci.md` "Red handling".
 6. **One owner per cause.** For each signature that recurs or sits on main, find its owner: an open PR, a board row (grep the board first), or a session already on it. No owner: post one proposal, `agent-propose add --stream ci-failures --project <project> --verb row --arg "ci(<area>): <signature>, <runs> runs, sample <url> #size/s #tier/3" --why "<runs> runs<, red on main>" --evidence <url> "<signature>"`. Accept on Home files the row; dedupe and the cap are the method's (`~/.local/src/docs/analysis-streams.md`). A red on main still follows step 4 first.
 7. **Report in this shape:**
    1. The answer in one or two sentences: the red rate and the one or two causes that drive it.
@@ -42,7 +42,7 @@ Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-ho
 
 ## Do NOT
 
-- Do not rerun a job to diagnose it; the log and the same-commit history already say what a rerun would.
+- Do not rerun a job to diagnose it (`ci.md` "Red handling" step 1).
 - Do not call a test flaky from one red, or from `green@sha` alone (step 5).
 - Do not quote a rate or count you did not get from the script in this session.
 - Do not fix here. Fixing is `/my:fix-ci` on one PR, or the owner's PR.
