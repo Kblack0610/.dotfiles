@@ -833,7 +833,7 @@ def quarantine_report(repo, base, old, t):
     --json` over its quarantine.txt, both read through gh and kept beside QUARANTINE, so a pass
     where the listing is unchanged (a 304, free) asks for nothing more. None for no quarantine."""
     listing, etag = gh_page(f"repos/{repo}/contents/{QUARANTINE_DIR}?ref={base}", old.get("etag"), missing=[])
-    cache = os.path.join(os.path.dirname(QUARANTINE), "quarantine", repo.replace("/", "_"))
+    cache = os.path.join(os.path.dirname(QUARANTINE), "quarantine", *repo.split("/"))
     files = dict(old.get("files") or {})
     today = t.astimezone().date().isoformat()
     if listing is None:  # unchanged since the last pass
@@ -870,14 +870,17 @@ def artifact_zip(repo, art):
 
 
 def run_artifacts(repo, run_id):
-    """Every artifact of one run, expired ones left out."""
-    out, page = [], 1
+    """The artifacts of one run, expired ones left out, the newest of each name: a re-run's
+    attempt uploads its own under the same name, and the run's newest attempt is the one read."""
+    newest, page = {}, 1
     while True:
         got = gh(f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
         arts = got.get("artifacts") or []
-        out += [a for a in arts if not a.get("expired")]
+        for a in arts:
+            if not a.get("expired") and (a.get("created_at") or "") >= (newest.get(a.get("name"), {}).get("created_at") or ""):
+                newest[a.get("name")] = a
         if len(arts) < 100 or page >= MAX_PAGES:
-            return out
+            return list(newest.values())
         page += 1
 
 
@@ -925,7 +928,10 @@ def last_nightly(repo, base, runs_last, old):
             continue
         arts = run_artifacts(repo, r["id"])
         if any(a.get("name") == NIGHT_SUMMARY for a in arts):
-            return night_counts(repo, r, arts), no_summary
+            try:
+                return night_counts(repo, r, arts), no_summary
+            except zipfile.BadZipFile as e:  # an artifact that never reads again: asked once
+                print(f"schedules-sync: {repo} nightly {r['id']}: {e}", file=sys.stderr)
         no_summary.append(key)
     return had, no_summary
 
@@ -958,13 +964,16 @@ def quarantine_pass(repos, runs_last, t):
             lane.update(report=report, etag=etag, files=files)
             lane["nightly"], lane["no_summary"] = last_nightly(repo, base, runs_last, old)
             lane.update(synced_at=iso(t), error=None)
-        except (GhError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, KeyError) as e:
+        except Exception as e:  # any failure stays on its lane: the run facts above are written
             print(f"schedules-sync: {repo} quarantine: {getattr(e, 'detail', e)}", file=sys.stderr)
-            if not old:
+            if "report" not in lane:
                 continue  # not yet known to have a quarantine: asked again next pass, not drawn
             lane["error"] = str(e)
         out.append(lane)
-    write_json(QUARANTINE, {"generated_at": iso(t), "repos": out, "absent": gone})
+    try:
+        write_json(QUARANTINE, {"generated_at": iso(t), "repos": out, "absent": gone})
+    except OSError as e:
+        print(f"schedules-sync: {QUARANTINE}: {e}", file=sys.stderr)
 
 
 def cron_field(spec, lo, hi):
