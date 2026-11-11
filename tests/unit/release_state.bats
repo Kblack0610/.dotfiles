@@ -376,6 +376,63 @@ MD
   assert_output "$(printf 'web-v1.1.0\nweb-v1.0.0')"
 }
 
+@test "history: each project's tags newest first, with when, its commit and the release before it" {
+  ship "first (#1)" web-v1.0.0
+  ship "rc (#2)" web-v1.1.0-rc1
+  ship "second (#3)" web-v1.1.0
+  run "$RS" refresh web
+  assert_success
+  h() { jq -c ".releases.web$1" "$RELEASE_STATE_DIR/state.json"; }
+  [ "$(h .line)" = '"release"' ]
+  [ "$(h '.tags | map(.tag)')" = '["web-v1.1.0","web-v1.1.0-rc1","web-v1.0.0"]' ]
+  # The same range the changelog reads: a release skips its own candidate.
+  [ "$(h '.tags[0].prev')" = '"web-v1.0.0"' ]
+  [ "$(h '.tags[2].prev')" = null ]
+  [ "$(h '.tags[0].version')" = '"1.1.0"' ]
+  [ "$(h '.tags[0].sha' | tr -d '"')" = "$(git -C "$CLONE" rev-parse web-v1.1.0^{commit})" ]
+  [[ "$(h '.tags[0].at')" =~ ^[0-9]+$ ]]
+  # A subset refresh keeps the other projects' history.
+  [ "$(jq -r '.releases | has("shop")' "$RELEASE_STATE_DIR/state.json")" = false ]
+  "$RS" refresh >/dev/null 2>&1
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(jq -r '.releases | has("shop") and has("lonely")' "$RELEASE_STATE_DIR/state.json")" = true ]
+}
+
+@test "history and changelog: a project with no release tag reads its buildTags, and without them has none" {
+  ship "build one (#1)" v0.5.0-web1
+  ship "build two (#2)" v0.5.0-web2
+  ship "sibling build (#3)" v0.5.0-other1
+  # Negative control: per-build tags are not the release line, so with no buildTags there is none.
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -r '.releases.web.line' "$RELEASE_STATE_DIR/state.json")" = none ]
+  run "$RS" changelog web
+  assert_failure 2
+  assert_output --partial 'web has no release tags'
+  jq '.trackers.web.buildTags = ["v*-web*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -c '.releases.web | [.line, .glob, (.tags | map(.tag)), .tags[0].prev]' "$RELEASE_STATE_DIR/state.json")" = '["build","v*-web*",["v0.5.0-web2","v0.5.0-web1"],"v0.5.0-web1"]' ]
+  [ "$(cl web | jq -c '[.tag, .range, .text]')" = '["v0.5.0-web2","v0.5.0-web1..v0.5.0-web2","- build two (#2)"]' ]
+  # buildTags never own the version: a game keeps waiting for its own release family.
+  run bash -c ". '$PROJECT_NAME_LIB'; project_release_tag web"
+  assert_output ''
+}
+
+@test "pinned: a gitops pin says when the file took its value and the value before it" {
+  run "$RS" refresh web
+  # The first pin has no value before it.
+  [ "$(field web-prod '.pinned | [.value, .prev] | @json')" = '["v1.0.0",null]' ]
+  [ "$(field web-prod .pinned.at)" = "$(git -C "$CLONE" log -1 --format=%ct)" ]
+  push_pin v1.1.0
+  run "$RS" refresh web
+  assert_success
+  [ "$(field web-prod '.pinned | [.value, .prev] | @json')" = '["v1.1.0","v1.0.0"]' ]
+  [ "$(field web-prod .pinned.at)" = "$(git -C "$SANDBOX/pusher" log -1 --format=%ct)" ]
+  # The kustomize pin reads its own history the same way.
+  [ "$(field web-preview '.pinned | [.value, .prev] | @json')" = '["pre-abc",null]' ]
+}
+
 @test "released: each commit's first tag on the line, none yet as null, an unknown commit as an error" {
   ship "first (#1)" web-v1.0.0
   ship "second (#2)" other-v9.0.0
@@ -456,6 +513,16 @@ EOF
   assert_output --partial 'target "b-steam-beta": live needs'
   assert_output --partial 'target "c-two-kinds": live names more than one kind'
   refute_output --partial 'target "a-'
+}
+
+@test "doctor 4c names a buildTags that is not a list of single globs" {
+  jq '.trackers.web.buildTags = ["v*-web*"] | .trackers.shop.buildTags = ["v*-a v*-b", ""] | .trackers.lonely.buildTags = "v*"' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial 'trackers.shop.buildTags has "v*-a v*-b": each entry is one glob'
+  assert_output --partial 'trackers.shop.buildTags has "":'
+  assert_output --partial 'trackers.lonely.buildTags is not a list of globs'
+  refute_output --partial 'trackers.web.buildTags'
 }
 
 @test "deploys: the target id names the environment in the project's github repo" {

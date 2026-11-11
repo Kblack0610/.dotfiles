@@ -74,6 +74,10 @@ const unread = {
 const binks = {
   project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
+  line: "release", released_text: "v2 11-05", history: [
+    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded" },
+  ],
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
@@ -119,7 +123,7 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: what is live, its word, its channels amber when one was not read, its last deploy", () => {
   show();
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="muted">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app to open");
 });
@@ -196,6 +200,30 @@ test("opening an app reads its newest changelog and draws it under a tag picker"
   assert.match(b, /<option>binks-v3<\/option><option selected>binks-v2<\/option><option>binks-v1<\/option>/);
   assert.match(b, /binks-v1\.\.binks-v2, from merged PRs/);
   assert.match(b, /fix the <strong>probe<\/strong> \(#7\)/);
+});
+
+test("an opened app lists its releases newest first with when, the one before and where each reached", async () => {
+  await open();
+  const b = box.innerHTML;
+  assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
+  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">-<\/td><td class="wrap muted">not recorded<\/td><\/tr>/);
+  assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
+  // Clicking a release reads its changelog, and the app stays open.
+  asked.length = 0;
+  const rh = { dataset: { project: "binks", tag: "binks-v1" } };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.rh" ? rh : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/changelog?project=binks&tag=binks-v1"]);
+  assert.equal(relst.sel, "binks");
+});
+
+test("an app with no tags read says so where its history would be", async () => {
+  show(data({ rows: [{ ...binks, history: [], line: "none" }] }));
+  body = changelog();
+  clickApp();
+  await settled();
+  assert.match(box.innerHTML, /<b>Releases<\/b> <span class="muted">no tags read<\/span>/);
 });
 
 test("opening a channel inside the app does not read the changelog again", async () => {
