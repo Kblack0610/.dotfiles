@@ -65,13 +65,20 @@ pub struct Side {
     /// it held before.
     pub at: Option<i64>,
     pub prev: Option<String>,
+    /// The store's build number: what the store reports live, or what the upload recorded on
+    /// its Deployment; when both sides have one it decides the status.
+    pub build: Option<String>,
+    /// Why a channel moved by hand (`source` `manual`) has no recorded deploy, from the registry.
+    pub reason: Option<String>,
 }
 
 impl Side {
-    /// The cell: the value, `-` when there is nothing to read, `?` when a read failed.
+    /// The cell: the value, `manual` for a channel moved by hand, `-` when there is nothing to
+    /// read, `?` when a read failed.
     fn text(&self) -> String {
         match &self.value {
             Some(v) => v.clone(),
+            None if self.source == "manual" => "manual".into(),
             None if self.source == "none" || self.error.as_deref() == Some("no release tag") => {
                 "-".into()
             }
@@ -89,6 +96,12 @@ pub struct Deploy {
     pub state: String,
     pub at: i64,
     pub url: Option<String>,
+    /// The commit the Deployment was made for (its `commitOid`): the tag's commit when the
+    /// recorder passes the tag as its ref, what the release graph joins on when the version
+    /// names no tag.
+    pub sha: Option<String>,
+    /// The store's build number the upload recorded (TestFlight, Play), when it recorded one.
+    pub build: Option<String>,
 }
 
 impl Deploy {
@@ -971,6 +984,13 @@ mod tests {
         assert_eq!(
             side(serde_json::json!({"source": "k8s", "error": "timeout"})),
             "?"
+        );
+        // A channel moved by hand says so instead of a blank.
+        assert_eq!(
+            side(
+                serde_json::json!({"value": null, "source": "manual", "reason": "set in Steamworks"})
+            ),
+            "manual"
         );
     }
 
