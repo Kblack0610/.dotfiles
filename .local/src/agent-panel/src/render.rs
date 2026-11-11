@@ -1,8 +1,8 @@
 //! Project grouping, ANSI fzf rows, and preview formatting.
 
 use crate::chooser::Agent;
-use crate::sort::{Key, Sort};
 use crate::jsonl::Mode;
+use crate::sort::{Key, Sort};
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
@@ -31,7 +31,10 @@ pub fn project_from_path(path: &str) -> String {
 }
 
 pub fn basename(path: &str) -> &str {
-    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
 }
 
 /// Strip a trailing `-agent-?[0-9]*` worktree marker.
@@ -53,7 +56,9 @@ fn strip_agent_suffix(s: &str) -> &str {
 /// when the session carries no "-agent-N" worktree suffix.
 pub fn short_target(session: &str, window_index: &str) -> String {
     let s = session.trim_start_matches(['_', '.']);
-    let agent = s.rsplit_once("-agent").map(|(_, rest)| rest.trim_start_matches('-'));
+    let agent = s
+        .rsplit_once("-agent")
+        .map(|(_, rest)| rest.trim_start_matches('-'));
     match agent {
         Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
             format!("{n}:{window_index}")
@@ -125,7 +130,9 @@ fn is_shepherd(a: &Agent) -> bool {
 /// How long a session has been open, 3 columns wide so the targets after it stay aligned:
 /// ` 5m`, `45m`, ` 3h`, ` 2d`. Blank for a row with no start time (a parked one).
 pub fn age(now: u64, started_at: Option<u64>) -> String {
-    let Some(start) = started_at else { return "   ".to_string() };
+    let Some(start) = started_at else {
+        return "   ".to_string();
+    };
     let secs = now.saturating_sub(start);
     match secs {
         s if s < 3600 => format!("{:>2}m", s / 60),
@@ -142,8 +149,11 @@ pub fn age(now: u64, started_at: Option<u64>) -> String {
 pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) {
     let mut groups: Vec<(String, Vec<&Agent>)> = Vec::new();
     if sort.key == Key::Project {
-        let mut projects: Vec<&str> =
-            agents.iter().filter(|a| !is_shepherd(a)).map(|a| a.project.as_str()).collect();
+        let mut projects: Vec<&str> = agents
+            .iter()
+            .filter(|a| !is_shepherd(a))
+            .map(|a| a.project.as_str())
+            .collect();
         projects.sort();
         projects.dedup();
         if sort.reverse {
@@ -156,7 +166,10 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
         for project in projects {
             groups.push((
                 project.to_string(),
-                agents.iter().filter(|a| !is_shepherd(a) && a.project == project).collect(),
+                agents
+                    .iter()
+                    .filter(|a| !is_shepherd(a) && a.project == project)
+                    .collect(),
             ));
         }
     } else {
@@ -186,7 +199,11 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
                 Mode::Manual => format!("{WHITE}M{RESET}"),
                 Mode::Other => " ".to_string(),
             };
-            let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
+            let ask = if a.ask.is_some() {
+                format!("{BLUE}A{RESET}")
+            } else {
+                " ".to_string()
+            };
             let open = format!("{DIM}{}{RESET}", age(now, a.started_at));
             let target = if flat {
                 format!("{} {}", a.project, a.short_target)
@@ -204,7 +221,10 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
             let display = if a.summary.is_empty() {
                 format!(" {g} {mode}{ask} {open} {target}{tags}")
             } else {
-                format!(" {g} {mode}{ask} {open} {target}{tags} {DIM}{}{RESET}", a.summary)
+                format!(
+                    " {g} {mode}{ask} {open} {target}{tags} {DIM}{}{RESET}",
+                    a.summary
+                )
             };
             rows.push(Row {
                 target: a.target.clone(),
@@ -250,11 +270,21 @@ impl Facts {
     /// a field (a pane title) becomes a space, so the line keeps its columns.
     pub fn line(&self, target: &str) -> String {
         let started = self.started_at.map(|t| t.to_string()).unwrap_or_default();
-        [target, &self.project, &self.summary, &self.repo_full, &self.ask, &self.status, &started, self.mode.mark(), &self.account]
-            .iter()
-            .map(|f| f.replace(['\t', '\n'], " "))
-            .collect::<Vec<_>>()
-            .join("\t")
+        [
+            target,
+            &self.project,
+            &self.summary,
+            &self.repo_full,
+            &self.ask,
+            &self.status,
+            &started,
+            self.mode.mark(),
+            &self.account,
+        ]
+        .iter()
+        .map(|f| f.replace(['\t', '\n'], " "))
+        .collect::<Vec<_>>()
+        .join("\t")
     }
 
     /// A map file line back: `(target, facts)`. Missing trailing fields read as empty.
@@ -291,9 +321,17 @@ pub fn preview(target: &str, f: &Facts, now: u64) {
 
 /// The pinned first line: who and where the agent is, then its pane title, cut to one row.
 fn status_line(target: &str, f: &Facts, now: u64, width: usize, dialog: bool) -> String {
-    let place = if !f.repo_full.is_empty() { &f.repo_full } else { &f.project };
+    let place = if !f.repo_full.is_empty() {
+        &f.repo_full
+    } else {
+        &f.project
+    };
     let mut status = vec![target.to_string()];
-    status.extend([place.clone(), f.status.clone()].into_iter().filter(|x| !x.is_empty()));
+    status.extend(
+        [place.clone(), f.status.clone()]
+            .into_iter()
+            .filter(|x| !x.is_empty()),
+    );
     match f.mode {
         Mode::Plan => status.push("plan mode".into()),
         Mode::Manual => status.push("manual mode".into()),
@@ -341,10 +379,20 @@ pub fn clean_pane(capture: &str, width: usize, dialog: bool) -> String {
     // The input box is the last two rules, a few lines apart with the prompt between them, and
     // only the status bar under it; cut at the upper one. Two rules of the agent's own output have
     // no prompt between them, and an old box in the scrollback has the newer output under it.
-    let foot = plain.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
-    let rules: Vec<usize> = plain.iter().enumerate().filter(|(_, l)| rule(l)).map(|(i, _)| i).collect();
+    let foot = plain
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map_or(0, |i| i + 1);
+    let rules: Vec<usize> = plain
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| rule(l))
+        .map(|(i, _)| i)
+        .collect();
     if let [.., upper, lower] = rules[..] {
-        let prompt = plain[upper + 1..lower].iter().any(|l| l.trim_start().starts_with('\u{276f}'));
+        let prompt = plain[upper + 1..lower]
+            .iter()
+            .any(|l| l.trim_start().starts_with('\u{276f}'));
         let at_foot = foot - lower <= STATUS_BAR_LINES + 1;
         if !dialog && at_foot && lower - upper <= INPUT_BOX_LINES && prompt {
             lines.truncate(upper);
@@ -413,7 +461,10 @@ fn trim_end_ansi(line: &str) -> &str {
                 i += 1;
             } else {
                 // A two-character escape: skip the whole character after ESC, never into it.
-                i += line.get(i..).and_then(|r| r.chars().next()).map_or(1, char::len_utf8);
+                i += line
+                    .get(i..)
+                    .and_then(|r| r.chars().next())
+                    .map_or(1, char::len_utf8);
             }
             continue;
         }
@@ -523,7 +574,16 @@ mod tests {
     fn headers(rows: &[Row]) -> Vec<String> {
         rows.iter()
             .filter(|r| r.target.is_empty())
-            .map(|r| r.text.split("━━━ ").nth(1).unwrap().split(RESET).next().unwrap().to_string())
+            .map(|r| {
+                r.text
+                    .split("━━━ ")
+                    .nth(1)
+                    .unwrap()
+                    .split(RESET)
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
             .collect()
     }
 
@@ -548,7 +608,14 @@ mod tests {
     #[test]
     fn the_open_column_is_three_wide_at_every_unit() {
         let now = 100_000_000;
-        for (secs, want) in [(0, " 0m"), (59 * 60, "59m"), (3600, " 1h"), (23 * 3600 + 3599, "23h"), (86_400, " 1d"), (200 * 86_400, "99d")] {
+        for (secs, want) in [
+            (0, " 0m"),
+            (59 * 60, "59m"),
+            (3600, " 1h"),
+            (23 * 3600 + 3599, "23h"),
+            (86_400, " 1d"),
+            (200 * 86_400, "99d"),
+        ] {
             assert_eq!(age(now, Some(now - secs)), want, "{secs}s");
         }
         assert_eq!(age(now, None), "   ");
@@ -565,18 +632,42 @@ mod tests {
         let mut new = agent("s:2", '~', Mode::Other, false);
         new.project = "alpha".into();
         new.started_at = Some(5000);
-        let open = Sort { key: Key::Open, reverse: false };
+        let open = Sort {
+            key: Key::Open,
+            reverse: false,
+        };
         let (rows, map) = build(&[new.clone(), old.clone()], open, 7300);
         assert_eq!(headers(&rows), ["all, longest open first"]);
-        assert_eq!((rows[1].target.as_str(), rows[2].target.as_str()), ("s:1", "s:2"));
-        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} zulu s:1")), "{}", row(&rows, "s:1"));
-        assert!(row(&rows, "s:2").contains(&format!("{DIM}38m{RESET} alpha s:2")), "{}", row(&rows, "s:2"));
-        assert!(map[0].starts_with("s:1\t"), "the preview map follows the row order");
+        assert_eq!(
+            (rows[1].target.as_str(), rows[2].target.as_str()),
+            ("s:1", "s:2")
+        );
+        assert!(
+            row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} zulu s:1")),
+            "{}",
+            row(&rows, "s:1")
+        );
+        assert!(
+            row(&rows, "s:2").contains(&format!("{DIM}38m{RESET} alpha s:2")),
+            "{}",
+            row(&rows, "s:2")
+        );
+        assert!(
+            map[0].starts_with("s:1\t"),
+            "the preview map follows the row order"
+        );
         // Negative control: the project sort keeps one header per project and bare targets.
         let (rows, _) = build(&[new.clone(), old.clone()], Sort::default(), 7300);
         assert_eq!(headers(&rows), ["alpha", "zulu"]);
         assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} s:1")));
-        let (rows, _) = build(&[new, old], Sort { key: Key::Project, reverse: true }, 7300);
+        let (rows, _) = build(
+            &[new, old],
+            Sort {
+                key: Key::Project,
+                reverse: true,
+            },
+            7300,
+        );
         assert_eq!(headers(&rows), ["zulu", "alpha"]);
     }
 
@@ -601,12 +692,27 @@ mod tests {
         };
         let (target, back) = Facts::parse(&f.line("hub/s:1"));
         assert_eq!(target, "hub/s:1");
-        assert_eq!(back, Facts { summary: "a title".into(), ..f });
-        let manual = Facts { mode: Mode::Manual, ..back.clone() };
+        assert_eq!(
+            back,
+            Facts {
+                summary: "a title".into(),
+                ..f
+            }
+        );
+        let manual = Facts {
+            mode: Mode::Manual,
+            ..back.clone()
+        };
         assert_eq!(Facts::parse(&manual.line("hub/s:1")).1.mode, Mode::Manual);
         // Negative control: a short line from an older panel reads its missing fields as empty.
         let (_, old) = Facts::parse("hub/s:1\tproj");
-        assert_eq!(old, Facts { project: "proj".into(), ..Facts::default() });
+        assert_eq!(
+            old,
+            Facts {
+                project: "proj".into(),
+                ..Facts::default()
+            }
+        );
     }
 
     /// The input box and status bar as Claude Code draws them under its output.
@@ -624,17 +730,29 @@ earlier line
 
     #[test]
     fn the_pane_drops_the_input_box_and_status_bar_and_keeps_the_rest() {
-        assert_eq!(clean_pane(PANE, 40, false), "earlier line\n  \u{23bf}  picked 27\n\u{b7} Flowing\u{2026} (11m 16s)\n");
+        assert_eq!(
+            clean_pane(PANE, 40, false),
+            "earlier line\n  \u{23bf}  picked 27\n\u{b7} Flowing\u{2026} (11m 16s)\n"
+        );
         // Negative control: a pane with no input box (a shell) keeps its foot.
         assert_eq!(clean_pane("$ ls\nfile\n\n", 40, false), "$ ls\nfile\n");
         // Negative control: two rules of the agent's own output, no prompt between, cut nothing.
         let rule = "\u{2500}".repeat(10);
-        assert_eq!(plain(&clean_pane(&format!("a\n{rule}\nb\n{rule}\nc"), 40, false)).lines().count(), 5);
+        assert_eq!(
+            plain(&clean_pane(&format!("a\n{rule}\nb\n{rule}\nc"), 40, false))
+                .lines()
+                .count(),
+            5
+        );
         // An open dialog is kept whole: its options start with the prompt glyph too.
         assert!(clean_pane(PANE, 40, true).contains('\u{276f}'));
         // An old input box in the scrollback, with newer output under it, cuts nothing.
         let old = format!("{PANE}later output\nmore\nand more\nstill more\nthe newest line\n");
-        assert!(clean_pane(&old, 40, false).ends_with("the newest line\n"), "{:?}", clean_pane(&old, 40, false));
+        assert!(
+            clean_pane(&old, 40, false).ends_with("the newest line\n"),
+            "{:?}",
+            clean_pane(&old, 40, false)
+        );
     }
 
     #[test]
@@ -648,14 +766,21 @@ earlier line
         assert!(got.starts_with("\x1b[1mtitle\x1b[0m\n\nbody\n"), "{got:?}");
         // The agent's own rule is shortened to the width; the input box and status bar are gone.
         let p = plain(&got);
-        assert_eq!(p.lines().last(), Some("\u{2500}".repeat(40).as_str()), "{p}");
+        assert_eq!(
+            p.lines().last(),
+            Some("\u{2500}".repeat(40).as_str()),
+            "{p}"
+        );
         assert!(!p.contains('\u{276f}') && !p.contains("status bar"), "{p}");
     }
 
     #[test]
     fn trims_trailing_spaces_among_escapes() {
         assert_eq!(trim_end_ansi("ab \x1b[0m  "), "ab");
-        assert_eq!(trim_end_ansi("\x1b[31m\u{276f} x\x1b[0m"), "\x1b[31m\u{276f} x");
+        assert_eq!(
+            trim_end_ansi("\x1b[31m\u{276f} x\x1b[0m"),
+            "\x1b[31m\u{276f} x"
+        );
         assert_eq!(strip_ansi("\x1b[38;5;214mok\x1b[0m"), "ok");
         // A two-character escape before a multibyte character skips the whole character.
         assert_eq!(trim_end_ansi("a\x1b\u{2500} b"), "a\x1b\u{2500} b");
@@ -663,7 +788,13 @@ earlier line
     }
 
     fn facts() -> Facts {
-        Facts { project: "dotfiles".into(), status: "waiting".into(), started_at: Some(0), summary: "doing it".into(), ..Facts::default() }
+        Facts {
+            project: "dotfiles".into(),
+            status: "waiting".into(),
+            started_at: Some(0),
+            summary: "doing it".into(),
+            ..Facts::default()
+        }
     }
 
     fn plain(s: &str) -> String {
@@ -682,14 +813,28 @@ earlier line
 
     #[test]
     fn the_status_line_is_one_row_with_needs_you_first() {
-        let asking = Facts { ask: "a1".into(), ..facts() };
+        let asking = Facts {
+            ask: "a1".into(),
+            ..facts()
+        };
         let line = status_line("hub/s:1", &asking, 3600, 200, false);
-        assert_eq!(plain(&line), "needs you  hub/s:1  dotfiles  waiting  open 1h  doing it");
+        assert_eq!(
+            plain(&line),
+            "needs you  hub/s:1  dotfiles  waiting  open 1h  doing it"
+        );
         assert!(line.starts_with(&format!("{YELLOW}needs you{RESET}")));
-        assert!(plain(&status_line("hub/s:1", &asking, 3600, 20, false)).chars().count() <= 20);
+        assert!(
+            plain(&status_line("hub/s:1", &asking, 3600, 20, false))
+                .chars()
+                .count()
+                <= 20
+        );
         // Negative control: nothing asked, no amber and no needs word.
         let line = status_line("hub/s:1", &facts(), 3600, 200, false);
-        assert!(!line.contains(YELLOW) && !line.contains("needs you"), "{line:?}");
+        assert!(
+            !line.contains(YELLOW) && !line.contains("needs you"),
+            "{line:?}"
+        );
         // An open dialog needs the human with no ask posted.
         assert!(plain(&status_line("hub/s:1", &facts(), 3600, 200, true)).starts_with("needs you"));
     }

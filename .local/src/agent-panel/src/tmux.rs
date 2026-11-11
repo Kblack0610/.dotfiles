@@ -142,9 +142,17 @@ fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let env = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string());
+    let env = |k: &str, d: &str| {
+        std::env::var(k)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| d.to_string())
+    };
     // fleet-shepherd's own names and defaults for where its passes run.
-    let home = (env("FLEET_SHEPHERD_SESSION", "hub"), env("FLEET_SHEPHERD_WINDOW", "shepherd"));
+    let home = (
+        env("FLEET_SHEPHERD_SESSION", "hub"),
+        env("FLEET_SHEPHERD_WINDOW", "shepherd"),
+    );
     let fmt = pane_format(now, (&home.0, &home.1));
     let out = tmux(Some(server))
         .args(["list-panes", "-a", "-F", &fmt])
@@ -152,7 +160,11 @@ fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
         .map_err(|e| format!("tmux -L {server} list-panes: {e}"))?;
     if !out.status.success() {
         let why = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("tmux -L {server} list-panes exited {}: {}", out.status, why.trim()));
+        return Err(format!(
+            "tmux -L {server} list-panes exited {}: {}",
+            out.status,
+            why.trim()
+        ));
     }
     Ok(parse_panes(server, &String::from_utf8_lossy(&out.stdout)))
 }
@@ -240,7 +252,9 @@ pub fn jump(target: &str) {
             let _ = Command::new(tmx_path()).args(["goto", srv, local]).status();
         }
         _ if here.is_some() => {
-            let _ = Command::new("tmux").args(["switch-client", "-t", local]).status();
+            let _ = Command::new("tmux")
+                .args(["switch-client", "-t", local])
+                .status();
         }
         _ => {
             let _ = tmux(server).args(["attach", "-t", local]).status();
@@ -250,7 +264,9 @@ pub fn jump(target: &str) {
 
 /// Show a line in the caller's tmux message bar.
 pub fn message(text: &str) {
-    let _ = Command::new("tmux").args(["display-message", text]).status();
+    let _ = Command::new("tmux")
+        .args(["display-message", text])
+        .status();
 }
 
 /// `tmx` from PATH, else the dotfiles install location: Hyprland's `exec` PATH does
@@ -294,8 +310,14 @@ mod tests {
         assert_eq!(panes[0].window_id, "@3");
         assert_eq!(panes[0].title, "✳ title");
         assert_eq!(panes[0].tags, "pinned");
-        assert_eq!((panes[0].stage.as_str(), panes[0].labels.as_str()), ("STALLED", "manual,x"));
-        assert_eq!((panes[1].stage.as_str(), panes[1].labels.as_str()), ("", ""));
+        assert_eq!(
+            (panes[0].stage.as_str(), panes[0].labels.as_str()),
+            ("STALLED", "manual,x")
+        );
+        assert_eq!(
+            (panes[1].stage.as_str(), panes[1].labels.as_str()),
+            ("", "")
+        );
     }
 
     #[test]
@@ -312,7 +334,10 @@ mod tests {
                    #{&&:#{==:#{session_name},hub},#{==:#{window_name},shepherd}}},shepherd ,}\t";
         assert!(fmt.contains(tag), "{fmt}");
         assert!(!fmt.contains("HOME_"));
-        assert!(fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}"), "{fmt}");
+        assert!(
+            fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}"),
+            "{fmt}"
+        );
         assert!(!fmt.contains("NOW"));
     }
 }

@@ -25,7 +25,12 @@ fn a_live_pids_unreadable_session_file_is_a_gap_and_exit_3() {
     // A dead pid's broken file is a stale file, not a gap.
     fs::write(sessions.join("4294967.json"), "{").unwrap();
     let out = list();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // This test process is live: its broken file means the read is missing a session.
     let me = std::process::id();
@@ -33,6 +38,9 @@ fn a_live_pids_unreadable_session_file_is_a_gap_and_exit_3() {
     let out = list();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(3), "{err}");
-    assert!(err.contains(&format!("incomplete read: ~/.claude/sessions/{me}.json")), "{err}");
+    assert!(
+        err.contains(&format!("incomplete read: ~/.claude/sessions/{me}.json")),
+        "{err}"
+    );
     fs::remove_dir_all(&dir).unwrap();
 }
