@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # forge-guard.py: in a checkout that commits .forgejo/workflows/mirror-to-github.yaml, gh pr
-# create/merge, agent-land and a push to a github.com remote are denied; anywhere else gh pr merge
-# is denied naming agent-land. The repos are fixtures built here; the hook only reads git state,
+# create/merge and a push to a github.com remote are denied; anywhere else gh pr merge, and on any
+# forge a merge through the PR API, are denied naming agent-land. The repos are fixtures built here; the hook only reads git state,
 # so nothing outside BATS_TEST_TMPDIR is touched.
 
 setup() {
@@ -46,7 +46,7 @@ gh pr merge 62 --squash --delete-branch 2>&1 | tail -1"
   denied
 }
 
-@test "the payload cwd, git -C, a bare push, -R, GH_REPO and agent-land each find the checkout" {
+@test "the payload cwd, git -C, a bare push, -R and GH_REPO each find the checkout" {
   run at "$T/hc" 'gh pr create --fill'
   denied
   run at /tmp "git -C $T/wt push origin HEAD"
@@ -56,8 +56,6 @@ gh pr merge 62 --squash --delete-branch 2>&1 | tail -1"
   run at /tmp 'gh pr merge 62 -R Kblack0610/home-config --squash'
   denied
   run at /tmp 'GH_REPO=Kblack0610/home-config gh pr create --fill'
-  denied
-  run at /tmp "pushd $T/hc >/dev/null; agent-land 62"
   denied
   run at "$T/hc" 'git push git@github.com:Kblack0610/home-config.git HEAD'
   denied
@@ -69,6 +67,9 @@ gh pr merge 62 --squash --delete-branch 2>&1 | tail -1"
   run at "$T/hc" 'gh pr view 62; gh pr list; git fetch origin'
   allowed
   run at "$T/ps" 'git push origin HEAD && gh pr create --fill && agent-land 1'
+  allowed
+  # agent-land lands a Forgejo PR through that forge's API, so it runs in a Forgejo checkout too.
+  run at /tmp "pushd $T/hc >/dev/null; agent-land 62 --item x"
   allowed
   run at /tmp 'gh pr create -R Kblack0610/personal-sites; gh pr create -R Kblack0610/unknown'
   allowed
@@ -156,11 +157,52 @@ git log -1'
   run at "$T/ps" 'gh pr merge --subject 5 12 --squash'
   denied
   assert_output --partial 'agent-land 12 --item'
-  # A Forgejo checkout keeps its own message: agent-land cannot run there.
+  # A Forgejo checkout keeps its own message: open through forgejo-ops, land with agent-land.
   run at "$T/hc" 'gh pr merge 62'
   denied
   assert_output --partial 'forgejo-ops'
+  assert_output --partial 'agent-land <N>'
   refute_output --partial 'ledger_coverage'
+}
+
+@test "a merge through a forge's PR API is denied naming agent-land, anywhere (ar-1213)" {
+  # The forgejo-ops snippet sessions ran in home-config and bnb-game-servers, API set in an earlier call.
+  run at /tmp 'curl -s -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d '"'"'{"Do":"squash"}'"'"' "$API/pulls/12/merge"'
+  denied
+  assert_output --partial 'agent-land 12 --item <slug>'
+  assert_output --partial 'records the PR on no queue item'
+  run at /tmp 'curl -sf -XPOST https://forge.example/api/v1/repos/o/r/pulls/7/merge --data-binary @m.json'
+  denied
+  assert_output --partial 'agent-land 7'
+  run at /tmp 'curl -s -d @m.json "$API/pulls/<n>/merge"'
+  denied
+  assert_output --partial 'agent-land <N>'
+  run at /tmp 'gh api -X PUT repos/o/r/pulls/3/merge -f merge_method=squash'
+  denied
+  assert_output --partial 'agent-land 3'
+  # Flag clusters and attached values, and a gh field alone, which makes gh api send a POST.
+  run at /tmp 'curl -sXPOST "$API/pulls/5/merge"'
+  denied
+  run at /tmp 'curl -s -d'"'"'{"Do":"merge"}'"'"' "$API/pulls/5/merge"'
+  denied
+  run at /tmp 'gh api -XPUT repos/o/r/pulls/5/merge'
+  denied
+  run at /tmp 'gh api repos/o/r/pulls/6/merge -f merge_method=squash'
+  denied
+  assert_output --partial 'agent-land 6'
+}
+
+@test "reads of the merge endpoint and other PR API writes pass" {
+  # A GET there asks whether the PR merged; opening a PR or commenting is not a merge.
+  run at /tmp 'curl -s -H "Authorization: token $TOKEN" "$API/pulls/12/merge"; gh api repos/o/r/pulls/3/merge'
+  allowed
+  run at /tmp 'curl -s -X POST -d @pr.json "$API/pulls"; curl -s -X POST -d @c.json "$API/issues/12/comments"'
+  allowed
+  run at /tmp 'echo "curl -X POST \$API/pulls/12/merge"'
+  allowed
+  # A cluster stops at a flag that takes a value: the X in an attached header is not -X.
+  run at /tmp 'curl -sSf -H'"'"'X-Trace: 1'"'"' "$API/pulls/12/merge"; curl -sSfo merged.json "$API/pulls/12/merge"'
+  allowed
 }
 
 @test "the rest of gh pr and text naming a merge pass" {
