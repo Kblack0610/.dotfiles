@@ -132,11 +132,13 @@ function facts(rows) {
 }
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
 // or "overdue 2h" once it has passed. Empty without one.
-function etaText(p) {
+// `overdue`, when the server said it (Home's Running `overdue`, the clock its Overdue chip uses),
+// decides lateness so the cell and the chip agree; otherwise this page's clock does.
+function etaText(p, overdue) {
   if (!p || !p.eta_epoch) return "";
   const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return late > 0
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
+  return (overdue ?? late > 0)
+    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(Math.max(late, 0))} (ETA was ${stamp(p.eta_epoch)})</span>`
     : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the

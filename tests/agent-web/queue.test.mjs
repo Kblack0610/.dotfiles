@@ -245,6 +245,32 @@ test("an old section id opens the table on its chip, once", async () => {
   assert.equal(ctx.history.url, "#queue?s=done");
 });
 
+test("an item's slug opens that item; one outside the view is searched for once", async () => {
+  load();
+  asked = [];
+  const slug = items[0].slug;
+  reply = data;
+  run(`st.tab = 'queue'; st.arg = '${slug}'; st.views.queue = ''`);
+  run("refreshQueue()");
+  await settle(); await settle();
+  assert.equal(run("qst.sel"), slug, "the item's record opens");
+  assert.equal(run("st.arg"), "");
+  // Not in this view: the table searches for it, and the read that has it opens it.
+  reply = (url) => (url.includes("q=gone") ? { ...data, items: [{ ...items[0], slug: "gone" }] } : { ...data, items: [] });
+  run("qst.sel = ''; st.arg = 'gone'; st.views.queue = 's=done'");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.ok(asked.some((u) => u.startsWith("/api/queue?q=gone")), asked.join(" "));
+  assert.equal(run("qst.sel"), "gone");
+  // An unknown slug searches once and then gives up, with the table still drawn.
+  reply = { ...data, items: [] };
+  run("qst.sel = ''; st.arg = 'nowhere'; st.views.queue = ''");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.equal(run("st.arg"), "");
+  assert.equal(run("qst.sel"), "");
+});
+
 test("a new section id scrolls to its section, not into the filter", async () => {
   load();
   reply = data;

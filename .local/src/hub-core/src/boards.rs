@@ -572,7 +572,11 @@ pub struct Watch {
 
 pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
     let state = self::state(state, r);
-    let log = std::fs::read_to_string(log).unwrap_or_default();
+    // Only the end is read: the log only grows (4.8 MB by 2026-11), and a line averages under
+    // 100 bytes, so a kilobyte per line kept covers the last `WATCH_LOG_LINES` with room.
+    let log = crate::fleet::tail(log, WATCH_LOG_LINES as u64 * 1024)
+        .map(|(t, _)| t)
+        .unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
     Watch {

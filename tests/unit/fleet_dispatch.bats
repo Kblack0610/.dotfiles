@@ -132,6 +132,50 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
 }
 
+@test "candidates: an edit that adds #of/, a priority tag or a comment field keeps the verdict; a scope or title edit re-judges" {
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in linked prio scoped titled; do row game agent "$k" "- [ ] chore(plan): $k it $T <!-- id:$k -->"; verdict game agent "$k" skip; done
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent linked "- [ ] chore(plan): linked it $T #of/ga-1 <!-- id:linked -->"
+  row game agent prio "- [ ] chore(plan): prio it   $T #high <!-- id:prio run:3 -->"
+  row game agent scoped "- [ ] chore(gameplay): scoped it $T <!-- id:scoped -->"
+  row game agent titled "- [ ] chore(plan): titled it now $T <!-- id:titled -->"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'scoped,titled'
+}
+
+@test "candidates: a verdict keyed on the raw line still holds, and candidates records nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent old "- [ ] old row $T #high <!-- id:old -->"
+  verdict game agent old skip
+  jq -c --arg raw "$(printf '%s' "- [ ] old row $T #high <!-- id:old -->" | sig)" '.line = $raw' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" &&
+    mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run cmd_candidates
+  assert_success
+  assert_output ''
+  assert_equal "$(wc -l < "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 1
+}
+
+@test "judge_once: a run pass records a raw-line verdict again under row_sig, once, copying the verdict that held" {
+  local text="- [ ] old row $T #high <!-- id:old -->"
+  project game beta "$SANDBOX/repos/game"
+  row game agent old "$text"
+  board_row game agent old '[]' '["details now"]'
+  verdict game agent old skip       # before dsig: holds whatever the details
+  verdict game agent old dispatch   # recorded other details: does not hold
+  jq -c --arg raw "$(printf '%s' "$text" | sig)" '.line = $raw | if .verdict == "dispatch" then .dsig = "other" else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub judge-stub 'touch "$NOTES_FIXTURE/judged"; echo "{\"verdicts\":[]}"'
+  DRY=0 JUDGE_RC='' judge_once
+  assert [ ! -e "$NOTES_FIXTURE/judged" ]
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.verdict + " " + .line')" "skip $(row_sig "$text")"
+  DRY=0 JUDGE_RC='' judge_once
+  assert_equal "$(wc -l < "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 3
+}
+
 @test "candidates: the judge reads a row's details, and an edit to them re-judges only a verdict that recorded them" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] fix the jump $T <!-- id:ga-1 -->"

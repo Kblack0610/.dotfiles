@@ -18,6 +18,7 @@ setup() {
   JOBS="$XDG_STATE_HOME/ci/jobs.jsonl"
   STATE="$XDG_STATE_HOME/schedules/state.json"
   LEDGER="$XDG_STATE_HOME/ci/runs.jsonl"
+  PRS="$HOME/.agent/prs"
   # gh-stub api [-i] [-H "If-None-Match: <etag>"] <path>: serves $GHD/<path with / ? & = as _>,
   # with -i behind an ETag of the file's md5 (and a 304, exit 1, when the caller already has it).
   # A missing file is GitHub's 404; $GHD/fail-<owner>_<name> fails every call for that repo
@@ -70,7 +71,14 @@ EOF
   chmod +x "$SANDBOX/bin/gh-stub" "$SANDBOX/bin/curl-stub" "$SANDBOX/bin/rbw-stub" "$SANDBOX/bin/kube-stub"
   printf '# owner/name base [clone]\no/game main ~/x\no/empty main\n' > "$SANDBOX/repos"
   runs | serve 'repos/o/empty/actions/runs?per_page=100&page=1'
+  # Every listed repo's PRs are read into the PR store each pass: none, unless a test serves some.
+  for r in o/game o/empty; do echo '[]' | serve "$(pulls "$r" 1)"; done
+  echo '[]' > "$FJD/$(key "$(fj_pulls o/fj 1)")"
 }
+
+# pulls <repo> <page> / fj_pulls <repo> <page>: the PR list page a pass asks GitHub / Forgejo for
+pulls() { echo "repos/$1/pulls?state=all&sort=updated&direction=desc&per_page=100&page=$2"; }
+fj_pulls() { echo "repos/$1/pulls?state=all&sort=recentupdate&limit=50&page=$2"; }
 
 key() { echo "$1" | tr '/?&=' '____'; }
 serve() { cat > "$GHD/$(key "$1")"; }
@@ -314,16 +322,16 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
 
 # ---- the run ledger ----
 
-@test "ledger: one row per run of every event, with branch, PRs and queue wait" {
+@test "ledger: one row per run of every event, with branch and queue wait; a run's PRs are the PR store's to join" {
   game_files
   runs "$(gh_run 31 .github/workflows/checks.yml 2025-11-06T11:30:00Z in_progress null 1 pull_request 7)" \
        "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
   run "$SUBJECT"
   assert_success
-  run jq -sc 'map([.forge, .repo, .id, .attempt, .event, .status, .conclusion, .prs, .ended_at])' "$LEDGER"
-  assert_output '[["github","o/game",31,1,"pull_request","in_progress",null,[7],null],["github","o/game",30,1,"schedule","completed","failure",[],"2025-11-06T10:01:00Z"]]'
+  run jq -sc 'map([.forge, .repo, .id, .attempt, .event, .status, .conclusion, .ended_at])' "$LEDGER"
+  assert_output '[["github","o/game",31,1,"pull_request","in_progress",null,null],["github","o/game",30,1,"schedule","completed","failure","2025-11-06T10:01:00Z"]]'
   run jq -sc '.[1] | keys_unsorted' "$LEDGER"
-  assert_output '["forge","repo","id","attempt","workflow","path","title","branch","event","sha","status","conclusion","created_at","started_at","ended_at","queue_wait_s","prs","url"]'
+  assert_output '["forge","repo","id","attempt","workflow","path","title","branch","event","sha","status","conclusion","created_at","started_at","ended_at","queue_wait_s","url"]'
   run jq -sc '.[1] | [.workflow, .path, .title, .branch, .sha, .created_at, .started_at, .queue_wait_s, .url]' "$LEDGER"
   assert_output '["T",".github/workflows/test.yml","t30","main","abc","2025-11-06T10:01:00Z","2025-11-06T10:01:00Z",0,"https://gh/r/30"]'
   run jq -c '.repos | map_values(.error)' "$XDG_STATE_HOME/ci/sync.json"
@@ -477,7 +485,7 @@ fj_run() {
   run jq -sc 'map([.forge, .repo, .id, .attempt, .status, .conclusion, .created_at, .ended_at, .workflow, .url])' "$LEDGER"
   assert_output '[["forgejo","o/fj",5,1,"in_progress",null,"2025-11-06T11:49:00Z",null,"ci.yml","https://git.x/o/fj/actions/runs/5"],["forgejo","o/fj",4,1,"completed","failure","2025-11-06T10:59:00Z","2025-11-06T11:00:00Z","ci.yml","https://git.x/o/fj/actions/runs/4"]]'
   run grep -c 'stdin: header = "Authorization: token fjtok"' "$FJD/calls"
-  assert_output 2  # the jobs page and run 4's stop
+  assert_output 3  # the jobs page, run 4's stop and the PR page
   run grep -c 'argv: [^|]*fjtok' "$FJD/calls"
   assert_output 0
   run grep -c 'argv: .* https://fj.test/api/v1/repos/o/fj/actions/tasks?limit=50&page=1 |' "$FJD/calls"
@@ -859,4 +867,148 @@ nightly_runs() {
   assert_success
   run jq -c '.repos[0] | [.report.entries, .error]' "$QUAR"
   assert_output '[2,"quarantine.py report: quarantine.txt:3: needs a date"]'
+}
+
+# ---- PR store ----
+
+# gh_pr <n> <state> <merged_at|null> <branch> [title] [body] [head sha]: one GitHub pulls entry
+gh_pr() {
+  jq -nc --argjson n "$1" --arg s "$2" --argjson m "$( [ "$3" = null ] && echo null || echo "\"$3\"")" --arg b "$4" \
+    --arg t "${5:-pr $1}" --arg body "${6:-}" --arg h "${7:-h$1}" '{number: $n, state: $s, title: $t, body: $body,
+      merged_at: $m, merge_commit_sha: (if $m then "m\($n)" else "stale\($n)" end), draft: false,
+      head: {ref: $b, sha: $h}, base: {ref: "main"}, user: {login: "alice"}, html_url: "https://github.com/o/game/pull/\($n)",
+      created_at: "2025-11-05T09:00:00Z", updated_at: "2025-11-06T\(if $n < 10 then "0" else "" end)\($n):00:00+00:00", closed_at: $m}'
+}
+prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r" 1)"; runs | page1; }
+
+@test "PR store: a pass writes one row per PR with its merge, links and revert; an unchanged first page is a 304 that writes nothing" {
+  prs_page o/game "$(gh_pr 8 closed 2025-11-06T11:00:00Z revert-x 'Revert "feat: x"' $'Reverts #7\n\nThis reverts commit abcdef1.')" \
+    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' 'https://claude.ai/code/session_abc')" "$(gh_pr 5 closed null dead-end)"
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .revert])' "$PRS/o__game.jsonl"
+  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]}],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],null],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],null]]'
+  run jq -c '.repos["o/game"] | [.synced_at, .error, (.etag | length > 0)]' "$PRS/sync.json"
+  assert_output '["2025-11-06T12:00:00Z",null,true]'
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
+  assert_output 1
+  run wc -l < "$PRS/o__game.jsonl"
+  assert_output 3
+}
+
+@test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {
+  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_page | fj_serve 1
+  page() { jq -nc --arg r "$1" '[{number: 3, state: "closed", merged: true, merged_at: "2025-11-06T10:00:00Z", merge_commit_sha: "f3",
+    title: "fix", head: {ref: $r, sha: "h3"}, base: {ref: "develop"}, user: {login: "bob"}, updated_at: "2025-11-06T10:00:00Z"}]' \
+    > "$FJD/$(key "$(fj_pulls o/fj 1)")"; }
+  page fix-y
+  run "$SUBJECT"
+  assert_success
+  page refs/pull/3/head
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  run "$SUBJECT" prs fj.test/o/fj
+  assert_success
+  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
+}
+
+@test "prs: newest first, filtered by state, since and branch; fails closed: 3 unlisted, 1 stale, 2 bad usage" {
+  prs_page o/game "$(gh_pr 9 open null feat-z)" "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)" "$(gh_pr 4 closed 2025-11-06T09:00:00Z feat-x)"
+  "$SUBJECT"
+  run "$SUBJECT" prs O/Game
+  assert_success
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[9,7,4]'
+  run "$SUBJECT" prs o/game --state merged --since 2025-11-06T06:00:00Z
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  run "$SUBJECT" prs o/game --state open
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[9]'
+  run "$SUBJECT" prs o/game --branch feat-x
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7,4]'
+  run "$SUBJECT" prs o/nope
+  assert_failure 3
+  run "$SUBJECT" prs o/game --state weird
+  assert_failure 2
+  run "$SUBJECT" prs o/game --since yesterday
+  assert_failure 2
+  SCHEDULES_NOW=$((1762430400 + 3600)) run "$SUBJECT" prs o/game
+  assert_failure 1
+  assert_output 'o/game: PRs last synced 2025-11-06T12:00:00Z, older than 30m'
+}
+
+@test "prs all: a stale repo is named on stderr with exit 1, and every other repo still prints" {
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  "$SUBJECT"
+  jq '.repos["o/empty"].synced_at = "2025-11-06T10:00:00Z" | .repos["o/empty"].error = "HTTP 502"' "$PRS/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$PRS/sync.json"
+  run sh -c '"$1" prs all 2>"$2"' _ "$SUBJECT" "$SANDBOX/err"
+  assert_failure 1
+  assert_equal "$(jq -c 'map([.repo, .number])' <<<"$output")" '[["o/game",7]]'
+  run cat "$SANDBOX/err"
+  assert_output 'o/empty: PRs last synced 2025-11-06T10:00:00Z, older than 30m: HTTP 502'
+  printf 'o/game main\n' > "$SANDBOX/repos"  # a repo dropped from the list is not read, so never stale
+  run "$SUBJECT" prs all
+  assert_success
+}
+
+@test "prs --checks: each PR's CI on its head from the run ledger, red job ids only once every run finished" {
+  prs_page o/game "$(gh_pr 9 open null a)" "$(gh_pr 8 open null b)" "$(gh_pr 7 open null c)" "$(gh_pr 6 open null d)"
+  "$SUBJECT"
+  row() { jq -nc --argjson id "$1" --arg sha "$2" --arg s "$3" --arg c "$4" --arg p "$5" '{forge: "github", repo: "o/game", id: $id, attempt: 1,
+    sha: $sha, status: $s, conclusion: (if $c == "" then null else $c end), path: $p, event: "pull_request", created_at: "2025-11-06T11:0\($id):00Z"}'; }
+  { row 1 h9 completed failure a.yml; row 2 h9 in_progress '' b.yml
+    row 3 h8 completed failure a.yml; row 4 h8 completed success b.yml
+    row 5 h7 completed failure a.yml; row 6 h7 completed success a.yml; } >> "$LEDGER"
+  { jq -nc '{forge: "github", repo: "o/game", run_id: 3, attempt: 1, jobs: [{id: 55, conclusion: "failure"}, {id: 56, conclusion: "success"}]}'
+    jq -nc '{forge: "github", repo: "o/game", run_id: 1, attempt: 1, jobs: [{id: 11, conclusion: "failure"}]}'; } >> "$JOBS"
+  run "$SUBJECT" prs o/game --checks
+  assert_success
+  assert_equal "$(jq -c 'map([.number, .ci, .red])' <<<"$output")" '[[9,"PENDING","-"],[8,"FAIL","55"],[7,"PASS","-"],[6,"NONE","-"]]'
+}
+
+@test "sync-prs: refreshes the named repo now; 3 for one the list does not sync; a failed read keeps the last rows" {
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  run "$SUBJECT" prs o/game
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  [ ! -e "$LEDGER" ]  # only the PR store, not a whole pass
+  run "$SUBJECT" sync-prs o/nope
+  assert_failure 3
+  assert_output --partial 'o/nope not in the repo list'
+  echo 'HTTP 502' > "$GHD/fail-o_game"
+  run "$SUBJECT" sync-prs o/game
+  assert_failure 1
+  run jq -r '.repos["o/game"].error' "$PRS/sync.json"
+  assert_output --partial 'HTTP 502'
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  rm "$GHD/fail-o_game"; mkdir -p "$PRS"
+  run timeout 30 flock "$PRS/.lock" "$SUBJECT" sync-prs o/game  # a pass holds the store: agent-land never waits on it
+  assert_failure 1
+  assert_output 'o/game: a pass holds the PR store'
+}
+
+@test "prs-only: a work repo's line feeds the PR store and sync-prs, never its runs, schedules or state" {
+  printf 'prs-only:o/work main\nprs-only:o/game main\n' >> "$SANDBOX/repos"  # o/game's CI line reads its PRs already
+  prs_page o/work "$(gh_pr 4 closed 2025-11-06T10:00:00Z feat-w)"
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run "$SUBJECT" prs o/work
+  assert_success
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[4]'
+  run grep -c 'o/game/pulls' "$GHD/calls"
+  assert_output 1
+  run grep -v -e '/pulls?' -e 'o/game' -e 'o/empty' "$GHD/calls"
+  assert_failure  # o/work: no runs, workflows or quarantine read
+  run jq -c '[.repos[].repo]' "$STATE"
+  assert_output '["o/game","o/empty"]'
+  run "$SUBJECT" runs o/work
+  assert_failure 3
+  run "$SUBJECT" sync-prs o/work
+  assert_success
 }

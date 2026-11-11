@@ -128,6 +128,16 @@ EOF
   # The Forgejo hosts agent-land may send the token to: none, so a GitHub origin stays on gh.
   export SO_FORGEJO_HOSTS=''
 
+  # schedules-sync: logs its call, exits ss.rc (0 by default) with ss.err on stderr
+  cat >"$SANDBOX/bin/schedules-sync" <<'EOF'
+#!/usr/bin/env bash
+printf 'schedules-sync %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/ss.err" >&2 2>/dev/null
+exit "$(cat "$NOTES_FIXTURE/ss.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/schedules-sync"
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
@@ -532,6 +542,7 @@ git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{co
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 dotfiles-autopull --now .
+schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
@@ -845,9 +856,10 @@ EOF2
   assert_line --index 6 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
   assert_line --index 7 --partial 'proof: gh pr view 42 --json mergeCommit'
   assert_line --index 8 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 9 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 10 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 11 --partial 'plan: tick'
+  assert_line --index 9 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 10 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 11 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 12 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -959,8 +971,8 @@ repo_map() {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 9 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 10 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 10 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 11 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -1335,6 +1347,22 @@ real_notes_board() {
   DOTFILES_AUTOPULL="$SANDBOX/no-such-autopull" run "$LAND" 42 --item ship
   assert_success
   assert_line 'landed #42'
+}
+
+@test "prs: after the merge the PR store refreshes that repo; a failed refresh is said and never fails the landing, an unlisted repo is silent" {
+  run "$LAND" 42 --item ship
+  assert_success
+  run grep '^schedules-sync' "$LOG"
+  assert_output 'schedules-sync sync-prs o/r'
+  printf '1\n' >"$NOTES_FIXTURE/ss.rc"; echo 'o/r: HTTP 502' >"$NOTES_FIXTURE/ss.err"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'prs: o/r not refreshed (o/r: HTTP 502); its next poll reads the merge'
+  assert_line 'landed #42'
+  printf '3\n' >"$NOTES_FIXTURE/ss.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'prs:'
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {

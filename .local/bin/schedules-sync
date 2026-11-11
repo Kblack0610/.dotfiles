@@ -14,7 +14,7 @@ Each pass also appends every run of every event, on GitHub and on the Forgejo re
 names as `forgejo:<host>/<owner/name> <base>`, to the run ledger SCHEDULES_RUNS_LEDGER
 (~/.local/state/ci/runs.jsonl), one JSON row per run each time it changes: forge, repo, id,
 attempt (the key), workflow, path, title, branch, event, sha, status, conclusion, created_at,
-started_at, ended_at, queue_wait_s, prs, url. A reader dedupes on the key and keeps the last
+started_at, ended_at, queue_wait_s, url. A reader dedupes on the key and keeps the last
 row; a torn last line is skipped. Rows whose run was created more than 30 days ago are pruned
 by an atomic rewrite, which also drops superseded rows once they outnumber the live ones.
 Forgejo has no attempt (always 1) and lists jobs, not runs: a run is its jobs grouped by run
@@ -25,6 +25,24 @@ private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_r
 sent in curl's stdin config, never argv; with neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
+  schedules-sync prs <repo|all> [--state open|merged|closed|all] [--since T] [--branch B] [--checks]
+                          the PR store's PRs of one repo (owner/repo on GitHub, host/owner/repo
+                          on Forgejo) or of every repo, a JSON array, newest number first, one
+                          object per PR: forge, repo, number, branch, base, state (OPEN, MERGED,
+                          CLOSED), draft, title, author, created_at, updated_at, closed_at,
+                          merged_at (UTC), merge_sha, head_sha, url, links (the claude.ai/code
+                          session ids its body names), revert (what it says it reverts, or null).
+                          --since keeps PRs updated at or after T; --checks adds ci (NONE,
+                          PENDING, FAIL, PASS) and red (failed job ids) on the head commit from
+                          the run ledger and job archive. The one reader of the store:
+                          fleet-sessions, session-outcomes, day-log, fleet-bench, project-timeline,
+                          credit-backfill and git_open_prs read PRs here, never from gh pr list.
+                          Exit 1 when a repo's PRs last synced over 30 minutes ago (with all,
+                          the others still print and stderr names it), 3 when the list does not
+                          sync the repo
+  schedules-sync sync-prs <repo>...
+                          refresh those repos' PR stores now: agent-land runs it after a merge, so
+                          a reader never waits a pass to see it
   schedules-sync jobs <repo> [--run ID] [--since T]
                           the job archive's records of one GitHub repo, a JSON array in
                           created_at order, one object per run attempt: forge, repo, run_id,
@@ -49,6 +67,15 @@ sent in curl's stdin config, never argv; with neither, a public repo still reads
                           caller tells "unknown" from "no runs"), 4 when a past --until is
                           after the last sync: that window is not yet complete, and the next
                           pass completes it
+
+Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
+list (a `prs-only:<owner/name> <base>` line is read for this alone: no runs, schedules or
+quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
+it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
+first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
+is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
+page. A store's last sync and error per repo are in that sync.json. No reader stores a PR fact of
+its own: run -> PR is a join against this store, so the ledger's runs carry no PR list.
 
 Job detail goes to the job archive SCHEDULES_JOBS_LEDGER (~/.local/state/ci/jobs.jsonl),
 kept 90 days, deduped and pruned like the run ledger. For the repos the github-runner-exporter
@@ -101,6 +128,7 @@ only repos whose schedules run nightly.
 """
 
 import base64
+import fcntl
 import io
 import json
 import os
@@ -320,7 +348,8 @@ def fj(host, path):
 
 def read_repos():
     """-> [(forge, owner/name, base, host)]: `forgejo:<host>/<owner/name>` is a Forgejo repo,
-    a bare (or `github:`) name a GitHub one, whose host is None."""
+    a bare (or `github:`) name a GitHub one, whose host is None, and `prs-only:<owner/name>` a
+    GitHub repo only the PR store reads (a work or client repo whose CI day-log leaves out)."""
     out = []
     with open(REPOS) as f:
         for line in f:
@@ -331,7 +360,13 @@ def read_repos():
                 if forge == "forgejo":
                     host, _, name = name.partition("/")
                 out.append((forge or "github", name, line[1], host))
-    return out
+    ci = {r.lower() for f, r, _, _ in out if f == "github"}
+    return [e for e in out if not (e[0] == PRS_ONLY and e[1].lower() in ci)]  # a CI line reads its PRs already
+
+
+def has_prs(forge, repo):
+    """Whether a list line has a PR store: a Forgejo line needs its owner/name."""
+    return forge in ("github", PRS_ONLY) or (forge == "forgejo" and "/" in repo)
 
 
 def read_prev():
@@ -487,7 +522,6 @@ def gh_row(repo, r):
             "created_at": r.get("created_at"), "started_at": r.get("run_started_at"),
             "ended_at": r.get("updated_at") if done else None,
             "queue_wait_s": wait_s(r.get("created_at"), r.get("run_started_at")),
-            "prs": [p["number"] for p in r.get("pull_requests") or [] if isinstance(p, dict) and "number" in p],
             "url": r.get("html_url")}
 
 
@@ -539,8 +573,246 @@ def forgejo_rows(host, repo, entry, open_since, t, last):
                      "branch": j.get("head_branch"), "event": j.get("event"), "sha": j.get("head_sha"),
                      "status": "completed" if done else ("in_progress" if "running" in st else "queued"),
                      "conclusion": conclusion, "created_at": created, "started_at": started, "ended_at": ended,
-                     "queue_wait_s": wait_s(created, started), "prs": [], "url": j.get("url")})
+                     "queue_wait_s": wait_s(created, started), "url": j.get("url")})
     return rows
+
+
+# ---- the PR store: one file per repo, one row per PR each time it changes ----
+
+PRS_DIR = os.environ.get("SCHEDULES_PRS_DIR", os.path.join(HOME, ".agent/prs"))
+PRS_ONLY = "prs-only"  # a day-log-ci line's prefix: the PR store reads the repo, nothing else does
+PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
+PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
+PR_STATES = ("open", "merged", "closed", "all")
+PR_OPTS = {"--state", "--since", "--branch"}
+RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
+# so_pr_index's revert word: "revert-safe" is not one, and "reverted in #N" names the reverter.
+REVERT_RE = r"(?i)\brevert(s|ed|ing)?(?![-\w])(?!\s+(in|by)\b)"
+
+
+def pr_key(r):
+    return r["number"]
+
+
+def pr_name(forge, repo, host):
+    """The store's name of a repo: owner/repo on GitHub, host/owner/repo on Forgejo."""
+    return f"{host}/{repo}" if forge == "forgejo" else repo
+
+
+def pr_file(name):
+    return os.path.join(PRS_DIR, name.replace("/", "__") + ".jsonl")
+
+
+def utc(s):
+    t = when(s)
+    return iso(t.astimezone(timezone.utc)) if t else None
+
+
+def revert_of(title, body):
+    """What a PR's title and body say it reverts, parsed once here for so_pr_index: {title (the
+    `Revert "<title>"` button's), prs (each `#N` after a revert word on its line), shas ("This
+    reverts commit <sha>")}, or None when no revert word appears."""
+    text = f"{title or ''}\n{body or ''}"
+    if not re.search(REVERT_RE, text):
+        return None
+    m = re.match(r'^Revert "(.*)"$', title or "")
+    refs = []
+    for line in text.split("\n"):
+        hit = re.search(REVERT_RE + r"(?P<rest>.*)", line)
+        if hit:
+            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", hit.group("rest"))]
+    return {"title": m.group(1) if m else None, "prs": refs,
+            "shas": re.findall(r"(?i)this reverts commit ([0-9a-f]{7,40})", text)}
+
+
+def pr_row(forge, name, p, branch, merged):
+    body = p.get("body") or ""
+    head, base, user = p.get("head") or {}, p.get("base") or {}, p.get("user") or {}
+    return {"forge": forge, "repo": name, "number": p["number"], "branch": branch, "base": base.get("ref"),
+            "state": "MERGED" if merged else ("OPEN" if p.get("state") == "open" else "CLOSED"),
+            "draft": bool(p.get("draft")), "title": p.get("title"), "author": user.get("login"),
+            "created_at": utc(p.get("created_at")), "updated_at": utc(p.get("updated_at")),
+            "closed_at": utc(p.get("closed_at")), "merged_at": utc(p.get("merged_at")) if merged else None,
+            "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),
+            "url": p.get("html_url"),
+            "links": sorted(set(re.findall(r"claude\.ai/code/(session_[A-Za-z0-9]+)", body))),
+            "revert": revert_of(p.get("title"), body)}
+
+
+def gh_pr_row(repo, p):
+    return pr_row("github", repo, p, (p.get("head") or {}).get("ref"), bool(p.get("merged_at")))
+
+
+def fj_pr_row(name, p, had):
+    """Forgejo's head.ref reads refs/pull/N/head once the branch is deleted: the branch the store
+    already had stays."""
+    ref = (p.get("head") or {}).get("ref") or ""
+    branch = (had or {}).get("branch") if ref.startswith("refs/") else ref
+    return pr_row("forgejo", name, p, branch, bool(p.get("merged")))
+
+
+def fetch_prs(forge, repo, host, entry):
+    """Every PR updated since the last sync less OVERLAP, newest update first; a repo never synced
+    reads its whole history (PR_PAGES pages). GitHub's first page is conditional on the ETag.
+    -> (PRs, etag); PRs is None when that page is unchanged (a 304)."""
+    stop = parse_iso(entry["synced_at"]) - OVERLAP if entry.get("synced_at") else None
+    out, etag = [], None
+    for page in range(1, PR_PAGES + 1):
+        if forge == "forgejo":
+            got = fj(host, f"repos/{repo}/pulls?state=all&sort=recentupdate&limit={FJ_PAGE}&page={page}")
+            size = FJ_PAGE
+        else:
+            path = f"repos/{repo}/pulls?state=all&sort=updated&direction=desc&per_page={PER_PAGE}&page={page}"
+            size = PER_PAGE
+            if page == 1:
+                got, etag = gh_page(path, entry.get("etag"))
+                if got is None:
+                    return None, etag
+            else:
+                got = gh(path)
+        batch = got if isinstance(got, list) else []
+        out.extend(batch)
+        if len(batch) < size:
+            break
+        oldest = when(batch[-1].get("updated_at"))
+        if stop and oldest and oldest < stop:
+            break
+    return out, etag
+
+
+def sync_prs(forge, repo, host, t, wait=True):
+    """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
+    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a
+    held lock is that error at once: agent-land never stalls behind a pass's cold read."""
+    name = pr_name(forge, repo, host)
+    os.makedirs(PRS_DIR, exist_ok=True)
+    with open(os.path.join(PRS_DIR, ".lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            return f"{name}: a pass holds the PR store"
+        state = read_sync(path=PRS_SYNC)
+        last, n, torn = read_ledger(path=pr_file(name), key=pr_key)
+        entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
+        last, err = last or {}, None
+        try:
+            got, etag = fetch_prs(forge, repo, host, entry)
+            if forge == "forgejo":
+                rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
+            else:
+                rows = [gh_pr_row(repo, p) for p in got or [] if "number" in p]
+            write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
+            entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
+        except GhError as e:
+            print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
+            entry["error"] = err = str(e)
+        state[name] = entry
+        write_json(PRS_SYNC, {"generated_at": iso(t), "repos": state})
+    return err
+
+
+def pr_checks(forge, repo, rows):
+    """Each PR's CI on its head commit, from the run ledger: `ci` NONE, PENDING, FAIL or PASS (the
+    newest run of each workflow file, a workflow_dispatch run aside: a PR's checks never hold one,
+    fleet-sessions' gate_ci folds those in), and `red`, the failed runs' failed job ids from the job
+    archive, comma-separated, `-` for a run the archive has no jobs of yet."""
+    shas = {r.get("head_sha") for r in rows} - {None}
+    last, _, _ = read_ledger(f'"repo":"{repo.lower()}"')
+    newest = {}  # (sha, run id) -> the newest attempt's row
+    for r in (last or {}).values():
+        if r["forge"] == forge and r["repo"].lower() == repo.lower() and r.get("sha") in shas \
+                and r.get("event") != "workflow_dispatch":
+            k = (r["sha"], r["id"])
+            if k not in newest or (r.get("attempt") or 1) >= (newest[k].get("attempt") or 1):
+                newest[k] = r
+    by_wf = {}  # sha -> workflow file -> its newest run
+    for r in sorted(newest.values(), key=lambda r: (r.get("created_at") or "", r["id"])):
+        by_wf.setdefault(r["sha"], {})[r.get("path") or r.get("workflow")] = r
+    jobs = None
+    for p in rows:
+        runs = list(by_wf.get(p.get("head_sha"), {}).values())
+        failed = [r for r in runs if r.get("status") == "completed" and r.get("conclusion") in RED]
+        p["ci"] = ("NONE" if not runs else "PENDING" if any(r.get("status") != "completed" for r in runs)
+                   else "FAIL" if failed else "PASS")
+        ids = []
+        if p["ci"] == "FAIL":
+            if jobs is None:
+                jobs = read_ledger(f'"repo":"{repo.lower()}"', JOBS_LEDGER, job_key)[0] or {}
+            for r in failed:
+                rec = jobs.get((forge, repo.lower(), r["id"], r.get("attempt") or 1))
+                ids += [str(j["id"]) for j in (rec or {}).get("jobs") or [] if j.get("conclusion") in RED] if rec else ["-"]
+        p["red"] = ",".join(ids) or "-"
+
+
+def prs(argv, t):
+    """`prs <repo|all> [--state S] [--since T] [--branch B] [--checks]` -> (exit code, JSON, reason). With
+    all, a stale repo is named in the reason (exit 1) and the rest still print, so one broken repo never
+    hides every other."""
+    checks = "--checks" in argv
+    argv = [a for a in argv if a != "--checks"]
+    usage = "prs <owner/repo|host/owner/repo|all> [--state open|merged|closed|all] [--since T] [--branch B] [--checks]"
+    if not argv or argv[0].startswith("-") or len(argv) % 2 != 1:
+        return 2, "", usage
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    if set(opts) - PR_OPTS or len(opts) * 2 != len(argv) - 1 or any(v.startswith("--") for v in opts.values()):
+        return 2, "", usage
+    state = opts.get("--state", "all").lower()
+    if state not in PR_STATES:
+        return 2, "", usage
+    try:
+        since = parse_iso(opts["--since"]) if "--since" in opts else None
+    except ValueError:
+        return 2, "", "prs: --since is YYYY-MM-DDTHH:MM:SSZ"
+    synced = read_sync(path=PRS_SYNC)
+    want = argv[0].lower()
+    if want == "all":
+        try:  # a repo dropped from the list is no longer read, so it never reads as stale
+            listed = {pr_name(f, r, h).lower() for f, r, _, h in read_repos() if has_prs(f, r)}
+        except OSError:
+            listed = None
+        names = sorted(k for k in synced if listed is None or k.lower() in listed)
+    else:
+        names = [k for k in synced if k.lower() == want]
+    if not names:
+        return 3, "", f"{argv[0]} is not in the PR store ({REPOS})"
+    out, stale = [], []
+    for name in names:
+        entry, at = synced[name], when(synced[name].get("synced_at"))
+        last = None
+        if at and at >= t - STALE:
+            last, _, _ = read_ledger(path=pr_file(name), key=pr_key)
+        if last is None:
+            stale.append(stale_why(f"{name}: PRs", entry) if not at or at < t - STALE
+                         else f"{name}: no PR store at {pr_file(name)}")
+            continue
+        rows = [r for r in last.values()
+                if (state == "all" or r.get("state") == state.upper())
+                and ("--branch" not in opts or r.get("branch") == opts["--branch"])
+                and not (since and (when(r.get("updated_at")) or since) < since)]
+        rows.sort(key=lambda r: -r["number"])
+        if checks and rows:
+            forge = rows[0]["forge"]
+            pr_checks(forge, name.split("/", 1)[1] if forge == "forgejo" else name, rows)
+        out += rows
+    if stale and want != "all":
+        return 1, "", stale[0]
+    return (1 if stale else 0), json.dumps(out, separators=(",", ":")), "\n".join(stale)
+
+
+def sync_prs_cmd(argv, t):
+    """`sync-prs <repo>...`: refresh those repos' PR stores now (agent-land, after a merge)."""
+    if not argv:
+        return 2, "sync-prs <owner/repo|host/owner/repo>..."
+    try:
+        listed = {pr_name(f, r, h).lower(): ("github" if f == PRS_ONLY else f, r, h)
+                  for f, r, _, h in read_repos() if has_prs(f, r)}
+    except OSError as e:
+        return 1, f"no repo list: {e}"
+    missing = [a for a in argv if a.lower() not in listed]
+    if missing:
+        return 3, f"{', '.join(missing)} not in the repo list ({REPOS})"
+    errs = [e for e in (sync_prs(*listed[a.lower()], t, wait=False) for a in argv) if e]
+    return (1, "; ".join(errs)) if errs else (0, "")
 
 
 def run_key(r):
@@ -575,7 +847,7 @@ def read_ledger(repo=None, path=None, key=run_key):
 
 def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
     """Append the rows that changed since their key's last row. Rewrite instead, through a tmp
-    file, when a run has aged past `keep` or superseded rows outnumber live ones. -> the rows the
+    file, when a run has aged past `keep` (None keeps every key) or superseded rows outnumber live ones. -> the rows the
     file now holds; `last` is left holding only the live runs."""
     path = path or LEDGER
     changed = []
@@ -583,7 +855,7 @@ def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
         if last.get(key(r)) != r:
             last[key(r)] = r
             changed.append(r)
-    live = {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - keep}
+    live = dict(last) if keep is None else {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - keep}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     line = lambda r: json.dumps(r, separators=(",", ":")) + "\n"
     if len(live) < len(last) or n + len(changed) - len(live) > len(live):
@@ -703,9 +975,15 @@ def direct_jobs(repo, runs_last, jobs_last, exporter, budgets, t):
     return out
 
 
-def read_sync(part="repos"):
+def stale_why(label, entry):
+    """The reason a reader gets for a repo last synced longer ago than STALE."""
+    why = f": {entry['error']}" if entry.get("error") else ""
+    return f"{label} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
+
+
+def read_sync(part="repos", path=SYNC):
     try:
-        with open(SYNC) as f:
+        with open(path) as f:
             return json.load(f).get(part) or {}
     except (OSError, ValueError, AttributeError):
         return {}
@@ -766,8 +1044,7 @@ def runs(argv, t):
     if until and synced and until <= t and not complete:
         return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
     if not complete and (not synced or synced < t - STALE):
-        why = f": {entry['error']}" if entry.get("error") else ""
-        return 1, f"{argv[0]} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
+        return 1, stale_why(argv[0], entry)
     last, _, _ = read_ledger(f'"repo":"{name.lower()}"')
     if last is None:
         return 1, f"no ledger at {LEDGER}"
@@ -1072,12 +1349,20 @@ def main(argv):
         rc, out = runs(argv[1:], now())
         print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
-    if argv and argv[0] == "jobs":
-        rc, out = jobs(argv[1:])
-        print(out, file=sys.stdout if rc == 0 else sys.stderr)
+    if argv and argv[0] == "prs":
+        rc, out, why = prs(argv[1:], now())
+        if out:
+            print(out)
+        if why:
+            print(why, file=sys.stderr)
+        return rc
+    if argv and argv[0] in ("jobs", "sync-prs"):
+        rc, out = jobs(argv[1:]) if argv[0] == "jobs" else sync_prs_cmd(argv[1:], now())
+        if out:
+            print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, jobs, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, jobs, prs, sync-prs, --help)", file=sys.stderr)
         return 2
     try:
         repos = read_repos()
@@ -1100,6 +1385,9 @@ def main(argv):
             k = (r["forge"], r["repo"])
             opened[k] = min(opened.get(k, c), c)
     for forge, repo, base, host in repos:
+        if forge == PRS_ONLY:  # the PR store alone: no runs, schedules or quarantine
+            bad += bool(sync_prs("github", repo, None, t))
+            continue
         rows = []
         entry = dict(sync.get(f"{forge}:{repo}") or {})
         p = prev.get(repo) if forge == "github" else None
@@ -1136,6 +1424,8 @@ def main(argv):
         # ledger goes first: a crash between the two re-reads the repo, it never skips it.
         n, torn = write_ledger(last, n, torn, rows, t), False
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
+        if has_prs(forge, repo) and sync_prs(forge, repo, host, t):
+            bad += 1
     write_json(STATE, {"generated_at": iso(t), "repos": out})
     quarantine_pass(repos, last, t)
     print(STATE)
