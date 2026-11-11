@@ -66,7 +66,10 @@ install_work_profile() {
     local root="$1"
     local overlay="$PRIVATE_FIREFOX/work.user.js" profile="$1/work"
     [[ -f "$overlay" ]] || return 0
-    if [[ ! -d "$profile" ]]; then
+    # profiles.ini sits in the root on Linux and one level up on macOS. -P work needs the entry, not just the dir.
+    local ini="$root/profiles.ini"
+    [[ -f "$ini" ]] || ini="$(dirname "$root")/profiles.ini"
+    if ! grep -qx 'Name=work' "$ini" 2>/dev/null; then
         local firefox_bin="${FIREFOX_BIN:-firefox}"
         [[ "$(uname -s)" == Darwin && -z "${FIREFOX_BIN:-}" ]] && firefox_bin=/Applications/Firefox.app/Contents/MacOS/firefox
         "$firefox_bin" -CreateProfile "work $profile" >/dev/null 2>&1 || { echo "Warning: could not create the work profile at $profile"; return 0; }
@@ -81,7 +84,9 @@ for root in "$HOME/.mozilla/firefox:Firefox" "$MAC_SUPPORT/Firefox/Profiles:Fire
             "$HOME/.floorp:Floorp" "$MAC_SUPPORT/Floorp/Profiles:Floorp"; do
     if find_and_install "${root%:*}" "${root##*:}"; then
         installed=$((installed + 1))
-        [[ "${root##*:}" == Firefox ]] && install_work_profile "${root%:*}"
+        if [[ "${root##*:}" == Firefox ]]; then
+            install_work_profile "${root%:*}"
+        fi
     fi
 done
 

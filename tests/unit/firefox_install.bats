@@ -86,7 +86,7 @@ STUB
 
 # A stub firefox: -CreateProfile "name dir" makes the dir, as the real one does.
 stub_firefox() {
-  printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/firefox.log"\n[ "$1" = -CreateProfile ] && mkdir -p "${2#* }"\n' >"$HOME/bin/firefox"
+  printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/firefox.log"\n[ "$1" = -CreateProfile ] && mkdir -p "${2#* }" && printf "[ProfileW]\\nName=work\\n" >>"$HOME/.mozilla/firefox/profiles.ini"\n' >"$HOME/bin/firefox"
   chmod +x "$HOME/bin/firefox"
   export FIREFOX_BIN="$HOME/bin/firefox"
 }
@@ -108,10 +108,20 @@ stub_firefox() {
   stub_firefox
   echo 'user_pref("browser.startup.homepage", "https://new.test/");' >"$DOTFILES_PRIVATE/.config/firefox/work.user.js"
   mkdir -p "$HOME/.mozilla/firefox/work"
+  printf '[Profile9]\nName=work\nPath=work\n' >"$HOME/.mozilla/firefox/profiles.ini"
   run bash "$REPO/.config/firefox/install.sh"
   assert_success
   [ ! -e "$HOME/firefox.log" ]
   grep -q 'https://new.test/' "$HOME/.mozilla/firefox/work/user.js"
+}
+
+@test "a work dir missing from profiles.ini is registered" {
+  stub_firefox
+  echo 'user_pref("browser.startup.homepage", "https://a.test/");' >"$DOTFILES_PRIVATE/.config/firefox/work.user.js"
+  mkdir -p "$HOME/.mozilla/firefox/work"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  grep -q -- "-CreateProfile work" "$HOME/firefox.log"
 }
 
 @test "without work.user.js there is no work profile" {

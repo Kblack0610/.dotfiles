@@ -172,3 +172,21 @@ test("without a home set a day-old tab only discards", () => {
   const result = planTick([day], NOW, config({ homeSetSweepHours: 4 }), {}, []);
   assert.deepEqual(result, { discard: [day], sweep: [], close: [] });
 });
+
+test("two home pages that differ only in query pin one tab once", () => {
+  const open = tab("https://q.test/a");
+  const { pin, open: opened } = homeSetAction(["https://q.test/a?u=1", "https://q.test/a?u=2"], [open]);
+  assert.deepEqual(pin, [open]);
+  assert.deepEqual(opened, ["https://q.test/a?u=2"]);
+});
+
+test("a site already covered by a pinned tab gets no second pin", () => {
+  const moved = tab("https://cal.test/r/week", { pinned: true });
+  const copy = tab("https://cal.test/r");
+  assert.deepEqual(homeSetAction(["https://cal.test/r"], [moved, copy]), { pin: [], open: [] });
+});
+
+test("an unpinned home page is not swept", () => {
+  const home = tab("https://cal.test/r", { lastAccessed: NOW - 9 * DAY });
+  assert.deepEqual(planTick([home], NOW, config(), {}, HOME).sweep, []);
+});
