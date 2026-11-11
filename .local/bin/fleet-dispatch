@@ -81,6 +81,8 @@ unset _k _v
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# Its reply shape is the conf's SCHEMA; each call holds it to exactly the rows it sends (judge).
+: "${DISPATCH_SCHEMA:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${SCHEMA:-}")}"
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
@@ -1043,7 +1045,7 @@ cmd_candidates() {
 # call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
 # saying why: the call failed, the reply named no rule of the policy, or it left the row out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows
+  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows schema=()
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -1057,7 +1059,8 @@ judge() {
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
   # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
-  # The count is of the numbered lines themselves, so the two never disagree.
+  # The count is of the numbered lines themselves, so the two never disagree. Asking was not
+  # enough (2026-11-11, ucp-469 dropped from 41), so the call's schema holds the reply to it too.
   rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
     + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
   n=$(grep -c . <<<"$rows")
@@ -1073,8 +1076,15 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
   cid=$(judge_call_id)
+  # Claude Code checks the reply against this schema and hands a short one back to the model in
+  # the same call, so a dropped row is answered there instead of recorded as an error verdict.
+  if [ -n "$DISPATCH_SCHEMA" ]; then
+    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+      { rm -rf -- "$wd"; JUDGE_WHY="no readable schema at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+    schema=(--schema "$wd/schema.json")
+  fi
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD -p "$prompt" 2>"$wd/err")
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD ${schema[@]+"${schema[@]}"} -p "$prompt" 2>"$wd/err")
   rc=$?
   err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"

@@ -138,6 +138,8 @@ them — their independence comes from the `model:` frontmatter in
 | `ROLE_APPROVE` | `--allowedTools` | `permission` block | n/a: exec never prompts |
 | `AGENT_SCHEMA` | `--json-schema` | refused | `--output-schema` |
 
+`AGENT_SCHEMA` is the conf's `SCHEMA`, or the call's own `--schema <file>` when the caller knows more than the conf (fleet-dispatch holds the judge to exactly one verdict per row it sent). Claude Code checks a `--json-schema` reply with Ajv and hands a mismatch back to the model inside the call, so a count or a required field in the schema is enforced, not only asked for.
+
 `ROLE_MCP` controls what SPAWNS; denials control what may be CALLED. Both are
 needed. An allowlist alone still starts every user-scope server: that is how 11
 idle sessions each ended up holding a headed browser nobody asked for.

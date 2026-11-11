@@ -924,6 +924,24 @@ EOF
   grep -qF 'There are 3 rows above. Return exactly 3 verdicts' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
 }
 
+@test "judge: the call's schema holds the reply to exactly as many verdicts as rows (ucp-469)" {
+  DISPATCH_SCHEMA="$REPO_ROOT/.config/fleet-dispatch/verdicts.schema.json"
+  stub judge-stub '[ "$1" = --schema ] && cp "$2" "$NOTES_FIXTURE/schema.json"; echo "{\"verdicts\":[]}"'
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b; c c)"
+  assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
+  # the rest is the conf's schema, unchanged
+  assert_equal "$(jq -S 'del(.properties.verdicts.minItems, .properties.verdicts.maxItems)' "$NOTES_FIXTURE/schema.json")" \
+    "$(jq -S . "$DISPATCH_SCHEMA")"
+  # negative control: a schema that cannot be read makes no call and no verdict, so the rows are judged again
+  rm -f "$NOTES_FIXTURE/schema.json" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; DISPATCH_SCHEMA="$SANDBOX/missing.json"
+  run judge "$(c a)"
+  assert_failure
+  assert_output --partial 'no readable schema'
+  assert [ ! -e "$NOTES_FIXTURE/schema.json" ]
+  assert [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ]
+}
+
 @test "judge: a failed call is an error verdict for every row, with its reason, and the rows are judged again" {
   stub judge-stub 'echo "rate limited" >&2; exit 7'
   run judge '{"project":"game","stage":"beta","lane":"human","key":"a","text":"- [ ] a","tier":1,"line":"a"}'
