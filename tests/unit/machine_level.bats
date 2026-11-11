@@ -48,7 +48,7 @@ mode() { echo "MACHINE_MODE=$1" > "$HOME/.agent/machine-mode.env"; }
 }
 
 @test "a level the levels file does not list scales nothing and says so" {
-  printf 'odd|2|2|1|as-today|turbo\n' > "$BATS_TEST_TMPDIR/modes"
+  printf 'odd|2|2|1|turbo\n' > "$BATS_TEST_TMPDIR/modes"
   export MACHINE_MODE_MODES="$BATS_TEST_TMPDIR/modes"
   run --separate-stderr scale DISPATCH_PER_PASS 3
   assert_success
@@ -57,7 +57,7 @@ mode() { echo "MACHINE_MODE=$1" > "$HOME/.agent/machine-mode.env"; }
 }
 
 @test "a mode row with no level column is mid" {
-  printf 'old|2|2|1|as-today\n' > "$BATS_TEST_TMPDIR/modes"
+  printf 'old|2|2|1\n' > "$BATS_TEST_TMPDIR/modes"
   export MACHINE_MODE_MODES="$BATS_TEST_TMPDIR/modes"
   run bash -c '. "$1"; machine_level' _ "$LIB"
   assert_output mid
@@ -66,12 +66,12 @@ mode() { echo "MACHINE_MODE=$1" > "$HOME/.agent/machine-mode.env"; }
 @test "every mode in the real modes file names a level the real levels file lists, and mid is all 1" {
   local levels
   levels="$(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/levels" | tail -n +2 | cut -d'|' -f1)"
-  while IFS='|' read -r m _ _ _ _ l; do
+  while IFS='|' read -r m _ _ _ l; do
     grep -qx "$l" <<< "$levels" || fail "mode $m names level '$l', not in levels"
   done < <(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/modes")
   run awk -F'|' '$1 == "mid" { for (i = 2; i <= NF; i++) if ($i != 1) bad = 1; found = 1 } END { exit !(found && !bad) }' \
     "$REPO_ROOT/.config/machine-mode/levels"
   assert_success
   # The default, the last row, stays mid: nothing set must be today's numbers.
-  assert_equal "$(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/modes" | tail -1 | cut -d'|' -f6)" mid
+  assert_equal "$(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/modes" | tail -1 | cut -d'|' -f5)" mid
 }
