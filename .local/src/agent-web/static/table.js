@@ -39,9 +39,24 @@ function tblSort(t) {
     opt(`${c.key}|${c.sort || c.next_dir}`, `sort: ${c.key}`, !!c.sort) + (c.sort ? opt(`${c.key}|${flip(c.sort)}`, `sort: ${c.key} reversed`, false) : "")).join("") + `</select>`;
 }
 
-// One dropdown per facet, each option the whole query that picks its value.
-const tblFacets = (t) => tblSort(t) + t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
-  f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
+// One facet's dropdown: a pill naming the column and what is ticked, opening a checklist of its
+// values with their counts. Each box's value is the whole query a tick gives (hub-core decides it:
+// ticks on one column OR, columns AND), so a tick is a plain change on [data-tq].
+function tblFacet(f) {
+  const on = f.on || [];
+  const label = on.length ? `${f.key}: ${on[0]}${on.length > 1 ? ` +${on.length - 1}` : ""}` : f.key;
+  const clear = on.length ? `<button type="button" class="tfclear" data-tqc="${esc(f.clear)}">clear ${esc(f.key)}</button>` : "";
+  return `<details class="tfacet${on.length ? " on" : ""}" data-fkey="${esc(f.key)}"><summary title="filter ${esc(f.key)}: tick one or more">${esc(label)}</summary><div class="tfmenu">${clear}` +
+    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") +
+    `</div></details>`;
+}
+
+// The facets each table's header drew under its columns, keyed by the summary's facets array (a
+// tab that redraws its header from a copy of the summary still shares that array). The bar draws
+// the rest: a column the tab does not show, or every facet when no header was drawn (no rows), so
+// a filter that empties the table can still be taken off. A caller draws the body before the bar.
+const tblDrawn = new WeakMap();
+const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map(tblFacet).join(""); };
 // One count chip, here and on the tabs that still filter their own lists.
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
@@ -68,12 +83,20 @@ function tblBar(id, t, hint, chips = true, days = "") {
 // `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
 // on a tab sorts apart from the first by naming its own.
 function tblHead(t, labels, pre = "t") {
-  return "<tr>" + t.columns.filter((c) => labels[c.key]).map((c) => {
+  const cols = t.columns.filter((c) => labels[c.key]);
+  const facet = new Map((t.facets || []).map((f) => [f.key, f]));
+  const mine = cols.filter((c) => facet.has(c.key));
+  if (t.facets) tblDrawn.set(t.facets, new Set(mine.map((c) => c.key)));
+  // The filter row under the headers: a column with a facet carries its dropdown (fleet-platform's
+  // filter row, multi-pick here). tblStamp skips it; a phone shows it as a strip of pills.
+  const filters = mine.length ? `<tr class="tfilters" data-phone="filters">` +
+    cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key))}</th>` : `<td></td>`)).join("") + "</tr>" : "";
+  return "<tr>" + cols.map((c) => {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
     return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
-  }).join("") + "</tr>";
+  }).join("") + "</tr>" + filters;
 }
 
 // The button a capped body ends in; tblTab's listener answers `data-all` (t.all, reset by a view change).
@@ -91,6 +114,8 @@ function tblPatch(e) {
   if (e.type === "change" && t.dataset.tq != null) return { q: t.value };
   if (e.type === "change" && t.dataset.twin != null) return { [t.dataset.twin]: t.value };
   if (e.type !== "click" || !t.closest) return null;
+  const clear = t.closest("[data-tqc]");
+  if (clear) return { q: clear.dataset.tqc };
   const sort = t.closest("[data-tsort]");
   if (sort) return { sort: sort.dataset.tsort, dir: sort.dataset.tsort && sort.dataset.tdir === "asc" ? "asc" : "" };
   const chip = t.closest("[data-ts]");
@@ -100,7 +125,9 @@ function tblPatch(e) {
   return null;
 }
 
-const tblDropdown = (el) => el?.dataset?.tq !== undefined || el?.dataset?.tsv !== undefined || (el?.dataset?.twin !== undefined && el.dataset.tval === undefined);
+// A native control whose pick is done: it lets go of focus so the redraw can replace it. A facet's
+// checkbox is not one; its menu stays open for the next tick (tblMenuKeep).
+const tblDropdown = (el) => el?.type !== "checkbox" && (el?.dataset?.tq !== undefined || el?.dataset?.tsv !== undefined || (el?.dataset?.twin !== undefined && el.dataset.tval === undefined));
 
 // One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
 //   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
@@ -144,22 +171,22 @@ function tblTab(o) {
     const v = table(), f = document.activeElement;
     if (!v || !$(id + "-body")) return false;
     if (f?.id !== id + "-q" && (!tblDropdown(f) || !f.closest?.(`#${id}-facets`))) return false;
+    paint($(id + "-body"), o.body(t));
     if (f.id === id + "-q") paint($(id + "-facets"), facets(v));
     if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
-    paint($(id + "-body"), o.body(t));
     around();
     return true;
   };
   // The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
   t.redraw = () => {
     const v = table();
+    paint($(id + "-body"), o.body(t));
     if ($(id + "-facets")) paint($(id + "-facets"), facets(v));
     if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
-    paint($(id + "-body"), o.body(t));
     around();
   };
   const wrap = o.wrap || ((html) => html);
-  t.html = () => part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + part("body", o.body)) + part("tail", o.tail);
+  t.html = () => { const body = part("body", o.body); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + body) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;
@@ -209,7 +236,7 @@ function tblStamp(table) {
   table.classList.add("tphone");
   head.dataset.phone = "head";
   for (const tr of rows) {
-    if (tr.cells.length !== heads.length) continue;
+    if (tr.cells.length !== heads.length || tr.dataset.phone === "filters") continue;
     tr.dataset.phone = "row";
     [...tr.cells].forEach((td, i) => {
       // A control is never hidden: a row's detail need not repeat its buttons.
@@ -221,10 +248,70 @@ function tblStamp(table) {
   }
 }
 
+// The facet menu open, by its table block (data-tbl) and column, and the value last ticked: a
+// tick re-reads the table and the redraw replaces the menu, so each new draw opens it again with
+// focus on that box. One menu is open at a time.
+let tblMenu = null;
+const tblWhere = (d) => d.closest("[data-tbl]")?.dataset.tbl || "";
+
+// A menu sits in a scrolling panel, so it is fixed to the page under its pill rather than clipped.
+function tblPlace(d) {
+  const m = d.querySelector(".tfmenu"), r = d.querySelector("summary")?.getBoundingClientRect?.();
+  if (!m || !r) return;
+  m.style.top = `${Math.round(r.bottom + 2)}px`;
+  m.style.left = `${Math.round(Math.max(4, Math.min(r.left, innerWidth - m.offsetWidth - 4)))}px`;
+}
+
+function tblMenuKeep(root) {
+  if (!tblMenu || !root.querySelectorAll) return;
+  const ds = [...(root.matches?.("details.tfacet") ? [root] : []), ...root.querySelectorAll("details.tfacet")];
+  const d = ds.find((x) => x.dataset.fkey === tblMenu.key && tblWhere(x) === tblMenu.tbl);
+  if (!d) return;
+  d.open = true;
+  tblPlace(d);
+  const box = [...d.querySelectorAll("input[data-fv]")].find((i) => i.dataset.fv === tblMenu.fv);
+  box?.focus({ preventScroll: true });
+}
+
+function tblMenuShut(except) {
+  document.querySelectorAll("details.tfacet[open]").forEach((d) => { if (d !== except) d.open = false; });
+}
+
+if (typeof document !== "undefined" && document.addEventListener) {
+  // toggle does not bubble; a capture listener sees every menu open and close.
+  document.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (!d.matches?.("details.tfacet")) return;
+    if (d.open) {
+      tblMenuShut(d);
+      if (tblMenu?.key !== d.dataset.fkey || tblMenu?.tbl !== tblWhere(d)) tblMenu = { tbl: tblWhere(d), key: d.dataset.fkey, fv: null };
+      tblPlace(d);
+    } else if (d.isConnected && tblMenu?.key === d.dataset.fkey && tblMenu?.tbl === tblWhere(d)) tblMenu = null;
+  }, true);
+  document.addEventListener("change", (e) => {
+    const d = e.target.closest?.("details.tfacet");
+    if (d && e.target.dataset.fv != null) tblMenu = { tbl: tblWhere(d), key: d.dataset.fkey, fv: e.target.dataset.fv };
+  }, true);
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest?.("details.tfacet")) { tblMenu = null; tblMenuShut(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    const d = e.key === "Escape" && e.target.closest?.("details.tfacet[open]");
+    if (!d) return;
+    tblMenu = null;
+    d.open = false;
+    d.querySelector("summary")?.focus();
+  });
+  const follow = () => document.querySelectorAll("details.tfacet[open]").forEach(tblPlace);
+  document.addEventListener("scroll", follow, true);
+  if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", follow);
+}
+
 function tblStampAdded(records) {
   const tables = new Set();
   for (const r of records) for (const n of r.addedNodes) {
     if (n.nodeType !== 1) continue;
+    tblMenuKeep(n);
     const own = n.closest("table.tbl");
     if (own) tables.add(own);
     n.querySelectorAll("table.tbl").forEach((t) => tables.add(t));

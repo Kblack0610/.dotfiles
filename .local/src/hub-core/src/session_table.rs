@@ -120,7 +120,7 @@ impl Row for SessionRow {
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["project", "harness"];
+    const FACETS: &'static [&'static str] = &["bucket", "project", "acct", "harness"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
 

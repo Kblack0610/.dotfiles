@@ -916,7 +916,7 @@ impl crate::table::Row for QueueRow<'_> {
     /// Queue sections list them.
     const STATES: &'static [&'static str] =
         &["all", "needs you", "running", "on a PR", "up next", "done"];
-    const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
 

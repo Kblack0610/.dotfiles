@@ -327,6 +327,24 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tbl .n { text-align: right; font-family: var(--mono); }
 .tbl tr.allrow td { font-weight: 600; border-bottom: 1px solid var(--muted); }
 .thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
+/* A facet's dropdown (table.js tblFacet): a pill under its column's header, tinted while it filters,
+   opening a checklist of the column's values with counts. The menu is fixed to the page under its
+   pill (table.js tblPlace), so a scrolling panel does not clip it. */
+.tbl tr.tfilters th { padding: 2px 6px 4px; font-weight: 400; }
+.tbl tr.tfilters td { padding: 0; }
+.tfacet { display: inline-block; vertical-align: middle; }
+.tfacet > summary { list-style: none; cursor: pointer; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; white-space: nowrap; max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.tfacet > summary::-webkit-details-marker { display: none; }
+.tfacet > summary::after { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 2px 3px 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+.tfacet > summary:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
+.tfacet.on > summary { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.tfmenu { position: fixed; z-index: 40; min-width: 12em; max-width: min(320px, 92vw); max-height: min(360px, 60vh); overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px; box-shadow: 0 6px 18px rgb(0 0 0 / 25%); }
+.tfmenu label { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; color: var(--ink); white-space: nowrap; }
+.tfmenu label:hover { background: var(--bg); }
+.tfmenu label > span:first-of-type { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.tfmenu .n { color: var(--muted); font-family: var(--mono); }
+.tfclear { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 3px 6px; font-size: 12px; color: var(--accent); cursor: pointer; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.bfilter .tfacet { margin: 0 2px; }
 .tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
@@ -414,6 +432,14 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.tphone, .tbl.tphone > tbody { display: block; font-size: 13px; }
   .tbl.tphone .btn { min-height: 40px; }
   .tbl.tphone > * > tr[data-phone=head] { display: none; }
+  /* The filter row folds to a strip of pills over the rows, empty cells gone, the menu full width. */
+  .tbl.tphone > * > tr[data-phone=filters] { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .tbl.tphone > * > tr[data-phone=filters] > td { display: none; }
+  .tbl.tphone > * > tr[data-phone=filters] > th { border: 0; padding: 0; }
+  .tfacet > summary { min-height: 40px; box-sizing: border-box; display: flex; align-items: center; font-size: 13px; }
+  .tfmenu { left: 4px !important; right: 4px; max-width: none; }
+  .tfmenu label, .tfclear { min-height: 40px; box-sizing: border-box; font-size: 14px; }
+  .tfclear { display: flex; align-items: center; }
   .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
   .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
