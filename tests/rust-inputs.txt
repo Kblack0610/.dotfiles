@@ -1,0 +1,9 @@
+# Files outside a crate's directory that its build or its tests read: <crate dir> <path or dir/>.
+# tests/pick.sh rust picks the crate when a pull request touches one. unit/pick.bats fails when a
+# crate source names an outside path (include_str!, include_bytes!, CARGO_MANIFEST_DIR) not listed.
+.local/src/agent-panel .config/agent-panel/time-use.conf
+.local/src/agent-panel .local/bin/claude-recall
+.local/src/agent-panel .local/src/tmux/
+.local/src/agent-web   .local/src/web-kit/
+.local/src/hub-core    .config/comms-lint/
+.local/src/hub-core    .local/bin/comms-lint

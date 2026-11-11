@@ -136,6 +136,8 @@ CI (`.github/workflows/tests.yml`), under the doctrine in `~/.local/src/docs/ci.
 - `tests/shard.sh` splits the files across the matrix by the per-file seconds the `weights` job reads from the newest green main run's JUnit (`shard.sh --junit`), so there is no table to regenerate. Each shard writes its predicted and actual seconds to the Summary. A shard near its cap: split its heaviest file (a file never spans shards) or add a shard to the matrix.
 - `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
 
+The `rust` job runs `make test-rust CRATES=...` on what `tests/pick.sh rust` picks on a pull request: the crates whose directory or `tests/rust-inputs.txt` lines the change touches, plus the crates that depend on them by path; a change to the rust gate files runs all of them, and so does main. A crate that reads a new file outside its directory adds a line there (`unit/pick.bats` fails until it does).
+
 ## 6. Land it
 
 One concern per PR. Hand off rather than improvising:

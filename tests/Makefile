@@ -53,7 +53,7 @@ help:
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
-	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates"
+	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates (CRATES=<dirs> for some)"
 	@echo ""
 	@echo "container-only (real tmux servers; NEVER runs on this machine):"
 	@echo "  make test-ui      the tmux ui tier, inside docker"
@@ -150,7 +150,7 @@ lint:
 # deliberately not part of test-container -- the test image has no Rust toolchain, and
 # rust.sh skips cleanly when cargo is absent rather than going red on that.
 test-rust:
-	@$(HERE)rust.sh
+	@$(HERE)rust.sh $(CRATES)
 
 clean:
 	@rm -rf $(ARTIFACTS)
