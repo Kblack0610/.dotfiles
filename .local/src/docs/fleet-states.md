@@ -58,6 +58,28 @@ This table is the one definition of every bucket: no other file restates one, an
 
 Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default branch is not a session: it is a `NIGHTLY` row in `fleet-sessions` output and is listed under `main` here (in practice a nightly or scheduled suite; the field keeps its name for its readers). A test red on several branches is not a session either: it is a `SHARED` row, listed under `shared`. A deployed checkout off its default branch is a `CHECKOUT` row, also listed under `main`.
 
+## Close verdict
+
+Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `/wind-down auto` and the shepherd read it and never re-decide; `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`). The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
+
+| # | Facts | Verdict |
+|---|---|---|
+| 1 | label `manual` | keep: the human keeps it |
+| 2 | PARKED | keep: its claude is gone |
+| 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
+| 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, a conflict) | keep: land it |
+| 5 | WORKING, STALLED, or NEEDS with no ask of its own (a dialog in its pane) | keep |
+| 6 | hand-started and idle under `FLEET_HAND_ACTIVE_MIN` (60) | keep: the human was here |
+| 7 | `finished` and no ask of its own | now |
+| 8 | dispatched, and its own asks are its only blockers | now: the answer carries on without the window |
+| 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere) | now: the queue holds the rest |
+| 10 | LANDED with a next phase | after: queue the next phases, then close |
+| 11 | CHAT quiet `FLEET_CHAT_CLOSE_H` (24h) | now; under it, after |
+| 12 | an ask of its own is open | after: the human answers it |
+| 13 | anything else | keep: its first blocker |
+
+Dispatched is the `@dispatch` window flag, a queue item with an `origin`, or a session on `FLEET_DISPATCH_WORLD` (lab); anything else is hand-started. Quiet is the smaller of `idle_min` and `age_min`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
+
 ## Schema (version 1)
 
 ```

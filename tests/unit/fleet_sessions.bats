@@ -3026,3 +3026,73 @@ main_change() {
   [ "$(jq -r .main_red <<<"$session")" = true ]
   [ "$(jq -r '.owners | length' <<<"$main")" = 0 ]
 }
+
+# verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the rule table in
+# fleet-states.md). base is a dispatched lab session, finished, idle an hour, nothing open.
+verdict() {
+  jq -nr --argjson idle 20 --argjson hand 60 --argjson chat 1440 --arg world lab \
+    '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
+      blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
+     | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
+}
+
+@test "close verdict: each rule of the fleet-states.md close table, first match wins" {
+  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(verdict '{bucket: "PARKED"}')" = "keep: parked: its claude is gone" ]
+  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
+  # Negative control: finished and dispatched, but its work is not on main.
+  [ "$(verdict '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
+  [ "$(verdict '{bucket: "WORKING"}')" = "keep: working" ]
+  [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging"]}')" = "keep: stalled: PR #9 closed without merging" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false}')" = "keep: a dialog waits on the human" ]
+  [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
+  [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 25h with no plan, PR or item" ]
+  [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "after: quiet 24h (now 300m)" ]
+  [ "$(verdict '{target: "hub/d:5", own_asks: 1, blockers: ["open ask Cd34"]}')" = "after: the human answers its ask" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, own_asks: 1, blockers: ["open ask Ab12", "next phase: 2"]}')" = "after: the human answers its ask" ]
+}
+
+@test "close verdict: dispatched is the window flag, the item origin or the dispatch world" {
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "now: plan finished, nothing open" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  [ "$(jq -r --argjson idle 20 --argjson hand 60 --argjson chat 1440 --arg world lab \
+       '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = keep ]
+}
+
+@test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
+  [ "$(jq -c --argjson idle 20 --argjson hand 60 --argjson chat 1440 --arg world lab \
+       '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
+  [ "$(jq -c --argjson idle 20 --argjson hand 60 --argjson chat 1440 --arg world lab \
+       '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
+  [ "$(jq -c --argjson idle 20 --argjson hand 60 --argjson chat 1440 --arg world lab \
+       '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
+  run json_rows < <(age_row 45)
+  assert_success
+  [ "$(jq -r '.close.verdict' <<<"$output")" != null ]
+}
+
+@test "close: lists the state document by verdict, close-now first, oldest quiet first" {
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  STATE_FILE="$FLEET_STATE_FILE"
+  jq -n '{sessions: [
+    {target: "lab/a:1", bucket: "WORKING", idle_min: 1, close: {verdict: "keep", why: "working"}},
+    {target: "lab/b:1", bucket: "DONE", idle_min: 30, phases_done: 1, phases_total: 2, pct: 50, close: {verdict: "now", why: "w1"}},
+    {target: "lab/c:1", bucket: "DONE", idle_min: 90, close: {verdict: "now", why: "w2"}},
+    {target: "hub/hub:4", bucket: "WORKING", labels: ["shepherd"], close: {verdict: "keep", why: "working"}},
+    {target: "lab/d:1", bucket: "LANDED", idle_min: 5, close: {verdict: "after", why: "w3"}}]}' > "$STATE_FILE"
+  run close_view
+  assert_success
+  assert_line --index 0 "after 1, keep 1, now 2"
+  [[ "${lines[1]}" == "now"*"c:1"*"w2" ]]
+  [[ "${lines[2]}" == "now"*"b:1"*"1/2 50%"*"w1" ]]
+  [[ "${lines[3]}" == "after"*"d:1"* ]]
+  [[ "${lines[4]}" == "keep"*"a:1"* ]]
+  [ "${#lines[@]}" = 5 ]
+  run close_view --json
+  [ "$(jq -sr 'map(.target) | join(" ")' <<<"$output")" = "lab/c:1 lab/b:1 lab/d:1 lab/a:1" ]
+}
