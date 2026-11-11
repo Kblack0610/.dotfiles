@@ -599,6 +599,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     // them here or Infra prints "reading".
     if matches!(tab, None | Some(Tab::Infra)) {
         a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
+        // `--tab 'infra machines'` prints that inner tab; with none named, every one prints.
+        a.tab = Tab::Infra;
+        a.infra_all = section.is_none();
+        a.open_query(section.clone());
     }
     // Home's NEEDS YOU joins the human-sheet rows.
     if matches!(tab, None | Some(Tab::Home)) {
