@@ -148,14 +148,10 @@ pub struct RunTime {
 }
 
 impl RunTime {
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
-}
-
-/// The repo as a person names it: the part after the owner.
-pub fn short_repo(repo: &str) -> &str {
-    repo.rsplit('/').next().unwrap_or(repo)
 }
 
 impl Run {
@@ -173,8 +169,9 @@ impl Run {
         matches!(self.state.as_str(), "green" | "red" | "other")
     }
 
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
 }
 
@@ -209,7 +206,7 @@ impl Row for Run {
         };
         match col {
             "started" => Val::Num(self.started as f64),
-            "repo" => text(self.short_repo()),
+            "repo" => text(&self.project()),
             "forge" => text(&self.forge),
             "workflow" => text(&self.workflow),
             "branch" => text(&self.branch),
@@ -609,7 +606,7 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
     out.sort_by(|a, b| {
         let k = |t: &RunTime| {
             (
-                short_repo(&t.repo).to_string(),
+                t.project(),
                 std::cmp::Reverse(t.runs),
                 t.workflow.clone(),
                 t.repo.clone(),

@@ -24,10 +24,9 @@ setup() {
   cat > "$REAL_MAP" <<EOF
 {
   "paths": { "$REPO": "mono", "/elsewhere/tools": "tools" },
-  "aliases": { "monorepo": "mono" },
   "trackers": {
     "_comment": "a string value",
-    "mono": { "system": "none" },
+    "mono": { "system": "none", "names": ["monorepo"] },
     "taken": { "repo": "mono", "lab": "alpha", "type": "app" }
   }
 }
@@ -174,7 +173,7 @@ doctor"
 
 @test "refused: a name already in trackers" { refused taken --type app; }
 @test "refused: a repo key that already has a tracker entry" { refused mono --type app; }
-@test "refused: an alias" { refused monorepo --type app; }
+@test "refused: another spelling of a project" { refused monorepo --type app; }
 @test "refused: a bad name" { refused Bad.Name --type app; }
 @test "refused: no type" { refused epsilon; }
 @test "refused: a type outside the set" { refused epsilon --type client; }

@@ -24,7 +24,7 @@ gh     github       -   ref=Org
 aws    aws          -   project=playground lane=ci
 do     digitalocean -
 EOF
-  echo '{"aliases":{"engine":"playground"}}' > "$PROJECT_MAP"
+  echo '{"trackers":{"playground":{"names":["engine"]}}}' > "$PROJECT_MAP"
   for d in 01 02 03 04 05 06 07 08 09 10; do
     echo '{"fleet_cost":{"by_account":{"claude":{"usd":10},"claude-bnb":{"usd":30}},"other_harness":{"codex":{"usd":2}}}}' > "$TOKENS_DIR/2026-11-$d.json"
   done

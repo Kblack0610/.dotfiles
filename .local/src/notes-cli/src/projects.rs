@@ -12,9 +12,9 @@ use crate::daily;
 use crate::logging::Logger;
 use crate::md;
 use crate::project_tasks;
-use crate::registry::Registry;
 use crate::sheet::{self, V};
 use anyhow::{bail, Result};
+use project_map::Registry;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1686,7 +1686,7 @@ fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
 /// naming the orgs, because guessing which of two live sheets you meant is how edits land in the
 /// copy nothing reads.
 pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
-    let want = crate::registry::canonical(name.trim()).to_lowercase();
+    let want = project_map::canonical(name.trim()).to_lowercase();
 
     // Fast path: the active org has it AND it is the real sheet. No other org is consulted, so
     // the common case costs exactly what it did before.
@@ -6125,10 +6125,9 @@ mod shape_tests {
             &map,
             r#"{
               "paths": {"/src/alpha": "alpha"},
-              "aliases": {"alpha-old": "alpha"},
               "trackers": {
                 "_comment": "a string, not a tracker",
-                "alpha": {"type": "game"},
+                "alpha": {"type": "game", "names": ["alpha-old"]},
                 "beta": {"type": "game", "repo": "alpha"},
                 "gamma": {"type": "app", "repo": "alpha"},
                 "delta": {"type": "game"},
@@ -6168,7 +6167,7 @@ mod shape_tests {
         let o = overlays(&s);
         let index = s.p.project_index.as_ref().unwrap();
         let before = fs::read_to_string(index).unwrap();
-        // an alias is a name for a project, not a project
+        // another spelling of a project is not a project
         for name in ["zeta", "alpha-old"] {
             let err = new_project(&s.p, &s.log, name, &o).unwrap_err().to_string();
             assert!(err.contains("not a registered project"), "{err}");

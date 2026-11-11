@@ -235,14 +235,15 @@ pub(crate) fn name_of(target: &str) -> String {
 
 /// The project a session works in: the dispatcher's `project: item` when it has one, else the
 /// `project` its row carries, which `fleet-sessions` resolves from the cwd through
-/// `project-map.json` (a `freqtrade_trading_attempt-agent-3` worktree is `trader`). Never the tmux
+/// `project-map.json` (a `freqtrade_trading_attempt-agent-3` worktree is `trader`), read through
+/// the name index so an item filed under an old spelling counts under today's key. Never the tmux
 /// session name: that is a worktree, not a project.
 fn project_of(sess: &Value) -> String {
-    match s(sess, "dispatch").split_once(": ") {
+    let p = match s(sess, "dispatch").split_once(": ") {
         Some((p, _)) => p,
         None => s(sess, "project"),
-    }
-    .to_string()
+    };
+    project_map::canonical(p)
 }
 
 fn session(sess: &Value, at: i64) -> Option<Who> {

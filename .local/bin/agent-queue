@@ -780,14 +780,16 @@ move_to() {
 }
 
 # project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
-# start it: an alias becomes its project, a repo key with an `owner` in the registry becomes that
-# lab project (dotfiles has no sheet; its work counts on agent-runtime's), and the project must
-# reach a checkout through the registry (project-name.sh's project_repo_path). A game inside a
-# repo is runnable; a notes-only project is not. With no map there is nothing to ask.
+# start it: another spelling becomes its project (project_canonical), a repo key with an `owner` in
+# the registry becomes that lab project (dotfiles has no sheet; its work counts on agent-runtime's),
+# and the project must reach a checkout through the registry (project-name.sh's project_repo_path).
+# A game inside a repo is runnable; a notes-only project is not. With no map there is nothing to ask.
 project_resolve() {
   [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
-  local name
-  name="$(jq -r --arg p "$1" '(.aliases[$p] // $p) as $n | (.trackers[$n] | objects | .owner) // $n' "$AQ_MAP" 2>/dev/null)"
+  local name owner
+  name="$(project_canonical "$1")"
+  owner="$(project_field "$name" owner)"
+  name="${owner:-$name}"
   [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"
 }
 
@@ -801,10 +803,7 @@ project_resolve() {
 project_credit() {
   local p="" dir
   case "$2" in board:*) p="${2#board:}"; p="${p%%:*}" ;; esac
-  if [ -z "$p" ] && [ -n "$3" ] && [ -f "$AQ_MAP" ]; then
-    p="$(jq -r --arg c "${3%-*}" \
-      'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$AQ_MAP")"
-  fi
+  [ -n "$p" ] || [ -z "$3" ] || p="$(project_of_code "${3%-*}")"
   if [ -n "$p" ] && [ "$p" != "$1" ] && p="$(project_resolve "$p")" &&
     dir="$(project_repo_path "$1")" && [ -n "$dir" ] && [ "$(project_repo_path "$p")" = "$dir" ]; then
     printf '%s\n' "$p"

@@ -176,9 +176,9 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
     '3	hovercraft	hovercraft	Games' '2	story	Raiders	Games' '1	raiders	Raiders	Games')"
 }
 
-@test "a PR carries the project its repo is registered as, an alias, or its name without the dot" {
+@test "a PR carries the project its repo is registered as, another spelling of it, or its name without the dot" {
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  echo '{"paths":{"/x/dev/game":"raiders-game"},"aliases":{"tool_attempt":"tools"}}' > "$PROJECT_MAP_FILE"
+  echo '{"paths":{"/x/dev/game":"raiders-game"},"trackers":{"tools":{"names":["tool_attempt"]}}}' > "$PROJECT_MAP_FILE"
   { pr game 1 'feat: a' 2026-10-28T20:00:00Z; pr tool_attempt 2 'feat: b' 2026-10-28T19:00:00Z
     pr .cfg 3 'feat: c' 2026-10-28T18:00:00Z; } | merged
   pr .cfg 4 'feat: d' 2026-10-28T18:00:00Z | jq -s 'map(. + {createdAt: .closedAt, updatedAt: .closedAt, isDraft: false})' > "$GHD/open"

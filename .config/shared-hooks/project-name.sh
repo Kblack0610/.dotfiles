@@ -9,7 +9,7 @@
 #   1. App inside a repo (see below): a `trackers` entry with `repo` + `path`.
 #   2. Exact path lookup in project-map.json `paths`.
 #   3. The containing repo's canonical name.
-#   4. basename (leading dot stripped) looked up in `aliases`.
+#   4. basename (leading dot stripped) looked up in the name index (project_lookup).
 #   5. Under the worktree root with no checkout left: the registered repo its
 #      <repo>-<slug> name starts with.
 #   6. basename (leading dot stripped): a repo's checkout name, or outside any repo
@@ -54,6 +54,72 @@
 # private shell profile sets and what the tests use.
 project_map_file() {
   printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+}
+
+# ── the name index: any spelling of a project -> its key ─────────────────────
+#
+# A key names itself; then, per tracker sorted by key, each of its `names` and each `/`-suffix of
+# its `github` and `forgejo` slugs; then each `paths` checkout's basename. First entry wins, every
+# spelling lowercased, a leading dot also stripped. A lookup tries each `/`-suffix of the name,
+# longest first. The Rust copy is the `project-map` crate; tests/fixtures/project-names.tsv is
+# read by a test of each (rule: docs/operations/release-state.md, "Project identity").
+# shellcheck disable=SC2016
+_PN_JQ_DEFS='
+def _pn_sfx: ascii_downcase | split("/") | map(select(. != "")) as $s
+  | range(0; $s | length) as $i | $s[$i:] | join("/") | (., ltrimstr(".")) | select(. != "");
+def _pn_pairs:
+  . as $m
+  | ($m.trackers // {} | to_entries | map(select(.key != "default" and (.value | type) == "object")) | sort_by(.key)) as $t
+  | ((($m.paths // {} | .[] | strings), ($t[] | .key)) | [ascii_downcase, ., "key"]),
+    ($t[] | .key as $k | .value
+      | ((.names // [] | arrays | .[] | strings | ascii_downcase | [., $k, "names"]),
+         ((.github, .forgejo) | strings | _pn_sfx | [., $k, "slug"]))),
+    ($m.paths // {} | to_entries | sort_by(.key)[] | .value as $k | select($k | type == "string")
+      | .key | split("/") | last | ascii_downcase | (., ltrimstr(".")) | select(. != "") | [., $k, "path"]);
+def _pn_index: reduce _pn_pairs as $p ({}; if has($p[0]) then . else .[$p[0]] = $p[1] end);
+def _pn_lookup($i): first(_pn_sfx | $i[.] // empty) // empty;
+def _pn_canon($i): . as $n | (_pn_lookup($i) // ($n | split("/") | map(select(. != "")) | last // "" | ltrimstr(".")));
+'
+
+# project_lookup <name> -> the key <name> spells, or "" (status 1) when no entry names it.
+project_lookup() {
+  local map_file hit; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 1
+  hit=$(jq -r --arg n "$1" "$_PN_JQ_DEFS"' _pn_index as $i | $n | _pn_lookup($i)' "$map_file" 2>/dev/null) || true
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$hit"
+}
+
+# project_canonical <name> -> the key <name> spells, else its last path segment without a leading
+# dot (`Kblack0610/.dotfiles` -> `dotfiles`). The one shell answer to "which project is this name".
+project_canonical() {
+  project_lookup "$1" && return 0
+  local n="${1%/}"; n="${n##*/}"; printf '%s\n' "${n#.}"
+}
+
+# project_index_json -> the name index as one {"<spelling>": "<key>"} object, for a jq program
+# that resolves many names in one pass (`--argjson idx`, then `$idx[<lowercased name>]`).
+project_index_json() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || { echo '{}'; return 0; }
+  jq -c "$_PN_JQ_DEFS"' _pn_index' "$map_file" 2>/dev/null || echo '{}'
+}
+
+# project_spellings -> every index entry as `<spelling>\t<key>\t<source>` (key, names, slug,
+# path), including the ones a first entry shadowed: what project-map-doctor checks for a
+# spelling that names two keys.
+project_spellings() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r "$_PN_JQ_DEFS"' _pn_pairs | @tsv' "$map_file" 2>/dev/null || true
+}
+
+# project_of_code <code> -> the project whose row ids carry <code> (`ar` -> agent-runtime), or "".
+project_of_code() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg c "$1" 'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' \
+    "$map_file" 2>/dev/null || true
 }
 
 # resolve_project [dir] -> the canonical project for <dir> (default $PWD). The one entry point
@@ -115,19 +181,15 @@ project_repo_path() {
   printf '%s' "$repo"
 }
 
-# project_of_repos_json <repo-name>... -> {"<repo>": "<project>"} for GitHub repo names
-# (`.dotfiles`, `freqtrade_trading_attempt`), the question a PR list asks; one jq call.
-# A repo is the project its registered checkout (`paths`, matched by basename) names,
-# else its alias, else its name without a leading dot - the same steps
-# resolve_project_name takes for a repo root, without a checkout or its branch.
+# project_of_repos_json <repo-name>... -> {"<repo>": "<project>"} for forge repo names
+# (`.dotfiles`, `Studio/platform`), the question a PR list asks; one jq call over the
+# name index, each name project_canonical's answer.
 project_of_repos_json() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] || map_file=/dev/null
-  printf '%s\n' "$@" | jq -Rn --slurpfile m <(cat "$map_file" 2>/dev/null; echo '{}') '
-    ($m[0] // {}) as $map
-    | ($map.paths // {} | to_entries | map({key: (.key | split("/") | last), value}) | from_entries) as $by_base
-    | [inputs | select(. != "") | ltrimstr(".") as $b
-       | {key: ., value: ($by_base[.] // $map.aliases[.] // $map.aliases[$b] // $b)}] | from_entries'
+  printf '%s\n' "$@" | jq -Rn --slurpfile m <(cat "$map_file" 2>/dev/null; echo '{}') "$_PN_JQ_DEFS"'
+    ($m[0] // {} | _pn_index) as $i
+    | [inputs | select(. != "") | {key: ., value: _pn_canon($i)}] | from_entries'
 }
 
 # project_slug <project> -> a short name for a row that has no room: `trackers.<project>.slug`
@@ -334,16 +396,13 @@ project_anchor_keys() {
     | select(($t | type) != "object" or ($t.repo // "") == "" or ($t.path // "") != "")'
 }
 
-# project_known <name> -> 0 when <name> is a canonical project in the registry (a repo's
-# project, a tracker, or what an alias resolves to), 1 when it is not (an alias
-# itself, such as monorepo or waybar, or an unknown name), 2 when there is no registry.
+# project_known <name> -> 0 when <name> is itself a project key (a `paths` value or an object
+# tracker other than `default`), 1 when it is not (another spelling of one, such as monorepo or
+# waybar, or an unknown name), 2 when there is no registry.
 project_known() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 2
-  jq -e --arg n "$1" '
-    [(.paths // {} | .[]),
-     (.trackers // {} | to_entries[] | select(.value | type == "object") | .key),
-     (.aliases // {} | .[])] | index($n) != null' "$map_file" >/dev/null 2>&1
+  jq -e --arg n "$1" "$_PN_JQ_DEFS"' _pn_index[$n | ascii_downcase] == $n' "$map_file" >/dev/null 2>&1
 }
 
 resolve_project_name() {
@@ -367,7 +426,7 @@ resolve_project_name() {
         base="${repo##*/}"; base="${base#.}"
 
         repo_name=$(jq -r --arg p "$repo" '.paths[$p] // empty' "$map_file" 2>/dev/null || true)
-        [ -n "$repo_name" ] || repo_name=$(jq -r --arg b "${repo##*/}" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
+        [ -n "$repo_name" ] || repo_name=$(project_lookup "${repo##*/}" || true)
 
         if [ -n "$repo_name" ]; then
           # (a) longest repo-relative path prefix -> app
@@ -414,7 +473,7 @@ resolve_project_name() {
 
     if [ -n "$repo_name" ]; then echo "$repo_name"; return 0; fi
 
-    hit=$(jq -r --arg b "$base" '.aliases[$b] // empty' "$map_file" 2>/dev/null || true)
+    hit=$(project_lookup "$base" || true)
     if [ -n "$hit" ]; then echo "$hit"; return 0; fi
 
     # A path under the worktree root that is no checkout (reaped while its session ran,

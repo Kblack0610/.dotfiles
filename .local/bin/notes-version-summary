@@ -22,13 +22,10 @@
 # Model calls: the registered agents `version-summary` and `version-rewrite`
 # (`agentctl-run --agent <name> -p`). Their confs pick the route and model; their prompts are
 # ~/.config/notes-cockpit/prompts/. Each call is a line in ~/.local/state/agentctl/calls.jsonl.
-# Config (machine-local, not committed - see ~/.config/notes-cockpit/README.md):
-#   ~/.config/notes-cockpit/repos     project=/abs/repo[:pathfilter]  (optional; git-log source)
+# The git-log source is the project's checkout and `path` from the registry (project_repo_path).
 
 set -uo pipefail
 
-CONF_DIR="${NOTES_COCKPIT_CONF:-$HOME/.config/notes-cockpit}"
-REPOS_FILE="$CONF_DIR/repos"
 # What this summarizes is the personal notes vault, so the agents' confs say DATA_CLASS=personal
 # and agentctl-run refuses any route not safe for it. A fallback model that crossed that line
 # sent the vault to a paid client proxy on 2026-08-09; the route, not this script, now decides.
@@ -47,20 +44,11 @@ die() { echo "notes-version-summary: $*" >&2; exit 1; }
   || die "cannot load project-name.sh and git-release.sh"
 
 # ── config resolution ───────────────────────────────────────────────
-# repo_of <project> -> sets REPO + PATHFILTER from the repos map (case-insensitive key).
+# repo_of <project> -> sets REPO + PATHFILTER: the registry's checkout for the project's repo and
+# its `path` inside it ("" when the project is the whole repo, or has no checkout here).
 repo_of() {
-  REPO=""; PATHFILTER=""
-  [ -f "$REPOS_FILE" ] || return 0
-  local line val
-  line="$(awk -F= -v k="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" \
-    '!/^[[:space:]]*#/ { key=tolower($1); gsub(/[[:space:]]/,"",key); if (key==k){ sub(/^[^=]*=/,""); print; exit } }' \
-    "$REPOS_FILE")"
-  [ -z "$line" ] && return 0
-  val="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-  REPO="${val%%:*}"
-  case "$val" in *:*) PATHFILTER="${val#*:}" ;; esac
-  # ~ expansion
-  REPO="${REPO/#\~/$HOME}"
+  REPO="$(project_repo_path "$1")"
+  PATHFILTER="$(project_field "$1" path)"
 }
 
 # ── source gathering ────────────────────────────────────────────────

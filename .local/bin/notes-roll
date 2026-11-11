@@ -31,23 +31,9 @@ SELF="$(realpath "$0")"
   || . "$HOME/.config/shared-hooks/project-name.sh" 2>/dev/null \
   || . "$(dirname "$SELF")/../../.config/shared-hooks/project-name.sh" 2>/dev/null \
   || true
-declare -F project_repo_name >/dev/null 2>&1 \
-  || project_repo_name() { printf '%s' "${1:-}"; }
 
 USAGE="usage: notes-roll <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
 RENUMBER_TO=""  # set by roll_now: the version a --renumber roll opens
-
-# canon_namespaces <project> -> every ~/.agent namespace this project's sessions can be
-# under, one per line, most specific first: the project, then the repo it belongs to
-# (`trackers.<project>.repo`), e.g. notes-cockpit -> dotfiles.
-canon_namespaces() { # $1=project
-  local p="${1:-}" repo
-  [ -n "$p" ] || return 0
-  printf '%s\n' "$p"
-  repo="$(project_repo_name "$p" 2>/dev/null)"
-  [ -n "$repo" ] && [ "$repo" != "$p" ] && printf '%s\n' "$repo"
-  return 0
-}
 
 # ver_above A B: A strictly above B (git_version_ge, the one compare).
 ver_above() { [ "$(git_tag_version "$1")" != "$(git_tag_version "$2")" ] && git_version_ge "$1" "$2"; }
@@ -133,7 +119,7 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
   # versions/*.md at this point is the note just written, so the window has to be taken
   # from the note BEFORE it.
   if [ -n "$frozen" ] && command -v agent-usage >/dev/null 2>&1; then
-    local canon prev since block
+    local canon repo prev since block
     canon="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
     prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | sort -rV | sed -n 2p)"
     since=0
@@ -141,9 +127,13 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
       since="$(sed -n 's/.*<!-- *rolled: *\([0-9]\{1,\}\).*/\1/p' "$prev" | head -1)"
       [ -n "$since" ] || since="$(stat -c %Y "$prev" 2>/dev/null || echo 0)"
     fi
-    block="$(while IFS= read -r cn; do
-               [ -n "$cn" ] && agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
-             done < <(canon_namespaces "$canon"))"
+    # Its sessions are filed under the project, and under the repo it belongs to when it is
+    # part of one (`trackers.<project>.repo`: notes-cockpit -> dotfiles).
+    repo="$(project_repo_name "$canon" 2>/dev/null)"
+    [ "$repo" != "$canon" ] || repo=""
+    block="$(for cn in "$canon" ${repo:+"$repo"}; do
+               agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
+             done)"
     if [ -n "$block" ]; then
       printf '\n%s\n' "$block" >> "$frozen"
       echo "wrote the agent changelog into $(basename "$frozen")"

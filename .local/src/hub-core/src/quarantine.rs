@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::builds::short_repo;
 use crate::releases::Level;
 use crate::text::short_day;
 
@@ -120,7 +119,7 @@ impl Lane {
 
     /// One line: the count and its nearest end, then the nightly.
     pub fn says(&self) -> String {
-        let name = short_repo(&self.repo);
+        let name = project_map::canonical(&self.repo);
         let mut out = match &self.report {
             Some(r) => format!(
                 "{name}: {} quarantined over {} owner rows",
