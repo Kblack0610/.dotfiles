@@ -11,14 +11,34 @@ setup() {
   export FLEET_MAIN_TTL=0 # each test's gh answers decide
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
+  # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
+  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at"), no PRs when there is neither,
+  # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
+  # owner_repo name ends in <x>, and lists no
+  # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
   mkdir -p "$LEDGER_DIR"
   cat > "$SCHEDULES_SYNC" <<'SS'
 #!/usr/bin/env bash
 echo "$*" >> "$LEDGER_DIR/calls"
-[ "$1" = runs ] && [ $# -eq 2 ] || exit 2
-[ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
-cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []'
+case "$1" in
+  runs)
+    [ $# -eq 2 ] || exit 2
+    [ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
+    cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []' ;;
+  prs)
+    for f in "$LEDGER_DIR"/PRS_FAIL*; do
+      [ -e "$f" ] || continue
+      [ "${f##*/}" = PRS_FAIL ] || [[ "${2//\//_}" == *"${f##*/PRS_FAIL_}" ]] || continue
+      echo "$2: PR store last synced 2026-10-25T09:00:00Z" >&2; exit 1
+    done
+    [ ! -e "$LEDGER_DIR/PRS_UNLISTED" ] || { echo "$2 is not in the repo list" >&2; exit 3; }
+    f="$LEDGER_DIR/prs_${2//\//_}.tsv"; [ -f "$f" ] || f="$LEDGER_DIR/prs.tsv"
+    [ -f "$f" ] || { echo '[]'; exit 0; }
+    jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
+      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end)}]' "$f" ;;
+  *) exit 2 ;;
+esac
 SS
   chmod +x "$SCHEDULES_SYNC"
   # shellcheck source=/dev/null
@@ -936,7 +956,7 @@ landed_fixture() {
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
@@ -1023,7 +1043,7 @@ SH
   local oid old="1111111111111111111111111111111111111111"
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
-  printf '#!/usr/bin/env bash\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'all-sources-p5-scoring\t1500\tMERGED\tPASS\t%s\nfeat/x\t1490\tCLOSED\tPASS\t%s\n' "$oid" "$old" > "$LEDGER_DIR/prs.tsv"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -1031,7 +1051,7 @@ SH
   [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
 
   # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t1490\tCLOSED\tPASS\t%s\n' "$old" > "$LEDGER_DIR/prs.tsv"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
@@ -1091,7 +1111,7 @@ SH
   phases_plan '- [ ] Phase 1: fix main'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   ledger main "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$red" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -1307,7 +1327,7 @@ SH
   phases_plan '- [ ] Phase 1: x'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   ledger main "[$(r Tests success "$green" 1)]"
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$green" > "$LEDGER_DIR/prs.tsv"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -1405,7 +1425,7 @@ queue_item() {
 clean_fixture() {
   landed_fixture
   panel "$SANDBOX/wt"
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/gh"
+  rm "$LEDGER_DIR/prs.tsv"
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
 }
@@ -2021,61 +2041,46 @@ pr_transcript() {
   } > "$1"
 }
 
-# pr_gh: a gh stub answering `pr list --repo`, logging each call. o/two fails on $PR_GH_FAIL.
-pr_gh() {
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
-echo "$*" >> "$SANDBOX/gh.log"
-case "$*" in
-  *"--repo o/one"*) echo '[{"number":7,"state":"OPEN","mergedAt":null}]' ;;
-  *"--repo o/two"*) [ -n "${PR_GH_FAIL:-}" ] && exit 1; echo '[{"number":9,"state":"MERGED","mergedAt":"2026-10-30T12:00:00Z"}]' ;;
-esac
-SH
-  chmod +x "$SANDBOX/bin/gh"
-  export SANDBOX
+# pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
+pr_store() {
+  printf -- '-\t7\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
 }
 
-@test "session_prs: each PR with its state from its own repo, viewed PRs not counted, one gh call per repo" {
-  pr_gh; pr_transcript "$SANDBOX/t.jsonl"
-  export FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+@test "session_prs: each PR with its state from its own repo's store, viewed PRs not counted, one read per repo a pass" {
+  pr_store; pr_transcript "$SANDBOX/t.jsonl"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
   run session_prs "$SANDBOX/t.jsonl"
-  [ "$(wc -l < "$SANDBOX/gh.log")" -eq 2 ] # the second pass reuses both lists
+  [ "$(grep -c '^prs ' "$LEDGER_DIR/calls")" -eq 2 ] # the second call in the pass reuses both
   run session_prs "$SANDBOX/no-such-file"
   assert_output '[]'
 }
 
-@test "session_prs: a repo gh cannot read leaves a null state, is retried once per pass, and is not cached" {
-  pr_gh; pr_transcript "$SANDBOX/t.jsonl"
-  export PR_GH_FAIL=1 FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+@test "session_prs: a repo the store cannot answer leaves a null state, is read once a pass, and not kept past it" {
+  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  touch "$LEDGER_DIR/PRS_FAIL_o_two"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN",null]' ]
   run session_prs "$SANDBOX/t.jsonl"
-  [ "$(grep -c 'repo o/two' "$SANDBOX/gh.log")" -eq 1 ]
-  # the next pass asks again, and the answer is now known
-  unset PR_GH_FAIL; CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
+  [ "$(grep -c '^prs o/two' "$LEDGER_DIR/calls")" -eq 1 ]
+  # the next pass reads again, and the answer is now known
+  rm "$LEDGER_DIR/PRS_FAIL_o_two"; CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
   run session_prs "$SANDBOX/t.jsonl"
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
 }
 
-@test "session_prs: a Forgejo PR (host/owner/repo) takes its state from that host's API, not gh" {
-  pr_gh
+@test "session_prs: a Forgejo PR (host/owner/repo) takes its state from the store under that name, never gh" {
+  printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/gh.log"\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"; export SANDBOX
   {
     echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}}]}}'
     echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://git.example.test/o/audio/pulls/12"}]}}'
   } > "$SANDBOX/t.jsonl"
-  printf 'fj-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  cat > "$SANDBOX/bin/curl-fj" <<'SH'
-#!/usr/bin/env bash
-cat > /dev/null
-while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
-echo '[{"number":12,"state":"closed","merged":true,"merged_at":"2026-10-30T12:00:00Z","merge_commit_sha":"587713a"}]' > "$out"
-SH
-  chmod +x "$SANDBOX/bin/curl-fj"
-  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf -- '-\t12\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_git.example.test_o_audio.tsv"
+  export SO_FORGEJO_HOSTS=git.example.test; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["git.example.test/o/audio",12,"MERGED","2026-10-30T12:00:00Z"]]' ]
@@ -2130,11 +2135,11 @@ SH
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
     > "$SANDBOX/bin/agent-panel"
   # The cwd's repo has no PR for feat/x; o/other's #42 is open with the CI in $SANDBOX/ci.
+  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
   cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
   api*) echo "[]" ;;
-  *"pr list --repo o/other"*) echo '[{"number":42,"state":"OPEN","mergedAt":null}]' ;;
   *"pr view 42 --repo o/other"*) printf '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"%s"}]}\n' "$(cat "$SANDBOX/ci")" ;;
 esac
 SH
@@ -2263,8 +2268,7 @@ SH
 
   # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
   echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
-  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tOPEN\\tPASS\\t%s\\n"\n' \
-    "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$SANDBOX/bin/gh"
+  printf 'feat/x\t875\tOPEN\tPASS\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
   rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/fleet-sessions* 2>/dev/null || true
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .pr <<<"$output")" = 875 ]
@@ -2341,20 +2345,15 @@ explain_state() {
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"started_at\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"edited_files\":[],\"transcript\":\"$SANDBOX/t.jsonl\",\"summary\":\"the-topic\",\"time_use\":{\"work_min\":190,\"gate_min\":900,\"test_min\":7,\"jobs_min\":5,\"human_min\":5,\"parked_min\":620},\"doing\":\"Bash: Run the gate\",\"said\":\"Going.\",\"compactions\":2}" \
     > "$SANDBOX/bin/agent-panel"
-  cat > "$SANDBOX/bin/gh" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-  *"--repo o/one"*) echo '[{"number":7,"state":"MERGED","mergedAt":"2026-10-30T12:00:00Z"}]' ;;
-  *"--repo o/two"*) echo '[{"number":9,"state":"OPEN","mergedAt":null}]' ;;
-esac
-SH
+  printf -- '-\t7\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_one.tsv"
+  printf -- '-\t9\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   export XDG_CACHE_HOME="$SANDBOX/xdg"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -c '[.prs[].number, .time.gate_min, .time.test_min, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,900,7,620,2,"Bash: Run the gate"]' ]
 }
 
-@test "end to end: a tick that cannot read agent-panel or gh keeps the last stage cells and logs nothing" {
+@test "end to end: a tick that cannot read agent-panel or the PR store keeps the last stage cells and logs nothing" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
@@ -2367,11 +2366,11 @@ SH
   cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 
-  # gh down: every PR would read "-", which is a blink, not a change
+  # the store stale: every PR would read "-", which is a blink, not a change
   cp "$SANDBOX/panel.ok" "$SANDBOX/bin/agent-panel"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  touch "$LEDGER_DIR/PRS_FAIL"
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  jq -r '.unreadable[]' "$doc" | grep -q '^gh pr list (wt)$'
+  jq -r '.unreadable[]' "$doc" | grep -q '^PR store (.*/origin)$'
   cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
@@ -2389,20 +2388,21 @@ SH
   printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$line1" \
     "$(jq -c --arg c "$SANDBOX/wt2" '.target = "lab/s2:1" | .pane = "lab/%8" | .session_id = "sid-8" | .cwd = $c | .plan_file = ""' <<<"$line1")" \
     > "$SANDBOX/bin/agent-panel"
-  # gh answers for wt, and for wt2 only while gh.down is absent
-  printf '#!/usr/bin/env bash\ncase "$PWD" in */wt2) [ -e %q ] && exit 1 ;; esac\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%%s\\n" %q\n' \
-    "$SANDBOX/gh.down" "$oid" > "$SANDBOX/bin/gh"
+  # the store answers for wt, and for wt2 only while its PRS_FAIL_ file is absent
+  printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
+  local down="$LEDGER_DIR/PRS_FAIL_origin2"
   local doc="$XDG_STATE_HOME/fleet/state.json"
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(cut -f1 "$FLEET_SHEPHERD_DIR/watch.state" | sort | paste -sd' ')" = 'sid-8 sid-9' ]
   grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" > "$SANDBOX/s2.ok"
 
-  touch "$SANDBOX/gh.down"
+  touch "$down"
   "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
   "$REPO_ROOT/.local/bin/fleet-sessions" label s2 +quality:reviewing >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  [ "$(jq -c .unreadable "$doc")" = '["gh pr list (wt2)"]' ]
+  [ "$(jq -r '.unreadable | length' "$doc")" = 1 ]
+  jq -r '.unreadable[]' "$doc" | grep -q '^PR store (.*/origin2)$'
   run cat "$FLEET_SHEPHERD_DIR/watch.log"
   # s1 read clean, so its change is logged; s2 read a failed source, so it keeps its last cells
   assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
@@ -2410,7 +2410,7 @@ SH
   grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" | cmp - "$SANDBOX/s2.ok"
 
   # NEGATIVE CONTROL: the read comes back, and s2's change is logged then, once
-  rm "$SANDBOX/gh.down"
+  rm "$down"
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(grep -c 's2:1  quality - -> reviewing$' "$FLEET_SHEPHERD_DIR/watch.log")" = 1 ]
@@ -2428,23 +2428,31 @@ SH
   grep -qP '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state"
 }
 
-@test "end to end: a clone on another forge asks gh nothing and is never an unreadable source (ar-1116)" {
+@test "end to end: a clone on a Forgejo host, or a GitHub mirror of one, the PR store does not list is never an unreadable source (ar-1116)" {
   landed_fixture
   export SO_FORGEJO_HOSTS='git.example.lan git.example.test'
   git -C "$SANDBOX/wt" remote set-url origin https://git.example.lan/o/asset-library.git
-  printf '#!/usr/bin/env bash\necho "$PWD $*" >> %q\nexit 1\n' "$SANDBOX/gh.calls" > "$SANDBOX/bin/gh"
+  touch "$LEDGER_DIR/PRS_UNLISTED"
   local doc="$XDG_STATE_HOME/fleet/state.json"
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
   [ "$(jq -c .unreadable "$doc")" = '[]' ]
   [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
-  run grep -c 'pr list' "$SANDBOX/gh.calls"
-  [ "${output:-0}" = 0 ]
+  grep -qx 'prs git.example.lan/o/asset-library --checks' "$LEDGER_DIR/calls"
+  # one it lists reads its PRs under host/owner/repo
+  rm "$LEDGER_DIR/PRS_UNLISTED"; mv "$LEDGER_DIR/prs.tsv" "$LEDGER_DIR/prs_git.example.lan_o_asset-library.tsv"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = 875 ]
   # NEGATIVE CONTROL: the same clone on a host not listed as Forgejo (GitHub, or an ssh alias of it)
-  # asks gh, which fails, and is named
+  # is a GitHub repo the store does not list, and is named
+  touch "$LEDGER_DIR/PRS_UNLISTED"
   git -C "$SANDBOX/wt" remote set-url origin git@github.com-work:o/asset-library.git
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  jq -e '.unreadable | index("gh pr list (wt)")' "$doc" >/dev/null
+  jq -e '.unreadable | index("PR store (o/asset-library)")' "$doc" >/dev/null
+  # ...unless the checkout is a GitHub mirror of a Forgejo-canonical repo: its PRs are on Forgejo
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
 }
 
 @test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {
@@ -2686,58 +2694,17 @@ PROM
 }
 
 
-# open_pr_gh <json rollup>: a gh whose `pr list` answers one OPEN PR for feat/x at the worktree's
-# HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under test. Runs are the
-# ledger's (see ledger); a job's steps query answers $SANDBOX/job_<id>.json (see job).
-open_pr_gh() {
-  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
-    "$oid" "$1" > "$SANDBOX/prs.json"
+# open_pr <ci> [<red job ids>]: the PR store holds one OPEN PR, #9, for feat/x at the worktree's HEAD,
+# its CI <ci> (the store's reading of the head's runs). Gate runs are the ledger's (see ledger); a
+# job's steps query answers $SANDBOX/job_<id>.json (see job).
+open_pr() {
+  printf 'feat/x\t9\tOPEN\t%s\t%s\t%s\n' "$1" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" "${2:--}" > "$LEDGER_DIR/prs.tsv"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
 case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
-while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
+exit 1
 GH
   chmod +x "$SANDBOX/bin/gh"
-}
-
-@test "end to end: a PR is red only once every check has finished" {
-  landed_fixture
-  open_pr_gh '[{"conclusion":"FAILURE"},{"status":"IN_PROGRESS","conclusion":""}]'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-
-  open_pr_gh '[{"conclusion":"FAILURE"},{"conclusion":"SUCCESS"}]'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-}
-
-@test "end to end: an open PR older than the newest 100 is still the session's PR" {
-  # 2026-11-11: the playground's newest 100 PRs began at #2215, so open #1536..#2102 were not
-  # found and four sessions read "files not on the default branch, no PR"
-  landed_fixture
-  open_pr_gh '[{"conclusion":"FAILURE"}]'
-  jq -c '[range(400; 300; -1) as $n | {number: $n, state: "MERGED", headRefName: "other-\($n)", headRefOid: "0", statusCheckRollup: []}]' \
-    <<<null > "$SANDBOX/newest.json"
-  cat > "$SANDBOX/bin/gh" <<GH
-#!/usr/bin/env bash
-echo "\$*" >> "$SANDBOX/gh.log"
-f="$SANDBOX/prs.json"; case " \$* " in *" --state all "*) f="$SANDBOX/newest.json" ;; *" --state open "*) [ ! -e "$SANDBOX/OPEN_FAIL" ] || exit 1 ;; esac
-while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "\$f"; exit; }; shift; done
-GH
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  [ "$(jq -r .pr <<<"$output")" = 9 ]
-  # negative control: a window that is not full already holds every open PR, so no second call
-  : > "$SANDBOX/gh.log"
-  FLEET_PR_WINDOW=101 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" = - ]
-  ! grep -q -- '--state open' "$SANDBOX/gh.log"
-  # a failed open-PR call marks the repo unreadable and keeps the window it did read
-  touch "$SANDBOX/OPEN_FAIL"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" = - ]
-  grep -q -- '--state open' "$SANDBOX/gh.log"
 }
 
 # gate <run title> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
@@ -2749,47 +2716,47 @@ gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","stat
   local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
   export FLEET_MAIN_TTL=0
   ledger feat/x "[$(gate 'Tests (affected)' queued - "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 
   # a red gate newer than a green one is red; an older green does not hide it
   ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 
   # a workflow is its file, not its run title (ar-1094): a newer green 'Tests (all)' of the same
   # Tests.yml supersedes an older red 'Tests (affected)'; a red in another gate file still counts
   ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
   ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' in_progress - "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
   ledger feat/x "[$(gate 'Multi (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 
   # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
   # head does not hold (a reused slot branch's old PR) is not this PR's gate
   ledger feat/x "[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 
   # an older green alone adds nothing: whether it still covers the head is Checks' call
   ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1)]"
-  open_pr_gh '[]'
+  open_pr NONE
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .ci <<<"$output")" = PASS ]
 
   # only a gate workflow counts, and a stale run decides nothing, as in MAIN_STREAKS
   ledger feat/x "[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
   FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2797,7 +2764,7 @@ gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","stat
 
   # a rollup still running stays running, whatever the gate says
   ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
-  open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]'
+  open_pr PENDING
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 }
@@ -2809,11 +2776,10 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   # 2026-11-03 agent-54 #1692 read STALLED CI red: Checks ends with the Merge gate line step,
   # red until the pool gate run it waits on finishes.
   landed_fixture
-  local oid old checks; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
+  local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
   export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
-  checks='[{"name":"Checks","conclusion":"FAILURE","detailsUrl":"https://github.com/o/r/actions/runs/1/job/77"}]'
   job 77 'Harness tests:success' 'Merge gate line:failure'
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 
@@ -2821,24 +2787,24 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   # is on an older commit, so the head has none
   for runs in "$(gate 'Tests (affected)' completed success "$oid" 5)" "$(gate 'Tests (affected)' completed failure "$oid" 5)" \
               '' "$(gate 'Tests (affected)' in_progress - "$old" 5)"; do
-    ledger feat/x "[$runs]"; open_pr_gh "$checks"
+    ledger feat/x "[$runs]"; open_pr FAIL 77
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
   # and a real red: another step failed, the job was cancelled, another check is red, or the
   # step knob is off
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
   job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
   job 79 'Harness tests:cancelled' 'Merge gate line:skipped'
   for id in 78 79; do
-    ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "${checks/job\/77/job/$id}"
+    ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL "$id"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "${checks%]},{\"context\":\"Lint\",\"state\":\"FAILURE\"}]"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77,-
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
   FLEET_GATE_LINE_STEPS='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 }
@@ -2857,15 +2823,15 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   top="$("${g[@]}" rev-parse HEAD)"
   "${g[@]}" checkout -q feat/a
   # Checks green, and the PR's gate runs on its own branch feat/x, not the session's feat/a
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$mid" 5)]"; open_pr_gh '[{"conclusion":"SUCCESS"}]'
-  # stack_pr <state> <head> [<state> <head>]: newest first, as gh lists them
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$mid" 5)]"; open_pr PASS
+  # stack_pr <state> <head> [<state> <head>]: newest first, as the store lists them
   stack_pr() {
-    local out="[" n=12
+    local n=12
+    : > "$LEDGER_DIR/prs.tsv"
     while [ $# -gt 0 ]; do
-      out+="$([ "$out" = "[" ] || echo ,){\"number\":$n,\"state\":\"$1\",\"headRefName\":\"feat/x\",\"headRefOid\":\"$2\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}]}"
+      printf 'feat/x\t%s\t%s\tPASS\t%s\t-\n' "$n" "$1" "$2" >> "$LEDGER_DIR/prs.tsv"
       n=$((n - 1)); shift 2
     done
-    printf '%s]' "$out" > "$SANDBOX/prs.json"
   }
   stack_pr OPEN "$mid"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2936,7 +2902,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
   landed_fixture
-  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  open_pr FAIL
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red @feat/x@${oid:0:12}" ]
@@ -2946,7 +2912,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
 
   # the agent pushes a fix that is still red: same bucket, new head, new nudge
   git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'fix?'
-  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  open_pr FAIL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .nudged <<<"$output")" = false ]
@@ -2999,13 +2965,13 @@ main_change() {
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
   conflict_fixture
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  open_pr_gh '[{"conclusion":"FAILURE"}]'
+  open_pr FAIL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .conflicts <<<"$output")" = true ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, conflicts with the default branch' ]
   [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red, conflicts with the default branch @feat/x@${oid:0:12}" ]
 
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   local fork; fork="$(git -C "$SANDBOX/wt" merge-base origin/main HEAD)"
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
@@ -3019,7 +2985,7 @@ main_change() {
 
 @test "end to end: the same conflict at a new head is the same fact; conflicting again after a resolve is new" {
   conflict_fixture
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   local first; first="$(jq -r .fact <<<"$output")"
   mark sid-9 "$first"
@@ -3028,18 +2994,18 @@ main_change() {
   local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
   echo 1 > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'more work'
   main_change 'theirs again'
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .fact <<<"$output")" = "$first" ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
 
   # the session resolves it (merges main in), is clean, then main conflicts with it again
   "${g[@]}" merge -q -X ours origin/main -m 'merge main' >/dev/null
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .conflicts <<<"$output")" = false ]
   main_change 'theirs a third time'
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
   [ "$(jq -r .fact <<<"$output")" != "$first" ]
@@ -3052,7 +3018,7 @@ main_change() {
   conflict_fixture
   local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
   ledger main "[$(r Tests failure "$tip" 1)]"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  open_pr PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
   main="$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")"

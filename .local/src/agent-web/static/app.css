@@ -353,7 +353,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cores { display: flex; gap: 1px; width: 100%; height: 16px; }
 .cores i { display: flex; align-items: flex-end; flex: 1 1 0; min-width: 2px; max-width: 12px; height: 100%; background: var(--line); border-radius: 1px; overflow: hidden; }
 .cores b { display: block; width: 100%; }
-.tbl tr.tot td { font-weight: 600; border-bottom: 0; }
+.tbl tr.tot td { font-weight: 600; border-bottom: 0; border-top: 1px solid var(--muted); }
 .tbl tr.hgrp td { padding-top: 10px; font-weight: 600; }
 .scroll { overflow-x: auto; }
 .month { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 6px 0 4px; border-top: 1px solid var(--line); font-size: 13px; }

@@ -357,7 +357,7 @@ pub enum Msg {
     Builds(Box<Builds>),
     /// schedules-sync appended to the run ledger.
     BuildFile,
-    /// The Sessions table's ended rows, then its header, which waits on headroom.
+    /// The Sessions table's ended rows, then its header.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
     /// One session's page (hub_core::session_page), for the row it was read for.
@@ -4259,7 +4259,10 @@ mod tests {
         );
         let ran = fake.0.lock().unwrap().join("\n");
         assert!(ran.contains("agentctl-session-outcomes ended"), "{ran}");
-        assert!(ran.contains("fleet-dispatch headroom --json"), "{ran}");
+        assert!(
+            !ran.contains("fleet-dispatch headroom"),
+            "the header reads headroom.json: {ran}"
+        );
     }
 
     #[test]

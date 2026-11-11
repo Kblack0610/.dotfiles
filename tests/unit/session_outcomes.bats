@@ -5,8 +5,9 @@
 # Fixture: three registry sessions in one project. A opened PR #10 (merged, kept) and
 # closed a board row with --proof. B opened #11, which #12 reverted a day later. C hit an
 # API error, was interrupted, had a tool call rejected, and wrote a lesson. D is a headless
-# runner (entrypoint sdk-cli) that wrote a lesson. `gh` is the sandbox stub serving canned
-# `pr list` JSON; nothing here reaches the network.
+# runner (entrypoint sdk-cli) that wrote a lesson. `ss-stub` stands in for schedules-sync, serving
+# the PR store from canned `gh pr list`-shaped JSON (`$GH_FIXTURE/prs.<owner>-<repo>`) turned into
+# store rows by the real pr_row; nothing here reaches the network.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -23,6 +24,34 @@ setup() {
   export SO_BENCH=bench-stub BENCH_FX="$SANDBOX/bench.jsonl"
   printf '#!/usr/bin/env bash\n[ "$*" = "stats --json" ] || exit 9\ncat "%s" 2>/dev/null || true\n' "$BENCH_FX" > "$SANDBOX/bin/bench-stub"
   chmod +x "$SANDBOX/bin/bench-stub"
+  # The PR store, canned: `prs <repo>` logs to ss.calls and serves prs.<repo, / as -> through
+  # gh2store; <file>.fail is a stale store (rc 1), <file>.unlisted a repo it does not list (rc 3),
+  # and no file an empty repo.
+  cat > "$SANDBOX/bin/gh2store" <<'STUB'
+#!/usr/bin/env python3
+import json, sys
+from importlib.machinery import SourceFileLoader
+ss = SourceFileLoader("ss", sys.argv[1]).load_module()
+repo = sys.argv[2]
+forge = "forgejo" if repo.count("/") == 2 else "github"
+rows = [ss.pr_row(forge, repo, {"number": p["number"], "state": "open" if p["state"] == "OPEN" else "closed",
+                                "title": p.get("title"), "body": p.get("body"), "merged_at": p.get("mergedAt"),
+                                "merge_commit_sha": (p.get("mergeCommit") or {}).get("oid")},
+                   None, p["state"] == "MERGED") for p in json.load(sys.stdin)]
+print(json.dumps(sorted(rows, key=lambda r: -r["number"])))
+STUB
+  cat > "$SANDBOX/bin/ss-stub" <<STUB
+#!/usr/bin/env bash
+[ "\$1" = prs ] || exit 2
+echo "\$*" >> "$SANDBOX/ss.calls"
+f="$GH_FIXTURE/prs.\${2//\//-}"
+[ ! -e "\$f.unlisted" ] || { echo "\$2 is not in the repo list" >&2; exit 3; }
+[ ! -e "\$f.fail" ] || { echo "\$2: PR store last synced 2026-10-19T09:00:00Z" >&2; exit 1; }
+[ -f "\$f" ] || { echo '[]'; exit 0; }
+gh2store "$REPO_ROOT/.local/bin/schedules-sync" "\$2" < "\$f"
+STUB
+  chmod +x "$SANDBOX/bin/gh2store" "$SANDBOX/bin/ss-stub"
+  export SCHEDULES_SYNC=ss-stub
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.
   export SO_NOW=1792454400
   STOP=1792368000
@@ -85,8 +114,11 @@ outcome() { cat "$AGENTCTL_STATE_DIR/session-outcomes/last-outcome"; }
 lines() { cat "$SO_OUT"/proj/*.jsonl; }
 # field <session-letter> <jq-path> - from the newest observation of that session
 field() { cat "$SO_OUT"/*/*.jsonl | jq -rs --arg s "sess-$1" "map(select(.session_id == \$s)) | last | $2"; }
-# reverted <number> - so_pr_index over the shared revert fixture
-reverted() { (. "$REPO_ROOT/.local/lib/session-outcomes.sh"; so_pr_index 7 < "$BATS_TEST_TMPDIR/revs.json") | jq -r --arg n "$1" '.[$n].reverted'; }
+# reverted <number> - so_pr_index over the shared revert fixture, as the store writes it
+reverted() {
+  gh2store "$REPO_ROOT/.local/bin/schedules-sync" o/r < "$BATS_TEST_TMPDIR/revs.json" |
+    (. "$REPO_ROOT/.local/lib/session-outcomes.sh"; so_pr_index 7) | jq -r --arg n "$1" '.[$n].reverted'
+}
 
 # The shapes the old title-only rule missed. 241 is private #241, which undid #240 by
 # re-arming a timer with "Reverts #240" in its body and no revert in its title.
@@ -104,13 +136,13 @@ revert_fixture() {
 EOF
 }
 
-@test "three sessions -> three lines, WORKED, one gh call for the one repo" {
+@test "three sessions -> three lines, WORKED, one PR store read for the one repo and no gh call" {
   run "$SUBJECT" run
   assert_success
   assert_equal "$(lines | wc -l)" 3
   assert_equal "$(outcome)" WORKED
-  assert_equal "$(grep -c '^gh pr list -R o/r' "$GH_FIXTURE/calls.log")" 1
-  grep -q -- '--json number,state,title,mergedAt,body,mergeCommit' "$GH_FIXTURE/calls.log"
+  assert_equal "$(grep -cx 'prs o/r' "$SANDBOX/ss.calls")" 1
+  ! grep -q '^gh pr' "$GH_FIXTURE/calls.log" 2>/dev/null || fail "gh was asked for PRs"
   [ -f "$SO_OUT/proj/2026-10.jsonl" ]
 }
 
@@ -151,7 +183,7 @@ EOF2
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
 }
 
-@test "a claim in a repo gh cannot resolve (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
+@test "a claim in a repo the PR store does not list (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
   cat > "$TR/f.jsonl" <<'EOF2'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g1","content":"36: https://github.com/x/fixture/pull/10"}]}}
@@ -161,19 +193,17 @@ EOF2
   jq -cn --arg t "$TR/f.jsonl" --argjson u "$STOP" \
     '{session_id: "sess-f", project: "proj", transcript: $t, title: "title f", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
     >> "$SO_SESSIONS/proj/sessions.jsonl"
-  # gh as it answers for a repo that does not exist; every other repo is the stub's
-  printf '#!/bin/sh\ncase "$*" in *"-R x/fixture "*) echo "GraphQL: Could not resolve to a Repository with the name '"'x/fixture'"'. (repository)" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-gone"
-  chmod +x "$SANDBOX/bin/gh-gone"
-  SO_GH=gh-gone run "$SUBJECT" run
+  touch "$GH_FIXTURE/prs.x-fixture.unlisted"
+  run "$SUBJECT" run
   assert_success
-  assert_output --partial "claims dropped, gh cannot resolve: x/fixture"
+  assert_output --partial "claims dropped, not in the PR store: x/fixture"
   assert_equal "$(outcome)" WORKED
   assert_equal "$(field f '[.prs[] | "\(.repo)#\(.number)"] | join(",")')" "o/r#10"
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
-  # negative control: the same error with gh auth failing is the token's fault, not a missing repo
-  touch "$GH_FIXTURE/auth.fail"
+  # negative control: a listed repo the store is stale for is no missing repo, it stalls the run
+  rm "$GH_FIXTURE/prs.x-fixture.unlisted"; touch "$GH_FIXTURE/prs.x-fixture.fail"
   rm -rf "$SO_OUT"
-  SO_GH=gh-gone run "$SUBJECT" run
+  run "$SUBJECT" run
   assert_failure
   assert_equal "$(outcome)" STALLED
 }
@@ -266,10 +296,9 @@ EOF2
   assert_equal "$(outcome)" NOOP
 }
 
-@test "a gh failure is STALLED, exits 1, and writes nothing" {
-  printf '#!/bin/sh\necho "HTTP 403: rate limit" >&2\nexit 1\n' > "$SANDBOX/bin/gh-broken"
-  chmod +x "$SANDBOX/bin/gh-broken"
-  SO_GH=gh-broken run "$SUBJECT" run
+@test "a stale PR store for a due session's repo is STALLED, exits 1, and writes nothing" {
+  touch "$GH_FIXTURE/prs.o-r.fail"
+  run "$SUBJECT" run
   assert_failure
   assert_equal "$(outcome)" STALLED
   [ ! -d "$SO_OUT/proj" ]
@@ -278,8 +307,7 @@ EOF2
 # -- Forgejo PRs --
 # fj_setup - session E opened PR 12 on a Forgejo host through its API, the create printing its
 # html_url, and merged it the same way, which prints no URL; it also read PR 7 with a GET, which
-# it must not claim. curl-fj serves that API: page 1 is 50 open PRs (#100-#149), page 2 holds
-# #12 merged and #7 closed, so a repo past one page is read whole. FJ_FAIL makes every read fail.
+# it must not claim. The PR store holds the repo under host/owner/repo: #12 merged, #7 closed.
 fj_setup() {
   cat > "$TR/e.jsonl" <<'EOF'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"f1","name":"Bash","input":{"command":"API=\"https://git.example.test/api/v1/repos/o/audio\"\ncurl -s -X POST -H \"Authorization: token $TOKEN\" -d @pr.json \"$API/pulls\" | jq -r '.number, .html_url'"}}]}}
@@ -292,26 +320,10 @@ EOF
   jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
     '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
     >> "$SO_SESSIONS/proj/sessions.jsonl"
-  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  export SO_FORGEJO_HOSTS="git.other.test git.example.test"
-  cat > "$SANDBOX/bin/curl-fj" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
-cat >> "$BATS_TEST_TMPDIR/fj.stdin"
-out="" url=""
-while [ $# -gt 0 ]; do
-  case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac
-  shift
-done
-[ -z "${FJ_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
-case "$url" in
-  *"&page=1") jq -cn '[range(100; 150) | {number: ., state: "open", merged: false, merged_at: null, merge_commit_sha: null, title: "t\(.)", body: ""}]' ;;
-  *"&page=2") jq -cn '[{number: 12, state: "closed", merged: true, merged_at: "2026-10-19T03:00:00Z", merge_commit_sha: "587713a", title: "docs: e", body: ""},
-                       {number: 7, state: "closed", merged: false, merged_at: null, merge_commit_sha: null, title: "seven", body: ""}]' ;;
-esac > "$out"
-STUB
-  chmod +x "$SANDBOX/bin/curl-fj"
-  export SO_CURL=curl-fj
+  cat > "$GH_FIXTURE/prs.git.example.test-o-audio" <<'EOF'
+[{"number":12,"state":"MERGED","title":"docs: e","body":"","mergedAt":"2026-10-19T03:00:00Z","mergeCommit":{"oid":"587713a"}},
+ {"number":7,"state":"CLOSED","title":"seven","body":"","mergedAt":null}]
+EOF
 }
 
 @test "SO_PR_JQ: pr_cmd takes gh pr create|merge and a POST to a Forgejo pulls API; pr_refs keys a Forgejo PR by host/owner/repo" {
@@ -347,54 +359,42 @@ STUB
   assert_equal "$(refs 'https://github.com/o/r/pulls/3 https://h/api/v1/repos/o/r/pulls/4')" '[]'
 }
 
-@test "a Forgejo PR: claimed from its create's html_url, looked up across API pages with the token on stdin, merged; a GET is not claimed and gh is never asked" {
+@test "a Forgejo PR: claimed from its create's html_url, read from the PR store under host/owner/repo, merged; a GET is not claimed" {
   fj_setup
   run "$SUBJECT" run
   assert_success
   assert_equal "$(outcome)" WORKED
   assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
   assert_equal "$(field e .prs_merged)" 1
-  assert_equal "$(grep -c 'git.example.test/api/v1/repos/o/audio/pulls?state=all&sort=newest&limit=50&page=' "$BATS_TEST_TMPDIR/fj.argv")" 2
-  run grep -c 'git.example.test' "$GH_FIXTURE/calls.log"
-  assert_output 0
+  assert_equal "$(grep -cx 'prs git.example.test/o/audio' "$SANDBOX/ss.calls")" 1
   # GitHub sessions are untouched beside it
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
   assert_equal "$(field a .prs_merged)" 1
-  # the token goes in on stdin, never curl's argv
-  run grep -c 'fj-secret-token' "$BATS_TEST_TMPDIR/fj.argv"
-  assert_output 0
-  grep -q 'header = "Authorization: token fj-secret-token"' "$BATS_TEST_TMPDIR/fj.stdin"
 }
 
-@test "a Forgejo read with no token or a failed page holds that session back, writes the rest, and a later run records it" {
+@test "a Forgejo repo the PR store cannot answer for holds that session back, writes the rest, and a later run records it" {
   fj_setup
-  rm "$RBW_FIXTURE/forgejo_repo_admin"
+  touch "$GH_FIXTURE/prs.git.example.test-o-audio.fail"
   run "$SUBJECT" run
   assert_success
   assert_equal "$(outcome)" WORKED
   assert_equal "$(field e .session_id)" null
   assert_equal "$(field a .prs_merged)" 1
-  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: no token (rbw forgejo_repo_admin), git.example.test/o/audio unread; 1 session(s) held for the next run'
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio: PR store last synced .*; 1 session(s) held for the next run'
 
-  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  FJ_FAIL=1 run "$SUBJECT" run
-  assert_success
-  assert_equal "$(field e .session_id)" null
-  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio unread: curl: (22)'
-
+  rm "$GH_FIXTURE/prs.git.example.test-o-audio.fail"
   run "$SUBJECT" run
   assert_success
   assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
 }
 
-@test "a Forgejo host SO_FORGEJO_HOSTS does not list is never called: its PR stays UNKNOWN and the report names the host" {
+@test "a Forgejo repo the PR store does not list: its claims are dropped, the report names it, nothing is held" {
   fj_setup
-  export SO_FORGEJO_HOSTS="git.other.test"
+  touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"
   run "$SUBJECT" run
   assert_success
-  assert_equal "$(field e '.prs[0].state')" UNKNOWN
-  [ ! -e "$BATS_TEST_TMPDIR/fj.argv" ]
-  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test is not in SO_FORGEJO_HOSTS'
+  assert_output --partial "claims dropped, not in the PR store: git.example.test/o/audio"
+  assert_equal "$(field e '.prs | length')" 0
 }
 
 @test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
@@ -1758,9 +1758,8 @@ link_fixture() {
   link_fixture
   X="$SANDBOX/x"; git init -q -b main "$X"; git -C "$X" remote add origin git@github.com:o/x.git
   jq --arg d "$X" '.paths[$d] = "xproj"' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
-  printf '#!/usr/bin/env bash\ncase " $* " in *" -R o/x "*) echo "HTTP 404" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-x"
-  chmod +x "$SANDBOX/bin/gh-x"
-  SO_GH=gh-x run "$SUBJECT" run
+  touch "$GH_FIXTURE/prs.o-x.fail"
+  run "$SUBJECT" run
   assert_success
   assert_output --partial "1 clone repo(s) unlisted, last o/x"
   assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"
