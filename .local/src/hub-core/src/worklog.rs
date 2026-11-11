@@ -67,7 +67,7 @@ impl Row for Work {
         "failed",
         "cancelled",
     ];
-    const FACETS: &'static [&'static str] = &["project", "kind"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["state", "project", "when"];
 

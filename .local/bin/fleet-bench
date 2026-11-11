@@ -1898,9 +1898,9 @@ chain_notes() {
 # tag}]}, the release link over `notes projects --stats --json` (stages.md, "Versions"). overdue: a project
 # whose own sheet counter owns its version (project_version_owner) still due a day after its due date, so
 # a wave-roll pass had all day to cut it; its `.release.due` already means done rows waited out the
-# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
-# the tag plus one patch, the version wave-roll opens. A game waiting on its first tag counts in neither,
-# and so does a profile with `automation = false`.
+# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor a
+# next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
+# tag counts in neither, and so does a profile with `automation = false`.
 release_kpis() {
   local today prof name ver due_on shipped
   today=$(date -d "@$1" +%F)
@@ -1910,7 +1910,8 @@ release_kpis() {
     case "$(project_version_owner "$name" "$shipped")" in
       sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
                jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
-      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] && [ "$ver" != "${shipped%.*}.$(( ${shipped##*.} + 1 ))" ] &&
+      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
+             project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
              jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
     esac
     :   # a project that counts in neither is no failed pass, under pipefail

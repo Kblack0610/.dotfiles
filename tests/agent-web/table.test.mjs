@@ -34,7 +34,14 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+// The document listeners table.js adds (the facet menus' open, tick, outside click and Escape),
+// kept apart from the other scripts' so a test fires only these.
+const docOn = {};
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js"]) {
+  doc.addEventListener = f === "table.js" ? (ev, fn) => { (docOn[ev] ||= []).push(fn); } : () => {};
+  vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+}
+const fireDoc = (ev, e) => (docOn[ev] || []).forEach((f) => f(e));
 const run = (src) => vm.runInContext(src, ctx);
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -85,16 +92,6 @@ test("an event in the second table's block moves only that table's keys", () => 
   fire("click", { type: "click", target: target({ all: "1" }, "n") });
   assert.equal(run("two.all"), true);
   assert.equal(run("one.all"), false);
-});
-
-test("with a dropdown in use only what is around it repaints", () => {
-  run(`one.render()`);
-  box("tt").innerHTML = "the bar in use";
-  doc.activeElement = { id: "", dataset: { tq: "" }, closest: (sel) => (sel === "#tt-facets" ? {} : null) };
-  run(`one.data.rows = ["z"]; one.all = false; one.render()`);
-  doc.activeElement = null;
-  assert.equal(box("tt").innerHTML, "the bar in use");
-  assert.match(box("tt-body").innerHTML, /rows z/);
 });
 
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
@@ -238,4 +235,154 @@ test("a window click and a picked date each patch the control's one key; a blank
   ctx.i = dayTarget({ twin: "day" }, "INPUT");
   assert.equal(run("tblDropdown(b)"), false, "a window is a button, nothing to let go of");
   assert.equal(run("tblDropdown(i)"), true);
+});
+
+// A facet as hub-core sends it: column a filtering on x and y, and a column the tab does not draw.
+const facetTable = () => ({ columns: [{ key: "a", sort: null, next_sort: "a", next_dir: "desc" }, { key: "b", sort: null, next_sort: "b", next_dir: "desc" }],
+  facets: [
+    { key: "a", on: ["x", "y"], clear: "", values: [{ value: "x", n: 2, on: true, q: "a:y" }, { value: "y", n: 1, on: true, q: "a:x" }, { value: "<z>", n: 4, on: false, q: "a:x a:y a:<z>" }] },
+    { key: "repo", on: [], clear: "", values: [{ value: "r", n: 1, on: false, q: "repo:r" }] },
+  ] });
+
+test("the filter row draws each facet under its column, and the bar draws only the rest", () => {
+  ctx.t = facetTable();
+  assert.match(run("tblFacets(t)"), /data-fkey="a".*data-fkey="repo"/, "before any header is drawn the bar has every facet");
+  const head = run(`tblHead(t, { a: ["a"], b: ["b"] })`);
+  assert.match(head, /<\/tr><tr class="tfilters" data-phone="filters"><th><details class="tfacet on" data-fkey="a"[^>]*><summary[^>]*>a: x \+1<\/summary>.*<\/details><\/th><td><\/td><\/tr>$/, "a cell per drawn column, the facet under its own");
+  assert.match(head, /data-fv="x" value="a:y" checked>/);
+  assert.match(head, /data-fv="y" value="a:x" checked>/);
+  assert.match(head, /data-fv="&lt;z&gt;" value="a:x a:y a:&lt;z&gt;"> <span>&lt;z&gt;<\/span> <span class="n">4<\/span>/, "an unticked value adds itself, escaped");
+  assert.doesNotMatch(head, /data-fkey="repo"/);
+  const bar = run("tblFacets(t)");
+  assert.match(bar, /data-fkey="repo"/, "a facet whose column is not drawn stays in the bar");
+  assert.doesNotMatch(bar, /data-fkey="a"/, "and a drawn one is not drawn twice");
+  ctx.t = { ...facetTable(), facets: [facetTable().facets[1]] };
+  assert.doesNotMatch(run(`tblHead(t, { a: ["a"], b: ["b"] })`), /tfilters/, "no drawn column has a facet, no filter row");
+});
+
+test("a tick patches the query and keeps focus; clear patches the column's clear query", () => {
+  ctx.e = { type: "change", target: { type: "checkbox", value: "a:x a:z", dataset: { tq: "", fv: "z" } } };
+  assert.deepEqual({ ...run("tblPatch(e)") }, { q: "a:x a:z" });
+  assert.equal(run("tblDropdown(e.target)"), false, "a checkbox is not let go of, so its menu stays open");
+  ctx.e = { type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tqc]" ? { dataset: { tqc: "b:1" } } : null) } };
+  assert.deepEqual({ ...run("tblPatch(e)") }, { q: "b:1" });
+});
+
+// A drawn facet menu: its block, its column, and its boxes, as the redraw leaves it.
+const menuOf = (key, tbl, fvs, fq = "") => {
+  const boxes = fvs.map((fv) => ({ dataset: { fv }, focus() { this.focused = true; } }));
+  const summary = { focus() { this.focused = true; } }, classes = new Set();
+  return { dataset: { fkey: key, fq }, open: false, isConnected: true, boxes, summary, classes, classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+    matches: (sel) => sel === "details.tfacet", closest: (sel) => (sel === "[data-tbl]" ? (tbl ? { dataset: { tbl } } : null) : sel.startsWith("details.tfacet") ? null : null),
+    querySelector: (sel) => (sel === "summary" ? summary : null), querySelectorAll: () => boxes };
+};
+
+test("a menu ticked in waits for the answer, then stays open on the box last ticked", () => {
+  const before = menuOf("a", "n", ["x", "y"]);
+  before.closest = (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "n" } } : null);
+  fireDoc("change", { target: { value: "a:x a:y", dataset: { fv: "y" }, closest: (sel) => (sel === "details.tfacet" ? before : null) } });
+  assert.deepEqual(before.boxes.map((b) => b.disabled), [true, true], "no box built on the old view is ticked again");
+  assert.ok(before.classes.has("busy"));
+  assert.equal(before.summary.focused, true, "focus waits on the pill, where Escape still shuts it");
+  // A redraw from the old view (the hash change, a poll) lands first: its boxes still wait.
+  const stale = menuOf("a", "n", ["x", "y"], "a:x"), other = menuOf("a", "", ["x", "y"], "a:x a:y");
+  ctx.root = { querySelectorAll: () => [other, stale] };
+  run("tblMenuKeep(root)");
+  assert.equal(stale.open, true);
+  assert.deepEqual(stale.boxes.map((b) => b.disabled), [true, true]);
+  assert.equal(stale.summary.focused, true);
+  assert.equal(other.open, false, "the same column in another table block stays shut");
+  // The answer's redraw: its boxes are built on the view asked for.
+  const mine = menuOf("a", "n", ["x", "y"], " a:x  a:y");
+  ctx.root = { querySelectorAll: () => [mine] };
+  run("tblMenuKeep(root)");
+  assert.equal(mine.open, true);
+  assert.deepEqual(mine.boxes.map((b) => b.disabled), [undefined, undefined]);
+  assert.equal(mine.boxes[1].focused, true, "focus is back on the box ticked");
+  assert.equal(run("tblMenu.want"), null);
+});
+
+test("clear waits for its answer like a tick", () => {
+  const d = menuOf("a", "n", ["x"]);
+  d.closest = (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "n" } } : null);
+  fireDoc("click", { target: { closest: (sel) => (sel === "details.tfacet" ? d : sel === "[data-tqc]" ? { dataset: { tqc: "b:1" } } : null) } });
+  assert.equal(run("tblMenu.want"), "b:1");
+  assert.ok(d.classes.has("busy"));
+  const next = menuOf("a", "n", ["x"], "b:1");
+  ctx.root = { querySelectorAll: () => [next] };
+  run("tblMenuKeep(root)");
+  assert.equal(run("tblMenu.want"), null);
+  assert.equal(next.classes.has("busy"), false);
+  run("tblMenu = null");
+});
+
+test("a click outside a menu or Escape inside it shuts it, and nothing reopens on the next draw", () => {
+  const d = menuOf("a", "n", ["x"]);
+  d.open = true;
+  doc.querySelectorAll = (sel) => (sel === "details.tfacet[open]" ? [d] : []);
+  fireDoc("click", { target: { closest: () => null } });
+  assert.equal(d.open, false);
+  assert.equal(run("tblMenu"), null);
+  run(`tblMenu = { tbl: "n", key: "a", fv: null }`);
+  d.open = true;
+  fireDoc("keydown", { key: "Escape", target: { closest: (sel) => (sel === "details.tfacet[open]" ? d : null) } });
+  doc.querySelectorAll = () => [];
+  assert.equal(d.open, false);
+  assert.equal(d.summary.focused, true, "Escape hands focus back to the pill");
+  const next = menuOf("a", "n", ["x"]);
+  ctx.root = { querySelectorAll: () => [next] };
+  run("tblMenuKeep(root)");
+  assert.equal(next.open, false);
+});
+
+test("a menu opens under its pill, or over it when the window has more room there, never past the edge", () => {
+  ctx.innerWidth = 1280; ctx.innerHeight = 900;
+  const at = (top) => {
+    const m = { style: {}, scrollHeight: 300, offsetHeight: 300, offsetWidth: 150 };
+    ctx.d = { querySelector: (sel) => (sel === ".tfmenu" ? m : { getBoundingClientRect: () => ({ top, bottom: top + 24, left: 589 }) }) };
+    run("tblPlace(d)");
+    return m.style;
+  };
+  assert.deepEqual({ ...at(100) }, { maxHeight: "360px", top: "126px", left: "589px" });
+  assert.deepEqual({ ...at(839) }, { maxHeight: "360px", top: "537px", left: "589px" }, "a pill near the bottom opens its menu upward");
+  assert.equal(at(500).top, "526px", "room enough below stays below");
+  assert.equal(at(700).maxHeight, "360px");
+  assert.equal(at(700).top, "398px", "more room above, too little below, flips up");
+  ctx.innerHeight = 150;
+  assert.equal(at(90).top, "4px", "a window too short for either side never puts the menu above its top");
+  ctx.innerHeight = 900;
+});
+
+test("the filter row is never stamped as a phone row", () => {
+  const filters = trOf(cells(2)), row = trOf(cells(2));
+  filters.dataset.phone = "filters";
+  ctx.subject = tableOf(["lead", ""], [filters, row]);
+  run("tblStamp(subject)");
+  assert.equal(filters.dataset.phone, "filters");
+  assert.deepEqual(filters.cells.map((c) => c.dataset.role), [undefined, undefined]);
+  assert.equal(row.dataset.phone, "row");
+});
+
+test("a body drawn again with no header leaves every facet to the bar", () => {
+  ctx.t = facetTable();
+  run(`tblHead(t, { a: ["a"], b: ["b"] })`);
+  assert.doesNotMatch(run("tblFacets(t)"), /data-fkey="a"/);
+  run(`tblBodyFirst(t, () => "No rows.")`);
+  assert.match(run("tblFacets(t)"), /data-fkey="a"/, "the filter that emptied the table can still be taken off");
+});
+
+test("a menu kept open on one tab never opens the same column on another, and keeps its scroll", () => {
+  run(`st.tab = "tt"; tblMenu = { tbl: "tt|n|", key: "a", fv: null, top: 120 }`);
+  const list = { scrollTop: 0 };
+  const mine = menuOf("a", "n", ["x"]);
+  mine.querySelector = (sel) => (sel === ".tfmenu" ? list : sel === "summary" ? mine.summary : null);
+  ctx.root = { querySelectorAll: () => [mine] };
+  run("tblMenuKeep(root)");
+  assert.equal(mine.open, true);
+  assert.equal(list.scrollTop, 120, "a push redraw keeps where the menu was scrolled");
+  assert.equal(mine.summary.focused, true, "with nothing ticked yet, focus goes back to the pill");
+  const elsewhere = menuOf("a", "n", ["x"]);
+  ctx.root = { querySelectorAll: () => [elsewhere] };
+  run(`st.tab = "queue"; tblMenuKeep(root); st.tab = "tt"; tblMenu = null`);
+  assert.equal(elsewhere.open, false);
 });

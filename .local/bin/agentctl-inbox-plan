@@ -209,11 +209,11 @@ main() {
   local dir board rows rc=0 r row summary verdict open slots=0 tries=0 holds=0 blind='' want=''
   dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
   [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
-  if ! board="$(notes board --json 2>/dev/null)"; then
-    say "notes board --json failed"
-    [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || { proof_why "notes board --json failed"; proof_report "$NAME" FAILED; }
+  if ! read_board; then
+    [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || proof_report "$NAME" FAILED
     return 1
   fi
+  board="$BOARD"
   rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board")"
   if grep -q '"hold":true' <<<"$rows"; then
     if open="$(agent-queue list --json --state active 2>/dev/null | jq -s "$REVIEWS_JQ" 2>/dev/null)" && [ -n "$open" ]; then

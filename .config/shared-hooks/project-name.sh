@@ -305,6 +305,23 @@ project_release_version() {
   printf 'v%s' "$(git_tag_version "$tag")"
 }
 
+# The day each new release tag started getting its own lab version note (agentctl-wave-roll).
+# A tag before it with no note is history the notes never recorded, not a gap to fill.
+RELEASE_NOTES_SINCE="${RELEASE_NOTES_SINCE:-2026-11-11}"
+
+# project_release_tags_since <project> [YYYY-MM-DD] -> `vX.Y.Z` of each release tag in the
+# project's family (project_tag_scope) tagged on or after the day (default RELEASE_NOTES_SINCE),
+# lowest first. Releases only: a prerelease or a build tag names no version of its own.
+project_release_tags_since() {
+  local t v
+  project_tag_scope "$1" || return 0
+  while IFS= read -r t; do
+    v="v$(git_tag_version "$t")"
+    [[ $v =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$v"
+  done < <(git_tags_since "$_PTS_REPO" "$1" "$_PTS_SCOPED" "$_PTS_GLOB" "${2:-$RELEASE_NOTES_SINCE}")
+  return 0
+}
+
 # project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
 #   tag    a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
 #   build  a game with no tag yet: it waits for its own `<game>-vX.Y.Z` family, never the

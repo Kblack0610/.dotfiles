@@ -24,6 +24,8 @@ case "$1 $2" in
   case "$*" in
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
   # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
+  # prior.json: an earlier PR the item records, asked for its state and merge commit (open by default)
+  *state,mergeCommit*) { cat "$NOTES_FIXTURE/prior.json" 2>/dev/null || echo '{"state":"OPEN","mergeCommit":null}'; } | jq -r "${@: -1}" || exit 1 ;;
   # url: the PR's URL (o/r #42 by default)
   *baseRefName*) printf '{"state":"%s","baseRefName":"main","url":"%s","headRefOid":"%s","isCrossRepository":%s,"headRefName":"%s"}' "$(cat "$NOTES_FIXTURE/state")" \
     "$(cat "$NOTES_FIXTURE/url" 2>/dev/null || echo https://github.com/o/r/pull/42)" \
@@ -1358,6 +1360,46 @@ real_notes_board() {
   assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
   run board_calls
   assert_output --partial 'done ship it --proof pr:43'
+}
+
+@test "an earlier PR recorded with no merge takes its merge commit from gh, so this PR is recorded beside it" {
+  # NEGATIVE CONTROL: before ar-781 this merged #42, then failed "no merge recorded for o/p#1794"
+  # and left #42 off the item (private #762, 2026-11-11).
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line 'item: ship partial with pr:o/r#42, left open for the final landing'
+  run grep -c '^gh pr view 1794 -R o/p --json state,mergeCommit -q .mergeCommit.oid // .state$' "$LOG"
+  assert_output 1
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged] | join("|")' <<<"$output")" \
+    'running|yes|o/p#1794 o/r#42|abcdef0123456789abcdef0123456789abcdef01 fedcba9876543210fedcba9876543210fedcba98'
+}
+
+@test "an earlier PR that is not merged refuses before the merge, leaving the PR and item untouched" {
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  run "$LAND" 42 --item ship --partial
+  assert_failure 2
+  assert_output --partial 'queue item ship records o/p#1794, which is OPEN: land it first (agent-land 1794 --repo o/p --item ship --partial), then #42'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .pr, (.merged // ""), (.partial // "")] | join("|")' <<<"$output")" 'running|o/p#1794||'
+}
+
+@test "an earlier PR closed unmerged, or lists out of step, refuse before the merge with the way out" {
+  agent-queue set ship pr=o/p#1794 >/dev/null
+  echo '{"state":"CLOSED","mergeCommit":null}' >"$NOTES_FIXTURE/prior.json"
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'queue item ship records o/p#1794, closed unmerged: drop it from'
+  agent-queue set ship 'pr=o/p#1794 o/q#7' merged=abcdef0123456789abcdef0123456789abcdef01 >/dev/null
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'out of step'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
 }
 
 @test "partial protects an already merged PR and refuses a finished item or plan phase" {

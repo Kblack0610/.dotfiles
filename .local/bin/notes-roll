@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # notes-roll - roll a project to its next version, headless, with everything a roll owes.
 #
-#   notes-roll <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
+#   notes-roll [--tag vX.Y.Z] <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
 #
 # Wraps `notes projects --release` with the tag guard (a shipping app never freezes an
 # untagged version), the agent changelog appended to the frozen note, and the
@@ -15,6 +15,10 @@
 # the open one, for a sheet whose number ran ahead of the app's tags: the open number can
 # never be tagged, so the guard accepts it only while the sheet is above the newest tag and
 # the new version is too. Anything else is rejected, never guessed.
+#
+# `--tag vX.Y.Z` is a release tag closing the version (agentctl-wave-roll, for a project its tag
+# owns): the guard checks that tag is in the project's family, and notes names the frozen note
+# from it, or writes a note with no planned rows when the tag is below the open version.
 #
 # Exit: 0 rolled, 1 refused or the roll failed, 2 bad arguments.
 
@@ -32,8 +36,11 @@ SELF="$(realpath "$0")"
   || . "$(dirname "$SELF")/../../.config/shared-hooks/project-name.sh" 2>/dev/null \
   || true
 
-USAGE="usage: notes-roll <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
+USAGE="usage: notes-roll [--tag vX.Y.Z] <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
 RENUMBER_TO=""  # set by roll_now: the version a --renumber roll opens
+TAG=""          # --tag: the release tag closing the version
+# The marker notes writes on a tag's note that holds no planned rows (projects.rs NO_PLANNED_ROWS).
+NO_PLANNED_ROWS='<!-- no-planned-rows -->'
 
 # ver_above A B: A strictly above B (git_version_ge, the one compare).
 ver_above() { [ "$(git_tag_version "$1")" != "$(git_tag_version "$2")" ] && git_version_ge "$1" "$2"; }
@@ -51,7 +58,8 @@ roll_tag_guard() { # $1=profile $2=project
   shipped="$(project_release_version "$name" 2>/dev/null)"
   [ -n "$shipped" ] || return 0
 
-  target="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+  # With --tag the version being recorded is the tag's, whatever the sheet holds.
+  target="${TAG:-$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)}"
   [ -n "$target" ] || return 0
 
   # Source the library HERE, before the first compare. project_release_version also loads it,
@@ -90,6 +98,10 @@ roll_tag_guard() { # $1=profile $2=project
   fi
   tag="$(git_tag_for_version "$_PTS_REPO" "$name" "$target" "$_PTS_GLOB" 2>/dev/null)"
   [ -n "$tag" ] && return 0
+  if [ -n "$TAG" ]; then
+    printf 'roll: refusing - no tag in the %s family ships %s.\n' "$name" "$TAG" >&2
+    return 1
+  fi
   # A newer release already shipped past the sheet: the open version will never get a tag of
   # its own, and refusing would pin the sheet behind the app forever.
   ver_above "$shipped" "$target" && return 0
@@ -106,7 +118,7 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
   local profile="$1" name="$2" flag="${3:-}" out frozen
   roll_tag_guard "$profile" "$name" || return 1
   # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
-  out="$(notes --profile "$profile" projects --release "$name" $flag 2>&1)" \
+  out="$(notes --profile "$profile" projects --release "$name" $flag ${TAG:+--tag "$TAG"} 2>&1)" \
     || { echo "$out"; echo "roll failed"; return 1; }
   echo "$out"
   # the note that was just frozen (path is in the `(froze <path>)` line)
@@ -117,11 +129,13 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
   #
   # The window runs from the PREVIOUS version's `rolled:` stamp up to now. The newest
   # versions/*.md at this point is the note just written, so the window has to be taken
-  # from the note BEFORE it.
+  # from the note BEFORE it. A note with no planned rows (a hotfix tag the sheet never
+  # planned) carries no boundary, so it is passed over.
   if [ -n "$frozen" ] && command -v agent-usage >/dev/null 2>&1; then
     local canon repo prev since block
     canon="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-    prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | sort -rV | sed -n 2p)"
+    prev="$(ls -1 "$(dirname "$frozen")"/*.md 2>/dev/null | grep -vxF "$frozen" | sort -rV \
+      | while IFS= read -r f; do grep -qF "$NO_PLANNED_ROWS" "$f" || { echo "$f"; break; }; done)"
     since=0
     if [ -n "$prev" ]; then
       since="$(sed -n 's/.*<!-- *rolled: *\([0-9]\{1,\}\).*/\1/p' "$prev" | head -1)"
@@ -152,6 +166,8 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
 roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
   local profile="${1:-}" name="${2:-}" level="${3:-auto}" mode="${4:-}" flag
   [ -n "$profile" ] && [ -n "$name" ] || { echo "$USAGE" >&2; return 2; }
+  [ -z "$TAG" ] || [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { echo "notes-roll: --tag wants vX.Y.Z, got '$TAG'" >&2; return 2; }
   case "$level" in
     auto) flag='' ;;
     patch) flag='--patch' ;;
@@ -168,6 +184,7 @@ roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
         v[0-9]*.[0-9]*.[0-9]*) ;;
         *) echo "notes-roll: renumber needs an exact vX.Y.Z, got '$level'" >&2; return 2 ;;
       esac
+      [ -z "$TAG" ] || { echo "notes-roll: --tag and renumber do not go together" >&2; return 2; }
       RENUMBER_TO="$level"
       flag="$flag --renumber"
       [ "$mode" = renumber ] || flag="$flag --carry"
@@ -179,6 +196,7 @@ roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
 
 case "${1:-}" in
   -h | --help) echo "$USAGE"; exit 0 ;;
+  --tag) TAG="${2:-}"; [ -n "$TAG" ] && shift 2 || { echo "notes-roll: --tag needs a vX.Y.Z" >&2; echo "$USAGE" >&2; exit 2; } ;;
 esac
 roll_now "${1:-}" "${2:-}" "${3:-auto}" "${4:-}"
 exit $?
