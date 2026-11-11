@@ -8,6 +8,7 @@
 use std::cell::Cell as Remembered;
 
 use hub_core::capacity::{Capacity, Part};
+use hub_core::links::Link;
 use hub_core::session_actions::{available, Action, Session, Snapshot};
 use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
@@ -424,8 +425,8 @@ impl Controls {
                 mark: self.table.mark::<SessionRow>(),
                 // The first thirteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST",
+                    "ACCOUNT", "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
                 keep: vec![0, 3, 4, 5, 6, 12, 2, 7, 8, 15, 14, 1, 13, 9, 10, 11],
@@ -674,7 +675,10 @@ impl Controls {
 /// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
 /// agent-web's own.
 fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
-    let url = part.link.as_deref().filter(|l| l.starts_with("http"));
+    let url = match &part.link {
+        Some(Link::Url(u)) => Some(u),
+        _ => None,
+    };
     let text = match url {
         Some(u) => format!("{}  {u}", part.text),
         None => part.text.clone(),

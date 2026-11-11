@@ -6,7 +6,7 @@
 // session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -311,6 +311,9 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
 const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","governor"]],["ci","CI",["ci"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+// hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
+// the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
 // holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
@@ -328,6 +331,11 @@ const lastInner = {};
 function innerRoute(r) {
   const g = INNER_TABS[r.tab];
   if (!g) return r;
+  // A record's page (`#infra/machines/<host>`) opens its inner tab and keeps `word/id` as `page`.
+  const at = (r.arg || "").indexOf("/");
+  const word = at < 0 ? "" : r.arg.slice(0, at).toLowerCase();
+  const inner = ENTITY_PAGES[r.tab]?.[word];
+  if (inner && r.arg.slice(at + 1)) return { ...r, arg: inner, page: word + "/" + r.arg.slice(at + 1) };
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
@@ -374,6 +382,7 @@ function route(hash) {
 // the groups' visibility and the strip's marks flip without a repaint.
 function innerGo(tab, id) {
   st.arg = lastInner[tab] = id;
+  st.page = "";
   showUrl();
   const board = $(tab);
   if (!board) return;
@@ -428,9 +437,11 @@ document.addEventListener("keydown", (e) => {
 });
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
 // button leaves as it was. A tab button replaces the URL, so tab hopping makes no history; an
-// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
-function setTab(t, arg, query) {
+// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns. page is the record an
+// inner tab opens on (innerRoute's `machines/<host>`), blank for none.
+function setTab(t, arg, query, page) {
   st.tab = t;
+  st.page = page || "";
   // A tab button (no arg) brings back the inner tab that tab last showed.
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
   if (INNER_TABS[t]) lastInner[t] = st.arg;
@@ -447,7 +458,10 @@ function setTab(t, arg, query) {
 }
 function showUrl() {
   const t = st.tab, q = st.views[t];
-  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
+  // A page's id is one segment whatever it holds: `#infra/machines/<id>`.
+  const at = st.page ? st.page.indexOf("/") : -1;
+  const segs = st.page ? [st.page.slice(0, at), st.page.slice(at + 1)] : st.arg ? st.arg.split("/") : [];
+  const frag = (segs.length ? "#" + t + "/" + segs.map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
   try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !q ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 // The open tab's view state changed: the URL follows it without a history entry.
@@ -506,7 +520,7 @@ function connect() {
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
   if (r.section) st.section = r.section;
-  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
+  if (r.tab !== st.tab || r.arg !== st.arg || (r.page || "") !== st.page || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query, r.page);
 });
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
@@ -514,6 +528,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
-  setTab(r.tab, r.arg, r.query);
+  setTab(r.tab, r.arg, r.query, r.page);
   connect();
 });

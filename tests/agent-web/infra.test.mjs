@@ -131,6 +131,26 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.deepEqual(r("#jobs"), ["infra", "jobs", "jobs"]);
 });
 
+test("a record's page inside an inner tab keeps its id: the route opens the inner tab, the URL keeps the page", () => {
+  const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.page]; };
+  assert.deepEqual(r("#infra/machines/razer-laptop"), ["infra", "machines", "machines/razer-laptop"]);
+  assert.deepEqual(r("#infra/pools/unity"), ["infra", "machines", "pools/unity"], "a pool's page is on Machines");
+  assert.deepEqual(r("#infra/ci/4412"), ["infra", "ci", "ci/4412"]);
+  assert.deepEqual(r("#infra/jobs/agentctl-dream"), ["infra", "jobs", "jobs/agentctl-dream"]);
+  assert.deepEqual(r("#infra/machines"), ["infra", "machines", undefined], "no id: the inner tab alone");
+  assert.deepEqual(r("#infra/machines/a%2Fb"), ["infra", "machines", "machines/a/b"], "an id keeps its slash");
+  const urls = [];
+  ctx.history = { replaceState: (_s, _t, u) => urls.push(u) };
+  for (const h of ["#infra/machines/razer-laptop", "#infra/machines/a%2Fb"]) {
+    const x = ctx.route(h);
+    run(`st.tab = "infra"; st.views.infra = ""; st.arg = ${JSON.stringify(x.arg)}; st.page = ${JSON.stringify(x.page)}; showUrl()`);
+    assert.equal(urls.at(-1), h, "the URL a page shows is the one that opened it");
+  }
+  run(`innerGo("infra", "ci")`);
+  assert.equal(urls.at(-1), "#infra/ci", "another inner tab leaves the page");
+  delete ctx.history;
+});
+
 test("the Cloud card's month is a link to Costs, Budget; AWS's stops and emails stay", () => {
   const g = run(`governorIndex({ governor: [
     { labels: { __name__: "ci_governor_budget_ok" }, value: 1 },

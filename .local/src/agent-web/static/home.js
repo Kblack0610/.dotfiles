@@ -190,16 +190,15 @@ function needsBody(h) {
 }
 
 // One running item: its row opens its session page, or its queue item when no session runs it,
-// and each cell that names a record links to that record's home.
-const runCellLink = (href, text, cls = "") => href ? `<a${cls ? ` class="${cls}"` : ""} href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : (text ? `<span class="${cls}">${esc(text)}</span>` : "-");
-function runRow(r) {
-  const p = r.phases, row = r.row && `#board?q=id:=${encodeURIComponent(r.row)}`, epic = r.epic && `#board?q=id:=${encodeURIComponent(r.epic)}`;
-  const pr = r.pr ? runCellLink(r.pr_url, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
+// and each cell that names a record links to that record's page (`l`: tblLinks for the row).
+function runRow(r, l) {
+  const p = r.phases;
+  const pr = r.pr ? tblLink(l.pr, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
   return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
-    `<td class="wrap">${esc(r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
-    `<td>${runCellLink(`#projects/${encodeURIComponent(r.project)}`, r.project)}</td><td>${runCellLink(row, r.row)}</td><td>${runCellLink(epic, r.epic)}</td>` +
+    `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
+    `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
     `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
-    `<td>${r.ci ? runCellLink(r.ci_url, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
+    `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
 
@@ -208,7 +207,7 @@ function runBody(h) {
   const t = h.running_table, rows = h.running;
   if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>`;
   const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map(runRow).join("")}</table>` +
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
     tblMore(more, "more") + `</div>`;
 }
 

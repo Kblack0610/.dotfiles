@@ -14,6 +14,7 @@ use hub_core::fleet::ASK_FILTERS;
 use hub_core::home::Need;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
+use hub_core::links::Link;
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
@@ -2017,6 +2018,21 @@ impl App {
     }
 
     /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web.
+    /// Open what a link names, as `hub tab` would (`hub_core::links`): a record's tab and the
+    /// word it opens there, or a page outside the hub in the browser.
+    pub fn follow(&mut self, l: &Link) {
+        match (l, l.tab_args()) {
+            (Link::Url(u), _) => open(u),
+            (_, Some((tab, arg))) => {
+                if let Some(t) = Tab::parse(tab) {
+                    self.go(t);
+                    self.open_query(Some(arg).filter(|a| !a.is_empty()));
+                }
+            }
+            (Link::To(..), None) => {}
+        }
+    }
+
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
         if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
@@ -2057,10 +2073,10 @@ impl App {
         if self.fleet_table.key::<Who>(k.code) != Took::No {
             return true;
         }
-        let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
+        let rows: Vec<(Opens, String, Option<Link>)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
-                .iter()
-                .map(|r| (r.opens, r.key.clone()))
+                .into_iter()
+                .map(|r| (r.opens, r.key.clone(), DataTable::opens(r)))
                 .collect()
         });
         // The selection back in range of the rows for Enter and z: a re-read can leave fewer.
@@ -2071,13 +2087,13 @@ impl App {
         }
         let sel = self.fleet_table.sel;
         match k.code {
-            KeyCode::Enter => match rows.get(sel).cloned() {
-                Some((Opens::Runner, name)) => self.open_runner(&name),
-                Some((Opens::Session, target)) => self.open_session(&target),
-                None => {}
-            },
+            KeyCode::Enter => {
+                if let Some(l) = rows.get(sel).and_then(|r| r.2.clone()) {
+                    self.follow(&l);
+                }
+            }
             KeyCode::Char('z') => {
-                if let Some((Opens::Runner, name)) = rows.get(sel) {
+                if let Some((Opens::Runner, name, _)) = rows.get(sel) {
                     if !self.fleet_folded.remove(name) {
                         self.fleet_folded.insert(name.clone());
                     }
@@ -2148,6 +2164,7 @@ impl App {
                 }
             }
             (Tab::Queue, Some(q)) => self.qv.open(&q),
+            (Tab::Sessions, Some(q)) => self.open_session(q.trim()),
             // An inner tab's or a section's name shows that inner tab; any other word is the query.
             (Tab::Releases, Some(q)) => match crate::innertabs::named(releases::tab(), &q) {
                 Some(id) => self.rv.show(id),
@@ -4464,6 +4481,35 @@ mod tests {
         assert_eq!(a.scroll, 0);
     }
 
+    #[test]
+    fn a_link_opens_the_tab_and_the_word_its_tab_args_name() {
+        use hub_core::links::{Kind, Link};
+        let mut a = app(Tab::Home);
+        a.follow(&Link::to(Kind::Runner, "inbox-triage"));
+        assert_eq!(
+            (a.tab, a.fleet_page.as_deref()),
+            (Tab::Fleet, Some("inbox-triage"))
+        );
+        a.follow(&Link::to(Kind::Session, "lab/x:1"));
+        assert_eq!(a.tab, Tab::Sessions);
+        a.follow(&Link::to(Kind::Queue, "the-item"));
+        assert_eq!(a.tab, Tab::Queue);
+        a.follow(&Link::to(Kind::Row, "ar-1"));
+        assert_eq!(a.tab, Tab::Projects, "the Board is the Projects tab's rows");
+        a.follow(&Link::to(Kind::CiRun, "4412"));
+        assert_eq!(
+            a.tab,
+            Tab::Infra,
+            "a page the TUI lacks opens the inner tab that will hold it"
+        );
+        a.follow(&Link::tab("nope"));
+        assert_eq!(
+            a.tab,
+            Tab::Infra,
+            "a link to no tab leaves the page where it is"
+        );
+    }
+
     fn app(tab: Tab) -> App {
         let (tx, _rx) = std::sync::mpsc::channel();
         with_tx(tab, tx)
@@ -4674,20 +4720,26 @@ mod tests {
         a.handle(key('j'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         let id = "lab/unity-core-playground-agent-10:1".to_string();
-        let part = |label, text: &str, link: Option<&str>, warn| Part {
+        use hub_core::links::{Kind, Link};
+        let part = |label, text: &str, link: Option<Link>, warn| Part {
             label,
             text: text.into(),
-            link: link.map(String::from),
+            link,
             warn,
         };
         let page = SessionPage {
             parts: vec![
-                part("Queue item", "the-item (running)", Some("#queue"), false),
+                part(
+                    "Queue item",
+                    "the-item (running)",
+                    Some(Link::to(Kind::Queue, "the-item")),
+                    false,
+                ),
                 part("Worktree", "~/w  branch feat/x", None, false),
                 part(
                     "PR",
                     "#12 open",
-                    Some("https://github.com/o/r/pull/12"),
+                    Some(Link::Url("https://github.com/o/r/pull/12".into())),
                     true,
                 ),
             ],

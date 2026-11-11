@@ -29,9 +29,17 @@ const WOFF2: &str = "font/woff2";
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -438,6 +446,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
+        // keeps the id of every page Link::href draws inside an inner tab.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
     }
 
     #[test]
