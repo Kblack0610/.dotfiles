@@ -301,6 +301,7 @@ so_lesson_sigs() {
 
 # SO_FORGEJO_ERR says why a Forgejo read failed: rc 1 = no token or the read failed (worth a retry),
 # rc 2 = the host is not listed (never called). Seams: SO_CURL SO_RBW.
+SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
 # state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
