@@ -613,8 +613,9 @@ item_recs() {
 # no priority line reads high, add's default: a missing key there broke every read of the queue (ar-1399).
 # `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
 # project or the one its `board` key names (project_board): its `row:` (file_story, link_row), else
-# the board row it was promoted from (`from: board:`). The one definition agent-land and
-# fleet-dispatch read, whatever the item's origin.
+# the board row it was promoted from (`from: board:`), else no key: an item whose story row was never
+# filed writes `row:` empty, and "" as a row broke judge-eval (ar-1551). The one definition agent-land,
+# fleet-dispatch and judge-eval read, whatever the item's origin.
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -625,7 +626,8 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
   | .priority //= "high"
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
-  | if (.row // "") == "" and (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:")) else . end)'
+  | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
+    else del(.row) end)'
 
 # item_side <file> <after> <tags> <weight> <project> <mode> <phases> <after's finish> <item's project>
 # <priority> -> the file's
