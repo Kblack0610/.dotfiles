@@ -1963,6 +1963,44 @@ fix_item() {
   refute_output --partial 'for the human'
 }
 
+# 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
+# and triage queued a second 4 minutes later; the next pass would page the human about fixes that
+# "did not hold" when no session was asked to clear the red.
+@test "triage: an alert or owned watch item that closed ok this trip stands for its cause; an earlier trip's does not" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  local want this before
+  want=$(printf '%s' 'check(watch):spend' | sha256sum | cut -c1-8)
+  this=$(date -u -d "@$((T0 - 3600))" +%FT%TZ); before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" \
+    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: null, merged: null}' >> "$ITEMS"; }
+  watch_item ar-1 ok "$this"; watch_item ar-2 ok "$this"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  refute_output --partial 'for the human'
+  [ ! -s "$BOARD.agent-runtime" ]
+  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
+  : > "$ITEMS"; watch_item ar-1 ok "$before"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  # an item that failed this trip did not do its job either
+  : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 failed "$this"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  # an agent route's red is the session's to clear: closed ok with it still red did not hold
+  : > "$TRIAGE_ROUTES"; : > "$ITEMS"; : > "$PLOG"
+  route 'watch.: (spend) tripped' agent - 'fix the spend'
+  watch_item ar-1 ok "$this"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+}
+
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
   log_triage_setup
   lock_route

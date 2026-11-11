@@ -3493,15 +3493,30 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
-# or closed with a PR that is not merged (it waits on a merge, and a second session would only
-# repeat it). Else how many items the window queued for it. Every row triage reads is red now, so
-# an item that closed cancelled, failed, or merged with its red still here did not hold.
+# cause_tries <items> <cause> [trip] -> -1 while an item stands for the cause: queued, running or
+# waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
+# only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok since then
+# (its job was the ask or the owner, not the red). Else how many items the window queued for it.
+# Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
+# red still here did not hold.
 cause_tries() {
-  jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+  jq --arg c " cause:$2 " --arg trip "${3:-}" '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
+                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
+                or ($trip != "" and .state == "done" and .status == "ok"
+                    and ((.queued // "") | try fromdateiso8601 catch 0) >= ($trip | tonumber)))
       then -1 else length end' <<<"$1"
+}
+
+# watch_trip <key> <route> -> the epoch an alert or owned watch row's watch tripped at; nothing for
+# any other row. 2026-11-11: playground-release-ready's alert item closed ok with the watch still
+# red, triage queued a second 4 minutes later, and the third pass would page "red fixes that did
+# not hold" for a red no session was asked to clear.
+watch_trip() {
+  [[ "$1" == 'check(watch): '* ]] || return 0
+  case "$2" in alert | owned:?*) ;; *) return 0 ;; esac
+  local n=${1#'check(watch): '}
+  sed -n '1{/^[0-9][0-9]*$/p}' "$TRIAGE_WATCH_STATE/${n%% *}.since" 2>/dev/null
 }
 
 # cause_slugs <items> <cause> -> the slugs of the window's items for the cause, oldest first, comma-joined
@@ -3535,7 +3550,7 @@ triage_promote() {
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    tries=$(cause_tries "$items" "$cause")
+    tries=$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")
     [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
@@ -3556,7 +3571,7 @@ triage_spent() {
     triage_queues "$key" "$route" || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue
+    [ "$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")" -ge "$TRIAGE_FIX_TRIES" ] || continue
     printf '%s\t%s (red fixes that did not hold: %s)\t%s\thuman:%s\n' "$key" "$text" "$(cause_slugs "$items" "$cause")" "$pri" "$KPI_BOARD"
   done <<<"$1"
 }
