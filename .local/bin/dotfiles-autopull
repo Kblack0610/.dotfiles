@@ -168,16 +168,20 @@ attach_rust() {
 # expanded, links followed). A pull that changes that script leaves the running process on the old
 # functions, so a merged fix to the runner is not live until its restart: the route prompt of #1815
 # filed with the old one for hours (ar-1633). Like a Rust unit, one that is not running stays down.
+# Only the script itself is compared: a change to a library it sources goes live at its next start
+# (`agentctl restart <name>`). The conf is read as text, not sourced: the last KIND and COMMAND win,
+# as `source` would have them.
 attach_runners() {
   local conf cmd script
   for conf in "$CONF_DIR"/*.conf; do
-    [ -f "$conf" ] && grep -qE '^KIND=persistent([[:space:]]|$)' "$conf" || continue
-    cmd=$(sed -n 's/^COMMAND=//p' "$conf" | head -n 1)
+    [ -f "$conf" ] || continue
+    sed -n 's/^KIND=//p' "$conf" | tail -n 1 | grep -qE '^["'\'']?persistent["'\'']?([[:space:]]|$)' || continue
+    cmd=$(sed -n 's/^COMMAND=//p' "$conf" | tail -n 1)
     # The first word before $HOME is expanded, so a $HOME with a space in it stays one path.
     cmd=${cmd#[\"\']}
     cmd=${cmd%%[ \"\']*}
-    cmd=${cmd/#'${HOME}'/$HOME}
-    cmd=${cmd/#'$HOME'/$HOME}
+    cmd=${cmd/#'${HOME}'/"$HOME"}
+    cmd=${cmd/#'$HOME'/"$HOME"}
     script=$(readlink -f "$cmd" 2>/dev/null) && [ -f "$script" ] || continue
     restart_stale "agentctl@$(basename "$conf" .conf).service" "$script" "${script##*/}"
   done

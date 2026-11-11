@@ -453,3 +453,15 @@ runner() {
   refute_line --partial 'restarted'
   assert_not_called 'systemctl --user restart'
 }
+
+@test "a quoted KIND, \${HOME} in a single-quoted COMMAND and a later COMMAND line read as agentctl's source would" {
+  runner triage persistent 2000
+  runner old persistent 2000
+  printf '%s\n' "NAME=triage" "KIND='persistent'" 'COMMAND="$HOME/.local/bin/old"' "COMMAND='\${HOME}/.local/bin/triage --watch'" >"$AGENTCTL_CONF_DIR/triage.conf"
+  rm "$AGENTCTL_CONF_DIR/old.conf"
+  unit agentctl@triage active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: restarted agentctl@triage.service on the new triage'
+  refute_line --partial 'on the new old'
+}
