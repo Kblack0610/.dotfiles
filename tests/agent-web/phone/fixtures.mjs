@@ -39,7 +39,7 @@ const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 // Home: hub_core::home needs, proposals.
 const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
 const home = {
-  errors: [], shown: 6, grafana: "https://grafana.example/d/kb-command-center", sessions: "39 live, 3 need you, 2 stalled", spend: "$412 today",
+  errors: [], shown: 6, grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled", spend: "$412 today",
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   flow: { chips: [{ key: "running", label: "running", value: "7", hot: false, to: { tab: "queue", state: "running" } }, { key: "needs", label: "needs you", value: "3", hot: true, to: { tab: "queue", state: "needs you" } }, { key: "ready", label: "ready", value: "12", hot: false, to: { tab: "queue", state: "up next" } }], bottleneck: "review is the slowest stage this week at 41 minutes per PR", error: null, as_of: "13:20", absent: [] },
   vitals: null,
@@ -66,7 +66,7 @@ const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
 const RAIL = [["inbox", "inbox", null], ["board", "board", { tab: "board", state: "" }], ["queued", "queued", { tab: "queue", state: "up next" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
 const flow = {
-  grafana: "https://grafana.example",
+  grafana: home.grafana,
   line: {
     worst: 3, as_of: "13:20", stale: false, reading: false, error: null, absent: false,
     nodes: RAIL.map(([key, label, to], i) => ({ key, label, count: String(12 - i), sub: key === "done" ? "24h" : `p90 ${20 + i * 7}m`, hot: i === 5, stopped: i === 3, to, stop: i === 3 ? "fleet-assess says HOLD" : null, facts: [`${12 - i} in the step, bound 30m`], problems_n: i === 3 ? 2 : 0, problems: i === 3 ? [{ text: `01:16  ${SLUGS[0]}  failed  ${TEXT[0]}`, item: SLUGS[0] }, { text: `00:42  inbox line  ${TEXT[1]}`, item: null }] : [], elsewhere: null })),
@@ -199,17 +199,28 @@ const costs = {
   },
 };
 
-// Releases: hub_core::releases and builds.
-// Releases: agent-web's releases::Shown, one row per hub_core::releases::App, its channels opened under it.
-const channel = (project, i) => ({ project, id: `rel-${i}`, channel: pick(["prod", "beta", "internal"], i), where: "cluster", implicit: false, tag: `v1.${i}.0`, label: pick(["prod", "beta", "Steam beta"], i), pinned_text: `v1.${i}.0`, live_text: `v1.${i}.0`, status: pick(["ok", "drift", "released"], i), status_text: pick(["ok", "drift", "released"], i), level: pick(["ok", "bad", "warn"], i), status_level: pick(["ok", "bad", "warn"], i), prev_text: `v1.${Math.max(i - 1, 0)}.9`, last_deploy_text: "2h ago by agent", deploy_level: "ok", telemetry_text: "2/2", watch_level: "ok", deps_text: "", deps: [], pinned: { value: `v1.${i}.0`, source: "tag", error: null, image: null }, live: { value: `v1.${i}.0`, source: "cluster", error: null, image: null }, deploys: { source: REPOS[0], error: null, history: [], prev: null, last: null }, telemetry: [], drift_since: null, probed_at: NOW - 600 });
+// Releases: agent-web's releases::Shown, one row per hub_core::releases::App whose cells are
+// worded from its channels (hub_core::releases), each channel keyed `project|id` uniquely.
+const REL_STATUS = [["ok", "ok"], ["drift", "bad"], ["released", "warn"]];
+const channel = (project, app, c) => {
+  const [status, level] = pick(REL_STATUS, app + c);
+  return { project, id: `rel-${app}-${c}`, channel: pick(["prod", "beta", "internal"], c), where: "cluster", implicit: false, tag: `v1.${app}.0`, label: pick(["prod", "beta", "Steam beta"], c), pinned_text: `v1.${app}.0`, live_text: `v1.${app}.0`, status, status_text: status, level, status_level: level, prev_text: `v1.${Math.max(app - 1, 0)}.9`, last_deploy_text: "2h ago by agent", deploy_level: "ok", telemetry_text: "2/2", watch_level: "ok", deps_text: "", deps: [], pinned: { value: `v1.${app}.0`, source: "tag", error: null, image: null }, live: { value: `v1.${app}.0`, source: "cluster", error: null, image: null }, deploys: { source: REPOS[0], error: null, history: [], prev: null, last: null }, telemetry: [], drift_since: null, probed_at: NOW - 600 };
+};
+const LEVEL_RANK = ["ok", "warn", "bad"];
+function app(i) {
+  const project = pick(PROJECTS, i), channels = rows(2 + i % 2, (c) => channel(project, i, c));
+  const worst = channels.reduce((w, c) => (LEVEL_RANK.indexOf(c.level) > LEVEL_RANK.indexOf(w.level) ? c : w));
+  const counts = REL_STATUS.map(([s]) => [s, channels.filter((c) => c.status === s).length]).filter(([, n]) => n);
+  return { project, status: worst.status, status_text: worst.status_text, level: worst.level, live_text: `v1.${i}.0 prod`, channels_text: `${channels.length}: ${counts.map(([s, n]) => `${n} ${s}`).join(", ")}`, unread: 0, last_deploy_text: "2h ago by agent", deploy_level: "ok", channels, lead: 1, others_text: channels.slice(1).map((c) => `${c.channel} 1 ${c.status}`).join("; ") };
+}
 const releases = {
   table: table(6, ["project", "live", "status", "channels", "last_deploy", "channel", "id"], ["all", "attention", "ok"], { project: PROJECTS.slice(0, 3), status: ["ok", "drift"] }),
-  rows: rows(6, (i) => ({ project: pick(PROJECTS, i), status: pick(["ok", "drift", "released"], i), status_text: pick(["ok", "drift", "released"], i), level: pick(["ok", "bad", "warn"], i), live_text: `v1.${i}.0 prod`, channels_text: `${2 + i % 2}: ${1 + i % 2} ok, 1 released`, unread: i % 3 === 2 ? 1 : 0, last_deploy_text: "2h ago by agent", deploy_level: "ok", channels: rows(2 + i % 2, (c) => channel(pick(PROJECTS, i), c)), lead: 1, others_text: "beta 1 released" })),
-  question: "", summary: "6 apps: 3 ok, 2 released, 1 drift", gaps: "", look: true, at: NOW, stale_after: 3600, errors: [],
+  rows: rows(6, app),
+  question: "", summary: `6 apps: ${REL_STATUS.map(([s]) => [s, rows(6, app).filter((a) => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `${n} ${s}`).join(", ")}`, gaps: "", look: true, at: NOW, stale_after: 3600, errors: [],
 };
 const builds = {
   table: table(6, ["started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "forge", "event", "title"], ["all", "running", "queued", "red", "green"], { repo: REPOS.slice(0, 2), forge: ["github"], event: ["push", "pull_request"], state: ["green", "red"] }),
-  rows: rows(6, (i) => ({ forge: "github", repo: pick(REPOS, i), id: 9000 + i, attempt: 1, started: ago(20 + i * 30), state: pick(["running", "green", "red"], i), level: pick(["warn", "ok", "bad"], i), workflow: "ci", branch: `feat/${SLUGS[i]}`, took: 300 + i * 60, owner: "agent", event: pick(["push", "pull_request"], i), title: TEXT[i], url: "https://github.com/Kblack0610/.dotfiles/actions/runs/1", prs: [] })),
+  rows: rows(6, (i) => ({ forge: "github", repo: pick(REPOS, i), id: 9000 + i, attempt: 1, started: ago(20 + i * 30), state: pick(["running", "green", "red"], i), level: pick(["warn", "ok", "bad"], i), workflow: "ci", branch: `feat/${SLUGS[i]}`, took: 300 + i * 60, usual: { median: 280 + i * 30, p90: 520 + i * 40 }, eta: pick([NOW + 240, null, null], i), owner: "agent", event: pick(["push", "pull_request"], i), title: TEXT[i], url: "https://github.com/Kblack0610/.dotfiles/actions/runs/1", prs: [] })),
   more: 0, summary: "6 builds, 1 red", at: NOW, stale_after: 3600, errors: [],
 };
 
