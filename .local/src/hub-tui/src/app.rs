@@ -6233,7 +6233,10 @@ mod tests {
         assert!(screen(&mut a, 100, 60).contains("window:"));
         a.handle(k(KeyCode::Left));
         a.handle(k(KeyCode::Left));
-        assert_eq!(a.cv.inner, "models");
+        assert_eq!(a.cv.inner, "budget");
+        let (t, q) = crate::tabreq::parse("costs budget").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(a.cv.inner, "budget", "`hub --tab 'costs budget'` opens it");
         // `hub --tab 'costs burn'` and the moved `fleet tokens` land on the holding inner tab
         let (t, q) = crate::tabreq::parse("costs burn").unwrap();
         a.handle(Msg::Tab(t, q));

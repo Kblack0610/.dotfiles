@@ -142,7 +142,8 @@
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
+#                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
 set -uo pipefail
 # shellcheck source=../lib/end-reasons.sh
@@ -271,6 +272,10 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
 : "${BENCH_FLEET_COST_EVERY_MIN:=30}"
 : "${BENCH_FLEET_COST_TIMEOUT:=240}"
+: "${BENCH_BUDGET_CMD:=agent-usage budget --json}"   # this month's cash, by bill: the Costs Budget tab and fleet-budget-pace read the file
+: "${BENCH_BUDGET_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/budget.json}"
+: "${BENCH_BUDGET_EVERY_MIN:=30}"
+: "${BENCH_BUDGET_TIMEOUT:=120}"
 : "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
@@ -628,6 +633,7 @@ cmd_sample() {
     findings_run "$t"
     epics_step "$t"
     fleet_cost_step
+    budget_step
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -646,23 +652,41 @@ cmd_sample() {
   findings_run "$t"
   epics_step "$t"
   fleet_cost_step
+  budget_step
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
 }
 
-# fleet_cost_step: the whole fleet's estimate, tried at most every BENCH_FLEET_COST_EVERY_MIN. A failed
-# run keeps the last file and waits the same interval (touch), so a Prometheus outage costs one
-# attempt per interval; its as_of_epoch then reads stale on the Costs tab and in the KPI.
-fleet_cost_step() {
-  [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
-  mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
-  local tmp="$BENCH_FLEET_COST_FILE.$$.tmp"
-  if timeout "$BENCH_FLEET_COST_TIMEOUT" $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
-    mv "$tmp" "$BENCH_FLEET_COST_FILE"
+# state_file_step <file> <every min> <timeout s> <name> <cmd...>: run cmd at most every <every> minutes
+# and keep its JSON (it must have .total) as <file>. A failed run keeps the last file and waits the
+# same interval (touch), so a Prometheus outage costs one attempt per interval; its as_of_epoch then
+# reads stale on the Costs tab, in the KPI and in `agent-usage budget check`.
+state_file_step() {
+  local file=$1 every=$2 limit=$3 name=$4
+  shift 4
+  [ -z "$(find "$file" -mmin "-$every" 2>/dev/null)" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  local tmp="$file.$$.tmp"
+  if timeout "$limit" "$@" > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$file"
   else
     rm -f "$tmp"
-    touch -c "$BENCH_FLEET_COST_FILE"
-    say "fleet-cost: the estimate failed; the last one stays"
+    touch -c "$file"
+    say "$name: the run failed; the last file stays"
   fi
+}
+
+# fleet_cost_step: the whole fleet's list-price estimate over 24h.
+fleet_cost_step() {
+  # shellcheck disable=SC2086  # the command is words
+  state_file_step "$BENCH_FLEET_COST_FILE" "$BENCH_FLEET_COST_EVERY_MIN" "$BENCH_FLEET_COST_TIMEOUT" fleet-cost $BENCH_FLEET_COST_CMD
+}
+
+# budget_step: this month's cash by bill. A bill its reader cannot read is an `unread` line in a fresh
+# file, never the last good figure; BUDGET_JSON points the command at this file, whose unread_since it
+# carries forward (the only record of how long a reader has failed).
+budget_step() {
+  # shellcheck disable=SC2086  # the command is words
+  BUDGET_JSON=$BENCH_BUDGET_FILE state_file_step "$BENCH_BUDGET_FILE" "$BENCH_BUDGET_EVERY_MIN" "$BENCH_BUDGET_TIMEOUT" budget $BENCH_BUDGET_CMD
 }
 
 # epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is

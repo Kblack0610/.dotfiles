@@ -160,6 +160,10 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   assert_failure
   assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
 aws projects to $650 this month, past its $600 cap'
+  # the file carries the same reasons as `needs`, which the Costs Budget tab shows
+  run jq -r '.needs[]' "$BUDGET_JSON"
+  assert_output 'gh actions $100 is ahead of pace: past $88 of its $220 cap on day 11
+aws projects to $650 this month, past its $600 cap'
   BUDGET_NOW="2026-11-11T03:00:00-08:00" run "$AU" budget check
   assert_failure
   assert_output 'budget.json is 3.0h old (the fleet-bench budget step)'

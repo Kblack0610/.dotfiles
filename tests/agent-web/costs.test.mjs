@@ -656,3 +656,32 @@ test("a tab button brings back the inner tab that tab last showed; a link withou
   run("setTab('fleet')");
   assert.equal(run("st.arg"), "", "a tab with no inner tabs keeps no memory");
 });
+
+test("the Budget inner tab is this month's cash: head, what needs a look, one row per bill, the split", () => {
+  const budget = { why: null, month: "Nov, day 11 of 30", spent: "$838", projected: "~$1,304", caps: "$1,445", partial: [], as_of: 1700000000, stale: false,
+    needs: ["lazer over its $50 cap ($228), paid by lazer, not in our total"],
+    bills: [
+      { name: "lazer", kind: "litellm", cap: "$50", spent: "$228", month: "$228", note: "over, paid by lazer, not in our total", status: "over" },
+      { name: "max4", kind: "subscription", cap: "$200", spent: "$200", month: "$200", note: "$1,126 list work (6x)", status: "ok" },
+    ],
+    by_project: [{ name: "unity-core-playground", usd: "$334", share: "40%" }, { name: "unattributed", usd: "$91", share: "11%" }],
+    by_lane: [{ name: "queue", usd: "$175", share: "21%" }],
+    foot: "Cash: what we pay, not list price." };
+  assert.equal(ctx.route("#costs/budget").arg, "budget", "the Infra Cloud card's link lands here");
+  run("st.arg = 'budget'; st.section = null");
+  const h = show(board({ budget }));
+  assert.ok(shown(h, "budget") && !shown(h, "limits"));
+  const b = h.slice(h.indexOf('id="sec-budget"'));
+  assert.match(b, /^id="sec-budget">Budget \$838 so far, ~\$1,304 by month end <span class="muted">Nov, day 11 of 30, caps \$1,445, as of /);
+  assert.ok(b.indexOf("Needs a look 1") < b.indexOf("<table"), "what needs a look leads the bills");
+  assert.match(b, /<tr><td class="warn">lazer<\/td><td class="muted">litellm<\/td><td class="n">\$50<\/td><td class="n warn">\$228<\/td>/, "a bill over its cap is amber");
+  assert.match(b, /<tr><td class="">max4<\/td>.*<td class="n ">\$200<\/td>/, "an ok bill is not amber");
+  assert.match(b, /<b>By project<\/b> unity-core-playground \$334, unattributed \$91/);
+  assert.match(b, /<th data-role="lead">bill<\/th>/, "the table folds to a phone row");
+  assert.doesNotMatch(b, /of \$\d[\d,]*\/mo/, "no list price shown as a share of a fee");
+  assert.match(show(board({ budget: { ...budget, stale: true } })), /class="warn">stale, as of /);
+  // negative control: no file says so, never a $0 table
+  const none = show(board({ budget: { why: "no budget file: the fleet-bench budget step has not run" } }));
+  assert.match(none, /id="sec-budget">Budget<\/h2><div class="panel"><span class="warn">no budget file/);
+  run("st.arg = ''");
+});

@@ -328,14 +328,13 @@ function ruleText(h) {
 
 // The governor's other series: per host and global, by metric name.
 function governorIndex(inst) {
-  const g = { host: {}, alerts: [], actions: [], usd: {} };
+  const g = { host: {}, alerts: [], actions: [] };
   for (const s of inst.governor || []) {
     const l = s.labels, n = l.__name__.replace("ci_governor_", "");
     if (l.host) {
       const h = (g.host[l.host] ||= { host: l.host });
       if (n === "decision") { h.verdict = l.verdict; h.action = l.action; } else h[n] = s.value;
-    } else if (n === "budget_usd") g.usd[l.kind] = s.value;
-    else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
+    } else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
     else if (n === "budget_action_usd") g.actions.push([l.type, l.status, s.value]);
     else g[n] = s.value;
   }
@@ -345,15 +344,11 @@ function governorIndex(inst) {
 // [150, 100, 100] -> "$100 and $150"
 const usdList = (xs) => [...new Set(xs)].sort((a, b) => a - b).map((x) => "$" + x).join(" and ");
 
-// The month as AWS Budgets last gave it, and what happens at each line.
+// What AWS does at each budget line; the month's dollars are Costs > Budget, beside every other bill.
 function budgetLines(g) {
   if (g.budget_ok == null) return "";
-  const u = g.usd;
-  if (u.limit == null) return `<div class="muted">Month: the governor has not read the AWS budget yet${g.budget_ok ? "" : ' (its last read failed: runbook, "budget read")'}.</div>`;
-  // AWS forecasts from history; on a new account it can sit below what is already spent.
-  const fc = u.forecast == null || u.forecast < u.actual ? "no AWS forecast yet" : `forecast ${usd(u.forecast)}`;
-  const stale = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span>`;
-  const month = `<div class="month"><span>Month: <b>${usd(u.actual)}</b> of ${usd(u.limit)}, ${fc}</span><span class="m">${meter(u.limit ? u.actual / u.limit : 0, u.actual >= u.limit * 0.75 ? "var(--b-stalled)" : "var(--c2)")}</span><span class="muted">AWS Budgets, as of ${when(g.budget_updated)}${stale}</span></div>`;
+  const failed = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span> (runbook, "budget read")`;
+  const month = `<div class="month"><span>Month: <a href="#costs/budget">Costs, Budget</a></span><span class="muted">the governor read AWS Budgets ${when(g.budget_updated)}${failed}</span></div>`;
   const act = g.alerts.filter(([b]) => b === "actual").map(([, v]) => v), fore = g.alerts.filter(([b]) => b === "forecasted").map(([, v]) => v);
   const mails = act.length ? `Emails at ${usdList(act)}${usdList(fore) === usdList(act) ? " (spent or forecast)" : fore.length ? `, forecast at ${usdList(fore)}` : ""}` : "";
   const stops = [...new Set(g.actions.map(([, , v]) => v))].map((v) => {

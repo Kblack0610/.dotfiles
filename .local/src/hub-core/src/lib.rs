@@ -7,6 +7,7 @@ pub mod actions;
 pub mod alerts;
 pub mod boards;
 pub mod briefing;
+pub mod budget;
 pub mod builds;
 pub mod burn;
 pub mod capacity;
