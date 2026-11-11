@@ -780,14 +780,14 @@ move_to() {
 }
 
 # project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
-# start it: another spelling becomes its project (project_canonical), a repo key with an `owner` in
+# start it: another spelling becomes its project (project_lookup; an unknown name stays as given), a repo key with an `owner` in
 # the registry becomes that lab project (dotfiles has no sheet; its work counts on agent-runtime's),
 # and the project must reach a checkout through the registry (project-name.sh's project_repo_path).
 # A game inside a repo is runnable; a notes-only project is not. With no map there is nothing to ask.
 project_resolve() {
   [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
   local name owner
-  name="$(project_canonical "$1")"
+  name="$(project_lookup "$1")" || name="$1"
   owner="$(project_field "$name" owner)"
   name="${owner:-$name}"
   [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"

@@ -31,3 +31,5 @@ default	default
 _comment	_comment
 someone/thing//	thing
 ..dots	.dots
+# Two keys one case apart: the lower path wins on both sides, whatever order the file lists them in.
+CASE-TWIN	Case-Twin

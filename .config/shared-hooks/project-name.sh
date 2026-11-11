@@ -70,7 +70,7 @@ def _pn_sfx: ascii_downcase | split("/") | map(select(. != "")) as $s
 def _pn_pairs:
   . as $m
   | ($m.trackers // {} | to_entries | map(select(.key != "default" and (.value | type) == "object")) | sort_by(.key)) as $t
-  | ((($m.paths // {} | .[] | strings), ($t[] | .key)) | [ascii_downcase, ., "key"]),
+  | ((($m.paths // {} | to_entries | sort_by(.key)[] | .value | strings), ($t[] | .key)) | [ascii_downcase, ., "key"]),
     ($t[] | .key as $k | .value
       | ((.names // [] | arrays | .[] | strings | ascii_downcase | [., $k, "names"]),
          ((.github, .forgejo) | strings | _pn_sfx | [., $k, "slug"]))),

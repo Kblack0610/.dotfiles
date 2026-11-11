@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 pub struct Registry {
     raw: Value,
@@ -27,21 +27,42 @@ pub fn map_path() -> PathBuf {
     }
 }
 
-/// The registry at `map_path()`, read again only when the file's mtime changes, so a
-/// long-running server follows an edit without a restart. None when there is no registry.
+/// How long `cached()` trusts the registry it holds before it stats the file again. A table
+/// sort resolves a name per comparison, and a stat per call made each lookup 1.5us (270ns with
+/// this); a hand edit to the registry is seen within this long.
+const RECHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// The registry at `map_path()`, read again when the file's mtime changes (checked at most once
+/// per `RECHECK_EVERY`), so a long-running server follows an edit without a restart. None when
+/// there is no registry.
 pub fn cached() -> Option<Arc<Registry>> {
-    type Slot = Option<(PathBuf, Option<SystemTime>, Option<Arc<Registry>>)>;
-    static CACHE: Mutex<Slot> = Mutex::new(None);
+    struct Slot {
+        path: PathBuf,
+        mtime: Option<SystemTime>,
+        checked: Instant,
+        reg: Option<Arc<Registry>>,
+    }
+    static CACHE: Mutex<Option<Slot>> = Mutex::new(None);
     let path = map_path();
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let mut slot = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((p, t, r)) = slot.as_ref() {
-        if *p == path && *t == mtime {
-            return r.clone();
+    if let Some(s) = slot.as_mut().filter(|s| s.path == path) {
+        if s.checked.elapsed() < RECHECK_EVERY {
+            return s.reg.clone();
+        }
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if mtime == s.mtime {
+            s.checked = Instant::now();
+            return s.reg.clone();
         }
     }
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let reg = Registry::from_path(&path).map(Arc::new);
-    *slot = Some((path, mtime, reg.clone()));
+    *slot = Some(Slot {
+        path,
+        mtime,
+        checked: Instant::now(),
+        reg: reg.clone(),
+    });
     reg
 }
 
@@ -119,9 +140,16 @@ impl Registry {
             .filter_map(|(k, v)| v.as_object().map(|o| (k, o)))
             .collect();
         trackers.sort_by(|a, b| a.0.cmp(b.0));
-        for key in paths
-            .values()
-            .filter_map(Value::as_str)
+        // Sorted by path here and in the jq index, never map order: serde_json's `preserve_order`
+        // feature, which any crate in the build can switch on, would make it insertion order.
+        let mut by_path: Vec<(&String, &str)> = paths
+            .iter()
+            .filter_map(|(p, v)| v.as_str().map(|v| (p, v)))
+            .collect();
+        by_path.sort();
+        for key in by_path
+            .iter()
+            .map(|(_, k)| *k)
             .chain(trackers.iter().map(|(k, _)| k.as_str()))
         {
             add(key.to_lowercase(), key);
@@ -145,11 +173,6 @@ impl Registry {
                 }
             }
         }
-        let mut by_path: Vec<(&String, &str)> = paths
-            .iter()
-            .filter_map(|(p, v)| v.as_str().map(|v| (p, v)))
-            .collect();
-        by_path.sort();
         for (path, key) in by_path {
             let base = path.rsplit('/').next().unwrap_or("").to_lowercase();
             let bare = base.strip_prefix('.').unwrap_or(&base).to_string();

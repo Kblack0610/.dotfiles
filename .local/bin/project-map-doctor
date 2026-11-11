@@ -248,6 +248,10 @@ if [ -d "$AGENT_DIR" ]; then
     [ -n "$name" ] || continue
     n=$((n + 1))
     if ! is_known "$name"; then
+      if key="$(project_lookup "$name")"; then
+        fail "runtime key \"$name\" ($kinds) under ~/.agent is another spelling of $key; readers look under $key, so move its files there"
+        bad=$((bad + 1)); continue
+      fi
       fail "runtime key \"$name\" ($kinds) under ~/.agent names no registered project: register its repo in paths, or move it under ~/.agent/_archive/"
       bad=$((bad + 1))
     fi

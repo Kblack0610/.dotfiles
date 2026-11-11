@@ -199,6 +199,14 @@ EOF
   assert_output --partial 'runtime key "ghost-project" (lessons plans sessions) under ~/.agent'
 }
 
+@test "an ~/.agent key that is another spelling of a project names the key its files belong under" {
+  clean_map
+  mkdir -p "$AGENT_DIR/plans/mono"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'runtime key "mono" (plans) under ~/.agent is another spelling of mono-canon; readers look under mono-canon'
+}
+
 @test "registered keys, an anchor's decisions log and reserved _ keys pass" {
   clean_map
   mkdir -p "$AGENT_DIR/plans/alpha" "$AGENT_DIR/sessions/_unscoped" "$AGENT_DIR/anchors"

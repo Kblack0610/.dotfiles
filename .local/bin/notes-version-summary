@@ -47,8 +47,9 @@ die() { echo "notes-version-summary: $*" >&2; exit 1; }
 # repo_of <project> -> sets REPO + PATHFILTER: the registry's checkout for the project's repo and
 # its `path` inside it ("" when the project is the whole repo, or has no checkout here).
 repo_of() {
-  REPO="$(project_repo_path "$1")"
-  PATHFILTER="$(project_field "$1" path)"
+  local p; p="$(project_canonical "$1")"
+  REPO="$(project_repo_path "$p")"
+  PATHFILTER="$(project_field "$p" path)"
 }
 
 # ── source gathering ────────────────────────────────────────────────

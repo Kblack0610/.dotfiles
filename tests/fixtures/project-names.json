@@ -3,7 +3,9 @@
     "/src/.dotfiles": "dotfiles",
     "/src/platform": "bnb-platform",
     "/src/crypto/freqtrade_trading_attempt": "trader",
-    "/src/client/fleet-platform": "brightsign-fleet-platform"
+    "/src/client/fleet-platform": "brightsign-fleet-platform",
+    "/src/z/case-twin": "case-twin",
+    "/src/a/Case-Twin": "Case-Twin"
   },
   "trackers": {
     "_comment": "a string, not a tracker",

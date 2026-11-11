@@ -194,14 +194,17 @@ def gateway_team(ref):
 
 def project_names(repos):
     """{repo: project key} for each repo name, through `project_of_repos_json` in project-name.sh,
-    the one name index; {} when the library cannot run, and the caller falls back to the repo name."""
+    the one name index; {} with a warning when the library cannot run, and the caller falls back to
+    the repo name."""
     lib = ENV.get("PROJECT_NAME_LIB") or f"{HOME}/.config/shared-hooks/project-name.sh"
     try:
         r = subprocess.run(["bash", "-c", '. "$1" && shift && project_of_repos_json "$@"', "_", lib, *repos],
                            env={**ENV, "PROJECT_MAP_FILE": PROJECT_MAP}, capture_output=True, text=True,
                            timeout=30, check=True)
         return json.loads(r.stdout or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        print(f"agent-usage-budget: no project names from {lib} ({e}); spend splits by repo name",
+              file=sys.stderr)
         return {}
 
 
