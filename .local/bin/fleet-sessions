@@ -126,7 +126,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
-#                 requeued or running in another session, here:<slug> waiting here, or ->
+#                 requeued or running in another session, here:<slug> waiting here,
+#                 review:<slug> parked here in review (its PR is the item's now), or ->
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -290,6 +291,7 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item"; fi ;;
     OPEN)
+      [[ "$item" == review:* ]] && { echo "DONE PR #$pr parked for review, its item ${item#review:} owns it"; return; }
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
@@ -337,7 +339,7 @@ work_blockers() {
       [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
-    OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
+    OPEN) [[ "${20:--}" == review:* ]] || b+=("PR #$pr open, CI ${ci:--}") ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
     *)
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
@@ -345,7 +347,8 @@ work_blockers() {
   esac
   case "$phases" in
     # An item that moved on took the work with it: nothing here is left to finish.
-    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and nothing merged") ;;
+    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* || ( "${20:--}" == review:* && "$state" = OPEN ) ]] \
+         || b+=("no plan file and nothing merged") ;;
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
     *) [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]] || b+=("next phase: $next") ;;
   esac
@@ -602,15 +605,23 @@ blind_row() { : > "$CACHE/blind_row"; }
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
 # A clone on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) has no gh PRs,
 # never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
+# The newest 100 of any state, then every open PR not among them: an open PR is unlanded work
+# however old. 2026-11-11 the playground's newest 100 began at #2215, so four sessions with open
+# PRs #1536..#2102 read "files not on the default branch, no PR" and were told to open one.
+# The PR store (queue item release-data-pr-store) replaces both calls.
 prs_for() {
   local dir="$1" key host
   key="$CACHE/$(repo_slug "$dir")" || return 0
   if [ -f "$key" ]; then :
   elif host="$(origin_host "$dir")" && [ -n "$host" ] && [[ " $(so_forgejo_hosts) " == *" $host "* ]]; then : > "$key"
-  elif ! (cd "$dir" && gh pr list --state all --limit 100 \
-      --json number,state,headRefName,headRefOid,statusCheckRollup \
-      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key"; then
-    : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"
+  elif ! rows="$(cd "$dir" && for st in "all --limit 100" "open --limit 1000"; do
+        # shellcheck disable=SC2086 # st is two words on purpose: the state and its window
+        gh pr list --state $st --json number,state,headRefName,headRefOid,statusCheckRollup \
+          -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' || exit 1
+      done 2>/dev/null)"; then
+    : > "$key"; : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"
+  else
+    awk -F'\t' '!seen[$2]++' <<<"$rows" | grep . > "$key" || :
   fi
   [ ! -f "$key.failed" ] || blind_row
   cat "$key"
@@ -1135,6 +1146,10 @@ parked_lines() {
 # An item still running or waiting here wins over one that moved on; an item that recorded no
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
+# review:<slug> is one this session parked in review/: its open PR is the item's, and
+# fleet-dispatch's reap owns it once the session ends (fix_red_pr gives a red one a fix-ci session),
+# so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
+# refused, and the reap, which waits for the session to end, never took over.
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
@@ -1143,6 +1158,7 @@ item_of() {
       if (!bysid && !bysess) next
       if (($1 == "running" || $1 == "waiting" || $1 == "review") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
+        else if ($1 == "review") { if (rev == "") rev = $4; next }
         if (hereslug == "") hereslug = $4
         here = 1; next
       }
@@ -1154,6 +1170,7 @@ item_of() {
     END {
       if (own != "") print "own:" own
       else if (here) print "here:" hereslug
+      else if (rev != "") print "review:" rev
       else if (moved != "") print "moved:" moved
       else print "-"
     }' <<<"$1"
@@ -1303,7 +1320,7 @@ collect() {
     # The row's queue item (item_of's one join), with the board row it came from and its origin.
     local islug=- irel=- irow=- iorigin=-
     case "$item" in
-      own:* | moved:* | here:*)
+      own:* | moved:* | here:* | review:*)
         irel="${item%%:*}"; islug="${item#*:}"; islug="${islug%% *}"; islug="${islug%%,*}"
         IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
