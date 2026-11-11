@@ -2936,13 +2936,9 @@ item_repo() {
   printf '%s' "${url%.git}"
 }
 
-# scope_dir <project> -> the checkout of a fleet-bench project name, which may be an alias
+# scope_dir <project> -> the checkout of a fleet-bench project name, which may be another spelling
 # (`platform`) the queue never uses.
-scope_dir() {
-  local p
-  p=$(jq -r --arg s "$1" '.aliases[$s] // $s' "$DISPATCH_PROJECT_MAP" 2>/dev/null) || p=$1
-  repo_dir "${p:-$1}"
-}
+scope_dir() { repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_canonical "$1")"; }
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
 # comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all

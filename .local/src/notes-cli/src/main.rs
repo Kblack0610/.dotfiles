@@ -36,7 +36,6 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
-mod registry;
 mod sheet;
 mod show;
 mod standing;
@@ -1195,7 +1194,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let op = playtest_op(sub, exact)?;
             let _lock = match op {
                 playtest::Op::List => None,
@@ -1213,7 +1212,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -1462,7 +1461,7 @@ fn main() -> Result<()> {
             ..
         } => {
             let filter = ingest::Filter {
-                project: project.map(|n| registry::canonical(&n)),
+                project: project.map(|n| project_map::canonical(&n)),
                 id,
                 action,
                 by,

@@ -619,7 +619,7 @@ fn new_rows(
     details: &[String],
 ) -> Result<Vec<String>> {
     let today = chrono::Local::now().date_naive();
-    let code = crate::registry::Registry::load().and_then(|r| r.code(name));
+    let code = project_map::Registry::load().and_then(|r| r.code(name));
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
@@ -959,7 +959,7 @@ fn link_standing(
         .map(|t| crate::standing::wants_link(t))
         .collect();
     if areas.iter().all(Option::is_none)
-        || crate::registry::Registry::load()
+        || project_map::Registry::load()
             .and_then(|r| r.code(name))
             .is_none()
     {
@@ -2004,7 +2004,7 @@ fn start_as(
     running: bool,
 ) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
-    let id = crate::registry::Registry::load()
+    let id = project_map::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
     let today = chrono::Local::now().format("%m%d").to_string();
