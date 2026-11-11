@@ -834,6 +834,7 @@ mod tests {
             state: state.into(),
             at: AT,
             url: Some("https://github.test/run/7".into()),
+            ..Default::default()
         };
         let at = s.apps.iter().position(|a| a.project == "binks").unwrap();
         s.apps[at].channels[0].deploys = Deploys {

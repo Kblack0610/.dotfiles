@@ -2103,6 +2103,7 @@ mod tests {
             state: st.into(),
             at,
             url: None,
+            ..Default::default()
         });
         r
     }
