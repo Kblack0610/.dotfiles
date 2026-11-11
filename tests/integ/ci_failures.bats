@@ -107,3 +107,11 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   assert_output --partial 'not yet past 2026-11-04T00:00:00Z'
   assert_output --partial 'PARTIAL'
 }
+
+@test "SENTINEL_SINCE starts the window at a watch's fix: the runs before it are not read; one before the window changes nothing (negative control)" {
+  SENTINEL_SINCE=$(date -d 2026-11-03T13:15:00Z +%s) run field "d['since'], d['runs'], d['red_runs']"
+  assert_success
+  assert_output "2026-11-03T13:15:00Z 4 1"
+  SENTINEL_SINCE=$(date -d 2026-10-01T00:00:00Z +%s) run field "d['since'], d['runs'], d['red_runs']"
+  assert_output "2026-11-01T00:00:00Z 8 5"
+}

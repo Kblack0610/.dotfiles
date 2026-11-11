@@ -8,6 +8,7 @@
 #       --any-prompt counts verdicts under every prompt; --days keeps the last N days.
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
+#   SENTINEL_SINCE (an epoch, set by a Sentinel probe) starts every window no earlier than a watch's fix.
 #   judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]
 #       the answer judge's verdicts, newest first and under any prompt: what it said, why, the
 #       quote behind it and what you did. The same rows reach Log's Judges' verdicts section.
@@ -41,8 +42,12 @@ CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.
 SETTLE_H=48
-# judge_precision counts only rules with this many scored answers: below it one miss swings 10+ points.
+# judge_precision counts only rules with this many scored answers, and a false-defer percent only lanes
+# with this many scored defers: below it one miss swings 10+ points.
 KPI_LABELS=10
+# A Sentinel probe's fix watermark (watch-companion-loop resolve), an epoch, 0 for none: a window starts
+# at the later of its own start and this, so a fixed red stops counting the verdicts before its fix.
+WATERMARK=0; [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]] && WATERMARK="$SENTINEL_SINCE"
 MISSES=10
 # Verdicts one read carries to the dashboards: about a week of asks, so a filter still has rows.
 VERDICTS=200
@@ -88,7 +93,7 @@ eval_json() {
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
-    --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
+    --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
     --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
@@ -115,7 +120,8 @@ JQ_EVAL="$JQ_EPOCH"'
   # Each truth source scores the lane whose conf names it in SCORE=.
   | ($src | to_entries | map({(.value): .key}) | reverse | add // {}) as $by
   | ($calls | map({(.id): .}) | add // {}) as $call
-  | (if $days == "" then null else $now - ($days | tonumber) * 86400 end) as $since
+  | (if $days == "" then null else $now - ($days | tonumber) * 86400 end
+     | if $wm > 0 and (. == null or . < $wm) then $wm else . end) as $since
   | def inscope($agent): (.at | epoch) as $e
       | ($since == null or ($e != null and $e >= $since))
         and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-"));
@@ -337,16 +343,17 @@ kpi_json() {
   local w7 w28
   w7="$(VERDICTS=0 eval_json "$AGENTS" 1 7)" && w28="$(VERDICTS=0 eval_json "$AGENTS" 1 28)" || return 1
   jq -cn --argjson a "$w7" --argjson b "$w28" --argjson min "$KPI_LABELS" '
+    def fdefer: if .fn + .tn >= $min then .false_defer_pct else null end;
     def k: .bar.labels as $need
            | {judge_errors: ([.agents[] | if .score == "unrecorded" then .calls.errors else .total.errors end] | add),
             judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
-            ask_false_defer_pct: (.agents[] | select(.score == "ask-answers") | .total.false_defer_pct),
+            ask_false_defer_pct: (.agents[] | select(.score == "ask-answers") | .total | fdefer),
             ask_unclear_pct: (.agents[] | select(.score == "ask-answers") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
-            dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total.false_defer_pct] | .[0])}
+            dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total | fdefer] | .[0])}
          # A runner lane scores from the one bar: below it a single miss swings the number.
          + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched"))
              | {("runner_score_" + (.agent | gsub("-"; "_"))): (if (.total.tp + .total.fp) >= $need then .total.precision else null end)}]
