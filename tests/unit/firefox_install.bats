@@ -83,3 +83,41 @@ STUB
   assert_success
   grep -q "install -d -m 0755 $FIREFOX_DIR/defaults/pref" "$HOME/sudo.log"
 }
+
+# A stub firefox: -CreateProfile "name dir" makes the dir, as the real one does.
+stub_firefox() {
+  printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/firefox.log"\n[ "$1" = -CreateProfile ] && mkdir -p "${2#* }"\n' >"$HOME/bin/firefox"
+  chmod +x "$HOME/bin/firefox"
+  export FIREFOX_BIN="$HOME/bin/firefox"
+}
+
+@test "the private work.user.js makes a work profile whose user.js is the shared one plus it" {
+  stub_firefox
+  echo 'user_pref("browser.startup.homepage", "https://a.test/|https://b.test/");' >"$DOTFILES_PRIVATE/.config/firefox/work.user.js"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  WORK="$HOME/.mozilla/firefox/work"
+  grep -q -- "-CreateProfile work $WORK" "$HOME/firefox.log"
+  [ ! -L "$WORK/user.js" ]
+  grep -q 'browser.startup.homepage", "https://a.test/' "$WORK/user.js"
+  grep -q 'browser.startup.page' "$WORK/user.js"
+  [ -f "$WORK/chrome/userChrome.css" ]
+}
+
+@test "an existing work profile is refreshed, not created again" {
+  stub_firefox
+  echo 'user_pref("browser.startup.homepage", "https://new.test/");' >"$DOTFILES_PRIVATE/.config/firefox/work.user.js"
+  mkdir -p "$HOME/.mozilla/firefox/work"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  [ ! -e "$HOME/firefox.log" ]
+  grep -q 'https://new.test/' "$HOME/.mozilla/firefox/work/user.js"
+}
+
+@test "without work.user.js there is no work profile" {
+  stub_firefox
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  [ ! -e "$HOME/.mozilla/firefox/work" ]
+  [ ! -e "$HOME/firefox.log" ]
+}

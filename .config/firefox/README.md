@@ -17,7 +17,8 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `mozilla.cfg` | `<install dir>/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
 | `autoconfig.js` | `<install dir>/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
-| `tab-keeper/` | signed xpi, installed by policy | Extension: one tab per chosen site, idle tabs unloaded, old tabs saved to Karakeep then closed |
+| `tab-keeper/` | signed xpi, installed by policy | Extension: one tab per chosen site, home tabs pinned, idle tabs unloaded, old tabs saved to Karakeep then closed |
+| `~/.dotfiles-private/.config/firefox/work.user.js` | appended to the work profile's `user.js` by `install.sh` | The work profile's home tabs (`browser.startup.homepage`). Private because it names work URLs |
 | `install.sh` | - | One-shot installer, Linux and macOS |
 
 The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
@@ -66,8 +67,11 @@ A small extension that keeps the tab strip short. It starts in dry run: it logs 
 | Any other site | A new tab with the exact URL of an open tab in the same container lands in that tab |
 | Idle `discardHours` (2) | The tab stays in the strip and its process is freed, unless the host is in `neverDiscardHosts` |
 | Idle `sweepDays` (7) | Saved to Karakeep with the `tab-sweep` tag, then closed. Hosts in `closeWithoutSaving` close without saving |
+| Home set (a profile whose home page lists web pages) | Each home page stays open and pinned, and other tabs are saved and closed after `homeSetSweepHours` (4) idle instead of `sweepDays` |
 
 Only newly opened tabs are deduped, never navigation inside a tab, and a tab opened from its own site (Duplicate Tab, a link that opens a new tab) stays. Pinned, audible, active and non-web tabs are left alone. Hidden tabs (Simple Tab Groups) and `neverCloseContainers` are discarded but never closed, and a hidden tab is never the one a new tab lands in. A tab closes only after Karakeep has confirmed both the bookmark and the tag. A tick closes at most `maxSweepPerTick` tabs, oldest first.
+
+The home set is read from the profile's own home page (`browser.startup.homepage`, through `browserSettings.homepageOverride`), so the personal profile, whose home page is `about:home`, has none. Tab Keeper checks it on every wake and every tick: an open home page gets pinned, a missing one opens pinned, and a pinned tab that moved within its site (a calendar week, a device page) still counts for that site. A home page closed by hand comes back at the next check.
 
 Ctrl+Alt+D or the toolbar button pauses dedupe. The badge shows `off` when paused, `!` when something is wrong (its tooltip says what), and `dry` in dry run.
 
@@ -93,6 +97,16 @@ The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-priv
 | `!`, "no Karakeep key" | rbw was locked when `install.sh` ran. `rbw unlock`, rerun it, restart Firefox |
 | `!`, "Karakeep access not granted" | Click Grant Karakeep access in the options page, once per machine |
 | `!`, "last save failed" | A Karakeep save failed and the tab stayed open. The log in the options page says why; check that Karakeep is reachable |
+
+## Work profile
+
+`install.sh` creates a `work` profile next to the default one when the private `work.user.js` exists, and writes its `user.js` as the shared `user.js` plus `work.user.js`. That file is generated, so after editing either one rerun `install.sh` and restart the work profile. `firefox-work` opens it (`open -na Firefox --args -P work` on macOS). It shares the policies and Tab Keeper with the personal profile; only the home set differs. The profile starts signed out of everything, so sign in once per site.
+
+| Problem | Fix |
+|---|---|
+| A tab list edit did not apply | The work `user.js` is generated: rerun `install.sh`, then restart the work profile |
+| A home tab keeps coming back | That is the home set. Remove it from `work.user.js` and rerun `install.sh` |
+| "could not create the work profile" | Firefox was not found. On Linux `firefox` must be on PATH; `FIREFOX_BIN` overrides it |
 
 Tests: `tests/unit/tab_keeper.bats` runs the rule tests in `tests/tab-keeper/`, and `tests/unit/firefox_install.bats` covers `install.sh`.
 
