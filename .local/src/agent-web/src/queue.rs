@@ -87,6 +87,7 @@ impl Cache {
         self.all.clear().await;
         self.since.clear().await;
         self.stats.clear().await;
+        crate::epics::clear().await;
     }
 }
 

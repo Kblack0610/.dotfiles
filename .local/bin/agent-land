@@ -352,13 +352,14 @@ R=()
 . "$(dirname "$(readlink -f "$0")")/../lib/pr-ci.sh"
 fj='' remote=origin api=gh forge=GitHub
 fj_detect() {
-  local top r
-  top=$(git rev-parse --show-toplevel 2>/dev/null) || top=''
-  if forge_canonical "$top"; then
-    r=$(so_forgejo_remote .) || die "$top is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf"
-  else
-    r=$(so_forgejo_remote . origin) || return 0
-  fi
+  local r rc=0
+  r=$(so_forge_remote .) || rc=$?
+  case $rc in
+    0) ;;
+    1) return 0 ;;
+    2) die "$(git rev-parse --show-toplevel 2>/dev/null) is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf" ;;
+    *) die "picking the forge failed (so_forge_remote rc $rc)" ;;
+  esac
   remote=${r%% *} fj=${r#* } api=Forgejo forge=Forgejo
 }
 fj_detect

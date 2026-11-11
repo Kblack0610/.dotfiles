@@ -21,6 +21,7 @@ mod cli;
 mod cloud;
 mod costs;
 mod deliverables;
+mod epics;
 mod feed;
 mod fleet;
 mod focus;
@@ -32,6 +33,7 @@ mod projects;
 mod proposals;
 mod queue;
 mod releases;
+mod reqlog;
 mod schedules;
 mod sessions;
 mod shepherd;
@@ -62,8 +64,8 @@ use hub_core::{boards, transcript};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{broadcast, watch};
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
@@ -81,6 +83,8 @@ struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
     events: broadcast::Sender<String>,
+    /// True once the server is stopping: each live-update stream ends, so the drain finishes.
+    stopping: watch::Receiver<bool>,
     /// The paths agent-web could not watch, so changes there reach no page until a retry works.
     watch_off: WatchOff,
     infra: infra::Cache,
@@ -112,7 +116,9 @@ async fn main() -> Result<()> {
     let (events, _) = broadcast::channel(EVENT_BACKLOG);
     let watch_off = WatchOff::default();
     watch(events.clone(), watch_off.clone())?;
+    let (stop, stopping) = watch::channel(false);
     let state = Arc::new(AppState {
+        stopping,
         oauth,
         sessions,
         actions: feed::Cache::new(events.subscribe()),
@@ -198,13 +204,67 @@ async fn main() -> Result<()> {
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
         .layer(middleware::map_response(assets::headers))
+        .layer(middleware::from_fn(reqlog::log))
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     eprintln!("agent-web: listening on {addr}");
-    axum::serve(listener, app).await?;
+    serve_until(listener, app, stop_signal(term), stop, DRAIN).await?;
     Ok(())
+}
+
+/// How long a stop waits for the requests in flight: a cold project page reads for about 10s.
+const DRAIN: Duration = Duration::from_secs(30);
+
+/// SIGTERM (systemd's stop, so a rebuild's restart; installed before the listener serves, so a
+/// failure to install it stops the start) or Ctrl-C.
+async fn stop_signal(mut term: tokio::signal::unix::Signal) {
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+}
+
+/// Serve `app` until `signal`; then take no new connection, set `stop` (each live-update stream
+/// ends), and answer the requests in flight for at most `drain`, so a restart drops none of them.
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    signal: impl std::future::Future<Output = ()> + Send + 'static,
+    stop: watch::Sender<bool>,
+    drain: Duration,
+) -> std::io::Result<()> {
+    let mut stopped = stop.subscribe();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        signal.await;
+        eprintln!("agent-web: stopping; answering the requests in flight first");
+        let _ = stop.send(true);
+    });
+    tokio::select! {
+        r = serve => r,
+        _ = async {
+            let _ = stopped.wait_for(|s| *s).await;
+            tokio::time::sleep(drain).await;
+        } => {
+            eprintln!("agent-web: stopped with requests still in flight after {drain:?}");
+            Ok(())
+        }
+    }
+}
+
+/// `stream` until `stopping` turns true.
+fn until_stopped<T: Send + 'static>(
+    stream: impl Stream<Item = T> + Send + 'static,
+    stopping: watch::Receiver<bool>,
+) -> impl Stream<Item = T> + Send + 'static {
+    let stop = WatchStream::new(stopping).filter(|s| *s).map(|_| None);
+    stream
+        .map(Some)
+        .merge(stop)
+        .take_while(Option::is_some)
+        .map(|o| o.expect("take_while kept only Some"))
 }
 
 /// A directory just created directly under `projects`: a new project, whose transcripts need a
@@ -1397,8 +1457,8 @@ async fn events_stream(
         // A lagged receiver skipped messages; tell the page to refetch everything.
         m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string())
     });
-    let stream = tokio_stream::once(off)
-        .chain(changes)
+    // A stop ends the stream, so the drain is not held open by a page that is only listening.
+    let stream = until_stopped(tokio_stream::once(off).chain(changes), s.stopping.clone())
         .map(|data| Ok(SseEvent::default().data(data)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -1406,6 +1466,66 @@ async fn events_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::{oneshot, Notify};
+
+    // The clock is paused only while the request is in its handler and no socket has bytes in
+    // flight, so the timeout fires only once every task is idle: the server still running then is
+    // a server waiting on the request, not one that was slow to be polled. It resumes before the
+    // answer is written, so a socket wait never jumps the drain timer.
+    #[tokio::test]
+    async fn a_stop_answers_the_request_in_flight_and_ends_the_live_stream() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (e, r) = (entered.clone(), release.clone());
+        let app = Router::new().route(
+            "/slow",
+            get(move || async move {
+                e.notify_one();
+                r.notified().await;
+                "answered"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (fire, signal) = oneshot::channel::<()>();
+        let (stop, stopping) = watch::channel(false);
+        let mut live = until_stopped(tokio_stream::pending::<u32>(), stopping.clone());
+        let mut server = tokio::spawn(serve_until(
+            listener,
+            app,
+            async move {
+                let _ = signal.await;
+            },
+            stop,
+            Duration::from_secs(60),
+        ));
+        let client = tokio::spawn(async move {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            c.write_all(b"GET /slow HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).await.unwrap();
+            out
+        });
+        entered.notified().await;
+        fire.send(()).unwrap();
+        stopping.clone().wait_for(|s| *s).await.unwrap();
+        assert_eq!(live.next().await, None, "the live stream ends on a stop");
+        tokio::time::pause();
+        let early = tokio::time::timeout(Duration::from_secs(1), &mut server).await;
+        tokio::time::resume();
+        assert!(
+            early.is_err(),
+            "the server stopped before the request in flight was answered"
+        );
+        release.notify_one();
+        let out = client.await.unwrap();
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(out.ends_with("answered"), "{out}");
+        server.await.unwrap().unwrap();
+    }
 
     #[test]
     fn a_view_on_home_narrows_the_needs_it_sends_and_nothing_else() {
