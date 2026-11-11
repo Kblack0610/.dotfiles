@@ -1,0 +1,23 @@
+# What a machine lists, read by project-map's Rust test and tests/unit/project_visible.bats
+# against project-visibility.json, so the shell and Rust rules cannot diverge.
+# machine profile<TAB>profile|project<TAB>name<TAB>yes|no
+personal	project	dotfiles	yes
+personal	project	finance	yes
+personal	project	acme_kiosk	no
+personal	project	acme-platform	no
+personal	project	globex_bot	no
+personal	project	typo-client	no
+personal	project	unregistered	yes
+acmework	project	acme_kiosk	yes
+acmework	project	acme-platform	yes
+acmework	project	dotfiles	yes
+acmework	project	globex_bot	no
+globex	project	globex_bot	yes
+globex	project	acme_kiosk	no
+personal	profile	personal	yes
+personal	profile	bnb	yes
+personal	profile	acmework	no
+personal	profile	globex	no
+acmework	profile	acmework	yes
+acmework	profile	personal	yes
+acmework	profile	globex	no

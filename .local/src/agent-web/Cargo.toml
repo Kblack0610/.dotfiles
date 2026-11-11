@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 agent-panel = { path = "../agent-panel" }
 hub-core = { path = "../hub-core" }
+project-map = { path = "../project-map" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 axum = "0.8"

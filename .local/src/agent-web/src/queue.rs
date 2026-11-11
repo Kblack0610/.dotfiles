@@ -266,14 +266,18 @@ pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult
 }
 
 /// The projects a task may be queued for: the names in project-map.json, which is also what
-/// agent-queue checks `--project` against.
+/// agent-queue checks `--project` against, less the work projects this machine does not list.
 pub async fn projects() -> Json<Vec<String>> {
-    let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
-    Json(project_names(&text))
+    let names = tokio::task::spawn_blocking(|| {
+        let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
+        project_names(&text, &hub_core::projects::machine_profile(&System))
+    });
+    Json(names.await.unwrap_or_default())
 }
 
-fn project_names(map: &str) -> Vec<String> {
+fn project_names(map: &str, machine: &str) -> Vec<String> {
     let v: serde_json::Value = serde_json::from_str(map).unwrap_or_default();
+    let reg = project_map::Registry::parse(map);
     let mut names: Vec<String> = v
         .get("paths")
         .and_then(serde_json::Value::as_object)
@@ -281,6 +285,7 @@ fn project_names(map: &str) -> Vec<String> {
         .flat_map(|m| m.values())
         .filter_map(|p| p.as_str().map(String::from))
         .filter(|p| hub_queue::is_slug(p))
+        .filter(|p| reg.as_ref().is_none_or(|r| r.project_visible(p, machine)))
         .collect();
     names.sort();
     names.dedup();
@@ -435,7 +440,22 @@ mod tests {
     #[test]
     fn projects_are_the_unique_map_values() {
         let map = r#"{"paths":{"/a":"dotfiles","/b":"notes-cockpit","/c":"dotfiles","/d":"-x"},"trackers":{}}"#;
-        assert_eq!(project_names(map), ["dotfiles", "notes-cockpit"]);
-        assert!(project_names("not json").is_empty());
+        assert_eq!(
+            project_names(map, "personal"),
+            ["dotfiles", "notes-cockpit"]
+        );
+        assert!(project_names("not json", "personal").is_empty());
+    }
+
+    #[test]
+    fn a_work_repo_is_queueable_only_on_its_work_machine() {
+        let map = r#"{"clients":{"acme":{"profile":"acmework"}},
+            "paths":{"/a":"dotfiles","/w":"acme-platform"},
+            "trackers":{"acme-platform":{"client":"acme"}}}"#;
+        assert_eq!(project_names(map, "personal"), ["dotfiles"]);
+        assert_eq!(
+            project_names(map, "acmework"),
+            ["acme-platform", "dotfiles"]
+        );
     }
 }

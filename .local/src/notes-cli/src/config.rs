@@ -816,29 +816,54 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     })
 }
 
-/// Every profile NAME defined in the active config, sorted. Cross-profile aggregation
-/// (`notes focus --all`) iterates this to visit all profiles without knowing them ahead
-/// of time. Falls back to the built-in default's single `personal` profile when no config
-/// file exists — the same source `resolve` reads, so the two never disagree.
+/// Every profile NAME this machine lists, sorted. Cross-profile aggregation
+/// (`notes focus --all`, the board, `config --profiles` and through it lab-sync) iterates this
+/// to visit all profiles without knowing them ahead of time. A work profile (one named in
+/// project-map.json `clients`) is listed only on its own machine ([`machine_profile`]), so the
+/// work Mac shows its job and the personal fleet does not; `--profile` still reaches it. Falls
+/// back to the built-in default's single `personal` profile when no config file exists — the
+/// same source `resolve` reads, so the two never disagree.
 pub fn all_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw.profile.keys().cloned().collect();
-    names.sort();
-    Ok(names)
+    Ok(listed(&raw, raw.profile.keys()))
 }
 
 /// The profiles board automation may write: [`all_profile_names`] less any with
 /// `automation = false`. Every fleet-wide loop that rewrites or judges sheets uses this.
 pub fn managed_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw
+    let names = raw
         .profile
         .iter()
         .filter(|(_, p)| p.automation)
-        .map(|(n, _)| n.clone())
+        .map(|(n, _)| n);
+    Ok(listed(&raw, names))
+}
+
+/// This machine's own profile: what `resolve` picks with no `--profile` flag
+/// ($NOTES_PROFILE, then `[hostname_map]`, then `default_profile`).
+pub fn machine_profile() -> Result<String> {
+    let (raw, _src) = load_raw()?;
+    Ok(pick_profile(&raw, None).0)
+}
+
+/// `names` less the work profiles this machine does not list, sorted.
+fn listed<'a>(raw: &RawConfig, names: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let machine = pick_profile(raw, None).0;
+    listed_in(names, &machine, project_map::cached().as_deref())
+}
+
+fn listed_in<'a>(
+    names: impl Iterator<Item = &'a String>,
+    machine: &str,
+    reg: Option<&project_map::Registry>,
+) -> Vec<String> {
+    let mut out: Vec<String> = names
+        .filter(|n| reg.is_none_or(|r| r.profile_visible(n, machine)))
+        .cloned()
         .collect();
-    names.sort();
-    Ok(names)
+    out.sort();
+    out
 }
 
 /// Whether board automation may touch `profile` (see [`managed_profile_names`]). An unknown
@@ -1147,6 +1172,25 @@ mod tests {
         assert_eq!(name, "AcmeCorp");
         assert!(src.contains("hostname_map"));
         std::env::remove_var("NOTES_HOSTNAME");
+    }
+
+    // The personal fleet lists no work profile; the work machine lists its own and no other
+    // job's; no registry hides nothing. The rule itself: project-map's visibility fixture.
+    #[test]
+    fn a_work_profile_is_listed_only_on_its_own_machine() {
+        let reg = project_map::Registry::parse(
+            r#"{"clients":{"acme":{"profile":"acmework"},"globex":{"profile":"globex"}}}"#,
+        );
+        let names: Vec<String> = ["acmework", "bnb", "globex", "personal"]
+            .map(String::from)
+            .to_vec();
+        let on = |machine: &str, r| listed_in(names.iter(), machine, r);
+        assert_eq!(on("personal", reg.as_ref()), ["bnb", "personal"]);
+        assert_eq!(
+            on("acmework", reg.as_ref()),
+            ["acmework", "bnb", "personal"]
+        );
+        assert_eq!(on("personal", None), names);
     }
 
     // A profile nested under another's root (a work profile under personal's ~/.notes) is the case

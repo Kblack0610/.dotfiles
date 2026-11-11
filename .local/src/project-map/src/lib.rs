@@ -240,6 +240,42 @@ impl Registry {
         ((2..=4).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase()))
             .then(|| c.to_string())
     }
+
+    /// The profile of every `clients` entry: the work profiles.
+    fn work_profiles(&self) -> impl Iterator<Item = &str> {
+        self.raw
+            .get("clients")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .filter_map(|c| c.get("profile")?.as_str())
+    }
+
+    /// Whether notes profile `profile` is listed on a machine whose own profile is `machine`:
+    /// a work profile (one a `clients` entry names) only there, any other everywhere. The work
+    /// Mac lists its job and the personal fleet does not; the rule is the `clients` comment in
+    /// project-map.json, and `project_visible` in project-name.sh is its shell side.
+    pub fn profile_visible(&self, profile: &str, machine: &str) -> bool {
+        profile == machine || !self.work_profiles().any(|p| p == profile)
+    }
+
+    /// Whether project `name` is listed on a machine whose own profile is `machine`: one whose
+    /// tracker has a `client` only where that client's profile is the machine's, and a client
+    /// `clients` does not name nowhere, so a typo hides work instead of leaking it.
+    pub fn project_visible(&self, name: &str, machine: &str) -> bool {
+        let client = self
+            .tracker(name)
+            .and_then(|t| t.get("client"))
+            .and_then(Value::as_str);
+        client.is_none_or(|c| {
+            self.raw
+                .get("clients")
+                .and_then(|m| m.get(c))
+                .and_then(|e| e.get("profile"))
+                .and_then(Value::as_str)
+                == Some(machine)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +308,30 @@ mod tests {
         {
             let (spelling, want) = line.split_once('\t').expect("spelling<TAB>key");
             assert_eq!(r.canonical(spelling), want, "{spelling}");
+            n += 1;
+        }
+        assert!(n >= 20, "the fixture lost its rows: {n}");
+    }
+
+    /// The shared visibility fixture: tests/unit/project_visible.bats reads the same rows
+    /// through project-name.sh.
+    #[test]
+    fn every_visibility_row_matches_the_shell_rule() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tests/fixtures");
+        let r = Registry::from_path(&Path::new(dir).join("project-visibility.json")).unwrap();
+        let rows = std::fs::read_to_string(Path::new(dir).join("project-visibility.tsv")).unwrap();
+        let mut n = 0;
+        for line in rows.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let f: Vec<&str> = line.split('\t').collect();
+            let [machine, kind, name, want] = f[..] else {
+                panic!("machine<TAB>kind<TAB>name<TAB>yes|no: {line}")
+            };
+            let got = match kind {
+                "profile" => r.profile_visible(name, machine),
+                "project" => r.project_visible(name, machine),
+                _ => panic!("kind {kind}"),
+            };
+            assert_eq!(got, want == "yes", "{line}");
             n += 1;
         }
         assert!(n >= 20, "the fixture lost its rows: {n}");
