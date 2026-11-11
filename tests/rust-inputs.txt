@@ -7,3 +7,5 @@
 .local/src/agent-web   .local/src/web-kit/
 .local/src/hub-core    .config/comms-lint/
 .local/src/hub-core    .local/bin/comms-lint
+.local/src/project-map tests/fixtures/project-names.json
+.local/src/project-map tests/fixtures/project-names.tsv
