@@ -369,7 +369,6 @@
     "/tmp"
   ],
   "skillOverrides": {
-    "adb-ops": "name-only",
     "bitbucket-ops": "name-only",
     "bug-bash-wrapup": "name-only",
     "changelog-draft": "name-only",
