@@ -1026,6 +1026,17 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
+@test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
+  oc_db
+  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
+  run "$SUBJECT" run
+  assert_success
+  [ ! -e "$SO_OUT/bnb-agents" ]
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | jq -rs 'map(.session_id) | join(" ")')" ses_stray
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
+}
+
 @test "an opencode session's Forgejo PR: a POST to the pulls API that printed its html_url is claimed" {
   oc_db
   fj_setup
