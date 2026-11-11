@@ -136,7 +136,7 @@ sandbox_init() {
 
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
-  # colour sets it itself.
+  # colour sets it itself, after sandbox_init.
   unset NO_COLOR PANEL_NO_COLOR
 
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
