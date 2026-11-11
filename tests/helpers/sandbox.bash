@@ -134,6 +134,11 @@ sandbox_init() {
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
 
+  # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
+  # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
+  # colour sets it itself.
+  unset NO_COLOR PANEL_NO_COLOR
+
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
   # to assert exactly that behaviour.
