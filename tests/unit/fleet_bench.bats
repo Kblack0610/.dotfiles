@@ -2004,12 +2004,12 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  # one that merged a fix with the red still here did not hold, so it is queued again
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  # one that merged a PR beside the red stands too (ar-1663): no merge clears an alert red
   : > "$ITEMS"; watch_item ar-1 ok "$this" o/r#5
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial '1 queued as red fixes'
-  : > "$PLOG"; : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  [ ! -s "$PLOG" ]
   # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
   : > "$ITEMS"; watch_item ar-1 ok "$before"
   run "$SUBJECT" triage
