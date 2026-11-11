@@ -1158,7 +1158,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -n "$(field "$f" started)" ]
 }
 
-@test "--running on the agent world records <server>:<session>; off it or outside tmux, none" {
+@test "--running records <server>:<session> on any world; a session a manifest declares, or no tmux, records none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
   TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
   assert_success
@@ -1167,6 +1167,10 @@ notes --profile bnb ptask game --agent run gm-9"
   TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubbed "from a hub window"
   assert_success
   [ -z "$(field "$(item running hubbed)" session)" ]
+  printf 'dotfiles-agent-3\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubwt "from a hub worktree session"
+  assert_success
+  [ "$(field "$(item running hubwt)" session)" = hub:dotfiles-agent-3 ]
   TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --session given --slug given "given"
   [ "$(field "$(item running given)" session)" = lab:given ]
   run "$AQ" add --project game --running --slug nowhere "no tmux"
