@@ -344,6 +344,20 @@ so_forgejo_remote() {
   return 1
 }
 
+# so_forge_remote CHECKOUT - the forge CHECKOUT lands on, the one rule agent-land and `project-map
+# forges` share: "<remote> HOST/OWNER/REPO" when it is Forgejo (its checkout commits the mirror
+# marker, forge_canonical, or its origin is on a host so_forgejo_hosts lists). rc 1: GitHub (or any
+# other origin). rc 2: Forgejo-canonical, but no remote is on a listed host.
+so_forge_remote() {
+  local top
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || top=''
+  if forge_canonical "$top"; then
+    so_forgejo_remote "$1" || return 2
+  else
+    so_forgejo_remote "$1" origin || return 1
+  fi
+}
+
 # so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of so_forgejo_remote (home-config's remote is `forgejo`,
 # its origin the GitHub mirror); rc 1 when no remote is on a listed host.
 so_forgejo_repo() {

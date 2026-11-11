@@ -120,6 +120,7 @@ A project's `type` in `project-map.json` can add to the core through its `[proje
 |---|---|---|
 | Name, lab profile, type, repo, path in the repo, branch, tracker, release epic, tag glob | `project-map.json` (private dotfiles) `trackers.<name>` | a PR there |
 | Stage, version in progress, open rows and rows aimed at a later release | the sheet `README.md` | human, `notes ptask` / `projects` |
+| Which forge (Forgejo or GitHub) a repo lands on | the checkout: its remotes and the committed `.forgejo/workflows/mirror-to-github.yaml` marker; `project-map forges` lists them | the PR that flips the repo |
 | Where we are | `summary.md` STATUS | `lab-status` |
 | Shipped version | the git tag | the release |
 | What shipped, for users | the repo's `CHANGELOG.md` | the release |
@@ -139,6 +140,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 |---|---|
 | see projects | `notes projects`, `notes projects --archived`, `notes projects <name>` for its files |
 | add a project | `project-map add <name> --type game\|app\|infra --lab <profile>`, plus `--repo <key> --path <dir>` for part of a repo or `--repo-dir <abs>` for a whole one; it writes the registry entry, scaffolds the folder, regenerates the anchor and runs `project-map-doctor`. Land the registry change with dotfiles-land |
+| see which forge each repo lands on | `project-map forges` (FORGE is the rule agent-land uses; MIRROR `github` means it commits the GitHub mirror workflow) |
 | fill in a missing shape file | `notes --profile bnb projects --new <name>` |
 | check every project's shape | `notes doctor --projects` |
 | set its maturity stage (what each one requires: `~/.local/src/docs/stages.md`) | `projects --stage <name> --set draft\|dev\|alpha\|beta\|prod`; a move up runs `project-stage-check <name> --stage <s>` first and refuses on its exit 1; `projects --stages` prints the ladder, the one list every shell reader uses |
