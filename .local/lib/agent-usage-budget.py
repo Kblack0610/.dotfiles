@@ -32,6 +32,7 @@ forecast on aws) passes its cap, or a line unread for 24h (unread_since is carri
 file, the only record of how long a reader has failed). Fixed fees are never a trigger: they are spent whole.
 """
 import argparse
+import re
 import calendar
 import datetime as dt
 import functools
@@ -55,6 +56,7 @@ UNREAD_DAYS = 1
 PACE_SLACK_USD = 15            # about one heavy merge day of Actions (gh-actions-budget-pace, 2026-09-28)
 CAP_WARN = 0.9
 UNATTRIBUTED = "unattributed"
+SCHEMA = 2
 READ_TIMEOUT = 30  # seconds per reader; each is one HTTP call or two
 KINDS = ("subscription", "litellm", "github", "aws", "digitalocean")
 
@@ -112,11 +114,20 @@ def parse_ledger(path):
                     sys.exit(f"agent-usage budget: {path}:{n}: usd_month {usd!r} is not a number, - or ?")
             if line[1] != "subscription" and usd != "-":
                 sys.exit(f"agent-usage budget: {path}:{n}: a {line[1]} bill's cap comes from its system; write -")
+            for k, v in opts.items():
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+", v):
+                    sys.exit(f"agent-usage budget: {path}:{n}: {k}={v!r}: letters, digits, _ . - only")
             bills.append({"name": line[0], "kind": line[1], "usd_month": usd, "ref": opts.get("ref", line[0]),
                           "paid_by": opts.get("paid_by"), "project": opts.get("project"), "lane": opts.get("lane")})
     return bills
 
 
+def payer_key(b):
+    """The snapshot key a subscription's work is recorded under."""
+    return account_dirs().get(b["ref"], b["ref"])
+
+
+@functools.cache
 def account_dirs():
     """claude-acct account name -> the config dir basename the snapshots key by_account on."""
     out = {}
@@ -135,7 +146,7 @@ def list_work(month, today):
     """List-price dollars per payer key from this month's daily snapshots, the days they cover, and per
     payer key the (project, lane) -> dollars its sessions ran."""
     days_due = today.day - 1 if (today.year, today.month) == month else calendar.monthrange(*month)[1]
-    by, covered, cells = {}, 0, {}
+    by, covered, cells, split_days = {}, 0, {}, 0
     for p in sorted(glob.glob(os.path.join(TOKENS_DIR, f"{month[0]:04d}-{month[1]:02d}-*.json"))):
         if os.path.basename(p)[8:10] > f"{days_due:02d}":
             continue  # a day the month has not finished yet
@@ -152,6 +163,7 @@ def list_work(month, today):
             by[k] = by.get(k, 0) + (v.get("usd") or 0)
         for k, v in (fc.get("other_harness") or {}).items():
             by[k] = by.get(k, 0) + (v.get("usd") or 0)
+        split_days += bool(fc.get("by_session"))
         for r in fc.get("by_session") or []:
             if not isinstance(r, dict) or not r.get("usd"):
                 continue
@@ -159,7 +171,7 @@ def list_work(month, today):
             proj = r.get("project") if r.get("project") not in (None, "", "_unscoped") else UNATTRIBUTED
             cell = (proj, r.get("origin") or UNATTRIBUTED)
             cells.setdefault(key, {})[cell] = cells.get(key, {}).get(cell, 0) + r["usd"]
-    return by, covered, days_due, cells
+    return by, covered, days_due, cells, split_days
 
 
 def gateway_team(ref):
@@ -173,7 +185,9 @@ def gateway_team(ref):
     if "usd_used" not in t:
         raise Unread(f"claude-acct publishes no claude_account_usd_used{{account={ref}}}")
     age = t.get("textfile_age_seconds")
-    if age is not None and age > CLAUDE_ACCT_STALE_SECS:
+    if age is None:
+        raise Unread("no claude-acct textfile age in Prometheus, so its numbers may be frozen")
+    if age > CLAUDE_ACCT_STALE_SECS:
         raise Unread(f"claude-acct's textfile is {age / 3600:.1f}h old (timer claude-acct-usage)")
     return t
 
@@ -198,7 +212,7 @@ def split(lines, cells, work):
         if not counted(x):
             continue
         if x["kind"] == "subscription":
-            mine = cells.get(account_dirs().get(x["ref"], x["ref"]), {})
+            mine = cells.get(payer_key(x), {})
             total = sum(mine.values())
             if total <= 0:
                 add((UNATTRIBUTED, UNATTRIBUTED), x["spent"])
@@ -207,7 +221,7 @@ def split(lines, cells, work):
         elif x.get("by_repo"):
             lane = x.get("lane") or x["kind"]
             for repo, usd in x["by_repo"].items():
-                add((aliases.get(repo, repo) if repo != UNATTRIBUTED else repo, lane), usd)
+                add((aliases.get(repo) or repo.lstrip("."), lane), usd)
         else:
             add((x.get("project") or UNATTRIBUTED, x.get("lane") or x["kind"]), x["spent"])
     return out
@@ -242,7 +256,7 @@ def read_bill(b, frac, work, month):
                 line["status"] = "unpriced"
                 return line
             line.update(cap=fee, spent=fee, projected=fee)
-            key = account_dirs().get(b["ref"], b["ref"])
+            key = payer_key(b)
             if key in work:
                 line["list_usd"] = round(work[key], 2)
         elif b["kind"] == "litellm":
@@ -256,18 +270,20 @@ def read_bill(b, frac, work, month):
             nxt = f"{month[0] + month[1] // 12:04d}-{month[1] % 12 + 1:02d}-01"
             if reset and reset != nxt:
                 line["note"] = f"its budget window resets {reset}, not on the 1st"
+                line["off_calendar"] = True
         elif b["kind"] == "github":
             org = b["ref"]
             budgets = run_json(["gh", "api", f"/organizations/{org}/settings/billing/budgets"]).get("budgets") or []
             usage = run_json(["gh", "api", f"/organizations/{org}/settings/billing/usage?year={month[0]}&month={month[1]}"])
-            caps = {x.get("budget_product_sku"): float(x.get("budget_amount") or 0) for x in budgets}
+            caps = {str(x.get("budget_product_sku")).lower(): float(x.get("budget_amount") or 0) for x in budgets}
             caps = {k: v for k, v in caps.items() if v > 0}
             items = usage.get("usageItems") or []
             spent = sum(float(u.get("netAmount") or 0) for u in items)
             by_sku, by_repo = {}, {}
             for u in items:
                 n = float(u.get("netAmount") or 0)
-                by_sku[u.get("product")] = by_sku.get(u.get("product"), 0) + n
+                sku = str(u.get("product")).lower()
+                by_sku[sku] = by_sku.get(sku, 0) + n
                 repo = u.get("repositoryName") or UNATTRIBUTED
                 by_repo[repo] = by_repo.get(repo, 0) + n
             cap = sum(caps.values()) or None
@@ -303,7 +319,7 @@ def budget(now):
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     # Pace from at least one day: a few hours of a new month would multiply any carried-over usage by hundreds.
     frac = max((now - start).total_seconds() / 86400, 1) / days
-    work, covered, due, cells = list_work(month, now.date())
+    work, covered, due, cells, split_days = list_work(month, now.date())
     lines = [read_bill(b, frac, work, month) for b in parse_ledger(LEDGER)]
     carry_unread(lines, now)
     ours = [x for x in lines if not x.get("paid_by")]
@@ -313,12 +329,12 @@ def budget(now):
     for x in lines:
         x.pop("by_repo", None)
     return {
-        "schema": 2,
+        "schema": SCHEMA,
         "month": f"{month[0]:04d}-{month[1]:02d}",
         "as_of": now.isoformat(timespec="seconds"),
         "as_of_epoch": int(now.timestamp()),
         "day": now.day, "days": days, "elapsed": round(frac, 4),
-        "list_days": {"covered": covered, "due": due},
+        "list_days": {"covered": covered, "due": due, "split": split_days},
         "total": {
             "spent": spent,
             "projected": round(sum(x["projected"] for x in ok), 2),
@@ -352,10 +368,12 @@ def check(now):
             d = json.load(f)
     except (OSError, ValueError) as e:
         return [f"no readable {BUDGET_JSON}: {e}"]
-    age = now.timestamp() - (d.get("as_of_epoch") or 0)
+    if not isinstance(d, dict) or d.get("schema") != SCHEMA:
+        return [f"{BUDGET_JSON} is not schema {SCHEMA} (written by an older agent-usage budget?)"]
+    age = now.timestamp() - d["as_of_epoch"]
     if age > FILE_STALE_SECS:
         return [f"{os.path.basename(BUDGET_JSON)} is {age / 3600:.1f}h old (the fleet-bench budget step)"]
-    why, el = [], d.get("elapsed") or 0
+    why, el = [], d["elapsed"]
     for x in d.get("lines") or []:
         if x.get("paid_by"):
             continue
@@ -366,12 +384,16 @@ def check(now):
         caps = [(f"{x['name']} {k}", v["cap"], v["spent"]) for k, v in (x.get("products") or {}).items()]
         if not caps and x.get("cap") and x.get("spent") is not None and x["kind"] != "subscription":
             caps = [(x["name"], x["cap"], x["spent"])]
+        if x.get("off_calendar"):
+            caps = []  # its spend covers another window; the calendar share would misjudge its pace
+        mine = []
         for name, cap, spent in caps:
             limit = min(cap * el + PACE_SLACK_USD, CAP_WARN * cap)
             if spent > limit:
-                why.append(f"{name} ${spent:,.0f} is ahead of pace: past ${limit:,.0f} of its ${cap:,.0f} cap on day {d['day']}")
-        if x["kind"] != "subscription" and x.get("cap") and (x.get("projected") or 0) > x["cap"]:
-            why.append(f"{x['name']} projects to ${x['projected']:,.0f} this month, past its ${x['cap']:,.0f} cap")
+                mine.append(f"{name} ${spent:,.0f} is ahead of pace: past ${limit:,.0f} of its ${cap:,.0f} cap on day {d['day']}")
+        if not mine and x["kind"] != "subscription" and x.get("cap") and (x.get("projected") or 0) > x["cap"]:
+            mine.append(f"{x['name']} projects to ${x['projected']:,.0f} this month, past its ${x['cap']:,.0f} cap")
+        why += mine
     return why
 
 
@@ -412,6 +434,8 @@ def main():
     a = ap.parse_args()
     now = dt.datetime.fromisoformat(ENV["BUDGET_NOW"]) if ENV.get("BUDGET_NOW") else dt.datetime.now().astimezone()
     if a.action == "check":
+        if a.json:
+            ap.error("check prints its reasons as text; --json is for the budget itself")
         why = check(now)
         print("\n".join(why) if why else "budget on pace")
         sys.exit(1 if why else 0)

@@ -76,7 +76,7 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   echo '{"fleet_cost":{"by_account":{"claude":{"usd":99}}}}' > "$TOKENS_DIR/2026-11-11.json"   # today: not done yet
   run b '[(.lines[] | select(.kind == "subscription") | .list_usd), .list_days, .total.list_usd]'
   assert_success
-  assert_output '[70,210,14,{"covered":7,"due":10},294]'
+  assert_output '[70,210,14,{"covered":7,"due":10,"split":0},294]'
 }
 
 @test "an unread bill is named and left out of the total, never \$0 (negative control)" {
@@ -180,4 +180,25 @@ aws projects to $650 this month, past its $600 cap'
   run "$AU" budget check
   assert_failure
   assert_output --partial "no readable $BUDGET_JSON"
+}
+
+@test "review fixes: a missing claude-acct age is unread, a dot repo joins its project, a bad ref is refused, an old file is a schema error" {
+  printf '[{"metric":{"__name__":"claude_account_usd_used","account":"lazer"},"value":[0,"20"]}]' > "$FIX/lazer"
+  run b '.lines[] | select(.name == "lazer") | .status'
+  assert_output '"unread"'
+  lazer 20 250 1796083200 60
+  echo '{"usageItems":[{"product":"Actions","netAmount":30,"repositoryName":".dotfiles"}]}' > "$FIX/gh-usage"
+  run b '[(.by_project[] | select(.name == "dotfiles") | .usd), (.lines[] | select(.name == "gh") | .products.actions.spent)]'
+  assert_output '[30,30]'
+  echo 'x digitalocean - ref=a"b' >> "$BUDGET_LEDGER"
+  run "$AU" budget
+  assert_failure
+  assert_output --partial "letters, digits, _ . - only"
+  sed -i '$d' "$BUDGET_LEDGER"
+  echo '{"schema":1,"lines":[]}' > "$BUDGET_JSON"
+  run "$AU" budget check
+  assert_failure
+  assert_output --partial "is not schema 2"
+  run "$AU" budget check --json
+  assert_failure
 }
