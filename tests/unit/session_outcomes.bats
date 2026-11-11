@@ -1293,6 +1293,27 @@ cx_rollouts() {
   assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
 }
 
+@test "a codex session in a repo the registry does not know files under _unscoped, never a stray key the doctor fails" {
+  cx_rollouts
+  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  local t0
+  t0=$(date -u -d "@$((STOP - 60))" +%Y-%m-%dT%H:%M:%S.000Z)
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: "/w/qmk_firmware", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "trackball speed"}}
+  ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-cx-stray.jsonl"
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  [ ! -e "$SO_OUT/qmk_firmware" ]
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | jq -rs 'map(.session_id) | join(" ")')" cx-stray
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("cx-"))] | join(" ")')" cx-root
+  # the next run reads the _unscoped line as seen and writes nothing more
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/_unscoped/*.jsonl | grep -c .)" 1
+}
+
 # cx_item_rollouts -- the item format 0.164 writes for a run the fleet starts: UserMessage and
 # CommandExecution items with exit codes, token_usage_record per response, a turn that ended in a
 # usage limit. A root with a failing test, a passing one, a gh poll, a commit that printed
