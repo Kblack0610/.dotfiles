@@ -748,23 +748,17 @@ app urgent: fleet, #urgent, alpha"
   assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
 
-@test "item_brief: a repo whose canonical forge is Forgejo lands by one-shot's Forgejo section, never agent-land" {
+@test "item_brief: a repo whose canonical forge is Forgejo merges with agent-land too, which lands it through that API (ar-1213)" {
   project game beta "$SANDBOX/repos/game"
   mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
   it='{"slug": "hc", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}'
   run item_brief "$it"
-  assert_output --partial 'landing.md "Forgejo repo" says, recording the PR and merged: on hc.'
-  refute_output --partial 'Merge with agent-land'
-  # headless on Forgejo: no agent-land line, and recording the PR is not tied to gh
+  assert_output --partial 'Merge with agent-land <N> (AGENT_QUEUE_ITEM=hc is set)'
+  refute_output --partial 'landing.md'
   echo '{"harnesses": {"codex": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$it" codex
   assert_output --partial 'Right after the PR opens, run: agent-queue set hc pr='
-  refute_output --partial 'Run agent-land in the foreground'
-  # a GitHub-canonical repo still merges with agent-land (negative control)
-  rm "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
-  run item_brief "$it"
-  assert_output --partial 'Merge with agent-land <N>'
-  refute_output --partial 'Forgejo'
+  assert_output --partial 'Run agent-land in the foreground'
 }
 
 @test "item_brief: a doc+ask kind ends on a doc in the lab docs and an ask recorded on the item, never a PR" {

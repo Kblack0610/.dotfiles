@@ -1934,8 +1934,7 @@ ask_decisions() {
 # slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
 # resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
-# (salvage_line). A repo whose canonical forge is Forgejo (forge_canonical) cannot run agent-land, so
-# its brief names one-shot's Forgejo landing instead.
+# (salvage_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
@@ -1986,8 +1985,6 @@ item_brief() {
     proof_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")" "$harness"
     return
   fi
-  local forgejo=
-  forge_canonical "$(repo_dir "$(jq -r .project <<<"$it")")" && forgejo=1
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
@@ -1996,16 +1993,12 @@ item_brief() {
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
-    if [ -n "$forgejo" ]; then
-      echo "This repo's canonical forge is Forgejo, where agent-land cannot run: land it as ~/.claude/skills/one-shot/references/landing.md \"Forgejo repo\" says, recording the PR and merged: on $slug."
-    else
-      echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
-    fi
+    echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   if headless "$harness"; then
     echo "Right after the PR opens, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
-    [ -n "$pr_only$forgejo" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
+    [ -n "$pr_only" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Run final-pass (~/.claude/skills/final-pass/SKILL.md) on the diff before the PR opens; skip only its /simplify call. Skip wind-down (this run ends when you stop) and any other step that needs a Claude slash command, and name each step you skipped in the PR body."
     no_human "$slug"
     return
