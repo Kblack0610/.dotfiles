@@ -7,7 +7,8 @@
 //! The query: whitespace-separated terms, all of which must hold. `key:value` matches that
 //! column, and the same key repeated means any of them (`source:unity source:k8s`). `-key:value`
 //! excludes, `-word` excludes text. A bare word matches the row's text. Values match without
-//! case, `key:value` by prefix and a word anywhere in the text; `key:"two words"` quotes. A key
+//! case, `key:value` by prefix (`key:=value` the whole value, for one record by its id) and a
+//! word anywhere in the text; `key:"two words"` quotes. A key
 //! that is not one of the table's columns is read as a bare word, so `http://x` still searches.
 
 use std::cmp::Ordering;
@@ -138,6 +139,8 @@ struct Term {
     neg: bool,
     /// A column of the table, or None for a bare word.
     key: Option<&'static str>,
+    /// `key:=value`: the whole value, not a prefix of it.
+    exact: bool,
     value: String,
 }
 
@@ -180,11 +183,16 @@ fn terms<R: Row>(q: &str) -> Vec<Term> {
                 },
                 None => (None, body),
             };
+            let (exact, value) = match value.strip_prefix('=').filter(|_| key.is_some()) {
+                Some(v) => (true, v),
+                None => (false, value),
+            };
             let value = value.trim_matches('"').to_lowercase();
             (!value.is_empty() && value != "-").then(|| Term {
                 raw: raw.clone(),
                 neg,
                 key,
+                exact,
                 value,
             })
         })
@@ -213,10 +221,15 @@ fn term(key: &str, value: &str) -> String {
 impl Term {
     fn hits<R: Row>(&self, r: &R, text: &mut Option<String>) -> bool {
         match self.key {
-            Some(k) => r
-                .vals(k)
-                .iter()
-                .any(|v| v.text().is_some_and(|t| t.starts_with(&self.value))),
+            Some(k) => r.vals(k).iter().any(|v| {
+                v.text().is_some_and(|t| {
+                    if self.exact {
+                        t == self.value
+                    } else {
+                        t.starts_with(&self.value)
+                    }
+                })
+            }),
             None => text.get_or_insert_with(|| r.text()).contains(&self.value),
         }
     }
@@ -291,6 +304,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     });
     let rows = [
         phone_table::<crate::home::Need>(),
+        phone_table::<crate::home::Running>(),
         phone_table::<crate::proposals::Proposal>(),
         phone_table::<crate::queue::QueueRow<'static>>(),
         phone_table::<crate::tasks::Row>(),
@@ -672,6 +686,10 @@ mod tests {
         );
         assert_eq!(names(&q("n:10")), ["queue table"]);
         assert_eq!(names(&q("n:1.5")), ["ci cost"]);
+        assert_eq!(names(&q("n:1")).len(), 2, "1 is a prefix of 10");
+        assert_eq!(names(&q("n:=1")).len(), 0, "= is the whole value");
+        assert_eq!(names(&q("n:=10")), ["queue table"]);
+        assert_eq!(names(&q("-n:=10")).len(), 3);
     }
 
     #[test]
