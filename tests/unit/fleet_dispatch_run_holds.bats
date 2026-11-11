@@ -195,7 +195,7 @@ load 'fleet_dispatch/common'
 
 @test "an urgent heavy item that can never fit the run units holds nothing back" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_BURST=1
   agent-queue add --project game --slug big-urgent --priority urgent --weight heavy "big urgent"
   agent-queue add --project game --slug small-high --priority high --weight light "small high"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -218,7 +218,7 @@ load 'fleet_dispatch/common'
 
 @test "preempt: a heavy urgent item among light sessions parks one a pass, lowest priority first, and starts once two are free" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=2
+  export DISPATCH_TARGET_BURST=2
   started_item l1 lab:game-agent-l1 run area-l1
   started_item l2 lab:game-agent-l2 run area-l2
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-l1.md
@@ -269,7 +269,7 @@ load 'fleet_dispatch/common'
 
 @test "preempt: a hand-started session is never a victim, however low its priority" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_BURST=1
   started_item run1 lab:game-agent-run1 run area-run1
   started_item hand1 lab:game-agent-hand1 hand area-hand1
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-hand1.md
@@ -284,7 +284,7 @@ load 'fleet_dispatch/common'
 
 @test "preempt: with only urgent runner sessions live, nothing is parked and the pass says no runner session" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_BURST=1
   started_item u1 lab:game-agent-u1 run area-u1
   sed -i 's/^priority: high/priority: urgent/' "$AGENT_QUEUE_DIR"/running/*-u1.md
   echo game-agent-u1 > "$NOTES_FIXTURE/tmux.sessions.lab"

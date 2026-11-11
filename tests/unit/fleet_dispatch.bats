@@ -1293,7 +1293,7 @@ EOF
 
 @test "headroom counts what could start now against each limit" {
   two_items
-  export DISPATCH_PER_PASS=1 DISPATCH_MAX_LIVE=6
+  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_BURST=6
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
@@ -1340,9 +1340,9 @@ EOF
   assert_equal "$(jq -r .could_start <<<"$output")" 0
   assert_equal "$(jq -r .held <<<"$output")" "load 99.0 on $(nproc) cores is over the 0.7 pace"
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  export DISPATCH_MAX_LIVE=0
+  export DISPATCH_TARGET_BURST=0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run unit is used'
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tpace target: 0 live sessions, the away target is 0'
 }
 
 @test "headroom counts live sessions started by hand apart from run slots, and names the held kind" {
@@ -1350,12 +1350,12 @@ EOF
   started_item run-one lab:lab-run-1 run
   started_item hand-one lab:lab-hand-1 hand
   printf 'lab-run-1\nlab-hand-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_BURST=1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.live_runs, .live_hand, .held_kind] | @tsv' <<<"$output")" $'1\t1\tslots'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'run units: 1/1 used, 0 free (heavy 2, light 1), 1 more started by hand'
-  export DISPATCH_MAX_LIVE=6
+  export DISPATCH_TARGET_BURST=6
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
@@ -1367,17 +1367,17 @@ EOF
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_BURST=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   two_items
-  run env -u DISPATCH_MAX_LIVE -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  run env -u DISPATCH_TARGET_BURST -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
-  DISPATCH_MAX_LIVE=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  DISPATCH_TARGET_BURST=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .max_live <<<"$output")" 2
 }
 
 @test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_BURST=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   two_items
   run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
