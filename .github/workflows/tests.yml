@@ -14,8 +14,9 @@ name: shell tests
 #          which surfaces precisely when nothing in the repo changed.
 #   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
 #          image, which has no Rust toolchain. On a pull request only the crates the change can
-#          affect (tests/pick.sh rust). Testing and linting all six took 212-229 s of a 200-300 s
-#          job, the critical path of most PRs; the notes-cli build for the bats steps stays. Added 2026-08-09:
+#          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
+#          path of most PRs, so the job restores main's build output (Restore cargo); the notes-cli
+#          build for the bats steps stays. Added 2026-08-09:
 #          those crates carried 188 in-tree tests that had never run anywhere, and the
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
@@ -350,15 +351,9 @@ jobs:
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
           [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
           make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
-      # The bats cases that need a built notes: the test job has none, so they would only skip there.
-      - name: Board to queue join, on the real notes
-        run: |
-          cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
-          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
-      - name: Inbox triager and planner, on the real notes
-        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
+      # Right after the gate and on a red too: a red main must not leave every later run cold.
       - name: Save cargo
-        if: github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -366,6 +361,13 @@ jobs:
             ~/.cargo/git
             .local/src/*/target
           key: ${{ steps.cargo.outputs.cache-primary-key }}
+      # The bats cases that need a built notes: the test job has none, so they would only skip there.
+      - name: Board to queue join, on the real notes
+        run: |
+          cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
+          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
+      - name: Inbox triager and planner, on the real notes
+        run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 
   skills:
     name: skill lint (frontmatter + house rules)
