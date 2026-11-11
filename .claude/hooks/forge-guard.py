@@ -11,8 +11,7 @@ and merged with `gh pr merge` 22 seconds later, from a dotfiles session that had
 home-config worktree, so the home-config lessons never loaded. The mirror's reject-pull-requests
 workflow closes a PR only after it opens, too late to stop that merge.
 
-Denied in such a checkout: `gh pr create`, `gh pr merge`, `agent-land` (it merges with gh), and
-`git push` to a github.com remote (an ssh Host alias is resolved with `ssh -G`). The checkout is
+Denied in such a checkout: `gh pr create`, `gh pr merge`, and `git push` to a github.com remote (an ssh Host alias is resolved with `ssh -G`). The checkout is
 the one each segment runs in: the payload cwd, moved by `cd`/`pushd` earlier in the command (a
 subshell's cd stays in it), then `git -C <dir>`; for `gh -R <owner>/<repo>`, GH_REPO or a PR URL,
 the clone project-map.json `paths` lists under that repo name. `bash -c` and `eval` payloads and
@@ -23,6 +22,10 @@ Anywhere else, `gh pr merge` is denied too, naming `agent-land`: a GitHub PR lan
 agent-land, the one writer of a queue item's pr:, so the work ledger can credit it. 2026-11-09: of
 the 62 merged PRs since 11-07 that no item named (fleet-bench ledger_coverage), 41 were merged by a
 bare `gh pr merge` in a session that had an item (ar-1153).
+
+A merge through a forge's PR API (`curl -X POST .../pulls/N/merge`, `gh api -X PUT .../pulls/N/merge`)
+is denied too, naming `agent-land`, which lands a Forgejo PR through that API and records it: 12 of
+those 62 were home-config and bnb-game-servers PRs merged by a raw Forgejo call (ar-1213).
 """
 import importlib.util
 import json
@@ -46,9 +49,9 @@ MERGE_VALUE_FLAGS = {"-R", "--repo", "--match-head-commit", "-t", "--subject", "
 MSG = (
     "forge-guard: {top} is a Forgejo-canonical checkout (it commits {marker}), so GitHub is a "
     "passive mirror: {what} lands on the mirror, where Flux never sees it and the next mirror push "
-    "erases it. Push to the Forgejo remote ({forgejo}) and open and merge the PR through the "
-    "forgejo-ops skill's PR API; agent-land cannot run there (one-shot step 6). Read that repo's "
-    "CLAUDE.md \"Canonical Remote\" first."
+    "erases it. Push to the Forgejo remote ({forgejo}), open the PR through the forgejo-ops "
+    "skill's PR API, and land it with `agent-land <N>`, which merges and records it through the "
+    "Forgejo API there. Read that repo's CLAUDE.md \"Canonical Remote\" first."
 )
 
 LAND_MSG = (
@@ -58,6 +61,16 @@ LAND_MSG = (
     "on the item (--partial on every PR of a task but its last). A PR already merged: "
     "the same command records it. No item yet: `agent-queue add --running` first."
 )
+
+API_MSG = (
+    "forge-guard: {what} merges through the forge's PR API and records the PR on no queue item, so "
+    "the work ledger never credits it (fleet-bench ledger_coverage; ar-1213). From the PR's own "
+    "checkout, run `agent-land {pr} --item <slug>` with this session's queue item: on a Forgejo repo "
+    "it merges through that API, pinned to the head, and records the PR on the item. A PR already "
+    "merged: the same command records it."
+)
+API_MERGE = re.compile(r"/pulls/([^/\s]+)/merge/?(?:\?|$)")
+DATA_FLAGS = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--json", "-F", "--form")
 
 
 def _strip_heredocs():
@@ -273,21 +286,38 @@ def check_gh(cwd, argv, env):
     return None
 
 
-def check_land(cwd):
-    hit = canonical(cwd)
-    if not hit:
+def api_merge(head, argv):
+    """API_MSG when argv is a write to a PR's merge endpoint: curl with a non-GET method or a body,
+    or `gh api` with a non-GET method. A GET there only asks whether the PR merged."""
+    m = next((API_MERGE.search(a) for a in argv[1:] if API_MERGE.search(a)), None)
+    if not m:
         return None
-    top, marker = hit
-    return MSG.format(top=top, marker=marker, what="`agent-land` (it merges with gh)", forgejo=forgejo_remote(top))
+    method, i = None, 1
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-X", "--request", "--method") and i + 1 < len(argv):
+            method = argv[i + 1].upper()
+            i += 1
+        elif a.startswith(("--request=", "--method=")):
+            method = a.split("=", 1)[1].upper()
+        elif head == "curl" and a.startswith("-X") and len(a) > 2:
+            method = a[2:].upper()
+        elif head == "curl" and (a in DATA_FLAGS or a.startswith(tuple(f + "=" for f in DATA_FLAGS if f.startswith("--")))):
+            method = method or "POST"
+        i += 1
+    if method in (None, "GET", "HEAD"):
+        return None
+    pr = m.group(1) if m.group(1).isdigit() else "<N>"
+    return API_MSG.format(what="`%s ... %s`" % (head, m.group(0).rstrip("?")), pr=pr)
 
 
 def check(head, argv, env, cwd):
     if head == "git":
         return check_git(cwd, argv)
     if head == "gh":
-        return check_gh(cwd, argv, env)
-    if head == "agent-land":
-        return check_land(cwd)
+        return api_merge("gh api", argv) if gh_words(argv)[:1] == ["api"] else check_gh(cwd, argv, env)
+    if head == "curl":
+        return api_merge(head, argv)
     return None
 
 
@@ -335,7 +365,7 @@ def main():
     if data.get("tool_name", "Bash") != "Bash":
         return
     cmd = (data.get("tool_input") or {}).get("command") or ""
-    if not any(w in cmd for w in ("push", "gh", "agent-land")):
+    if not any(w in cmd for w in ("push", "gh", "merge")):
         return
     r = reason(cmd, data.get("cwd") or os.getcwd())
     if r:
