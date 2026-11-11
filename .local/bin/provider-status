@@ -5,11 +5,11 @@
 # runners), so the sentinel `provider-status` watch reads each Statuspage feed to name it.
 # Only incidents on components we use count: GitHub's feed is mostly Copilot, Cloudflare's
 # is mostly regional, and Claude's carries connector incidents under "Claude Code". A page
-# that cannot be read is not evidence that all is well, so it never exits 0.
+# that cannot be read is not evidence that all is well, so it never exits 0. The watch keeps
+# what it prints as the trip's evidence, so a red names its incident.
 #
 # Usage:
-#   provider-status           one line per relevant incident or unreachable page
-#   provider-status --quiet   print nothing (for a watch)
+#   provider-status   one line per relevant incident or unreachable page
 # Exit: 0 all clear, 1 a relevant incident is open, 2 a page could not be read.
 set -uo pipefail
 
@@ -20,15 +20,11 @@ PROVIDERS=(
   'Cloudflare|www.cloudflarestatus.com|(.impact | IN("major","critical")) or any(.components[]?.name; test("Tunnel|DNS"))'
 )
 
-quiet=0
 case "${1:-}" in
-  --quiet) quiet=1 ;;
   "") ;;
   -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
   *) echo "provider-status: unknown argument: $1" >&2; exit 64 ;;
 esac
-
-say() { [ "$quiet" = 1 ] || printf '%s\n' "$1"; }
 
 rc=0
 for p in "${PROVIDERS[@]}"; do
@@ -37,12 +33,12 @@ for p in "${PROVIDERS[@]}"; do
         "https://$host/api/v2/incidents/unresolved.json")" \
      || ! hits="$(jq -r --arg n "$name" ".incidents[] | select($relevant)
           | \"\(\$n): \(.name) (\(.impact))\"" <<<"$body" 2>/dev/null)"; then
-    say "UNREACHABLE $name: $host"
+    echo "UNREACHABLE $name: $host"
     [ "$rc" = 0 ] && rc=2
     continue
   fi
   [ -n "$hits" ] || continue
-  say "$hits"
+  printf '%s\n' "$hits"
   rc=1
 done
 exit "$rc"
