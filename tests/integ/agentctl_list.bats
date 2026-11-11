@@ -236,8 +236,8 @@ skill_fixture() {
     > "$HOME/.config/agentctl/roles/pinned.role"
   printf 'ROLE=pinned\nMODEL=conf-model\nPRIORITY=must\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
   # A conf's own ROUTE still beats the role's default route; the role's model pin beats the conf's.
-  printf 'ROLE=pinned\nROUTE=conf-route\n' >> "$HOME/.config/agentctl/agents/beta.conf"
-  printf 'NAME=gamma\nKIND=oneshot\nLANE=observe\nDESCRIPTION=g\nEFFECT=none\nCOMMAND=true\nSCHEDULE=daily\nROLE=broken\nMODEL=conf-model\n' \
+  printf 'ROLE=pinned\nROUTE=conf-route\nPRIORITY=low\n' >> "$HOME/.config/agentctl/agents/beta.conf"
+  printf 'NAME=gamma\nKIND=oneshot\nLANE=observe\nDESCRIPTION=g\nEFFECT=none\nCOMMAND=true\nSCHEDULE=daily\nROLE=broken\nMODEL=conf-model\nPRIORITY=low\n' \
     > "$HOME/.config/agentctl/agents/gamma.conf"
   printf 'ROLE_WRITE=no\nROLE_MODEL=never-used\n' > "$HOME/.config/agentctl/roles/broken.role"
   run "$AGENTCTL_BIN" list --json
