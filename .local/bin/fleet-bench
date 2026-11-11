@@ -84,7 +84,8 @@
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
 #                                cc:red_now item nothing here reads, plus one per red that started
 #                                within HOLD_HOURS after a cleanup merge; TRIAGE_ROUTES decides where
-#                                each one goes, and an agent route queues a red fix. --route prints
+#                                each one goes, and an agent route or any watch route but a human's
+#                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
 #   fleet-bench reds [--json] [--days N]
@@ -203,7 +204,7 @@ set -uo pipefail
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
-: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
+: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together but a tripped watch's (one item a watch at a time bounds those)
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: the window a cause's fix items are counted in
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
@@ -213,7 +214,7 @@ set -uo pipefail
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
-: "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
+: "${TRIAGE_WATCH_AFTER:=1800}"      # triage: seconds a watch must stay TRIP before it is a row and a red item: two dispatch passes, so its owner runs the hour it trips (human, 2026-11-10, ar-1531)
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_forgejo_pr
@@ -3404,8 +3405,8 @@ triage_shape() {
 }
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
-# whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
-# is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
+# whose ERE matches the row decides; no match, or a route it does not know, is route "-" and cause
+# "-", or for a watch check(watch):<name> hashed. The cause is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
 # names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
 # text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
 # line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
@@ -3427,13 +3428,24 @@ triage_route() {
       esac
     fi
     if [ "$hit" = 0 ]; then
-      printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
+      # An unrouted watch is still queued (triage_queues), so it is a cause of its own, named as a
+      # capture-group line names it, so a line added for it later keeps its tries.
+      if [[ "$key" == 'check(watch): '* ]]; then
+        cause=${key#'check(watch): '}; cause=$(printf 'check(watch):%s' "${cause%% *}" | sha256sum | cut -c1-8)
+      fi
+      printf '%s\t%s\t%s\t-\t%s\t\n' "$key" "$text" "$pri" "$cause"
       continue
     fi
     if [[ "$text" =~ $re ]] && [ -n "${BASH_REMATCH[1]:-}" ]; then
       if [[ "$text" == *:* ]]; then re="${text%%:*}:${BASH_REMATCH[1]}"; else re+=${BASH_REMATCH[1]}; fi
     fi
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
+    if [[ "$key" == 'check(watch): '* ]]; then
+      case "$route" in
+        alert) note="the human decides: $fix; own it: file that decision as one agent-ask with a recommendation, and fix what is not theirs" ;;
+        owned:?*) note="owned by ${route#owned:}: $fix; get that work running, or fix it here" ;;
+      esac
+    fi
     text+="${note:+; $note}"
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
@@ -3442,9 +3454,21 @@ triage_route() {
   done <<<"$1"
 }
 
-# triage_filed <rows> -> the rows for the agent board. An alert, an owned red and a human's red take
-# no agent row: dispatch would read an open one as work.
-triage_filed() { awk -F'\t' '$4 == "-" || $4 == "agent" || $4 == "script"' <<<"$1"; }
+# triage_queues <key> <route>: the row is queued as a red item. An agent route is; so is a tripped
+# watch on any route but a human's, so every tripped watch has an owner (TRIAGE_WATCH_AFTER): an
+# alert or owned watch's session files the decision or chases the owner.
+triage_queues() { [ "$2" = agent ] || { [[ "$1" == 'check(watch): '* ]] && [[ "$2" != human:* ]]; }; }
+
+# triage_filed <rows> -> the rows for the agent board: every one triage_queues, and an unrouted or
+# script row. Any other alert, owned or human red takes no agent row: dispatch would read an open one as work.
+triage_filed() {
+  local line key route
+  while IFS= read -r line; do
+    IFS=$'\t' read -r key _ _ route _ <<<"$line"
+    case "$route" in - | script) ;; *) triage_queues "$key" "$route" || continue ;; esac
+    printf '%s\n' "$line"
+  done <<<"$1"
+}
 
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
@@ -3481,22 +3505,25 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
-# triage_promote <rows> -> how many agent routes were queued as red fixes. A red fix opens its PR at
+# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
-# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, an item in hand
-# stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in the window.
+# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
+# item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
+# the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
+# so the watches bound it, and fleet-dispatch widens its red floor by one for each.
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
 # whose tries are spent goes to the human (triage_spent).
 triage_promote() {
-  local board key raw route cause tags items used tries more n=0 seen=' '
+  local board key raw route cause tags items used tries more kind n=0 capped=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
-    '[.[] | select(((" " + (.tags // "") + " ") | contains(" red ")) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
-    [ "$route" = agent ] || continue
-    [ $((used + n)) -lt "$TRIAGE_FIX_CAP" ] || break
+    triage_queues "$key" "$route" || continue
+    kind=''; [[ "$key" == 'check(watch): '* ]] && kind=' watch'
+    [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
     tries=$(cause_tries "$items" "$cause")
@@ -3504,19 +3531,20 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
 }
 
-# triage_spent <rows> -> a human route row on the KPI board's sheet for each agent route whose cause
+# triage_spent <rows> -> a human route row on the KPI board's sheet for each row triage_queues whose cause
 # had TRIAGE_FIX_TRIES items in the window and is red still: those sessions did not hold it, so the
 # next step is the human's. triage_human files it and pages once.
 triage_spent() {
   local items key text pri route cause seen=' '
   items=$(triage_items) || return 0
   while IFS=$'\t' read -r key text pri route cause _; do
-    [ "$route" = agent ] || continue
+    triage_queues "$key" "$route" || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
     [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue

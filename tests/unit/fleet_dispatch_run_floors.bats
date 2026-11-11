@@ -116,6 +116,36 @@ load 'fleet_dispatch/common'
   LIVE=(); DISPATCH_RED_FLOOR=0 RED_PASS=1 run red_floor_open; assert_failure
 }
 
+@test "red floor: each tripped watch's red item adds a slot, and starts ahead of the other reds" {
+  red_held_machine
+  export DISPATCH_RED_FLOOR=1
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project game --slug r2 --tags 'red cause:b' "fix r2" >/dev/null
+  agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
+  agent-queue add --project game --slug w2 --tags 'red watch cause:d' "check(watch): w2 tripped" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'plus 2 for tripped watches'
+  assert_output --partial 'started queue item w1 on the red floor'
+  assert_output --partial 'started queue item w2 on the red floor'
+  assert_output --partial 'started queue item r1 on the red floor'
+  refute_output --partial 'started queue item r2'
+  assert_equal "$(grep -o 'started queue item [a-z0-9]*' <<<"$output" | head -n 1)" 'started queue item w1'
+}
+
+@test "red floor: the watch slots count running and unheld queued watch reds only, and a floor of 0 is off for them too" {
+  live_reds() { printf '%s\n' "${LIVE[@]}"; }
+  export DISPATCH_RED_FLOOR=2
+  LIVE=(a b c); RED_WATCH=2 RED_PASS=1 run red_floor_open; assert_success
+  LIVE=(a b c d); RED_WATCH=2 RED_PASS=1 run red_floor_open; assert_failure
+  LIVE=(); RED_WATCH=3 DISPATCH_RED_FLOOR=0 RED_PASS=1 run red_floor_open; assert_failure
+  agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project game --slug p1 --tags 'watch' "plain p1" >/dev/null
+  agent-queue add --project game --slug w2 --after r1 --tags 'red watch cause:d' "check(watch): w2 tripped" >/dev/null
+  run watch_reds
+  assert_output 1
+}
+
 @test "red floor: agent-hold and an account in its reserve still hold a red" {
   red_held_machine
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
