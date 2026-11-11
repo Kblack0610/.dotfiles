@@ -381,7 +381,7 @@ pub fn times_rows(b: &Builds) -> usize {
 fn time_row(t: &RunTime) -> Vec<Cell> {
     let d = |s: Option<i64>| s.map_or("-".to_string(), |s| dur(s as f64));
     vec![
-        t.short_repo().to_string().into(),
+        t.project().into(),
         t.workflow.clone().into(),
         t.runs.to_string().into(),
         d(t.usual.map(|u| u.median)).into(),

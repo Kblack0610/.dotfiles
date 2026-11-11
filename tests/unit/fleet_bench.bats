@@ -4153,11 +4153,11 @@ live_merges() {
   export BENCH_PROJECT_MAP="$SANDBOX/map.json"
   mkdir -p "$FLEET_BENCH_DIR"
   merge_repo "$SANDBOX/plat" $((T0 - 108000)) $((T0 - 1800))
-  jq -n --arg p "$SANDBOX/plat" '{paths: {($p): "bnb-platform"}, aliases: {platform: "bnb-platform"}}' > "$BENCH_PROJECT_MAP"
+  jq -n --arg p "$SANDBOX/plat" '{paths: {($p): "bnb-platform"}, trackers: {"bnb-platform": {names: ["platform"]}}}' > "$BENCH_PROJECT_MAP"
   printf '{"epoch":%s,"project":"platform","bucket":"WORKING"}\n' $((T0 - 600)) $((T0 - 118000)) > "$FLEET_BENCH_DIR/progress.jsonl"
 }
 
-@test "throughput: merges come from git, reaching a repo through the map's alias" {
+@test "throughput: merges come from git, reaching a repo through another spelling in the map" {
   live_merges
   BENCH_NOW=$T0 run "$SUBJECT" throughput
   assert_success
