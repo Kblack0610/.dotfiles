@@ -145,9 +145,16 @@ pub fn chain(runner: &dyn Runner, name: &str) -> Result<Chain, String> {
     if !crate::projects::safe_name(name) {
         return Err(format!("refusing project name {name:?}"));
     }
-    read_all(runner, &["--project", name])?
-        .into_iter()
+    pick(&read_all(runner, &["--project", name])?, name)
+}
+
+/// The chain of `name` among `chains`, as `chain` reads it: a project not there is an error that
+/// says so. agent-web takes a project page's chain from its one kept `all` read with this.
+pub fn pick(chains: &[Chain], name: &str) -> Result<Chain, String> {
+    chains
+        .iter()
         .find(|c| c.project == name)
+        .cloned()
         .ok_or_else(|| format!("fleet-bench epics lists no project {name}"))
 }
 
