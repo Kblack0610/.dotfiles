@@ -10,7 +10,7 @@
 # File order is the order `machine-mode next` and the chip's click walk. The last row is the
 # mode with nothing set, so it must stay what the machine does with no mode at all.
 
-full|2|2|1|as-today|high
+full|1|2|1|as-today|high
 reserved|0|1|0|paused|low
 shared|1|2|0|as-today|mid
-open|2|2|1|as-today|mid
+open|0|2|1|as-today|mid

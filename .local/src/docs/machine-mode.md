@@ -4,7 +4,7 @@ How much of this workstation background work may use. Four modes on one scale, n
 
 | | reserved | shared | open (default) | full |
 |---|---|---|---|---|
-| Runners taking new jobs | 0 | 1 | 2 | 2 |
+| Runners taking new jobs | 0 | 1 | 0 | 1 |
 | Local Unity runs, always open + when there is room | 1 + 0 | 2 + 0 | 2 + 1 | 2 + 1 |
 | New agent sessions from fleet-dispatch | paused | as today | as today | as today |
 | Level | low | mid | mid | high |
@@ -74,7 +74,7 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 - Dropping a slot is not instant: the ConfigMap takes about a minute to reach the pod, the governor runs every 60 seconds, then a running job finishes. Expect minutes, and longer if a gate is running.
 - A local Unity run already going is not touched. The new number applies to the next one.
 - Other builds agents start are not capped. They already run at a low priority.
-- `open` means the two runners on 12 of the 24 threads, as it always has. A third slot waits on a day of load data.
+- This box runs one pool runner at night (`full`) and none by day (`open`): two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11), so day CI goes to the AWS hosts. `shared` gives one by day, by hand.
 
 ## Release lane
 
