@@ -260,6 +260,12 @@ set -uo pipefail
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+# A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
+# none. ledger_coverage, untracked_merged_prs, wants_unstamped and reds_unfixed count from the later of
+# their window start and this, so a watch's fixed red stops counting the events before its fix; a row
+# with no readable time still counts, so a watermark never hides it. The step ages and the other
+# chain KPIs read the state now, which a watermark would only hide.
+FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINEL_SINCE; fi
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
@@ -1694,8 +1700,8 @@ KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
 wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
-  jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" '
-    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
+  jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" --argjson fix "$FIX_SINCE" "$JQ_LIB"'
+    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch $fix) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
          | {from: (.from // "?"), stamped: ((.want // "") != "" or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
@@ -1894,8 +1900,8 @@ chain_counts() {
   done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
   board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
-  ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
-    'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))')
+  ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" --argjson fix "$FIX_SINCE" \
+    'map(select(.merged_epoch > ([$t - $d * 86400, $fix] | max) and .merged_epoch <= $t))')
   links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
@@ -3846,7 +3852,8 @@ reds_json() {
 reds_counts() {
   local rows
   rows=$(reds_json "$1" | jq -cs .) || { echo "reds_unfixed=?"; echo "red_fix_min_p50=?"; return 0; }
-  jq -r '"reds_unfixed=\([.[] | select(.outcome == "still red" or .outcome == "came back")] | length)",
+  jq -r --argjson fix "$FIX_SINCE" "$JQ_LIB"'"reds_unfixed=\([.[] | select((.outcome == "still red" or .outcome == "came back")
+      and ((.finished | ep) // $fix) >= $fix)] | length)",
     "red_fix_min_p50=\([.[] | .fix_min // empty] | sort | if length == 0 then "?" else .[(length - 1) / 2 | floor] end)"' <<<"$rows"
 }
 

@@ -5,7 +5,8 @@
                    [--days N] [--until TIME] [--cache DIR] [--offline] [--json]
 
 Reads the finished GitHub Actions runs created in the N days (default 3) ending at --until
-(default now) from the run ledger (`schedules-sync runs`, synced every 10 minutes, so the last
+(default now), or since SENTINEL_SINCE (an epoch, a watch's fix) when that is later, from the
+run ledger (`schedules-sync runs`, synced every 10 minutes, so the last
 pass's runs are the newest it has), and for every red run each attempt's jobs, each failed job's check-run
 annotations and, when those say nothing but an exit code, its `--log-failed` output. Each
 failed job gets:
@@ -359,6 +360,10 @@ def main(argv):
     args = p.parse_args(argv[1:])
     until = parse_time(args.until) if args.until else datetime.datetime.now(datetime.timezone.utc)
     since = until - datetime.timedelta(days=args.days)
+    # a Sentinel probe's fix watermark (watch-companion-loop resolve): the runs before the fix are not its red
+    fix = os.environ.get("SENTINEL_SINCE", "")
+    if fix.isdigit() and int(fix) > 0:
+        since = min(until, max(since, datetime.datetime.fromtimestamp(int(fix), datetime.timezone.utc)))
     cache = args.cache or os.path.expanduser(f"~/.cache/ci-failures/{args.repo.replace('/', '-')}")
     src = Source(args.repo, cache, args.offline)
     runs = src.runs(since, until, bool(args.until))

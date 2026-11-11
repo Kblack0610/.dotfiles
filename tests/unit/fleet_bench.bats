@@ -2267,6 +2267,11 @@ red_item() {
   assert_line '| a | watch fine | fixed | '"$(date -u -d "@$((T0 - 7200))" +%FT%H:%M)"' | 60 | r#1 |'
   run "$SUBJECT" chain --json
   assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
+  # SENTINEL_SINCE (a watch's fix) after these fixes finished: none of them counts; one before them: all do
+  SENTINEL_SINCE=$((T0 - 1800)) run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 0
+  SENTINEL_SINCE=$((T0 - 7200)) run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
 }
 
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
@@ -3033,6 +3038,24 @@ LIB
   run "$SUBJECT" chain --json
   run jq -c '.done_inline_old["7d"]' <<<"$output"
   assert_output 'null'
+}
+
+@test "chain: SENTINEL_SINCE starts the merged-PR links at a watch's fix, and a PR merged after the fix still trips (negative control)" {
+  chain_fixture
+  # an untracked PR merged two days back trips the chain
+  ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 150000), ci_red: 0}'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
+  # its fix merged 36h back: the PR before it no longer counts
+  export SENTINEL_SINCE=$((T0 - 129600))
+  run "$SUBJECT" chain --check
+  assert_success
+  # NEGATIVE CONTROL: one merged after the fix still counts
+  ci_row '{repo: "o/r", number: 10, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output "$(printf '%s\n' 'ledger_coverage 0.5 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
 }
 
 # lead_fixture: on the clean chain, five items the human asked for and two that do not count. game
@@ -5121,6 +5144,17 @@ epics_fixture() {
   run "$SUBJECT" chain
   assert_success
   assert_line 'wants_unstamped: 2 of 4 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/2)'
+  # SENTINEL_SINCE (a watch's fix) starts the window at the fix: only the stamped add after it counts
+  SENTINEL_SINCE=$(date -d "${day}T10:02:15-08:00" +%s) run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0
+  # NEGATIVE CONTROL: a fix before the 10:02 unstamped add leaves it counted
+  SENTINEL_SINCE=$(date -d "${day}T10:01:30-08:00" +%s) run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
+  # a row whose time cannot be read is never hidden by a watermark: it counts
+  jq -cn --arg d "$day" '{ts: "\($d) late", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): no readable time"}' >> "$BENCH_INGEST"
+  SENTINEL_SINCE=$(date -d "${day}T10:02:15-08:00" +%s) run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {

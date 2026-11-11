@@ -228,8 +228,9 @@ ask_fixture() {
   run "$JUDGE_EVAL" kpi --json
   assert_success
   run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
-  # judge_precision needs 10 scored answers in a rule: none here. 3 of 12 asks were answered live.
-  assert_output '[2,null,25,33.3,8.3]'
+  # judge_precision needs 10 scored answers in a rule, and a false-defer percent 10 scored defers: 3
+  # here (the lane's own 33.3 is in the first test). 3 of 12 asks were answered live.
+  assert_output '[2,null,25,null,8.3]'
 }
 
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
@@ -445,6 +446,32 @@ SH
   # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young
   run jq -c '.agents[0].total | [.deferred, .fn, .tn, .pending, .false_defer_pct]' <<<"$output"
   assert_output '[7,2,4,1,33.3]'
+  # 6 scored defers is under the KPI's floor of 10, where one defer swings it 10+ points
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":33.3,"28d":33.3}'
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":null,"28d":null}'
+  { v skip q1 '-5 days'; v skip q2 '-5 days'; v skip q3 '-5 days'; v skip q4 '-5 days'; } >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":20,"28d":20}'
+}
+
+@test "SENTINEL_SINCE: a window starts at a watch's fix, and an error after the fix still counts (negative control)" {
+  local at; at="$(date -d '-2 days' -Iseconds)"
+  printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$at" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # the fix merged a day ago: the error before it is out of both windows
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":0,"28d":0}'
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" dispatch-judge --any-prompt --days 7 --json
+  assert_equal "$(jq -c '.agents[0].total.errors' <<<"$output")" '0'
+  # a watermark older than the window leaves the window as it is, and a non-number is ignored
+  SENTINEL_SINCE="$(date -d '-10 days' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  SENTINEL_SINCE=yesterday run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # negative control: an error after the fix is a new failure
+  printf '{"verdict":"error","project":"p","key":"k2","at":"%s"}\n' "$(date -Iseconds)" >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
 }
