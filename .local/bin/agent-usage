@@ -11,6 +11,7 @@
 #   agent-usage tokens snapshot|line|json|check [--langfuse|--gateway-errors] [--date D]  the nightly token-usage record per day
 #   agent-usage fleet-cost [--days 1] [--before DATE] [--json]    the whole fleet's measured and estimated dollars
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
+#   agent-usage export check [<age>]                              every queue session past <age> (1h) exports cost (the queue-cost-export watch)
 #   agent-usage budget [--json]                                    this month's cash, one line per bill in the budget ledger
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
@@ -636,6 +637,63 @@ cmd_spend() {
   LC_ALL=C awk -v v="$v" -v m="$max" -v w="$win" 'BEGIN { printf "last %s: $%.1f (alert at $%s)\n", w, v, m; exit (v + 0 <= m + 0) ? 0 : 1 }'
 }
 
+# --- export ----------------------------------------------------------------
+
+# export check [<age>]: every live queue session that has run <age> (default 1h) is exporting cost.
+# A queue session is a claude whose environment has AGENT_QUEUE_ITEM (fleet-dispatch's launch line),
+# found by its ~/.claude*/sessions/<pid>.json and checked live in /proc as claude_pid_live does. Each
+# must have a claude_code_cost_usage_USD_total sample under its session_id in the last <age>: a
+# cumulative counter re-exports every interval while the process lives, idle or not. And while one
+# runs, cc:claude_code_cost_24h_usd:by_runner must hold an agentctl_runner="fleet-dispatch" series.
+# The queue-cost-export watch runs it: on 2026-11-08 16 of 16 queue sessions exported nothing (#1585)
+# and nothing noticed. Exit 0 when all export or none has run <age>, 1 naming each that does not, 2
+# when Prometheus cannot be read, 64 for bad arguments.
+AU_PROC="${AGENT_USAGE_PROC:-/proc}"
+cmd_export() {
+  local verb="${1:-}" age="${2:-1h}" secs now d f pid sid pstart started item sids have runner rc=0
+  local -a live=() st=()
+  local -A seen=()  # the account dirs may be symlinks to one sessions/
+  local PROM_TIMEOUT=20 vec='.data.result | if type != "array" then error("not a vector") else . end'
+  if [ "$verb" != check ] || ! [[ "$age" =~ ^([0-9]+)([mhd])$ ]]; then
+    echo "usage: agent-usage export check [<age e.g. 1h>]" >&2; return 64
+  fi
+  case "${BASH_REMATCH[2]}" in m) secs=60 ;; h) secs=3600 ;; d) secs=86400 ;; esac
+  secs=$(( BASH_REMATCH[1] * secs )); now=$(date +%s)
+  for d in "$HOME"/.claude*/sessions; do
+    d=$(readlink -f "$d") || continue
+    [ -z "${seen[$d]:-}" ] || continue
+    seen[$d]=1
+    for f in "$d"/*.json; do
+      pid=${f##*/}; [ -d "$AU_PROC/${pid%.json}" ] || continue  # most files are dead pids': skip the jq
+      # Tab is IFS whitespace, so an empty field collapses into the next: the optional one goes last.
+      IFS="$TAB" read -r pid sid started pstart < <(jq -r '[.pid, (.sessionId // ""),
+        ((.startedAt // 0) / 1000 | floor), (.procStart // "")] | @tsv' "$f" 2>/dev/null) || continue
+      [[ "$pid" =~ ^[0-9]+$ && "$sid" =~ ^[0-9a-f-]+$ ]] && (( started > 0 && now - started >= secs )) || continue
+      read -ra st < <(sed 's/.*) //' "$AU_PROC/$pid/stat" 2>/dev/null) || continue
+      [ "${st[0]:-Z}" != Z ] || continue  # stat after "comm) ": [0] state, [19] starttime
+      [ -z "$pstart" ] || [ "${st[19]:-}" = "$pstart" ] || continue
+      item=$(tr '\0' '\n' 2>/dev/null < "$AU_PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
+      [ -n "$item" ] && live+=("$sid$TAB$item$TAB$pid")
+    done
+  done
+  [ "${#live[@]}" -gt 0 ] || { echo "no queue session has run $age"; return 0; }
+  [ -n "${CC_PROM_URL:-}" ] || { echo "export: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
+  sids=$(printf '%s\n' "${live[@]}" | cut -f1 | paste -sd'|' -)
+  have=$(prom_q "count by (session_id) (last_over_time(claude_code_cost_usage_USD_total{session_id=~\"$sids\"}[$age]))" |
+    jq -er "$vec | map(.metric.session_id) | join(\" \")" 2>/dev/null) ||
+    { echo "export: Prometheus unreadable or not a vector" >&2; return 2; }
+  runner=$(prom_q 'count(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner="fleet-dispatch"})' |
+    jq -er "$vec | length" 2>/dev/null) ||
+    { echo "export: Prometheus unreadable or not a vector" >&2; return 2; }
+  for f in "${live[@]}"; do
+    IFS="$TAB" read -r sid item pid <<<"$f"
+    case " $have " in *" $sid "*) ;; *) echo "no cost exported in the last $age: $item (session $sid, pid $pid)"; rc=1 ;; esac
+  done
+  [ "$runner" -gt 0 ] || { echo 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'; rc=1; }
+  [ "$rc" -ne 0 ] || echo "${#live[@]} queue sessions past $age, each exporting cost; the by_runner rule has a fleet-dispatch series"
+  return "$rc"
+}
+
 # --- langfuse --------------------------------------------------------------
 
 # One window's tool latency, tool errors and gateway figures, for the token-usage snapshot.
@@ -654,7 +712,7 @@ cmd_budget() {
 
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -671,6 +729,7 @@ case "$sub" in
   fleet-cost) cmd_burn --fleet-cost --days 1 "$@" ;;
   tokens)    cmd_tokens "$@" ;;
   spend)     cmd_spend "$@" ;;
+  export)    cmd_export "$@" ;;
   langfuse)  cmd_langfuse "$@" ;;
   budget)    cmd_budget "$@" ;;
   -h|--help|help|'') usage ;;
