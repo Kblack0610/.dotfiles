@@ -167,6 +167,14 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
     ((.deps // [])[] | [$p, $id, "dep", .]),
     ((.telemetry // [])[] | [$p, $id, "watch", .])
   | @tsv' "$MAP_FILE" 2>/dev/null)
+# buildTags: the per-build tag globs a project's history and changelog read while it has no
+# release family (release-state). Each is one glob: the readers join them with spaces.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.buildTags != null)
+  | .key as $p | .value.buildTags
+  | if type != "array" or length == 0 then "trackers.\($p).buildTags is not a list of globs"
+    else .[] | select(type != "string" or . == "" or test("\\s")) | "trackers.\($p).buildTags has \(tojson): each entry is one glob, no spaces" end' "$MAP_FILE" 2>/dev/null)
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 

@@ -39,6 +39,7 @@ pub mod proposals;
 pub mod quarantine;
 pub mod queue;
 pub mod reds;
+pub mod release_graph;
 pub mod releases;
 pub mod run_detail;
 pub mod schedules;
