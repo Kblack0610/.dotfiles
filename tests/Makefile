@@ -84,8 +84,10 @@ test-fast: test-unit test-integ
 # shards of 296 s predicted each (run 42983385857), against 5 minutes for the whole gate. Its
 # files are as isolated as unit's: helpers/sandbox gives each test its own HOME and TMPDIR under
 # BATS_TEST_TMPDIR, and the files that skip the sandbox are stdin-to-stdout hook checks or set
-# HOME to that dir themselves. A test that shares a fixed path, a port or setup_file state
-# with another breaks that, and goes red here first.
+# HOME to that dir themselves; shell_tests_scope.bats registers a worktree in the real repo at a
+# per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
+# one job per core, so they share a core no more than serially. A test that shares a fixed
+# path, a port or setup_file state with another breaks that, and goes red here first.
 # Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
 # each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
 # every other session (ar-885). Busy is the larger of the 1-minute load and the processes
