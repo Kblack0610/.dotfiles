@@ -66,5 +66,5 @@ doc_launch_files() {
   rm -rf "$h"
   assert_success
   refute_output --partial 'Invalid'
-  assert_line --index 0 '| Runner | Lane | Trigger | Role | Skill | Model | Effect | Purpose |'
+  assert_line --index 0 '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |'
 }

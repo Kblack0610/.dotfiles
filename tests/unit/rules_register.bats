@@ -168,8 +168,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   assert_success
   local states="$output"
   # Only this repo's sources: a rule edited or a measure gone elsewhere is the scorecard's line, and
-  # must not go red on a session here that only touched fleet-bench.
-  run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead))
+  # must not go red on a session here that only touched fleet-bench. A measure that calls gh meets
+  # the sandbox's gh stub, so only the live scorecard can say it is dead.
+  run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or (.dead and ((.measure // "") | test("^gh ") | not))))
     | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
