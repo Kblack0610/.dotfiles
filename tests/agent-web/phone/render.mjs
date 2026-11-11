@@ -28,10 +28,12 @@ const NAV = { menu: "kb-shell .kb-menu", nav: "kb-shell .kb-nav", group: ".kb-na
 const CONTROL_CSS = "body { min-width: 900px !important; }";
 
 // Each tab's first data row; a tab with several tables names the one the brief measures, and a
-// tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`).
+// tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`). A second
+// table on a tab is its own entry (`name`), scrolled to so its screenshot shows it.
 const DATA_ROW = "tr:has(> td):not(.tfilters)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
+  { tab: "home", name: "home-running", row: `#home [data-tbl="r"] tr.jr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "board", row: `#board tr.jr` },
@@ -157,7 +159,7 @@ async function renderTab(browser, spec, page0) {
     };
   });
   await wire(context, page, page0, seen);
-  const result = { tab: spec.tab, pageOverflowX: null, firstRowTop: null, tableOverflowX: null, leadVisible: null, leadMethod: null };
+  const result = { tab: spec.name || spec.tab, pageOverflowX: null, firstRowTop: null, tableOverflowX: null, leadVisible: null, leadMethod: null };
   try {
     await page.goto(`${ORIGIN}/#${spec.tab}${spec.inner ? "/" + spec.inner : ""}`, { waitUntil: "load" });
     if (control) await page.addStyleTag({ content: CONTROL_CSS });
@@ -165,13 +167,14 @@ async function renderTab(browser, spec, page0) {
     if (spec.open) await page.evaluate((id) => { document.getElementById(id).open = true; }, spec.open);
     await page.waitForSelector(spec.row, { state: "visible", timeout: WAIT_MS });
     await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
+    if (spec.name) await page.locator(spec.row).first().scrollIntoViewIfNeeded();
     const { badText, ...numbers } = await page.evaluate(measure, { width: VIEWPORT.width, row: spec.row });
     Object.assign(result, numbers);
     if (badText) seen.errors.push(`a fixture field is missing: the page shows "${badText}"`);
   } catch (e) {
     seen.errors.push(`no row: ${e.message.split("\n")[0]}`);
   }
-  await page.screenshot({ path: join(out, `${spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
+  await page.screenshot({ path: join(out, `${spec.name || spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
   return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
 }

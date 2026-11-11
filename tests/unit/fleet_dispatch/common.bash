@@ -245,7 +245,7 @@ T='#worker/fleet #tier/1'
 line_of() {
   local text
   text=$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2" 2>/dev/null)
-  [ -z "$text" ] || printf '%s' "$text" | sig
+  [ -z "$text" ] || row_sig "$text"
 }
 
 # verdict <project> <lane> <key> <verdict> [size] [tier] [area] -- made under the current policy for the row's current text
