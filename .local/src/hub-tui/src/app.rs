@@ -87,10 +87,10 @@ impl Tab {
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
+        Tab::Fleet,
+        Tab::Log,
         Tab::Alerts,
         Tab::Infra,
-        Tab::Log,
-        Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
         Tab::Releases,
@@ -103,10 +103,10 @@ impl Tab {
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
+        Tab::Fleet,
+        Tab::Log,
         Tab::Alerts,
         Tab::Infra,
-        Tab::Log,
-        Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
         Tab::Releases,
@@ -4880,7 +4880,7 @@ mod tests {
         assert!(!a.quit, "q is typed into the query");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         a.handle(key('2'));
-        a.handle(key('7'));
+        a.handle(key('6'));
         a.handle(key('f'));
         assert!(
             a.log_open.contains(&"forecast"),
@@ -5031,7 +5031,9 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Home  2 Queue  3 Projects  4 Sessions  5 Alerts  6 Infra"),
+            lines[0].contains(
+                "1 Home  2 Queue  3 Projects  4 Sessions  5 Fleet  6 Log  7 Alerts  8 Infra"
+            ),
             "{s}"
         );
         assert!(
@@ -5242,10 +5244,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Projects);
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
-        assert!(
-            bar.contains("3 Projects  4 Sessions") && bar.contains("8 Fleet"),
-            "{s}"
-        );
+        assert!(bar.contains("3 Projects  4 Sessions  5 Fleet"), "{s}");
         assert!(s.contains("Reading notes projects..."), "{s}");
         settle(&mut a, &rx);
         assert!(screen(&mut a, 140, 30).contains("notes projects --stats --json"));
@@ -5588,7 +5587,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("6 Infra") && first.contains(" RED"),
+            first.contains("1 Home") && first.contains("8 Infra") && first.contains(" RED"),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -5646,7 +5645,15 @@ mod tests {
                 "the badges name this digit"
             );
         }
-        assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('5', '6'));
+        assert_eq!(
+            (
+                Tab::Fleet.digit(),
+                Tab::Log.digit(),
+                Tab::Alerts.digit(),
+                Tab::Infra.digit()
+            ),
+            ('5', '6', '7', '8')
+        );
         assert_eq!(
             (Tab::Costs.digit(), Tab::by_digit('0')),
             ('0', Some(Tab::Costs))
@@ -5827,7 +5834,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("5 Fleet"), "{s}");
         assert!(
             !s.contains("WHERE THE TOKENS GO"),
             "tokens are Costs' now\n{s}"
@@ -6380,7 +6387,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('4'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('7'));
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Log);
     }
 
@@ -6549,29 +6556,33 @@ mod tests {
         assert_eq!(a.tab, Tab::Infra);
         assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, its headline numbers first, and n/N step between the section
-        // headings from there.
+        // headings from there (a short screen, so the governor is a scroll away).
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
-        let s = screen(&mut a, 160, 12);
+        let s = screen(&mut a, 160, 6);
         assert!(top(&s).starts_with("nodes "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 12)).starts_with("CI RUNNERS"));
+        let s = screen(&mut a, 160, 6);
+        assert!(
+            s.contains("GOVERNOR") && !top(&s).starts_with("nodes "),
+            "{s}"
+        );
         a.handle(key('N'));
-        assert!(top(&screen(&mut a, 160, 12)).starts_with("nodes "));
+        assert!(top(&screen(&mut a, 160, 6)).starts_with("nodes "));
     }
 
     #[test]
     fn printed_infra_shows_every_inner_tab_under_the_strip() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('8'));
         a.infra_all = true;
         let s = screen(&mut a, 160, 400);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         for w in [
             "[Machines]",
             "MACHINE ",
-            "CI RUNNERS",
             "GOVERNOR",
+            "CI RUNNERS",
             "Enter opens",
             "CLOUD RUNNERS",
         ]
@@ -6584,15 +6595,15 @@ mod tests {
     #[test]
     fn infra_leads_with_its_strip_and_left_right_switch() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('8'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("5 Alerts  6 Infra") && !bar.contains("Machines"),
+            bar.contains("7 Alerts  8 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(
-            top(&s).starts_with("[Machines] Jobs  Cloud   <- -> switch"),
+            top(&s).starts_with("[Machines] CI  Jobs  Cloud   <- -> switch"),
             "the strip is the first line: {s}"
         );
         // What is red is Alerts' now: no health, red now or fixes here.
@@ -6600,17 +6611,22 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines, the CI runners and the governor, in that order.
+        // Machines holds the machines and the governor, in that order; CI is its own.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        for w in ["MACHINE ", "CI RUNNERS", "GOVERNOR"].windows(2) {
-            assert!(at(&s, w[0]) < at(&s, w[1]), "{} after {}: {s}", w[0], w[1]);
-        }
-        assert!(!s.contains("CLOUD RUNNERS"), "{s}");
+        assert!(at(&s, "MACHINE ") < at(&s, "GOVERNOR"), "{s}");
+        assert!(
+            !s.contains("CI RUNNERS") && !s.contains("CLOUD RUNNERS"),
+            "{s}"
+        );
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with(" Machines [Jobs]"), "{s}");
+        assert!(top(&s).starts_with(" Machines [CI]"), "{s}");
+        assert!(s.contains("CI RUNNERS") && !s.contains("GOVERNOR"), "{s}");
+        a.handle(right());
+        let s = screen(&mut a, 160, 200);
+        assert!(top(&s).starts_with(" Machines  CI [Jobs]"), "{s}");
         assert!(
             s.contains("Enter opens the table") && !s.contains("GOVERNOR"),
             "{s}"
@@ -6638,12 +6654,12 @@ mod tests {
         let mut a = app(Tab::Infra);
         a.infra = None;
         let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
-        assert!(body[0].starts_with("[Machines] Jobs"), "{body:?}");
+        assert!(body[0].starts_with("[Machines] CI  Jobs"), "{body:?}");
         assert_eq!(body[1], "Reading Prometheus...");
     }
 
     #[test]
-    fn infra_strip_counts_red_ci_lines_on_machines() {
+    fn infra_strip_counts_red_ci_lines_on_ci() {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
@@ -6654,11 +6670,19 @@ mod tests {
                 .find(|l| l.contains("<- -> switch"))
                 .unwrap()
         };
-        assert!(strip(&a).starts_with("[Machines] Jobs"), "{}", strip(&a));
+        assert!(
+            strip(&a).starts_with("[Machines] CI  Jobs"),
+            "{}",
+            strip(&a)
+        );
         if let Some(i) = a.infra.as_mut() {
             i.ci.red = vec!["queued job needs gpu".into()];
         }
-        assert!(strip(&a).starts_with("[Machines 1] Jobs"), "{}", strip(&a));
+        assert!(
+            strip(&a).starts_with("[Machines] CI 1  Jobs"),
+            "{}",
+            strip(&a)
+        );
     }
 
     #[test]
@@ -6683,7 +6707,7 @@ mod tests {
     #[test]
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('8'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
@@ -6803,19 +6827,18 @@ mod tests {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
         (a.alerts_read.busy, a.reds_read.busy) = (true, true);
-        a.handle(key('5'));
-        assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
-        a.handle(key('6'));
-        assert_eq!((a.tab, a.seek), (Tab::Infra, None));
         a.handle(key('7'));
+        assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
+        a.handle(key('8'));
+        assert_eq!((a.tab, a.seek), (Tab::Infra, None));
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Log);
         a.costs_read.busy = true;
         a.handle(key('0'));
         assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
-        a.handle(key('7'));
-        a.fleet_read.busy = true;
+        a.handle(key('6'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Fleet);
+        assert_eq!(a.tab, Tab::Alerts);
         a.handle(key('q'));
         assert!(a.quit);
     }
