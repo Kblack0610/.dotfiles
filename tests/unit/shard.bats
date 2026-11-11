@@ -97,3 +97,19 @@ fixture() {
   assert_line --index 3 "$(printf '0.4\tunit/c.bats')"
   [ "${#lines[@]}" -eq 4 ]
 }
+
+@test "a list splits only its own tier's files, every one in exactly one shard, and a shard may be empty" {
+  for f in a b c; do fixture "unit/$f.bats" "t$f"; done
+  printf '3\tunit/a.bats\n2\tunit/b.bats\n1\tunit/c.bats\n' > "$SHARD_WEIGHTS"
+  printf 'unit/a.bats\nunit/c.bats\ninteg/x.bats\n' > "$BATS_TEST_TMPDIR/list"
+  local all=() i
+  for i in 1 2 3; do
+    run "$SUBJECT" unit "$i/3" "$BATS_TEST_TMPDIR/list"
+    assert_success
+    [ -z "$output" ] || mapfile -t -O "${#all[@]}" all <<< "$output"
+  done
+  [ "$(printf '%s\n' "${all[@]}" | sort)" = "$(printf 'unit/a.bats\nunit/c.bats')" ]
+  run "$SUBJECT" unit 1/1 - <<<'integ/x.bats'
+  assert_success
+  assert_output ''
+}
