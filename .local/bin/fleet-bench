@@ -407,8 +407,8 @@ def fleet_finish: {median_p50: (map(.finish_p50) | median | if . == null then nu
 # queue items in (enriched by forecast_json: phases, P and S seconds a phase, start, live, after,
 # why) -> each item placed on $K dispatcher slots on track $k ("P" or "S"). Running items hold a
 # slot until they end (the finish of its live session when that is on the schedule). Each time
-# the earliest slot frees, it goes to the first queued item in queue order whose after: parent
-# has ended by then, or else to the one ready soonest: fleet-dispatch starts the runnable head.
+# the earliest slot frees, it goes to the first queued item in queue order whose after: parents
+# have all ended by then, or else to the one ready soonest: fleet-dispatch starts the runnable head.
 # Items with a why, and those behind one, stay unplaced.
 def qplace($t; $K; $k):
   (map(select(.state == "running")
@@ -421,8 +421,8 @@ def qplace($t; $K; $k):
   | until((.todo | length) == 0 or .stuck;
       . as $s
       | ($s.free[0] // $t) as $slot
-      | [$s.todo | to_entries[] | select(.value.after == null or $s.done[.value.after] != null)
-         | . + {ready: ([$s.done[.value.after // ""] // $t, $t] | max)}] as $can
+      | [$s.todo | to_entries[] | (.value.after // []) as $par | select(all($par[]; $s.done[.] != null))
+         | . + {ready: ([$par[] | $s.done[.]] + [$t] | max)}] as $can
       | (($can | map(select(.ready <= $slot)) | first) // ($can | min_by(.ready))) as $pick
       | if $pick == null then .stuck = true
         else $pick.value as $it
@@ -2410,8 +2410,10 @@ def pnum: (capture("-p(?<n>[0-9]+)$").n | tonumber) // null;
 def asked: .priority == "urgent" and (.from == "human" or .from == "shepherd");
 def live: .state != "done";
 def open: any(.[]; live and asked);
+def afters: .after // "" | split(" ") | map(select(. != ""));
 def keyed: . as $all | map(. as $i | ($i.slug | prefix) as $p
-  | . + {key: (if any($all[]; (.slug == $i.after or .after == $i.slug) and (.slug | prefix) == $p)
+  | . + {key: (if any($all[]; . as $o | (($i | afters | index([$o.slug])) != null or ($o | afters | index([$i.slug])) != null)
+                 and ($o.slug | prefix) == $p)
                then $p else $i.slug end)});
 def session_row($c): ($c.sessions // "" | split(" ") | map(select(. != ""))) as $ids
   | [$sessions[0][] | select(.session_id as $s | $ids | index($s))] | last;
@@ -4368,16 +4370,16 @@ forecast_json() {
           | ($it | map(
               (($map[0].trackers // {})[.project].repo // .project) as $repo
               | ($prp[$repo] // $flp) as $pp
-              | (.hold // "") as $h | ($h | sub("^after "; "")) as $par
+              | (.hold // "") as $h | ($h | sub("^after "; "")) as $par | ($par | split(" ")) as $pars
               | {slug, project, state, mode,
                  phases: ((.phases // "" | [splits(" +")] | map(select(. != "")) | length | select(. > 0)) // $ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
                  P: $pp.P, S: $pp.S, basis: $pp.basis,
                  start: ((.started // .queued) | fromdateiso8601? // $t),
                  live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
-                 after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
+                 after: (if ($h | startswith("after ")) and all($pars[]; $active[.] != null) then $pars else null end),
                  why: (if .state == "waiting" then "waiting on you"
                        elif .state == "review" then "on a PR"
-                       elif ($h | startswith("after ")) and $active[$par] == null then "after \($par), which did not finish ok"
+                       elif ($h | startswith("after ")) and any($pars[]; $active[.] == null) then "after \($par), which did not finish ok"
                        elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
                        else null end)})) as $e
           | ($e | qplace($t; $K; "P")) as $a | ($e | qplace($t; $K; "S")) as $b

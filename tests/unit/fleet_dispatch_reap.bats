@@ -802,9 +802,12 @@ OUT
 
 @test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
   project game beta "$SANDBOX/repos/game"
+  # after: is a list (ar-39): zero is done ok, so first alone still holds.
+  agent-queue add --project game --slug zero "the zeroth part" >/dev/null
+  agent-queue move zero done --status ok >/dev/null
   agent-queue add --project game --slug first "the first part" >/dev/null
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   run cmd_reap
   assert_success
   assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
@@ -812,7 +815,7 @@ OUT
   # Negative control: once its after: item is done, the unclosed run is the run's own failure.
   rm "$AGENT_QUEUE_DIR"/queued/*-second.md
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   agent-queue move first done --status ok >/dev/null
   run cmd_reap
   assert_output --partial 'failed queue item second'

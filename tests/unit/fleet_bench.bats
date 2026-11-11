@@ -4363,14 +4363,14 @@ items_stub() {
     '{"slug":"r0","project":"game","mode":"oneshot","state":"running","session":"game-agent-1","started":"'"$(iso "$T0")"'"}' \
     '{"slug":"r1","project":"game","mode":"oneshot","state":"running","session":"lab:game-agent-9","started":"'"$(iso "$T0")"'"}' \
     '{"slug":"q1","project":"game","mode":"oneshot","state":"queued","queued":"'"$(iso "$T0")"'"}' \
-    '{"slug":"q2","project":"game","mode":"oneshot","state":"queued","after":"q1","hold":"after q1"}' \
+    '{"slug":"q2","project":"game","mode":"oneshot","state":"queued","after":"r1 q1","hold":"after r1 q1"}' \
     '{"slug":"q3","project":"game","mode":"oneshot","state":"queued","tags":"night","hold":"night (22:00-06:00)"}' \
     '{"slug":"q4","project":"game","mode":"oneshot","state":"queued","after":"gone","hold":"after gone"}' \
     '{"slug":"w1","project":"game","mode":"plan","state":"waiting"}' \
     '{"slug":"v1","project":"game","mode":"oneshot","state":"review","pr":"o/r#1"}' \
     '{"slug":"q5","project":"game","mode":"oneshot","state":"queued","after":"w1","hold":"after w1"}'
   # 3 slots: r0 (agent-1, already on the schedule, ends at its own ETA T0+1h) and r1 hold two,
-  # so q1 starts now; q2 waits for q1 even though a slot frees at T0+1h. 60 min a phase.
+  # so q1 starts now; q2 waits for both its parents, r1 and q1, even though a slot frees at T0+1h. 60 min a phase.
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   assert_success
   run jq -c '.items | {count, running, queued, review, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
