@@ -38,6 +38,7 @@ if [ -f "\$f" ]; then
   fi
   exec cat "\$f"
 fi
+[ -n "\$inc" ] && printf 'HTTP/2.0 404 Not Found\\r\\n\\r\\n'
 echo '{"message":"Not Found","status":"404"}'; exit 1
 EOF
   # curl-stub ... <url>: serves $FJD/<path after /api/v1/ with / ? & = as _>, else curl -f's 22.
@@ -105,10 +106,10 @@ jobs:
   a:
     timeout-minutes: 5'
 
-# gh_run <id> <path> <created> <status> <conclusion> [attempt] [event] [pr]
+# gh_run <id> <path> <created> <status> <conclusion> [attempt] [event] [pr] [title]
 gh_run() {
-  printf '{"id":%s,"run_attempt":%s,"name":"T","path":"%s","html_url":"https://gh/r/%s","head_sha":"abc","head_branch":"main","display_title":"t%s","event":"%s","pull_requests":[%s],"created_at":"%s","run_started_at":"%s","updated_at":"%s","status":"%s","conclusion":%s}' \
-    "$1" "${6:-1}" "$2" "$1" "$1" "${7:-schedule}" "${8:+{\"number\":$8\}}" "$3" "$3" "$3" "$4" "$( [ "$5" = null ] && echo null || echo "\"$5\"")"
+  printf '{"id":%s,"run_attempt":%s,"name":"T","path":"%s","html_url":"https://gh/r/%s","head_sha":"abc","head_branch":"main","display_title":"%s","event":"%s","pull_requests":[%s],"created_at":"%s","run_started_at":"%s","updated_at":"%s","status":"%s","conclusion":%s}' \
+    "$1" "${6:-1}" "$2" "$1" "${9:-t$1}" "${7:-schedule}" "${8:+{\"number\":$8\}}" "$3" "$3" "$3" "$4" "$( [ "$5" = null ] && echo null || echo "\"$5\"")"
 }
 runs() { local IFS=,; printf '{"workflow_runs":[%s]}' "$*"; }
 
@@ -754,4 +755,108 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_failure 2
   run "$SUBJECT" jobs
   assert_failure 2
+}
+
+# quarantine_files: o/game's base has scripts/test/quarantine.py, a stand-in that reports the
+# list's line count and the --today it was given, and a two-entry quarantine.txt.
+quarantine_files() {
+  QUAR="$XDG_STATE_HOME/ci/quarantine.json"
+  serve 'repos/o/game/contents/scripts/test?ref=main' <<'EOF'
+[{"name":"quarantine.py","sha":"q1","type":"file"},{"name":"quarantine.txt","sha":"q2","type":"file"},{"name":"results.py","sha":"q3","type":"file"}]
+EOF
+  blob o/game q1 'import json, sys
+a = sys.argv
+n = sum(1 for l in open(a[a.index("--file") + 1]) if l.strip())
+print(json.dumps({"today": a[a.index("--today") + 1], "entries": n, "rows": [{"row": "ucp-1", "entries": n, "ends": "2025-11-10", "days_left": 4}]}))'
+  blob o/game q2 'P.A.one  2025-11-10  ucp-1 leak
+P.A.two  2025-11-10  ucp-1 leak'
+}
+
+# zip_art <id> <member> <text> [<member> <text> ...]: artifact <id>'s zip, served at its /zip path
+zip_art() {
+  local id="$1"; shift
+  python3 - "$GHD/$(key "repos/o/game/actions/artifacts/$id/zip")" "$@" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for name, text in zip(sys.argv[2::2], sys.argv[3::2]):
+        z.writestr(name, text)
+EOF
+}
+
+# The nightly 50 uploaded its summary and suite output; 51, newer, skipped (no summary).
+nightly_artifacts() {
+  echo '{"artifacts":[]}' | serve 'repos/o/game/actions/runs/51/artifacts?per_page=100&page=1'
+  serve 'repos/o/game/actions/runs/50/artifacts?per_page=100&page=1' <<'EOF'
+{"artifacts":[{"id":7,"name":"playmode-summary"},{"id":8,"name":"test-runs-playmode-1"},
+ {"id":9,"name":"test-runs-editmode"},{"id":10,"name":"ui-shots-1"},{"id":11,"name":"test-runs-playmode-2","expired":true}]}
+EOF
+  zip_art 7 summary.txt 'ok    A  ==> 3/5 passed, 0 failed, 2 known red, 0 skipped
+FAIL  B  ==> 1/3 passed, 1 failed, 1 known red, 0 skipped
+NOT RUN C  never started' durations.txt '12 P.A'
+  zip_art 8 suite-1/A.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
+==> 3/5 passed' suite-1/batch-1.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
+==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.two' \
+    run/editor.log '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.Log.ignored'
+  zip_art 9 suite-2/E.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.E.three("a b")'
+}
+
+nightly_runs() {
+  runs "$(gh_run 51 .github/workflows/test.yml 2025-11-06T10:01:00Z completed success 1 workflow_dispatch '' 'Tests (all)')" \
+       "$(gh_run 50 .github/workflows/test.yml 2025-11-05T10:01:00Z completed failure 1 schedule '' 'Tests (all)')" \
+       "$(gh_run 49 .github/workflows/test.yml 2025-11-05T09:00:00Z completed failure 1 push '' 'Tests (affected)')" \
+       "$(gh_run 48 .github/workflows/test.yml 2025-11-04T10:01:00Z completed cancelled 1 schedule '' 'Tests (all)')" "$@" | page1
+}
+
+@test "quarantine: a lane per repo with quarantine.py on its base: its report, and the last nightly's KNOWN and now-passing counts" {
+  game_files; quarantine_files; nightly_artifacts; nightly_runs
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | map([.repo, .base, .error, .report.today, .report.entries, .report.rows[0].row, .files])' "$QUAR"
+  assert_output '[["o/game","main",null,"2025-11-06",2,"ucp-1",{"quarantine.py":"q1","quarantine.txt":"q2"}]]'
+  # 51 has no summary (a skipped night), so 50 is the last nightly; an editor.log is not read,
+  # an expired artifact is not asked for, and a test named in a batch and alone counts once.
+  run jq -c '.repos[0] | [.nightly.run_id, .nightly.known, .nightly.now_passing, .nightly.now_passing_tests, .nightly.logs, .no_summary]' "$QUAR"
+  assert_output '[50,3,3,["P.A.one","P.A.two","P.E.three(\"a b\")"],2,["51:1"]]'
+  # a repo with no quarantine is no lane, and is asked again a day later, not every pass
+  run jq -c '.absent' "$QUAR"
+  assert_output '{"o/empty":"2025-11-06T12:00:00Z"}'
+  run grep -c 'artifacts/11' "$GHD/calls"
+  assert_output 0
+
+  : > "$GHD/calls"
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  # warm: an unchanged listing is a 304, no blob, artifact or zip is asked again, o/empty waits
+  run grep -E 'scripts/test|blobs/q|artifacts' "$GHD/calls"
+  assert_output 'repos/o/game/contents/scripts/test?ref=main (conditional)'
+  run jq -c '.repos[0] | [.nightly.run_id, .nightly.now_passing, .report.entries, .error]' "$QUAR"
+  assert_output '[50,3,2,null]'
+
+  # a day later the report's today moves with no new read of the list
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run jq -c '[.repos[0].report.today, .absent]' "$QUAR"
+  assert_output '["2025-11-07",{"o/empty":"2025-11-07T12:00:00Z"}]'
+  run grep -c 'blobs/q' "$GHD/calls"
+  assert_output 0
+}
+
+@test "negative control: a nightly read that fails keeps the last good lane with the error, and the pass still exits 0" {
+  game_files; quarantine_files; nightly_artifacts; nightly_runs
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  # a newer nightly with a summary whose zip is gone
+  echo '{"artifacts":[{"id":12,"name":"playmode-summary"}]}' | serve 'repos/o/game/actions/runs/52/artifacts?per_page=100&page=1'
+  nightly_runs "$(gh_run 52 .github/workflows/test.yml 2025-11-06T11:00:00Z completed success 1 workflow_dispatch '' 'Tests (all)')"
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.nightly.run_id, .nightly.known, .report.entries, (.error | test("Not Found"))]' "$QUAR"
+  assert_output '[50,3,2,true]'
+  # a report that fails is the lane's error too, never a blank
+  blob o/game q1b 'import sys; sys.exit("quarantine.txt:3: needs a date")'
+  sed -i 's/"q1"/"q1b"/' "$GHD/$(key 'repos/o/game/contents/scripts/test?ref=main')"
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.report.entries, .error]' "$QUAR"
+  assert_output '[2,"quarantine.py report: quarantine.txt:3: needs a date"]'
 }

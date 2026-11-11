@@ -228,6 +228,22 @@ function buildTimes(d) {
     `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table>${money}</div>`, REL_OPEN, true);
 }
 
+// Each repo's test quarantine: its line (entries, the nearest end, the last nightly's KNOWN and
+// now-passing counts), then its owner rows, soonest end first. No repo with one draws nothing.
+function buildQuarantine(d) {
+  const q = d.quarantine || [];
+  if (!q.length) return "";
+  const row = (r) => `<tr><td>${esc(r.row)}</td><td class="n">${r.entries}</td><td>${esc(r.ends)}</td>` +
+    `<td class="n ${relClass(r.level)}">${esc(r.left)}</td></tr>`;
+  const head = "<tr><th>owner row</th><th>entries</th><th>ends</th><th>left</th></tr>";
+  const lane = (l) => `<div class="cline ${relClass(l.level)}">${esc(l.says)}` +
+    (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>` +
+    (l.rows.length ? `<table class="tbl">${head}${l.rows.map(row).join("")}</table>` : "");
+  const entries = q.reduce((n, l) => n + l.entries, 0);
+  return cfold("bld-quar", `<b>Quarantine</b> <span class="${relClass(d.quarantine_level) || "muted"}">${entries} entries in ${q.length} repo${q.length === 1 ? "" : "s"}</span>`,
+    `<div class="panel scroll">${q.map(lane).join("")}</div>`, REL_OPEN, true);
+}
+
 function buildsHead(d) {
   const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after;
   let html = `<h2 class="sec" id="sec-builds">Builds <span class="muted">${esc(d.summary || "")}</span>` +
@@ -235,7 +251,7 @@ function buildsHead(d) {
   if (bld.err) html += `<div class="panel down">${esc(bld.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   // In the head, so a repaint while the search box has focus refreshes it too.
-  return html + buildTimes(d);
+  return html + buildTimes(d) + buildQuarantine(d);
 }
 
 // The channels' tail: the Builds block, once it has been read.
