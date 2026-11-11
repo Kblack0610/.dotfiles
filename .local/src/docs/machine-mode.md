@@ -9,7 +9,7 @@ How much of this workstation background work may use. Four modes on one scale, n
 | New agent sessions from fleet-dispatch | as today, at the low level | as today | as today | as today |
 | Level | low | mid | mid | high |
 
-"As today" means board rows wait for you to be away and queued items do not. A session started by hand (`fleet-dispatch start`) works in every mode. The numbers live in `.config/machine-mode/modes`.
+"As today" means board rows wait for you to be away and queued items do not. No mode stops dispatch: reserved slows it with the low level, and `agent-hold set dispatch` is the full stop. A session started by hand (`fleet-dispatch start`) works in every mode. The numbers live in `.config/machine-mode/modes`.
 
 ## Level
 
@@ -96,6 +96,7 @@ It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same Confi
 | `could not reach the cluster`, chip amber | The local parts applied and the ConfigMap write failed. Nothing else writes runner labels | Fix cluster access and run the same mode again |
 | `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 2 runners admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
 | `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |
+| `paused by machine-mode` | A hold left by a machine-mode older than this doc; no mode sets one now | `agent-hold release dispatch` |
 | `paused by <name>` | Someone holds `dispatch`; machine-mode never sets or lifts that hold | `agent-hold show dispatch`, then ask the holder |
 | `no pool runners on this machine` | No `actions.runner.*-unity-pool-*` unit here | Run it on the workstation |
 | `level <word> is not in .../levels, so nothing is scaled` | A mode row names a level the levels file does not list | Fix the row in `modes` or add the level to `levels`; until then the confs' own numbers apply |
