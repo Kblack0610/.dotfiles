@@ -2177,8 +2177,10 @@ comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
-# human_answered_per_day: asks the human answered in the window, a day. An answer with no answered_by
-# is an in-session capture from before the field existed, so the human's.
+# human_answered_per_day: asks the human answered in the window, a day, outside the chat that asked
+# them, so it counts interrupts: an answer typed into the asking session (answer_note "in session: ",
+# closed_reason "replied in session") or with no answered_by (an in-session capture from before the
+# field existed) is the conversation, not an interrupt (the human's pick in ask Go78lB, 2026-11-10).
 # ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
 # pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
 # A cancelled ask was withdrawn by its asker and waited on no one.
@@ -2188,12 +2190,13 @@ ask_kpi() {
   jq -nc --argjson t "$1" --rawfile a <(printf '%s' "$asks") "$JQ_LIB"'
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;   # nearest rank
     [$a | split("\n")[] | select(length > 0) | split("\t")
-     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // "")}
+     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // ""),
+        chat: (((.[23] // "") | startswith("in session")) or ((.[14] // "") | test("replied in session")))}
      | select(.c != "")
      | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
      | .x |= (if . == "" then null else ask_epoch end)] as $r
     | def w($d): ($t - $d * 86400) as $s
-        | {human_answered_per_day: ([$r[] | select(.status == "answered" and (.by == "" or .by == "human")
+        | {human_answered_per_day: ([$r[] | select(.status == "answered" and .by == "human" and (.chat | not)
                                                   and .a != null and .a > $s and .a <= $t)] | length / $d | round1),
            ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
                                | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};

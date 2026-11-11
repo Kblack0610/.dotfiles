@@ -1272,19 +1272,22 @@ kpi_fixture() {
   assert_failure 2
 }
 
-# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ]: one agent-ask list --all line
+# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ] [closed_reason] [answer_note]: one agent-ask list --all line
 ask_row() {
   local st; st() { [ -n "$1" ] && TZ="${2:-UTC}" date -d "@$1" +%Y-%m-%dT%H:%M:%S%z; }
-  printf '%s\tgame\tdefault\t%s\tchoice\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t\t\t\t%s\n' \
-    "$1" "$2" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "$5" >> "$ASKSALL"
+  printf '%s\tgame\tdefault\t%s\tchoice\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t%s\t\t\t%s\t\t\t\t\t\t%s\t\t\n' \
+    "$1" "$2" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "${8:-}" "$5" "${9:-}" >> "$ASKSALL"
 }
 
-@test "kpi: ask load counts human answers only, ask wait counts pending age, and improve names the one past its threshold" {
+@test "kpi: ask load counts human answers outside the asking chat only, ask wait counts pending age, and improve names the one past its threshold" {
   kpi_setup
   printf '%s\n' human_answered_per_day_max=0.2 ask_wait_p90_min_max=10000 >> "$KPI_THRESHOLDS"
   local d=86400
   ask_row h1 answered $((T0 - 2*d)) $((T0 - 2*d + 3600)) human "" EST5   # -0500 stamps, waited 60 min
-  ask_row h2 answered $((T0 - d)) $((T0 - d + 600)) "" ""               # in-session capture, no answered_by
+  ask_row h2 answered $((T0 - d)) $((T0 - d + 600)) human "" UTC "" "in session: go with a"   # answered in the asking chat
+  ask_row h3 answered $((T0 - d)) $((T0 - d + 900)) human "" UTC "replied in session: sure"   # answered in the asking chat
+  ask_row h4 answered $((T0 - d)) $((T0 - d + 300)) "" ""               # in-session capture, no answered_by
+  ask_row h5 answered $((T0 - 4*d)) $((T0 - 4*d + 1200)) human ""       # answered outside the asking chat
   ask_row j1 answered $((T0 - 3*d)) $((T0 - 3*d + 60)) judge ""
   ask_row c1 cancelled $((T0 - 5*d)) "" "" "$T0"                       # waited 7200 min, then cancelled
   ask_row o1 answered $((T0 - 20*d)) $((T0 - 20*d + 1800)) human ""     # 28d window only

@@ -311,6 +311,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
     run "$AGENT_ASK" show "$a"
     assert_line 'status: answered'
     assert_line "answer: in session: $msg"
+    assert_line "answer_note: in session: $msg"   # the in-chat mark fleet-bench's ask load reads
   done
 }
 
