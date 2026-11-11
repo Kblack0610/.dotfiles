@@ -5,7 +5,6 @@
 use std::collections::{BTreeMap, HashMap};
 
 use hub_core::infra::Infra;
-use hub_core::layout::FOLD_ROWS;
 use hub_core::prom::Series;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -552,67 +551,6 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// RED NOW: the `cc:red_now` items, the down runners (`Infra::runners_down`), stuck runs, and GitHub or
-    /// the exporter not answering, the likeliest cause first.
-    pub fn down(&self, w: usize) -> Vec<Line<'static>> {
-        let mut items: Vec<String> = self
-            .infra
-            .get("red")
-            .iter()
-            .map(|s| s.label("item").to_string())
-            .filter(|i| !i.is_empty())
-            .collect();
-        items.sort();
-        for s in self.infra.runners_down() {
-            items.push(format!("{} {}", lab(s, "name"), s.label("state")));
-        }
-        for s in self.infra.get("waiting") {
-            if s.label("stuck") == "true" {
-                items.push(format!(
-                    "stuck run: {} {}, {}, no jobs",
-                    lab(s, "repo"),
-                    lab(s, "branch"),
-                    dur(s.value.unwrap_or(f64::NAN))
-                ));
-            }
-        }
-        // A missed scrape (every exporter series stale) is told apart from a spent rate limit
-        // and from GitHub not answering the exporter's runner reads, the only API failure that
-        // can cost runner rows.
-        let is = |q: &str, v: f64| self.infra.get(q).first().and_then(|s| s.value) == Some(v);
-        if !is("exporter_up", 1.0) {
-            items.insert(
-                0,
-                "runner exporter missed its last scrape: runner rows may be missing".into(),
-            );
-        } else if is("rate_left", 0.0) {
-            items.insert(
-                0,
-                "GitHub rate limit spent: runner jobs and history unread until it resets".into(),
-            );
-        } else if !is("api", 1.0) {
-            items.insert(
-                0,
-                "GitHub not answering the exporter: runner rows may be missing".into(),
-            );
-        } else if self.runners.is_empty() {
-            items.push("no runner series from the exporter".into());
-        }
-        let line = if items.is_empty() {
-            self.heading(
-                "RED NOW",
-                "  nothing: every rostered runner is online or powered off by the governor".into(),
-            )
-        } else {
-            Line::from(vec![
-                Span::styled("RED NOW", self.p.head()),
-                Span::raw("  "),
-                Span::styled(items.join(", "), self.p.bad()),
-            ])
-        };
-        vec![clip_line(line, w)]
-    }
-
     /// The last day of runs per repo and workflow, the worst pass rate first. Pass is success
     /// of success + failure + timed out; cancelled is its own column, since gates for closed
     /// PRs are cancelled on purpose. All-green workflows fold to a line.
@@ -901,85 +839,18 @@ pub fn extra_hosts() -> Vec<String> {
         .collect()
 }
 
-/// RED FIXES, under RED NOW: each red the triage queued as a fix in the last week
-/// (`hub_core::reds`, which orders the open rows worst first and words the summary), the open
-/// rows one a line up to `FOLD_ROWS` then "+N more", and the settled ones folded to a count. The
-/// app reads it on its own, so a failed read is this section's error alone, never an empty list
-/// that reads as all fixed.
-pub fn fixes(
-    reds: Option<&Result<hub_core::reds::Reds, String>>,
-    p: Palette,
-    now: i64,
-    w: usize,
-) -> Vec<Line<'static>> {
-    let head = |rest: String, style| {
-        Line::from(vec![
-            Span::styled("RED FIXES", p.head()),
-            Span::styled(format!("  {rest}"), style),
-        ])
-    };
-    let r = match reds {
-        None => return vec![head("reading fleet-bench reds".into(), p.dim())],
-        Some(Err(e)) => {
-            return vec![
-                head("read failed".into(), p.bad()),
-                clip_line(Line::styled(format!("  {e}"), p.bad()), w),
-            ]
-        }
-        Some(Ok(r)) => r,
-    };
-    let mut out = vec![clip_line(head(r.summary.clone(), Style::default()), w)];
-    for f in r.open.iter().take(FOLD_ROWS) {
-        let style = match f.outcome.as_str() {
-            "came back" | "still red" | "no fix" => p.bad(),
-            "needs merge" => p.warn(),
-            _ => Style::default(),
-        };
-        // The number only: a URL or `owner/repo#N` would push the age off a narrow line.
-        let pr = f.pr.as_deref().map_or(String::new(), |n| {
-            let n = n.trim_end_matches('/');
-            let tail = n.rsplit(['#', '/']).next().unwrap_or(n);
-            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
-                format!("  #{tail}")
-            } else {
-                format!("  PR {n}")
-            }
-        });
-        out.push(clip_line(
-            Line::from(vec![
-                Span::styled(format!("  {:<11}", f.outcome.to_uppercase()), style),
-                Span::raw(format!("  {}  {}{pr}  ", f.red, f.slug)),
-                Span::styled(f.age(now), p.dim()),
-            ]),
-            w,
-        ));
-    }
-    if r.open.len() > FOLD_ROWS {
-        out.push(Line::styled(
-            format!("  +{} more", r.open.len() - FOLD_ROWS),
-            p.dim(),
-        ));
-    }
-    if !r.settled.is_empty() {
-        out.push(Line::styled(
-            format!("  +{} settled", r.settled.len()),
-            p.dim(),
-        ));
-    }
-    out
-}
-
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
 pub type Section = (&'static str, Vec<Line<'static>>);
 
-/// The Infra page as named sections in `hub_core::layout` order, less `fixes` and `jobs`, which
-/// the app draws from their own reads; the app shows them by inner tab. Exceptions lead: red
-/// items, then what runs, waits and failed; green workflows fold to a line. A failed read is one section with the error and nothing
-/// else: a board never leaves the last (maybe green) numbers up.
+/// The Infra page as named sections in `hub_core::layout` order, less `jobs`, which the app
+/// draws from its own read; the app shows them by inner tab. What is red is the Alerts tab's
+/// (`hub_core::alerts`); here the headline numbers lead the machines, then what runs, waits and
+/// failed; green workflows fold to a line. A failed read is one section with the error and
+/// nothing else: a board never leaves the last (maybe green) numbers up.
 pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) -> Vec<Section> {
     if !infra.ok {
         return vec![(
-            "health",
+            "machines",
             vec![
                 Line::from(vec![
                     Span::styled(" QUERY FAILED ", p.status(Some(2.0)).0),
@@ -1004,8 +875,9 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
     }
     let b = Board::new(infra, p, now, hosts.to_vec());
     let blank = || Line::raw("");
-    let mut health = vec![crate::hometab::health_line(&infra.health(), p, w)];
-    health.extend(b.numbers(w));
+    let mut machines = b.numbers(w);
+    machines.push(blank());
+    machines.extend(b.machines(w));
     let mut ci = b.ci_runners(w);
     ci.push(blank());
     ci.extend(b.finished(w));
@@ -1014,9 +886,7 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
     ci.push(blank());
     ci.push(b.runs_badge());
     let sections = vec![
-        ("health", health),
-        ("red", b.down(w)),
-        ("machines", b.machines(w)),
+        ("machines", machines),
         ("ci", ci),
         ("governor", b.governor(w)),
         ("cloud", b.cloud(w)),
@@ -1365,13 +1235,13 @@ pub(crate) mod tests {
             .into_iter()
             .map(|s| s.0)
             .collect();
-        // Jobs and Red fixes are the app's, each drawn from its own read.
+        // Jobs is the app's, drawn from its own read.
         let want: Vec<_> = hub_core::layout::resolve("infra")
             .unwrap()
             .sections
             .iter()
             .copied()
-            .filter(|s| !["jobs", "fixes"].contains(s))
+            .filter(|s| *s != "jobs")
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
@@ -1384,50 +1254,6 @@ pub(crate) mod tests {
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
         assert!(at("HOST") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
         assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RUNS  every"));
-    }
-
-    #[test]
-    fn red_fixes_shows_open_rows_worst_first_folds_settled_and_says_a_failed_read() {
-        let p = Palette { no_color: true };
-        let text = |ls: Vec<Line<'static>>| ls.iter().map(plain).collect::<Vec<_>>().join("\n");
-        let rows = [
-            r#"{"slug":"ar-1","red":"watch a","queued":"2026-11-06T10:00:00Z","merged":"x","fix_min":34,"pr":"Kblack0610/.dotfiles#1185","outcome":"fixed"}"#,
-            r#"{"slug":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
-            r#"{"slug":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
-            r#"{"slug":"ar-4","red":"watch b","queued":"2026-11-06T09:00:00Z","outcome":"cancelled"}"#,
-        ]
-        .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-        let reds = hub_core::reds::split(rows);
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
-            .unwrap()
-            .timestamp();
-        let s = text(fixes(Some(&Ok(reds)), p, now, 160));
-        let lines: Vec<&str> = s.lines().collect();
-        assert_eq!(
-            lines[0],
-            "RED FIXES  2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m"
-        );
-        assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
-        assert_eq!(
-            lines[2],
-            "  QUEUED       watch playground-nightly  ar-2  1h"
-        );
-        assert_eq!(lines[3], "  +2 settled");
-        assert_eq!(lines.len(), 4, "settled rows fold to their count: {s}");
-        // A failed read is the error, never an empty list that reads as all fixed.
-        let s = text(fixes(
-            Some(&Err("reds: cannot read the queue".into())),
-            p,
-            now,
-            160,
-        ));
-        assert_eq!(s, "RED FIXES  read failed\n  reds: cannot read the queue");
-        assert_eq!(
-            text(fixes(None, p, now, 160)),
-            "RED FIXES  reading fleet-bench reds"
-        );
     }
 
     #[test]
@@ -1579,49 +1405,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_stuck_run_is_down_and_out_of_the_queue_and_its_oldest_wait() {
+    fn a_stuck_run_is_out_of_the_queue_and_its_oldest_wait() {
+        // Its red row is the Alerts tab's (`alertstab` tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "stuck run: platform develop, 45d17h, no jobs"));
         assert!(has(&out, "4 queued (oldest 2h28m)"), "{out}");
-        assert!(
-            has(&out, "RED NOW watch mac_studio_mlx, mini-1 offline"),
-            "red_now items lead, then an offline runner by name"
-        );
-    }
-
-    #[test]
-    fn a_runner_the_governor_powered_off_is_not_red() {
-        let mut i = fixture();
-        i.instant
-            .get_mut("runners")
-            .unwrap()
-            .extend(series(vec![runner(
-                "aws-burst-1",
-                "aws-1",
-                "offline",
-                "0",
-                json!({"site": "cloud"}),
-            )]));
-        let red = |i: &Infra| {
-            text(i, 160)
-                .lines()
-                .find(|l| l.starts_with("RED NOW"))
-                .unwrap()
-                .to_string()
-        };
-        assert!(red(&i).contains("aws-1 offline"), "unmanaged: down");
-        let power = |state: &str| {
-            series(vec![(
-                json!({"__name__": "ci_governor_power_state", "host": "aws-burst-1", "state": state}),
-                "1",
-            )])
-        };
-        i.instant.insert("power", power("running"));
-        assert!(red(&i).contains("aws-1 offline"), "governor running: down");
-        i.instant.insert("power", power("stopped"));
-        let line = red(&i);
-        assert!(!line.contains("aws-1"), "{line}");
-        assert!(line.contains("mini-1 offline"), "{line}");
+        assert!(!out.contains("RED NOW"), "{out}");
     }
 
     #[test]
@@ -1705,7 +1493,7 @@ pub(crate) mod tests {
             "nodes ",
             "heartbeats ",
             "ci local 3/7 cloud 0/0, waiting 4",
-            "spend: 9 Costs",
+            "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }
@@ -1741,7 +1529,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn github_not_answering_and_a_missed_scrape_read_differently_in_down() {
+    fn github_not_answering_and_a_missed_scrape_read_differently_in_alerts_machinery() {
+        // The rows Alerts fires on (hub_core::alerts::machinery), on this board's fixture.
+        let text = |i: &Infra, _w: usize| hub_core::alerts::machinery(i).join("\n");
         let mut i = fixture();
         i.instant.insert("api", series(vec![(json!({}), "0")]));
         let out = text(&i, 160);
@@ -1864,27 +1654,9 @@ pub(crate) mod tests {
         let ci = tab(&fixture(), "ci", 160);
         assert_eq!(
             ci.lines().last(),
-            Some("RUNS  every CI run: 0 Releases, Builds"),
+            Some("RUNS  every CI run: Releases, Builds"),
             "{ci}"
         );
         assert!(!ci.contains("RECENT RUNS"), "the runs are Releases': {ci}");
-    }
-
-    #[test]
-    fn red_fixes_caps_the_open_rows_at_fold_rows() {
-        let open = FOLD_ROWS + 2;
-        let rows = (0..open)
-            .map(|n| {
-                serde_json::from_str(&format!(
-                    r#"{{"slug":"ar-{n}","red":"watch w{n}","outcome":"queued"}}"#
-                ))
-                .unwrap()
-            })
-            .collect();
-        let reds = hub_core::reds::split(rows);
-        let out = fixes(Some(&Ok(reds)), Palette { no_color: true }, 0, 160);
-        let s: Vec<String> = out.iter().map(plain).collect();
-        assert_eq!(s.len(), 1 + FOLD_ROWS + 1, "{s:?}");
-        assert_eq!(s.last().map(String::as_str), Some("  +2 more"));
     }
 }

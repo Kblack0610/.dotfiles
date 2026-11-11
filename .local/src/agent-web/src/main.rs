@@ -10,6 +10,7 @@
 //! Served behind the home cluster ingress (home-config `apps/agents`),
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
+mod alerts;
 mod assets;
 mod auth;
 mod board;
@@ -30,7 +31,6 @@ mod outcomes;
 mod projects;
 mod proposals;
 mod queue;
-mod reds;
 mod releases;
 mod schedules;
 mod sessions;
@@ -84,6 +84,7 @@ struct AppState {
     /// The paths agent-web could not watch, so changes there reach no page until a retry works.
     watch_off: WatchOff,
     infra: infra::Cache,
+    alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
     work: worklog::Cache,
@@ -111,6 +112,7 @@ async fn main() -> Result<()> {
         sessions,
         actions: feed::Cache::new(events.subscribe()),
         work: worklog::Cache::new(events.subscribe()),
+        alerts: alerts::Cache::new(events.subscribe()),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -173,7 +175,7 @@ async fn main() -> Result<()> {
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
-        .route("/api/reds", get(reds::get))
+        .route("/api/alerts", get(alerts_board))
         .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
         .route("/api/log/work", get(worklog::get))
@@ -356,6 +358,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if notes_state.is_dir() {
         targets.push((notes_state, flat));
     }
+    // Sentinel's state files: a watch tripping, clearing or failing pushes the Alerts tab.
+    let sentinel = hub_core::alerts::watch_dirs().1;
+    if sentinel.is_dir() {
+        targets.push((sentinel, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -393,6 +400,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
 const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
+/// A Sentinel watch changed state: the Alerts tab reads afresh.
+const ALERTS_EVENT: &str = r#"{"kind":"alerts"}"#;
 
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
@@ -420,6 +429,12 @@ fn classify(p: &Path) -> Option<String> {
     // A park ledger is named by its tmux session; one starting with `.` is still being written.
     if p.parent()?.ends_with(".agent/parked") && !p.file_name()?.to_str()?.starts_with('.') {
         return Some(r#"{"kind":"sessions"}"#.to_string());
+    }
+    // A watch's state, written only when it changes (its lastrun and out files are not news).
+    if p.extension().is_some_and(|e| e == "state")
+        && p.parent() == Some(hub_core::alerts::watch_dirs().1.as_path())
+    {
+        return Some(ALERTS_EVENT.to_string());
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
@@ -1266,6 +1281,14 @@ async fn tests_cases(Query(q): Query<suites::CasesQuery>) -> ApiResult<Response>
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
+async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.alerts.get(&s.infra, q).await,
+    )
+        .into_response()
+}
+
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1543,6 +1566,14 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/shepherd/watch.state")), None);
+        // A watch's state change pushes Alerts; its per-run files do not.
+        let sentinel = hub_core::alerts::watch_dirs().1;
+        assert_eq!(
+            classify(&sentinel.join("nightly.state")).as_deref(),
+            Some(ALERTS_EVENT)
+        );
+        assert_eq!(classify(&sentinel.join("nightly.lastrun")), None);
+        assert_eq!(classify(&sentinel.join("nightly.out")), None);
         for p in [
             "/h/.local/state/agentctl/runs.jsonl",
             "/h/.agent/dispatch/verdicts.jsonl",

@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(named(infra, " Cloud "), Some("cloud"));
         assert_eq!(named(infra, "red"), None);
         assert_eq!(named(infra, "nope"), None);
-        assert_eq!(step(infra, "reds", true), "cloud");
+        assert_eq!(step(infra, "machines", true), "cloud");
     }
 
     #[test]

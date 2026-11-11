@@ -6,6 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hub_core::alerts::Alert;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::builds::{self, Builds};
 use hub_core::fleet::who::{Opens, Who};
@@ -26,6 +27,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::alertstab::{self, AlertsView};
 use crate::builds as bv;
 use crate::controls::{Ask, Controls};
 use crate::datatable::{DataTable, Took};
@@ -67,6 +69,7 @@ pub enum Tab {
     Queue,
     Projects,
     Sessions,
+    Alerts,
     Infra,
     Log,
     Fleet,
@@ -77,13 +80,14 @@ pub enum Tab {
 
 impl Tab {
     /// hub-core's layout order, every page the TUI can show (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 12] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
+        Tab::Alerts,
         Tab::Infra,
         Tab::Log,
         Tab::Fleet,
@@ -91,13 +95,15 @@ impl Tab {
         Tab::Costs,
         Tab::Releases,
     ];
-    /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth. Daily
-    /// is left off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
-    pub const SHOWN: [Tab; 10] = [
+    /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth, past
+    /// which a tab has no digit and Tab reaches it (`hub_core::layout::bar_digit`). Daily is left
+    /// off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
+    pub const SHOWN: [Tab; 11] = [
         Tab::Home,
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
+        Tab::Alerts,
         Tab::Infra,
         Tab::Log,
         Tab::Fleet,
@@ -112,6 +118,7 @@ impl Tab {
             Tab::Queue => "Queue",
             Tab::Projects => "Projects",
             Tab::Sessions => "Sessions",
+            Tab::Alerts => "Alerts",
             Tab::Infra => "Infra",
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
@@ -137,11 +144,13 @@ impl Tab {
     fn index(self) -> usize {
         Tab::SHOWN.iter().position(|t| *t == self).unwrap_or(0)
     }
-    /// The digit that opens this tab, as the tab bar shows it; a tab off the bar has none.
+    /// The digit that opens this tab, as the tab bar shows it; a tab off the bar, or past the
+    /// tenth, has none.
     fn digit(self) -> char {
         Tab::SHOWN
             .iter()
             .position(|t| *t == self)
+            .filter(|i| *i < 10)
             .and_then(|i| char::from_digit((i as u32 + 1) % 10, 10))
             .unwrap_or(' ')
     }
@@ -158,6 +167,7 @@ impl Tab {
             Tab::Daily
             | Tab::Projects
             | Tab::Sessions
+            | Tab::Alerts
             | Tab::Log
             | Tab::Fleet
             | Tab::Schedules
@@ -223,6 +233,8 @@ pub struct BoardFiles {
     pub builds: builds::Paths,
     /// The Queue tab's Candidates: the snapshot each real `fleet-dispatch run` writes.
     pub candidates: PathBuf,
+    /// Sentinel's state directory: a watch tripping or clearing rewrites its `.state` file.
+    pub watches: PathBuf,
 }
 
 impl BoardFiles {
@@ -238,6 +250,7 @@ impl BoardFiles {
             releases: boards::releases_dir(),
             builds: builds::Paths::from_env(),
             candidates: boards::candidates_file(),
+            watches: hub_core::alerts::watch_dirs().1,
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -261,6 +274,10 @@ impl BoardFiles {
 
     pub fn is_build_file(&self, p: &Path) -> bool {
         self.builds.is_ledger_file(p)
+    }
+
+    pub fn is_watch_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.watches.as_path()) && p.extension().is_some_and(|e| e == "state")
     }
 
     pub fn is_release_file(&self, p: &Path) -> bool {
@@ -348,8 +365,12 @@ pub enum Msg {
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
-    /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
+    /// `fleet-bench reds`, split for Alerts' Fixes section and its owners, or why it failed.
     Reds(Result<hub_core::reds::Reds, String>),
+    /// The Alerts tab's join (hub_core::alerts) over the held Infra and reds.
+    Alerts(Box<hub_core::alerts::Alerts>),
+    /// A Sentinel watch's state file changed (a trip, a clear, an error).
+    WatchFiles,
     /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
     Deliverables(Result<hub_core::deliverables::Deliverables, String>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
@@ -435,8 +456,13 @@ pub struct App {
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
     pub ranked: Option<Result<Vec<Ranked>, String>>,
-    /// Infra's Red fixes section; None until the first read.
+    /// `fleet-bench reds`, the Alerts tab's Fixes and owners; None until the first read.
     pub reds: Option<Result<hub_core::reds::Reds, String>>,
+    /// The Alerts tab's join; None until Prometheus and the reds have both answered.
+    pub alerts: Option<hub_core::alerts::Alerts>,
+    /// The Alerts tab's table view, opened row and Watches fold.
+    pub av: AlertsView,
+    alerts_read: Read,
     /// The Projects tab's Deliverables section; None until the first read.
     pub deliverables: Option<Result<hub_core::deliverables::Deliverables, String>>,
     /// The Costs tab's read; None until the first.
@@ -548,7 +574,7 @@ pub struct App {
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
-    /// When the last Red fixes read finished, for `REDS_REFRESH`.
+    /// When the last reds read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
     /// When the last Deliverables read finished, for `DELIVERABLES_REFRESH`.
     deliverables_at: Option<std::time::Instant>,
@@ -603,6 +629,9 @@ impl App {
             forecast: None,
             ranked: None,
             reds: None,
+            alerts: None,
+            av: AlertsView::default(),
+            alerts_read: Read::default(),
             deliverables: None,
             costs: None,
             cv: crate::coststab::CostsView::default(),
@@ -713,6 +742,7 @@ impl App {
             (self.files.sessions.clone(), false),
             (self.files.tokens.clone(), false),
             (self.files.releases.clone(), false),
+            (self.files.watches.clone(), false),
         ];
         if let Some(d) = self.files.builds.ledger.parent() {
             v.push((d.to_path_buf(), false));
@@ -772,13 +802,29 @@ impl App {
         }
     }
 
-    /// fleet-bench reds writes no file to watch, so Infra reads it on entering, on `r` and on
+    /// fleet-bench reds writes no file to watch, so Alerts reads it on entering, on `r` and on
     /// the tick while it is shown, at most every `REDS_REFRESH`.
     pub fn read_reds(&mut self) {
         if self.reds_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Reds(hub_core::reds::read(runner.as_ref())));
+            });
+        }
+    }
+
+    /// The Alerts join, once Prometheus and the reds have answered: on entering, on `r`, on each
+    /// Prometheus or reds answer and on a watch's state file changing while the tab is shown.
+    /// The watch files and the agent-notify ledger are read in the join, off the draw thread.
+    pub fn read_alerts(&mut self) {
+        let (Some(infra), Some(reds)) = (&self.infra, &self.reds) else {
+            return;
+        };
+        if self.alerts_read.want() {
+            let (tx, infra, reds) = (self.tx.clone(), infra.clone(), reds.clone());
+            std::thread::spawn(move || {
+                let a = hub_core::alerts::read(&infra, reds, jobs::now());
+                let _ = tx.send(Msg::Alerts(Box::new(a)));
             });
         }
     }
@@ -1413,7 +1459,7 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
-                if self.tab == Tab::Infra
+                if self.tab == Tab::Alerts
                     && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
                 {
                     self.read_reds();
@@ -1521,8 +1567,28 @@ impl App {
             Msg::Reds(r) => {
                 self.reds = Some(r);
                 self.reds_at = Some(std::time::Instant::now());
-                if self.reds_read.done() && self.tab == Tab::Infra {
+                if self.reds_read.done() && self.tab == Tab::Alerts {
                     self.read_reds();
+                }
+                if self.tab == Tab::Alerts {
+                    self.read_alerts();
+                }
+            }
+            Msg::Alerts(a) => {
+                let id = self
+                    .alerts
+                    .as_ref()
+                    .and_then(|old| self.av.selected(old))
+                    .map(alertstab::row_id);
+                self.av.reselect(&a, id);
+                self.alerts = Some(*a);
+                if self.alerts_read.done() && self.tab == Tab::Alerts {
+                    self.read_alerts();
+                }
+            }
+            Msg::WatchFiles => {
+                if self.tab == Tab::Alerts {
+                    self.read_alerts();
                 }
             }
             Msg::Deliverables(r) => {
@@ -1618,6 +1684,9 @@ impl App {
                 self.infra = Some(*i);
                 if self.infra_read.done() {
                     self.read_infra();
+                }
+                if self.tab == Tab::Alerts {
+                    self.read_alerts();
                 }
             }
             Msg::Jobs(j) => {
@@ -1801,6 +1870,9 @@ impl App {
         if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
+        if self.tab == Tab::Alerts && self.alerts_key(k) {
+            return;
+        }
         if self.tab == Tab::Log && self.log_key(k) {
             return;
         }
@@ -1871,8 +1943,9 @@ impl App {
                 self.read_jobs();
                 self.read_boards();
                 self.read_queue();
-                if self.tab == Tab::Infra {
+                if self.tab == Tab::Alerts {
                     self.read_reds();
+                    self.read_alerts();
                 }
                 if self.tab == Tab::Projects {
                     self.read_deliverables();
@@ -2037,7 +2110,7 @@ impl App {
                     self.show_outbox(true);
                 }
             }
-            (Tab::Infra | Tab::Log, Some(q)) => {
+            (Tab::Alerts | Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
                     hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
                 if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
@@ -2132,8 +2205,9 @@ impl App {
         if t == Tab::Fleet {
             self.read_fleet_shown();
         }
-        if t == Tab::Infra {
+        if t == Tab::Alerts {
             self.read_reds();
+            self.read_alerts();
         }
         if t == Tab::Schedules {
             self.read_schedules();
@@ -2813,6 +2887,78 @@ impl App {
 
     /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
     /// which already says all the pane would.
+    /// The Alerts tab's keys: the firing table's (/ f s S x; a new view shuts the opened row),
+    /// j/k and the page keys move its selection, Enter opens the row's watch under it, `o` its
+    /// fix PR, `i` its queue item, `w` folds Watches, n/N step the sections. Esc shuts the row,
+    /// then clears the view, then is the global Esc.
+    fn alerts_key(&mut self, k: KeyEvent) -> bool {
+        if k.modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        match self.av.table.key::<Alert>(k.code) {
+            Took::No => {}
+            Took::Typing => return true,
+            Took::View => {
+                self.av.open = false;
+                self.av.follow = true;
+                return true;
+            }
+        }
+        let rows = self.alerts.as_ref().map_or(0, |a| self.av.shown(a).len());
+        if matches!(
+            k.code,
+            KeyCode::Char('j' | 'k' | 'g' | 'G')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        ) && self.av.table.moves(k, rows, self.page)
+        {
+            self.av.follow = true;
+            return true;
+        }
+        let sel = self
+            .alerts
+            .as_ref()
+            .and_then(|a| self.av.selected(a))
+            .cloned();
+        match k.code {
+            KeyCode::Enter if sel.is_some() => {
+                self.av.open = !self.av.open;
+                self.av.follow = true;
+            }
+            KeyCode::Esc if self.av.open => self.av.open = false,
+            KeyCode::Esc if !self.av.table.is_default() => self.av.table.clear(),
+            KeyCode::Char('o') => match sel.and_then(|a| a.pr_url) {
+                Some(u) => open(&u),
+                None => return false,
+            },
+            KeyCode::Char('i') => match sel.filter(|a| !a.slug.is_empty()) {
+                Some(a) => {
+                    self.go(Tab::Queue);
+                    self.qv.open(&a.slug);
+                }
+                None => return false,
+            },
+            KeyCode::Char('w') => {
+                let open = self
+                    .alerts
+                    .as_ref()
+                    .is_some_and(|a| self.av.watches.unwrap_or(!a.watches_folded));
+                self.av.watches = Some(!open);
+                if !open {
+                    self.seek = Some("watches");
+                }
+            }
+            KeyCode::Char('n') => self.next_section(true),
+            KeyCode::Char('N') => self.next_section(false),
+            _ => return false,
+        }
+        true
+    }
+
     fn schedules_key(&mut self, k: KeyEvent) -> bool {
         if self.sv.table.key::<Schedule>(k.code) != Took::No {
             return true;
@@ -3143,6 +3289,22 @@ impl App {
                     self.scroll = at + 1 - h;
                 }
             }
+            // Alerts' selected firing row is kept in view after a key moved it, and is no
+            // section for n/N.
+            let mut sections = sections;
+            if self.tab == Tab::Alerts {
+                if let Some(i) = sections.iter().position(|s| s.0 == alertstab::ROW) {
+                    let (_, at) = sections.remove(i);
+                    let h = (body.height as usize).max(1);
+                    if std::mem::take(&mut self.av.follow) {
+                        if at < self.scroll {
+                            self.scroll = at.saturating_sub(2);
+                        } else if at >= self.scroll + h {
+                            self.scroll = (at + 1 - h).min(max);
+                        }
+                    }
+                }
+            }
             // A section asked for (`hub --tab ci`, a fold opened) is scrolled to once the page has it.
             if let Some(want) = self.seek {
                 if let Some((_, at)) = sections.iter().find(|s| s.0 == want) {
@@ -3221,6 +3383,10 @@ impl App {
             }
             Tab::Home if self.prv.open => format!(
                 "a accept  d reject  Enter record  / query  f state  s sort  S asc/desc  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Alerts if self.av.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Alerts => format!(
+                "j/k move  Enter open  o fix PR  i its item  w watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra if !self.infra_jobs => format!(
                 "<-/-> view  n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
@@ -3382,13 +3548,10 @@ impl App {
         out
     }
 
-    /// Infra's sections needing a look, for the strip's counts: open red fixes, and CI lines
-    /// `hub_core::ci` judged red (a queued job no online runner can take).
+    /// Infra's sections needing a look, for the strip's counts: the CI lines `hub_core::ci`
+    /// judged red (a queued job no online runner can take).
     fn infra_flagged(&self, i: Option<&hub_core::infra::Infra>) -> Vec<&'static str> {
         let mut out = vec![];
-        if matches!(&self.reds, Some(Ok(r)) if !r.open.is_empty()) {
-            out.push("fixes");
-        }
         if i.is_some_and(|i| !i.ci.red.is_empty()) {
             out.push("ci");
         }
@@ -3556,6 +3719,11 @@ impl App {
                 (day::history(&b.hist, self.hist_sel, self.p, w), vec![])
             }
             (Tab::Log, Some(b), _) => self.log_page(b, now, w),
+            // A failed Prometheus read is the join's own error line, so only the first read waits.
+            (Tab::Alerts, _, _) => match &self.alerts {
+                Some(a) => self.av.page(a, self.p, now, w),
+                None => reading("Prometheus and fleet-bench reds"),
+            },
             // Infra: the strip first, while Prometheus is read too, then the pinned sections and
             // the inner tab shown, each section in hub_core::layout order with a blank line
             // between them.
@@ -3582,11 +3750,8 @@ impl App {
                         .map_or(&[][..], |i| i.sections)
                 };
                 let mut secs = board::infra(i, self.p, now, w, &self.hosts);
-                // Red fixes and Jobs are read on their own, and built only on the inner tab that
-                // shows them: the jobs table walks every job in the window on each draw.
-                if shown.contains(&"fixes") {
-                    secs.push(("fixes", board::fixes(self.reds.as_ref(), self.p, now, w)));
-                }
+                // Jobs is read on its own, and built only on the inner tab that shows it: the
+                // jobs table walks every job in the window on each draw.
                 if shown.contains(&"jobs") {
                     secs.push(("jobs", self.jobs_section(w)));
                 }
@@ -4715,7 +4880,7 @@ mod tests {
         assert!(!a.quit, "q is typed into the query");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         a.handle(key('2'));
-        a.handle(key('6'));
+        a.handle(key('7'));
         a.handle(key('f'));
         assert!(
             a.log_open.contains(&"forecast"),
@@ -4866,7 +5031,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Home  2 Queue  3 Projects  4 Sessions  5 Infra"),
+            lines[0].contains("1 Home  2 Queue  3 Projects  4 Sessions  5 Alerts  6 Infra"),
             "{s}"
         );
         assert!(
@@ -5078,7 +5243,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Projects  4 Sessions") && bar.contains("7 Fleet"),
+            bar.contains("3 Projects  4 Sessions") && bar.contains("8 Fleet"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -5423,7 +5588,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("5 Infra") && first.contains(" RED "),
+            first.contains("1 Home") && first.contains("6 Infra") && first.contains(" RED"),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -5453,7 +5618,8 @@ mod tests {
     #[test]
     fn the_tabs_are_the_layout_and_each_digit_its_place() {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs in its order,
-        // and the digits follow that order along the number row, 1 for the first, 0 the tenth.
+        // and the digits follow that order along the number row, 1 for the first, 0 the tenth;
+        // a tab past the tenth has none, and Tab reaches it.
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         // Less Board: agent-web's tab for what `a` on Projects opens here.
         let layout: Vec<&str> = hub_core::layout::TABS
@@ -5467,20 +5633,25 @@ mod tests {
         let bar: Vec<&str> = layout.iter().copied().filter(|t| *t != "Daily").collect();
         assert_eq!(shown, bar);
         for (i, t) in Tab::SHOWN.iter().enumerate() {
+            let id = t.title().to_lowercase();
+            if i >= 10 {
+                assert_eq!((t.digit(), hub_core::layout::bar_digit(&id)), (' ', None));
+                continue;
+            }
             let d = char::from_digit((i as u32 + 1) % 10, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
-            let id = t.title().to_lowercase();
             assert_eq!(
                 hub_core::layout::bar_digit(&id),
                 d.to_digit(10).map(|n| n as usize),
                 "the badges name this digit"
             );
         }
-        assert_eq!(Tab::Costs.digit(), '9');
+        assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('5', '6'));
         assert_eq!(
-            (Tab::Releases.digit(), Tab::by_digit('0')),
-            ('0', Some(Tab::Releases))
+            (Tab::Costs.digit(), Tab::by_digit('0')),
+            ('0', Some(Tab::Costs))
         );
+        assert_eq!(Tab::Releases.digit(), ' ');
         assert_eq!(Tab::Daily.digit(), ' ');
         assert_eq!(Tab::by_digit('2'), Some(Tab::Queue));
     }
@@ -5656,7 +5827,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("7 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
         assert!(
             !s.contains("WHERE THE TOKENS GO"),
             "tokens are Costs' now\n{s}"
@@ -6209,7 +6380,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Fleet);
         a.handle(key('4'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('6'));
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
     }
 
@@ -6257,24 +6428,74 @@ mod tests {
     }
 
     #[test]
-    fn entering_infra_reads_red_fixes_and_draws_them_under_red_now() {
+    fn entering_alerts_reads_the_reds_then_draws_the_join() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         a.infra = Some(board::tests::fixture());
-        a.handle(Msg::Tab(Tab::Infra, None));
+        // The join's file reads are hub_core::alerts', tested there: no real watch dir here.
+        a.alerts_read.busy = true;
+        a.handle(Msg::Tab(Tab::Alerts, None));
         // The read went through the app's runner (the Fake), never a real fleet-bench.
         let m = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(matches!(m, Msg::Reds(Ok(_))));
+        assert!(screen(&mut a, 160, 20).contains("Reading Prometheus and fleet-bench reds..."));
         a.handle(Msg::Reds(Err("reds: cannot read the queue".into())));
+        // Both held, the join is asked for (here: queued behind the one marked running).
+        assert!(a.alerts_read.again);
+        a.alerts = Some(hub_core::alerts::join(
+            a.infra.as_ref().unwrap(),
+            Ok(vec![]),
+            a.reds.clone().unwrap(),
+            Ok(String::new()),
+            0,
+        ));
         let s = screen(&mut a, 160, 80);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
-        assert!(at("[Reds]") < at("RED NOW"), "{s}");
-        assert!(at("RED NOW") < at("RED FIXES  read failed"), "{s}");
         assert!(
-            !s.contains("MACHINE "),
-            "Machines is another inner tab: {s}"
+            at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch mac_studio_mlx"),
+            "{s}"
         );
-        assert!(s.contains("reds: cannot read the queue"), "{s}");
+        assert!(at("watch mac_studio_mlx") < at("FIXES  read failed"), "{s}");
+        assert!(
+            s.contains("fleet-bench reds: reds: cannot read the queue"),
+            "{s}"
+        );
+        assert!(!s.contains("MACHINE "), "the machines are Infra's: {s}");
+    }
+
+    #[test]
+    fn the_alerts_keys_move_open_filter_fold_and_follow_a_fix_to_its_queue_item() {
+        let mut a = app(Tab::Alerts);
+        a.alerts = Some(crate::alertstab::tests::sample());
+        let enter = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter)));
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        assert!(a.hints().contains("Enter open"), "{}", a.hints());
+        // Enter opens the selected row's watch under it; j moves to the next row.
+        a.handle(enter());
+        assert!(screen(&mut a, 160, 60).contains("What it checks the nightly on main"));
+        a.handle(key('j'));
+        assert_eq!(
+            a.av.selected(a.alerts.as_ref().unwrap())
+                .map(|r| r.what.as_str()),
+            Some("dream")
+        );
+        // Esc shuts the row first, then clears a view, then is no longer the tab's.
+        a.handle(esc());
+        assert!(!a.av.open);
+        a.handle(key('f'));
+        assert_eq!(a.av.table.view.state, "trip");
+        assert!(!screen(&mut a, 160, 60).contains("dream  sentinel"));
+        a.handle(esc());
+        assert!(a.av.table.is_default());
+        assert!(!a.alerts_key(KeyEvent::from(KeyCode::Esc)));
+        // w folds Watches, which opened on its own with one tripped.
+        assert!(screen(&mut a, 160, 80).contains("LAST RUN"));
+        a.handle(key('w'));
+        assert!(!screen(&mut a, 160, 80).contains("LAST RUN"));
+        // i takes the selected row's fix to its queue item; a row with no fix keeps the key.
+        a.av.table.sel = 0;
+        a.handle(key('i'));
+        assert_eq!((a.tab, a.qv.table.view.q.as_str()), (Tab::Queue, "ar-9"));
     }
 
     #[test]
@@ -6303,7 +6524,7 @@ mod tests {
     #[test]
     fn the_tick_rereads_red_fixes_only_after_reds_refresh_and_r_reads_at_once() {
         let (tx, _rx) = std::sync::mpsc::channel();
-        let mut a = with_tx(Tab::Infra, tx);
+        let mut a = with_tx(Tab::Alerts, tx);
         a.handle(Msg::Reds(Err("x".into())));
         assert!(!a.reds_read.busy);
         // A fresh answer: the tick leaves it alone (one read is about 2s of fleet-bench).
@@ -6324,30 +6545,31 @@ mod tests {
         let mut a = infra_app();
         let (t, q) = crate::tabreq::parse("ci").unwrap();
         a.handle(Msg::Tab(t, q));
-        let s = screen(&mut a, 160, 30);
+        let s = screen(&mut a, 160, 12);
         assert_eq!(a.tab, Tab::Infra);
         assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
-        // Machines the same way, and n/N step between the section headings from there.
+        // Machines the same way, its headline numbers first, and n/N step between the section
+        // headings from there.
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
-        let s = screen(&mut a, 160, 30);
-        assert!(top(&s).starts_with("MACHINE "), "{s}");
+        let s = screen(&mut a, 160, 12);
+        assert!(top(&s).starts_with("nodes "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI RUNNERS"));
+        assert!(top(&screen(&mut a, 160, 12)).starts_with("CI RUNNERS"));
         a.handle(key('N'));
-        assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
+        assert!(top(&screen(&mut a, 160, 12)).starts_with("nodes "));
     }
 
     #[test]
     fn printed_infra_shows_every_inner_tab_under_the_strip() {
         let mut a = infra_app();
-        a.handle(key('5'));
+        a.handle(key('6'));
         a.infra_all = true;
         let s = screen(&mut a, 160, 400);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         for w in [
-            "[Reds]",
-            "RED FIXES",
+            "[Machines]",
+            "MACHINE ",
             "CI RUNNERS",
             "GOVERNOR",
             "Enter opens",
@@ -6360,56 +6582,55 @@ mod tests {
     }
 
     #[test]
-    fn infra_leads_with_its_strip_pins_health_and_red_under_it_and_left_right_switch() {
+    fn infra_leads_with_its_strip_and_left_right_switch() {
         let mut a = infra_app();
-        a.handle(key('5'));
+        a.handle(key('6'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("4 Sessions  5 Infra") && !bar.contains("Machines"),
+            bar.contains("5 Alerts  6 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(
-            top(&s).starts_with("[Reds] Machines  Jobs  Cloud   <- -> switch"),
+            top(&s).starts_with("[Machines] Jobs  Cloud   <- -> switch"),
             "the strip is the first line: {s}"
         );
-        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        assert!(at(&s, "[Reds]") < at(&s, "HEALTH") && at(&s, "HEALTH") < at(&s, "RED NOW"));
-        assert!(s.contains("RED FIXES") && !s.contains("CI RUNNERS"), "{s}");
-        // Right: Machines holds the machines, the CI runners and the governor, in that order.
-        let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
-        a.handle(right());
+        // What is red is Alerts' now: no health, red now or fixes here.
+        assert!(
+            !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
+            "{s}"
+        );
+        // Machines holds the machines, the CI runners and the governor, in that order.
         assert_eq!(a.infra_inner, "machines");
-        let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with(" Reds [Machines]"), "{s}");
-        assert!(at(&s, "[Machines]") < at(&s, "HEALTH"), "pinned stays: {s}");
+        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         for w in ["MACHINE ", "CI RUNNERS", "GOVERNOR"].windows(2) {
             assert!(at(&s, w[0]) < at(&s, w[1]), "{} after {}: {s}", w[0], w[1]);
         }
-        assert!(
-            !s.contains("RED FIXES") && !s.contains("CLOUD RUNNERS"),
-            "{s}"
-        );
+        assert!(!s.contains("CLOUD RUNNERS"), "{s}");
+        let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
+        assert!(top(&s).starts_with(" Machines [Jobs]"), "{s}");
         assert!(
             s.contains("Enter opens the table") && !s.contains("GOVERNOR"),
             "{s}"
         );
         a.handle(right());
         assert!(screen(&mut a, 160, 200).contains("CLOUD RUNNERS"));
-        // Left from the first wraps to the last.
+        // Right from the last wraps to the first, Left back again.
         a.handle(right());
-        assert_eq!(a.infra_inner, "reds");
+        assert_eq!(a.infra_inner, "machines");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
         assert_eq!(a.infra_inner, "cloud");
-        // An inner tab's own name opens it; a pinned section keeps the one shown.
-        let (t, q) = crate::tabreq::parse("infra reds").unwrap();
+        // An inner tab's own name opens it; a name that moved goes to its new tab.
+        let (t, q) = crate::tabreq::parse("infra machines").unwrap();
         a.handle(Msg::Tab(t, q));
-        assert_eq!(a.infra_inner, "reds");
+        assert_eq!(a.infra_inner, "machines");
+        a.alerts_read.busy = true;
+        a.reds_read.busy = true;
         let (t, q) = crate::tabreq::parse("infra red").unwrap();
         a.handle(Msg::Tab(t, q));
-        assert_eq!((a.infra_inner, a.seek), ("reds", Some("red")));
+        assert_eq!((a.tab, a.seek), (Tab::Alerts, Some("firing")));
     }
 
     #[test]
@@ -6417,12 +6638,12 @@ mod tests {
         let mut a = app(Tab::Infra);
         a.infra = None;
         let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
-        assert!(body[0].starts_with("[Reds] Machines"), "{body:?}");
+        assert!(body[0].starts_with("[Machines] Jobs"), "{body:?}");
         assert_eq!(body[1], "Reading Prometheus...");
     }
 
     #[test]
-    fn infra_strip_counts_open_red_fixes_and_red_ci_lines() {
+    fn infra_strip_counts_red_ci_lines_on_machines() {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
@@ -6433,19 +6654,11 @@ mod tests {
                 .find(|l| l.contains("<- -> switch"))
                 .unwrap()
         };
-        assert!(strip(&a).starts_with("[Reds]"), "{}", strip(&a));
-        a.reds = Some(Ok(hub_core::reds::Reds {
-            open: vec![hub_core::reds::Red::default()],
-            ..Default::default()
-        }));
+        assert!(strip(&a).starts_with("[Machines] Jobs"), "{}", strip(&a));
         if let Some(i) = a.infra.as_mut() {
             i.ci.red = vec!["queued job needs gpu".into()];
         }
-        assert!(
-            strip(&a).starts_with("[Reds 1] Machines 1  Jobs"),
-            "{}",
-            strip(&a)
-        );
+        assert!(strip(&a).starts_with("[Machines 1] Jobs"), "{}", strip(&a));
     }
 
     #[test]
@@ -6470,7 +6683,7 @@ mod tests {
     #[test]
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
-        a.handle(key('5'));
+        a.handle(key('6'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
@@ -6573,7 +6786,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            bar.starts_with(" HUB  1  2  3  4  5  6  7  8 Schedules  9  0 "),
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9 Schedules  0  Releases "),
             "{bar:?}"
         );
         let wide: String = a
@@ -6589,14 +6802,17 @@ mod tests {
     fn number_keys_switch_pages_and_q_quits() {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        (a.alerts_read.busy, a.reds_read.busy) = (true, true);
         a.handle(key('5'));
-        assert_eq!((a.tab, a.seek), (Tab::Infra, None));
+        assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
         a.handle(key('6'));
+        assert_eq!((a.tab, a.seek), (Tab::Infra, None));
+        a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
         a.costs_read.busy = true;
-        a.handle(key('9'));
-        assert_eq!(a.tab, Tab::Costs, "9 opens the ninth tab");
-        a.handle(key('6'));
+        a.handle(key('0'));
+        assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
+        a.handle(key('7'));
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);

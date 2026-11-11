@@ -1605,7 +1605,7 @@ mod tests {
             since: Some(since),
             lastrun: None,
             lasttrip: None,
-            place: String::new(),
+            ..Default::default()
         }
     }
 

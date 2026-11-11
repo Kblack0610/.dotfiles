@@ -177,11 +177,9 @@ function runnerExtras(x) {
         `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>action</th><th>from -&gt; to</th><th>by</th><th>line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
-      const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
-      const rows = x.watches.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="n">${when(w.lasttrip)}</td></tr>`).join("");
+      // Every watch, its state and owner are on Alerts; Fleet keeps the count that sends you there.
       const trip = x.watches.filter((w) => w.state === "TRIP").length;
-      return `<h2 class="sec">Watches <span class="muted">${x.watches.length} watches, ${trip} tripped</span></h2>` +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th>watch</th><th>state</th><th>severity</th><th class="n">since</th><th class="n">last run</th><th class="n">last trip</th></tr>${rows}</table>` : `<div class="empty">No watch defined.</div>`}</div>`;
+      return `<h2 class="sec">Watches <span class="muted"><a href="#alerts/watches">${x.watches.length} watches, ${trip} tripped</a></span></h2>`;
     }
     default:
       return "";
