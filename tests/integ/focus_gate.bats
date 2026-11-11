@@ -103,10 +103,12 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
   assert_blocks "$(CLAUDE_HEADLESS=0 gate s1)"
 }
 
-@test "an in-progress item means you already declared what you are on" {
+@test "a Focus item in progress is the human's list and does not silence the gate (ar-257)" {
+  # It used to: one started Focus item switched the gate off for every agent session until
+  # midnight, while a started board row counted for nothing. In progress is a queue item.
   focus '- [/] the thing i am on (1d)' '- [ ] open thing (2d)'
   dirty
-  refute_blocks "$(gate s1)"
+  assert_blocks "$(gate s1)"
 }
 
 @test "a focus write during this turn does not satisfy the gate -- work is tracked in the queue" {

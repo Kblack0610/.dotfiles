@@ -14,9 +14,11 @@
 # ("Session outcomes") in the private overlay.
 
 # shellcheck source=origin-repo.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/origin-repo.sh" || return 1
+SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+. "$SO_LIB/origin-repo.sh" || return 1
 
-# SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
+# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and test_run and ci_poll, the regexes that count a
+# session's test runs and CI polls. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
 # or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
 # quoted pattern naming it, whose output is often test fixtures, is not one; or a curl POST to a Forgejo `.../pulls` or
@@ -37,6 +39,8 @@ SO_PR_JQ='
                   | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
                  (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
                   | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
+  def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
+  def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
 '
 
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
@@ -67,8 +71,6 @@ SO_PR_JQ='
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
   jq -nR --argjson sigs "${2:-[]}" "$SO_PR_JQ"'
-    def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
-    def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
@@ -228,48 +230,18 @@ so_opencode_rows() {
 # price with all three rates and no cache writes (OpenAI bills none), since the token total is not
 # split by model; a session with any unpriced rollout, or no
 # price file, has cost_usd null, never a partial figure. PRs follow the rule at the top of this
-# file, from a PR call (SO_PR_JQ) paired with its own output.
+# file, from a PR call (SO_PR_JQ) paired with its own output. The per-rollout read is codex-session.jq,
+# which also gives the Claude row's metrics (hard errors, tool and test counts); a subagent's add to its parent's.
 so_codex_rows() {
   local dir="$1" work="$2" prices="${3:-}" f pj='{}'
   [ -d "$dir" ] || return 0
   if [ -r "$prices" ]; then
     pj="$(jq -c '.harnesses.codex.prices // {}' "$prices" 2>/dev/null)" || { echo "so_codex_rows: unreadable $prices, no Codex cost" >&2; pj='{}'; }
   fi
+  local prog
+  prog="$(cat "$SO_LIB/codex-session.jq")" && [ -n "$prog" ] || { echo "so_codex_rows: $SO_LIB/codex-session.jq missing or empty" >&2; return 1; }
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
-    jq -cs --argjson prices "$pj" "$SO_PR_JQ"'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-      (map(select(.type == "session_meta")) | first | .payload) as $m
-      | select($m.id)
-      | (map(select(.type == "response_item") | .payload)) as $r
-      | ($r | map(select(.type == "function_call_output" or .type == "custom_tool_call_output")
-                  | {key: .call_id, value: (.output | tostring)}) | from_entries) as $out
-      | (map(select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage // empty) | last) as $u
-      | (map(.timestamp // empty | ts)) as $t
-      | (map(select(.type == "turn_context") | .payload.model // empty) | unique) as $mods
-      | (if $u != null and ($mods | length) == 1 and ($u.cache_write_input_tokens // 0) == 0
-            and ([$prices[$mods[0]].input, $prices[$mods[0]].cached_input, $prices[$mods[0]].output] | all(type == "number"))
-         then $prices[$mods[0]] as $pr
-           | ((($u.input_tokens - ($u.cached_input_tokens // 0)) * $pr.input + ($u.cached_input_tokens // 0) * $pr.cached_input
-               + $u.output_tokens * $pr.output) / 1000000 * 1000000 | round) / 1000000
-         else null end) as $cost
-      | { session_id: $m.id, harness: "codex", cwd: $m.cwd,
-          parent: ($m.source | if type == "object" then .subagent.thread_spawn.parent_thread_id else null end),
-          title: (map(select(.type == "event_msg" and .payload.type == "user_message") | .payload.message) | first // "" | split("\n")[0] | .[0:120]),
-          updated: ($t | max | floor), duration_s: ((($t | max) - ($t | min)) | floor),
-          edits: ($r | map(select(.name == "apply_patch")) | length),
-          cost_by_model: (if $cost == null then null else {($mods[0]): $cost} end),
-          unpriced: ($u != null and $cost == null),
-          models: $mods,
-          tokens: (if $u == null then null else
-                     {input: ($u.input_tokens - ($u.cached_input_tokens // 0)), output: $u.output_tokens,
-                      cacheCreation: ($u.cache_write_input_tokens // 0), cacheRead: ($u.cached_input_tokens // 0),
-                      total: ($u.input_tokens + $u.output_tokens)} end),
-          prs: ([ ($r[] | select(.type == "function_call" and .name == "exec_command")
-                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
-                  ($r[] | select(.type == "custom_tool_call" and .name == "exec")
-                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
-                  (.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "CommandExecution")
-                   | .payload.item | select(.command | if type == "array" then join(" ") else tostring end | pr_cmd)
-                   | .aggregated_output // "" | pr_refs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
+    jq -cs --argjson prices "$pj" --arg file "$f" "$SO_PR_JQ$prog" "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
@@ -279,11 +251,17 @@ so_codex_rows() {
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
       reduce (b | keys[]) as $k (a; .[$k] = ((.[$k] // 0) + b[$k])) end;
+    def nadd(a; b): if a == null and b == null then null else (a // 0) + (b // 0) end;
+    def sum_into($c): .metrics.hard_errors.api_error = nadd(.metrics.hard_errors.api_error; $c.metrics.hard_errors.api_error)
+      | .metrics.hard_errors.tool_errors = nadd(.metrics.hard_errors.tool_errors; $c.metrics.hard_errors.tool_errors)
+      | reduce ("tool_calls", "test_runs", "test_failures", "ci_polls", "api_messages", "tokens") as $k (.;
+          .metrics.activity[$k] = nadd(.metrics.activity[$k]; $c.metrics.activity[$k]));
     (map(select(.parent == null) | {key: .session_id, value: .}) | from_entries) as $roots
     | reduce (.[] | select(.parent != null and $roots[.parent] != null)) as $c ($roots;
         .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
                          | .cost_by_model = add_tok(.cost_by_model; $c.cost_by_model) | .unpriced = (.unpriced or $c.unpriced)
                          | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
+                         | sum_into($c)
                          | .updated = ([.updated, $c.updated] | max)))
     | .[] | .project = $p[0][.cwd]
     | if .unpriced then .cost_by_model = null else . end
@@ -317,20 +295,12 @@ so_lesson_sigs() {
 SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
 so_forgejo_pr_list() {
-  local repo="$1" work="$2" limit="$3" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}" page=1 got
-  case " $(so_forgejo_hosts) " in
-    *" ${repo%%/*} "*) ;;
-    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
-  esac
-  if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
-  fi
+  local repo="$1" work="$2" limit="$3" page=1 got
+  so_forgejo_auth "$repo" || return
   rm -f "$work"/fj.page.*
   while :; do
-    printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$(printf %04d "$page")" \
-        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+    so_forgejo_get "$repo" "pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" \
+        -o "$work/fj.page.$(printf %04d "$page")" 2>"$work/fj.err" &&
       got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
       { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
     [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
@@ -339,6 +309,64 @@ so_forgejo_pr_list() {
   jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
                      state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
                      mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
+}
+
+# so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
+# state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
+# branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
+# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr.
+so_forgejo_pr() {
+  local repo="$1" n="$2" pr
+  so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
+  pr="$(so_forgejo_get "$repo" "pulls/$n")" || return 1
+  jq -c '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+          headRefName: "#\(.number)", headRefOid: .head.sha, body, createdAt: .created_at, mergedAt: .merged_at,
+          additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
+}
+
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state}],
+# so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
+# failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
+so_forgejo_checks() {
+  local st
+  st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
+  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]' <<<"$st"
+}
+
+# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts
+# lists (home-config's is `forgejo`, its origin the GitHub mirror); rc 1 when none is.
+so_forgejo_repo() {
+  local name url host hosts
+  hosts=" $(so_forgejo_hosts) "
+  for name in $(git -C "$1" remote 2>/dev/null); do
+    url="$(git -C "$1" remote get-url "$name" 2>/dev/null)" || continue
+    host="$(url_host "$url")"
+    [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
+    printf '%s/%s\n' "$host" "$(url_repo "$url")"
+    return 0
+  done
+  return 1
+}
+
+# so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
+# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR: rc as so_forgejo_pr_list.
+so_forgejo_auth() {
+  local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
+  case " $(so_forgejo_hosts) " in
+    *" ${repo%%/*} "*) ;;
+    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
+  esac
+  if [ -z "$SO_FORGEJO_TOKEN" ]; then
+    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
+    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+  fi
+}
+
+# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API read, after so_forgejo_auth
+so_forgejo_get() {
+  local repo="$1" path="$2"; shift 2
+  printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+    "${SO_CURL:-curl}" -sSf -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:

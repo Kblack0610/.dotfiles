@@ -6,6 +6,7 @@
   agent-usage tokens json --date D                       the day's snapshot, for day-log
   agent-usage tokens check                               the newest day against the 7 before it
   agent-usage tokens check --langfuse                    Langfuse unreadable for the last two nights
+  agent-usage tokens check --gateway-errors              a gateway error class that means a bad request
 
 No scanner of its own: every number comes from one of the counted tools, so this file only
 joins them. Who owns which number:
@@ -30,6 +31,13 @@ check --langfuse is the read-health watch: 1 when the newest two snapshots both 
 langfuse section (the reader failed two nights running, the reason is in their errors), 0 when
 either has figures or the reader has not run yet (a snapshot with no langfuse key at all), 2 as
 above. One null night is quiet: Langfuse restarts and the next night fills the gap.
+
+check --gateway-errors reads the newest snapshot's langfuse.gateway.by_error: 1 when a class in
+TOKENS_GATEWAY_TRIP (default BadRequestError, comma separated) has at least TOKENS_GATEWAY_MIN (1)
+errors, 0 otherwise. Only the listed classes count: auth probes (HTTPException, KeyNotFoundError)
+and budget or rate limits (BudgetExceededError, ProxyRateLimitError) are the gateway doing its job,
+and a BadRequestError is a caller sending something the model API refuses. A null langfuse section
+is quiet here, since check --langfuse owns an unreadable reader. 2 as above.
 """
 import argparse
 import datetime as dt
@@ -47,12 +55,15 @@ ENV = os.environ
 DIR = Path(ENV.get("TOKENS_DIR", Path.home() / ".agent" / "token-usage"))
 RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
+FLEET_COST = shlex.split(ENV.get("TOKENS_FLEET_COST_CMD", "agent-usage fleet-cost"))
 CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
 LANGFUSE = shlex.split(ENV.get("TOKENS_LANGFUSE_CMD", "agent-usage langfuse"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
 SUSPECT_PCT = float(ENV.get("TOKENS_SUSPECT_PCT", "50"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
 MIN_BASELINE = 3      # fewer earlier days than this and there is no median to compare with
+GATEWAY_TRIP = [c.strip() for c in (ENV.get("TOKENS_GATEWAY_TRIP") or "BadRequestError").split(",") if c.strip()]
+GATEWAY_MIN = max(1, int(ENV.get("TOKENS_GATEWAY_MIN", "1")))   # 0 would trip every night
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
 TOP_COMMANDS = 20
 TOP_TARGETS = 20      # the files whose reads cost the most responses that day
@@ -96,6 +107,7 @@ def snapshot(day):
     jobs = {"recall": recall,
             "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
+            "fleet-cost": FLEET_COST + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
             "langfuse": LANGFUSE + ["--since", s, "--until", e]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
@@ -124,6 +136,7 @@ def snapshot(day):
         "window": {"start": s, "end": e},
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "errors": errors,
+        "fleet_cost": got["fleet-cost"][0],
         "totals": {**tu, "input": t.get("input_tokens"), "cache_write": t.get("cache_creation_input_tokens"),
                    "cache_read": t.get("cache_read_input_tokens"), "tool_calls": t.get("calls"),
                    "cost_usd": (burn.get("registry") or {}).get("cost_usd"),
@@ -270,7 +283,23 @@ def langfuse_check(files, newest):
     return 1
 
 
-def check(langfuse=False):
+def gateway_errors_check(newest):
+    """check --gateway-errors: a trip-listed error class in the newest snapshot's gateway errors."""
+    gw = (newest.get("langfuse") or {}).get("gateway")
+    if not gw:
+        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
+        return 0
+    by_error = gw.get("by_error") or {}
+    hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
+    if not hit:
+        print(f"{newest['date']}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
+        return 0
+    others = gw.get("errors", 0) - sum(hit.values())
+    print(f"{newest['date']}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
+    return 1
+
+
+def check(langfuse=False, gateway_errors=False):
     files = snapshots()
     if not files:
         print(f"no token-usage snapshot in {DIR} (agent-usage tokens snapshot)")
@@ -285,6 +314,8 @@ def check(langfuse=False):
         return 2
     if langfuse:
         return langfuse_check(files, newest)
+    if gateway_errors:
+        return gateway_errors_check(newest)
     base = [x for x in (load(p) for p in files[-1 - BASELINE_DAYS:-1]) if x]
     drift, suspect, said = [], [], []
     for key, label, worse in WATCHED:
@@ -321,7 +352,9 @@ def main():
     jp = sub.add_parser("json")
     jp.add_argument("--date", type=dt.date.fromisoformat, required=True)
     cp = sub.add_parser("check")
-    cp.add_argument("--langfuse", action="store_true", help="the read-health watch")
+    mode = cp.add_mutually_exclusive_group()
+    mode.add_argument("--langfuse", action="store_true", help="the read-health watch")
+    mode.add_argument("--gateway-errors", action="store_true", help="a bad-request class in the gateway errors")
     a = ap.parse_args()
     if a.verb == "snapshot":
         day = a.date or today() - dt.timedelta(days=1)
@@ -346,7 +379,7 @@ def main():
             return 1
         print(s["line"])
         return 0
-    return check(a.langfuse)
+    return check(a.langfuse, a.gateway_errors)
 
 
 if __name__ == "__main__":

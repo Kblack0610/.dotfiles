@@ -52,6 +52,20 @@ export ENABLE_CLAUDEAI_MCP_SERVERS
 # publish (claude 2.1.318 reads 0/false/no/off as "artifact_env_off", checked 2026-11-05).
 : "${CLAUDE_CODE_ARTIFACT:=0}"
 export CLAUDE_CODE_ARTIFACT
+# Tools every automated start runs without, as --disallowedTools: a queue start or resume
+# (fleet-dispatch dropped_tools), an agentctl runner and a shepherd pass (agent-run's claude
+# harness), and a claude-acct move carries the flag over. Their schemas ride on every turn of a
+# session that never calls them: in the 7 days to 2026-11-06 Workflow had 1 call and ScheduleWakeup
+# 43 (all /loop) across about 2,900 sessions, for about 10K chars a turn; Artifact (ask OaAlhA) had
+# 11 calls a week, all from queue sessions. A plain claude start reads none of it. Empty keeps every
+# tool, and so does a value that is not a comma list of tool names (it never reaches a command line).
+: "${CLAUDE_AUTO_DROP_TOOLS=Workflow,ScheduleWakeup,Artifact}"
+case "$CLAUDE_AUTO_DROP_TOOLS" in
+    *[!A-Za-z0-9_,]* | ,* | *, | *,,*)
+        printf 'claude-telemetry: CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names: %s; dropping none\n' "$CLAUDE_AUTO_DROP_TOOLS" >&2
+        CLAUDE_AUTO_DROP_TOOLS= ;;
+esac
+export CLAUDE_AUTO_DROP_TOOLS
 
 if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # claude_otel_attr <key> [value] -> OTEL_RESOURCE_ATTRIBUTES with <key> set to <value>, or
@@ -72,6 +86,11 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # target_info lands and all counters are silently dropped. (Verified: cumulative
     # makes session/token/cost metrics appear.)
     export OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+    # The SDK default is one export per 60000 ms, so a run that ends sooner (a one-shot
+    # `claude -p`, a short dispatched lane) exits before its first export and its cost is
+    # never logged. Cumulative counters make the shorter period safe: a repeat export
+    # restates the total, it does not double count.
+    export OTEL_METRIC_EXPORT_INTERVAL="${OTEL_METRIC_EXPORT_INTERVAL:-5000}"
 
     # --- Traces -> Langfuse (via the same Alloy receiver) --------------------
     # Metrics answer "what did this session cost"; traces answer "what it actually did".
@@ -121,3 +140,28 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
             claude_otel_attr queue.item "${AGENT_QUEUE_ITEM:-}"
     }
 fi
+
+# claude_launch_env -> the launch-line prefix for a claude started as a tmux pane command
+# (fleet-dispatch): `env` dropping a parent Claude session's identity, then every variable this file
+# exports, shell-quoted, with OTEL_RESOURCE_ATTRIBUTES from claude_telemetry_launch. No rc file runs in
+# such a pane, and it gets the tmux server's environment; a server started from inside a Claude
+# session holds that session's id, CHILD_SESSION and ATTENDED flags and messaging socket, and no
+# telemetry endpoint. Measured 2026-11-08: 16 of 16 live queue sessions exported no cost.
+# tests/unit/claude_telemetry.bats checks this list against every `export` above.
+claude_launch_env() {
+    local v val
+    printf 'env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN '
+    # CLAUDE_AUTO_DROP_TOOLS is read by the launcher (as --disallowedTools), never by claude.
+    for v in ENABLE_CLAUDEAI_MCP_SERVERS CLAUDE_CODE_ARTIFACT; do
+        val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"
+    done
+    # The export, only where the guard above defined it: off the LAN nothing is added.
+    command -v claude_telemetry_launch >/dev/null 2>&1 || return 0
+    for v in CLAUDE_CODE_ENABLE_TELEMETRY OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL \
+        OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE OTEL_METRIC_EXPORT_INTERVAL \
+        CLAUDE_CODE_ENHANCED_TELEMETRY_BETA OTEL_TRACES_EXPORTER OTEL_LOG_USER_PROMPTS \
+        OTEL_LOG_ASSISTANT_RESPONSES OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT; do
+        val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"
+    done
+    printf 'OTEL_RESOURCE_ATTRIBUTES=%q ' "$(claude_telemetry_launch)"
+}

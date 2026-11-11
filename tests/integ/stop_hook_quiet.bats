@@ -183,7 +183,7 @@ stderr() { cat "$ERRF"; }
   run_hook
   assert_equal "$STATUS" 0
   assert_equal "$(stderr)" ""
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt  # any date: a run across midnight wrote yesterday's
   assert_output --partial "note=no executable checks"
 }
 
@@ -191,7 +191,7 @@ stderr() { cat "$ERRF"; }
   dirty
   check green 0
   run_hook
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt
   assert_output --partial "status=PASS"
   assert_output --partial "note=all checks passed"
 }
@@ -208,7 +208,7 @@ stderr() { cat "$ERRF"; }
   run stderr
   assert_output ""
   refute_output --partial "green"
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt
   assert_output --partial "note=hang=timeout"
   assert_output --partial "status=SKIPPED"
   [ -z "$(find "$HOME/.cache/claude-stop-hook" -name 'pass-fp-*' -print)" ]
@@ -236,10 +236,31 @@ EOS
   chmod +x "$HOOK_DIR/stop-post.d/$1.sh"
 }
 
-# run_session <sid> -- one Stop from session <sid>.
+# run_session <sid> [args] -- one Stop from session <sid>.
 run_session() {
+  local sid=$1; shift
   STATUS=0
-  bash "$HOOK" <<< "{\"stop_hook_active\":false,\"session_id\":\"$1\"}" >"$OUTF" 2>"$ERRF" || STATUS=$?
+  bash "$HOOK" "$@" <<< "{\"stop_hook_active\":false,\"session_id\":\"$sid\"}" >"$OUTF" 2>"$ERRF" || STATUS=$?
+}
+
+@test "--checks-only (Codex): a failing check still blocks, and no post script runs on any branch" {
+  dirty
+  check red 2
+  post 50-seen
+  run_session aaa --checks-only
+  assert_equal "$STATUS" 2
+  run stderr
+  assert_output --partial 'red-output-line-1'
+  [ ! -e "$HOME/post.seen" ]
+  # the no-session-changes branch skips post too
+  snapshot qa
+  run_session qa --checks-only
+  assert_equal "$STATUS" 0
+  [ ! -e "$HOME/post.seen" ]
+  # without the flag the same Stop runs post (negative control)
+  run_session aaa
+  assert_equal "$STATUS" 2
+  [ -e "$HOME/post.seen" ]
 }
 
 @test "two sessions in one project keep separate CI results, and post scripts are handed their own" {
@@ -269,13 +290,13 @@ run_session() {
   cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
   echo 'target=%1' > "$spin/alpha__old.request"
   touch -d '2 days ago' "$spin/alpha__old.request"
-  echo 'target=%2' > "$spin/alpha__aaa.request"
+  echo 'target=%2' > "$spin/aaa.request"
   dirty
   check red 2
   run_session aaa
   [ ! -e "$spin/alpha__old.request" ]
   # Its own checks failed, so the request waits for a clean Stop.
-  [ -e "$spin/alpha__aaa.request" ]
+  [ -e "$spin/aaa.request" ]
   run stderr
   assert_output --partial "wind-down deferred"
 }
@@ -293,7 +314,7 @@ counted() {
   chmod +x "$f"
 }
 runs() { wc -l < "$SANDBOX/$1.runs" 2>/dev/null | tr -d ' ' || echo 0; }
-ci_result() { cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"; }
+ci_result() { cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt; }
 
 @test "a dirty tree unchanged since a passing run skips the checks on the next Stop" {
   dirty

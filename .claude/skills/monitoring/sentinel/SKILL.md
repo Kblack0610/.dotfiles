@@ -34,7 +34,7 @@ manifest CRUD; the running service does the watching.
 
 | Concern | Owned by |
 |---|---|
-| Run probes, dedupe, notify, expire | the **service** (`watch-companion-loop`, the `sentinel-diagnose` runner only when needed) |
+| Run probes, dedupe, notify, expire | the **service** (`watch-companion-loop`, the `sentinel-diagnose` runner only when needed); `recheck` runs the same pass on demand for named watches |
 | Add / list / stop / pause watches | **this skill** (manifest CRUD) |
 | Diagnose a trip / judge a fuzzy watch | the service's bounded agent tier (observe-only) |
 | Act on a notification (fix, roll back, restart) | the **human** - Sentinel only recommends |
@@ -144,6 +144,15 @@ watch-companion-loop status
 
 The `list` table plus daemon health (`agentctl status sentinel`) and the tail of `activity.log`.
 Answers "what are you watching / is Sentinel running". Read-only.
+
+## Verb: `recheck <name>` / `recheck --tripped`
+
+```sh
+watch-companion-loop recheck <name>...   # probe now, whatever the interval
+watch-companion-loop recheck --tripped   # every TRIP or ERROR watch
+```
+
+The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. Operate commands: `~/.config/agentctl/SENTINEL.md`.
 
 ## Verb: `stop` / `remove <name>`
 

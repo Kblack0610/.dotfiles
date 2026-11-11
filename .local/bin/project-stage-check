@@ -4,6 +4,7 @@
 #   project-stage-check <name> [--stage <stage>] [--json]
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
 #   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file
+#   project-stage-check <name> --list [--json]
 #
 # Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
 # declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
@@ -16,16 +17,19 @@
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
 # --file turns each FAIL row into a story on the project's agent board, under the open epic for
 # its target: `epic(stage): <stage> ...` for a stage (with no --stage, that epic's stage is the
-# target), `epic(<system>): ...` for a system. It never files the epic: only the human, the
-# session whose plan they just approved, or an answered ask does. A row already on either sheet
+# target), `epic(<system>): ...` for a system. It never files the epic (who does:
+# ~/.local/src/docs/lifecycle.md, "What an epic is"). A row already on either sheet
 # under the same title, open or closed or dropped, is never filed again. With no epic it prints
 # what it would file and writes nothing. Exit 0, 1 when a write failed, 2 as above.
+# --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),
+# one `id<TAB>doc|own<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an array of
+# {id, source, aliases, is}). A malformed `systems` entry exits 2.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
-NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE=""
+NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +38,7 @@ while [ $# -gt 0 ]; do
     --system) ONLY="${2:-}"; SYSTEMS=1; shift 2 || usage ;;
     --json) JSON=1; shift ;;
     --file) FILE=1; shift ;;
+    --list) LIST=1; shift ;;
     -h|--help) usage 0 ;;
     -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
     *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
@@ -42,6 +47,7 @@ done
 [ -n "$NAME" ] || usage
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
 [ -z "$FILE" ] || [ -z "$JSON" ] || { echo "project-stage-check: --file and --json do not mix" >&2; usage; }
+[ -z "$LIST" ] || [ -z "$FILE$TARGET$ONLY" ] || { echo "project-stage-check: --list takes only --json" >&2; usage; }
 
 # sheet_rows: one `state<TAB>title` line per task row on both lanes' sheets and their frozen
 # version notes, the title from `notes row parse` (the grammar's home, so it reads as
@@ -92,6 +98,10 @@ file_gaps() {
       | [$t, .stage, .requirement, .check] | @tsv' <<<"$check")"
   fi
 
+  # Each row's priority is its own (no writer defaults one): #high while the gate it fails blocks
+  # the stage, #low for a report-only gap and for a system's.
+  local prio=low
+  [ -z "$SYSTEMS" ] && [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
   while IFS=$'\t' read -r target area full chk; do
     [ -n "$target" ] || continue
     n=$((n + 1))
@@ -114,7 +124,7 @@ file_gaps() {
     if [ -z "$epic" ]; then
       waiting=$((waiting + 1)); printf 'no epic %-10s  %s\n' "$area" "$title"; continue
     fi
-    row="chore($area): $title #of/$epic #size/s"
+    row="chore($area): $title #of/$epic #size/s #$prio"
     text="from project-stage-check $NAME --file, $( [ -n "$SYSTEMS" ] && echo "systems.md $target" || echo "stages.md #$area" ), check: $chk"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then
@@ -142,7 +152,7 @@ file_gaps() {
 
 STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
 SYSTEMS_DOC="${SYSTEMS_DOC:-$HOME/.local/src/docs/systems.md}"
-DOC="$STAGES_DOC"; [ -z "$SYSTEMS" ] || DOC="$SYSTEMS_DOC"
+DOC="$STAGES_DOC"; [ -z "$SYSTEMS$LIST" ] || DOC="$SYSTEMS_DOC"
 [ -r "$DOC" ] || { echo "project-stage-check: $DOC not found" >&2; exit 2; }
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
@@ -166,7 +176,7 @@ REPO="${REPO/#\~/$HOME}"
 # README, docs and CHANGELOG there; the predicates run from that root.
 sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
-[ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
+[ -n "$LIST" ] || [ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 [ -z "$FILE" ] || file_gaps
 
@@ -265,6 +275,43 @@ systems() {
   exit 0
 }
 
+list_systems() {
+  local own out
+  # A malformed entry exits 2 with its key named: an empty list would read as "no own systems".
+  own="$(jq -c --arg n "$NAME" '
+    def word: type == "string" and test("^[a-z][a-z0-9-]*$");
+    def id: type == "string" and test("^[a-z][a-z-]*$");
+    def entry: type == "object" and ((.aliases // []) | type == "array" and all(.[]; word))
+      and ((.is // "") | type == "string");
+    (.trackers[$n].systems // {}) as $s
+    | if ($s | type) != "object" then error("\($n): systems is not an object") else . end
+    | [$s | to_entries[] | select((.key | id | not) or (.value | entry | not)) | .key] as $bad
+    | if $bad == [] then $s
+      else error("\($n): bad systems entries: \($bad | join(", ")); want {\"<id>\": {\"is\": \"<line>\", \"aliases\": [\"<word>\"]}}, ids and aliases lowercase") end
+  ' "$(project_map_file)")" || { echo "project-stage-check: cannot read the systems of \"$NAME\" from $(project_map_file)" >&2; exit 2; }
+  out="$(rows "$SYSTEMS_DOC" Systems | jq -r -R -s --arg type "${TYPE:-none}" --argjson own "$own" --arg json "$JSON" '
+    [split("\n")[] | select(length > 0) | split("\t") | {id: .[0], applies: (.[1] | split(", ")), is: .[2]}] as $doc
+    | ($doc | map(.id)) as $ids
+    | [$own | keys[] | select(. as $k | ($ids | index($k) | not) and ($own[$k].is // "") == "")] as $nois
+    | if $nois != [] then error("own systems need an \"is\" line: \($nois | join(", "))") else . end
+    | ([$doc[] | select(.applies | index("base") or index($type)) | .id]) as $applies
+    | [$own | keys[] | select(. as $k | ($ids | index($k)) and ($applies | index($k) | not))] as $off
+    | if $off != [] then error("\($off | join(", ")) does not apply to a \($type) project, so it cannot take aliases") else . end
+    | ([$applies[], ($own | keys[] | select(. as $k | $ids | index($k) | not))]) as $mine
+    | [$own | to_entries[] | .key as $k | (.value.aliases // [])[] | {a: ., k: $k}] as $pairs
+    | [$pairs | group_by(.a)[] | select(length > 1 or (.[0].a as $a | $mine | index($a))) | .[0].a] as $clash
+    | if $clash != [] then error("an alias names two systems or is itself a system id: \($clash | join(", "))") else . end
+    | [$doc[] | select(.id as $i | $applies | index($i))
+        | {id, source: "doc", aliases: ($own[.id].aliases // []), is}]
+      + [$own | to_entries[] | select(.key as $k | $ids | index($k) | not)
+        | {id: .key, source: "own", aliases: (.value.aliases // []), is: .value.is}]
+    | if $json == "1" then . else .[] | [.id, .source, (.aliases | join(",")), .is] | @tsv end')" \
+    || { echo "project-stage-check: \"$NAME\": the systems list did not build" >&2; exit 2; }
+  printf '%s\n' "$out"
+  exit 0
+}
+
+[ -z "$LIST" ] || list_systems
 [ -z "$SYSTEMS" ] || systems
 
 LAB_STAGES="${LAB_STAGES:-$(notes projects --stages 2>/dev/null || true)}"

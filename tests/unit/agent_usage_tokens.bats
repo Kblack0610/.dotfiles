@@ -17,6 +17,7 @@ setup() {
   export TOKENS_RECALL_CMD="$REPO_ROOT/.local/bin/claude-recall tool-output" TOKENS_BURN_CMD="$AU burn"
   export TOKENS_CALLS_CMD="$REPO_ROOT/.local/bin/claude-recall tool-calls"
   export TOKENS_LANGFUSE_CMD="sh -c 'echo null' langfuse"
+  export TOKENS_FLEET_COST_CMD="sh -c 'echo {\\\"total\\\":{\\\"usd\\\":1}}' fleet-cost"
   cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
 }
 
@@ -29,6 +30,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_equal "$(snap '[.totals.responses, .totals.context, .totals.tool_chars, .context_per_response, .carried_x]')" '[6,179025,4,29837,2]'
   assert_equal "$(snap '[.start_context_median, .merged_prs, .cost_per_merged_pr, .totals.cost_usd, .compactions, .context_per_merged_pr]')" '[27008,2,2.5,5.0,1,89512]'
   assert_equal "$(snap '[.window.start, .window.end, .errors]')" '["2026-01-01T00:00:00+00:00","2026-01-02T00:00:00+00:00",[]]'
+  assert_equal "$(snap '.fleet_cost.total.usd')" 1
 }
 
 @test "snapshot: by tool, by command head, cost by project, and the stretches between compactions" {
@@ -265,5 +267,56 @@ lf_nokey() { mkdir -p "$TOKENS_DIR"; echo "{\"date\":\"$1\",\"errors\":[]}" > "$
   assert_failure 2
   rm "$TOKENS_DIR"/*.json
   run "$AU" tokens check --langfuse
+  assert_failure 2
+}
+
+# check --gateway-errors: a trip-listed error class in the newest snapshot, auth probes quiet.
+gw_day() { lf_day "$1" "{\"gateway\":{\"calls\":100,\"errors\":$2,\"by_error\":$3}}" '[]'; }
+
+@test "check --gateway-errors: BadRequestError trips, naming the count and the unlisted rest" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output '2026-01-01: gateway BadRequestError x8 (4 other errors, not listed)'
+}
+
+@test "check --gateway-errors: auth probes, budget and rate limits are quiet (negative control)" {
+  gw_day 2026-01-01 400 '{"HTTPException":300,"KeyNotFoundError":80,"BudgetExceededError":15,"ProxyRateLimitError":5}'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output '2026-01-01: no BadRequestError in the gateway errors (400 errors in 100 calls)'
+  TOKENS_GATEWAY_TRIP=KeyNotFoundError run "$AU" tokens check --gateway-errors
+  assert_failure 1
+}
+
+@test "check --gateway-errors: a null langfuse section or no by_error is quiet, only the newest night counts" {
+  lf_day 2025-12-31 '{"gateway":{"by_error":{"BadRequestError":5}}}' '[]'; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output --partial 'no gateway figures'
+  lf_day 2026-01-01 '{"gateway":{"calls":3,"errors":0,"by_error":{}}}' '[]'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  TOKENS_GATEWAY_MIN=2 run "$AU" tokens check --gateway-errors
+  assert_success
+}
+
+@test "check --gateway-errors: a zero minimum or an empty class list falls back instead of tripping or crashing" {
+  gw_day 2026-01-01 3 '{"HTTPException":3}'
+  TOKENS_GATEWAY_MIN=0 run "$AU" tokens check --gateway-errors
+  assert_success
+  TOKENS_GATEWAY_TRIP= run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output --partial 'no BadRequestError'
+}
+
+@test "check --gateway-errors: no or a stale snapshot still exits 2, and it excludes --langfuse" {
+  gw_day 2026-01-01 1 '{"BadRequestError":1}'
+  TOKENS_TODAY=2026-01-05 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  run "$AU" tokens check --gateway-errors --langfuse
+  assert_failure 2
+  rm "$TOKENS_DIR"/*.json
+  run "$AU" tokens check --gateway-errors
   assert_failure 2
 }

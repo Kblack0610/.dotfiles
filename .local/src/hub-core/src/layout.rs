@@ -2,88 +2,224 @@
 //! surface lists its tabs from here and a test on each side fails when they drift, so the two
 //! cannot name or order a tab differently. The layout and its rules: `docs/dashboards.md`.
 
-/// One tab: its id (the `#name` URL and `hub --tab name`), title, the question it answers, and
-/// its section ids in order.
+/// One inner tab: a strip entry inside one tab that shows a named group of that tab's sections.
+/// Its id is the `#tab/id` URL word; a section id names it too, for the inner tab holding it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tab {
+pub struct Inner {
     pub id: &'static str,
     pub title: &'static str,
-    pub question: &'static str,
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 10] = [
+/// One tab: its id (the `#name` URL and `hub --tab name`), title, the question it answers, and
+/// its section ids in order. A tab with inner tabs lists its `pinned` sections (always shown,
+/// above the strip) and then each inner tab's sections, so `sections` is those, concatenated:
+/// the section ids never change when a tab gains a strip, and every old link still lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tab {
+    pub id: &'static str,
+    /// The sidebar heading agent-web files it under. Each group is one run of `TABS`, so a heading
+    /// never splits the order or moves a digit.
+    pub group: &'static str,
+    pub title: &'static str,
+    pub question: &'static str,
+    pub sections: &'static [&'static str],
+    pub pinned: &'static [&'static str],
+    pub inner: &'static [Inner],
+}
+
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
+        group: "Now",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "numbers", "health"],
+        sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
+        pinned: &[],
+        inner: &[],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
     // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
+        group: "Now",
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
+        pinned: &[],
+        inner: &[],
     },
     Tab {
         id: "queue",
+        group: "Work",
         title: "Queue",
         question: "What will agents do next?",
         sections: &["flow", "table", "candidates"],
+        pinned: &[],
+        inner: &[],
     },
     Tab {
         id: "projects",
+        group: "Work",
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
+        id: "board",
+        group: "Work",
+        title: "Board",
+        question: "What is on every project's board?",
+        sections: &["rows"],
+        pinned: &[],
+        inner: &[],
     },
     Tab {
         id: "sessions",
+        group: "Work",
         title: "Sessions",
         question: "What is each agent doing?",
         sections: &["shepherd", "sessions", "detail"],
+        pinned: &[],
+        inner: &[],
     },
     Tab {
         id: "infra",
+        group: "Ops",
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
-            "health", "red", "fixes", "machines", "ci", "jobs", "cloud", "governor",
+            "health", "red", "fixes", "machines", "ci", "governor", "jobs", "cloud",
+        ],
+        // Health and what is red now stay above the strip (exceptions first); the governor
+        // powers machines on and off, so it sits with them.
+        pinned: &["health", "red"],
+        inner: &[
+            Inner {
+                id: "reds",
+                title: "Reds",
+                sections: &["fixes"],
+            },
+            Inner {
+                id: "machines",
+                title: "Machines",
+                sections: &["machines", "ci", "governor"],
+            },
+            Inner {
+                id: "jobs",
+                title: "Jobs",
+                sections: &["jobs"],
+            },
+            Inner {
+                id: "cloud",
+                title: "Cloud",
+                sections: &["cloud"],
+            },
         ],
     },
     Tab {
         id: "log",
+        group: "Ops",
         title: "Log",
         question: "What happened?",
         sections: &[
-            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast", "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
         ],
+        pinned: &[],
+        inner: &[],
     },
     Tab {
         id: "fleet",
+        group: "Ops",
         title: "Fleet",
         question: "Who is working, and on what?",
         sections: &["workers"],
+        pinned: &[],
+        inner: &[],
     },
     // After the older tabs, so they keep their digits.
     Tab {
         id: "schedules",
+        group: "Ops",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
+        pinned: &[],
+        inner: &[],
     },
-    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
     // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
+        group: "Spend, ship",
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
-        sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
+        sections: &[
+            "fleet",
+            "burn",
+            "consumers",
+            "spend",
+            "totals",
+            "table",
+            "tokens",
+            "langfuse",
+            "sections",
+        ],
+        // The 24h fleet figure stays above the strip; the strip splits the three questions.
+        pinned: &["fleet"],
+        inner: &[
+            Inner {
+                id: "limits",
+                title: "Limits",
+                sections: &["burn", "consumers"],
+            },
+            Inner {
+                id: "spend",
+                title: "Spend",
+                sections: &["spend", "totals", "table"],
+            },
+            Inner {
+                id: "models",
+                title: "Models",
+                sections: &["tokens", "langfuse", "sections"],
+            },
+        ],
+    },
+    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
+    // Builds section (CI runs, its own reader; release-state has no CI collector), then the Tests
+    // section (per-suite results of one tests.yml run, web first; the TUI follows).
+    Tab {
+        id: "releases",
+        group: "Spend, ship",
+        title: "Releases",
+        question: "What is building, and what is live where?",
+        sections: &["table", "detail", "builds", "tests"],
+        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
+        // how the last test run went.
+        pinned: &[],
+        inner: &[
+            Inner {
+                id: "apps",
+                title: "Apps",
+                sections: &["table", "detail"],
+            },
+            Inner {
+                id: "builds",
+                title: "Builds",
+                sections: &["builds"],
+            },
+            Inner {
+                id: "tests",
+                title: "Tests",
+                sections: &["tests"],
+            },
+        ],
     },
 ];
 
@@ -98,8 +234,8 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("waiting", "home"),
     ("asks", "home"),
     ("overview", "home"),
-    // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
-    ("board", "projects"),
+    // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
+    ("numbers", "home"),
     // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
     ("watch", "sessions"),
     ("shepherd", "sessions"),
@@ -131,6 +267,18 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
 ];
+
+/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
+/// Board, which is `a` on Projects there.
+pub const OFF_BAR: [&str; 2] = ["daily", "board"];
+
+/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth.
+pub fn bar_digit(id: &str) -> Option<usize> {
+    TABS.iter()
+        .filter(|t| !OFF_BAR.contains(&t.id))
+        .position(|t| t.id == id)
+        .map(|i| (i + 1) % 10)
+}
 
 /// Where a section that moved off `tab` lives now: its new tab and section.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
@@ -167,9 +315,85 @@ pub fn section(name: &str) -> Option<&'static str> {
         .find(|s| *s == n && tab.id != n)
 }
 
+/// The inner tab a request word opens on `tab`: a section id (an old link) opens the inner tab
+/// holding it, an inner tab's id opens it, and a missing, unknown or pinned word opens the
+/// first. None when the tab has no inner tabs.
+pub fn inner_tab(tab: &Tab, name: Option<&str>) -> Option<&'static Inner> {
+    let n = name.unwrap_or_default().trim().to_ascii_lowercase();
+    tab.inner
+        .iter()
+        .find(|i| i.sections.contains(&n.as_str()))
+        .or_else(|| tab.inner.iter().find(|i| i.id == n))
+        .or_else(|| tab.inner.first())
+}
+
+/// How many of an inner tab's sections are in `flagged` (the ones needing a look), the count its
+/// label carries when above zero, so a red behind an unselected inner tab still shows.
+pub fn inner_count(inner: &Inner, flagged: &[&str]) -> usize {
+    inner
+        .sections
+        .iter()
+        .filter(|s| flagged.contains(s))
+        .count()
+}
+
+/// Why a tab's groups are not sound: `sections` must be its pinned sections then each inner
+/// tab's, in that order, which puts every section in exactly one place.
+pub fn groups_check(tab: &Tab) -> Result<(), String> {
+    if tab.inner.is_empty() {
+        return if tab.pinned.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("{} pins sections but has no inner tabs", tab.id))
+        };
+    }
+    let grouped: Vec<&str> = tab
+        .pinned
+        .iter()
+        .copied()
+        .chain(tab.inner.iter().flat_map(|i| i.sections.iter().copied()))
+        .collect();
+    if grouped != tab.sections {
+        return Err(format!(
+            "{}: pinned and inner sections {grouped:?} are not its sections {:?}",
+            tab.id, tab.sections
+        ));
+    }
+    for i in tab.inner {
+        if i.sections.is_empty() {
+            return Err(format!("{}: inner tab {} is empty", tab.id, i.id));
+        }
+        // An id that is also a section must name the inner tab holding that section.
+        if tab.sections.contains(&i.id) && !i.sections.contains(&i.id) {
+            return Err(format!(
+                "{}: {} names a section of another inner tab",
+                tab.id, i.id
+            ));
+        }
+    }
+    let mut ids: Vec<&str> = tab.inner.iter().map(|i| i.id).collect();
+    ids.sort();
+    ids.dedup();
+    if ids.len() != tab.inner.len() {
+        return Err(format!("{}: inner tab ids repeat", tab.id));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_group_is_one_run_of_the_tabs() {
+        let mut seen: Vec<&str> = Vec::new();
+        for t in &TABS {
+            if seen.last() != Some(&t.group) {
+                assert!(!seen.contains(&t.group), "{} splits {}", t.id, t.group);
+                seen.push(t.group);
+            }
+        }
+    }
 
     #[test]
     fn ids_are_unique_and_a_retired_name_is_never_a_live_id() {
@@ -187,12 +411,13 @@ mod tests {
     fn a_retired_name_or_a_title_resolves_to_its_tab() {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
+        assert_eq!(resolve("numbers").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
         assert_eq!(resolve("focus").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Daily").map(|t| t.id), Some("daily"));
         assert_eq!(TABS[0].id, "home", "the landing page leads");
-        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
+        assert_eq!(resolve("board").map(|t| t.id), Some("board"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("log"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));
@@ -263,5 +488,109 @@ mod tests {
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
         assert_eq!(section("nope"), None);
+    }
+
+    #[test]
+    fn every_section_is_pinned_or_in_exactly_one_inner_tab() {
+        for t in &TABS {
+            assert_eq!(groups_check(t), Ok(()), "{}", t.id);
+        }
+        assert_eq!(resolve("costs").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
+    }
+
+    #[test]
+    fn infra_pins_health_and_red_and_old_links_open_their_inner_tab() {
+        let infra = resolve("infra").unwrap();
+        assert_eq!(infra.pinned, ["health", "red"]);
+        let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
+        assert_eq!(at(None), Some("reds"));
+        assert_eq!(at(Some("ci")), Some("machines"));
+        assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("jobs")), Some("jobs"));
+        // a retired tab name that became a section lands on the inner tab holding it
+        assert_eq!(at(section("ci")), Some("machines"));
+    }
+
+    #[test]
+    fn an_unknown_section_in_a_group_fails_the_check() {
+        // The negative control: the check is not vacuous.
+        let costs = *resolve("costs").unwrap();
+        const BAD: &[Inner] = &[Inner {
+            id: "limits",
+            title: "Limits",
+            sections: &["burn", "nope"],
+        }];
+        assert!(groups_check(&Tab {
+            inner: BAD,
+            ..costs
+        })
+        .is_err());
+        const DUP: &[Inner] = &[
+            Inner {
+                id: "a",
+                title: "A",
+                sections: &["fleet", "burn", "spend", "totals"],
+            },
+            Inner {
+                id: "a",
+                title: "A",
+                sections: &["table", "tokens", "langfuse", "sections"],
+            },
+        ];
+        assert!(groups_check(&Tab {
+            pinned: &[],
+            inner: DUP,
+            ..costs
+        })
+        .is_err());
+        assert!(groups_check(&Tab {
+            pinned: &["fleet"],
+            inner: &[],
+            ..costs
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn the_inner_tab_a_word_opens() {
+        let costs = resolve("costs").unwrap();
+        let at = |w: Option<&str>| inner_tab(costs, w).map(|i| i.id);
+        // the URL's inner tab opens
+        assert_eq!(at(Some("models")), Some("models"));
+        assert_eq!(at(Some(" Spend ")), Some("spend"));
+        // a missing, unknown or pinned word falls to the first
+        assert_eq!(at(None), Some("limits"));
+        assert_eq!(at(Some("nope")), Some("limits"));
+        assert_eq!(at(Some("fleet")), Some("limits"));
+        // an old section link opens the inner tab now holding it
+        assert_eq!(at(Some("burn")), Some("limits"));
+        assert_eq!(at(Some("langfuse")), Some("models"));
+        assert_eq!(at(Some("table")), Some("spend"));
+        // a moved section still lands: fleet/tokens is costs/tokens, which Models holds
+        let (tab, sec) = moved("fleet", "tokens").unwrap();
+        assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
+        // a tab with no inner tabs has none
+        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        // Releases: the apps and an opened one, Builds, Tests; old `#releases/builds` links land
+        let rel = resolve("releases").unwrap();
+        let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
+        assert_eq!(at(None), Some("apps"));
+        assert_eq!(at(Some("detail")), Some("apps"));
+        assert_eq!(at(Some("builds")), Some("builds"));
+        assert_eq!(at(Some("tests")), Some("tests"));
+        assert_eq!(at(Some("project:binks")), Some("apps"));
+    }
+
+    #[test]
+    fn a_count_shows_only_for_flagged_sections_of_that_inner_tab() {
+        let costs = resolve("costs").unwrap();
+        let n =
+            |id: &str, f: &[&str]| inner_count(costs.inner.iter().find(|i| i.id == id).unwrap(), f);
+        assert_eq!(n("limits", &[]), 0);
+        assert_eq!(n("limits", &["burn"]), 1);
+        assert_eq!(n("limits", &["burn", "consumers"]), 2);
+        assert_eq!(n("models", &["tokens", "langfuse", "burn"]), 2);
+        assert_eq!(n("spend", &["burn"]), 0);
     }
 }

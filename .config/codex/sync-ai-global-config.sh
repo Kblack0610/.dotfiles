@@ -12,9 +12,13 @@ OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 RULESYNC_BIN="${RULESYNC_BIN:-}"
 RULES_CLAUDE_MD="${RULES_CLAUDE_MD:-$CLAUDE_HOME/CLAUDE.md}"
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+CODEX_OWNED_TOML="${CODEX_OWNED_TOML:-$SCRIPT_DIR/config.owned.toml}"
 
 START_MARKER="# >>> dotfiles codex managed start >>>"
 END_MARKER="# <<< dotfiles codex managed end <<<"
+# Top-level keys must precede every table, so the owned keys get their own region at the head.
+HEAD_START="# >>> dotfiles codex owned keys start >>>"
+HEAD_END="# <<< dotfiles codex owned keys end <<<"
 
 find_rulesync() {
     if [ -n "$RULESYNC_BIN" ] && [ -x "$RULESYNC_BIN" ]; then
@@ -110,18 +114,29 @@ cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 
 {
     echo "$START_MARKER"
-    cat "$stage_dir/.codex/config.toml"
+    # rulesync writes each server's `type` and `description`, which Codex does not know: it lists
+    # them as "unrecognized configuration settings" at the start of every run.
+    awk '/^\[/ { in_server = ($0 ~ /^\[mcp_servers\.[^.]+\]$/) }
+         in_server && /^(type|description)[[:space:]]*=/ { next }
+         { print }' "$stage_dir/.codex/config.toml"
     # Unset, Codex sends its built-in usage metrics to OpenAI's Statsig
     # (codex-rs core/src/config/otel.rs defaults metrics_exporter to Statsig).
     printf '\n[analytics]\nenabled = false\n'
     echo "$END_MARKER"
 } > "$managed_tmp"
 
+# An owned file with no keys matches nothing. A dropped key whose array value runs past its line
+# (`key = [` up to a line holding `]`) takes its continuation lines with it.
+owned_keys=$(grep -oE '^[A-Za-z0-9_-]+[[:space:]]*=' "$CODEX_OWNED_TOML" | tr -d ' =' | paste -sd'|' || true)
+owned_re='^$.'
+[ -z "$owned_keys" ] || owned_re="^(${owned_keys})[[:space:]]*="
 if [ -f "$CODEX_HOME/config.toml" ]; then
-    awk -v start="$START_MARKER" -v end="$END_MARKER" '
-        $0 == start {skip_managed=1; next}
-        $0 == end {skip_managed=0; next}
-        /^\[/ {skip_owned=($0 ~ /^\[(mcp_servers(\.|])|analytics])/) ? 1 : 0}
+    awk -v start="$START_MARKER" -v end="$END_MARKER" -v hstart="$HEAD_START" -v hend="$HEAD_END" -v owned="$owned_re" '
+        $0 == start || $0 == hstart {skip_managed=1; next}
+        $0 == end || $0 == hend {skip_managed=0; next}
+        in_array { if ($0 ~ /]/) in_array=0; next }
+        /^\[/ {in_table=1; skip_owned=($0 ~ /^\[(mcp_servers(\.|])|analytics])/) ? 1 : 0}
+        !in_table && skip_managed != 1 && $0 ~ owned { v=$0; sub(/^[^=]*=[[:space:]]*/, "", v); if (v ~ /^\[/ && v !~ /]/) in_array=1; next }
         skip_managed != 1 && skip_owned != 1 {print}
     ' "$CODEX_HOME/config.toml" > "$codex_tmp"
 else
@@ -158,7 +173,14 @@ if [ -s "$codex_tmp" ]; then
     printf "\n" >> "$codex_tmp"
 fi
 cat "$managed_tmp" >> "$codex_tmp"
-mv "$codex_tmp" "$CODEX_HOME/config.toml"
+{
+    echo "$HEAD_START"
+    grep -E '^[A-Za-z0-9_-]+[[:space:]]*=' "$CODEX_OWNED_TOML" || true
+    echo "$HEAD_END"
+    echo
+    sed '/./,$!d' "$codex_tmp"
+} > "$features_tmp"
+mv "$features_tmp" "$CODEX_HOME/config.toml"
 
 # Codex's skills and hooks.json, from the Claude skill corpus and .config/codex/hooks.json.
 "$SCRIPT_DIR/sync-codex-home.sh"

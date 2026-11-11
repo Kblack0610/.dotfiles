@@ -4,11 +4,10 @@
 
 use chrono::{DateTime, Local};
 use hub_core::boards::DayRow;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::fit::{cell, clip_line, wrap, Cell, Table};
+use crate::fit::{clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
 /// Open PRs touched within this many days are listed; older ones are counted (`DAYLOG_OPEN_DAYS`).
@@ -39,27 +38,6 @@ fn hm(ts: &str) -> String {
     }
 }
 
-/// A PR title without its conventional-commit prefix.
-fn subject(title: &str) -> &str {
-    let t = title.trim_start();
-    let head: String = t.chars().take_while(|c| c.is_ascii_lowercase()).collect();
-    if head.is_empty() {
-        return t;
-    }
-    let mut rest = &t[head.len()..];
-    if rest.starts_with('(') {
-        match rest.find(')') {
-            Some(i) => rest = &rest[i + 1..],
-            None => return t,
-        }
-    }
-    rest = rest.strip_prefix('!').unwrap_or(rest);
-    match rest.strip_prefix(':') {
-        Some(r) => r.trim_start(),
-        None => t,
-    }
-}
-
 pub fn money(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
@@ -84,56 +62,6 @@ fn sessions(rec: &Value) -> Option<u64> {
 pub struct Page {
     pub lines: Vec<Line<'static>>,
     pub sections: Vec<usize>,
-}
-
-/// The rows each project group shows before the rest fold under "+N more", the same cap
-/// Home's lists use (dashboards.md, "Long list").
-const GROUP_SHOWN: usize = hub_core::home::SHOWN;
-
-/// The rows a grouped table draws, in group order: each group's first `GROUP_SHOWN`.
-fn shown_rows<'a, 'b>(
-    groups: &'b [(String, Vec<&'a Value>)],
-) -> impl Iterator<Item = (&'b str, &'a Value)> + 'b {
-    groups
-        .iter()
-        .flat_map(|(proj, v)| v.iter().take(GROUP_SHOWN).map(move |x| (proj.as_str(), *x)))
-}
-
-/// `#N` under its project's head; the repo is named only when it is not the project's own.
-fn pr_ref(project: &str, pr: &Value) -> String {
-    let repo = s(pr, "repo");
-    if repo.trim_start_matches('.') == project {
-        format!("#{}", pr["number"])
-    } else {
-        format!("{repo}#{}", pr["number"])
-    }
-}
-
-/// A fitted table of `shown_rows(groups)` with a head per project (its count) before its rows
-/// and "+N more" after a group that was cut; the column header stays on top, shared.
-fn grouped(
-    table: Vec<Line<'static>>,
-    groups: &[(String, Vec<&Value>)],
-    what: &str,
-    p: Palette,
-    w: usize,
-) -> Vec<Line<'static>> {
-    let mut rows = table.into_iter();
-    let mut out: Vec<Line<'static>> = rows.next().into_iter().collect();
-    for (proj, v) in groups {
-        out.push(clip_line(
-            Line::styled(format!("{proj} ({} {what})", v.len()), p.head()),
-            w,
-        ));
-        out.extend(rows.by_ref().take(v.len().min(GROUP_SHOWN)));
-        if v.len() > GROUP_SHOWN {
-            out.push(Line::styled(
-                format!("  +{} more", v.len() - GROUP_SHOWN),
-                p.dim(),
-            ));
-        }
-    }
-    out
 }
 
 /// The hour grid's project column: never wider than this, and never cut below the floor
@@ -281,7 +209,6 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     );
 
     let grid = hub_core::boards::merges_by_hour(rec, &Local);
-    let order = hub_core::boards::project_order(rec, &grid);
     out.extend(hour_grid(&grid, p, w));
 
     let mut section = |out: &mut Vec<Line<'static>>, title: String| {
@@ -304,107 +231,6 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
             ]),
             w,
         ));
-    }
-
-    // MERGED, every PR, newest first
-    section(&mut out, format!("MERGED ({})", merged.len()));
-    if merged.is_empty() {
-        out.push(Line::styled("  nothing yet", p.dim()));
-    } else {
-        let mut m = merged.clone();
-        m.sort_by(|a, b| s(b, "merged_at").cmp(s(a, "merged_at")));
-        let groups = hub_core::boards::by_project(&m, &order);
-        let table = Table {
-            header: vec!["TIME", "PR", "AREA", "GROUP", "BY", "TITLE"],
-            rows: shown_rows(&groups)
-                .map(|(proj, x)| {
-                    vec![
-                        hm(s(x, "merged_at")).into(),
-                        pr_ref(proj, x).into(),
-                        or_dash(s(x, "area")).into(),
-                        or_dash(s(x, "group")).into(),
-                        or_dash(s(x, "by")).into(),
-                        subject(s(x, "title")).to_string().into(),
-                    ]
-                })
-                .collect(),
-            keep: vec![1, 0, 3, 4, 2],
-            flex: Some(5),
-            flexmin: if w >= 100 { 40 } else { 16 },
-            flexkeep: true,
-            cap: vec![(1, 16), (2, 14), (3, 24), (4, 18)],
-            ..Default::default()
-        }
-        .fit(w, p.head());
-        out.extend(grouped(table, &groups, "merged", p, w));
-    }
-
-    // STILL OPEN: only while the day is live
-    if let Some(o) = open {
-        let fresh: Vec<&Value> = o.iter().filter(|x| recent(x, now)).collect();
-        section(
-            &mut out,
-            format!("STILL OPEN ({} touched in {OPEN_DAYS}d)", fresh.len()),
-        );
-        if fresh.is_empty() {
-            out.push(Line::styled("  none", p.dim()));
-        } else {
-            let groups = hub_core::boards::by_project(&fresh, &order);
-            let table = Table {
-                mark: None,
-                header: vec!["PR", "AGE", "CI", "BY", "TITLE"],
-                rows: shown_rows(&groups)
-                    .map(|(proj, x)| {
-                        let age = DateTime::parse_from_rfc3339(s(x, "created_at")).map_or(
-                            "-".into(),
-                            |t| {
-                                let h = (now - t.timestamp()).max(0) / 3600;
-                                if h >= 48 {
-                                    format!("{}d", h / 24)
-                                } else {
-                                    format!("{h}h")
-                                }
-                            },
-                        );
-                        let ci = if x["draft"].as_bool() == Some(true) {
-                            "draft".to_string()
-                        } else {
-                            or_dash(s(x, "ci")).to_lowercase()
-                        };
-                        let st = match ci.as_str() {
-                            "failure" | "fail" => p.bad(),
-                            "success" | "pass" => p.good(),
-                            "pending" => p.warn(),
-                            _ => Style::new(),
-                        };
-                        vec![
-                            pr_ref(proj, x).into(),
-                            age.into(),
-                            cell(ci, st),
-                            or_dash(s(x, "by")).into(),
-                            subject(s(x, "title")).to_string().into(),
-                        ]
-                    })
-                    .collect(),
-                keep: vec![0, 1, 2, 3],
-                flex: Some(4),
-                flexmin: 16,
-                flexkeep: true,
-                right: vec![1],
-                cap: vec![(0, 16)],
-            }
-            .fit(w, p.head());
-            out.extend(grouped(table, &groups, "open", p, w));
-        }
-        if o.len() > fresh.len() {
-            out.push(Line::styled(
-                format!(
-                    "  +{} older, untouched in {OPEN_DAYS}d",
-                    o.len() - fresh.len()
-                ),
-                p.dim(),
-            ));
-        }
     }
 
     // SESSIONS: the bench for the day
@@ -608,42 +434,18 @@ pub mod tests {
     }
 
     #[test]
-    fn a_project_group_shows_its_first_rows_and_folds_the_rest() {
-        let mut r = record();
-        let many: Vec<Value> = (0..GROUP_SHOWN + 3)
-            .map(|i| {
-                serde_json::json!({"repo": "freqtrade", "project": "trader", "number": 100 + i,
-                "title": format!("fix: n{i}"), "merged_at": format!("2026-11-03T19:{i:02}:00Z")})
-            })
-            .collect();
-        r["merged"].as_array_mut().unwrap().extend(many);
-        let t = text(&today(Some(&r), Palette { no_color: true }, NOW, 160).lines);
-        assert!(
-            t.contains(&format!("trader ({} merged)", GROUP_SHOWN + 3)),
-            "{t}"
-        );
-        assert!(t.contains("  +3 more"), "{t}");
-        // Newest first, so the three oldest are the folded ones; a repo that is not the
-        // project's own name is kept on the row.
-        assert!(
-            t.contains("freqtrade#110") && !t.contains("freqtrade#102"),
-            "{t}"
-        );
-        // The busiest project leads.
-        assert!(t.find("trader (").unwrap() < t.find("dotfiles (1 merged)").unwrap());
-    }
-
-    #[test]
     fn every_section_is_there_in_the_bash_boards_order() {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("3 waiting on you  2 Home answers them") < at("MERGED (2)"));
+        assert!(at("3 waiting on you  2 Home answers them") < at("SESSIONS (1)"));
         assert!(!t.contains("WAITING ON YOU"), "Home lists them");
-        assert!(at("MERGED (2)") < at("STILL OPEN (1 touched in 7d)"));
-        assert!(at("STILL OPEN") < at("SESSIONS (1)"));
+        assert!(
+            !t.contains("MERGED (2)") && !t.contains("STILL OPEN"),
+            "the Work table has them"
+        );
         assert!(at("SESSIONS (1)") < at("TIMELINE (2)"));
-        assert_eq!(pg.sections.len(), 4);
+        assert_eq!(pg.sections.len(), 2);
         for i in &pg.sections {
             assert!(plain(&pg.lines[*i])
                 .chars()
@@ -652,27 +454,17 @@ pub mod tests {
                 .is_ascii_uppercase());
         }
         assert!(
-            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 0 Costs"),
+            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 9 Costs"),
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
-        assert!(t.contains("+1 older, untouched in 7d"));
-        assert!(
-            t.contains("hub infra board") && !t.contains("feat(hub-tui)"),
-            "{t}"
-        );
-        assert!(t.contains("pending") && t.contains("$211.22"));
-        // One head per project, in the hour grid's order, and the PR under it by number alone.
-        assert!(at("dotfiles (1 merged)") < at("#722"));
-        assert!(at("#722") < at("unity-core-playground (1 merged)"));
-        assert!(at("unity-core-playground (1 merged)") < at("#1593"));
-        assert!(at("unity-core-playground (1 open)") < at("#1649"));
+        assert!(t.contains("$211.22"), "{t}");
         // Newest timeline line first.
         assert!(at("stage NEEDS -> WORKING") < at("new: NEEDS"));
     }
 
     #[test]
-    fn a_past_day_has_no_open_section_and_says_it_is_past() {
+    fn a_past_day_says_it_is_past() {
         let mut r = record();
         r["live"] = false.into();
         r["open"] = Value::Null;
@@ -681,7 +473,6 @@ pub mod tests {
             t.contains("past day, last gathered 2026-11-03 12:26"),
             "{t}"
         );
-        assert!(!t.contains("STILL OPEN"));
     }
 
     #[test]
@@ -721,13 +512,5 @@ pub mod tests {
         );
         assert!(t.contains("Agent runtime 1, Games 1"), "{t}");
         assert_eq!(l[2].style, Palette::default().sel());
-    }
-
-    #[test]
-    fn subjects_lose_only_a_conventional_prefix() {
-        assert_eq!(subject("feat(hub-tui)!: a board"), "a board");
-        assert_eq!(subject("fix: x"), "x");
-        assert_eq!(subject("Revert \"feat: x\""), "Revert \"feat: x\"");
-        assert_eq!(subject("feat(open paren"), "feat(open paren");
     }
 }

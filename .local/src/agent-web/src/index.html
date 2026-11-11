@@ -5,30 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agents</title>
 <link rel="preload" href="/static/inter.woff2?v={{v}}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/tokens.css?v={{v}}">
+<link rel="stylesheet" href="/static/shell.css?v={{v}}">
 <link rel="stylesheet" href="/static/app.css?v={{v}}">
+<script type="module" src="/static/kb-shell.js?v={{v}}"></script>
 </head>
 <body>
-<header id="top">
-  <button class="menu" id="menu" aria-label="Menu" aria-expanded="false" aria-controls="tabs"><span class="bars"></span><span id="menu-badge"></span></button>
+<kb-shell id="top">
+  <span class="kb-menu-badge" id="menu-badge"></span>
   <span class="conn" id="conn" title="live updates"></span>
-  <h1>Agents</h1>
-  <span class="cur" id="cur-tab"></span>
+  <h1 class="kb-brand">Agents</h1>
   <span class="live-off" id="live-off" hidden>live updates off, reload to refresh</span>
-  <nav class="tabs" id="tabs">
-    <button id="tab-home" class="on">Home<span id="ask-badge"></span></button>
-    <button id="tab-daily">Daily</button>
-    <button id="tab-queue">Queue<span id="queue-badge"></span></button>
-    <button id="tab-projects">Projects</button>
-    <button id="tab-sessions">Sessions<span id="wait-badge"></span></button>
-    <button id="tab-infra">Infra</button>
-    <button id="tab-log">Log</button>
-    <button id="tab-fleet">Fleet</button>
-    <button id="tab-schedules">Schedules</button>
-    <button id="tab-costs">Costs</button>
-    <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
+  <nav class="kb-nav" id="tabs" aria-label="Tabs">
+{{nav}}    <form class="kb-foot" method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
   </nav>
-</header>
-<main id="main">
+</kb-shell>
+<main id="main" class="kb-main">
   <aside id="side" aria-label="Sessions"></aside>
   <section id="detail">
     <div class="bar">
@@ -58,18 +50,21 @@
   <section id="home" class="board"></section>
   <section id="daily" class="board" hidden><nav id="d-nav" aria-label="Daily"></nav><div id="d-main"><div id="d-note"></div><div id="outbox" hidden></div></div></section>
   <section id="queue" class="board" hidden></section>
-  <section id="projects" class="board" hidden><div id="p-cards"></div><div id="p-rows" hidden><div id="p-head"></div><div id="board"></div></div></section>
-  <section id="log" class="board" hidden><div id="log-day"></div>
-    <details class="sec-d" id="sec-actions"><summary><h2 class="sec">Actions</h2></summary><div id="actions"></div></details>
-    <details class="sec-d" id="sec-changes"><summary><h2 class="sec">Changes</h2></summary><div id="log-changes"></div></details>
-    <details class="sec-d" id="sec-rundowns"><summary><h2 class="sec">Rundowns</h2></summary><div id="log-rundowns"></div></details>
-    <details class="sec-d" id="sec-verdicts"><summary><h2 class="sec">Judges' verdicts</h2></summary><div id="log-verdicts"></div></details>
+  <section id="projects" class="board" hidden><div id="p-deliv"></div><div id="p-cards"></div><div id="p-rows" hidden><div id="p-head"></div><div id="b-root"></div></div></section>
+  <section id="board" class="board" hidden></section>
+  <section id="log" class="board" hidden><div id="sec-work"><div id="log-work" data-tbl="w"></div></div>
+    <details class="sec-d" id="sec-day" open><summary><h2 class="sec">Day detail</h2></summary><div id="log-day"></div></details>
+    <details class="sec-d" id="sec-actions" open><summary><h2 class="sec">Actions</h2></summary><div id="actions"></div></details>
+    <details class="sec-d" id="sec-changes" open><summary><h2 class="sec">Changes</h2></summary><div id="log-changes"></div></details>
+    <details class="sec-d" id="sec-rundowns" open><summary><h2 class="sec">Rundowns</h2></summary><div id="log-rundowns"></div></details>
+    <details class="sec-d" id="sec-verdicts" open><summary><h2 class="sec">Judges' verdicts</h2></summary><div id="log-verdicts"></div></details>
     <details class="sec-d" id="sec-ranked"><summary><h2 class="sec">Ranked sessions</h2></summary><div id="log-ranked"></div></details>
   </section>
   <section id="infra" class="board" hidden><div id="infra-main"></div><div id="jobs"></div><div id="infra-tail"></div></section>
   <section id="fleet" class="board" hidden></section>
   <section id="schedules" class="board" hidden></section>
   <section id="costs" class="board" hidden></section>
+  <section id="releases" class="board" hidden></section>
 </main>
 <script src="/static/ui.js?v={{v}}"></script>
 <script src="/static/md.js?v={{v}}"></script>
@@ -91,9 +86,12 @@
 <script src="/static/projects.js?v={{v}}"></script>
 <script src="/static/shepherd.js?v={{v}}"></script>
 <script src="/static/sessions.js?v={{v}}"></script>
+<script src="/static/work.js?v={{v}}"></script>
 <script src="/static/actions.js?v={{v}}"></script>
 <script src="/static/fleet.js?v={{v}}"></script>
 <script src="/static/costs.js?v={{v}}"></script>
+<script src="/static/releases.js?v={{v}}"></script>
 <script src="/static/focus.js?v={{v}}"></script>
+<script src="/static/nav.js?v={{v}}"></script>
 </body>
 </html>

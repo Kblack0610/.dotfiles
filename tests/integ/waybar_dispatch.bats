@@ -25,7 +25,7 @@ STUB
 
 # feed [series=value ...] -> Prometheus's answer: a healthy queue on host h1 (39 ready, 32
 # urgent, the oldest 12h59m, last pass 3m ago, last start 12m ago, 7 reaps; 60 queued, 14
-# running, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
+# running, 6 on a PR, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
 # 30 done and 18 added in 6h; 1522 agent, 451 human and 357 playtest board rows; 16 of 24 run units, 5 by hand), with the overrides applied. A
 # series is topic.key (a feed number, summary_shepherd.* for the shepherd); h2: prefixes another
 # host, dup: a second scrape of h1; a value of - drops the series. acct:<name>.<reason> is that
@@ -40,7 +40,7 @@ s = {
     "summary_dispatch.started_1h": 5, "summary_dispatch.failed_1h": 0,
     "summary_dispatch.started_24h": 50, "summary_dispatch.failed_24h": 2,
     "summary_dispatch.reaped_1h": 7, "summary_dispatch.flapping_items": 0,
-    "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.waiting": 10,
+    "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.held": 21, "summary_dispatch.held_after": 19, "summary_dispatch.held_pr": 2,
     "summary_dispatch.held_time": 0, "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
@@ -91,7 +91,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
 @test "the hover has a section per system, in standard terms" {
   run "$MODULE"
   run tip
-  assert_line --index 1 "<b>Queue</b>  84 items: 60 queued, 14 running, 10 waiting on you"
+  assert_line --index 1 "<b>Queue</b>  90 items: 60 queued, 14 running, 6 on a PR, 10 waiting on you"
   assert_line --index 2 "queued: 39 ready (32 urgent, 7 high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
   assert_line --index 3 "oldest: ready 12h59m, urgent <span color='$Y'>12h59m</span>"
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
@@ -200,7 +200,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 1522 12)"
   run tip
-  assert_line --index 1 "<b>Queue</b>  - items: - queued, 14 running, 10 waiting on you"
+  assert_line --index 1 "<b>Queue</b>  - items: - queued, 14 running, 6 on a PR, 10 waiting on you"
   assert_line --index 6 "drain 6h: -"
   assert_output --partial "capacity: no headroom from a pass in the last 45 minutes"
 }
@@ -359,4 +359,17 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   assert_equal "$(text)" "$(bar 39 1522 12)"
   refute_output --partial "low water"
   refute_output --partial "present trickle"
+}
+
+@test "the hover ends with the vitals line, and has none when hub cannot read them" {
+  printf '#!/usr/bin/env bash\necho "5 of 7 off target: Flow"\necho "Flow  !  a row"\n' > "$SANDBOX/bin/fake-hub"
+  chmod +x "$SANDBOX/bin/fake-hub"
+  HUB="$SANDBOX/bin/fake-hub" run "$MODULE"
+  run tip
+  assert_output --partial $'\n\nvitals: 5 of 7 off target: Flow'
+  refute_output --partial 'a row'
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fake-hub"
+  HUB="$SANDBOX/bin/fake-hub" run "$MODULE"
+  run tip
+  refute_output --partial 'vitals:'
 }

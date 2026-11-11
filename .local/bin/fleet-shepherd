@@ -26,7 +26,7 @@
 #                          an item's `<size> <usd>` budget, by its task's #size/ tag, which hub_core::session_page shows
 #   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
 #                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
-#                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
+#                          two checks in a row that would start a pass; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
@@ -43,7 +43,9 @@
 #   fleet-shepherd skip "<due line>" "<why>"
 #                          answer a due line by leaving it: it stays out of check while it is
 #                          due. check leads with `unhandled: <line>` for any line the last pass
-#                          was given (.handed) and neither moved nor skipped
+#                          was given (.handed) and neither moved nor skipped. A line that is not
+#                          due now is refused (exit 2) naming the nearest due lines, so a
+#                          shortened line never lands in .skipped; copy it as check printed it
 #   fleet-shepherd infra   print what is wrong with the cluster right now, live: red k3s domain,
 #                          or Prometheus not answering; exit 0 if anything, 1 if not. Read by
 #                          fleet-dispatch's gate
@@ -96,7 +98,7 @@ DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what t
 HANDED="$LEDGER/.handed"     # <key>\t<epoch>: due lines handed to a pass and when, so only those can come back unhandled
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
-UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
+UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line that would start a pass
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
@@ -113,16 +115,18 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
-: "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
+: "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
-: "${FLEET_SHEPHERD_DEBOUNCE_MIN:=30}"
+: "${FLEET_SHEPHERD_DEBOUNCE_MIN:=60}"
 # Urgent lines start a pass on the next run: a red (nightly, shared, infra, a tripped watch), a
-# STALLED row (past fleet-sessions' stall threshold already), a usage-limit stop, and a line the
-# last pass left unhandled. An answered ask has no line: ask-resume hands the answer to its session.
-: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: |nightly red|shared red|infra:|watch:|limit:|(nudge|escalate) STALLED)}"
-# Lines due wait at most DEBOUNCE_MIN for a pass, so 60 is two of those and room for a late timer.
+# STALLED row (past fleet-sessions' stall threshold already) and a usage-limit stop. A line the last
+# pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
+# which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
+: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|(nudge|escalate) STALLED)}"
+# An urgent line starts a pass within a run or two, so 60 is a fault; only a line the debounce can
+# hold gets DEBOUNCE_MIN on top (stuck_min).
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
 # A queue session's budget, by its item's #size/ tag; unsized is most items. A budget is a
 # checkpoint, not a wall (Ken, 2026-11-05: development comes first): see budget_sample.
@@ -145,6 +149,7 @@ SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns 
 # from pool-test-failures), so that repo owns the quarantine and the fix.
 : "${FLEET_SHARED_RED_PROJECT:=unity-core-playground}"
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
+GATEWAY_LIMIT_RE='Budget has been exceeded'                 # the gateway's 429, matched only on a gateway session
 
 die() { echo "fleet-shepherd: $*" >&2; exit 2; }
 
@@ -219,7 +224,8 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
+# nudged once (never while the session holds an open ask it filed: its window is where the
+# question waits), and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
 # survived, is escalated once. A test red on several branches (shared) is owned by the queue item
 # shared_sample filed, and its sessions are told once; only one with no item escalates.
 # PARKED is fleet-pace's, below.
@@ -239,7 +245,9 @@ cmd_due() {
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
-      | if (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
+      | if (.own_asks // 0) > 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+          empty
+        elif (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
           "nudge \(.bucket): \(.target) \(.fact // "")"
         elif .bucket == "CHAT" and (.nudged | not) and $quiet >= $chat then
           "nudge CHAT: \(.target) \(.fact // "")"
@@ -251,8 +259,9 @@ cmd_due() {
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
   # hold is a hold decision; both are the shepherd's step 1. So is a parked session on a CLEAR
   # machine with no hold: nothing else ever resumes it. One the budget checkpoint parked is left
-  # out, since that park pages the human and only they resume it.
-  local verdict holds parked
+  # out, since that park pages the human and only they resume it, and so is one fleet-dispatch
+  # preempted for an urgent item (ledger why=preempt): its own pass resumes it once units free.
+  local verdict holds parked preempt
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list 2>/dev/null | cut -f1 | paste -sd, -)"
   if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
@@ -260,9 +269,15 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) '
+    local f; preempt=""
+    for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
+      [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
+    done
+    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" '
       ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
+      | ($pre | split("\n")) as $pre
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
+          and (.target as $t | $pre | index($t) | not)
           and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
         | .target] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
@@ -362,21 +377,24 @@ overdue_due() {
 }
 
 # limit_due -> what a pass moves off an account that is out of usage. Each account whose published
-# verdict says capped (`room.capped` in `claude-acct room --json`: its week or 5h window spent) gets a
-# line per live session on it: an idle one moves to the account that answer picks (the best with
-# room), one in a dialog is listed for the human, and a busy one or one with
+# verdict says capped (`room.capped` in `claude-acct room --json`: its week or 5h window spent, or for
+# `gateway` the team budget) gets a line per live session on it: an idle one moves to the account
+# that answer picks (the best with room), one in a dialog is listed for the human, and a busy one or one with
 # shells running waits for a later pass (a move would stop its gate or test). No room anywhere is
 # one line per capped account, for the human. A session the account read does not cover (its
 # account unread, or not in the row) still gets the pane line: only the pane says it stopped. An
 # escalated row is left out of the pane line, since that is where a pass puts one no account has
 # room for, and only the human can add room.
 limit_due() {
-  local rows capped room_name target pane server
+  local rows capped room_name target pane server account re
   # One ask: room --json exits 1 or 2 when no account has room, and still prints every verdict.
   rows="$(claude-acct room --json 2>/dev/null)"
-  capped="$(jq -c '[(.accounts // [])[] | select(.room.capped) | .name]' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
+  # A session on the gateway is on no account (agent-panel names it `gateway`), and every key it can
+  # run on spends inside the team budget, so a spent team is that name out of usage.
+  capped="$(jq -c '[(.accounts // [])[] | select(.room.capped) | .name]
+    + (if any((.sources // [])[]; .kind == "litellm-team" and .room.capped) then ["gateway"] else [] end)' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
+  room_name="$(jq -r '.pick // empty' <<<"${rows:-null}" 2>/dev/null)"
   if [ "${capped:-[]}" != '[]' ]; then
-    room_name="$(jq -r '.pick // empty' <<<"$rows")"
     jq -r --argjson capped "$capped" --arg room "$room_name" '
       (.sessions // []) | map((.account // "") as $a
         | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))
@@ -388,17 +406,23 @@ limit_due() {
            | "limit: \(.[0].account) is out of usage and no account has room; then: tell the human once (\(length) live on it), and fleet-shepherd skip it"
          else empty end)' "$STATE_FILE" 2>/dev/null
   fi
-  while IFS=$'\t' read -r target pane; do
+  while IFS=$'\t' read -r target pane account; do
     server=''
+    re="$LIMIT_RE"
+    [ "$account" = gateway ] && re="$re|$GATEWAY_LIMIT_RE"
     case "$target" in */*) server="${target%%/*}" ;; esac
     tmux ${server:+-L "$server"} capture-pane -p -t "$pane" 2>/dev/null \
-      | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$LIMIT_RE" \
-      && echo "limit: $target stopped on the usage limit"
+      | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$re" || continue
+    if [ "$account" = gateway ] && [ -n "$room_name" ]; then
+      echo "limit: $target stopped on its gateway budget; then: claude-acct move $target --to $room_name"
+    else
+      echo "limit: $target stopped on the usage limit"
+    fi
   done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" '(.sessions // [])[]
     | select((.labels // []) | index("manual") | not)
     | select((.account // "") as $a | ($capped | index($a)) == null)
     | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
-    | [.target, .pane] | @tsv' "$STATE_FILE" 2>/dev/null)
+    | [.target, .pane, (.account // "")] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
 # blocked_sample: rotate the blocked rows, so each pass compares itself with the one before.
@@ -482,19 +506,22 @@ cmd_infra() {
   printf '%s\n' "$out"
 }
 
-# infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears (high and
-# urgent, `watch-companion-loop tripped`). On 2026-11-04 queue-starved was high, so the shepherd
-# never heard that dispatch had started nothing for 7.5h. A watch with a live `red` item has an
-# owner (fleet-bench triage), so it raises no line.
+# infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears: the high and
+# urgent ones of `watch-companion-loop tripped`, which lists every TRIP watch. On 2026-11-04 the
+# shepherd heard urgent only, so queue-starved (high) never reached it. Every other trip is owned by
+# its fleet-bench triage red item, or by the human sheet on a human route, so it raises no line here.
+# A watch whose `red` item is running or queued unheld has an owner, so it raises no line either; a
+# held one does not, as fleet-dispatch watch_reds gives it no slot.
 infra_sample() {
   local owned
-  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red "))) | .task' \
+  owned=$(agent-queue list --json 2>/dev/null | jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
+    | select(.state != "queued" or (.hold // "") == "") | .task' \
     | sed -n 's/^check(watch): \([^ ]*\) tripped.*/\1/p')
   {
     infra_now
     watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
       BEGIN { n = split(owned, o, "\n"); for (i = 1; i <= n; i++) has[o[i]] = 1 }
-      NF && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
+      ($2 == "high" || $2 == "urgent") && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
 }
 
@@ -761,7 +788,7 @@ receipts() {
     if [ -z "$early" ] && [ -n "$handed" ]; then
       owe=1
       owed+="unhandled: $line"$'\n'
-      if [ $(( (now - handed) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
+      if [ $(( (now - handed) / 60 )) -ge "$(unhandled_min "$line")" ] && ! grep -qxF -- "$key" "$PAGED"; then
         # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
         # so its target is where the page points; other lines (pace, infra) point nowhere.
         ref=""
@@ -785,8 +812,11 @@ receipts() {
   [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || hand_keys "$given"
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   if [ -n "$owed" ]; then
-    seen="$(cat "$UNHANDLED" 2>/dev/null)"
-    echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+    # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
+    if ! no_pass_why "$owed$out" >/dev/null; then
+      seen="$(cat "$UNHANDLED" 2>/dev/null)"
+      echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+    fi
   elif [ -z "$early" ]; then
     rm -f "$UNHANDLED"
   fi
@@ -817,11 +847,43 @@ last_working() {
   [ "$st" != idle ] && [ "$st" != gone ]
 }
 
+# skip_known <key>: 0 when the key is a line due now. Anything else is refused with the nearest due
+# lines, because a skip stored under a shortened or reworded line never matches the due line, which
+# then comes back as unhandled (2026-11-09: a pass skipped 'overdue: lab/...-agent-58:1' and the
+# next check reported agent-58 and agent-59 unhandled). The due lines are cmd_due's, read live
+# (it writes nothing), not the ledger a check last wrote, which a line that appeared since is not in.
+skip_known() {
+  local key="$1" due rc=0 k n best="" bestn=-1 near="" cnt=0 pre="" suf=""
+  [ -n "$key" ] || { echo "fleet-shepherd: not skipped: the line is empty" >&2; return 1; }
+  due="$(cmd_due)" || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "fleet-shepherd: not skipped: the due lines could not be read (cmd_due exit $rc)" >&2; return 1; }
+  local keys
+  keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"$due")"
+  # exact, whole-line compare: grep would treat a multi-line key as several patterns
+  KEY="$key" awk 'ENVIRON["KEY"] == $0 { f = 1 } END { exit !f }' <<<"$keys" && return 0
+  if [ -z "$keys" ]; then
+    echo "fleet-shepherd: not skipped: '$key' is not a due line, and nothing is due now" >&2
+    return 1
+  fi
+  # an elided line ('lab/...-agent-58:1') matches a due line holding both ends of it
+  if [[ "$key" == *...* ]]; then pre="${key%%...*}"; suf="${key#*...}"; fi
+  while IFS= read -r k; do
+    n=0
+    while [ "$n" -lt "${#k}" ] && [ "$n" -lt "${#key}" ] && [ "${k:n:1}" = "${key:n:1}" ]; do n=$((n + 1)); done
+    [ -z "$suf" ] || [[ "$k" != "$pre"* || "$k" != *"$suf"* ]] || n=$((n + 1000))
+    if [ "$n" -gt "$bestn" ]; then bestn=$n; near="$k"; cnt=1
+    elif [ "$n" -eq "$bestn" ] && [ "$cnt" -lt 5 ]; then near+="'; '$k"; cnt=$((cnt + 1)); fi
+  done <<<"$keys"
+  echo "fleet-shepherd: not skipped: '$key' is not a due line; nearest due: '$near'. Skip a line exactly as check printed it (exit 2, nothing stored)." >&2
+  return 1
+}
+
 # skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
 # It logs the skip, so a pass whose only answer was a skip did something and is not STALLED.
 cmd_skip() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ] || die 'usage: fleet-shepherd skip "<due line>" "<why>"'
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  skip_known "$(due_key "$1")" || exit 2
   printf '%s\t%s\t%s\n' "$(due_key "$1")" "${2//[$'\t\n']/ }" "$(date +%s)" >> "$SKIPPED"
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
@@ -1244,6 +1306,18 @@ replace_pass() {
   sd+="${sd:+; }${scored#*$'\t'}"
 }
 
+# unhandled_min <line> -> minutes a handed line may go unanswered before it pages.
+unhandled_min() {
+  if grep -qE -- "$FLEET_SHEPHERD_URGENT_RE" <<<"$1"; then echo "$FLEET_SHEPHERD_UNHANDLED_MIN"
+  else echo $(( FLEET_SHEPHERD_UNHANDLED_MIN + FLEET_SHEPHERD_DEBOUNCE_MIN )); fi
+}
+
+# stuck_min -> minutes with lines due and no pass before the shepherd reads as stuck.
+stuck_min() {
+  if cut -f4 "$DUE_LAST" 2>/dev/null | grep -E -- "$FLEET_SHEPHERD_URGENT_RE" >/dev/null; then echo "$FLEET_SHEPHERD_STUCK_MIN"
+  else echo $(( FLEET_SHEPHERD_STUCK_MIN + FLEET_SHEPHERD_DEBOUNCE_MIN )); fi
+}
+
 # no_pass_why <due> -> why this run starts no pass; exit 1 when it should start one. Nothing due
 # starts none; something due starts one once FLEET_SHEPHERD_DEBOUNCE_MIN has passed since the last
 # pass started, or at once for a line FLEET_SHEPHERD_URGENT_RE matches.
@@ -1412,7 +1486,7 @@ cmd_stats() {
       --argjson skipped "$(lines "$SKIPPED")" \
       --argjson paged "$(lines "$PAGED")" \
       --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \
-      --argjson stuckmin "$FLEET_SHEPHERD_STUCK_MIN" '
+      --argjson stuckmin "$(stuck_min)" '
       (split("\n") | map(select(length > 0))) as $v
       | def n(w): $v | map(select(. == w)) | length;
       def nul: if . == "" then null else . end;

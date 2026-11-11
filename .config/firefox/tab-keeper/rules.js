@@ -37,6 +37,24 @@
     return errors;
   }
 
+  // Settings and key come only from the Firefox policy (3rdparty.Extensions in policies.json, built
+  // by install.sh). Anything wrong there falls back to defaults, which are dry run, and names why.
+  function fromPolicy(policy) {
+    if (!policy?.config) return { config: withDefaults({}), problem: "no settings in the Firefox policy: rerun install.sh" };
+    const errors = configErrors(policy.config);
+    if (errors.length) return { config: withDefaults({}), problem: `policy settings: ${errors.join("; ")}` };
+    const config = withDefaults(policy.config);
+    const key = policy.karakeepKey || "";
+    if (config.karakeepUrl && !key) return { config, key, problem: "no Karakeep key in the Firefox policy: rbw unlock, rerun install.sh" };
+    return { config, key, problem: null };
+  }
+
+  // Firefox match patterns carry no port, so this is built from the hostname, not the origin.
+  function karakeepOrigin(url) {
+    const { protocol, hostname } = new URL(url);
+    return `${protocol}//${hostname}/*`;
+  }
+
   function hostOf(url) {
     try {
       const parsed = new URL(url);
@@ -110,5 +128,5 @@
     return plan;
   }
 
-  globalThis.TabKeeperRules = { DEFAULTS, withDefaults, configErrors, hostOf, hostMatches, dedupeAction, planTick };
+  globalThis.TabKeeperRules = { DEFAULTS, withDefaults, configErrors, fromPolicy, karakeepOrigin, hostOf, hostMatches, dedupeAction, planTick };
 })();

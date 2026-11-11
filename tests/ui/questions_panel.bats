@@ -28,6 +28,9 @@ teardown() { ui_teardown; }
 ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
 status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
 open_panel() { tmux_start "$REPO_ROOT/.local/src/tmux/questions.sh"; }
+# live_session <claude session id>: that session runs now (agent-ask live-sessions), so its ask is
+# LIVE and sorts above the dead ones.
+live_session() { mkdir -p "$HOME/.claude/sessions"; printf '{"pid":%d,"sessionId":"%s"}\n' "$$" "$1" >"$HOME/.claude/sessions/$$.json"; }
 # keep_screen <name>: the capture the PR body shows (dashboards.md rule 14).
 keep_screen() { mkdir -p "$REPO_ROOT/tests/artifacts"; screen >"$REPO_ROOT/tests/artifacts/questions_$1.screen"; }
 
@@ -69,6 +72,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 @test "at 144x33 the whole card, story and all, fits beside the list" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/delta"
   : > "$HOME/.claude/projects/p/sid-u.jsonl"
+  live_session sid-u
   printf '{"session_id":"sid-u","title":"runner-pool-tonight"}\n' > "$HOME/.agent/sessions/delta/sessions.jsonl"
   jq -cn --arg req "$(printf 'please sort out the runner pool for tonight %.0s' $(seq 1 12))" '{first: $req, prompt: "which goes first?",
     said: ["step 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
@@ -88,16 +92,20 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 }
 
 # The rows read beside the card (human, 2026-11-05): what each session is, under its question,
-# and ended once it has; the selected row's name in fzf's selected white, not a colour that
+# and whether it is LIVE or dead; the selected row's name in fzf's selected white, not a colour that
 # vanishes on the selection bar; and a key that scrolls a card longer than the screen.
 @test "at 144x33 a row names its session under the question, the selected name reads, pgdn scrolls the card" {
   mkdir -p "$HOME/.agent/sessions/delta"
   printf '{"session_id":"sid-r","title":"runner-pool-tonight"}\n' >"$HOME/.agent/sessions/delta/sessions.jsonl"
+  live_session sid-r
+  CLAUDE_CODE_SESSION_ID=sid-gone "$AGENT_ASK" post --project delta --session delta-agent-7 --options 'a=the first|b=the second' 'Gone?' >/dev/null
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" post --project delta --session delta-agent-4 --options 'a=the first|b=the second' \
     --context "$(printf 'Context sentence %d of a card longer than the screen. ' $(seq 1 60))" 'Which goes first?')"
   sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
   TM_WIDTH=144 TM_HEIGHT=33 open_panel
-  wait_until 'side_by_side && screen_has "ended . runner-pool-tonight"'
+  wait_until 'side_by_side && screen_has "LIVE delta:4" && screen_has "runner-pool-tonight"'
+  # Negative control: the ask whose session has ended reads dead, below the live ones.
+  screen_has 'dead delta:7'
   screen_has 'pgup/pgdn scroll card'
   keep_screen rows_144x33
   # The selected row is the oldest, delta:4: its name is drawn in bright white (97).
@@ -221,12 +229,17 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'screen_has "1 ask waiting" && screen_lacks "answering"'
 }
 
-# plan_row: a session the state document has waiting on its plan dialog, and the card and
-# options agent-panel reads off that pane.
-plan_row() {
+# stale_rows <json rows>: what the fleet state document says, a pass behind the live list.
+stale_rows() {
   mkdir -p "$XDG_STATE_HOME/fleet"
-  printf '{"sessions":[{"target":"hub/demo:2","bucket":"NEEDS","reason":"plan awaiting approval","idle_min":90,"doing":"ExitPlanMode","topic":"Stop issues","cwd":"/nowhere/demo"}]}\n' \
-    >"$XDG_STATE_HOME/fleet/state.json"
+  printf '{"sessions":[%s]}\n' "$1" >"$XDG_STATE_HOME/fleet/state.json"
+}
+
+# plan_row: a session agent-panel has waiting on its plan dialog, and the card and options it
+# reads off that pane. The state document has never heard of it.
+plan_row() {
+  printf '{"target":"hub/demo:2","status":"waiting","idle_since":%s,"doing":"ExitPlanMode","summary":"Stop issues","cwd":"/nowhere/demo"}\n' \
+    "$(($(date +%s) - 5400))" >"$NOTES_FIXTURE/agent-panel.list.json"
   printf 'plan waiting for your approval\nhub/demo:2  demo\n\n 1  Yes, and switch to BYPASS PERMISSIONS\n 2  Yes, manually approve edits\n 3  Tell Claude what to change  (t types it)\n' \
     >"$NOTES_FIXTURE/agent-panel.dialog"
   printf '1\t0\tYes, and switch to BYPASS PERMISSIONS\n2\t0\tYes, manually approve edits\n3\t1\tTell Claude what to change\n' \
@@ -245,6 +258,21 @@ plan_row() {
   tmux_keys Enter
   wait_until 'screen_has "sent 2"'
   grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+  # The stub still says waiting, as a status file can for a moment after the pane moved on.
+  wait_until 'screen_has "3 asks waiting"'
+}
+
+@test "a state document a pass behind cannot list a dialog that is not open now" {
+  plan_row
+  stale_rows '{"target":"hub/old:1","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode"},{"target":"hub/old:2","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode"}'
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
+}
+
+@test "a worker host's dialog comes from the state document, no local read can see it" {
+  stale_rows '{"target":"mini@hub/far:1","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode","cwd":"/nowhere/far"}'
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
 }
 
 @test "a plan dialog that closed before enter: the panel says not sent and stays open" {
@@ -263,12 +291,13 @@ plan_row() {
 
 @test "g goes to the asking session and closes the panel" {
   sed -i 's/^claude_session: .*/claude_session: sid-old/' "$(ask_file "$OLD")"
+  live_session sid-old
   printf '%s\n' '{"session_id":"sid-old","target":"hub/alpha:3"}' >"$NOTES_FIXTURE/agent-panel.list"
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys Down
   tmux_keys g
-  wait_until 'screen_has "no Claude session owns"'
+  wait_until 'screen_has "no session is waiting"'
   tmux_keys Up
   tmux_keys g
   wait_until 'grep -qx "agent-panel jump hub/alpha:3" "$NOTES_FIXTURE/calls.log"'

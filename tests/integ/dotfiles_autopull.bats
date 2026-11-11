@@ -12,7 +12,7 @@ setup() {
   sandbox_init basic
   PULL="$REPO_ROOT/.local/bin/dotfiles-autopull"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-  unset DOTFILES_DIR DOTFILES_PRIVATE DOTFILES_AUTOPULL_INTERVAL
+  unset DOTFILES_DIR DOTFILES_PRIVATE DOTFILES_AUTOPULL_INTERVAL CLAUDE_SKILLS
   PUB="$HOME/.dotfiles" PRIV="$HOME/.dotfiles-private"
   pair pub "$PUB"
   pair priv "$PRIV"
@@ -100,6 +100,114 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output 1
   run grep -c 'fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output 2
+}
+
+@test "the shell pass links a file another tool's pull added, though it moves nothing itself" {
+  export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
+  rm -rf "$PRIV"
+  add_upstream pub .local/bin/hand-pulled v1
+  git -C "$PUB" pull -q
+  run "$PULL"
+  assert_success
+  assert_equal "$(readlink -f "$HOME/.local/bin/hand-pulled")" "$(readlink -f "$PUB/.local/bin/hand-pulled")"
+  run grep -c 'fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output 0
+}
+
+@test "--now links a file another tool's pull added, though the checkout is already current" {
+  export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
+  rm -rf "$PRIV"
+  printf 'local\n' >"$HOME/f"
+  add_upstream pub .local/bin/hand-pulled v1
+  git -C "$PUB" pull -q
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'already current'
+  assert_line --index 1 '~: linked 1 missing file(s) into $HOME (dotfiles-deploy --apply --missing)'
+  assert_equal "$(readlink -f "$HOME/.local/bin/hand-pulled")" "$(readlink -f "$PUB/.local/bin/hand-pulled")"
+}
+
+@test "a fast-forward that adds a SKILL.md links the skill, flat" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/new-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/new-skill")" "$(readlink -f "$PUB/.claude/skills/ops/new-skill")"
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'updated 1 skill link(s)'
+}
+
+@test "a fast-forward that moves a skill's category repoints its link" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/moved-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  git -C "$SANDBOX/pub-up" mv .claude/skills/ops .claude/skills/infra
+  git -C "$SANDBOX/pub-up" commit -qm move && git -C "$SANDBOX/pub-up" push -q origin HEAD:main
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/moved-skill")" "$(readlink -f "$PUB/.claude/skills/infra/moved-skill")"
+}
+
+@test "a fast-forward that deletes a skill removes its link" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/gone-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  git -C "$SANDBOX/pub-up" rm -rq .claude/skills/ops
+  git -C "$SANDBOX/pub-up" commit -qm delete && git -C "$SANDBOX/pub-up" push -q origin HEAD:main
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  [ ! -L "$HOME/.claude/skills/gone-skill" ] || fail 'the deleted skill kept its link'
+}
+
+@test "a fast-forward that changes no skill links adds no line, and one that does heals a skill a hand pull left unlinked" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/one/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_output --regexp '^~/\.dotfiles: fast-forwarded main [0-9a-f]{8}\.\.[0-9a-f]{8}$'
+  add_upstream pub .claude/skills/ops/hand-pulled/SKILL.md v1
+  git -C "$PUB" pull -q
+  merge pub v3
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/hand-pulled")" "$(readlink -f "$PUB/.claude/skills/ops/hand-pulled")"
+}
+
+@test "a skill-deploy conflict after a fast-forward is named on the line, logged, and the pull still succeeds" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  mkdir -p "$HOME/.claude/skills/in-the-way"
+  printf 'hand-made\n' >"$HOME/.claude/skills/in-the-way/SKILL.md"
+  add_upstream pub .claude/skills/ops/in-the-way/SKILL.md v1
+  add_upstream pub .claude/skills/ops/fine/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --index 1 --partial 'updated 1 skill link(s), then skill-deploy failed (exit 1) on: in-the-way; report in'
+  assert_equal "$(cat "$HOME/.claude/skills/in-the-way/SKILL.md")" hand-made
+  assert_equal "$(readlink -f "$HOME/.claude/skills/fine")" "$(readlink -f "$PUB/.claude/skills/ops/fine")"
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'skill-deploy --quiet exited 1, its report:'
+  assert_output --partial '    CONFLICT  in-the-way'
+}
+
+@test "the shell pass links the skills both checkouts added in one skill-deploy run" {
+  printf '#!/bin/sh\necho ran >>"$SANDBOX/skill-deploy.calls"\nexec "$REAL_SKILL_DEPLOY" "$@"\n' >"$SANDBOX/skill-stub" && chmod +x "$SANDBOX/skill-stub"
+  export SANDBOX REAL_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy" DOTFILES_SKILL_DEPLOY="$SANDBOX/skill-stub"
+  add_upstream pub .claude/skills/ops/pub-skill/SKILL.md v1
+  add_upstream priv .claude/skills/ops/priv-skill/SKILL.md v1
+  run "$PULL"
+  assert_success
+  assert_output ''
+  assert_equal "$(wc -l <"$SANDBOX/skill-deploy.calls")" 1
+  assert_equal "$(readlink -f "$HOME/.claude/skills/pub-skill")" "$(readlink -f "$PUB/.claude/skills/ops/pub-skill")"
+  assert_equal "$(readlink -f "$HOME/.claude/skills/priv-skill")" "$(readlink -f "$PRIV/.claude/skills/ops/priv-skill")"
 }
 
 @test "--now from the private repo fast-forwards ~/.dotfiles-private" {
@@ -199,4 +307,117 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output ''
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output --partial '~/.dotfiles-private: detached HEAD, left alone'
+}
+
+# rust_tool <crate> <bin> <mtime> -> $PUB/.local/src/<crate> holds a built <bin> dated @<mtime>, linked
+# from ~/.local/bin as build_local_rust_tools links it; `cargo` is a stub that logs its directory and
+# exits 101 when $SANDBOX/cargo.fail exists, or dates every built binary now when $SANDBOX/cargo.builds
+# exists (a crate or path dependency changed), else touches nothing (a no-op build).
+rust_tool() {
+  local crate="$PUB/.local/src/$1"
+  mkdir -p "$crate/target/release" "$HOME/.local/bin"
+  : >"$crate/Cargo.toml"
+  : >"$crate/target/release/$2" && touch -d "@$3" "$crate/target/release/$2"
+  ln -sfn "$crate/target/release/$2" "$HOME/.local/bin/$2"
+  cat >"$SANDBOX/bin/cargo" <<'STUB'
+#!/bin/sh
+printf 'cargo %s in %s\n' "$*" "$PWD" >>"$NOTES_FIXTURE/calls.log"
+[ -e "$SANDBOX/cargo.fail" ] && { echo 'error[E0425]: stub'; exit 101; }
+[ -e "$SANDBOX/cargo.builds" ] && touch target/release/*
+exit 0
+STUB
+  chmod +x "$SANDBOX/bin/cargo"
+  export SANDBOX
+}
+
+# unit <bin> <state> <started> -> the systemctl stub serves <bin>.service as <state> since @<started>
+unit() {
+  printf '%s\n' "$2" >"$NOTES_FIXTURE/systemctl.show.$1.service.ActiveState"
+  printf '@%s\n' "$3" >"$NOTES_FIXTURE/systemctl.show.$1.service.ActiveEnterTimestamp"
+}
+
+@test "a fast-forward that changes a crate rebuilds its tool and restarts the unit running the old binary" {
+  rust_tool agent-web agent-web 500
+  rust_tool hub-tui hub 500
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.builds"
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line '~: rebuilt agent-web (cargo build --release)'
+  assert_line '~: rebuilt hub (cargo build --release)'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/agent-web"
+  assert_called "cargo build --release --quiet in $PUB/.local/src/hub-tui"
+  assert_called 'systemctl --user restart agent-web.service'
+  assert_not_called 'systemctl --user restart hub.service'
+}
+
+@test "a current tool is not restarted, and one built by hand after its unit started is, though the checkout did not move" {
+  rust_tool agent-web agent-web 500
+  unit agent-web active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'rebuilt'
+  refute_line --partial 'restarted'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/agent-web"
+  assert_not_called 'systemctl --user restart'
+  touch -d @2000 "$PUB/.local/src/agent-web/target/release/agent-web"
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'rebuilt'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+}
+
+@test "a unit that is not running is never started" {
+  rust_tool agent-web agent-web 500
+  unit agent-web inactive 1000
+  touch "$SANDBOX/cargo.builds"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: rebuilt agent-web (cargo build --release)'
+  assert_not_called 'systemctl --user restart'
+}
+
+@test "a failed build is named on the line and logged, the old binary and its unit stay, and the pull still succeeds" {
+  rust_tool agent-web agent-web 500
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.fail"
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --partial '~: cargo build of agent-web failed (exit 101), the binary on disk stays; report in'
+  assert_not_called 'systemctl --user restart'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'error[E0425]: stub'
+}
+
+@test "negative control: a link into another tree's target/release is not built" {
+  rust_tool agent-web agent-web 500
+  mkdir -p "$SANDBOX/elsewhere/.local/src/x/target/release"
+  : >"$SANDBOX/elsewhere/.local/src/x/Cargo.toml"
+  : >"$SANDBOX/elsewhere/.local/src/x/target/release/x"
+  ln -sfn "$SANDBOX/elsewhere/.local/src/x/target/release/x" "$HOME/.local/bin/x"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called "in $PUB/.local/src/agent-web"
+  assert_not_called "in $SANDBOX/elsewhere"
+}
+
+@test "a failed build still restarts a unit older than the binary on disk, and an empty budget builds nothing" {
+  rust_tool agent-web agent-web 2000
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.fail"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --partial '~: cargo build of agent-web failed (exit 101)'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+  rm "$SANDBOX/cargo.fail"
+  : >"$NOTES_FIXTURE/calls.log"
+  DOTFILES_AUTOPULL_BUILD_SECS=0 run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: build budget of 0s spent, agent-web not rebuilt'
+  assert_not_called 'cargo build'
 }

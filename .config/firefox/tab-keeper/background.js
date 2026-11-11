@@ -1,5 +1,5 @@
 // Tab Keeper: carries out what rules.js decides. dryRun logs and touches nothing.
-const { withDefaults, hostOf, dedupeAction, planTick } = globalThis.TabKeeperRules;
+const { fromPolicy, karakeepOrigin, hostOf, dedupeAction, planTick } = globalThis.TabKeeperRules;
 
 const TICK = "tick";
 const TICK_MINUTES = 60; // no event exists for "this tab has gone idle", so sample hourly
@@ -14,9 +14,19 @@ const ready = browser.storage.session.get("fresh").then((stored) => {
 });
 const saveFresh = () => browser.storage.session.set({ fresh: [...fresh] });
 
+// storage.managed throws when the policy has no entry for this add-on; fromPolicy names that.
+const policy = () => browser.storage.managed.get(["config", "karakeepKey"]).catch(() => null);
+
 async function state() {
-  const stored = await browser.storage.local.get(["config", "paused", "karakeepKey", "lastFailure"]);
-  return { ...stored, config: withDefaults(stored.config) };
+  const [stored, managed] = await Promise.all([browser.storage.local.get(["paused", "lastFailure"]), policy()]);
+  const { config, key, problem } = fromPolicy(managed);
+  const granted = !config.karakeepUrl || (await browser.permissions.contains({ origins: [karakeepOrigin(config.karakeepUrl)] }));
+  return {
+    ...stored,
+    config,
+    karakeepKey: key,
+    problem: problem ?? (granted ? null : "Karakeep access not granted: open Tab Keeper options and click Grant"),
+  };
 }
 
 async function log(entry) {
@@ -26,12 +36,11 @@ async function log(entry) {
 }
 
 async function showBadge() {
-  const { config, paused, lastFailure } = await state();
-  const text = paused ? "off" : lastFailure ? "!" : config.dryRun ? "dry" : "";
+  const { config, paused, lastFailure, problem } = await state();
+  const text = paused ? "off" : problem || lastFailure ? "!" : config.dryRun ? "dry" : "";
   await browser.action.setBadgeText({ text });
-  await browser.action.setTitle({
-    title: lastFailure ? `Tab Keeper: last save failed: ${lastFailure}` : "Tab Keeper: click to pause or resume dedupe",
-  });
+  const title = problem ? `Tab Keeper: ${problem}` : lastFailure ? `Tab Keeper: last save failed: ${lastFailure}` : "Tab Keeper: click to pause or resume dedupe";
+  await browser.action.setTitle({ title });
 }
 
 async function togglePaused() {
@@ -144,9 +153,16 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === TICK) tick();
 });
 browser.storage.local.onChanged.addListener(showBadge);
+browser.permissions.onAdded.addListener(showBadge);
+browser.permissions.onRemoved.addListener(showBadge);
 browser.runtime.onMessage.addListener((message) => {
   if (message === "tick") return tick();
+  // The options page gets the settings and the problem, never the key.
+  if (message === "state") return state().then(({ config, problem }) => ({ config, problem }));
 });
+
+// 0.1.x kept pasted settings and the key here; the policy owns both now.
+browser.storage.local.remove(["config", "karakeepKey"]);
 
 // create() restarts the period, and this file runs on every wake, so only create it when missing.
 browser.alarms.get(TICK).then((alarm) => alarm ?? browser.alarms.create(TICK, { periodInMinutes: TICK_MINUTES }));

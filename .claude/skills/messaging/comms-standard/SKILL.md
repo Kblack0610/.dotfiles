@@ -50,7 +50,7 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 **Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
 
-**Briefing** (`refs/<date>/briefing.md`, the shape `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 317 PRs in 7 repos, $421 spent."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Areas`, one line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs): its level, then one sentence. Everything else goes under `## Details`, where only the page-wide checks apply.
+**Briefing** (`refs/<date>/briefing.md`, the human overview `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Landed yesterday` (product changes, urgent and high first, then fixes; the fleet's own tooling is one count line), `## Builds and releases`, `## Overnight`, `## Money`, and one `## Agents` line that links `agents.md`. Each section is required (`require`), the first four capped. **Agent briefing** (`refs/<date>/agents.md`, channel `briefing-agents`): the briefing as it was before the split: `## Needs you`, `## Areas` (one line per area: Infra, Sessions, Workers overnight, Nightly, Delivery, Costs, its level, then one sentence), and everything else under `## Details`, where only the page-wide checks apply.
 
 **Morning block.** The briefing's headline and Needs you items, copied as they are, plus the knowledge line. Eight lines at most.
 
@@ -76,6 +76,7 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 - Use the system's own names (shepherd, dispatch, lane, pace, queue item, pass) without defining them, and never explain how a piece of the system works unless asked.
 - Lead with the finding and its cause, measured against the last point the system recorded (the previous pass report, the last summary). A number appears only when it moves the finding.
 - End with the one lever you would pull and why. Pull it yourself when it is an automated lane's; for the human's own sessions, recommend it. "That is your call" with no recommendation is not an answer.
+- A reader who says they have lost the thread ("catch me up", "what is going on here") gets the `catch-up` shape in place of the bullets above and rule 1, every term defined.
 - Why: on 2026-11-06 an answer about the fleet's burn explained the shepherd's budget cap to the person who wrote it and ended with no recommendation. The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
 
 ## Steps

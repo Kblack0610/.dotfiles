@@ -59,7 +59,7 @@ pub(crate) fn proves_outcome(stamp: &str) -> bool {
 }
 
 /// What closed a row: its marker without the stamps every row carries.
-fn proof_of(line: &str) -> String {
+pub(crate) fn proof_of(line: &str) -> String {
     let marker = md::marker_of(line).unwrap_or_default();
     let stamps = ["id:", "filed:", "done:", "carried", "ask:"];
     marker
@@ -322,6 +322,26 @@ impl Index {
 
     fn open_epics(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.nodes.len()).filter(|&i| self.nodes[i].title.is_some() && self.nodes[i].open)
+    }
+
+    /// The nearest open epic above row `id`, when every one of its leaves is done: a close
+    /// just finished it, and only the human's check of its outcome is left (lifecycle.md).
+    pub(crate) fn landed_epic_above(&self, id: &str) -> Option<EpicProgress> {
+        let mut seen = HashSet::new();
+        let mut at = self.node(id)?.parent.clone();
+        while let Some(pid) = at {
+            let &i = self.by_id.get(&pid)?;
+            if !seen.insert(i) {
+                return None;
+            }
+            let n = &self.nodes[i];
+            if n.title.is_some() {
+                let r = self.rollup(i);
+                return (n.open && r.open == 0 && r.done > 0).then_some(r);
+            }
+            at = n.parent.clone();
+        }
+        None
     }
 
     /// Every open epic with its rollup, in sheet order.

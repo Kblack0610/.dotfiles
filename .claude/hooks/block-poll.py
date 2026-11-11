@@ -5,10 +5,11 @@
 "until grep ..."` loops and `gh run watch` on top of agent-land's own wait. Each pass blocks the
 turn, and each re-check re-reads the whole context. A background command wakes the session once.
 
-Denied: `gh run watch` anywhere (it polls the API for the whole wait, unity-core-playground
-docs/operations/ci.md rule 8), and a foreground loop that sleeps: `until`, `while` (not `while
+Denied: a foreground loop that sleeps: `until`, `while` (not `while
 read`), or a `for` that breaks out. Allowed: the same loop with run_in_background, a loop inside a
 script file, a heredoc body, and text in quotes, except a `-c` payload, which is checked as code.
+`gh run watch` is a hand form with a replacement, so its deny is a `metadata.replaces` row of the
+gh-workflows skill, enforced by hand_methods.py, which shares this file's parse.
 
 Also denied: a foreground read of a background task's `tasks/<id>.output` while a process still
 holds that file open, i.e. the run is live and its notice has not come. 2026-11-05: 243 such reads
@@ -26,21 +27,15 @@ import sys
 
 SEP = r"(?:^|[;&|(){}\s])"
 END = r"(?=[;&|(){}\s]|$)"
-GH_WATCH = re.compile(SEP + r"gh\s+run\s+watch" + END)
 KEYWORD = re.compile(SEP + r"(until|while|for)\s")
 LOOP = re.compile(r"(until|while|for)\s+(.*?)" + SEP + r"do" + END + r"(.*)" + SEP + r"done" + END, re.S)
 SLEEP = re.compile(SEP + r"sleep" + END)
 BREAK = re.compile(SEP + r"(break|exit)" + END)
 SHELL_C = re.compile(SEP + r"(?:ba|z|da|k)?sh(?:\s+-\S+)*\s+-[a-z]*c\s*$")
 TASK_OUTPUT = re.compile(r"""([^\s'"]*/tasks/([\w.-]+)\.output)""")
+WRAPPER = re.compile(SEP + r"(?:eval|ssh|watch|xargs|su|parallel|pkexec)(?:\s[^;&|(\n]*)?$")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
-WATCH_MSG = (
-    "`gh run watch` polls the GitHub API for the whole wait and is banned (unity-core-playground "
-    "docs/operations/ci.md rule 8). `agent-land <N>` already waits for a PR's checks: start the "
-    "gate-and-land command with run_in_background and act on its completion notification. Any "
-    "other run: `gh-run-wait <run-id> [label]` with run_in_background; do not write your own waiter."
-)
 LOOP_MSG = (
     "This foreground loop polls: it blocks the turn, and every re-check re-reads the whole "
     "context. Start the same wait with run_in_background: true (or the Monitor tool) and act on "
@@ -57,22 +52,54 @@ LIVE_MSG = (
 )
 
 
+def quote_flags(line, q):
+    """Per index of line: is it inside quotes. Also the quote still open at the line's end."""
+    flags, i, n = [False] * len(line), 0, len(line)
+    while i < n:
+        c = line[i]
+        if q is None:
+            if c == "\\":
+                i += 2
+                continue
+            if c in "'\"":
+                q, flags[i] = c, True
+        else:
+            flags[i] = True
+            if q == '"' and c == "\\":
+                if i + 1 < n:
+                    flags[i + 1] = True
+                i += 2
+                continue
+            if c == q:
+                q = None
+        i += 1
+    return flags, q
+
+
 def strip_heredocs(cmd):
-    out, end = [], None
+    """Drop heredoc bodies. A `<<WORD` inside quoted text opens no heredoc."""
+    out, end, q = [], None, None
     for line in cmd.split("\n"):
         if end is not None:
             if line.strip() == end:
                 end = None
             continue
-        m = HEREDOC.search(line)
-        if m:
-            end = m.group(2)
+        flags, q = quote_flags(line, q)
+        for m in HEREDOC.finditer(line):
+            if not flags[m.start()]:
+                end = m.group(2)
+                break
         out.append(line)
     return "\n".join(out)
 
 
-def code_texts(cmd):
-    """The command with quoted text blanked, plus each `-c '<payload>'`, recursively."""
+def code_texts(cmd, guard=False):
+    """The command with quoted text blanked, plus each `-c '<payload>'`, recursively.
+
+    guard=True is for a guard that must not miss a search: the quoted string after eval, ssh,
+    watch, xargs or su is code too, and an unterminated quote stays visible instead of
+    swallowing the rest of the command.
+    """
     texts, out, i, n = [], [], 0, len(cmd)
     while i < n:
         c = cmd[i]
@@ -89,8 +116,13 @@ def code_texts(cmd):
                     continue
                 body.append(cmd[j])
                 j += 1
-            if SHELL_C.search("".join(out)):
-                texts.extend(code_texts("".join(body)))
+            if guard and j >= n:
+                out.append(c + "".join(body))
+                i = j + 1
+                continue
+            prefix = "".join(out)
+            if SHELL_C.search(prefix) or (guard and WRAPPER.search(prefix)):
+                texts.extend(code_texts("".join(body), guard))
             out.append(" Q ")
             i = j + 1
             continue
@@ -179,8 +211,6 @@ def main():
     if tool != "Bash":
         return
     texts = code_texts(strip_heredocs(tin.get("command") or ""))
-    if any(GH_WATCH.search(t) for t in texts):
-        return deny(WATCH_MSG)
     if tin.get("run_in_background"):
         return
     if any(polls(t) for t in texts):

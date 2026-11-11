@@ -19,7 +19,7 @@ The size of each part comes from `agent-usage burn --json` (`first_request_parts
 - The human asks for a trim or "cleanup/trim pass N", or a fixed part grows past its budget.
 - After a trim lands, to prove what it saved.
 
-Siblings: stale or wrong claims are `docs-cleanup`; a rule the human just gave is `update-rules`; which skills are listed name-only is the skill-usage toggle (`skillOverrides` in user settings). Built-in tool schemas and the system prompt are not ours to cut.
+Siblings: stale or wrong claims are `docs-cleanup`; a rule the human just gave is `update-rules`; which skills are listed name-only is the nightly `skill-toggle` runner (`skill-drift --overrides`, `skillOverrides` in user settings). Built-in tool schemas and the system prompt are not ours to cut.
 
 ## Parts and their homes
 

@@ -10,10 +10,11 @@ const setBuckets = (list) => { if (list && list.length) BUCKETS = list; };
 const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
 const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "chat"})`;
 
-// A horizontal meter: frac in [0, 1].
-function meter(frac, color) {
-  const pct = Math.max(0, Math.min(1, frac || 0)) * 100;
-  return `<span class="meter"><span style="width:${pct.toFixed(1)}%;background:${color || "var(--accent)"}"></span></span>`;
+// A horizontal meter: frac in [0, 1], with a tick at mark (same scale) when given, kept inside the box at 100%.
+function meter(frac, color, mark) {
+  const pc = (v) => (Math.max(0, Math.min(1, v || 0)) * 100).toFixed(1);
+  const tick = mark == null ? "" : `<i style="left:min(${pc(mark)}%,calc(100% - 2px))"></i>`;
+  return `<span class="meter"><span style="width:${pc(frac)}%;background:${color || "var(--accent)"}"></span>${tick}</span>`;
 }
 
 // Long targets keep the tail that tells them apart, cut at a dash:

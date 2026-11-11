@@ -7,6 +7,15 @@
 #   machine-mode hours      print the day's parts, the mode each runs in, and which one is now
 #   machine-mode clock      the timer's tick: a new part's mode applies once (agentctl machine-clock)
 #   machine-mode auto       give the mode back to the clock: apply this part's mode now
+#   machine-mode release-lane <host> --until <time>   keep <host>'s pool slots for release jobs
+#                           until <time> (date -d, at most 24h ahead); it ends on its own
+#   machine-mode release-lane --clear <host>          end that reservation now (removes the key)
+#   machine-mode release-lane    list the reservations
+#
+# A reservation is the "<host>.reserve" key, {"until": <epoch>}, in the same ConfigMap: the
+# governor pins the host to 0 until then, so gates go to other hosts while release.yml jobs,
+# which ask for host-<host> alone, take the withheld slots. Any machine with the kube context
+# can set one; the release skill does at a cut (playground docs/operations/steam.md#the-release-lane).
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here
@@ -85,6 +94,56 @@ pin_runners() {
     {apiVersion: "v1", kind: "ConfigMap", metadata: {name: $name, namespace: $ns},
      data: (($cm.data // {}) + {($host): (((($cm.data[$host] // "{}") | object) + {slots: $slots}) | tojson)})}' \
     | kube apply -f - 2>&1 >/dev/null)" || { printf '%s\n' "$err" >&2; return 1; }
+}
+
+# release_lane [<host> --until <time> | --clear <host>]: see the header. Writes or removes only
+# the "<host>.reserve" key, and only for a host the governor reports on.
+release_lane() {
+  local host end now cm key
+  [ -n "${CC_KUBE_CONTEXT:-}" ] || die "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env"
+  cm="$(kube get configmap "$CONFIGMAP" -o json --ignore-not-found)" || exit 1
+  [ -n "$cm" ] || cm='{}'
+  case "${1:-}" in
+    '')
+      jq -r '.data // {} | to_entries[] | select(.key | endswith(".reserve"))
+        | (.value | try fromjson catch {}) as $r | select(($r | type) == "object" and ($r.until | type) == "number")
+        | "\(.key | rtrimstr(".reserve")) \($r.until | floor)"' <<< "$cm" |
+        while read -r host end; do
+          printf '%s: until %s%s\n' "$host" "$(date -d "@$end" '+%Y-%m-%d %H:%M %Z')" \
+            "$( ((end <= $(date +%s))) && echo ", ended")"
+        done
+      return ;;
+    --clear)
+      host="${2:-}"; [ -n "$host" ] || die "usage: machine-mode release-lane --clear <host>"
+      key="$host.reserve"
+      jq -e --arg k "$key" '.data // {} | has($k)' <<< "$cm" >/dev/null || { echo "$host: no reservation"; return; }
+      jq --arg k "$key" '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: .metadata.name, namespace: .metadata.namespace},
+        data: (.data | del(.[$k]))}' <<< "$cm" | kube apply -f - >/dev/null || exit 1
+      echo "$host: reservation ended; the governor re-admits its slots"
+      return ;;
+  esac
+  host="$1"
+  [ "${2:-}" = --until ] && [ -n "${3:-}" ] || die "usage: machine-mode release-lane <host> --until <time>"
+  [[ "$host" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "'$host' is not a pool host name"
+  end="$(date -d "$3" +%s 2>/dev/null)" || die "cannot read the time '$3'"
+  now="$(date +%s)"
+  ((end > now)) || die "$3 is not in the future (for a time tomorrow, say 'tomorrow $3')"
+  # One cut's whole run was under 10h (2026-11-06); a day caps a forgotten reservation.
+  ((end - now <= 86400)) || die "$3 is more than 24h ahead: one cut at a time"
+  # A typo would reserve nothing and say it had. Without Prometheus, say so and go on: a cut
+  # should not wait on monitoring.
+  local raw
+  if raw="$(prom_q "ci_governor_registered{host=\"$host\"}")"; then
+    jq -e --arg h "$host" 'any(.data.result[]; .metric.host == $h)' <<< "$raw" >/dev/null \
+      || die "the governor runs no host '$host' (no ci_governor_registered series)"
+  else
+    echo "warning: cannot read Prometheus to check that the governor runs '$host'" >&2
+  fi
+  key="$host.reserve"
+  jq -n --argjson cm "$cm" --arg name "$CONFIGMAP" --arg ns "$NAMESPACE" --arg key "$key" --argjson end "$end" '
+    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: $name, namespace: $ns},
+     data: (($cm.data // {}) + {($key): ({until: $end} | tojson)})}' | kube apply -f - >/dev/null || exit 1
+  echo "$host: reserved for release jobs until $(date -d "@$end" '+%Y-%m-%d %H:%M %Z'); its slots leave the pool one per governor cycle"
 }
 
 write_state() {
@@ -218,7 +277,8 @@ switch() {
 
 case "${1:-}" in
   hours) hours; exit 0 ;;
-  -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  release-lane) shift; release_lane "$@"; exit 0 ;;
+  -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 if ! compgen -G "$RUNNER_UNITS" >/dev/null; then

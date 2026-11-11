@@ -17,7 +17,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
 | `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). `ctrl-n` starts a new Claude in a fresh worktree of the selected agent's repo (`wt new --claude`); `--query` opens it already filtered. Cross-platform binary; see `../agent-panel/`. |
-| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them, and favourite a session (`Prefix+t f`); also on PATH as `tmux-tags` |
 | `muxpoon` (submodule, `../muxpoon/`) | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Window slots, its own public repo: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. `.tmux.conf` keeps the list in `~/.local/state/tmx/harpoon`, and it survives a kill-server. Also on PATH as `muxpoon`. |
 | `projects.sh` | `Prefix+p` | Full screen, like `Prefix+g`. Every profile's projects, main ones first (drafts behind `d`), each with its stage, open count and urgent count. The selected project's card and open rows show on the right (`hub --once --tab 'projects <profile>/<name>'`); `ctrl-/` moves the preview below, hides it, brings it back. `1`-`9`, Enter or `o` opens that project's rows under its card on the hub Projects tab (`hub tab projects <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`). `a`, `g` and `c` reach the repo the project lives in (`project_repo_path`, project-map.json): its agents (`agent-panel --query`), its session (`sessionizer.sh <repo>`), or a new Claude in a fresh worktree (`wt new --claude`); a notes-only project says it has no repo. `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
@@ -26,7 +26,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 ## Keys
 
-`keys` (`Prefix+K`, or `Super+A k`) lists every key that is live: tmux's stock keys and ours, Hyprland and nvim, searchable. Each row is the bind's own `-N` note, so a new bind in `.tmux.conf` gets one (`tests/unit/tmux_keys_doc.bats` fails without it). muxpoon's `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` come from its plugin. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
+`keys` (`Prefix+K`, or `Super+A k` then `a`/`h`/`t`/`n` for one layer) is every live key with what it is for, full screen, a tab per layer (all, Hyprland, tmux, nvim): tab / shift-tab switch, type to filter, ctrl-/ shows the command. `keys tmux` opens one tab. Each row is the bind's own `-N` note, so a new bind in `.tmux.conf` gets one (`tests/unit/tmux_keys_doc.bats` fails without it). muxpoon's `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` come from its plugin. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
 
 ## Window Tags
 
@@ -61,6 +61,21 @@ tmux-tags gather --tag group:work --into work   # a tag is a group
 Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare
 them in the session manager's config and have the window tag itself on startup.
+
+### Favourite sessions
+
+`Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, server-lifetime like a tag. It is a mark only: wind-down protects `pinned` and `important` windows, not favourites. It is marked in four places:
+
+- the status bar: a yellow star before the agent counts
+- `Prefix+H` (`tmx pick`): a star in front of the session's row
+- `Prefix+w`: `[fav]` after the session's window count
+- `Prefix+g` (agent-panel): `fav` in the tag column of every agent in the session
+
+```sh
+tmux-tags fav                 # toggle the current session
+tmux-tags fav on -t dotfiles  # or on / off for a named session
+tmux-tags fav ls              # favourite sessions, one per line
+```
 
 ## Servers (`Prefix+H`, `tmx`)
 
@@ -301,9 +316,10 @@ session with seven windows all named `main` actually was.
 the current pane is in, and the slot is the lowest one that is free or idle. Idle means the
 same thing `reap` means by eligible - clean, landed, no session and no pane inside it - so a
 worktree whose session was killed without `wt done` is reset onto the trunk in place (its
-ignored build caches kept) instead of pushing the next agent one number higher. A leftover
-`agent-N` branch with no directory frees its slot too, once it is merged and checked out
-nowhere.
+ignored build caches kept) instead of pushing the next agent one number higher. The slot
+number is reused but the branch name never is: each cut starts on `agent-N-<UTC stamp>`, so a
+push never meets a stale `origin/agent-N` that GitHub kept after its PR merged or closed
+(ar-1121), and a leftover branch never pins a slot.
 
 `Prefix+f` **does** list worktrees, which reverses the original call that "a worktree is
 somewhere you are sent, not somewhere you go looking". Being sent covers the first minute of
@@ -347,7 +363,7 @@ breaking all three at once.
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
-`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
@@ -386,7 +402,7 @@ Measured on unity-core-playground (5k files in the main tree; `External/asset-li
 | 3 | `wt_next_slot`: walk agent-1, 2, ... and take the first idle one | background | 0.7s (was 4.5 to 9s, #463) |
 | 4 | `wt: recycle\|fresh <name>, opening it`, create the session, switch to it | status line, then the new session | instant |
 | 5 | `git fetch origin` on the main checkout | the new session's first pane | 2.8s, network |
-| 6 | `git switch -C agent-N origin/<trunk>` in the worktree | pane | 0.2s |
+| 6 | `git switch -c agent-N-<stamp> origin/<trunk>` in the worktree | pane | 0.2s |
 | 7 | copy each moved submodule's new commit from the main checkout into `refs/wt/main` | pane | 8 to 54ms (unity-core over the network was 1079ms, #474) |
 | 8 | `GIT_LFS_SKIP_SMUDGE=1 git submodule update --recursive` | pane | no network when step 7 found the commit |
 | 9 | `git lfs checkout -- <changed files>` in submodules that moved | pane | 0.07s for a real LFS file (a bare `lfs checkout` scanned the whole tree: 20s+, #456 #460) |
@@ -456,7 +472,7 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 ## Status Line Integration
 
 `claude-status.sh` runs every 3 seconds to display agent status:
-- `!n` = needs attention (n agents)
+- `!n` = n questions waiting on you: the Prefix y panel's count (pending asks plus open dialogs, fleet-wide), so the bar and the panel header agree
 - `~n` = working (n agents)
 - `✓n` = idle between turns (n agents). This is the live `activity`, not the delivery `bucket`: a session that is idle here can still be NEEDS or STALLED in `fleet-sessions` (vocabulary: `.local/src/docs/fleet-states.md`)
 - `·n` = Claude panes found but none classified

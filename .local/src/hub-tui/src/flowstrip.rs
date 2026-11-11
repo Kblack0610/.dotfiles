@@ -1,7 +1,7 @@
-//! The flow strip as the hub draws it: one renderer for Home and the Queue tab, over
-//! `hub_core::flow::Strip` (the same builder agent-web draws from). The step past its age bound
+//! The flow strip as the hub draws it on Home, over `hub_core::flow::Strip` (the same builder
+//! agent-web draws from); the Queue tab leads with the line (`flowline`). The step past its age bound
 //! is the one amber chip; the line under the chips says what the inbox and board counts were
-//! read from and when, so a count from a stopped collector cannot pass for a fresh one.
+//! read from and when, so a count from a stopped writer cannot pass for a fresh one.
 
 use hub_core::flow::Strip;
 use ratatui::text::{Line, Span};
@@ -14,8 +14,8 @@ const HEAD: &str = "FLOW  ";
 const SEP: &str = " | ";
 
 /// The lines: the chips wrapped under `FLOW`, a bottleneck line when a step is past its bound,
-/// and a dim line for the gauges' stamp or failure and the `o graph` hint. `reading` is true
-/// while Prometheus has not answered, when inbox and board read `-`.
+/// and a dim line for the snapshot's stamp or failure and the `o graph` hint. `reading` is true
+/// while it has not been read, when inbox and board read `-`.
 pub fn lines(
     strip: &Strip,
     reading: bool,
@@ -55,10 +55,10 @@ pub fn lines(
     }
     let mut notes: Vec<String> = vec![];
     if reading {
-        notes.push("inbox, board: reading Prometheus".into());
+        notes.push("inbox, board: reading".into());
     }
     if strip.absent {
-        notes.push("inbox, board: no gauges".into());
+        notes.push("inbox, board: no snapshot".into());
     }
     if let Some(t) = &strip.as_of {
         notes.push(format!("inbox, board as of {t}"));
@@ -99,7 +99,7 @@ mod tests {
         let wide = text(&st, false, false, 140);
         assert_eq!(
             wide,
-            ["FLOW  inbox - | board - | queued - | running - | needs you - | done 24h - | drain -"]
+            ["FLOW  inbox - | board - | queued - | running - | on a PR - | needs you - | done 24h - | drain -"]
         );
         let narrow = text(&st, false, false, 40);
         assert!(
@@ -110,21 +110,21 @@ mod tests {
     }
 
     #[test]
-    fn reading_the_gauges_and_a_failed_read_say_so_and_the_graph_hint_rides_below() {
+    fn reading_the_snapshot_and_a_failed_read_say_so_and_the_graph_hint_rides_below() {
         let st = Strip::build(None);
         assert_eq!(
             text(&st, true, true, 140)[1],
-            "      inbox, board: reading Prometheus   o graph"
+            "      inbox, board: reading   o graph"
         );
         let mut bad = Strip::build(None);
-        bad.set_pipeline(&Err("CC_PROM_URL is not set".into()));
+        bad.set_pipeline(&Err("snapshot cannot be read".into()));
         let l = text(&bad, false, false, 140);
-        assert_eq!(l[1], "      inbox, board: CC_PROM_URL is not set");
+        assert_eq!(l[1], "      inbox, board: snapshot cannot be read");
         let mut none = Strip::build(None);
         none.set_pipeline(&Ok(None));
         assert_eq!(
             text(&none, false, false, 140)[1],
-            "      inbox, board: no gauges"
+            "      inbox, board: no snapshot"
         );
     }
 }

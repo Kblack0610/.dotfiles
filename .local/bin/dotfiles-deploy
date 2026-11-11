@@ -22,28 +22,22 @@
 # at all"). Every headless runner had been starting without telemetry for four days, and
 # nothing anywhere reported an error.
 #
-# WHY THE EXISTING TOOLS CANNOT CLOSE IT
-# -------------------------------------
-#   dotfiles-drift        DETECTS. It reports MIRROR findings and is deliberately left
-#                         alone (a Sentinel watch calls `dotfiles-drift --quiet`). It only
-#                         looks at .local/bin, .local/lib and .config/systemd/user, so it
-#                         misses e.g. .claude/commands/kb/workflow.md, and it only fires
-#                         once the content has ALREADY diverged. It never repairs.
-#   dotfiles-overlay-link REPAIRS, but its safety rule is "only ever touch a link that is
-#                         missing or dangling, never overwrite a real file". These ARE real
-#                         files. So it skips precisely the failure that matters, reports
-#                         "already in sync", and the repair loop can never converge.
+# WHY dotfiles-drift CANNOT CLOSE IT
+# ----------------------------------
+# dotfiles-drift DETECTS. It reports MIRROR findings and is deliberately left alone (a
+# Sentinel watch calls `dotfiles-drift --quiet`). It only looks at .local/bin, .local/lib and
+# .config/systemd/user, so it misses e.g. .claude/commands/kb/workflow.md, and it only fires
+# once the content has ALREADY diverged. It never repairs.
 #
-# So there is a detector that under-reports and a repairer that structurally cannot fix the
-# thing detected. This script is the converging half: after `--apply`, `--check` is clean.
+# This script is the converging half: after `--apply`, `--check` is clean.
 #
 # WHAT IT DOES
 # ------------
 #   1. Builds a manifest of every path each repo actually DEPLOYS: tracked, minus whatever
-#      that repo's .stow-local-ignore excludes, minus tracked symlinks (git stores those as
-#      mode 120000 blobs holding the link target, so diffing one against a resolved file is
-#      a guaranteed false positive - the same 15-false-positives lesson dotfiles-drift
-#      records).
+#      that repo's .stow-local-ignore excludes. A tracked symlink can only be MISSING (git
+#      stores those as mode 120000 blobs holding the link target, so diffing one against a
+#      resolved file is a guaranteed false positive - the same 15-false-positives lesson
+#      dotfiles-drift records).
 #   2. A path deployed by BOTH repos is a HARD ERROR, not a precedence rule. Ambiguous
 #      ownership is the disease; quietly picking a winner is how it hid for six weeks.
 #      (In practice there is nothing to pick: README.md, .gitignore and .stow-local-ignore
@@ -54,6 +48,9 @@
 #   4. Every link it writes is the RELATIVE link stow writes (lib/stow-link.sh). An absolute
 #      link resolves the same but stow does not own it, and one aborts the whole `stow .`
 #      run, so a new file never deploys. Such a link reads ABSLINK and --apply rewrites it.
+#   5. A MISSING path gets a link per file, as `stow --no-folding` writes it, except where
+#      that cannot work or would litter the other repo: there one finding names the directory,
+#      and one link serves it. See fold_point.
 #
 # The tracked source always wins. When the physical copy differs it is backed up first,
 # under $XDG_STATE_HOME/dotfiles-deploy/backup/<stamp>/, because its content exists in no
@@ -77,8 +74,9 @@
 #   dotfiles-deploy --json     machine-readable report
 #   dotfiles-deploy --missing  with any of the above: only MISSING paths, so --apply attaches a
 #                              link where nothing resolves and never converts a copy. Safe to run
-#                              unattended; dotfiles-autopull runs `--apply --missing` after every
-#                              fast-forward, so a newly tracked file is linked when it arrives.
+#                              unattended; every dotfiles-autopull pass runs `--apply --missing`,
+#                              so a newly tracked file is linked however its checkout was pulled,
+#                              and setup_dotfiles_private runs it after the overlay's first stow.
 #
 # Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)
 #
@@ -221,17 +219,19 @@ is_repo_root() {
 }
 
 # ── the manifest ─────────────────────────────────────────────────────────────
-# MANIFEST holds "path<SEP>owner-name<SEP>owner-dir". OWNER_OF maps a path to the name of
-# the repo that claims it, which is how a second claim is detected.
+# MANIFEST holds "path<SEP>owner-name<SEP>owner-dir<SEP>git-mode". OWNER_OF maps a path to the
+# name of the repo that claims it, which is how a second claim is detected. HOLDS_IGNORED names
+# each "<owner-dir>/<dir>" with a tracked path under it that stow skips.
 
 declare -A OWNER_OF=()
+declare -A HOLDS_IGNORED=()
 MANIFEST=()
 CONFLICTS=()
 SKIPPED_REPOS=()
 
 # add_repo <name> <dir>
 add_repo() {
-  local name="$1" dir="$2" mode rest path n=0
+  local name="$1" dir="$2" mode rest path up n=0
   if ! is_repo_root "$dir"; then
     SKIPPED_REPOS+=("$name${SEP}$dir")
     return 0
@@ -242,18 +242,23 @@ add_repo() {
     path="${rest#*$'\t'}"
     [ -n "$path" ] || continue
     n=$((n + 1))
-    # A tracked symlink is not a copy that can drift. git stores it as a mode-120000 blob
-    # holding the link TARGET, so comparing it to the resolved file on disk always reports
-    # a difference - 15 false positives from systemd .wants/ entries alone the last time
-    # someone tried. Skipped on both sides, exactly as dotfiles-drift does.
-    [ "$mode" = "120000" ] && continue
-    stow_ignored "$path" && continue
+    if stow_ignored "$path"; then
+      up="$path"
+      while [ "$up" != "${up%/*}" ]; do
+        up="${up%/*}"
+        HOLDS_IGNORED["$dir/$up"]=1
+      done
+      continue
+    fi
+    # A tracked symlink that dangles in its own repo (a submodule not checked out) has nothing
+    # to attach, so it is no deploy path.
+    [ "$mode" = 120000 ] && [ ! -e "$dir/$path" ] && continue
     if [ -n "${OWNER_OF[$path]:-}" ]; then
       CONFLICTS+=("$path${SEP}${OWNER_OF[$path]}${SEP}$name")
       continue
     fi
     OWNER_OF["$path"]="$name"
-    MANIFEST+=("$path${SEP}$name${SEP}$dir")
+    MANIFEST+=("$path${SEP}$name${SEP}$dir${SEP}$mode")
   done < <(git -C "$dir" ls-files -sz 2>/dev/null)
 
   # A repo that is present but enumerates NOTHING means git failed, not that the repo is
@@ -316,6 +321,37 @@ EOF
 
 FINDINGS=()
 
+# in_repo_tree <abs-dir> - does this directory physically sit in either repo's checkout?
+in_repo_tree() {
+  local abs="$1/" repo
+  for repo in "$PUB" "$PRIV"; do
+    case "$abs" in "$(readlink -f -- "$repo")"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# fold_point <path> <repo-dir> - the directory of a MISSING <path> that takes one link instead
+# of a link per file, or nothing. It is the first component with nothing at it in $HOME, when:
+#   - its parent is a folded link into a repo: creating it there would leave a physical
+#     directory of this repo's files in the other repo's checkout; or
+#   - it is a dangling link, which `mkdir -p` cannot get past: the directory moved repos and
+#     its old link stayed behind.
+# A directory link deploys all of it, so one holding a stow-ignored path gets no fold.
+fold_point() {
+  local rest="$1" repo="$2" prefix="" at
+  while [ "$rest" != "${rest#*/}" ]; do
+    prefix="${prefix:+$prefix/}${rest%%/*}"
+    rest="${rest#*/}"
+    at="$HOME/$prefix"
+    [ -e "$at" ] && continue
+    [ -d "$repo/$prefix" ] && [ -z "${HOLDS_IGNORED[$repo/$prefix]:-}" ] || return 0
+    if [ -L "$at" ] || in_repo_tree "$(readlink -f -- "${at%/*}")"; then
+      printf '%s\n' "$prefix"
+    fi
+    return 0
+  done
+}
+
 # first_link <path> - the shortest prefix of <path> that is a symlink under $HOME, or nothing.
 first_link() {
   local rest="$1" prefix="" comp
@@ -330,22 +366,31 @@ first_link() {
 
 classify_all() {
   FINDINGS=()
-  local rec path owner dir src tgt real_src real_tgt lp
-  declare -A SEEN_ABS=()
+  local rec path owner dir mode src tgt real_src real_tgt lp fold
+  declare -A SEEN_ABS=() SEEN_FOLD=()
   for rec in "${MANIFEST[@]}"; do
-    IFS="$SEP" read -r path owner dir <<< "$rec"
+    IFS="$SEP" read -r path owner dir mode <<< "$rec"
     src="$dir/$path"
     tgt="$HOME/$path"
     real_src="$(readlink -f -- "$src" 2>/dev/null)"
 
     if [ ! -e "$tgt" ]; then
-      if [ -L "$tgt" ]; then
+      fold="$(fold_point "$path" "$dir")"
+      if [ -n "$fold" ]; then
+        [ -n "${SEEN_FOLD[$fold]:-}" ] \
+          || FINDINGS+=("MISSING${SEP}$owner${SEP}$fold${SEP}$HOME/$fold${SEP}directory, one link serves every path under it")
+        SEEN_FOLD["$fold"]=1
+      elif [ -L "$tgt" ]; then
         FINDINGS+=("MISSING${SEP}$owner${SEP}$path${SEP}$tgt${SEP}symlink dangles (target missing)")
       else
         FINDINGS+=("MISSING${SEP}$owner${SEP}$path${SEP}$tgt${SEP}not linked into \$HOME (stow has not run)")
       fi
       continue
     fi
+    # git stores a symlink as a mode-120000 blob holding the link TARGET, so comparing it to the
+    # resolved file on disk always reports a difference - 15 false positives from systemd .wants/
+    # entries alone the last time someone tried. Skipped here, exactly as dotfiles-drift does.
+    [ "$mode" = 120000 ] && continue
 
     real_tgt="$(readlink -f -- "$tgt" 2>/dev/null)"
     if [ -n "$real_src" ] && [ "$real_tgt" = "$real_src" ]; then
@@ -431,10 +476,9 @@ convert() {
   FAILED=$((FAILED + 1)); return 1
 }
 
-# attach <target> <tracked-source> <path> - the MISSING case, which is all
-# dotfiles-overlay-link ever did. Creating the parent may land inside the OTHER repo's tree
-# when that parent is a folded directory link; that is correct for this layout and is
-# exactly how the committed .local/bin/* overlay links already resolve.
+# attach <target> <tracked-source> <path> - the MISSING case. Creating the parent may land inside
+# the OTHER repo's tree when that parent is a folded directory link; that is correct for this
+# layout and is exactly how the committed .local/bin/* overlay links already resolve.
 attach() {
   local tgt="$1" src="$2" path="$3" parent
   parent="$(dirname -- "$tgt")"
@@ -607,11 +651,8 @@ main() {
     printf '\n'
     apply_all
 
-    # CONVERGENCE. The reason this script exists rather than a longer
-    # dotfiles-overlay-link: re-classifying from scratch afterwards is the only honest
-    # proof that the repair took. dotfiles-overlay-link reports "attached N link(s)" and
-    # then reports "already in sync" on every run after, while the mirrors it structurally
-    # skipped are still sitting there serving the wrong content.
+    # CONVERGENCE. Re-classifying from scratch afterwards is the only honest proof that the
+    # repair took: a count of links written says nothing about what still serves wrong content.
     classify
     if [ "${#FINDINGS[@]}" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
       if [ "$ONLY_MISSING" = 1 ]; then

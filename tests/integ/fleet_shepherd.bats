@@ -120,6 +120,19 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
+@test "due never nudges a session holding an open ask it filed, and nudges the same row once the ask is gone" {
+  own="$(row a DONE false false | jq -c '. + {own_asks: 1}')"
+  doc "[$own, $(row b LANDED false false | jq -c '. + {own_asks: 2}'), $(row c STALLED false false | jq -c '. + {own_asks: 1}'), $(row d DONE false false)]"
+  run "$SH" due
+  refute_output --partial 'nudge DONE: a '
+  refute_output --partial 'nudge LANDED: b '
+  refute_output --partial 'nudge STALLED: c '
+  assert_line 'nudge DONE: d f-d'
+  doc "[$(jq -c '. + {own_asks: 0}' <<<"$own")]"
+  run "$SH" due
+  assert_line 'nudge DONE: a f-a'
+}
+
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
   # no item could be filed (the add fails), so the red is the human's, as before ar-623
   stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'
@@ -281,6 +294,12 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   rm "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  # One fleet-dispatch preempted (why=preempt) is its pass's to resume, never a pace line; a why=park one still is.
+  export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
+  printf 'session=p\ntarget=lab/p:1\nwhy=preempt\n' > "$CLAUDE_ACCT_PARKED_DIR/p"
+  printf 'session=q\ntarget=lab/q:1\nwhy=park\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  run "$SH" due
+  assert_output 'pace: parked lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
 }
 
 @test "run with nothing due starts no pass, calls no model, and still refreshes the document" {
@@ -324,13 +343,20 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run prompt
   assert_line 'nudge LANDED: b f-b'
   refute_output --partial 'unhandled:'
-  # the pass leaves b as it was: that is owed, and owed is urgent, so the next run starts a pass at once
+  # the pass leaves b as it was: owed, but not urgent, so it waits for the debounce, and that wait is no streak
   live "$(pass_id)" idle
   local second; second="$(pass_id)"
   run "$SH" run
   assert_output --partial 'unhandled: nudge LANDED: b f-b'
+  assert_output --partial 'none urgent'
+  assert_equal "$(pass_id)" "$second"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
+  # past the debounce the owed line starts a pass, and that check counts
+  aged 31
+  run "$SH" run
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$second" ]
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
   # a STALLED row is urgent too, however young the last pass, and so is each red the producers write
   live "$(pass_id)" idle
   doc "[$(row c STALLED false false)]"
@@ -948,6 +974,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: queue-starved tripped (high)'
 }
 
+@test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
+  doc "[$(row a DONE false false)]"
+  stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nfleet-thermal\tlow\nneptune-health\tnormal\n' STUB_K3S='[]'
+  run "$SH" run
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
+  refute_output --partial 'watch: fleet-thermal'
+  refute_output --partial 'watch: neptune-health'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
@@ -955,6 +991,19 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge DONE: a'
   refute_output --partial 'unbound variable'
   grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
+@test "debounce: a line left unhandled is as urgent as the line itself, so an owed red does not wait" {
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=30 STUB_TRIPPED='queue-starved\thigh\n'
+  doc "[$(row d WORKING false false)]"
+  "$SH" run >/dev/null
+  live "$(pass_id)" idle
+  local id; id="$(pass_id)"
+  run "$SH" run
+  assert_output --partial 'unhandled: watch: queue-starved tripped (high)'
+  assert_output --partial 'started pass'
+  [ "$(pass_id)" != "$id" ]
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
 }
 
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
@@ -1219,6 +1268,30 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
 }
 
+# gw_accts <team capped>: accts with the sources rows, the team one capped or not
+gw_accts() {
+  accts false 50 50 | jq -c --argjson c "$1" '.sources = [
+    {name: "lazer", kind: "litellm-team", room: {ok: false, capped: $c}},
+    {name: "reserve", kind: "litellm-key", room: {ok: false, capped: false}}]'
+}
+
+@test "a gateway team out of budget: its sessions get the exact move, sessions on accounts get nothing" {
+  doc "[$(acct_row lab/agent-55:1 %5 idle gateway), $(acct_row hub/dotfiles:2 %27 idle main)]"
+  STUB_ACCTS="$(gw_accts true)" run "$SH" due
+  assert_success
+  assert_output 'limit: lab/agent-55:1 idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
+  # Negative control: the team has budget, and a key's own row is not the team's
+  STUB_ACCTS="$(gw_accts false)" run "$SH" due
+  assert_failure
+}
+
+@test "a gateway session stopped on a 429 names the move; an account session showing that text gets no line" {
+  doc "[$(acct_row lab/agent-55:1 %5 idle gateway | jq -c '.idle_min = 9'), $(idle_row lab/agent-1:1 %6 9)]"
+  STUB_ACCTS="$(gw_accts false)" STUB_PANE='API Error: 429 Budget has been exceeded! Team=t1 Current cost: 380, Max budget: 250\n' run "$SH" due
+  assert_success
+  assert_output 'limit: lab/agent-55:1 stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
+}
+
 @test "an account out of usage with no room anywhere is one line for the human" {
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 idle main)]"
   STUB_ACCTS="$(accts true 100 40 noroom)" run "$SH" due
@@ -1329,6 +1402,26 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   assert_output --regexp '^passing: 1 due, last pass (19|20|21)m ago$'
 }
 
+@test "stuck and the page: a line the debounce can hold gets DEBOUNCE_MIN longer, an urgent line does not" {
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=60
+  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '90 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stuck
+  assert_success
+  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: watch: x tripped (high)\n' > "$FLEET_SHEPHERD_DIR/.due"
+  run "$SH" stuck
+  assert_failure 1
+  # the page: 90 minutes owed pages an urgent line and not a held one
+  doc "[$(row a DONE false false)]"
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  "$SH" check >/dev/null
+  sed -i "s/\t[0-9]*$/\t$(ago 90)/" "$FLEET_SHEPHERD_DIR/.handed"
+  "$SH" check >/dev/null
+  run cat "$HOME/pages"
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  refute_output --partial 'nudge DONE: a'
+}
+
 @test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {
   doc "[$(row a DONE false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' "$SH" check >/dev/null
@@ -1374,6 +1467,48 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   assert_line --partial 'open 160m'
   run "$SH" skip 'overdue: t-s1 phase 2/4'
   assert_failure 2
+}
+
+@test "skip refuses a line that is not due, names the nearest due line, and stores nothing" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: a f-...' 'shortened'
+  assert_failure 2
+  assert_output --partial "nearest due: 'nudge DONE: a f-a'"
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  if grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"; then false; fi
+  # Negative control: the line as check printed it is accepted and stays out of the next check.
+  run "$SH" skip 'nudge DONE: a f-a' 'the human has it'
+  assert_success
+  run checked
+  assert_failure 1
+}
+
+@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is accepted" {
+  doc "[]"
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_failure 2
+  assert_output --partial 'nothing is due now'
+  run "$SH" skip 'unhandled: ' 'why'
+  assert_failure 2
+  assert_output --partial 'is empty'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  # no check has seen this line: it is due now, so it is a due line
+  doc "[$(row a DONE false false)]"
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_success
+}
+
+@test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
+  doc "[$(row a DONE false false),$(row b DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: zzz' 'why'
+  assert_failure 2
+  assert_output --partial "nudge DONE: a f-a'; 'nudge DONE: b f-b"
+  run "$SH" skip 'nudge DONE: ...f-b' 'why'
+  assert_failure 2
+  assert_output --partial "nearest due: 'nudge DONE: b f-b'"
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
 }
 
 @test "stats counts the ledgers: open, unhandled, skipped and paged lines, 24h receipts from log.md, the last pass" {

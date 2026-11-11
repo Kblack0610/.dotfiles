@@ -128,7 +128,7 @@ dotfiles path; the token arrives via the private overlay. Then:
 launchctl load -w ~/Library/LaunchAgents/com.kblack.fleet-pulse.plist   # or your load path
 sketchybar --reload
 ```
-Expect that Mac's key (`homelab_mac-studio` / `homelab_mac-mini`, or
+Expect that Mac's key (`homelab_mac-mini`, or
 `workplace_gp-mac`) to green on the dashboard and the sketchybar dot to go green.
 
 ### 4. Windows

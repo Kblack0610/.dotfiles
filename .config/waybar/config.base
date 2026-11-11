@@ -101,7 +101,7 @@
                 ""
             ]
         },
-        "on-click": "pavucontrol"
+        "on-click": "kitty --class floating-term -e wiremix"
     },
     // The `modules.sh gate <id>` prefix below is what makes these toggleable at
     // runtime: while a module is off the gate prints nothing and waybar drops it.
@@ -120,8 +120,7 @@
             "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/ci",
-            "custom/machine-mode"
+            "custom/ci"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
@@ -257,8 +256,8 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab projects",
         "tooltip": true
     },
-    // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
-    // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
+    // Machine mode: the mode's initial, in every mode. Placed by config.desktop only (right of
+    // custom/storage); the laptop has no pool runners, so it has no chip.
     "custom/machine-mode": {
         "format": "{}",
         "return-type": "json",
@@ -269,6 +268,8 @@
         "on-click": "$HOME/.local/bin/machine-mode next",
         "tooltip": true
     },
+    // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
+    // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
     "custom/dispatch": {
         "format": "{}",
         "return-type": "json",

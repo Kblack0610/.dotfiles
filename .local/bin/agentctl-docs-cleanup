@@ -68,7 +68,7 @@ fi
 # Each night's pass is new work under that slug, so it is queued --repeat.
 state="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty')"
 case "$state" in
-    queued|running|waiting)
+    queued|running|waiting|review)
         report NOOP "pass $SLUG still $state ($summary)"
         echo "docs-cleanup: pass $SLUG still $state, not queuing another ($summary)"
         exit 0 ;;

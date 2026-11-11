@@ -94,7 +94,7 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.
 const st = vm.runInContext("st", ctx);
 const wrow = (o) => ({ tier: 3, kind: "session", who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, for: "fleet tab plan", doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
-const COLS = ["kind", "who", "state", "since", "for", "doing", "under", "project"];
+const COLS = ["kind", "who", "state", "cost", "since", "for", "doing", "under", "project"];
 const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
   states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
@@ -104,7 +104,7 @@ const table = (o = {}) => ({
 });
 const people = [
   wrow({ tier: 1, kind: "lead", who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", for: "Starts a one-shot session per small agent row", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
-  wrow({ tier: 2, kind: "observe", who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", for: "Answers asks it can", doing: "no gateway route (2 failed 24h)", under: "called by dream", parent: null, project: "" }),
+  wrow({ tier: 2, kind: "observe", who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", cost_24h: 4.5, for: "Answers asks it can", doing: "no gateway route (2 failed 24h)", under: "called by dream", parent: null, project: "" }),
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
@@ -141,7 +141,7 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   const h = box.innerHTML;
   assert.equal((h.match(/data-tsort=/g) || []).length, COLS.length);
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
-  assert.match(h, /spend on <a href="#costs\?by=runner&w=24h">Costs<\/a>/);
+  assert.match(h, /who spent what on <a href="#costs">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
   assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
 });
@@ -241,7 +241,7 @@ const runnerPage = (name, o = {}) => ({
   runs_total: 2, failed_total: 1,
   days: Array.from({ length: 14 }, (_, i) => ({ day: `11-${String(i + 1).padStart(2, "0")}`, runs: i === 13 ? 2 : 0, failed: i === 13 ? 1 : 0 })),
   calls: { day: totals({ calls: 4, errors: 1, tokens: 12000, cost: 0.42, p50_ms: 2100 }), week: totals({ calls: 30, tokens: 90000, cost: 3.1, p50_ms: 2400 }), partial: true, recent: [call("s9")] },
-  extras: { kind: "ingest", counts_7d: { filed: 5, routed: 2 }, partial: false, steps: [{ ts: "2026-11-06T10:00:00Z", action: "filed", from: "inbox", to: "board", lane: "", text: "fix the thing", id: null, why: null }] },
+  extras: { kind: "ingest", counts_7d: { filed: 5, routed: 2 }, partial: false, steps: [{ ts: "2026-11-06T10:00:00Z", action: "filed", from: "inbox", to: "board", lane: "", text: "fix the thing", id: "ar-9", why: "model: names the hub", row: "fix the thing on the hub", by: "inbox-triage" }] },
   ...o,
 });
 const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: "", headers: { get: () => (status < 400 ? "application/json" : "text/plain") }, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
@@ -268,6 +268,8 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /<td class="bad">FAILED<\/td>/);
   assert.match(h, /<td>7d<\/td><td class="n">30\+<\/td>/, "a partial week is a floor");
   assert.match(h, /<span class="tl">FILED<\/span><span class="tv">5<\/span>/);
+  assert.match(h, /<td>filed <span class="muted">ar-9<\/span><\/td><td class="muted">inbox -&gt; board<\/td><td class="muted">inbox-triage<\/td>/, "an intake step names its id, route and writer");
+  assert.match(h, /fix the thing<div class="muted">=&gt; fix the thing on the hub<\/div><\/td><td class="wrap muted">model: names the hub<\/td>/, "and the row it became and why");
   assert.match(h, /<td>API_TOKEN<\/td><td class="wrap muted">\(set\)<\/td>/);
   assert.match(h, /href="#fleet">All runners<\/a>/);
   click({ target: { closest: (sel) => (sel === "tr.rr" ? { dataset: { i: "0" } } : null) } });
@@ -316,4 +318,18 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
   st.tab = "fleet";
+});
+
+test("COST 24H is a runner's dollars linking to Costs, and none is a dash, never $0", () => {
+  vm.runInContext("st", ctx).tab = "fleet";
+  vm.runInContext("fst", ctx).data = fleetData;
+  ctx.renderFleet();
+  const h = box.innerHTML;
+  assert.match(h, />cost 24h<\/button><\/th>/);
+  assert.match(h, /<td class="bad">failed<\/td><td class="n"><a href="#costs">\$4\.50<\/a><\/td>/);
+  assert.match(h, /<td class="warn">needs you<\/td><td class="n">-<\/td>/, "a session has no runner cost");
+  vm.runInContext("fst", ctx).data = { ...fleetData, who: fleetData.who.map((r) => ({ ...r, cost_estimated: r.cost_24h != null })) };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<a href="#costs">~\$4\.50<\/a>/, "an estimated figure is marked on the screen");
+  assert.doesNotMatch(h, /\$0\.00/);
 });

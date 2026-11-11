@@ -7,7 +7,7 @@
 #
 # Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
 # in its own terminal (a plan to approve, an AskUserQuestion, a permission): agent-ask never
-# sees those, yet the agents chip counts them in its !N. A plan or question row is answered
+# sees those, yet the status bar counts them in its !N. A plan or question row is answered
 # here too: its card and options come from `agent-panel dialog`, which reads the live pane, and
 # a number then enter presses that option there through `agent-panel answer`, which refuses
 # when the dialog changed since the card was drawn. A dialog the parser does not know (a
@@ -17,7 +17,10 @@
 #
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
-#                     then oldest, then the sessions with a dialog open (id @<target>)
+#                     then the live asks oldest first, then the sessions with a dialog open
+#                     (id @<target>), then the dead asks oldest first
+#   count             how many rows rows prints, one number: the pending asks plus the open dialogs.
+#                     The agents status bar's !N, so the bar and this panel never disagree
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
 #   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
@@ -29,30 +32,42 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../../.config/shared-hooks/project-name.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
-# fleet-sessions' state document, the one place a session's NEEDS reason is decided.
+# fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-# The NEEDS reasons session_bucket gives a session waiting on a dialog in its own terminal.
-DIALOG_REASONS='["waiting on a prompt or permission", "plan awaiting approval"]'
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
 # picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "<slug>:<agent number>  <age>  <question>" and, under the question, what the
-# session is (its registry title) and "ended" once it has: short enough for the list column
-# beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
+# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
+# session is (its registry title): short enough for the list column beside the card (a third of
+# the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
+# ask whose session has ended, none an ask no session filed (intake, headless), as its card says
+# "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts. Where an answer goes is on the card
+# (agent-ask answer_route), not the row: it reads the queue, 1.8 s, too slow for the open path
+# (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
-# prompt_list: the sessions with a dialog open,
-# "<target>\t<project>\t<idle min>\t<doing>\t<topic>\t<reason>", the project resolved from the
-# session's directory the way an ask's is.
+# prompt_rows: the sessions with a dialog open now, and prompt_list those rows with the project added:
+# "<target>\t<project>\t<idle min>\t<doing>\t<topic>", the project resolved from the session's
+# directory the way an ask's is. Live from agent-panel, so a plan shows as soon as it waits and
+# goes when it is answered; QUESTIONS_ANSWERED is the one just answered, whose status file can
+# trail its pane by a moment. A worker's sessions come from the state document, a pass behind.
+prompt_rows() {
+  {
+    agent-panel list --json 2>/dev/null | jq -r --argjson now "$(date +%s)" --arg done "${QUESTIONS_ANSWERED:-}" '
+      select(.status == "waiting" and .target != $done)
+      | [.target, (.cwd // ""), ((($now - (.idle_since // $now)) / 60 | floor | if . < 0 then 0 else . end)),
+         (.doing // "" | gsub("[\t\n]"; " ")), (.summary // "" | gsub("[\t\n]"; " "))] | @tsv' 2>/dev/null
+    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done)
+      | [.target, (.cwd // ""), (.idle_min // 0),
+         (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
+      "$FLEET_STATE_FILE" 2>/dev/null
+  } | awk -F'\t' '$1 != ""'
+}
 prompt_list() {
-  [ -r "$FLEET_STATE_FILE" ] || return 0
   local t cwd rest
-  jq -r --argjson r "$DIALOG_REASONS" '.sessions[]? | select(.bucket == "NEEDS" and (.reason | IN($r[])))
-    | [.target, (.cwd // ""), (.idle_min // 0),
-       (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " ")), .reason] | @tsv' \
-    "$FLEET_STATE_FILE" 2>/dev/null |
+  prompt_rows |
     while IFS=$'\t' read -r t cwd rest; do
       printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
     done
@@ -103,9 +118,9 @@ cmd_rows() {
         else if (match($1, /:[0-9]+$/)) who = who substr($1, RSTART)
         k = "p" FNR; W[k] = who; if (length(who) > w) w = length(who)
         e = now - $3 * 60
-        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e)
+        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e); M[k] = 2
         tool = $4; sub(/:.*/, "", tool)
-        if (tool == "ExitPlanMode" || $6 == "plan awaiting approval") Q[k] = "plan waiting for approval"
+        if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval"
         else if (tool == "AskUserQuestion") Q[k] = "question waiting for an answer"
         else Q[k] = "prompt waiting in its terminal" ($4 != "" ? ": " $4 : "")
         S[k] = ($5 != "") ? faint $5 off : ""
@@ -116,22 +131,36 @@ cmd_rows() {
         who = slug(n)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
-        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $NF, $1)
+        M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
+        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $NF, $1)
         A[NR] = age($NF); Q[NR] = $6
-        S[NR] = ($16 != "" && index(live, " " $16 " ") == 0) ? "ended" : ""
-        if (T[$16] != "") S[NR] = S[NR] (S[NR] != "" ? " . " : "") faint T[$16] off
+        S[NR] = (T[$16] != "") ? faint T[$16] off : ""
       }
       # The name column is as wide as its longest name, up to 12. The second line starts under
       # the question; \037 stands for its newline until the rows are sorted.
       END {
         if (w > 12) w = 12
         for (i in W) {
-          printf "%s%s%-*.*s%s %s%3s%s  %s", L[i], bold, w, w, W[i], off, faint, A[i], off, Q[i]
-          if (S[i] != "") printf "\037%*s%s", w + 6, "", S[i]
+          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : faint "dead" off,
+            bold, w, w, W[i], off, faint, A[i], off, Q[i]
+          if (S[i] != "") printf "\037%*s%s", w + 11, "", S[i]
           print ""
         }
       }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
+}
+# cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
+# without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows
+# selects; tests/integ/questions_panel.bats holds the two equal). A status bar ticks every 3 s,
+# so it gets no titles, routes or project names.
+cmd_count() {
+  local asks prompts
+  asks="$("$QUESTIONS_ASK" list --all --pending | grep -c .)" || true
+  prompts="$({
+    agent-panel list 2>/dev/null | awk -F'\t' -v done="${QUESTIONS_ANSWERED:-}" '$2 == "!" && $1 != done { print $1 }'
+    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done) | .target' "$FLEET_STATE_FILE" 2>/dev/null
+  } | grep -c .)" || true
+  echo $((${asks:-0} + ${prompts:-0}))
 }
 # rows_count: "<asks> <plans> <questions> <prompts>" in what cmd_rows printed (a row is
 # NUL-ended; a dialog's id starts with @ and its first line names its kind).
@@ -198,7 +227,8 @@ after() {
   local n
   n="$(cmd_rows | rows_count)"
   st_write ""
-  printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting $n)"
+  printf 'hide-input+change-prompt~~+reload(QUESTIONS_ANSWERED=%q %q rows)+change-header~%s~+' \
+    "${QUESTIONS_ANSWERED:-}" "$SELF" "$(waiting $n)"
   if [ "$n" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
@@ -272,7 +302,7 @@ dialog_send() {
   local k="$1" t="${2#@}" seen="$3" err rc=0
   err="$(agent-panel answer "$t" "$k" --expect "$seen" -- ${4:+"$4"} 2>&1 >/dev/null)" || rc=$?
   case "$rc" in
-  0) after "sent $k \"$seen\" to $t" ;;
+  0) QUESTIONS_ANSWERED="$t" after "sent $k \"$seen\" to $t" ;;
   3) after "not taken: $t did not move on . g goes there" ;;
   4) after "not sent: ${err:-the dialog changed or closed}" ;;
   *) after "not sent: ${err:-agent-panel answer failed}" ;;
@@ -411,6 +441,7 @@ cmd_pick() {
 
 case "${1:-}" in
 rows) cmd_rows ;;
+count) cmd_count ;;
 key) shift; cmd_key "$@" ;;
 card) shift; cmd_card "$@" ;;
 '') cmd_pick ;;

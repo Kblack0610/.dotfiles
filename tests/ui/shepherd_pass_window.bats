@@ -19,6 +19,7 @@ setup() {
   SH="$REPO_ROOT/.local/bin/fleet-shepherd"
   SRV="batsshep$$"
   export FLEET_SHEPHERD_SERVER="$SRV" FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd" FLEET_STATE_FILE="$HOME/state.json"
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=0   # these drive passes back to back; the hold has its own test in integ
   export AGENTCTL_NAME=shepherd-test AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   mkdir -p "$FLEET_SHEPHERD_DIR" "$HOME/.dotfiles"
   jq -n '{schema:1, main:[], sessions:[{target:"a", bucket:"DONE", nudged:false, escalated:false, labels:[], fact:"f"}]}' > "$FLEET_STATE_FILE"

@@ -13,8 +13,8 @@ fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
 
-/// The tokens fold: `u` opens it, `U` switches its window. None leaves it to the
-/// section's state: shut while green, open while amber (dashboards rule 4).
+/// The tokens fold: `u` folds or opens it, `U` switches its window. None is the default, open
+/// (dashboards rule 4).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TokensView {
     pub open: Option<bool>,
@@ -23,7 +23,7 @@ pub struct TokensView {
 
 impl TokensView {
     pub fn is_open(self, t: Option<&Tokens>) -> bool {
-        t.is_some_and(|t| self.open.unwrap_or(t.stale))
+        t.is_some() && self.open.unwrap_or(true)
     }
 }
 
@@ -99,16 +99,14 @@ pub fn tokens(
     out
 }
 
-/// Whether the Langfuse fold is open: the human's `l`, else open while amber (no figures that
-/// night, or a stale snapshot).
-pub fn langfuse_open(t: &Tokens, open: Option<bool>) -> bool {
-    open.unwrap_or(t.langfuse.figures.is_none() || t.stale)
+/// Whether the Langfuse fold is open: the human's `l`, else open (dashboards rule 4).
+pub fn langfuse_open(open: Option<bool>) -> bool {
+    open.unwrap_or(true)
 }
 
 /// What Langfuse sees: the newest snapshot's tool latency, tool errors and gateway figures. `open`
-/// is the human's fold (`l`); None leaves it to the section's state: shut while it reads, open
-/// while amber, which is no figures that night or a stale snapshot (dashboards rule 4). The
-/// gateway's dollars are the gateway's alone, never summed with the Claude sessions' (the table).
+/// is the human's fold (`l`); None is the default, open (dashboards rule 4). The gateway's
+/// dollars are the gateway's alone, never summed with the Claude sessions' (the table).
 pub fn langfuse(
     t: Option<&Tokens>,
     open: Option<bool>,
@@ -118,7 +116,7 @@ pub fn langfuse(
     const TITLE: &str = "WHAT LANGFUSE SEES";
     let Some(t) = t else { return vec![] };
     let f = t.langfuse.figures.as_ref();
-    let open = langfuse_open(t, open);
+    let open = langfuse_open(open);
     let (mark, verb) = if open { ("-", "folds") } else { ("+", "opens") };
     let mut head = vec![Span::styled(format!("{mark} {TITLE}"), p.head())];
     match f {
@@ -266,7 +264,7 @@ fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec
         })
         .collect();
     Table {
-        header: vec![title, "CALLS", "OUTPUT", "SHARE", "RE-READ"],
+        header: vec![title, "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
         rows,
         keep: vec![0, 3, 2, 4, 1],
         right: vec![1, 2, 3, 4],
@@ -360,10 +358,11 @@ mod tests {
     }
 
     #[test]
-    fn the_langfuse_fold_is_one_line_while_it_reads() {
+    fn the_langfuse_fold_starts_open_and_folds_to_one_line() {
         let t = token_fixture(false);
+        assert!(lf_text(Some(&t), None, 80)[0].starts_with("- WHAT LANGFUSE SEES"));
         assert_eq!(
-            lf_text(Some(&t), None, 80),
+            lf_text(Some(&t), Some(false), 80),
             ["+ WHAT LANGFUSE SEES  tool errors 2%, gateway errors 13%, $3.59  l opens it"]
         );
         assert!(lf_text(None, None, 80).is_empty());
@@ -425,9 +424,18 @@ mod tests {
     }
 
     #[test]
-    fn the_tokens_fold_is_one_line_while_fresh() {
+    fn the_tokens_fold_starts_open_and_folds_to_one_line() {
         let t = token_fixture(false);
         let l = token_text(Some(&t), TokensView::default(), 80);
+        assert!(
+            l[0].starts_with("- WHERE THE TOKENS GO") && l.len() > 1,
+            "{l:?}"
+        );
+        let shut = TokensView {
+            open: Some(false),
+            day: false,
+        };
+        let l = token_text(Some(&t), shut, 80);
         assert_eq!(
             l,
             ["+ WHERE THE TOKENS GO  7d 18.0B, tool output 15%  u opens it"]

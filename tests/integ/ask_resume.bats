@@ -235,3 +235,19 @@ EOF
   run bash -c '"$AGENT_ASK" resumable alpha | wc -l'
   assert_output '1'
 }
+
+@test "a run: resume runs its command with the ask id, once, and no model" {
+  printf '#!/usr/bin/env bash\necho "consumer $*" >> "$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/consumer"
+  chmod +x "$SANDBOX/bin/consumer"
+  local id; id="$("$AGENT_ASK" post --project alpha --kind gate \
+    --options 'alpha=file it on alpha|drop=take it out' --resume 'run:consumer --answer' 'Which project is this line about?')"
+  "$AGENT_ASK" answer "$id" alpha >/dev/null 2>&1
+  run ask-resume --dry-run "$id"
+  assert_output --partial "would run: consumer --answer $id"
+  ask-resume "$id"
+  ask-resume --all
+  # The answer also reads the queue for items held on the ask (agent-ask start_held), so only the
+  # consumer's own calls are counted.
+  run grep '^consumer ' "$NOTES_FIXTURE/calls.log"
+  assert_output "consumer --answer $id"
+}

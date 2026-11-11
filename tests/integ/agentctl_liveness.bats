@@ -153,10 +153,11 @@ outcome() {
   echo 'ENABLED=no' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   echo 'CRITICAL=maybe' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   show agentctl-alpha.timer ActiveState inactive
-  printf 'NAME=judge\nKIND=call\nLANE=deliver\nROLE=distill\nDESCRIPTION=\047a judge\047\nEFFECT=shadow\n' > "$AGENTCTL_CONF_DIR/judge.conf"
+  printf 'NAME=judge\nKIND=call\nLANE=deliver\nROLE=distill\nPRIORITY=low\nDESCRIPTION=\047a judge\047\nEFFECT=shadow\n' > "$AGENTCTL_CONF_DIR/judge.conf"
   run "$AGENTCTL_BIN" liveness
   assert_failure
   assert_output --partial 'fleet: no enabled runner on the roster'
+  refute_output --partial 'judge'
 }
 
 @test "an invalid conf is a fault: reload gives it no timer" {
@@ -171,4 +172,17 @@ outcome() {
   run "$AGENTCTL_BIN" pause hot box
   assert_success
   assert_line 'agentctl: still running (CRITICAL=yes): beta'
+}
+
+@test "only an EFFECT=none runner can be CRITICAL: a pause must stop model work" {
+  for effect in draft shadow acts; do
+    runner beta 'SCHEDULE=hourly' 'CRITICAL=yes' "EFFECT=$effect"
+    run "$AGENTCTL_BIN" liveness
+    assert_failure
+    assert_output --partial "beta: invalid conf (CRITICAL=yes needs EFFECT=none, not $effect"
+  done
+  # Negative control: the model effects are refused only with CRITICAL=yes.
+  runner beta 'SCHEDULE=hourly' 'EFFECT=acts'
+  run "$AGENTCTL_BIN" liveness
+  assert_success
 }

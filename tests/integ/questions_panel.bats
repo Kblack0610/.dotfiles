@@ -48,12 +48,12 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
-  assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]$'
-  assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]$'
-  assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]$'
+  assert_line --regexp $'\tnone ucp:60 +[0-9]+m  long project[?]$'
+  assert_line --regexp $'\tnone demo:1 +[0-9]+m  short project[?]$'
+  assert_line --regexp $'\tnone demo   +[0-9]+m  no agent number[?]$'
 }
 
-@test "a row's second line says what the session is, and ended once it has, under the question" {
+@test "a row says LIVE, none or dead before the name, and what the session is under the question" {
   mkdir -p "$HOME/.claude/sessions" "$HOME/.agent/sessions/demo"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
   printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
@@ -65,11 +65,36 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   loose="$(ask demo s 'a=the first|b=the second' 'headless?')"
   run rows
   assert_success
-  # The second line starts under the question: name column (4) + age (3) + three spaces.
-  assert_line --regexp "^$live	demo +[0-9]+m  live[?]~ {10}live-work\$"
-  assert_line --regexp "^$ended	demo +[0-9]+m  ended[?]~ {10}ended [.] tidy-the-board\$"
-  assert_line --regexp "^$untitled	demo +[0-9]+m  untitled[?]~ {10}ended\$"
-  assert_line --regexp "^$loose	demo +[0-9]+m  headless[?]\$"
+  # The second line starts under the question: mark (4) + name column (4) + age (3) + four spaces.
+  assert_line --regexp "^$live	LIVE demo +[0-9]+m  live[?]~ {15}live-work\$"
+  assert_line --regexp "^$ended	dead demo +[0-9]+m  ended[?]~ {15}tidy-the-board\$"
+  assert_line --regexp "^$untitled	dead demo +[0-9]+m  untitled[?]\$"
+  # An ask with no session (intake, headless) is none, not LIVE: its card says no session is waiting.
+  assert_line --regexp "^$loose	none demo +[0-9]+m  headless[?]\$"
+}
+
+@test "live asks come first oldest first, then the open dialogs, then the dead asks oldest first" {
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
+  local dead_old live_new dead_new live_old
+  dead_old="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo agent-1 'a=the first|b=the second' 'dead old?')"
+  live_new="$(CLAUDE_CODE_SESSION_ID=sid-1 ask demo agent-2 'a=the first|b=the second' 'live new?')"
+  dead_new="$(CLAUDE_CODE_SESSION_ID=sid-8 ask demo agent-3 'a=the first|b=the second' 'dead new?')"
+  live_old="$(ask demo agent-4 'a=the first|b=the second' 'live old?')"
+  created "$dead_old" 2026-11-01T10:00:00-0800
+  created "$live_new" 2026-11-04T10:00:00-0800
+  created "$dead_new" 2026-11-05T10:00:00-0800
+  created "$live_old" 2026-11-02T10:00:00-0800
+  live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues' >"$NOTES_FIXTURE/agent-panel.list.json"
+  run rows
+  assert_success
+  # The oldest ask is dead, so it sorts below every live row and the dialog.
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live_old $live_new @hub/demo:2 $dead_old $dead_new "
+  assert_line --index 2 --partial $'\tLIVE demo:2'
+  # live_old has no session: it reads none, and still sorts with the live asks.
+  assert_line --index 0 --partial $'\tnone demo:4'
+  assert_line --index 1 --partial $'\tLIVE demo:2'
+  assert_line --index 3 --partial $'\tdead demo:1'
 }
 
 # The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'
@@ -101,17 +126,25 @@ session() {
   printf '{"target":"%s","bucket":"%s","reason":"%s","idle_min":%s,"doing":"%s","topic":"%s","said":"the last thing it said","cwd":"/nowhere/demo"}' "$@"
 }
 
+# live_agent <target> <status> <idle min> <doing> <summary>: one line of `agent-panel list --json`.
+live_agent() {
+  printf '{"target":"%s","status":"%s","idle_since":%s,"doing":"%s","summary":"%s","cwd":"/nowhere/demo"}\n' \
+    "$1" "$2" "$(($(date +%s) - $3 * 60))" "$4" "$5"
+}
+
 @test "every session with a dialog open is a row after the asks, plans included, so the count matches the chip's" {
   local id
   id="$(ask demo agent-1 'a=the first|b=the second' 'filed question?')"
-  fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')" \
-    "$(session hub/demo:2 NEEDS 'plan awaiting approval' 90 ExitPlanMode 'Stop issues')" \
-    "$(session hub/demo:3 NEEDS 'waiting on a prompt or permission' 10 Bash 'Needs a permission')" \
-    "$(session lab/demo-agent-5:1 NEEDS '1 pending ask(s)' 5 Bash 'Has an ask')" \
-    "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
+  {
+    live_agent lab/demo-agent-4:1 waiting 30 AskUserQuestion 'Trading plan'
+    live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues'
+    live_agent hub/demo:3 waiting 10 Bash 'Needs a permission'
+    live_agent lab/demo-agent-5:1 busy 5 Bash 'Has an ask'
+    live_agent lab/demo-agent-6:1 busy 0 Edit 'Busy'
+  } >"$NOTES_FIXTURE/agent-panel.list.json"
   run rows
   assert_success
-  # The ask first, then the dialogs oldest first; an ask's NEEDS and a WORKING session add nothing.
+  # The ask first, then the dialogs oldest first; a busy session adds nothing, ask or no ask.
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$id @hub/demo:2 @lab/demo-agent-4:1 @hub/demo:3 "
   assert_line --index 1 --partial 'demo:2'
   assert_line --index 1 --partial 'plan waiting for approval~'
@@ -125,6 +158,34 @@ session() {
   assert_equal "$(waiting 3 11 2 0)" '3 asks . 11 plans . 2 questions waiting'
   assert_equal "$(waiting 0 1 0 0)" '1 plan waiting'
   assert_equal "$(waiting 0 0 0 0)" 'no questions waiting'
+}
+
+@test "count is the number of rows, so the status bar and the panel read one number" {
+  ask demo agent-1 'a=the first|b=the second' 'one?' >/dev/null
+  ask demo agent-2 'a=the first|b=the second' 'two?' >/dev/null
+  {
+    live_agent lab/demo-agent-4:1 waiting 30 AskUserQuestion 'Trading plan'
+    live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues'
+    live_agent lab/demo-agent-6:1 busy 0 Edit 'Busy'
+  } >"$NOTES_FIXTURE/agent-panel.list.json"
+  # agent-panel list prints a `!` glyph for a waiting status; the fixture serves both forms.
+  printf 'lab/demo-agent-4:1\t!\tdemo\tx\nhub/demo:2\t!\tdemo\tx\nlab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+  . "$Q"
+  run "$Q" count
+  assert_success
+  assert_output 4
+  assert_equal "$("$Q" rows | rows_count | awk '{ print $1 + $2 + $3 + $4 }')" 4
+  assert_equal "$("$AGENT_ASK" count --all)" 2
+  # An answered or cancelled ask leaves both counts; the dialog just answered does too.
+  QUESTIONS_ANSWERED=hub/demo:2 run "$Q" count
+  assert_output 3
+}
+
+@test "count is 0 with nothing waiting, and a busy session adds nothing (negative control)" {
+  printf 'lab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+  run "$Q" count
+  assert_success
+  assert_output 0
 }
 
 @test "with no state document, or no question at all, a dialog row never appears" {
@@ -334,10 +395,12 @@ plan_dialog() {
   printf '%s\n' '{"session_id":"sid-live","target":"hub/demo:2"}' >"$NOTES_FIXTURE/agent-panel.list"
   run "$Q" key g "$live"
   assert_output 'execute-silent(agent-panel jump hub/demo:2)+abort'
+  # sid-gone has no Claude transcript (a Codex thread posts under its own id): no reopen, no
+  # claude --resume hint. The reopen test below covers a transcript whose directory is gone.
   run "$Q" key g "$gone"
-  assert_output 'change-footer~session ended and its directory is gone; resume with claude --resume sid-gone~'
+  assert_output 'change-footer~no Claude conversation sid-gone to reopen; answer it here~'
   run "$Q" key g "$loose"
-  assert_output 'change-footer~no Claude session owns this ask~'
+  assert_output 'change-footer~no session is waiting on this ask; answer it here~'
   # Going nowhere answers nothing.
   assert_equal "$(status_of "$live")$(status_of "$gone")" pendingpending
 }

@@ -34,10 +34,11 @@
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale
-#   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
+#   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
 #                                against KPI_THRESHOLDS;
+#                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
@@ -63,15 +64,18 @@
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
 #                                queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
-#   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]]
-#                                | start <id> | score <id> | shepherd [--days N] [--json]
+#   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
+#                                | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
+#                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one night item per task
 #                                a week (retro runs it), start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
 #                                once per run; verify proves each oracle fails at base, passes at merge;
 #                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model;
-#                                list --by sets each lane beside the claude lane on their shared tasks
+#                                list --by sets each lane beside the claude lane on their shared tasks;
+#                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
+#                                harness: each cell proven, failing, excluded, no work, or empty
 #   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run|--coverage|--route <key>...]
@@ -80,13 +84,16 @@
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
 #                                cc:red_now item nothing here reads, plus one per red that started
 #                                within HOLD_HOURS after a cleanup merge; TRIAGE_ROUTES decides where
-#                                each one goes, and an agent route queues a red fix. --route prints
+#                                each one goes, and an agent route or any watch route but a human's
+#                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cancelled (closed cancelled
+#                                came back (red again after the merge), alert route (red, but
+#                                TRIAGE_ROUTES sends it to alert: its watch pages on a KPI no merge
+#                                clears, so reds_unfixed leaves it out), cancelled (closed cancelled
 #                                with no merge, as when handed to an owner), cleared (ok with no PR)
 #                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
@@ -132,12 +139,14 @@
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
+# BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H.
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
 
 set -uo pipefail
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 
 # Each sample also publishes the window's numbers to Prometheus (fleet_bench.prom).
 # shellcheck source=/dev/null
@@ -153,6 +162,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/test-pick.sh"
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # forge_canonical, for the matrix
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -160,6 +171,7 @@ set -uo pipefail
 : "${BENCH_CAL_MIN:=0.25}"           # clamp on that factor: a few odd runs cannot shrink an ETA to nothing
 : "${BENCH_CAL_MAX:=4}"              # nor stretch it to days
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
+: "${BENCH_CI_MATCH_CMD:=hub ci --pool-match}"   # given the wait (s) a job must have waited; hub_core::ci's pool match rows
 : "${BENCH_NEEDS_CMD:=hub needs --json}"   # hub Home's ranked NEEDS YOU (hub_core::home::needs)
 : "${BENCH_ASKS_ALL_CMD:=agent-ask list --all}"   # every ask, for the ask KPIs
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
@@ -176,7 +188,6 @@ set -uo pipefail
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
-: "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
@@ -193,7 +204,7 @@ set -uo pipefail
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
-: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
+: "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together but a tripped watch's (one item a watch at a time bounds those)
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: the window a cause's fix items are counted in
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
@@ -203,15 +214,16 @@ set -uo pipefail
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
-: "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
+: "${TRIAGE_WATCH_AFTER:=1800}"      # triage: seconds a watch must stay TRIP before it is a row and a red item: two dispatch passes, so its owner runs the hour it trips (human, 2026-11-10, ar-1531)
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
-: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
+: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
-: "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model` a line (content as data)
+: "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model [effort]` a line (content as data)
+: "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
 : "${BENCH_HARNESSES:=$HOME/.config/agentctl/harnesses.json}"   # each harness's `source`: a lane's capacity, a session's and an item's source
 : "${BENCH_ROOM_CMD:=claude-acct room --source}"   # retro: given a source name, exit 0 when it has room
 : "${BENCH_SOURCES_CMD:=claude-acct status --json}"   # sources: every source's row, the one writer's
@@ -232,19 +244,33 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue's admission: automated adds it held
+: "${BENCH_VITALS:=output=merged_prs flow=queue_net_24h,step_age_p90_queued quality=rework_candidate_7d,first_pass_share you=human_answered_per_day,buzzes_per_day cost=points_per_pr trust=ledger_coverage,loop_dark_7d outcome=requested_unstarted_h,landed_unverified}"   # the front page: question=kpi,kpi in order; every view reads this list
 : "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
+: "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
-: "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
+: "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
+: "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
+: "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
+: "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+: "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
+: "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
+: "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
+: "${BENCH_FLEET_COST_EVERY_MIN:=30}"
+: "${BENCH_FLEET_COST_TIMEOUT:=240}"
+: "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
+: "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
+: "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
+: "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
 : "${BENCH_ALL_ITEMS_CMD:=agent-queue list --json --state all}"   # every item, done included: an epic's items and PRs
@@ -265,6 +291,7 @@ FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy p
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 SHEPHERD_PASSES="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/passes.tsv"   # one scored pass a row, fleet-shepherd the writer
+DREAM_TRIAL="${DREAM_TRIAL_FILE:-$HOME/.agent/dreams/trial.tsv}"   # one counted sweep a row, agentctl-dream the writer
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -282,6 +309,7 @@ report_outcome() { proof_lib && proof_outcome "$NAME" "$@"; }
 now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
 # jq helpers shared by every verb.
+VITALS_JQ='def vitals($v): [$v | splits("\\s+") | select(test("^[^=]+=[^=]+$")) | split("=") | {question: .[0], kpi: (.[1] | split(",")[])}];'
 JQ_LIB='
 def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
@@ -289,9 +317,11 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
-def ownerless: select((.state == "running" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
+def ownerless: select((.state == "running" or .state == "review" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
 def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
 def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
+# An end that says nothing about the model (UNRATED_ENDS, lib/end-reasons.sh) is no evidence for or against it.
+def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
 def hold_key: "fix(hold): \(.name) went red";
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
 def leaves_landed: .open == 0 and .done > 0;
@@ -312,11 +342,14 @@ def run_rows: split("\n") | map(select(. != "") | split("\t")
   | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
 def total(f): map(f // 0) | add // 0;
 def key: "\(.repo)#\(.number)";
-# every PR an item names (pr and prs, owner/repo#N or a pull URL), lowercase owner/repo#N; a bare
-# number is #N, so it matches no pr-ci key
+# the lowercase owner/repo#N an item names (prkeys); the repo of a Forgejo row also carries its host
+def itemkey: "\(.repo // "" | split("/") | .[-2:] | join("/") | ascii_downcase)#\(.number)";
+# every PR an item names (pr and prs, owner/repo#N or a pull URL), lowercase owner/repo#N. A bare
+# number names no repo, so it credits nothing: PR numbers repeat across repos.
 def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
-  | ([scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"]
-     + [gsub("[a-z0-9_.-]+/[a-z0-9_.-]+(?:#|/pulls?/)[0-9]+"; " ") | scan("[0-9]+") | "#\(.)"]);
+  | [scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"];
+# the "<project>:<id>" board row a queue item works: its row, else the board: it came from
+def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
 def claimed: (.session_id // "") != "";
 def ran_gate: (.gate_runs // 0) > 0;
 def first_try: .gate_red == 0;
@@ -588,6 +621,7 @@ cmd_sample() {
     publish_window "$t"
     findings_run "$t"
     epics_step "$t"
+    fleet_cost_step
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -605,7 +639,24 @@ cmd_sample() {
   publish_window "$t"
   findings_run "$t"
   epics_step "$t"
+  fleet_cost_step
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
+}
+
+# fleet_cost_step: the whole fleet's estimate, tried at most every BENCH_FLEET_COST_EVERY_MIN. A failed
+# run keeps the last file and waits the same interval (touch), so a Prometheus outage costs one
+# attempt per interval; its as_of_epoch then reads stale on the Costs tab and in the KPI.
+fleet_cost_step() {
+  [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
+  mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
+  local tmp="$BENCH_FLEET_COST_FILE.$$.tmp"
+  if timeout "$BENCH_FLEET_COST_TIMEOUT" $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$BENCH_FLEET_COST_FILE"
+  else
+    rm -f "$tmp"
+    touch -c "$BENCH_FLEET_COST_FILE"
+    say "fleet-cost: the estimate failed; the last one stays"
+  fi
 }
 
 # epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is
@@ -732,12 +783,11 @@ window_stats() {
 # the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
 # in the window by a session of that project. The KPIs ride along so a reader never runs `kpi`.
 bench_prom() {
-  local t="$1" kpis pl
+  local t="$1" pl="$2" kpis
   kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
-  pl=$(pipeline_json "$t") || pl='{"steps": []}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
      --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(ci_window "$t") --argjson k "$kpis" \
-     --slurpfile ef <(effect_lines) "$JQ_LIB$IMPROVE_JQ$PROM_JQ"'
+     --slurpfile ef <(effect_lines) --arg vitals "$BENCH_VITALS" "$JQ_LIB$IMPROVE_JQ$PROM_JQ$VITALS_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
     | ($w | map(.project) + ($s | map(.project)) | unique) as $ps
@@ -760,6 +810,8 @@ bench_prom() {
         $k | to_entries[] | [{kpi: .key}, .value.threshold]),
       gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
+      gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
+        vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
       gauge("agent_bench_improve"; "Improvement claims live now, and verdicts of each kind, from effect.jsonl.";
         [{state: "live"}, ($ef | live | length)],
         (("improved", "flat", "regressed", "unproven") as $v
@@ -778,10 +830,29 @@ bench_prom() {
         [{}, $pl.drift])'
 }
 
-# publish_window <now>: write bench_prom where node_exporter reads it.
+# pipeline_snapshot <json>: the file the pipeline line reads, renamed into place so no reader
+# sees half of it. A failed build or write leaves the last one, whose as_of shows its age.
+pipeline_snapshot() {
+  local dir=${PIPELINE_SNAPSHOT%/*} tmp
+  mkdir -p "$dir" && tmp=$(mktemp "$dir/.pipeline.XXXXXX") || return 1
+  if printf '%s\n' "$1" >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$PIPELINE_SNAPSHOT"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
+# publish_window <now>: one pipeline_json for the snapshot and the gauges, so the line and Grafana
+# cannot disagree, then bench_prom where node_exporter reads it. The snapshot comes first: it does
+# not depend on the session progress the gauges need.
 publish_window() {
+  local pl
+  if pl=$(pipeline_json "$1"); then
+    pipeline_snapshot "$pl" || say "could not write $PIPELINE_SNAPSHOT"
+  else
+    say "pipeline: the rollup failed; the last snapshot stays"
+    pl='{"steps": []}'
+  fi
   [ -s "$PROGRESS" ] || return 0
-  prom_textfile fleet_bench.prom bench_prom "$1" || say "could not write fleet_bench.prom"
+  prom_textfile fleet_bench.prom bench_prom "$1" "$pl" || say "could not write fleet_bench.prom"
 }
 
 # outcomes_newest -> the newest session-outcomes line per session_id (its own reader rule)
@@ -893,23 +964,28 @@ cmd_stats() {
 }
 
 cmd_scorecard() {
-  local t day out counts SOURCE_ATTR_JSON=""
+  local t day out counts kpis SOURCE_ATTR_JSON=""
   t=$(now); day=$(date -d "@$t" +%F)
   [ -s "$PROGRESS" ] || { say "no samples yet"; return 1; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/$day.md"
+  SOURCE_ATTR_JSON=$(source_attr "$t")   # counts, models and sources all read it: one status probe, one Prometheus read
   counts=$(ledger_counts)
-  SOURCE_ATTR_JSON=$(source_attr "$t")   # models and sources both read it: one status probe, one Prometheus read
+  kpis=$(kpi_json "$t" "$counts")
   {
     echo "# Fleet bench, $day"
     echo
     echo "$(BENCH_NOW=$t cmd_headline)."
     echo
+    echo "## Vitals"
+    echo
+    vitals_table "$kpis"
+    echo
     echo "## KPIs"
     echo
     echo "Human sessions by when session-outcomes last saw them; (now) is a count taken at this run. Thresholds: $KPI_THRESHOLDS. \`fleet-bench retro\` files a board row for each one past it."
     echo
-    kpi_table "$(kpi_json "$t" "$counts")"
+    kpi_table "$kpis"
     echo
     forecast_section "$t"
     echo
@@ -931,6 +1007,8 @@ cmd_scorecard() {
     sources_section "$t"
     echo
     canary_lanes_section
+    echo
+    canary_matrix_section
     echo
     sizes_section "$t"
     echo
@@ -1102,14 +1180,14 @@ depth_section() {
   echo "Whole sessions as of the last nightly, counted from the transcript's structure. A test run is one command, and a suite is many runs. Spent after the last edit is the share of tokens past its last commit or edit, so a high share on a long session is time spent waiting or polling."
   echo
   session_rows "$1" | jq -rs "$JQ_LIB"'
-    map(select(.activity != null)) | sort_by(-.activity.tokens) | .[:15]
+    map(select(.activity != null)) | sort_by(-(.activity.tokens // 0)) | .[:15]
     | if length == 0 then "_No session in this window has been through the nightly yet._"
       else ("| Session | Test runs | Test runs per PR | CI polls | Tool calls | Tool errors | API messages | Tokens (M) | Spent after last edit |",
             "|---|---|---|---|---|---|---|---|---|",
             (.[] | .activity as $a
              | "| \(.target) | \($a.test_runs) | \(if (.prs_merged // 0) > 0 then $a.test_runs / .prs_merged | round1 else "-" end) | \($a.ci_polls) | \($a.tool_calls) | "
-               + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages) | \($a.tokens / 1000000 | round1) | "
-               + "\(if (.edits // 0) > 0 and $a.tokens > 0 then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
+               + "\(if $a.tool_calls > 0 then "\((.tool_errors // 0) * 100 / $a.tool_calls | round)%" else "-" end) | \($a.api_messages // "-") | \(($a.tokens // 0) / 1000000 | round1) | "
+               + "\(if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) |"))
       end'
 }
 
@@ -1195,13 +1273,20 @@ commit_paths() {
 # commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
 # runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
 # 1 when it is unreadable or stale); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red. A repo with sections adds the PR's
-# sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
+# startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
+# session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
+# keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
+# adds the PR's sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
 # commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
-  local pr runs paths=''
-  pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
-  runs=$("$SCHEDULES_SYNC" runs "$1" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
+  local pr runs paths='' ledger=$1
+  if [[ "$1" == */*/* ]]; then
+    pr=$(so_forgejo_pr "$1" "$2") || return 1
+    ledger=forgejo:${1#*/}
+  else
+    pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
+  fi
+  runs=$("$SCHEDULES_SYNC" runs "$ledger" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
   runs=$(jq -c 'map({conclusion, workflowName: .workflow, headSha: .sha, createdAt: .created_at,
     startedAt: (.started_at // .created_at), updatedAt: (.ended_at // .started_at // .created_at)})' <<<"$runs") || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
@@ -1229,6 +1314,15 @@ pr_ci() {
         end)'
 }
 
+# forgejo_ready <host/owner/repo> -> the lib loaded and the token read in this shell, so the
+# subshell each pr_ci runs in inherits them and a review reads the token once, a failed read too
+forgejo_ready() {
+  [ -z "${SO_FORGEJO_ERR:-}" ] || return 1
+  # shellcheck source=/dev/null
+  declare -F so_forgejo_auth >/dev/null || . "$BENCH_SO_LIB" || return 1
+  so_forgejo_auth "$1" || { say "$SO_FORGEJO_ERR"; return 1; }
+}
+
 cmd_review() {
   local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
   case "${1:-}" in
@@ -1247,7 +1341,9 @@ cmd_review() {
     [ -n "$repo" ] || continue
     # a repo the ledger does not sync is learnt once per review, not paid a gh call per PR
     case "$off" in *" $repo "*) unsynced=$((unsynced + 1)); continue ;; esac
-    rc=0; row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?
+    rc=0
+    if [[ "$repo" == */*/* ]] && ! forgejo_ready "$repo"; then rc=1
+    else row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?; fi
     case $rc in
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
@@ -1263,7 +1359,7 @@ cmd_review() {
   # a PR merged after the ledger's last sync is counted by the next review, once its runs are in
   [ "$later" -eq 0 ] || say "$later PRs merged after the run ledger's last sync, left for the next review"
   if [ "$failed" -gt 0 ]; then
-    report_outcome FAILED "cannot count $failed PRs (gh or the run ledger), $n counted"
+    report_outcome FAILED "cannot count $failed PRs (gh, Forgejo or the run ledger), $n counted"
     return 1
   fi
   if [ "$n" -eq 0 ]; then
@@ -1464,8 +1560,17 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
-board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
+# board_open_count -> the open and started agent-lane rows on the active profile's boards
+# (BENCH_BOARD_CMD feeds every profile; BENCH_PROFILE overrides the profile `notes config` names).
+# One profile is the unit dispatch pulls from and the unit board_open_max was measured against,
+# so a second profile's boards do not add to it. A project with automation off is left out; ?
+# when the feed or the profile cannot be read.
+board_open_count() {
+  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
+  [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" '.rows | if type == "array" then . else error("no rows") end
+    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false)) | length' 2>/dev/null || echo '?'
+}
 
 # intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
 # only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
@@ -1473,6 +1578,7 @@ board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat 
 intake_room() {
   local n max
   n=$(board_open_count)
+  [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
   max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
   if [ -z "$max" ]; then echo "room: board_open $n, no board_open_max"; return 0; fi
   if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
@@ -1530,7 +1636,11 @@ ledger_counts() {
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
   echo "board_open=$(board_open_count)"
-  echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
+  # points_per_pr: Claude weekly points per landed PR, the plans' real price; other sources bill in other units
+  echo "points_per_pr=$(sources_json "$t" 2>/dev/null | jq -er '[.sources[] | select(.kind == "claude" and .points != null)]
+    | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
+  # loop_dark is the alert (still firing); loop_dark_7d counts the cleared ones too, which loop_dark reads as ok
+  loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -sr '"loop_dark=\(map(select(.dark and .open)) | length)", "loop_dark_7d=\(map(select(.dark)) | length)"'
   # lesson_held_share: of the lessons with a sig whose before and after windows are both read, the share
   # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
@@ -1551,25 +1661,34 @@ ledger_counts() {
 # names (owner/repo#N, a forge URL, or a bare N by number). board_orphan_started: started agent rows
 # no active item names. merged_open_rows: done items with merge proof whose row is still open.
 # ownerless_running: running or waiting items with no session (reap flags them).
-# epic_linked_share: the agent rows filed under an epic (#of/) in the projects that have one open.
+# epic_linked_share: the agent rows filed under an epic (#of/), over every project automation manages;
+# a project with no epic yet counts, all its rows unlinked, since the link pass gives each row one.
 # landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+# orphan_request_rows, next_up_blocked, stale_urgent_d, playtest_waiting_d and done_inline_old: the
+# rows the board holds that no step will move, from board_links (which says what each counts).
+# request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
+# BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
 # (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
 # carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
 # `ptask --want`) was stamped by the writer.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
-# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
+# reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
+# leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+# release_overdue and version_tag_drift are the release link (release_kpis): a sheet-counter project a
+# day past its cadence due date with done rows and no cut, and a tagged project whose sheet is not its
+# tag plus one patch.
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1582,15 +1701,160 @@ wants_stats() {
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
 }
 
-# chain_notes <now>: the lines under the chain table that say which rows sit behind three of its numbers
+# lead_time_json <now> -> {hours, p50, at_merge, in_release, unreleased, unknown}: request to live
+# for the items the human asked for (from: human) with merge proof, finished in the last
+# BENCH_LEAD_DAYS. Request is the item's queued time. Live is the item's finished time (agent-land
+# closes it at the merge) in a project release-state has no row for, since its merge is its
+# deploy; else the first tag of the project's line holding every merged commit (release-state
+# released), as no target records deploys yet. hours and p50 cover those live in the last
+# CHAIN_DAYS; unreleased counts the merged ones no tag holds yet, unknown the ones whose commit
+# the checkout lacks (one of an item's merges in another repo makes it unknown too), both over
+# the whole BENCH_LEAD_DAYS. A failure when the queue or the
+# release snapshot cannot be read.
+lead_time_json() {
+  local t=$1 items rel p released=() shas
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - BENCH_LEAD_DAYS * 86400))" +%F)" 2>/dev/null \
+    | jq -sc 'map(select(.from == "human" and (.merged // "") != "") | {project, merged, queued, finished})') || return 1
+  rel=$($BENCH_RELEASES_CMD 2>/dev/null | jq -ce '[.rows[].project] | unique') || return 1
+  for p in $(jq -r --argjson r "$rel" '[.[].project | select(IN($r[]))] | unique[]' <<<"$items"); do
+    mapfile -t shas < <(jq -r --arg p "$p" '.[] | select(.project == $p) | .merged | splits(" +") | select(. != "")' <<<"$items")
+    released+=("$($BENCH_RELEASED_CMD "$p" "${shas[@]}" 2>/dev/null | jq -sc .)")
+  done
+  jq -c --argjson t "$t" --argjson days "$CHAIN_DAYS" --argjson r "$rel" \
+     --slurpfile x <(printf '%s\n' "${released[@]}" '[]') "$JQ_LIB"'
+    . as $a | ($x | add | map(select(.sha)) | INDEX(.sha)) as $tag
+    | [$a[] | [.merged | splits(" +") | select(. != "")] as $s
+       | (.queued | ep) as $q
+       | if (.project | IN($r[])) | not then {kind: "at_merge", at: (.finished | ep)}
+         elif any($s[]; $tag[.] == null or $tag[.].error != null) then {kind: "unknown"}
+         elif any($s[]; $tag[.].at == null) then {kind: "unreleased"}
+         else {kind: "in_release", at: ([$s[] | $tag[.].at] | max)} end
+       | . + {q: $q}] as $rows
+    | ($rows | map(select(.at != null and .q != null and .at > $t - $days * 86400 and .at <= $t))) as $live
+    | ($live | map((.at - .q) / 3600 | round1)) as $h
+    | {hours: $h, p50: ($h | median | if . == null then null else round1 end),
+       at_merge: ($live | map(select(.kind == "at_merge")) | length),
+       in_release: ($live | map(select(.kind == "in_release")) | length),
+       unreleased: ($rows | map(select(.kind == "unreleased")) | length),
+       unknown: ($rows | map(select(.kind == "unknown")) | length)}' <<<"$items"
+}
+
+# lead_untrusted <key=value lines> -> one "<kpi> <value> (min <bound>)" line per BENCH_LEAD_TRUST
+# KPI that is unread, has no min in kpi-thresholds, or sits under it; nothing when all hold, and
+# request_to_live_h reads its value only then (a lead time over a ledger that misses half the
+# merges is not one).
+lead_untrusted() {
+  local kv=$1 k v min
+  for k in $BENCH_LEAD_TRUST; do
+    v=$(sed -n "s/^$k=//p" <<<"$kv" | tail -1)
+    min=$(sed -n "s/^${k}_min=//p" "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
+    if [ -z "$min" ]; then echo "$k ${v:-?} (no min)"
+    elif ! awk -v v="$v" -v m="$min" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 >= m + 0) }'; then echo "$k ${v:-?} (min $min)"; fi
+  done
+}
+
+# playtest_blame <board json> -> "<sheet>\t<line>\t<epoch>" for each line of every playtest sheet
+# with an open check on a managed board: the author time git blame gives the line, as a check
+# carries no date of its own (an uncommitted line reads now); "<sheet>\t?\t?" for a sheet git cannot blame
+playtest_blame() {
+  local s
+  jq -r '[.rows[]? | select(.lane == "playtest" and .state == "open" and .automation != false) | .sheet | strings] | unique[]' <<<"$1" |
+    while IFS= read -r s; do
+      git -C "${s%/*}" blame --line-porcelain -M -- "${s##*/}" 2>/dev/null | awk -v s="$s" '
+        substr($0, 1, 1) != "\t" && length($1) >= 40 && $1 ~ /^[0-9a-f]+$/ && NF >= 3 { l = $3 }
+        /^author-time / { print s "\t" l "\t" $2; n++ }
+        END { if (!n) print s "\t?\t?" }'
+    done
+}
+
+# board_links <now> -> one object naming the rows behind five chain KPIs, a field null when its
+# source cannot be read; nothing and rc 1 when the board feed (BENCH_BOARD_CMD) cannot be read.
+# Rows of a project with automation off are never counted.
+#   orphans (orphan_request_rows): open rows with an id whose #of/ parent is no open row, or that a
+#     done item with merge proof (the done items merged_open_rows reads) names as its subject while
+#     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
+#     first line: its first word, or the one id in brackets. The item that worked the row itself is
+#     merged_open_rows; a merged PR reaches a row through its item. A row an active item works
+#     (BENCH_ITEMS_CMD) is that item's to move, so it is no orphan of the merged one.
+#   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
+#     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
+#   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
+#     its item queued), in whole days since it was filed
+#   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
+#   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
+board_links() {
+  local t=$1 feed done verdicts blame active
+  feed=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)') || return 1
+  active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
+  done=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)" 2>/dev/null | jq -sc .) || done=null
+  verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
+  blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
+  jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
+     --slurpfile a <(printf '%s' "$active") --argjson blame "${blame:-[]}" "$JQ_LIB"'
+    def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
+      | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
+    def live: .state == "open" or .state == "doing";
+    $d[0] as $d | $v[0] as $v | ($a[0] | if . == null then null else map(rowkey | strings) | INDEX(.) end) as $worked
+    | [.rows[] | select(.id != null and live)] as $live
+    | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
+    | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
+    | [.rows[] | select(.automation != false)] as $rows
+    | {orphans: (if $d == null or $worked == null then null else
+         [($rows[] | select(.id != null and live and .parent != null and $open["\(.project):\(.parent)"] == null)
+             | {project, id, why: "its parent \(.parent) is closed"}),
+          ($d[] | select((.merged // "") != "")
+             | ((.title | select(. != "")) // (.task // "" | split("\n")[0]) // "" | subject) as $s | select($s != null) | $byid[$s][]? as $o
+             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null)
+                      and $worked["\($o.project):\($s)"] == null)
+             | {project: $o.project, id: $s, why: "\(.slug) landed it"})]
+         | unique_by([.project, .id]) end),
+       blocked: (if $v == null then null else
+         ($v | map(select(.lane == "agent" and .plan == true))
+              | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
+         | [$rows[] | select(.lane == "agent" and .state == "open" and .id != null)
+             | $by["\(.project)\t\(.id)"] as $x | select($x != null)
+             | (($x.at // "") | try iso_epoch catch null) as $at | select($at != null and $at < $t - 86400)
+             | {project, id, rule: $x.rule, at: $x.at}] end),
+       urgent: ([$rows[] | select(.lane == "agent" and .priority == "urgent" and .untriaged != true
+                   and (.state == "open" or .section == "next") and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
+                 | {project, id, since, days: (($t - (.since + "T00:00:00Z" | fromdate)) / 86400 | floor)}]
+                | sort_by(-.days) | first),
+       playtest: (if any($blame[]; .[1] == "?") then null else
+         ($blame | map({key: "\(.[0])\t\(.[1])", value: (.[2] | tonumber)}) | from_entries) as $at
+         | [$rows[] | select(.lane == "playtest" and .state == "open") | $at["\(.sheet)\t\(.line)"] as $e | select($e != null)
+             | {project, game: (.game // "-"), days: (($t - $e) / 86400 | floor)}]
+         | group_by([.project, .game]) | map(max_by(.days)) | sort_by(-.days) end),
+       done_old: (.projects // null | if . == null then null
+         else map(select(.automation != false) | .done_old) | if any(. == null) then null else add // 0 end end)}' <<<"$feed"
+}
+
+# chain_notes <now> <chain json>: the lines under the chain table that say which rows sit behind
+# its numbers, the lead time's raw value while its trust KPIs hold it at ? among them
 chain_notes() {
-  local t=$1 stats
+  local t=$1 stats lead held
   $BENCH_ITEMS_CMD 2>/dev/null | jq -rs "$JQ_LIB"'
     map(ownerless | .slug) | select(. != []) | "ownerless_running: \(join(", "))"' 2>/dev/null
   $BENCH_BOARD_CMD 2>/dev/null | jq -r --argjson t "$t" '
     [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
     | sort_by(.since) | first // empty
     | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
+  board_links "$t" | jq -r 'def few: (.[0:8] | join(", ")) + (if length > 8 then ", \(length - 8) more" else "" end);
+    (.orphans // [] | select(. != []) | "orphan_request_rows: " + (map("\(.project):\(.id) (\(.why))") | few)),
+    (.blocked // [] | select(. != []) | sort_by(.at) | "next_up_blocked: skipped for a split over 24h ago, oldest first: " + (map("\(.project):\(.id) (\(.rule) \(.at[0:10]))") | few)),
+    (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
+    (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
+  local projects
+  projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
+    (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) due since \(.due_on)") | join(", "))),
+    (.drift | select(. != []) | "version_tag_drift: " + (map("\(.project) sheet \(.sheet), tag \(.tag)") | join(", ")))' 2>/dev/null
+  held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
+  if lead=$(lead_time_json "$t"); then
+    jq -r --argjson d "$CHAIN_DAYS" --argjson lead "$BENCH_LEAD_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
+      + " (\(.at_merge) on merge, \(.in_release) in a tag); of those merged in \($lead)d, \(.unreleased) in no tag yet, \(.unknown) unknown"
+      + (if $held == "" then "" else "; reads ? until \($held)" end)' <<<"$lead"
+  else
+    echo "request_to_live_h: the done items or the release-state snapshot unreadable"
+  fi
   if stats=$(wants_stats "$t") && [ -n "$stats" ]; then
     jq -r --argjson d "$CHAIN_DAYS" '"wants_unstamped: \(.unstamped) of \(.total) human-channel agent rows added in \($d)d carry no #requested, by project"
       + (if .total == 0 then "" else " (" + ([.by_project | to_entries | sort_by(-.value.unstamped)[] | "\(.key) \(.value.unstamped)/\(.value.total)"] | join(", ")) + ")" end)' <<<"$stats"
@@ -1599,9 +1863,32 @@ chain_notes() {
   fi
 }
 
+# release_kpis <now> <projects json> -> {overdue: [{project, version, due_on}], drift: [{project, sheet,
+# tag}]}, the release link over `notes projects --stats --json` (stages.md, "Versions"). overdue: a project
+# whose own sheet counter owns its version (project_version_owner) still due a day after its due date, so
+# a wave-roll pass had all day to cut it; its `.release.due` already means done rows waited out the
+# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
+# the tag plus one patch, the version wave-roll opens. A game waiting on its first tag counts in neither,
+# and so does a profile with `automation = false`.
+release_kpis() {
+  local today prof name ver due_on shipped
+  today=$(date -d "@$1" +%F)
+  jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end)] | join("|")' <<<"$2" |
+  while IFS='|' read -r prof name ver due_on; do
+    shipped=$(project_release_version "$name")
+    case "$(project_version_owner "$name" "$shipped")" in
+      sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
+               jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
+      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] && [ "$ver" != "${shipped%.*}.$(( ${shipped##*.} + 1 ))" ] &&
+             jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
+    esac
+    :   # a project that counts in neither is no failed pass, under pipefail
+  done | jq -sc '{overdue: map(.overdue // empty), drift: map(.drift // empty)}'
+}
+
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
-  local t=$1 since active done board projects ci
+  local t=$1 since active done board projects ci links lead
   since=$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)
   active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
   done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
@@ -1609,20 +1896,18 @@ chain_counts() {
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
   ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
     'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))')
-  jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
+  links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
-    def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
     def n($v): if $v == null then "?" else $v end;
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $p[0] as $p | $c[0] as $c
     | (if $a == null or $d == null or $c == null then null
        else (($a + $d) | map(prkeys[]) | INDEX(.)) as $refs
          | {total: ($c | length),
-            hit: ($c | map(select($refs["\(.repo // "" | ascii_downcase)#\(.number)"] or $refs["#\(.number)"])) | length)} end) as $cov
+            hit: ($c | map(select($refs[itemkey])) | length)} end) as $cov
     | ($b // [] | map(select(.lane == "agent"))) as $agent
     | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
-    | ($p // [] | map(select((.epics // []) | length > 0) | .name) | INDEX(.)) as $epicked
-    | ($agent | map(select($epicked[.project] and .type != "epic"))) as $linkable
+    | ($agent | map(select(.automation != false and .type != "epic"))) as $linkable
     | "ledger_coverage=\(n(if $cov == null then null else ratio($cov.hit; $cov.total) end))",
       "untracked_merged_prs=\(n(if $cov == null then null else $cov.total - $cov.hit end))",
       "board_orphan_started=\(n(if $a == null or $b == null then null else ($a | map(rowkey | strings) | INDEX(.)) as $live
@@ -1638,8 +1923,26 @@ chain_counts() {
         | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
-        | if length == 0 then null else add / length * 100 | round / 100 end end))"'
+        | if length == 0 then null else add / length * 100 | round / 100 end end))"')
+  [ -n "$links" ] && printf '%s\n' "$links"
+  local rel
+  if [ "$projects" != null ] && rel=$(release_kpis "$t" "$projects"); then
+    jq -r '"release_overdue=\(.overdue | length)", "version_tag_drift=\(.drift | length)"' <<<"$rel"
+  else printf '%s=?\n' release_overdue version_tag_drift; fi
+  if [ -n "$(lead_untrusted "$links")" ]; then echo "request_to_live_h=?"
+  elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
+  else echo "request_to_live_h=?"; fi
+  local bl
+  if bl=$(board_links "$t"); then
+    jq -r '"orphan_request_rows=\(.orphans | if . == null then "?" else length end)",
+      "next_up_blocked=\(.blocked | if . == null then "?" else length end)",
+      "stale_urgent_d=\(.urgent.days // 0)",
+      "playtest_waiting_d=\(.playtest | if . == null then "?" else map(.days) | max // 0 end)",
+      "done_inline_old=\(.done_old // "?")"' <<<"$bl"
+  else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
+  # older than four tries is an estimator that stopped, not today's share
+  echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
   local orphans dups
   # the newest night only: a runner that stopped must read ?, never an older night's count as now
   dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
@@ -1654,12 +1957,13 @@ chain_counts() {
   reds_counts "$1"
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
-    (.steps[] | select(.step | IN("backlog", "queued", "running", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)")'
+    (.steps[] | select(.step | IN("backlog", "queued", "running", "review", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)"),
+    (.steps[] | select(.step == "queued") | "queue_net_24h=\(if .in_24h == null or .out_24h == null then "?" else .in_24h - .out_24h end)")'
 }
 
 # The work chain's steps, in order: an untriaged line, an open agent-board row, a queue item
-# queued, running or waiting, and done.
-PIPELINE_STEPS="inbox backlog queued running waiting done"
+# queued, running, on its PR (review) or waiting on the human, and done.
+PIPELINE_STEPS="inbox backlog queued running review waiting done"
 
 # inbox_lines -> how many lines wait untriaged: the outbox plus every project's `## Inbox`
 inbox_lines() {
@@ -1681,20 +1985,20 @@ inbox_lines() {
 # furthest past its step_age_p90_<step>_max in kpi-thresholds, null while every step is inside its
 # bound. A source that cannot be read leaves its numbers null.
 pipeline_json() {
-  local t=$1 items fin board rec inbox lim='{}'
+  local t=$1 items fin board rec inbox stopped lim='{}'
+  stopped=$($BENCH_STOPPED_CMD 2>/dev/null | jq -r '.line // empty' 2>/dev/null)
   items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || items=null
   fin=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - 86400))" +%F)" 2>/dev/null | jq -sc .) || fin=null
   board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   rec=$($BENCH_STEPS_CMD 2>/dev/null | jq -ce 'select(.steps | arrays)') || rec=null
   inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -e 'numbers') || inbox=null
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" \
+  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" --arg stopped "$stopped" \
      --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") \
-     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") '
+     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") "$JQ_LIB"'
     def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
     def mins: ($t - .) / 60 | floor;
     def pct($p): sort | if length == 0 then null else .[([length * $p / 100 | ceil, 1] | max) - 1] end;
-    def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $r[0] as $r
     | def held($s; $f): if $a == null then null else $a | map(select(.state == $s)) | {n: length, ages: map(.[$f] | epoch | mins)} end;
     ($a // [] | map(rowkey | strings) | INDEX(.)) as $live
@@ -1702,7 +2006,8 @@ pipeline_json() {
        backlog: (if $b == null or $a == null then null
                  else $b | map(select(.lane == "agent" and .state == "open" and ($live["\(.project):\(.id)"] | not)))
                    | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins)} end),
-       queued: held("queued"; "queued"), running: held("running"; "started"), waiting: held("waiting"; "waiting"),
+       queued: held("queued"; "queued"), running: held("running"; "started"), review: held("review"; "review"),
+       waiting: held("waiting"; "waiting"),
        done: (if $d == null then null else {n: ($d | map(select((.finished | epoch) > $t - 86400)) | length), ages: []} end)} as $now
     | ($r.steps // [] | INDEX(.step)) as $flow
     | [$steps | split(" ")[] | . as $s | $now[$s] as $w | ($flow[$s] // {}) as $f
@@ -1710,13 +2015,15 @@ pipeline_json() {
        | {step: $s, wip: $w.n, age_p50_min: ($w.ages // [] | pct(50)), age_p90_min: $p90, oldest_min: ($w.ages // [] | max),
           in_1h: $f.in_1h, out_1h: $f.out_1h, in_24h: $f.in_24h, out_24h: $f.out_24h,
           dwell_p50_min: $f.dwell_p50_min, dwell_p90_min: $f.dwell_p90_min, bound: $bound,
-          ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end)}] as $rows
+          ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end),
+          problems_n: $f.problems_n, problems: ($f.problems // []),
+          blocked: (if $s == "queued" and $stopped != "" then $stopped else null end)}] as $rows
     | (if $a == null or $r == null then null
        else ($r.steps | map(.step as $s | (.items // [])[] | {key: ., value: $s}) | from_entries) as $rec
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
-    | {since: $r.since, items_since: $r.items_since, drift: $drift,
+    | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift,
        bottleneck: ($rows | map(select((.ratio // 0) > 1)) | max_by(.ratio) | if . then {step, age_p90_min, bound, ratio} else null end),
        steps: $rows}'
 }
@@ -1735,8 +2042,11 @@ cmd_pipeline() {
     "",
     (.bottleneck | if . then "bottleneck: \(.step), age p90 \(.age_p90_min | m) against a bound of \(.bound | m) (\(.ratio)x)"
                    else "bottleneck: none, every step with a bound is inside it" end),
+    (.steps[] | select(.blocked) | "blocked at \(.step): \(.blocked)"),
     ([.steps[] | select(.in_24h != null and .step != "done" and .in_24h > .out_24h) | "\(.step) +\(.in_24h - .out_24h)"]
       | if length > 0 then "growing over 24h: \(join(", "))" else empty end),
+    ([.steps[] | select((.problems_n // 0) > 0) | "\(.step) \(.problems_n)"]
+      | if length > 0 then "problems over 24h: \(join(", "))" else empty end),
     "drift: \(.drift | c) queue items the record and the queue folders place apart (it sees queue items from \(.items_since // "-"))"' <<<"$json"
 }
 
@@ -1855,7 +2165,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d"
+KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -1870,8 +2180,10 @@ comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
-# human_answered_per_day: asks the human answered in the window, a day. An answer with no answered_by
-# is an in-session capture from before the field existed, so the human's.
+# human_answered_per_day: asks the human answered in the window, a day, outside the chat that asked
+# them, so it counts interrupts: an answer typed into the asking session (answer_note "in session: ",
+# closed_reason "replied in session") or with no answered_by (an in-session capture from before the
+# field existed) is the conversation, not an interrupt (the human's pick in ask Go78lB, 2026-11-10).
 # ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
 # pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
 # A cancelled ask was withdrawn by its asker and waited on no one.
@@ -1881,12 +2193,13 @@ ask_kpi() {
   jq -nc --argjson t "$1" --rawfile a <(printf '%s' "$asks") "$JQ_LIB"'
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;   # nearest rank
     [$a | split("\n")[] | select(length > 0) | split("\t")
-     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // "")}
+     | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // ""),
+        chat: (((.[23] // "") | startswith("in session")) or ((.[14] // "") | test("replied in session")))}
      | select(.c != "")
      | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
      | .x |= (if . == "" then null else ask_epoch end)] as $r
     | def w($d): ($t - $d * 86400) as $s
-        | {human_answered_per_day: ([$r[] | select(.status == "answered" and (.by == "" or .by == "human")
+        | {human_answered_per_day: ([$r[] | select(.status == "answered" and .by == "human" and (.chat | not)
                                                   and .a != null and .a > $s and .a <= $t)] | length / $d | round1),
            ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
                                | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};
@@ -1956,9 +2269,9 @@ KPI_DEFS="$JQ_LIB"'
     | ($tk | map(select((.date // "") >= $d0 and .date < $d1))) as $tw
     | ($tw | map(select(.merged_prs | numbers))) as $tp
     | ($tw | map(select(.context_split.start | numbers))) as $ts
-    | {sessions: ($s | length), prs_per_session: ratio($prs; $s | length),
+    | {sessions: ($s | length), merged_prs: ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t)) | unique_by([.repo, .number]) | length),
        revert_rate: ratio(($s | total(.reverted_7d)); $prs),
-       interrupts_per_session: ratio(($s | total(.corrections.interrupts)); $s | length),
+       interrupts_per_day: ratio(($s | total(.corrections.interrupts)); $d),
        cost_per_pr: ratio(($s | total(.cost_usd)); $prs),
        ci_red_per_pr: ratio(($ci | total(.ci_red)); $ci | length),
        first_pass_share: ($ci | map(select(ran_gate)) as $ran | ratio($ran | map(select(first_try)) | length; $ran | length)),
@@ -1966,7 +2279,7 @@ KPI_DEFS="$JQ_LIB"'
        canary_runs: ($kw | length), canary_pass_rate: ratio(($kw | map(select(.pass == true)) | length); $kw | length),
        canary_cost_per_task: ratio(($ks | total(.cost_usd)); $ks | length),
        canary_min_per_task: ratio(($ks | total(.duration_s)) / 60; $ks | length),
-       canary_turns_per_task: ratio(($ks | total(.activity.api_messages)); $ks | length),
+       canary_turns_per_task: ($ks | map(.activity.api_messages | numbers) | ratio(add // 0; length)),
        responses_per_merged_pr: ratio(($tp | total(.totals.responses)); $tp | total(.merged_prs)),
        context_per_merged_pr: (ratio(($tp | total(.totals.context)); $tp | total(.merged_prs)) | if . then round else . end),
        tool_chars_per_call: ratio(($tw | total(.totals.tool_chars)); $tw | total(.totals.tool_calls)),
@@ -1979,7 +2292,7 @@ KPI_DEFS="$JQ_LIB"'
        rework_candidate_7d: reworked($bot; $t; $d; "rework_candidate_7d"),
        rework_verified_30d: reworked($bot; $t; $d; "rework_verified_30d")};
   # which way is better: -1 lower, 1 higher, 0 neither (sessions is volume, not quality)
-  def better: {sessions: 0, prs_per_session: 1, revert_rate: -1, interrupts_per_session: -1,
+  def better: {sessions: 0, merged_prs: 0, revert_rate: -1, interrupts_per_day: -1,
                cost_per_pr: -1, ci_red_per_pr: -1, first_pass_share: 1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
                canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1,
                responses_per_merged_pr: -1, context_per_merged_pr: -1, tool_chars_per_call: -1,
@@ -2039,6 +2352,18 @@ kpi_table() {
   jq -r '"| KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|",
     (to_entries[] | .value as $v
      | "| \(.key)\(if $v.now then " (now)" else "" end) | \($v["7d"] // "-") | \($v["28d"] // "-") | \(if $v.bound then "\($v.bound) \($v.threshold)" else "-" end) | \($v.status) |")' <<<"$1"
+}
+
+# vitals_json <kpi json> -> the BENCH_VITALS rows in their order, each with the question it answers. A key
+# kpi_json does not carry stays as a row with no value: a dropped row reads as a healthy one.
+vitals_json() {
+  jq -c --arg v "$BENCH_VITALS" "$VITALS_JQ"'. as $k | [vitals($v)[] | {"7d": null, "28d": null, threshold: null, bound: null, status: "-", now: false} + ($k[.kpi] // {}) + .]' <<<"$1"
+}
+
+# vitals_table <kpi json> -> the front page: the scorecard's first table and `kpi --vitals`
+vitals_table() {
+  vitals_json "$1" | jq -r '"| Question | KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|---|",
+    (.[] | "| \(.question) | \(.kpi)\(if .now then " (now)" else "" end) | \(.["7d"] // "-") | \(.["28d"] // "-") | \(if .bound then "\(.bound) \(.threshold)" else "-" end) | \(.status) |")'
 }
 
 # wakes_lines -> the calls-per-wake lines under the KPI table, from `agent-usage wakes` over the
@@ -2200,6 +2525,9 @@ queue_section() {
 # have a pr-ci row: ci_red_per_pr is its red CI runs per PR, first_pass_share the
 # share of those that ran a gate with no red gate run (the KPI of that name). points are the
 # window points (source_attr) of the landed items' sessions, per pointed item: one with a known share.
+# An item whose end_reason is unrated (UNRATED_ENDS: the run ended for a cause outside the
+# model) is counted in unrated, and left out of landed_rate and failed. A run model-lane voided
+# (voids.jsonl, `model-lane void`) is left out of runs, rated and redo; it still names its item's lane.
 # by is a comma list of class and lane. lane is the model-lane lane the item's run logged under (the
 # run its lane_run= names; unrouted when it has none), so a lane's trial candidate is scored on its
 # own lane's landings; with lane alone, redo counts the runs of that lane. This is the evidence a
@@ -2210,12 +2538,13 @@ models_json() {
      --slurpfile items <($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
      --slurpfile outcomes <(outcomes_latest) \
      --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) \
+     --slurpfile voids <([ ! -s "$BENCH_LANE_VOIDS" ] || jq -cR 'fromjson? | select(.id)' "$BENCH_LANE_VOIDS" 2>/dev/null) \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) \
      --slurpfile sa <(source_attr "$1" | jq -c '.sessions') "$JQ_LIB"'
     def ratio($a; $b): if $b > 0 then ($a / $b * 100 | round / 100) else null end;
     ($by | split(",")) as $bys | ($bys | index("class") != null) as $cl | ($bys | index("lane") != null) as $ln
-    | ($runs | INDEX(.id)) as $rix
-    | ($ci | INDEX(key | ascii_downcase)) as $cix | ($sa[0] // {}) as $sp |
+    | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
+    | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def landed: .status == "ok" and (.pr // "") != "";
     def metered: (.gateway_cost_usd // "") != "";
@@ -2230,14 +2559,14 @@ models_json() {
       ($items | map(select(.status != "cancelled")
         | . + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude"),
                c: (if $cl then cls else null end), l: (if $ln then $rix[.lane_run // ""].lane // "unrouted" else null end)})) as $done
-    | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since)
+    | ($runs | map(select(($vix[.id] | not) and (.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since)
         | . + {h: (.harness // "claude"), ran: (.ran | if . then alias else . end), lane: (.lane // "unrouted")})) as $rs
     | ([$done[] | {m, h, c, l}] + (if $cl then [] else [$rs[] | {m: .ran, h, c: null, l: (if $ln then .lane else null end)}] end) | unique_by([.m, .h, .c, .l])) as $pairs
     | {days: $days, models: ($pairs | map(. as {m: $m, h: $h, c: $c, l: $l}
         | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $it
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
-        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.] != null) then "list" else null end)})) as $priced_items
+        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
         | ($rs | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
@@ -2249,8 +2578,9 @@ models_json() {
         | [$li | map(prkeys[]) | unique[] | $cix[.] // empty] as $cr
         | ($li | map(sids[]) | unique | map($sp[.].points // empty)) as $pt
         | ($li | map(select(any(sids[]; $sp[.].points != null))) | length) as $pointed
-        | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
-           failed: ($it | map(select(.status == "failed")) | length),
+        | ($it | map(select(unrated)) | length) as $unrated
+        | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; ($it | length) - $unrated),
+           failed: ($it | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
            runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
@@ -2270,7 +2600,7 @@ models_section() {
   local j by="${2:-}" cols="" lead=""
   echo "## Models"
   echo
-  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`). Landed is done ok with a PR. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. CI red is red CI runs per landed PR with a \`pr-ci\` row, first pass the share of those green first time. Points are percent points of the pairing's sources' weekly windows its landed items' sessions used (\`fleet-bench sources\`), per PR with a known share. Counts, not a winner: pairings ran different tasks."
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`), less the runs \`model-lane void\` voided. Landed is done ok with a PR. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. CI red is red CI runs per landed PR with a \`pr-ci\` row, first pass the share of those green first time. Points are percent points of the pairing's sources' weekly windows its landed items' sessions used (\`fleet-bench sources\`), per PR with a known share. Counts, not a winner: pairings ran different tasks."
   echo
   j=$(models_json "$1" "$by") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
   case ",$by," in *,class,*)
@@ -2283,6 +2613,8 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
+  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`."
+  echo
   local redo_h="Redo | " redo_c='\(.redo) | ' hdr
   case ",$by," in *,class,*) redo_h="" redo_c="" ;; esac
   hdr="${cols}Model | Harness | Done | Landed | Rate | Failed | ${redo_h}Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
@@ -2505,11 +2837,12 @@ kpi_past() {
 }
 
 cmd_kpi() {
-  local json=0 at='' trend='' check='' re='' t
-  local usage="usage: fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]"
+  local json=0 vitals=0 at='' trend='' check='' re='' t
+  local usage="usage: fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
+      --vitals) vitals=1 ;;
       --at) at="${2:?--at needs a time}"; shift ;;
       --trend) trend="${2:?--trend needs a day count}"; shift ;;
       --check) check=1; if [ $# -gt 1 ] && [[ "$2" != --* ]]; then re=$2; shift; fi ;;
@@ -2518,6 +2851,7 @@ cmd_kpi() {
     shift
   done
   [ -z "$check" ] || [ -z "$at$trend" ] || { say "$usage"; return 2; }
+  [ "$vitals" = 0 ] || [ -z "$at$trend$check" ] || { say "$usage"; return 2; }
   t=$(now)
   [ -z "$at" ] || t=$(throughput_epoch "$at") || { say "kpi: cannot read the time $at"; return 2; }
   if [ -n "$trend" ]; then
@@ -2536,7 +2870,9 @@ cmd_kpi() {
     kpi_past "$t"
     return
   fi
-  if [ "$json" = 1 ]; then jq -c . <<<"$t"; else kpi_table "$t"; fi
+  if [ "$vitals" = 1 ]; then
+    if [ "$json" = 1 ]; then vitals_json "$t"; else vitals_table "$t"; fi
+  elif [ "$json" = 1 ]; then jq -c . <<<"$t"; else kpi_table "$t"; fi
 }
 
 # chain [--json|--check] -- the KPI_CHAIN rows of the KPI table, counted now. --check prints one
@@ -2549,7 +2885,7 @@ cmd_chain() {
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
     --check) kpi_past "$json" ;;
-    *) kpi_table "$json"; chain_notes "$t" ;;
+    *) kpi_table "$json"; chain_notes "$t" "$json" ;;
   esac
 }
 
@@ -2885,7 +3221,7 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A row whose condition cleared is left for whoever owns it. Every row is
+# it counts as filed. A row whose condition cleared is triage_retire's. Every row is
 # #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
   local board p text pri have rc added=0 edited=0
@@ -3075,8 +3411,8 @@ triage_shape() {
 }
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
-# whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
-# is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
+# whose ERE matches the row decides; no match, or a route it does not know, is route "-" and cause
+# "-", or for a watch check(watch):<name> hashed. The cause is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
 # names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
 # text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
 # line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
@@ -3098,13 +3434,24 @@ triage_route() {
       esac
     fi
     if [ "$hit" = 0 ]; then
-      printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
+      # An unrouted watch is still queued (triage_queues), so it is a cause of its own, named as a
+      # capture-group line names it, so a line added for it later keeps its tries.
+      if [[ "$key" == 'check(watch): '* ]]; then
+        cause=${key#'check(watch): '}; cause=$(printf 'check(watch):%s' "${cause%% *}" | sha256sum | cut -c1-8)
+      fi
+      printf '%s\t%s\t%s\t-\t%s\t\n' "$key" "$text" "$pri" "$cause"
       continue
     fi
     if [[ "$text" =~ $re ]] && [ -n "${BASH_REMATCH[1]:-}" ]; then
       if [[ "$text" == *:* ]]; then re="${text%%:*}:${BASH_REMATCH[1]}"; else re+=${BASH_REMATCH[1]}; fi
     fi
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
+    if [[ "$key" == 'check(watch): '* ]]; then
+      case "$route" in
+        alert) note="the human decides: $fix; own it: file that decision as one agent-ask with a recommendation, and fix what is not theirs" ;;
+        owned:?*) note="owned by ${route#owned:}: $fix; get that work running, or fix it here" ;;
+      esac
+    fi
     text+="${note:+; $note}"
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
@@ -3113,9 +3460,21 @@ triage_route() {
   done <<<"$1"
 }
 
-# triage_filed <rows> -> the rows for the agent board. An alert, an owned red and a human's red take
-# no agent row: dispatch would read an open one as work.
-triage_filed() { awk -F'\t' '$4 == "-" || $4 == "agent" || $4 == "script"' <<<"$1"; }
+# triage_queues <key> <route>: the row is queued as a red item. An agent route is; so is a tripped
+# watch on any route but a human's, so every tripped watch has an owner (TRIAGE_WATCH_AFTER): an
+# alert or owned watch's session files the decision or chases the owner.
+triage_queues() { [ "$2" = agent ] || { [[ "$1" == 'check(watch): '* ]] && [[ "$2" != human:* ]]; }; }
+
+# triage_filed <rows> -> the rows for the agent board: every one triage_queues, and an unrouted or
+# script row. Any other alert, owned or human red takes no agent row: dispatch would read an open one as work.
+triage_filed() {
+  local line key route
+  while IFS= read -r line; do
+    IFS=$'\t' read -r key _ _ route _ <<<"$line"
+    case "$route" in - | script) ;; *) triage_queues "$key" "$route" || continue ;; esac
+    printf '%s\n' "$line"
+  done <<<"$1"
+}
 
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
@@ -3137,7 +3496,7 @@ triage_human() {
 # an item that closed cancelled, failed, or merged with its red still here did not hold.
 cause_tries() {
   jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
-    | if any(.[]; .state == "queued" or .state == "running" or .state == "waiting"
+    | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
       then -1 else length end' <<<"$1"
 }
@@ -3152,22 +3511,25 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
-# triage_promote <rows> -> how many agent routes were queued as red fixes. A red fix opens its PR at
+# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
-# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, an item in hand
-# stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in the window.
+# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
+# item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
+# the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
+# so the watches bound it, and fleet-dispatch widens its red floor by one for each.
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
 # whose tries are spent goes to the human (triage_spent).
 triage_promote() {
-  local board key raw route cause tags items used tries more n=0 seen=' '
+  local board key raw route cause tags items used tries more kind n=0 capped=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
-    '[.[] | select(((" " + (.tags // "") + " ") | contains(" red ")) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
-    [ "$route" = agent ] || continue
-    [ $((used + n)) -lt "$TRIAGE_FIX_CAP" ] || break
+    triage_queues "$key" "$route" || continue
+    kind=''; [[ "$key" == 'check(watch): '* ]] && kind=' watch'
+    [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
     tries=$(cause_tries "$items" "$cause")
@@ -3175,19 +3537,20 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
 }
 
-# triage_spent <rows> -> a human route row on the KPI board's sheet for each agent route whose cause
+# triage_spent <rows> -> a human route row on the KPI board's sheet for each row triage_queues whose cause
 # had TRIAGE_FIX_TRIES items in the window and is red still: those sessions did not hold it, so the
 # next step is the human's. triage_human files it and pages once.
 triage_spent() {
   local items key text pri route cause seen=' '
   items=$(triage_items) || return 0
   while IFS=$'\t' read -r key text pri route cause _; do
-    [ "$route" = agent ] || continue
+    triage_queues "$key" "$route" || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
     [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue
@@ -3228,12 +3591,24 @@ triage_coverage() {
 # when it breaks something: these are its post-merge guard. Each red reads as one record naming
 # every merge it could be, because one red that queued a fix per merge would be a stampede.
 
+# hold_ledger <owner/repo> -> "<ledger name> <base branch>" from day-log-ci, the one list of watched
+# repos: a GitHub line as written, else a Forgejo line as forgejo:owner/repo (the name pr_ci uses),
+# else the repo and main, which the ledger then answers for.
+hold_ledger() {
+  cat "${SCHEDULES_REPOS:-$HOME/.config/agentctl/day-log-ci}" 2>/dev/null | awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -v fallback="$1 main" '
+    /^#/ || NF < 2 { next }
+    tolower($1) == want { print $1, $2; found = 1; exit }
+    tolower($1) ~ /^forgejo:/ { n = tolower($1); sub(/^forgejo:[^\/]+\//, "", n); if (n == want) forge = "forgejo:" n " " $2 }
+    END { if (!found) print (forge != "" ? forge : fallback) }'
+}
+
 # hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
 # does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
 # a merge.
 hold_runs() {
-  local runs
-  runs=$(main_runs "$1" main) || return
+  local runs name base
+  read -r name base < <(hold_ledger "$1")
+  runs=$(main_runs "$name" "$base") || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
@@ -3252,9 +3627,11 @@ hold_memo() {
 }
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
-# when its log cannot be read, or is not there yet.
+# when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
+# no file and counts against the merges since the last green, like any red that names none.
 hold_failed() {
   local log
+  [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
   { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
@@ -3270,45 +3647,47 @@ hold_test() {
 # merges whose area they are, the ones the Stop hook would pick for what each changed; a red that names none (lint, rust, a timeout) leaves only the merges
 # in last green..first red.
 hold_streak() {
-  local repo=$1 streak=$2 near id failed sha msha m f paths hits
+  local repo=$1 streak=$2 near id failed sha msha m f paths hits unread=0
   local -A body
   near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
-    | . as $m | .at = (([$runs[] | select(.workflowName == $s.workflow and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
+    | . as $m | .at = (([$runs[] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
     | select(.at <= $red and $red - .at <= $h)' <<<"$4")
   [ -n "$near" ] || return 0
   id=$(jq -r .red.id <<<"$streak")
   failed=$(hold_memo "failed_${repo//\//_}_$id" hold_failed "$repo" "$id") ||
-    { say "hold: cannot read the log of run $id on $repo"; return 0; }
+    { say "hold: cannot read the log of run $id on $repo"; return 1; }
   sha=$(jq -r .red.headSha <<<"$streak")
   if [ -n "$failed" ]; then
     while IFS= read -r f; do
       body[$f]=$(hold_memo "test_${repo//\//_}_${sha}_${f//\//_}" hold_test "$repo" "$sha" "$f") ||
-        say "hold: cannot read $f on $repo at ${sha:0:8}"
+        { say "hold: cannot read $f on $repo at ${sha:0:8}"; unread=1; }
     done <<<"$failed"
-    hits=$(while IFS= read -r m; do
+    hits=$(rc=0; while IFS= read -r m; do
       msha=$(jq -r .sha <<<"$m")
       paths=$(hold_memo "files_${repo//\//_}_$msha" commit_paths "$repo" "$msha" 2>/dev/null) ||
-        { say "hold: cannot read the files of $repo ${msha:0:8}"; continue; }
+        { say "hold: cannot read the files of $repo ${msha:0:8}"; rc=1; continue; }
       for f in "${!body[@]}"; do
         test_picked "$paths" "$f" <<<"${body[$f]}" && { printf '%s\n' "$m"; break; }
       done
-    done <<<"$near")
+    done <<<"$near"; exit "$rc") || unread=1
   else
     hits=$(jq -c --argjson s "$streak" "$JQ_LIB"'select(.at > ($s.green.createdAt | ep))' <<<"$near")
   fi
-  [ -n "$hits" ] || return 0
+  [ -n "$hits" ] || return "$unread"
   jq -cs --argjson s "$streak" --arg failed "$failed" '
     {name: "ci-\($s.red.headSha[0:8])-\($s.workflow | ascii_downcase | gsub("[^a-z0-9]+"; "-"))",
      what: "\($s.workflow) red at \($s.red.headSha[0:8])\(if $failed == "" then ", no bats file named" else ": " + ($failed | split("\n") | join(", ")) end)",
      merges: .}' <<<"$hits"
+  return "$unread"
 }
 
 # hold_reds <now> <queue items> -> one record a line for each red now that counts against a cleanup
 # merge: {name, what, merges}. fleet-liveness counts once it is past triage's patience, so a flap
-# stays out. A repo whose runs cannot be read says so, and counts as nothing rather than as green.
+# stays out. A repo or run that cannot be read, or that the run ledger does not hold, says so and
+# counts as nothing, and the return is 1 so a caller that needs "not red" can tell that from "unknown".
 hold_reds() {
-  local t=$1 merges repo runs rc streak since w=fleet-liveness h=$((HOLD_HOURS * 3600))
+  local t=$1 merges repo runs rc streak since w=fleet-liveness h=$((HOLD_HOURS * 3600)) unread=0
   # pr: and merged: are lists in step, one PR per repo (agent-land)
   merges=$(jq -c "$JQ_LIB"'[.[] | select(tagged("cleanup") and (.merged // "") != "" and (.finished | ep) != null)
     | . as $i | [(.pr | tostring | split(" ")), (.merged | tostring | split(" "))] | transpose[]
@@ -3322,12 +3701,13 @@ hold_reds() {
   fi
   while IFS= read -r repo; do
     rc=0; runs=$(hold_runs "$repo") || rc=$?
-    if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (day-log-ci), so nothing guards its main"; continue; fi
-    [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; continue; }
-    jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs" | while IFS= read -r streak; do
-      hold_streak "$repo" "$streak" "$runs" "$merges"
-    done
+    if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (day-log-ci), so nothing guards its main"; unread=1; continue; fi
+    [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; unread=1; continue; }
+    while IFS= read -r streak; do
+      hold_streak "$repo" "$streak" "$runs" "$merges" || unread=1
+    done < <(jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs")
   done < <(jq -r 'map(.repo) | unique[]' <<<"$merges")
+  return "$unread"
 }
 
 # reds_items <now> -> the queue items of the last REDS_DAYS as one array; rc 1 when unreadable
@@ -3344,13 +3724,20 @@ triage_hold_rows() {
     | "\(hold_key)\t\(hold_key) after cleanup merge\(if (.merges | length) > 1 then "s" else "" end) \($m): \(.what)\t#high"'
 }
 
-# reds_live -> the row key of each thing red right now, one a line: every triage row, plus every
-# watch at TRIP whatever its age, so a fix that came back counts before triage would file it.
+# reds_live <hold_reds records> -> the row key of each thing red right now, one a line: every triage
+# row, every hold, plus every watch at TRIP whatever its age, so a fix that came back counts before
+# triage would file it.
 reds_live() {
-  local f
   { triage_rows; triage_log_rows; triage_red_rows; } | cut -f1
+  jq -r "$JQ_LIB"'hold_key' <<<"$1"
+  watch_keys TRIP
+}
+
+# watch_keys <state> -> the row key of every watch in that Sentinel state, one a line
+watch_keys() {
+  local f
   for f in "$TRIAGE_WATCH_STATE"/*.state; do
-    [ -e "$f" ] && [ "$(cat "$f")" = TRIP ] || continue
+    [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
@@ -3371,24 +3758,36 @@ red_titles() {
     { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
 }
 
+# alert_titles <items> -> the titles of the red items whose row TRIAGE_ROUTES sends to alert, as a
+# JSON array: their watch pages the human on a KPI past its bound, so no merge can clear it.
+alert_titles() {
+  jq -r "$JQ_LIB"'.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")' <<<"$1" | sort -u |
+    while IFS= read -r title; do
+      if triage_line "$title" && [ "$route" = alert ]; then printf '%s\n' "$title"; fi
+    done | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
 # reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS, then
 # per merged cleanup item (cleanup: true, its outcome the hold: the reds line of the usage above): what
 # was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
-# after the merge is "came back", red the whole time is "still red". Counted, never judged.
+# after the merge is "came back", red the whole time is "still red", and red now with its row routed
+# to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
+# Counted, never judged.
 reds_json() {
-  local t="$1" items holds live watches='{}' f n parsed
+  local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
   parsed=$(red_titles "$items") || return 1
+  alerted=$(alert_titles "$items") || return 1
   holds=$(hold_reds "$t" "$items" | jq -cs .)
-  live=$({ reds_live; jq -r "$JQ_LIB"'.[] | hold_key' <<<"$holds"; } | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
+  live=$(reds_live "$(jq -c '.[]' <<<"$holds")" | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
     [ -e "$f" ] || continue
     n=${f##*/} n=${n%.since}
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -3408,9 +3807,10 @@ reds_json() {
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"
-         elif .state == "running" or .state == "waiting" then "fixing"
+         elif .state == "running" or .state == "review" or .state == "waiting" then "fixing"
          elif .merged != null then
            (if $red | not then "fixed"
+            elif $t | gsub("\n"; " ") | IN($alerted[]) then "alert route"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
             else "still red" end)
          elif .status == "cancelled" then "cancelled"
@@ -3451,8 +3851,46 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
+# triage_retire <dry> -> closes each check(watch) or fix(hold) row nobody started whose key left
+# reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it again.
+# Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
+# board cannot be read, a watch whose probe could not run (ERROR), every hold row when a repo's runs
+# could not be read, and a ci- hold whose merge has left the REDS_DAYS window hold_reds reads. A row
+# that fails to close is said and tried again next pass: retiring never stops new reds being filed.
+# Leaves the count in TRIAGE_RETIRED.
+triage_retire() {
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key
+  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red)'
+  local merge='after cleanup merges? ([^ ]+) \('
+  TRIAGE_RETIRED=0
+  [ -d "$TRIAGE_WATCH_STATE" ] || return 0
+  t=$(now)
+  items=$(reds_items "$t") || return 0
+  holds=$(hold_reds "$t" "$items") || holds_read=0
+  live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
+  slugs=$(jq -r '.[].slug' <<<"$items")
+  while IFS=$'\t' read -r _ _ title raw; do
+    [[ $title =~ $shape ]] || continue
+    key=${BASH_REMATCH[1]}
+    [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    if [[ $key == 'fix(hold): '* ]]; then
+      [ "$holds_read" = 1 ] || continue
+      if [[ $key == 'fix(hold): ci-'* ]]; then
+        [[ $raw =~ $merge ]] && grep -qxF -- "${BASH_REMATCH[1]}" <<<"$slugs" || continue
+      fi
+    fi
+    if [ "$dry" = 1 ]; then echo "retire: $key"; TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1)); continue; fi
+    if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent done "$key" --proof "run:fleet-bench-triage-$(date -d "@$t" +%F)" >/dev/null; then
+      TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1))
+    else
+      say "retire: could not close $key"
+    fi
+  done <<<"$board"
+}
+
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key
+  local rows filed dry=0 q h text re route skill fix tags key extra
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -3482,18 +3920,22 @@ cmd_triage() {
   [ -n "$rows" ] && rows=$(triage_route "$rows")
   if [ "$dry" = 1 ]; then
     [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == "-" ? "" : " (" $4 ")") }' <<<"$rows"
+    triage_retire 1
     return 0
   fi
+  triage_retire 0
   if [ -z "$rows" ]; then
     say "no runner, unit, watch or log error at fault"
-    report_outcome NOOP "no runner, unit, watch or log error at fault"
+    if [ "$TRIAGE_RETIRED" -gt 0 ]; then report_outcome WORKED "$TRIAGE_RETIRED recovered rows closed"
+    else report_outcome NOOP "no runner, unit, watch or log error at fault"; fi
     return 0
   fi
   filed=$(triage_filed "$rows")
   if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
   h=$(triage_human "$rows"$'\n'"$(triage_spent "$rows")")
   q=$(triage_promote "$rows")
-  upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
+  extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
+  upsert_report "$rows" "$extra"
 }
 
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
@@ -3517,39 +3959,15 @@ finding_limits() {
   jq -cn --argjson d "$FINDING_DEFAULTS" --argjson f "$file" '$d + ($f | with_entries(select(.value != null)))'
 }
 
-# prom_match_rows <epoch> -> cc:pool_match_{slots,busy} per pool and cc:pool_match_labels "<pool>/<label sets>":
+# prom_match_rows -> cc:pool_match_{slots,busy,runners} per pool and cc:pool_match_labels "<pool>/<label sets>":
 # the slots that can take the jobs the pool has long waited on. A job runs only on a runner holding all
 # its labels (GitHub compares them without case), so a pool's total busy/slots says nothing about a
 # job that fits two of its ten runners (2026-11-05: razer-laptop-unity-pool-1/2 were the only ones that
-# matched while mac-studio slots sat idle). A slot is a runner running or idle and not withheld, as
-# cc:pool_slots counts it; cc:pool_match_runners counts the runners in any state, so no slot because they are
-# down reads differently from no runner with the labels. Empty when nothing waits long, or no runner is read:
-# the rule then falls back to the pool's own totals.
+# matched while mac-studio slots sat idle). The join is hub_core::ci, the one copy the hub and agent-web
+# draw too; this only asks it. Empty when nothing waits long or it is unread: the rule then falls back
+# to the pool's own totals. It reads Prometheus now, which is the newest sample the one reader of this asks for.
 prom_match_rows() {
-  local minwait
-  minwait=$(finding_limits | jq -r .finding_pool_wait_s)
-  prom_q "{__name__=~\"github_actions_job_waiting|github_runner_state|github_runner_withheld\"}" "$1" 2>/dev/null |
-    jq -r --argjson minwait "$minwait" '
-      def lbl: (.metric.labels // "") | ascii_downcase | split(",") | map(select(. != ""));
-      .data.result as $r
-      | ([$r[] | select(.metric.__name__ == "github_runner_withheld" and (.value[1] | tonumber) == 1) | .metric.name]) as $withheld
-      # One row per runner, a running one winning when two exporter pods disagree during a rollout.
-      | ([$r[] | select(.metric.__name__ == "github_runner_state") | {name: .metric.name, state: .metric.state, labels: lbl}]
-         | group_by(.name) | map(sort_by(.state != "running") | first)) as $runners
-      | select($runners | length > 0)
-      | ([$r[] | select(.metric.__name__ == "github_actions_job_waiting" and .metric.stuck != "true"
-                        and (.value[1] | tonumber) >= $minwait and .metric.pool != null)
-          | {pool: .metric.pool, labels: lbl} | select(.labels | length > 0)]
-         | group_by(.pool)[]) as $jobs
-      | ($jobs[0].pool) as $pool
-      | ($jobs | map(.labels | sort) | unique) as $sets
-      | [$runners[] | select(.labels as $have | any($sets[]; all(.[]; . as $x | $have | index($x))))] as $fit
-      | [$fit[] | select(.state == "running" or (.state == "idle" and (.name as $n | $withheld | index($n) | not)))] as $m
-      | ["cc:pool_match_slots", $pool, ($m | length)],
-        ["cc:pool_match_busy", $pool, ($m | map(select(.state == "running")) | length)],
-        ["cc:pool_match_runners", $pool, ($fit | length)],
-        ["cc:pool_match_labels", "\($pool)/\($sets | map(join(",")) | join(" | "))", 1]
-      | @tsv' 2>/dev/null
+  $BENCH_CI_MATCH_CMD "$(finding_limits | jq -r .finding_pool_wait_s)" 2>/dev/null
 }
 
 # prom_rows <epoch> [match] -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
@@ -3567,7 +3985,7 @@ prom_rows() {
     # that feeds it. Unread, a starved pool names no repos, and whoever reads it must assume all.
     out+=$'\n'$(prom_q "count by (pool, repo) ($W (github_actions_job_waiting{stuck!=\"true\"}))" "$t" |
       jq -r '.data.result[] | select(.metric.pool and .metric.repo) | ["cc:pool_waiting_repo", "\(.metric.pool)/\(.metric.repo)", (.value[1] | tonumber)] | @tsv' 2>/dev/null)
-    [ -n "${2:-}" ] && out+=$'\n'$(prom_match_rows "$t")
+    [ -n "${2:-}" ] && out+=$'\n'$(prom_match_rows)
     out=$(grep . <<<"$out")
   fi
   [ -n "$out" ] && printf '%s\n' "$out"
@@ -3664,11 +4082,15 @@ finding_rows() {
             # more sessions add no demand to it.
             | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels" else "capacity" end) as $bind
+            # Jobs pinned to a host (a host-<name> label) wait on the slots of that host by choice:
+            # with those all busy, no label or admission is wrong.
+            | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
+               and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
                 + (if $ms != null then {pool_busy: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u // "?")/\($k.s // "?") slots busy"
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($u // "?")/\($s // "?") in the pool" else "" end) + ": "
-                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
@@ -3934,6 +4356,7 @@ forecast_json() {
                  live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
                  after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
                  why: (if .state == "waiting" then "waiting on you"
+                       elif .state == "review" then "on a PR"
                        elif ($h | startswith("after ")) and $active[$par] == null then "after \($par), which did not finish ok"
                        elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
                        else null end)})) as $e
@@ -3943,6 +4366,7 @@ forecast_json() {
                          p50: $a.placed[.slug].end, slow: $b.placed[.slug].end})) as $rows
           | {count: ($it | length), running: ($it | map(select(.state == "running")) | length),
              queued: ($it | map(select(.state == "queued")) | length),
+             review: ($it | map(select(.state == "review")) | length),
              waiting: ($it | map(select(.state == "waiting")) | length),
              slots: $K, slots_known: ($slots != ""), on_schedule: ($e | map(select(.live != null)) | length),
              phases: ($rows | map(.phases) | add // 0),
@@ -3992,7 +4416,7 @@ cmd_forecast() {
     (if .items == null then "  agent queue: unreadable"
      elif .items.count == 0 then "  agent queue: empty"
      else .items as $i
-       | "  agent queue: \($i.count) items (\($i.running) running, \($i.queued) queued, \($i.waiting) waiting on you), \($i.phases) phases on \($i.slots) dispatch slots"
+       | "  agent queue: \($i.count) items (\($i.running) running, \($i.queued) queued, \($i.review) on a PR, \($i.waiting) waiting on you), \($i.phases) phases on \($i.slots) dispatch slots"
          + (if ($i.schedule | length) > 0 then ": all done by \($i.finish_p50 | hm), slow \($i.finish_slow | hm)" else "" end)
          + (if $i.on_schedule > 0 then " (\($i.on_schedule) running already counted above)" else "" end),
          (if ($i.not_scheduled | length) > 0
@@ -4096,9 +4520,11 @@ cmd_flow() {
 # base (the commit before it), merge, task (its row text), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
 # merge, so a session can neither see nor edit what scores it. A score row in canary.jsonl is
-# {epoch, run, id, project, pr, session_id, harness, model, pass, rc, config}; cost, minutes,
+# {epoch, run, id, project, pr, session_id, harness, model, effort, pass, rc, config}; cost, minutes,
 # turns and tokens come from the session's outcome row by session_id, never copied here. A lane is
-# a harness and model: the same tasks run under each, so lanes compare on equal work. The canary_
+# a harness, model and effort (null: the harness's own default): the same tasks run under each, so
+# lanes compare on equal work. A task may name its `stack` (else its project's, by BENCH_MATRIX);
+# its kind is its task text's prefix. The canary_
 # KPIs read the claude lane alone (a row without harness is claude), one baseline week to week.
 
 # canary_tasks [id...] -> one compact task a line, by id; every listed id must exist
@@ -4162,6 +4588,11 @@ canary_brief() {
 # canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+# A lane with an effort ends in its first two letters (me, hi, lo, mi, xh): the whole word would
+# leave the id too few letters to tell the tasks apart. Retro refuses a lane whose slug repeats one before it.
+# canary_lane_name <harness> [model] [effort] -> the lane part of the slug, as canary_slug keeps it whole
+canary_lane_name() { printf '%s' "$1${2:+-$2}${3:+-${3:0:2}}"; }
+
 canary_slug() {
   local id tail
   tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
@@ -4172,17 +4603,19 @@ canary_slug() {
 }
 
 canary_queue() {
-  local tasks t id slug week lane="" harness="" model="" added=0 had=0
+  local tasks t id slug week lane="" label="" harness="" model="" effort="" added=0 had=0
   local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
       --model) model="${2:?canary queue: --model needs a value}"; shift 2 ;;
-      *) say "usage: fleet-bench canary queue [--harness h [--model m]]"; return 2 ;;
+      --effort) effort="${2:?canary queue: --effort needs a value}"; shift 2 ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]]"; return 2 ;;
     esac
   done
   [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
-  [ -z "$harness" ] || lane="$harness${model:+-$model}"
+  [ -z "$effort" ] || [ -n "$model" ] || { say "canary queue: --effort needs --model"; return 2; }
+  [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
@@ -4193,33 +4626,37 @@ canary_queue() {
     seen[$slug]=$id
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
-      --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${harness:+ $harness${model:+/$model}}" \
+      --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
       -- "$(canary_brief "$t" "$slug")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
-    [ -z "$model" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" "model=$model" >/dev/null ||
+    [ -z "$model" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" "model=$model" ${effort:+"effort=$effort"} >/dev/null ||
       { say "canary: queued $slug, but could not set its model"; return 1; }
     added=$((added + 1))
   done <<<"$tasks"
-  say "canary: $added queued, $had already queued for $week${harness:+ ($harness${model:+/$model})}"
+  say "canary: $added queued, $had already queued for $week${label:+ ($label)}"
 }
 
-# canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model` a line, #
-# comments), when the source its harness spends from (harnesses.json `source`) has room by
+# canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model [effort]` a
+# line, # comments), when the source its harness spends from (harnesses.json `source`) has room by
 # BENCH_ROOM_CMD; a lane with no source or no room is said and skipped, so retro never queues a run
 # its source cannot carry. Returns 1 when any lane could not be queued.
 canary_queue_lanes() {
-  local h m src why rc=0
+  local h m e src why label lane rc=0
+  local -A lanes=()
   [ -r "$BENCH_CANARY_LANES" ] || return 0
-  while read -r h m _ <&3 || [ -n "$h" ]; do
+  while read -r h m e _ <&3 || [ -n "$h" ]; do
     [ -n "$h" ] && [ "${h:0:1}" != "#" ] || continue
+    label="$h${m:+/$m}${e:+@$e}" lane=$(canary_lane_name "$h" "$m" "$e")
+    if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
+    lanes[$lane]=$label
     src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
-    if [ -z "$src" ]; then say "canary: $h${m:+/$m} not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
-    if ! why=$($BENCH_ROOM_CMD "$src" 2>&1); then say "canary: $h${m:+/$m} not queued, ${why:-$src has no room}"; continue; fi
-    canary_queue --harness "$h" ${m:+--model "$m"} || rc=1
+    if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
+    if ! why=$($BENCH_ROOM_CMD "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+    canary_queue --harness "$h" ${m:+--model "$m"} ${e:+--effort "$e"} || rc=1
   done 3<"$BENCH_CANARY_LANES"
   return "$rc"
 }
 
-# canary_lane -> {harness, model, session_id} of the run scoring now: harness and model from its
+# canary_lane -> {harness, model, effort, session_id} of the run scoring now: harness, model and effort from its
 # queue item (fleet-dispatch records what it started), else codex when CODEX_THREAD_ID is set, else
 # claude. The session is that harness's own id, else the newest one claimed on the item.
 canary_lane() {
@@ -4228,7 +4665,7 @@ canary_lane() {
   jq -nc --argjson it "$it" --arg cx "${CODEX_THREAD_ID:-}" --arg cl "${CLAUDE_CODE_SESSION_ID:-}" '
     def nz: if . == "" then null else . end;
     ($it.agent // (if $cx != "" then "codex" else "claude" end)) as $h
-    | {harness: $h, model: ($it.model // null | nz),
+    | {harness: $h, model: ($it.model // null | nz), effort: ($it.effort // null | nz),
        session_id: ((if $h == "claude" then $cl elif $h == "codex" then $cx else "" end | nz)
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
@@ -4265,7 +4702,7 @@ canary_score() {
   lane=$(canary_lane)
   jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
     --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
-      session_id: $l.session_id, harness: $l.harness, model: $l.model, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
+      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
   printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
 }
 
@@ -4316,7 +4753,7 @@ canary_list() {
     fi
 }
 
-# canary_lanes [json] -> one row per harness and model over every score, joined to outcome rows.
+# canary_lanes [json] -> one row per harness, model and effort over every score, joined to outcome rows.
 # same_tasks are the tasks a lane shares with the claude lane (harness claude, as the canary_ KPIs
 # read it): its pass rate and claude's over just those, each the mean of per-task pass rates so a
 # task claude re-ran every week weighs one, the like-for-like comparison; null on a claude row.
@@ -4329,11 +4766,11 @@ canary_lanes() {
     ($o | INDEX(.session_id)) as $os
     | [$k[] | select(baseline)] as $base
     | ($base | map(.id) | unique) as $bt
-    | $k | group_by([.harness // "claude", .model // ""]) | map(
+    | $k | group_by([.harness // "claude", .model // "", .effort // ""]) | map(
         [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
         | any(.[]; baseline) as $isbase
         | (map(.id) | unique | map(select(IN($bt[])))) as $st
-        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), runs: length,
+        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null), runs: length,
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),
            same_tasks: (if $isbase then null else ($st | length) end),
            pass_rate_same: (if $isbase then null else (. as $l | $st | map(. as $i | $l | per_task($i)) | mean(.) | if . then round2 else . end) end),
@@ -4344,7 +4781,7 @@ canary_lanes() {
            cost_per_run: ($rs | mean(.o.cost_usd) | if . then round1 else . end),
            tokens_per_run: ($rs | mean(.o.tokens_total) | if . then round else . end)}) | .[]' |
     if [ -n "$1" ]; then cat; else
-      jq -r '"\(.harness)/\(.model // "-")\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
+      jq -r '"\(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end)\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
     fi
 }
 
@@ -4360,7 +4797,161 @@ canary_lanes_section() {
   echo "| Lane | Runs | Tasks | Pass | Same | Pass on same | Claude on same | Min | Turns | Cost | Tokens |"
   echo "|---|---|---|---|---|---|---|---|---|---|---|"
   jq -r 'def d: if . == null then "-" else tostring end;
-    "| \(.harness)/\(.model // "-") | \(.runs) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
+    "| \(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end) | \(.runs) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
+}
+
+# canary matrix [--harness h] [--days N] [--json]: the task matrix for one harness (default codex),
+# from BENCH_MATRIX. A kind-by-stack cell counts that harness's canary scores on tasks of the kind and
+# stack, and its own items done in the last N days (default 30; canaries come in by score, not item):
+# a pass is a passed score or an item closed ok; a fail is a failed score or an item closed failed,
+# except an end that says nothing about the model (UNRATED_ENDS). Proven
+# is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why, no work is a cell no item
+# on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
+# `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in
+# no cell. Each mode is mode_of's test on the item
+# (interactive: the harness's own outcome rows no item claims, a pass when it merged a PR; forgejo: a
+# project whose checkout mirrors to GitHub from Forgejo, as fleet-dispatch forge_canonical reads it).
+MATRIX_JQ='
+  def kind_of: if tagged("research") then "research" else .type // null end;
+  def stack_of($m): (.stack // null) as $own | (.area // null) as $sc | .project as $p
+    | $own // first($m.stacks | to_entries[] | select(($sc != null) and ((.value.scopes // []) | index($sc))) | .key)
+      // first($m.stacks | to_entries[] | select(.value.projects | index($p)) | .key) // null;
+  def verdict: if .status == "ok" then "pass" elif .status == "failed" and (unrated | not) then "fail" else null end;
+  def mode_of($os): [
+    (select(.mode == "oneshot" and (tagged("night") | not) and (tagged("red") | not)) | "oneshot"),
+    (select(tagged("night")) | "night"), (select(tagged("red")) | "red"), (select(.mode == "plan") | "plan"),
+    (select((" " + (.tags // "")) | test(" ask:")) | "ask-resume"),
+    (select((.salvage // "") != "") | "salvage-resume"),
+    (select((.sessions // "") | split(" ") | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
+    (select(.project as $p | $forgejo | index($p)) | "forgejo")];
+  def cell($rs): {pass: ($rs | map(select(.v == "pass")) | length), fail: ($rs | map(select(.v == "fail")) | length),
+    evidence: ($rs | map(select(.v)) | sort_by(.at) | last | .ref // null)};
+  def status($c; $ex; $work): if $ex then "excluded" elif $c.pass > 0 then "proven" elif $c.fail > 0 then "failing"
+    elif $work == 0 then "no work" else "empty" end;
+  ($items | map(select(.from != "canary"))) as $all
+  | ($o | INDEX(.session_id)) as $os
+  | ($ts | map({key: .id, value: {kind: kind_of, stack: stack_of($m)}}) | from_entries) as $tk
+  | ([$k[] | select((.harness // "claude") == $h and (.epoch // 0) >= ($since + "T00:00:00Z" | fromdateiso8601))
+      | . as $r | $tk[$r.id] | select(.)
+      | {kind, stack, v: (if $r.pass then "pass" else "fail" end), at: ($r.epoch | todate), ref: $r.run}]) as $scores
+  | ([$all[] | select((.agent // "claude") == $h)
+      | {kind: kind_of, stack: stack_of($m), modes: mode_of($os), v: verdict, at: (.finished // ""), ref: .slug}]) as $live
+  | ($all | map({kind: kind_of, stack: stack_of($m)})) as $demand
+  | ($all | map(.sessions // "" | split(" ")[]) | map(select(. != "")) | INDEX(.)) as $claimed
+  | ([$o[] | select(.harness == $h and ($claimed[.session_id // ""] | not))
+      | {v: (if (.prs_merged // 0) > 0 then "pass" else null end), at: (.updated // ""), ref: .session_id}]) as $hand
+  | def excluded($kind; $stack; $mode): first($m.excluded[]? | select((.kind // null) == $kind and (.stack // null) == $stack
+      and (.mode // null) == $mode)) // first($m.excluded[]? | select(.stack == null and .mode == null and .kind == $kind and $stack != null))
+      // first($m.excluded[]? | select(.kind == null and .mode == null and .stack == $stack and $kind != null)) // null;
+  {harness: $h, since: $since, kinds: $m.kinds, stacks: ($m.stacks | keys_unsorted),
+   cells: [$m.kinds[] as $kd | $m.stacks | keys_unsorted[] as $st
+     | (($scores + $live) | map(select(.kind == $kd and .stack == $st))) as $rs | cell($rs) as $c
+     | excluded($kd; $st; null) as $ex
+     | {kind: $kd, stack: $st} + $c + {status: status($c; $ex; ($demand | map(select(.kind == $kd and .stack == $st)) | length)), why: ($ex.why // null)}],
+   modes: [$m.modes[] as $md
+     | (if $md == "interactive" then $hand else $live | map(select(.modes | index($md))) end) as $rs | cell($rs) as $c
+     | excluded(null; null; $md) as $ex
+     | {mode: $md} + $c + {status: status($c; $ex; 1), why: ($ex.why // null)}],
+   excluded: [$m.excluded[]? | select((.kind // null) as $x | ($m.kinds | index($x)) | not) | select(.stack == null or .kind != null)]}'
+
+# The matrix json's renderers share these: a cell's mark with its passes of runs, and the empty count.
+MATRIX_FMT_JQ='def mark: {proven: "P", failing: "F", excluded: "X", "no work": "-", empty: "."}[.status]
+    + (if .pass + .fail > 0 then " \(.pass)/\(.pass + .fail)" else "" end);
+  def empties: [.cells[], .modes[] | select(.status == "empty")] | length; '
+
+canary_matrix() {
+  local h=codex days=30 json="" since tasks parsed items forgejo p dir
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --harness) h="${2:?canary matrix: --harness needs a value}"; shift 2 ;;
+      --days) days="${2:-}"; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "canary matrix: --days takes a whole number"; return 2; }; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary matrix [--harness h] [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  jq -e '(.kinds | arrays) and (.stacks | objects) and (.modes | arrays)' "$BENCH_MATRIX" >/dev/null 2>&1 ||
+    { say "canary matrix: $BENCH_MATRIX is not a matrix (kinds, stacks, modes)"; return 2; }
+  since=$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)
+  tasks=$(canary_tasks) || return 2
+  # A task's kind and scope, as an item's, are its row's type and area: one `notes row parse` of each first line.
+  if [ -n "$tasks" ]; then
+    parsed=$(jq -r '.task | split("\n")[0]' <<<"$tasks" | notes row parse) &&
+      tasks=$(jq -cn --rawfile p <(printf '%s\n' "$parsed") --rawfile t <(printf '%s\n' "$tasks") '
+        ($t | split("\n") | map(select(length > 0) | fromjson)) as $t | ($p | split("\n") | map(select(length > 0) | split("\t"))) as $p
+        | if ($p | length) != ($t | length) then error("short") else range($t | length) as $i
+          | $t[$i] + if $p[$i][3] == "1" then {type: $p[$i][0], area: ($p[$i][1] | if . == "-" then null else . end)} else {} end end') ||
+      { say "canary matrix: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
+  fi
+  items=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -c 'if type == "array" then .[] else . end') ||
+    { say "canary matrix: the done items could not be read"; return 1; }
+  forgejo=$(jq -r --slurpfile is <(printf '%s\n' "$items") '($is | map(.project) | unique) as $ps
+              | .paths // {} | to_entries[] | select(.value as $p | $ps | index($p)) | "\(.key)\t\(.value)"' "$BENCH_PROJECT_MAP" 2>/dev/null |
+            while IFS=$'\t' read -r dir p; do forge_canonical "$dir" && printf '%s\n' "$p"; done | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
+  jq -n --arg h "$h" --arg since "$since" --slurpfile m "$BENCH_MATRIX" --slurpfile k "$(kpi_canary)" --argjson forgejo "$forgejo" \
+    --slurpfile o <(outcomes_newest | jq -c --arg since "$since" 'select((.updated // "") >= $since)') \
+    --slurpfile items <(printf '%s\n' "$items") \
+    --rawfile tsr <(printf '%s' "$tasks") \
+    "$JQ_LIB"'($tsr | split("\n") | map(select(length > 0) | fromjson)) as $ts | $m[0] as $m | '"$MATRIX_JQ" |
+    if [ -n "$json" ]; then cat; else canary_matrix_text; fi
+}
+
+# canary_matrix_section: the codex task matrix, in the scorecard
+canary_matrix_section() {
+  local j
+  echo "## Task matrix"
+  echo
+  echo "Codex on every kind by stack, then each run mode (\`fleet-bench canary matrix\`, from \`~/.config/fleet-bench/matrix.json\`, a private file for its project names). P proven, F failing, X excluded, - no work on any harness in 30 days, . empty; n/m is passes of runs, from canary scores and Codex items."
+  echo
+  j=$(canary_matrix --json 2>/dev/null) || { echo "- task matrix: ? (matrix, scores or items unreadable)"; return 0; }
+  jq -r "$MATRIX_FMT_JQ"'.cells as $cs | .stacks as $st
+    | "| Kind | \($st | join(" | ")) |", "|---\($st | map("|---") | join(""))|",
+      (.kinds[] as $k | "| \($k) | \([$cs[] | select(.kind == $k) | mark] | join(" | ")) |"),
+      "", "| Mode | Status | Pass | Fail | Newest |", "|---|---|---|---|---|",
+      (.modes[] | "| \(.mode) | \(.status) | \(.pass) | \(.fail) | \(.evidence // .why // "-") |"),
+      "", "Excluded: \([.excluded[] | "\(.kind // .mode) (\(.why))"] | join("; ")). Empty cells: \(empties)."' <<<"$j"
+}
+
+# canary_matrix_text: the matrix json as a grid (P proven, F failing, X excluded, - no work, . empty)
+# with the modes and the exclusions beneath; the scorecard prints the same in markdown
+canary_matrix_text() {
+  jq -r "$MATRIX_FMT_JQ"'.cells as $cs
+    | "\(.harness) since \(.since): P proven, F failing, X excluded, - no work, . empty; n/m is passes of runs",
+      (["kind"] + .stacks | join("\t")),
+      (.kinds[] as $k | [$k] + [$cs[] | select(.kind == $k) | mark] | join("\t")),
+      "",
+      (.modes[] | "mode \(.mode)\t\(.status)\t\(.pass) pass \(.fail) fail\(if .evidence then "\t\(.evidence)" else "" end)\(if .why then "\t\(.why)" else "" end)"),
+      (.excluded[] | "excluded \(.kind // .mode)\t\(.why)"),
+      "empty: \(empties)"'
+}
+
+# canary_dream [--days N] [--json] -> one row per model dream's sweeps ran on over the last N days
+# (default 14), from agentctl-dream's trial.tsv (date, project, model, session, cost, verdict,
+# lessons added, memory refused): sweeps, cost and lessons added per sweep, the share with a memory
+# refused, the share FAILED or STALLED. No file yet is an empty answer, so the writer can land later.
+canary_dream() {
+  local days=14 json="" since
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "canary dream: --days takes a whole number"; return 2; }; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary dream [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  [ -r "$DREAM_TRIAL" ] || { say "canary dream: no sweeps recorded yet ($DREAM_TRIAL)"; return 0; }
+  since="$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)"
+  jq -Rnc --arg since "$since" "$JQ_LIB"'
+    [inputs | split("\t") | select(length >= 8 and .[0] >= $since)
+     | {model: .[2], cost: ((.[4] | tonumber?) // null), verdict: .[5],
+        lessons: ((.[6] | tonumber?) // 0), refused: ((.[7] | tonumber?) // 0)}]
+    | group_by(.model) | map(
+        (map(.cost | select(. != null))) as $c
+        | {model: .[0].model, sweeps: length, costed: ($c | length), cost_per_sweep: ratio($c | add // 0; $c | length),
+           lessons_per_sweep: ratio(map(.lessons) | add; length),
+           refused_share: ratio(map(select(.refused > 0)) | length; length),
+           stalled_share: ratio(map(select(.verdict == "FAILED" or .verdict == "STALLED")) | length; length)}) | .[]' "$DREAM_TRIAL" |
+    if [ -n "$json" ]; then cat; else
+      jq -r '"\(.model)\t\(.sweeps) sweeps\t$\(.cost_per_sweep // "-")/sweep over \(.costed)\tlessons/sweep \(.lessons_per_sweep // "-")\trefused \(.refused_share // "-")\tfailed or stalled \(.stalled_share // "-")"'
+    fi
 }
 
 # canary_shepherd [--days N] [--json] -> one row per model the shepherd's passes ran on over the
@@ -4398,11 +4989,13 @@ cmd_canary() {
   case "${1:-}" in
     list) shift; canary_list "$@" ;;
     shepherd) shift; canary_shepherd "$@" ;;
+    dream) shift; canary_dream "$@" ;;
     verify) shift; canary_verify "$@" ;;
     queue) shift; canary_queue "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json]"; return 2 ;;
+    matrix) shift; canary_matrix "$@" ;;
+    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 

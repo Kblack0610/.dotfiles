@@ -36,7 +36,7 @@ pub const DETAILS: [&str; 4] = [
 ];
 
 /// The intake steps the ingest block counts: what inbox-triage does with a line.
-const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
+const INTAKE: [&str; 7] = ["moved", "filed", "dup", "planned", "left", "asked", "refused"];
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Runner {
@@ -596,6 +596,7 @@ mod tests {
                 agentctl: state,
                 unity_runs: root.join("unity-runs.tsv"),
                 cache: root.join("cache"),
+                builds: crate::builds::Paths::from_env(),
             },
             dispatch: root.join("dispatch"),
             state: root.join("state.json"),
@@ -603,6 +604,7 @@ mod tests {
             judge_eval: root.join("no-judge-eval").display().to_string(),
             notes_state: root.join("notes"),
             lanes: root.join("lanes.tsv"),
+            fleet_cost: root.join("fleet-cost.json"),
         };
         (Fixture(root), paths)
     }

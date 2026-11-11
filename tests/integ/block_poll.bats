@@ -15,21 +15,8 @@ bg() { jq -nc --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c, run_in_ba
 denied() { assert_success; assert_output --partial '"permissionDecision": "deny"'; assert_output --partial '"permissionDecisionReason": "block-poll: '; }
 allowed() { assert_success; assert_output ""; }
 
-@test "gh run watch is denied, foreground or background, and names agent-land and gh-run-wait" {
+@test "gh run watch is no longer this hook's: hand_methods.bats owns that deny" {
   run fg 'gh run watch 123456 --exit-status'
-  denied
-  assert_output --partial 'agent-land'
-  assert_output --partial 'gh-run-wait <run-id>'
-  run bg 'cd x && gh run watch'
-  denied
-}
-
-@test "gh run view, gh run list, and a quoted pgrep pattern are allowed" {
-  run fg "pgrep -fc 'gh run watch'"
-  allowed
-  run fg 'gh run view 123456 --log-failed | tail -n 40'
-  allowed
-  run fg 'gh run list --limit 5'
   allowed
 }
 
@@ -170,5 +157,12 @@ rd() { jq -nc --arg f "$1" '{tool_name:"Read", tool_input:{file_path:$f}}' | pyt
 
 @test "negative control: a Monitor until-loop, the sanctioned wait, is allowed" {
   run bash -c "jq -nc '{tool_name:\"Monitor\", tool_input:{command:\"until grep -q done out.log; do sleep 5; done\"}}' | python3 '$GUARD'"
+  allowed
+}
+
+@test "a heredoc marker inside quoted text hides nothing after it" {
+  run fg $'git commit -m "doc <<EOF syntax"\nuntil gh pr view 1; do sleep 5; done'
+  denied
+  run fg $'cat <<EOF\nuntil x; do sleep 5; done\nEOF'
   allowed
 }

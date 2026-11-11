@@ -14,10 +14,12 @@ mod assets;
 mod auth;
 mod board;
 mod briefing;
+mod builds;
 mod cache;
 mod cli;
 mod cloud;
 mod costs;
+mod deliverables;
 mod feed;
 mod fleet;
 mod focus;
@@ -25,14 +27,16 @@ mod infra;
 mod jobs;
 mod outbox;
 mod outcomes;
-mod pipeline;
 mod projects;
 mod proposals;
 mod queue;
 mod reds;
+mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod suites;
+mod worklog;
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -82,9 +86,9 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
+    work: worklog::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
-    pipeline: pipeline::Cache,
     briefing: briefing::Cache,
 }
 
@@ -106,13 +110,13 @@ async fn main() -> Result<()> {
         oauth,
         sessions,
         actions: feed::Cache::new(events.subscribe()),
+        work: worklog::Cache::new(events.subscribe()),
         events,
         watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
-        pipeline: pipeline::Cache::default(),
         briefing: briefing::Cache::default(),
     });
 
@@ -146,7 +150,15 @@ async fn main() -> Result<()> {
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
+        .route("/api/releases", get(releases_list))
+        .route("/api/releases/changelog", get(releases::changelog))
+        .route("/api/builds", get(builds_list))
+        .route("/api/builds/log", get(build_log))
+        .route("/api/builds/detail", get(build_detail))
+        .route("/api/tests", get(tests_list))
+        .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/deliverables", get(deliverables::get))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))
@@ -164,6 +176,7 @@ async fn main() -> Result<()> {
         .route("/api/reds", get(reds::get))
         .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
+        .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -241,7 +254,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let claude = session::home().join(".claude");
     let projects = claude.join("projects");
     let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
-    let (costs_events, mut costs_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (cached_events, mut cached_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -254,10 +267,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 let _ = new_dirs.send(p.clone());
             }
             match classify(p) {
-                // Costs keeps its read for minutes, so the task below drops it before it tells
+                // Costs and Builds keep their read, so the task below drops it before it tells
                 // the page; a refresh that raced ahead would get the old snapshots back.
-                Some(msg) if msg == COSTS_EVENT => {
-                    let _ = costs_events.send(msg);
+                Some(msg) if msg == COSTS_EVENT || msg == BUILDS_EVENT => {
+                    let _ = cached_events.send(msg);
                 }
                 Some(msg) => {
                     let _ = events.send(msg); // no subscribers is fine
@@ -296,6 +309,15 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let tokens = boards::token_usage_dir();
     std::fs::create_dir_all(&tokens)?;
     targets.push((tokens, flat));
+    // release-state's snapshot, replaced by a rename: the Releases tab.
+    let snapshots = boards::releases_dir();
+    std::fs::create_dir_all(&snapshots)?;
+    targets.push((snapshots, flat));
+    // schedules-sync's run ledger and its sync record: the Releases tab's Builds section.
+    if let Some(dir) = hub_core::builds::Paths::from_env().ledger.parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -347,8 +369,12 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let Some(dir) = dir else { break };
                     failed.extend(add_watches(&mut w, vec![(dir, flat)]));
                 }
-                Some(msg) = costs_rx.recv() => {
-                    costs::forget().await;
+                Some(msg) = cached_rx.recv() => {
+                    if msg == BUILDS_EVENT {
+                        builds::forget().await;
+                    } else {
+                        costs::forget().await;
+                    }
                     let _ = tx.send(msg);
                 }
                 () = tokio::time::sleep(delay), if retry => {
@@ -366,6 +392,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
+const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
 
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
@@ -377,6 +404,12 @@ fn classify(p: &Path) -> Option<String> {
             .extension()
             .is_some_and(|e| e == "json")
             .then(|| COSTS_EVENT.to_string());
+    }
+    if boards::is_release_snapshot(&boards::releases_dir(), p) {
+        return Some(r#"{"kind":"releases"}"#.to_string());
+    }
+    if hub_core::builds::Paths::from_env().is_ledger_file(p) {
+        return Some(BUILDS_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1109,7 +1142,6 @@ async fn home_board(
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
     let infra = s.infra.infra().await;
-    let gauges = s.pipeline.get().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
@@ -1117,7 +1149,7 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&gauges);
+        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await
@@ -1143,15 +1175,14 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-/// The flow strip (hub_core::flow) over the live queue and the cached gauges: the Queue tab's
-/// copy of what Home's `/api/home` carries as `flow`.
-async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
-    let gauges = s.pipeline.get().await;
+/// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
+async fn flow_strip() -> ApiResult<Json<serde_json::Value>> {
     tokio::task::spawn_blocking(move || {
         let queue = hub_core::queue::Queue::read(&actions::System);
-        let mut flow = hub_core::flow::Strip::build(Some(&queue));
-        flow.set_pipeline(&gauges);
-        serde_json::json!({ "flow": flow, "grafana": hub_core::infra::grafana() })
+        let read = hub_core::pipeline::read();
+        let line =
+            hub_core::flow::Rail::build(Some(&queue), Some(&read), chrono::Utc::now().timestamp());
+        serde_json::json!({ "line": line, "grafana": hub_core::infra::grafana() })
     })
     .await
     .map(Json)
@@ -1184,6 +1215,55 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         s.jobs.get(q).await,
     )
         .into_response()
+}
+
+async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        releases::get(q).await,
+    )
+        .into_response()
+}
+
+async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        builds::get(q, s.infra.rates().await).await,
+    )
+        .into_response()
+}
+
+/// The run is named by its ledger key, never by a URL or a path.
+async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Response> {
+    let text = builds::log(key)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
+/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+async fn build_detail(
+    State(s): State<Shared>,
+    Query(key): Query<hub_core::builds::RunKey>,
+) -> ApiResult<Response> {
+    let body = builds::detail(key, s.infra.rates().await)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+async fn tests_list(Query(q): Query<suites::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        suites::get(q).await,
+    )
+        .into_response()
+}
+
+/// A suite is named by its run and its place in that run's results, never by a path.
+async fn tests_cases(Query(q): Query<suites::CasesQuery>) -> ApiResult<Response> {
+    let body = suites::cases(q).await.map_err(|(code, e)| bad(code, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
@@ -1293,7 +1373,7 @@ mod tests {
         });
         let home = hub_core::home::build(&state, None, None, None);
         assert_eq!(home.needs.len(), 2);
-        let (numbers, shown) = (home.numbers.clone(), home.shown);
+        let (sessions, shown) = (home.sessions.clone(), home.shown);
         let q = HomeQuery {
             q: "project:b".into(),
             ..Default::default()
@@ -1309,7 +1389,7 @@ mod tests {
         assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
         assert_eq!(out["table"]["q"], "project:b");
         assert_eq!(out["shown"], shown, "flattened beside the rows");
-        assert_eq!(out["numbers"], serde_json::to_value(numbers).unwrap());
+        assert_eq!(out["sessions"], serde_json::to_value(sessions).unwrap());
         assert!(
             out["proposals_table"].is_object(),
             "Proposals' view rides beside it"
@@ -1446,6 +1526,18 @@ mod tests {
             classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
             None
         );
+        // release-state's snapshot arrives by a rename; its temp files and any other state.json
+        // are not it.
+        assert_eq!(
+            classify(&boards::releases_dir().join("state.json")).as_deref(),
+            Some(r#"{"kind":"releases"}"#)
+        );
+        assert_eq!(classify(&boards::releases_dir().join(".state.123")), None);
+        // schedules-sync's ledger and sync record are the Builds section's; its other files are not.
+        let ci = hub_core::builds::Paths::from_env();
+        assert_eq!(classify(&ci.ledger).as_deref(), Some(BUILDS_EVENT));
+        assert_eq!(classify(&ci.sync).as_deref(), Some(BUILDS_EVENT));
+        assert_eq!(classify(&ci.sync.with_file_name("other.json")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

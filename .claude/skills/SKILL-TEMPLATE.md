@@ -6,6 +6,12 @@ metadata:
   category: <authoring|memory|messaging|monitoring|ops|reference|research|tickets|workstreams>
   tags: [<tag>, <tag>]
   reviewed: "<YYYY-MM-DD>"
+  # Only when the skill stands in for a command sequence (~/.local/src/docs/skills.md); else delete.
+  replaces:
+    - match: '<regex over the hand-typed command>'
+      use: <the script or command to run instead>
+      mode: deny
+      why: <what the hand form costs>
 ---
 
 # <Skill Title>
@@ -32,6 +38,6 @@ Not for <adjacent case> - that is `<sibling-skill>`.
 
 ## How to use this template
 
-Copy it to `.claude/skills/<category>/<skill-name>/SKILL.md`, in the repo the `dotfiles-land` skill picks, then delete this trailing section. A new public skill also needs a line in the `.gitignore` allowlist. Run `skill-deploy` to link it, and never hand-write the symlink.
+Copy it to `.claude/skills/<category>/<skill-name>/SKILL.md`, in the repo the `dotfiles-land` skill picks, then delete this trailing section. A new public skill also needs a line in the `.gitignore` allowlist. Landing it links it (`dotfiles-autopull` runs `skill-deploy`); never hand-write the symlink.
 
 **House rules.** `~/.local/src/docs/skills.md` is the standard: frontmatter, the description budget, `reviewed`, the required heading, body size, ASCII. `skill-drift --lint .` checks what it can, and CI runs the same command.

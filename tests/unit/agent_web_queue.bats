@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list and its conversation, the Fleet runner rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab, the Costs tab and the tab skeleton they share (tblTab)
-# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,convo,fleet,infra,jobs,schedules,costs,table}.test.mjs); skips where node is absent.
+# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,convo,fleet,infra,jobs,schedules,releases,costs,table}.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -68,6 +68,11 @@ setup() {
   assert_success
 }
 
+@test "agent-web releases.js the Releases tab: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/releases.test.mjs"
+  assert_success
+}
+
 @test "agent-web schedules.js the Schedules tab: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/schedules.test.mjs"
   assert_success
@@ -85,5 +90,10 @@ setup() {
 
 @test "agent-web table.js tblTab, the skeleton every shared-table tab draws with: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/table.test.mjs"
+  assert_success
+}
+
+@test "agent-web nav.js, the sidebar's outline: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/nav.test.mjs"
   assert_success
 }

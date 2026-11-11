@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# project-timeline - what happened on one lab project's code, as facts a page joins.
+#
+#   project-timeline [--days N] <project>     N is 1 to 30, the run ledger's reach
+#
+# One JSON object of the project's commits, PRs, CI runs and release tags in the last N days
+# (default 7), read when its record opens on the Projects tab; hub_core::timeline joins it with the
+# deploys and words it (`Facts` there lists each field). The checkout, branch, path and prFilter
+# come from project-map.json through project-name.sh. No git fetch: the branch is the checkout's
+# last-fetched origin/<branch>. A source the project lacks is a note, one that failed an error,
+# and the rest still prints. Exit 0, 2 on usage. Tests: tests/unit/project_timeline.bats.
+set -uo pipefail
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/origin-repo.sh
+. "$HERE/../lib/origin-repo.sh"
+
+DAYS=7 PROJ=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days) [[ "${2:-}" =~ ^([1-9]|[12][0-9]|30)$ ]] || usage; DAYS="$2"; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) usage ;;
+    *) [ -z "$PROJ" ] || usage; PROJ="$1"; shift ;;
+  esac
+done
+[[ "$PROJ" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
+
+SINCE=$(( $(date +%s) - DAYS * 86400 ))
+DIR="" REF="" BRANCH="" PATHF="" FILTER="" GH="" LEDGER="" TAGS="" NOTE=""
+DIR="$(project_repo_path "$PROJ")"
+if [ -n "$DIR" ] && [ -e "$DIR/.git" ]; then
+  BRANCH="$(project_field "$PROJ" branch)"
+  if [ -z "$BRANCH" ]; then
+    BRANCH="$(git -C "$DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+    BRANCH="${BRANCH#origin/}"
+  fi
+  BRANCH="${BRANCH:-main}"
+  REF="origin/$BRANCH"
+  git -C "$DIR" rev-parse -q --verify "$REF^{commit}" >/dev/null || REF="$BRANCH"
+  PATHF="$(project_field "$PROJ" path)"
+  FILTER="$(project_field "$PROJ" prFilter)"
+  if GH="$(origin_repo "$DIR" github.com)"; then
+    LEDGER="github:$GH"
+  elif LEDGER="$(origin_repo "$DIR")"; then
+    LEDGER="forgejo:$LEDGER"
+  else
+    LEDGER=""
+  fi
+  if project_tag_scope "$PROJ"; then
+    TAGS="$(git_tags "$_PTS_REPO" "$PROJ" "$_PTS_SCOPED" "$_PTS_GLOB" \
+      | sed 's#^#refs/tags/#' \
+      | xargs -r git -C "$DIR" for-each-ref --format='%(refname:short)%09%(creatordate:unix)' 2>/dev/null)"
+  fi
+else
+  NOTE="no checkout on this machine"
+  DIR=""
+fi
+
+export PROJ SINCE DIR REF BRANCH PATHF FILTER GH LEDGER TAGS NOTE
+exec python3 -I - <<'PY'
+import json, os, re, subprocess
+from datetime import datetime, timezone
+
+E = os.environ
+since = int(E["SINCE"])
+out = {"since": since, "branch": E["BRANCH"], "scoped": bool(E["FILTER"] or E["PATHF"]),
+       "commits": [], "prs": [], "runs": [], "tags": [], "notes": [], "errors": []}
+if E["NOTE"]:
+    out["notes"].append(E["NOTE"])
+
+
+def run(argv, cwd=None):
+    """(exit code, stdout, the first line of stderr) of a command; 127 when it is not installed."""
+    try:
+        p = subprocess.run(argv, cwd=cwd or None, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]} not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]} timed out"
+    err = (p.stderr.strip() or p.stdout.strip()).splitlines()
+    return p.returncode, p.stdout, err[0] if err else f"exit {p.returncode}"
+
+
+def epoch(s):
+    if not s:
+        return None
+    try:
+        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+# The registry's default prFilter for a product inside a repo (one with a path) is its own name.
+filt = None
+if E["FILTER"]:
+    try:
+        filt = re.compile(E["FILTER"], re.I)
+    except re.error as e:
+        out["errors"].append(f"prFilter {E['FILTER']!r}: {e}; matched as plain text")
+        filt = re.compile(re.escape(E["FILTER"]), re.I)
+elif E["PATHF"]:
+    filt = re.compile(re.escape(E["PROJ"]), re.I)
+d = E["DIR"]
+pr_refs = set()
+if d:
+    argv = ["git", "-C", d, "log", E["REF"], f"--since=@{since}", "--format=%H%x1f%ct%x1f%s"]
+    if E["PATHF"]:
+        argv += ["--", E["PATHF"]]
+    code, text, err = run(argv)
+    if code:
+        out["errors"].append(f"git log {E['REF']}: {err}")
+    for line in text.splitlines():
+        sha, at, subject = (line.split("\x1f") + ["", ""])[:3]
+        if not E["PATHF"] and filt and not filt.search(subject):
+            continue
+        prs = [int(n) for n in re.findall(r"\(#(\d+)\)", subject)]
+        out["commits"].append({"sha": sha, "at": int(at), "subject": subject, "prs": prs})
+        pr_refs.update(prs)
+
+if d and E["GH"]:
+    day = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%d")
+    code, text, err = run(["gh", "pr", "list", "--state", "all", "--limit", "100", "--search", f"updated:>={day}",
+                           "--json", "number,title,state,createdAt,mergedAt,closedAt,headRefName,url"], cwd=d)
+    if code:
+        out["errors"].append(f"gh pr list: {err}")
+    else:
+        try:
+            prs = json.loads(text or "[]")
+        except ValueError as e:
+            prs = []
+            out["errors"].append(f"gh pr list: {e}")
+        for p in prs:
+            if filt and p["number"] not in pr_refs and not filt.search(p.get("title") or ""):
+                continue
+            # The search keeps PRs updated in the window: an old open PR pushed to today is in,
+            # so its runs are the project's; the fold lists only its events in the window.
+            out["prs"].append({"number": p["number"], "title": p.get("title") or "", "state": (p.get("state") or "").lower(),
+                   "created": epoch(p.get("createdAt")), "merged": epoch(p.get("mergedAt")),
+                   "closed": epoch(p.get("closedAt")), "branch": p.get("headRefName") or "",
+                   "url": p.get("url") or ""})
+        if len(prs) >= 100:
+            out["notes"].append("PRs: the newest 100 of those updated in the window only")
+elif d:
+    out["notes"].append("PRs: the origin is not GitHub")
+
+if E["LEDGER"]:
+    iso = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A GitHub origin can be the mirror of a repo whose CI runs on Forgejo (home-config).
+    keys = [E["LEDGER"]] + ([f"forgejo:{E['GH']}"] if E["GH"] else [])
+    for key in keys:
+        code, text, err = run(["schedules-sync", "runs", key, "--since", iso])
+        if code != 3:
+            break
+    if code == 3:
+        out["notes"].append(f"runs: {' or '.join(keys)} not in the run ledger")
+    elif code:
+        out["errors"].append(f"schedules-sync runs: {err}")
+    else:
+        try:
+            out["runs"] = json.loads(text or "[]")
+        except ValueError as e:
+            out["errors"].append(f"schedules-sync runs: {e}")
+
+for line in E["TAGS"].splitlines():
+    tag, _, at = line.partition("\t")
+    if at.isdigit() and int(at) >= since:
+        out["tags"].append({"tag": tag, "at": int(at)})
+
+print(json.dumps(out, separators=(",", ":")))
+PY

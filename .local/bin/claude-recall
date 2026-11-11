@@ -16,7 +16,8 @@ Usage:
                            [--context N] [--limit N] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
-  claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,prompt]
+  claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,intent,prompt,
+                                                           body,read,script,mention]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
   claude-recall tool-output [--days N | --since DATE|ISO]
@@ -425,7 +426,92 @@ def cmd_show(a):
     return 0
 
 
-STATS_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+# The four signals beyond a Skill call and a typed command that a skill was used: its body was
+# loaded, its SKILL.md was read, a file under its directory was run, or a Bash command ran a
+# CLI of its name (fleet-dispatch, work-update). An argument is not a mention: a grep for a
+# name or a worktree named after it is work on the skill, not use of it. skill-drift reads
+# all six; they are off by default, since the tool-call scan is the slow part of a stats run.
+USE_KINDS = ("body", "read", "script", "mention")
+DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+# bypass: a Bash call that ran (no hook denied it) matching a hand-typed form some skill's
+# metadata.replaces names, keyed by that skill (hand_methods.py owns the rows and the match).
+# Not a use: skill-drift reads it beside the use kinds for BYPASSED and RETIRE.
+# denied: the same match on a call a PreToolUse hook refused, yielded with bypass; a deny row
+# that holds reads bypass 0 and denied N, so N is demand the skill still has (not RETIRE).
+STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass", "denied")
+
+
+def hand_methods():
+    """The hook module that owns metadata.replaces, beside this script in the same checkout."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "hand_methods.py"
+    spec = importlib.util.spec_from_file_location("hand_methods", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+# How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
+DENIED = "PreToolUse:Bash hook error:"
+
+
+def result_text(block):
+    """A tool_result's text, whether its content is a string or a list of text blocks."""
+    c = block.get("content")
+    if isinstance(c, list):
+        return "".join(str(x.get("text") or "") for x in c if isinstance(x, dict))
+    return str(c or "")
+BODY_RE = re.compile(r"\ABase directory for this skill: (\S+)")
+SKILL_PATH_RE = re.compile(r"skills/([\w.@+-]+(?:/[\w.@+-]+)*)")
+
+
+def skill_names():
+    """The deployed skills, one directory each in CLAUDE_SKILLS (skill-drift's variable)."""
+    root = Path(os.environ.get("CLAUDE_SKILLS") or Path.home() / ".claude" / "skills")
+    try:
+        return {d.name for d in root.iterdir() if (d / "SKILL.md").exists()}
+    except OSError:
+        return set()
+
+
+def skill_of_path(path, names):
+    """(kind, skill) for a path under a skills/ dir: read for its SKILL.md, script for any other
+    file. Only the deployed layout (skills/<name>/) counts: the source tree nests skills under a
+    category (skills/ops/<name>/), and a call there is authoring the skill, not using it."""
+    segs = path.split("/")
+    hit = segs[0]
+    if (names and hit not in names) or hit == "SKILL.md":
+        return None
+    return ("read" if segs[-1] == "SKILL.md" else "script"), hit
+
+
+@functools.lru_cache(maxsize=None)
+def cli_names(names):
+    """The skills that ship a CLI of their name on PATH. A mention of any other name is a word
+    (scope, release, loop), never a command run."""
+    return frozenset(n for n in names if shutil.which(n))
+
+
+# A call that touches more skills than this is corpus work (an audit loop, a grep over the
+# names, skill-drift itself), not the use of any one of them, so it counts for none.
+CORPUS_CALL_SKILLS = 2
+
+
+def tool_use_events(name, inp, names):
+    """The read/script/mention signals of one Read or Bash call, one per skill and kind."""
+    out = set()
+    if name == "Read":
+        m = SKILL_PATH_RE.search(str(inp.get("file_path") or ""))
+        hit = m and skill_of_path(m.group(1), names)
+        if hit and hit[0] == "read":
+            out.add(hit)
+    elif name == "Bash":
+        cmd = str(inp.get("command") or "")
+        for m in SKILL_PATH_RE.finditer(cmd):
+            hit = skill_of_path(m.group(1), names)
+            if hit:
+                out.add(hit)
+        out.update(("mention", x) for x in bash_heads(cmd) & cli_names(names))
+    return out if len({k for _, k in out}) <= CORPUS_CALL_SKILLS else set()
+
 # A typed command record opens with its tag; one quoted inside a summary or paste does not.
 CMD_RE = re.compile(r"\A\s*<command-(?:name|message)>(?:.*?<command-name>)?/?([^<\s]+)</command-name>", re.S)
 # Masks applied before a prompt becomes a counting key, so "fix PR #712" and "fix PR #713"
@@ -558,22 +644,40 @@ def stats_repo(label):
     return re.sub(r"-agent-(?:\d+(?:-[a-z])?|a[0-9a-f]{12,})$", "", label)
 
 
-def stats_events(path, since):
-    """Yield (kind, key, origin, day, example) for one transcript.
-
-    A subagent transcript contributes its Skill and Agent calls but no prompts or slash
-    commands: its user records are the parent's dispatch prompt, not anything typed.
-    """
+def stats_events(path, since, kinds=(), names=frozenset(), hand=None):
+    """Yield (kind, key, origin, day, example) for one transcript. The USE_KINDS are yielded
+    only when kinds names them; names is skill_names(). hand is (module, rules) for bypass."""
+    # A subagent transcript contributes its Skill and Agent calls but no prompts or slash
+    # commands: its user records are the parent's dispatch prompt, not anything typed. Its
+    # skill bodies, reads and runs count, since a subagent can use a skill.
     sub = "subagents" in path.parts
+    tools = {"read", "script", "mention"} & set(kinds)
+    body = "body" in kinds
+    bypass = hand if {"bypass", "denied"} & set(kinds) and hand and hand[1] else None
+    # A bypass is a hand form that RAN: a call a PreToolUse hook refused (hand_methods.py's own
+    # deny included) is recorded too, so each match waits here for its tool_result and is
+    # dropped when that result is a hook denial. A deny row then reads zero once it holds.
+    pending = {}
     session_auto = None
     for line in path.open(errors="replace"):
         # Cheap substring gates before json.loads: tool results and api records are most
         # of the bytes and none of the signal.
         if '"type":"assistant"' in line:
-            if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line):
+            if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line
+                    or (tools and ('"name":"Read"' in line or '"name":"Bash"' in line)
+                        and ("skills/" in line or ("mention" in tools and '"name":"Bash"' in line)))
+                    or (bypass and '"name":"Bash"' in line)):
                 continue
         elif '"type":"user"' in line:
-            if sub or '"tool_use_id"' in line:
+            if '"tool_use_id"' in line:
+                if pending and DENIED in line:
+                    for b in ((parse_line(line) or {}).get("message") or {}).get("content") or []:
+                        if (isinstance(b, dict) and b.get("is_error")
+                                and result_text(b).lstrip().startswith(DENIED)):
+                            for ev in pending.pop(b.get("tool_use_id"), ()):
+                                yield ("denied",) + ev[1:]
+                continue
+            if sub and not (body and "Base directory for this skill" in line):
                 continue
         else:
             continue
@@ -597,11 +701,29 @@ def stats_events(path, since):
                     yield "skill", str(inp["skill"]).lstrip("/"), origin, ts, ""
                 elif b.get("name") in ("Agent", "Task"):
                     yield "agent", str(inp.get("subagent_type") or "general-purpose"), origin, ts, ""
+                else:
+                    if tools:
+                        for kind, key in tool_use_events(b.get("name"), inp, names):
+                            if kind in tools:
+                                yield kind, key, origin, ts, ""
+                    if bypass and b.get("name") == "Bash":
+                        cmd = str(inp.get("command") or "")
+                        for skill in dict.fromkeys(r["skill"] for r in
+                                                   bypass[0].matches(cmd, rec.get("cwd"), bypass[1])):
+                            pending.setdefault(b.get("id") or id(b), []).append(
+                                ("bypass", skill, origin, ts, cmd))
         elif rtype == "user":
             text = user_text(rec)
             if not text:
                 continue
             origin = user_origin(rec)
+            m = BODY_RE.match(text)
+            if m:
+                if body:
+                    yield "body", m.group(1).rstrip("/").rsplit("/", 1)[-1], origin, ts, ""
+                continue
+            if sub:
+                continue
             m = CMD_RE.search(text)
             if m:
                 yield "slash", m.group(1), origin, ts, ""
@@ -614,12 +736,14 @@ def stats_events(path, since):
                     or s.startswith(HARNESS_PREFIXES)):
                 continue
             yield "prompt", None, origin, ts, s
+    for events in pending.values():
+        yield from events
 
 
 def cmd_stats(a):
     """Count slash commands, skills, subagents and repeated prompts. SESSIONS is the
     headline: a /loop that re-fires a command 200 times in one session is one session."""
-    kinds = set(a.kind.split(",")) if a.kind else set(STATS_KINDS)
+    kinds = set(a.kind.split(",")) if a.kind else set(DEFAULT_KINDS)
     bad = kinds - set(STATS_KINDS)
     if bad:
         print(f"claude-recall stats: unknown kind {','.join(sorted(bad))} "
@@ -631,8 +755,16 @@ def cmd_stats(a):
     if "intent" in kinds and not intents:
         print(f"claude-recall stats: no intents in {intents_path()}", file=sys.stderr)
     covers = {name: skills for name, skills, _ in intents}
+    names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
+    hand = None
+    if {"bypass", "denied"} & kinds:
+        mod = hand_methods()
+        hand = (mod, mod.load_rules())
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
+    # skill -> the sessions that used it by any counted use kind, so one session that calls a
+    # skill and reads its SKILL.md is one session, not two (skill-drift --overrides reads it)
+    skill_sessions = {}
 
     def add(kind, key, shown, bucket, session, origin, example):
         row = agg.setdefault((kind, key, bucket), {
@@ -642,6 +774,8 @@ def cmd_stats(a):
         row["shown"][shown] = row["shown"].get(shown, 0) + 1
         row["sessions"].add(session)
         row[origin].add(session)
+        if kind in ("skill", "slash") + USE_KINDS:
+            skill_sessions.setdefault(key, set()).add(session)
 
     for path in iter_files():
         try:
@@ -652,7 +786,7 @@ def cmd_stats(a):
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
-            for kind, key, origin, day, example in stats_events(path, since):
+            for kind, key, origin, day, example in stats_events(path, since, kinds, names, hand):
                 if kind in ("skill", "slash"):
                     used.setdefault(session, set()).add(key)
                 if a.origin != "all" and origin != a.origin:
@@ -690,6 +824,11 @@ def cmd_stats(a):
         # means the task gets described in words and the skill never fires.
         **({"covered_sessions": sum(1 for x in r["sessions"] if used.get(x, set()) & covers[key]),
             "covered_by": sorted(covers[key])} if k == "intent" else {}),
+        # bypass only: the sessions that also used the skill (any counted use kind). The rest
+        # did its work by hand with the skill never loaded.
+        **({"covered_sessions": sum(1 for x in r["sessions"]
+                                    if key in used.get(x, set()) or x in skill_sessions.get(key, ()))}
+           if k in ("bypass", "denied") else {}),
     } for (k, key, b), r in agg.items() if len(r["sessions"]) >= a.min]
     rows.sort(key=lambda r: (STATS_KINDS.index(r["kind"]), r["bucket"],
                              -r["sessions"], -r["calls"], r["key"]))
@@ -704,7 +843,9 @@ def cmd_stats(a):
 
     if a.json:
         print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
-                          "rows": rows}, ensure_ascii=False))
+                          "rows": rows,
+                          "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
+                         ensure_ascii=False))
         return 0
     if not rows:
         print(f"nothing counted since {since}")
@@ -722,6 +863,9 @@ def cmd_stats(a):
         elif r["kind"] == "intent":
             by = ",".join(r["covered_by"]) or "no skill"
             cov = f"skill ran in {r['covered_sessions']}/{r['sessions']} ({by})"
+            key = f"{key}  {c(DIM, cov)}"
+        elif r["kind"] in ("bypass", "denied"):
+            cov = f"skill used in {r['covered_sessions']}/{r['sessions']} | {r['example']}"
             key = f"{key}  {c(DIM, cov)}"
         print(f"  {r['sessions']:>8} {r['calls']:>6} {r['interactive_sessions']:>6} "
               f"{r['auto_sessions']:>5}  {key}")
@@ -749,14 +893,38 @@ SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl", 
 SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its commands
 
 
+def seg_words(seg):
+    """The words of one command segment (a string, or its words), past env assignments and timeout,
+    sudo, env, time."""
+    w = seg.split() if isinstance(seg, str) else list(seg)
+    while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
+        w = w[1:]
+        while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
+            w = w[1:]  # timeout 30, env -i
+    return w
+
+
+HEREDOC_RE = re.compile(r"(?<!<)<<-?\s*['\"]?\w")
+DQUOTE_RE = re.compile(r'(?<!\\)"')
+
+
+def bash_heads(cmd):
+    """The basename of every command a Bash call runs, one per segment and line. A heredoc body
+    and the inner lines of a multi-line double-quoted string are text, not commands."""
+    heads, quoted = set(), False
+    for line in cmd.splitlines():
+        if not quoted:
+            heads.update(os.path.basename(w[0]) for w in map(seg_words, SEGMENTS.split(line.strip())) if w)
+        if HEREDOC_RE.search(line):
+            break
+        quoted ^= len(DQUOTE_RE.findall(line)) % 2 == 1
+    return heads
+
+
 def bash_head(cmd):
     """grep, sed, git show: the first real command of a Bash call, past env, cd and wrappers."""
     for seg in SEGMENTS.split(cmd.strip()):
-        w = seg.split()
-        while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
-            w = w[1:]
-            while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
-                w = w[1:]  # timeout 30, env -i
+        w = seg_words(seg)
         if not w or w[0] == "cd":
             continue
         head = os.path.basename(w[0])
@@ -1215,13 +1383,27 @@ def result_text(b):
     return str(rc or "")
 
 
-# Read discipline: the responses a file read costs beyond itself. A read of a file a grep or rg
-# found in one of the LOCATE_WINDOW calls before it paid two responses where one call would do
-# (`rg -n -C`, or the locate and the slice chained in one command). A read of lines this stretch
-# already read, with no write to the file between, paid one for nothing. Logs, transcripts and
-# /tmp captures grow while a session runs, so reading one again is never counted as a repeat.
+# Read discipline: the responses a file read costs beyond itself. A read of lines within
+# LOCATE_CONTEXT of a numbered hit that a grep or rg in an earlier response of the last
+# LOCATE_WINDOW calls printed in that same file paid a response one call would have saved
+# (`rg -n -C 40`), so it is priced as the read's own response. A whole-file read or a range far
+# from every hit is the reader asking for more than any -C gives, and no pair. A list-only or
+# unnumbered grep, a name only in the pattern or the call's description, a grep in the same
+# response as the read, and a hit printed before a write to the file are no pair. A read of lines this
+# stretch already read, with no write to the file between, paid one for nothing. Logs,
+# transcripts and /tmp captures grow while a session runs, so reading one again is never a repeat.
 LOCATE_WINDOW = 8
+LOCATE_CONTEXT = 40  # the widest -C a pair is held to: one call printing 81 lines
 LOCATE_HEADS = {"grep", "rg", "ugrep", "ag"}
+# grep and rg flags whose value is the next word, so the word is neither pattern nor path
+LOCATE_VALUE_FLAGS = {"-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m", "-M", "-j", "--glob", "--iglob",
+                      "--type", "--type-not", "--regexp", "--file", "--max-count", "--include", "--exclude",
+                      "-d", "--max-depth", "--exclude-dir", "--context", "--after-context", "--before-context"}
+RG_VALUE_FLAGS = {"-r", "-E", "--replace", "--encoding", "--color", "--colors", "--sort", "--sortr",
+                  "--max-columns", "--max-filesize", "--threads", "--pre"}  # grep -r and -E take none
+NUMBERED_FLAG = re.compile(r"^(?:--line-number|-[a-zA-Z]*n)")  # -n, -rn, -inw: grep prints N:
+NUMBERED_LINE = re.compile(r"(?m)^(\d+)[:-]")  # a one-file grep -n hit or -C context line
+SHELL_TOKEN = re.compile(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.|&&|\|\||[|;]|[^'"\\|;&]+|&""")
 SED_RANGE = re.compile(r"^(\d+)(?:,(\d+))?p$")
 REDIRECT = re.compile(r"^\d*[<>]")  # 2>/dev/null, 2>&1
 REDIRECT_OP = re.compile(r"\d*[<>]+&?")  # a bare 2> or >>, whose target is the next word
@@ -1311,21 +1493,83 @@ def write_paths(name, inp, cwd):
     return [p for p in out if p != "/dev/null" and "&" not in p]
 
 
-def locate_call(name, inp):
-    if name in ("Grep", "Glob"):
-        return True
-    return name == "Bash" and any(bash_head(s) in LOCATE_HEADS
-                                  for s in SEGMENTS.split((inp.get("command") or "").strip()))
+def shell_commands(line):
+    """One shell line split at |, ||, &&, ; and & outside quotes, each command as its words."""
+    segs, cur = [], ""
+    for t in SHELL_TOKEN.findall(line):
+        if t in ("|", "||", "&&", ";", "&"):
+            segs.append(cur)
+            cur = ""
+        else:
+            cur += t
+    out = []
+    for seg in segs + [cur]:
+        try:
+            out.append(shlex.split(seg))
+        except ValueError:
+            out.append(seg.split())
+    return out
 
 
-def located_by(p, recent, seg):
-    """True when one of the recent calls in this stretch was a grep or rg that named or found p."""
-    base = os.path.basename(p)
-    tail = "/".join(p.split("/")[-2:])
-    word = re.compile(r"(?<![\w.-])" + re.escape(base) + r"(?![\w.-])")
-    hit = re.compile(r"(?m)^(?:\./)?" + re.escape(base) + ":")  # grep -rn output for a file at the top of the tree
-    return any(s == seg and loc and (word.search(cmd) or tail in text or hit.search(text))
-               for s, loc, cmd, text in recent)
+def locate_paths(name, inp):
+    """The paths a grep call that prints line numbers names (None when it prints none). The Grep
+    tool's `path` in content mode; for a Bash grep or rg with -n, the words after the pattern,
+    read only up to a heredoc, whose body is text."""
+    if name == "Grep":
+        numbered = inp.get("output_mode") == "content" and inp.get("-n", True) is not False
+        return [inp.get("path") or ""] if numbered else None
+    if name != "Bash":
+        return None
+    cmd, paths, found = inp.get("command") or "", [], False
+    for line in cmd.splitlines():
+        for words in shell_commands(line.strip()):
+            w = seg_words(words)
+            head = os.path.basename(w[0]) if w else ""
+            if head not in LOCATE_HEADS:
+                continue
+            values = LOCATE_VALUE_FLAGS | (RG_VALUE_FLAGS if head == "rg" else set())
+            pos, skip, explicit, numbered = [], False, False, head == "ag"
+            for x in w[1:]:
+                if skip:
+                    skip = False
+                elif x in values:
+                    skip, explicit = True, explicit or x in ("-e", "--regexp", "-f", "--file")
+                elif x.startswith("-"):
+                    numbered = numbered or bool(NUMBERED_FLAG.match(x))
+                elif not REDIRECT.match(x):
+                    pos.append(x)
+            if numbered:
+                found = True
+                paths += pos if explicit else pos[1:]
+        if HEREDOC_RE.search(line):
+            break
+    return paths if found else None
+
+
+def same_file(p, printed):
+    """True when a path a grep printed or was given names the absolute read path p."""
+    printed = printed.rstrip("/")
+    while printed.startswith("./"):
+        printed = printed[2:]
+    return bool(printed) and (p == printed or p.endswith("/" + printed))
+
+
+def located_by(p, lo, hi, recent, seg, i, since):
+    """True when a grep in an earlier response of this stretch, after the last write to p (index
+    since), printed a numbered hit in p (a `path:N:` line, or an `N:` line from a grep that named
+    p as its one path) and the read's lines lo..hi all sit within LOCATE_CONTEXT of one hit."""
+    if hi is None:
+        return False
+    hit = re.compile(r"(?m)^(\S*?" + re.escape(os.path.basename(p)) + r")[:-](\d+)[:-]")
+    for s, ri, paths, text in recent:
+        if s != seg or ri >= i or ri <= since or paths is None:
+            continue
+        lines = [int(n) for f, n in hit.findall(text) if same_file(p, f)]
+        if len(paths) == 1 and same_file(p, paths[0]):
+            lines += [int(n) for n in NUMBERED_LINE.findall(text)]
+        if any(n - LOCATE_CONTEXT <= lo and hi <= n + LOCATE_CONTEXT for n in lines):
+            return True
+    return False
 
 
 def tool_calls_file(path, since, until, seen_msgs, emit):
@@ -1384,6 +1628,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
     emit("session", kind, project)
     last_in_seg, seen_words, repeats, edits = {}, set(), {}, 0
     spans, recent, hot = {}, deque(maxlen=LOCATE_WINDOW), {}  # read discipline: path -> [(seg, lo, hi)]
+    written = {}  # path -> the response index of its last write, older grep hits are stale
     agent_texts = []  # (seg, report): what an Agent handed back, for reads that re-check it
     for i, r in enumerate(resps):
         last_in_seg[r["seg"]] = i
@@ -1418,21 +1663,22 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             nctx = nxt["ctx"] if nxt else 0
             for p in write_paths(name, inp, r["cwd"]):
                 spans.pop(p, None)
+                written[p] = i
             if name == "Bash" and not ro:  # a run can rewrite any generated file; code changes by edit
                 for p in [p for p in spans if path_class(p) != "code"]:
                     del spans[p]
             for p, lo, hi in ([] if err else read_spans(name, inp, r["cwd"])):
                 again = path_class(p) not in VOLATILE and not p.startswith("/tmp/") and any(
                     s == r["seg"] and lo <= (h or math.inf) and l <= (hi or math.inf) for s, l, h in spans.get(p, ()))
-                found = located_by(p, recent, r["seg"])
+                found = located_by(p, lo, hi, recent, r["seg"], i, written.get(p, -1))
                 segs = {s for s, _, _ in spans.get(p, ())}
                 fresh = r["seg"] not in segs  # first read of p in this stretch
                 tail = "/".join(p.split("/")[-2:])
                 spans.setdefault(p, []).append((r["seg"], lo, hi))
                 if win:
                     emit("n", kind, project, "reads", 1, nctx)
-                    if found:
-                        emit("n", kind, project, "locate_then_read", 1, nctx)
+                    if found:  # priced as the read's own response, the one a single call would have saved
+                        emit("n", kind, project, "locate_then_read", 1, r["ctx"])
                     if again:
                         emit("n", kind, project, "reread_same_lines", 1, nctx)
                     if fresh and any(s < r["seg"] for s in segs):
@@ -1442,7 +1688,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                     if RULE_DOC.search(p):
                         emit("n", kind, project, "read_rule_doc", 1, nctx)
                     hot[p] = hot.get(p, 0) + nctx
-            recent.append((r["seg"], locate_call(name, inp), json.dumps(inp), text[:20000]))
+            recent.append((r["seg"], i, locate_paths(name, inp), text[:20000]))
             if name == "Agent" and text:
                 agent_texts.append((r["seg"], text[:50000]))
             if not win:
@@ -1583,8 +1829,8 @@ def cmd_tool_calls(a):
           f"{100 * al.get('parallel_responses', 0) / max(al.get('tool_responses', 0), 1):.1f}% of "
           f"tool responses carried more than one call")
     reads = al.get("reads", 0)
-    print(f"  {reads:,} file reads: {100 * al.get('locate_then_read', 0) / max(reads, 1):.1f}% read a file a grep "
-          f"found in the {LOCATE_WINDOW} calls before, {100 * al.get('reread_same_lines', 0) / max(reads, 1):.1f}% "
+    print(f"  {reads:,} file reads: {100 * al.get('locate_then_read', 0) / max(reads, 1):.1f}% read lines near a numbered "
+          f"hit an earlier grep printed (one rg -C could do both), {100 * al.get('reread_same_lines', 0) / max(reads, 1):.1f}% "
           f"read lines already read with no write between")
     print(f"  read triggers: {100 * al.get('read_after_compaction', 0) / max(reads, 1):.1f}% first re-read after a "
           f"compaction, {100 * al.get('read_after_subagent', 0) / max(reads, 1):.1f}% a file an Agent report named, "
@@ -1656,7 +1902,10 @@ def main():
     st = sub.add_parser("stats", help="count slash commands, skills, subagents, repeated prompts")
     st.add_argument("--days", type=int, default=30, help="window in days (default 30)")
     st.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
-    st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default all)")
+    st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default "
+                    + ",".join(DEFAULT_KINDS) + "; body, read, script and mention are the skill-use "
+                    "signals skill-drift adds to skill and slash; bypass counts calls matching a skill's "
+                    "metadata.replaces that ran, denied the ones a hook refused)")
     st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
                     help="interactive = a turn in a CLI session (typed, or a dispatched task); "
                          "auto = headless, /loop fires, peer messages")

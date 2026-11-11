@@ -14,7 +14,19 @@
         "hooks": [
           { "type": "command", "command": "python3 $HOME/.claude/hooks/block-poll.py || true", "timeout": 10 },
           { "type": "command", "command": "bash $HOME/.claude/hooks/block-pip.sh", "timeout": 10 },
+          { "type": "command", "command": "bash $HOME/.claude/hooks/block-pkill-f.sh", "timeout": 10 },
+          { "type": "command", "command": "python3 $HOME/.claude/hooks/forge-guard.py || true", "timeout": 10 },
+          { "type": "command", "command": "python3 $HOME/.claude/hooks/checkout-guard.py || true", "timeout": 10 },
+          { "type": "command", "command": "python3 $HOME/.claude/hooks/deny-list-guard.py || true", "timeout": 10 },
           { "type": "command", "command": "bash $HOME/.claude/hooks/block-root-search.sh", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash $HOME/.claude/hooks/pre-stop-checks.sh --checks-only", "timeout": 600 },
+          { "type": "command", "command": "bash $HOME/.claude/hooks/codex-item-stop.sh", "timeout": 30 }
         ]
       }
     ]

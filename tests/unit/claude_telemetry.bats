@@ -45,6 +45,11 @@ telemetry_env() {
   assert_output --partial 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative'
 }
 
+@test "metrics export every 5s, or a run under the 60s SDK default never logs its cost" {
+  run telemetry_env 0
+  assert_output --partial 'OTEL_METRIC_EXPORT_INTERVAL=5000'
+}
+
 @test "off-LAN it exports NOTHING — the content-privacy gate" {
   # The paired positive is the on-LAN test above; without it a snippet that exported
   # nothing under any condition would pass this one.
@@ -173,9 +178,70 @@ connectors_env() {
   assert_output 'connectors=false artifact=0'
 }
 
+@test "the tools an automated start drops default to Workflow, ScheduleWakeup and Artifact; a launch-time value, empty too, wins" {
+  drops() {
+    env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" "$@" bash -c \
+      ". '$SNIP' >/dev/null 2>&1; echo \"drop=\${CLAUDE_AUTO_DROP_TOOLS-unset}\""
+  }
+  printf '#!/bin/sh\nexit 2\n' > "$FAKEBIN/getent"; chmod +x "$FAKEBIN/getent"
+  run drops
+  assert_output 'drop=Workflow,ScheduleWakeup,Artifact'
+  run drops CLAUDE_AUTO_DROP_TOOLS=
+  assert_output 'drop='
+  run drops CLAUDE_AUTO_DROP_TOOLS=Workflow
+  assert_output 'drop=Workflow'
+  # A value that is not a comma list of tool names drops none, and says so on stderr.
+  for bad in 'Bash(rm:*);x' 'Workflow,' ',Workflow' 'Workflow,,Artifact' 'Workflow Artifact'; do
+    drops2() { env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" CLAUDE_AUTO_DROP_TOOLS="$bad" bash -c \
+      ". '$SNIP' >/dev/null; echo \"drop=\${CLAUDE_AUTO_DROP_TOOLS-unset}\"" 2>&1; }
+    run drops2
+    assert_line --index 0 --partial 'is not a comma list of tool names'
+    assert_line --index 1 'drop='
+  done
+}
+
 @test "a launch-time ENABLE_CLAUDEAI_MCP_SERVERS or CLAUDE_CODE_ARTIFACT wins over the default" {
   run connectors_env 1 ENABLE_CLAUDEAI_MCP_SERVERS=true
   assert_output 'connectors=true artifact=0'
   run connectors_env 1 CLAUDE_CODE_ARTIFACT=1
   assert_output 'connectors=false artifact=1'
+}
+
+# The launch-line prefix for a claude started as a tmux pane command, from a pristine env.
+launch_env() {
+  printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"
+  chmod +x "$FAKEBIN/getent"
+  env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" bash -c ". '$SNIP' >/dev/null 2>&1; claude_launch_env"
+}
+
+@test "claude_launch_env carries every variable the file exports, on the LAN" {
+  # Its list is a second copy of the exports; this keeps the two from drifting.
+  run launch_env 0
+  assert_success
+  local v
+  for v in $(grep -oE '^ *export [A-Z_]+' "$SNIP" | awk '{ print $2 }'); do
+    # Written per launch below, and read by the launcher, not claude, in that order.
+    case $v in OTEL_RESOURCE_ATTRIBUTES | CLAUDE_AUTO_DROP_TOOLS) continue ;; esac
+    assert_output --partial " $v="
+  done
+  assert_output --partial 'OTEL_RESOURCE_ATTRIBUTES='
+}
+
+@test "claude_launch_env off the LAN carries no telemetry, and drops a parent Claude session's identity either way" {
+  run launch_env 1
+  assert_success
+  refute_output --partial 'OTEL_'
+  refute_output --partial 'CLAUDE_CODE_ENABLE_TELEMETRY'
+  assert_output --partial 'ENABLE_CLAUDEAI_MCP_SERVERS=false'
+  assert_output --partial '-u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED'
+}
+
+@test "claude_launch_env's prefix runs a command with the parent's identity gone and the export set" {
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"
+  chmod +x "$FAKEBIN/getent"
+  run env CLAUDE_CODE_SESSION_ID=parent CLAUDE_CODE_CHILD_SESSION=1 bash -c "eval \"\$(env -i HOME='$HOME' PATH='$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin' bash -c \". '$SNIP' >/dev/null 2>&1; claude_launch_env\") printenv\""
+  assert_success
+  refute_output --partial 'CLAUDE_CODE_SESSION_ID='
+  refute_output --partial 'CLAUDE_CODE_CHILD_SESSION='
+  assert_output --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
 }

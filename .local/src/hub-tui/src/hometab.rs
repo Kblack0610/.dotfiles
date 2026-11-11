@@ -1,5 +1,5 @@
 //! The Home tab: what needs you, what changed since last night, what analysis proposes, what is
-//! running, the numbers and the health strip, from `hub_core::home` and `hub_core::briefing`
+//! running (with the session counts), the spend, the vitals and the health strip, from `hub_core::home` and `hub_core::briefing`
 //! (the readers agent-web's Home uses too). The machines, pools and CI that sat
 //! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 
 use hub_core::briefing::{self, Fix, Night};
 use hub_core::home::{Chip, Home, Level, Need};
+use hub_core::vitals::Vitals;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, wrap, Table};
+use crate::fit::{cell, clip_line, Table};
 use crate::fmt::{clock, dur, Palette};
 
 pub(crate) fn age(since: Option<i64>, now: i64) -> String {
@@ -98,13 +99,53 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
         // The rank's two factors (WAITED, HOLDS) outlast PROJECT as the page narrows.
         keep: vec![1, 5, 3, 4, 2, 0, 6],
         flex: Some(5),
-        flexmin: 20,
+        // WHAT wraps, so this is the width it reads at: narrow pages drop ID and RANK first.
+        flexmin: 40,
         flexkeep: true,
         right: vec![0, 3],
         cap: vec![(2, 22), (4, 20), (6, 34)],
     };
-    out.extend(t.fit(w, p.dim()));
+    out.extend(t.fit_wrapped(w, p.dim()).0);
     more(&mut out, rows.len(), h.shown, "more", p);
+    out
+}
+
+/// VITALS: the head, then a row per question unless all are on target (dashboards rule 4). A row
+/// too wide for the screen stacks its clauses under the question.
+fn vitals(v: &Vitals, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let head = if v.all_ok { p.good() } else { p.warn() };
+    let mut out = vec![Line::from(vec![
+        Span::styled("VITALS    ", p.head()),
+        Span::styled(v.head.clone(), head),
+    ])];
+    if v.all_ok {
+        return out;
+    }
+    for r in &v.rows {
+        let style = if r.level == Level::Warn {
+            p.warn()
+        } else {
+            p.dim()
+        };
+        let lead = format!("  {:<8}{}  ", r.question, r.mark());
+        let room = w.saturating_sub(lead.len());
+        let parts = if r.text().len() <= room {
+            vec![r.text()]
+        } else {
+            r.parts.clone()
+        };
+        for (i, part) in parts.into_iter().enumerate() {
+            let label = if i == 0 {
+                lead.clone()
+            } else {
+                " ".repeat(lead.len())
+            };
+            out.push(clip_line(
+                Line::from(vec![Span::styled(label, style), Span::raw(part)]),
+                w,
+            ));
+        }
+    }
     out
 }
 
@@ -192,7 +233,7 @@ fn night_section(out: &mut Vec<Line<'static>>, v: &NightView, p: Palette, w: usi
             right: vec![],
             cap: vec![(3, 34)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
     }
     if !n.ok_line.is_empty() {
         out.push(clip_line(Line::styled(n.ok_line.clone(), p.dim()), w));
@@ -210,7 +251,7 @@ pub const FLOW_KEYS: [(char, &str); 6] = [
     ('b', "board"),
 ];
 
-/// Home as lines. `flow` is (the gauges have not answered yet, the `o graph` hint applies).
+/// Home as lines. `flow` is (the snapshot has not been read yet, the `o graph` hint applies).
 pub fn page(
     h: &Home,
     view: &DataTable,
@@ -225,24 +266,23 @@ pub fn page(
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
 
-    // The flow strip leads, then the other numbers (dashboards rule 3).
+    // The flow strip leads, then health and spend (dashboards rule 3).
     out.extend(crate::flowstrip::lines(&h.flow, flow.0, flow.1, p, w));
 
-    // The summary leads (dashboards rule 3): two lines, so a long list never buries them.
-    let nums: Vec<String> = h
-        .numbers
-        .iter()
-        .map(|n| format!("{} {}", n.label, n.value))
-        .collect();
-    for (i, l) in wrap(&nums, " | ", w.saturating_sub(9))
-        .into_iter()
-        .enumerate()
-    {
-        let head = if i == 0 { "NUMBERS  " } else { "         " };
-        out.push(Line::from(vec![Span::styled(head, p.head()), Span::raw(l)]));
-    }
-
     out.push(health_line(&h.health, p, w));
+    if let Some(spend) = &h.spend {
+        // One line that points at Costs, where the spend is broken down (dashboards rule 2).
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled("SPEND     ", p.head()),
+                Span::raw(format!("{spend}  -> Costs")),
+            ]),
+            w,
+        ));
+    }
+    if let Some(v) = &h.vitals {
+        out.extend(vitals(v, p, w));
+    }
     out.push(Line::raw(""));
 
     out.extend(needs(h, view, p, now, w));
@@ -293,21 +333,47 @@ pub fn page(
             right: vec![2],
             cap: vec![(0, 18), (1, 18)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
         more(&mut out, h.proposals.len(), h.shown, "more", p);
     }
 
     out.push(Line::raw(""));
-    if h.running.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("RUNNING  ", p.head()),
-            Span::styled("nothing running from the queue", p.dim()),
-        ]));
+    // The session counts head the list they count: beside the heading when they fit, else on a
+    // line under it (clipping would cut the counts that matter, need you and stalled).
+    let counts = if h.sessions.is_empty() {
+        String::new()
     } else {
-        out.push(Line::styled(
-            format!("RUNNING ({})", h.running.len()),
-            p.head(),
-        ));
+        format!("sessions: {}", h.sessions)
+    };
+    let running_head = |head: Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
+        let n: usize = head.iter().map(|s| s.content.chars().count()).sum();
+        if counts.is_empty() {
+            out.push(Line::from(head));
+        } else if n + 3 + counts.chars().count() <= w {
+            let mut line = head;
+            line.push(Span::styled(format!("   {counts}"), p.dim()));
+            out.push(Line::from(line));
+        } else {
+            out.push(clip_line(Line::from(head), w));
+            out.push(clip_line(Line::styled(format!("  {counts}"), p.dim()), w));
+        }
+    };
+    if h.running.is_empty() {
+        running_head(
+            vec![
+                Span::styled("RUNNING  ", p.head()),
+                Span::styled("nothing running from the queue", p.dim()),
+            ],
+            &mut out,
+        );
+    } else {
+        running_head(
+            vec![Span::styled(
+                format!("RUNNING ({})", h.running.len()),
+                p.head(),
+            )],
+            &mut out,
+        );
         let t = Table {
             mark: None,
             header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
@@ -393,7 +459,7 @@ mod tests {
     use crate::fit::plain;
     use hub_core::briefing::NightRow;
     use hub_core::flow::Strip;
-    use hub_core::home::{Chip, Kind, Need, NeedKind, Number, Score};
+    use hub_core::home::{Chip, Kind, Need, NeedKind, Score};
     use ratatui::crossterm::event::KeyCode;
 
     fn home() -> Home {
@@ -411,10 +477,8 @@ mod tests {
                 score: Some(Score::new(true, true, 3, 0, 2)),
             }],
             flow: Strip::build(Some(&crate::queuetab::tests::fixture())),
-            numbers: vec![Number {
-                label: "sessions",
-                value: "3 working, 1 need you, 0 stalled".into(),
-            }],
+            sessions: "3 working, 1 need you, 0 stalled".into(),
+            spend: Some("claude $573 in 24h".into()),
             health: vec![
                 Chip {
                     name: "k3s".into(),
@@ -552,28 +616,50 @@ mod tests {
     #[test]
     fn the_summary_leads_and_only_the_chips_that_are_not_green_are_drawn() {
         let out = text(&home());
-        // The flow strip leads, then the other numbers; the queue's counts are the strip's.
+        // The flow strip leads, then health and spend; the queue's counts are the strip's.
         assert!(
-            out.starts_with("FLOW  inbox - | board - | queued 2 | running 1 | needs you 1"),
+            out.starts_with(
+                "FLOW  inbox - | board - | queued 2 | running 1 | on a PR 0 | needs you 1"
+            ),
             "{out}"
         );
-        assert!(out.contains("\nNUMBERS  sessions 3 working"), "{out}");
+        assert!(!out.contains("NUMBERS"), "{out}");
+        assert!(
+            out.contains("\nSPEND     claude $573 in 24h  -> Costs"),
+            "{out}"
+        );
+        let head =
+            "RUNNING  nothing running from the queue   sessions: 3 working, 1 need you, 0 stalled";
+        assert!(out.contains(head), "the session counts head Running: {out}");
         assert!(
             !out.contains("queue 1 running") && !out.contains("done today"),
             "{out}"
         );
-        let (num, need) = (
+        let (health, spend, need) = (
             out.find("HEALTH").unwrap(),
+            out.find("SPEND").unwrap(),
             out.find("NEEDS YOU (1)").unwrap(),
         );
-        assert!(num < need, "health sits above the lists: {out}");
+        assert!(
+            health < spend && spend < need,
+            "health and spend sit above the lists: {out}"
+        );
         assert!(out.contains("Question") && out.contains("dodginballs") && out.contains("2m"));
-        assert!(out.contains("RUNNING  nothing running from the queue"));
         assert!(
             out.contains(" ci WARN ") && out.contains("1 green"),
             "{out}"
         );
         assert!(!out.contains("k3s"), "green chips collapse: {out}");
+    }
+
+    #[test]
+    fn narrow_session_counts_drop_under_the_running_heading_whole() {
+        let out = viewed(&home(), &DataTable::default(), 60);
+        assert!(
+            out.contains("RUNNING  nothing running from the queue\n  sessions: 3 working, 1 need you, 0 stalled"),
+            "{out}"
+        );
+        assert!(out.lines().all(|l| l.chars().count() <= 60), "{out}");
     }
 
     #[test]
@@ -738,5 +824,68 @@ mod tests {
         assert_eq!(next_fix(&n, &fixes).unwrap().0, "Nightly");
         let out = night_text(&home(), Some(&n), &fixes);
         assert!(out.contains("queued 2026-fix-from-web"), "{out}");
+    }
+
+    fn fleet_vitals() -> Vitals {
+        use hub_core::vitals::Row;
+        let row = |q: &str, level, parts: &[&str]| Row {
+            question: q.into(),
+            level,
+            parts: parts.iter().map(|s| s.to_string()).collect(),
+        };
+        Vitals {
+            head: "1 of 2 off target".into(),
+            line: "1 of 2 off target: Outcome".into(),
+            all_ok: false,
+            rows: vec![
+                row("Output", Level::Ok, &["1633 PRs merged in 7d"]),
+                row(
+                    "Outcome",
+                    Level::Warn,
+                    &["Oldest request 340h, limit 72h", "12 unverified, limit 0"],
+                ),
+            ],
+        }
+    }
+
+    fn drawn(v: &Vitals, w: usize) -> String {
+        vitals(v, Palette { no_color: true }, w)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn vitals_is_the_mockup_at_80_columns() {
+        assert_eq!(
+            drawn(&fleet_vitals(), 80),
+            "VITALS    1 of 2 off target\n  \
+             Output     1633 PRs merged in 7d\n  \
+             Outcome !  Oldest request 340h, limit 72h; 12 unverified, limit 0"
+        );
+    }
+
+    #[test]
+    fn a_vitals_row_too_wide_stacks_its_clauses_and_loses_none() {
+        let out = drawn(&fleet_vitals(), 50);
+        assert!(
+            out.contains("  Outcome !  Oldest request 340h, limit 72h\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("\n             12 unverified, limit 0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn vitals_all_on_target_is_one_line() {
+        let v = Vitals {
+            head: "2 of 2 on target".into(),
+            all_ok: true,
+            ..fleet_vitals()
+        };
+        assert_eq!(drawn(&v, 80), "VITALS    2 of 2 on target");
     }
 }

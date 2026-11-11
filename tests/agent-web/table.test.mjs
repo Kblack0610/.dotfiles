@@ -96,3 +96,146 @@ test("with a dropdown in use only what is around it repaints", () => {
   assert.equal(box("tt").innerHTML, "the bar in use");
   assert.match(box("tt-body").innerHTML, /rows z/);
 });
+
+const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
+const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i, querySelector: () => null }));
+const trOf = (c) => ({ cells: c, dataset: {}, textContent: c.map((x) => x.textContent).join(""), classList: { add(k) { this[k] = true; } } });
+const tableOf = (roles, rows) => ({ rows: [trOf(heads(roles)), ...rows], classList: { add(k) { this[k] = true; } } });
+
+test("a table is stamped from its own headers, and a row of another shape is left alone", () => {
+  const row = trOf(cells(3)), detail = trOf(cells(1)), t = tableOf(["lead", "glance", ""], [row, detail]);
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.equal(t.classList.tphone, true);
+  assert.equal(t.rows[0].dataset.phone, "head");
+  assert.equal(row.dataset.phone, "row");
+  assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "glance", "rest"]);
+  assert.deepEqual(row.cells.map((c) => c.dataset.label), ["col0", "col1", "col2"]);
+  assert.equal(detail.dataset.phone, undefined);
+  assert.equal(detail.cells[0].dataset.role, undefined);
+});
+
+test("a cell holding a control is never hidden, whatever its column", () => {
+  const row = trOf(cells(3)), t = tableOf(["lead", "", ""], [row]);
+  row.cells[2].querySelector = () => ({});
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "rest", "glance"]);
+});
+
+test("a hand-written table's labels come from its header text, and a named glance cell keeps its name", () => {
+  const hs = [["lead", "host"], ["glance", "temp"], ["", "where"]].map(([role, textContent], i) => ({ dataset: i === 1 ? { role, named: "" } : { role }, textContent }));
+  const row = trOf(cells(3)), t = { rows: [trOf(hs), row], classList: { add() {} } };
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.deepEqual(row.cells.map((c) => c.dataset.label), ["host", "temp", "where"]);
+  assert.deepEqual(row.cells.map((c) => "named" in c.dataset), [false, true, false]);
+  hs[2].dataset.label = "";
+  run("tblStamp(subject)");
+  assert.equal(row.cells[2].dataset.label, "", "a label left blank on purpose stays blank");
+});
+
+test("a pfold is always open on a wide screen, and on a phone is a closed line until opened", () => {
+  const draw = () => run(`pfold("x", "the line", "the part")`);
+  assert.equal(draw(), `<details class="pfold" data-pf="x" open><summary>the line</summary>the part</details>`);
+  ctx.matchMedia = () => ({ matches: true });
+  assert.doesNotMatch(draw(), / open>/);
+  run(`PFOLD.x = true`);
+  assert.match(draw(), / open>/, "opened on a phone stays open across a redraw");
+  run(`delete PFOLD.x`);
+  const drawn = { dataset: { pf: "x" }, open: true }, real = doc.querySelectorAll;
+  doc.querySelectorAll = (sel) => (sel === "details.pfold" ? [drawn] : real(sel));
+  run(`pfoldFit()`);
+  assert.equal(drawn.open, false, "narrowing closes a fold already drawn");
+  delete ctx.matchMedia;
+  run(`pfoldFit()`);
+  assert.equal(drawn.open, true, "widening opens one, whose summary a wide screen hides");
+  doc.querySelectorAll = real;
+});
+
+test("every hand-written table header on Infra and Costs names a lead", () => {
+  for (const f of ["infra.js", "costs.js"]) for (const [h] of readFileSync(new URL(f, dir), "utf8").matchAll(/<table class="tbl"><tr><th.*?<\/tr>/g))
+    assert.match(h, /data-role="lead"/, `${f}: ${h}`);
+});
+
+test("an open session's action buttons are one fold, and a confirm or a result stays outside it", () => {
+  const acts = { hidden: true, innerHTML: "" }, real = doc.getElementById;
+  doc.getElementById = (id) => (id === "acts" ? acts : real(id));
+  run(`st.sel = { target: "t1", account: "a", actions: ["interrupt"] }; st.act = { confirm: null, busy: false, msg: "done", err: false }; renderActs()`);
+  assert.match(acts.innerHTML, /^<details class="pfold" data-pf="acts" open><summary>Actions<\/summary><div class="actrow"><button class="btn" data-act="interrupt"[^>]*>Interrupt<\/button><\/div><\/details><div class="msg">done<\/div>$/);
+  run(`st.opts = { describe: {}, accounts: [] }; st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
+  assert.doesNotMatch(acts.innerHTML, /pfold/, "a confirm is never folded away");
+  assert.match(acts.innerHTML, /data-go/);
+  run(`st.sel = null; st.act = { confirm: null, busy: false, msg: "", err: false }`);
+  doc.getElementById = real;
+});
+
+test("a table with no lead keeps its columns", () => {
+  const row = trOf(cells(2)), t = tableOf(["", ""], [row]);
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.equal(t.classList.tphone, undefined);
+  assert.equal(row.dataset.phone, undefined);
+});
+
+test("a row expanded by a tap is still expanded after a redraw", () => {
+  const before = trOf(cells(2)), t = tableOf(["lead", ""], [before]);
+  ctx.subject = t;
+  run("tblStamp(subject); tblExpanded.add('text0text1')");
+  const after = trOf(cells(2));
+  ctx.subject = tableOf(["lead", ""], [after]);
+  run("tblStamp(subject); tblExpanded.clear()");
+  assert.equal(after.classList.tx, true);
+});
+
+test("the sort dropdown lists each column, marks the sort, offers its reverse, and patches the view", () => {
+  ctx.subject = { sort: "run", columns: [{ key: "run", sort: "desc", next_dir: "asc" }, { key: "name", sort: null, next_dir: "asc" }] };
+  const html = run("tblSort(subject)");
+  assert.match(html, /<option value="\|">default sort/);
+  assert.match(html, /<option value="run\|desc" selected>sort: run</);
+  assert.match(html, /<option value="run\|asc">sort: run reversed</);
+  assert.match(html, /<option value="name\|asc">sort: name</);
+  ctx.subject = { type: "change", target: { value: "run|asc", dataset: { tsv: "" } } };
+  assert.deepEqual({ ...run("tblPatch(subject)") }, { sort: "run", dir: "asc" });
+  ctx.subject = { type: "change", target: { value: "|", dataset: { tsv: "" } } };
+  assert.deepEqual({ ...run("tblPatch(subject)") }, { sort: "", dir: "" });
+  assert.equal(run("tblSort({columns: []})"), "");
+});
+
+test("with the sort dropdown in use only what is around it repaints", () => {
+  run(`one.render()`);
+  box("tt").innerHTML = "the bar in use";
+  doc.activeElement = { id: "", dataset: { tsv: "" }, closest: (sel) => (sel === "#tt-facets" ? {} : null) };
+  run(`one.data.rows = ["y"]; one.all = false; one.render()`);
+  doc.activeElement = null;
+  assert.equal(box("tt").innerHTML, "the bar in use");
+  assert.match(box("tt-body").innerHTML, /rows y/);
+});
+
+const dayTarget = (attrs, tag = "BUTTON") => ({ tagName: tag, dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
+
+test("the day control marks the window on, shows a picked date and escapes what it draws", () => {
+  ctx.a = { key: "day", on: "2026-11-03", windows: [["today", "Today"], ["", "7d"]], date: true };
+  const picked = run("tblDays(a)");
+  assert.match(picked, /<button class="" data-twin="day" data-tval="today">Today<\/button>/);
+  assert.match(picked, /<input type="date" class="tdate" data-twin="day" value="2026-11-03"/);
+  ctx.a = { key: "day", on: "", windows: [["", "7d"]], date: true };
+  assert.match(run("tblDays(a)"), /class="on" data-twin="day" data-tval="">7d/);
+  assert.match(run("tblDays(a)"), /class="tdate" data-twin="day" value=""/, "a window is no date");
+  ctx.a = { key: "day", on: "<x>", windows: [], date: true };
+  assert.doesNotMatch(run("tblDays(a)"), /<x>/);
+  ctx.a = { key: "hours", on: "", windows: [["", "24h"]] };
+  assert.doesNotMatch(run("tblDays(a)"), /tdate/, "no date asked, no picker");
+});
+
+test("a window click and a picked date each patch the control's one key; a blank window clears it", () => {
+  ctx.ev = (type, t, value) => ({ type, target: Object.assign(t, { value }) });
+  const patch = (type, t, value) => { ctx.e = ctx.ev(type, t, value); return JSON.parse(run("JSON.stringify(tblPatch(e))")); };
+  assert.deepEqual(patch("click", dayTarget({ twin: "day", tval: "30d" })), { day: "30d" });
+  assert.deepEqual(patch("click", dayTarget({ twin: "day", tval: "" })), { day: "" });
+  assert.deepEqual(patch("change", dayTarget({ twin: "day" }, "INPUT"), "2026-11-03"), { day: "2026-11-03" });
+  ctx.b = dayTarget({ twin: "day", tval: "30d" });
+  ctx.i = dayTarget({ twin: "day" }, "INPUT");
+  assert.equal(run("tblDropdown(b)"), false, "a window is a button, nothing to let go of");
+  assert.equal(run("tblDropdown(i)"), true);
+});

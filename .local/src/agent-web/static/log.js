@@ -5,13 +5,7 @@
 // The charts show this many days; the day picker can step back through the fetched history.
 const LOG_CHART_DAYS = 30;
 const LOG_HISTORY_DAYS = 120;
-const LOG_OPEN_MERGED = 25;
-// A project group shows this many rows and folds the rest (hub_core::home::SHOWN, as Home does).
-const LOG_GROUP_SHOWN = 8;
-// The legend key that stands for every project past the colour slots.
-const LOG_OTHER = "\u0000other";
-// proj: the project the legend filters the lists to (LOG_OTHER for the Other group), or null.
-const lst = { day: null, rec: null, hist: [], err: null, proj: null, open: {} };
+const lst = { day: null, rec: null, hist: [], err: null, open: {} };
 
 const refreshLog = coalesce(async () => {
   try {
@@ -25,9 +19,12 @@ const refreshLog = coalesce(async () => {
 });
 
 const shownDay = () => (lst.rec && lst.rec.date) || lst.day;
-// The shown day stays up until the next one arrives, so stepping never flashes or jumps.
-// A new day drops the legend pick: its projects are not the last day's.
-function goDay(d) { lst.day = d; lst.proj = null; refreshLog(); }
+// The day a past-day link, the stepper, the keys and the chart bars all write: Work's `wday`. The
+// shown day stays up until the next one arrives, so stepping never flashes or jumps.
+const workDay = () => new URLSearchParams(st.views.log || "").get("wday") || "";
+const urlDay = () => { const d = workDay(); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null; };
+function syncDay() { const d = urlDay(); if (d !== lst.day) { lst.day = d; refreshLog(); } }
+function goDay(d) { wrk.view({ day: d || "today" }); }
 function stepDay(n) {
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(shownDay());
   const j = i + n;
@@ -65,12 +62,11 @@ function historyCharts(sel) {
 // hub_core::boards::project_order, merges first), the rest share Other.
 function projColors(rec) {
   const top = (rec.projects || []).slice(0, SLOTS.length);
-  return { top, of: (p) => (top.includes(p) ? SLOTS[top.indexOf(p)] : OTHER), key: (p) => (top.includes(p) ? p : LOG_OTHER) };
+  return { top, of: (p) => (top.includes(p) ? SLOTS[top.indexOf(p)] : OTHER) };
 }
-const projLabel = (k) => (k === LOG_OTHER ? "Other" : k);
 
 // Merges per local hour, one stacked column per hour coloured by project, from the grid
-// hub_core::boards::merges_by_hour serves as rec.hours. The legend filters the lists below.
+// hub_core::boards::merges_by_hour serves as rec.hours.
 function byHour(rec) {
   const g = rec.hours || { hours: [], rows: [] }, pc = projColors(rec);
   const hh = (h) => String(h).padStart(2, "0");
@@ -86,63 +82,22 @@ function byHour(rec) {
     };
   });
   const merged = new Set(g.rows.map((r) => r.project));
-  const keys = [...pc.top.filter((p) => merged.has(p)), ...(g.rows.some((r) => !pc.top.includes(r.project)) ? [LOG_OTHER] : [])];
-  const leg = keys.map((k) => `<button class="lg${lst.proj === k ? " on" : ""}" data-proj="${esc(k)}" title="show only ${esc(projLabel(k))}"><i style="background:${k === LOG_OTHER ? OTHER : pc.of(k)}"></i>${esc(projLabel(k))}</button>`).join("");
-  return { chart: columns(cols, { height: 110 }), legend: leg ? `<span class="legend">${leg}</span>` : "" };
-}
-
-// `by` is what day-log calls the session that landed a PR: a short target ("agent-18") or an
-// outcome's title. It links when a live agent still has that target.
-function bySession(repo, by) {
-  if (!by) return "";
-  const a = st.agents.find((x) => { const t = shortTarget(x.target).replace(/:\d+$/, ""); return t === by || t === `${repo}-${by}`; });
-  return a ? `<a class="by" href="#" data-target="${esc(a.target)}">${esc(by)}</a>` : `<span class="by">${esc(by)}</span>`;
-}
-
-// PRs by project, in rec.projects order, cut to the legend's pick: [[project, prs]].
-function projGroups(rec, prs) {
-  const pc = projColors(rec), by = new Map((rec.projects || []).map((p) => [p, []]));
-  for (const m of prs) { if (!by.has(m.project)) by.set(m.project, []); by.get(m.project).push(m); }
-  return [...by].filter(([p, l]) => l.length && (!lst.proj || pc.key(p) === lst.proj));
-}
-// A PR names its number alone when its repo is the project ("#722"), else "repo#722".
-const prRef = (proj, m) => ((m.repo || "").replace(/^\./, "") === proj ? "" : esc(m.repo)) + "#" + m.number;
-// One project group: its first LOG_GROUP_SHOWN rows, the rest under a "+N more" fold. A legend
-// pick keys its groups apart, so the picked group opens even on a day that starts them folded.
-function projPanel(rec, kind, proj, rows, open) {
-  const k = `${kind}:${proj}${lst.proj ? ":only" : ""}`, isOpen = k in lst.open ? lst.open[k] : open || !!lst.proj;
-  const more = rows.length > LOG_GROUP_SHOWN ? cfold(k + "+", `+${rows.length - LOG_GROUP_SHOWN} more`, rows.slice(LOG_GROUP_SHOWN).join(""), lst.open) : "";
-  return `<details class="panel area" data-k="${esc(k)}"${isOpen ? " open" : ""}><summary><i class="sw" style="background:${projColors(rec).of(proj)}"></i>${esc(proj)} <span class="muted">${rows.length}</span></summary>${rows.slice(0, LOG_GROUP_SHOWN).join("")}${more}</details>`;
-}
-const prLink = (proj, m) => `<a href="${esc(m.url)}" target="_blank" rel="noopener">${prRef(proj, m)}</a>`;
-// The area and group day-log filed the PR under, kept as a short label on its row.
-const areaLabel = (m) => { const a = [m.area, m.group || m.scope].filter(Boolean).join(" / "); return a ? `<span class="lbl" title="${esc(a)}">${esc(a)}</span>` : ""; };
-
-function mergedList(rec) {
-  // A busy day is a few hundred rows; then each project starts folded to its count.
-  const open = (rec.merged || []).length <= LOG_OPEN_MERGED;
-  const newest = (rec.merged || []).slice().sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)));
-  return projGroups(rec, newest).map(([proj, prs]) => projPanel(rec, "m", proj, prs.map((m) =>
-    `<div class="pr"><span class="ft">${hm(m.merged_at)}</span>${prLink(proj, m)}${areaLabel(m)}<span class="pt">${esc(m.title)}</span>${bySession(m.repo, m.by)}</div>`), open)).join("");
-}
-
-function openList(rec) {
-  const now = Date.now();
-  return projGroups(rec, rec.open || []).map(([proj, prs]) => projPanel(rec, "o", proj, prs.map((p) => {
-    const h = Math.round((now - new Date(p.created_at).getTime()) / 3600e3);
-    const ci = p.draft ? '<b class="ci">draft</b>' : p.ci ? `<b class="ci ${esc(String(p.ci).toLowerCase())}">${esc(p.ci)}</b>` : "";
-    return `<div class="pr"><span class="ft">${h >= 48 ? Math.floor(h / 24) + "d" : h + "h"}</span>${prLink(proj, p)}<span class="pt">${esc(p.title)}</span>${ci}${bySession(p.repo, p.by)}</div>`;
-  }), true)).join("");
+  const items = [...pc.top.filter((p) => merged.has(p)).map((p) => [p, pc.of(p)]), ...(g.rows.some((r) => !pc.top.includes(r.project)) ? [["Other", OTHER]] : [])];
+  return { chart: columns(cols, { height: 110 }), legend: items.length ? legend(items) : "" };
 }
 
 // What waits on the human is Home's to show and answer; the day says how much and links there.
 const waiting = (n) => (n ? `<div class="badge-line"><a href="#" data-asks><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>` : "");
 
+// A session leads with what it works on (its plan's name, hub_core::boards::log_view); on a
+// phone the row is that line plus phase, PRs and cost, and a tap shows the rest.
 function benchTable(rec) {
   const ss = ((rec.bench || {}).sessions || []).slice().sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
   if (!ss.length) return "";
-  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr><th>session</th><th>plan</th><th class="n">phases</th><th class="n">working</th><th class="n">waiting</th><th class="n">stalled</th><th class="n">PRs</th><th class="n">CI reds</th><th class="n">peak ctx</th><th class="n">cost</th></tr>${
-    ss.map((s) => `<tr><td title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td><td class="muted">${esc(s.plan || "-")}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td></tr>`).join("")}</table></div>`;
+  const h = (label, role, n) => `<th${n ? ' class="n"' : ""}${role ? ` data-role="${role}"${role === "glance" ? " data-named" : ""}` : ""}>${label}</th>`;
+  const head = h("what", "lead") + h("phase", "glance", 1) + h("PRs", "glance", 1) + h("working", "", 1) + h("waiting", "", 1) + h("stalled", "", 1) + h("CI reds", "", 1) + h("peak ctx", "", 1) + h("cost", "glance", 1) + h("session");
+  const row = (s) => `<tr><td class="wrap" title="${esc(s.plan || "")}">${esc(s.name || s.plan || shortTarget(s.target))}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td><td class="muted" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td></tr>`;
+  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
 }
 
 function renderLog() {
@@ -169,13 +124,9 @@ function renderLog() {
   const hours = byHour(rec);
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += waiting(nWait);
-  // The legend's pick narrows both lists to one project's group; the head says so.
-  const only = lst.proj ? ` <span class="muted only">${esc(projLabel(lst.proj))} only, <a href="#" data-proj="${esc(lst.proj)}">show all</a></span>` : "";
-  html += `<h2 class="sec">Merged <span class="muted">${(rec.merged || []).length}</span>${only}</h2>${mergedList(rec) || '<div class="empty">Nothing merged.</div>'}`;
-  html += `<h2 class="sec">Open PRs <span class="muted">${(rec.open || []).length}</span>${only}</h2>${openList(rec) || '<div class="panel"><div class="empty">Nothing open.</div></div>'}`;
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d"><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
   paint(el, html, lst.open);
 }
 
@@ -184,12 +135,8 @@ $("log").addEventListener("click", (e) => {
   const step = t.closest("[data-step]");
   if (step) { stepDay(Number(step.dataset.step)); return; }
   if (t.closest("[data-today]")) { goDay(null); return; }
-  const proj = t.closest("[data-proj]");
-  if (proj) { e.preventDefault(); lst.proj = lst.proj === proj.dataset.proj ? null : proj.dataset.proj; renderLog(); return; }
   const col = t.closest(".cc[data-key]");
   if (col && /^\d{4}-/.test(col.dataset.key)) { const ds = lst.hist.map((r) => r.date); goDay(col.dataset.key === ds[ds.length - 1] ? null : col.dataset.key); return; }
-  const by = t.closest("[data-target]");
-  if (by) { e.preventDefault(); const a = st.agents.find((x) => x.target === by.dataset.target); if (a) openAgent(a); return; }
   if (t.closest("[data-asks]")) { e.preventDefault(); setTab("home"); }
 });
 document.addEventListener("keydown", (e) => {
@@ -202,6 +149,6 @@ document.addEventListener("keydown", (e) => {
 // Any record written changes the history charts, so a log event refetches both.
 const logFeed = pushed("log", ["log"], refreshLog);
 TABS.log = {
-  show() { renderLog(); logFeed.show(!lst.rec); for (const p of LOG_PARTS) p.show(); seekSection(); },
+  show() { syncDay(); renderLog(); logFeed.show(!lst.rec); for (const p of LOG_PARTS) p.show(); seekSection(); },
   onEvent(ev) { logFeed.onEvent(ev); for (const p of LOG_PARTS) p.onEvent(ev); },
 };

@@ -173,10 +173,11 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    targets the same way. The check exits 0 early for a detached HEAD or when the branch IS the
    main branch, and uses `@{upstream}..HEAD` whenever an upstream exists.
 
-   Prefer, in order: (a) **switch the slot back to its own conventional branch** - a
-   `platform-agent-N` worktree belongs on branch `agent-N`, which usually already exists with an
-   upstream and zero unpushed commits, so `git checkout agent-N` clears the gate and preserves
-   the junk branch untouched; (b) land the commits properly if they are real work; (c) reset the
+   Prefer, in order: (a) **switch the slot back to the branch `wt` cut it on** - a
+   `platform-agent-N` worktree starts on `agent-N-<stamp>` (a name no other cut used), which
+   tracks the trunk with zero unpushed commits (`git branch --list 'agent-N-*'` finds it), so
+   checking it out clears the gate and preserves the junk branch untouched; when `wt gc` already
+   pruned it, use (c); (b) land the commits properly if they are real work; (c) reset the
    junk branch onto the local main ref. Never push a throwaway branch to origin just to buy a
    tracking ref. Verify by RUNNING the check - `bash ~/.claude/hooks/stop-checks.d/10-git-workflow.sh;
    echo $?` - rather than reasoning about whether it now passes.
@@ -221,7 +222,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another
-   tmux session is attached there, leave it on its own `agent-N` branch (step 4a). Every
+   tmux session is attached there, leave it on its own branch (step 4a). Every
    worktree lives under `~/.worktrees/<repo>-<slug>`; the legacy `~/dev/<repo>-*` siblings and
    `<repo>/.claude/worktrees/` were retired 2026-09-18.
 7. **Report the landing state** in your closing message: branch + PR link for what shipped, an
@@ -236,8 +237,6 @@ If the session produced nothing to commit (pure Q&A / read-only), say so and ski
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm            # close just Claude's window (default)
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session (a world session: this window only)
 ```
-
-**Arm against the session's ORIGINAL project dir.** The Stop hook resolves the sentinel name from the `CLAUDE_PROJECT_DIR` the session started with, not from your current shell. If step 2 already released this session's worktree, a plain `arm` run from somewhere else (the main checkout, `$HOME`) writes `<other-project>__<sid>.request`, the hook never finds it, and the window silently stays open. Pass the original path explicitly: `CLAUDE_PROJECT_DIR=~/.worktrees/<repo>-<slug> wind-down.sh arm`. Why: 2026-09-30, unity-core-playground-agent-15 reaped its worktree, then armed from the main checkout, and the window never closed.
 
 Use `--session` only when the user said "session" / "close everything" or Claude clearly owns
 the whole session it spun up. Default to window scope.
@@ -257,11 +256,12 @@ thing shown before the window closes.
 
 ## Notes
 
-- Sentinel lives at `~/.agent/spin-down/<project>__<session-id>.request` - one per SESSION, not
-  per project, so several armed sessions in the same repo do not clobber each other. A sentinel
+- Sentinel lives at `~/.agent/spin-down/<session-id>.request` - one per SESSION, not
+  per project, so several armed sessions in the same repo do not clobber each other, and the
+  directory `arm` runs from does not matter. A sentinel
   left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
   prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
-  `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel under any project name.
+  `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
 - Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.

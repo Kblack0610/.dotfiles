@@ -3,7 +3,7 @@
 //! `~/.config/agentctl/QUEUE.md`), so this module never opens `~/.agent/queue`: it runs
 //! `agent-queue list --json` and `agent-queue stats --json` through a `Runner` and types what
 //! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
-//! rows `fleet-dispatch suggest --json` prints, for the tabs' Candidates section.
+//! rows of the snapshot `fleet-dispatch suggest --write` keeps, for the tabs' Candidates section.
 
 use std::collections::BTreeMap;
 
@@ -39,8 +39,11 @@ pub fn harness_of(said: &str, account: &str) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
+    /// The session needs the human: a plan, a dialog or an ask.
     Waiting,
     Running,
+    /// Parked on its open PR, its session ended or stopped there; reap closes it on the merge.
+    Review,
     #[default]
     Queued,
     Done,
@@ -48,9 +51,10 @@ pub enum State {
 
 /// The old section ids (`#queue/running`, `hub --tab "queue running"`) and the state chip each
 /// one opens the table on, so a link made before the table still lands on that view.
-pub const SECTION_ALIASES: [(&str, &str); 4] = [
+pub const SECTION_ALIASES: [(&str, &str); 5] = [
     ("waiting", "needs you"),
     ("running", "running"),
+    ("review", "on a PR"),
     ("queued", "up next"),
     ("done", "done"),
 ];
@@ -106,6 +110,9 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// `yes` while an item that landed one PR still has its final landing to make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
     /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
@@ -140,6 +147,9 @@ pub struct Item {
     /// When it moved to `waiting/`, the human's turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// When it moved to `review/`, parked on its open PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     /// The merge commit `agent-land` proved, beside `pr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<String>,
@@ -242,6 +252,7 @@ impl Item {
             ("ready", &self.ready),
             ("started", &self.started),
             ("waiting", &self.waiting),
+            ("review", &self.review),
             ("finished", &self.finished),
         ] {
             let Some(at) = said(v) else { continue };
@@ -288,6 +299,45 @@ impl Item {
         }
     }
 
+    /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
+    pub fn plan(&self) -> Option<(&str, &str)> {
+        Some((self.extra_str("plan")?, self.extra_str("phases")?))
+    }
+
+    /// `<plan name> P5: <phase words>`, a plan item's title as the Log's Work row says it: the
+    /// plan by its heading (`plans::name`) in place of the file name `agent-queue add --plan`
+    /// titles it with. A one-phase item takes the label its words lead with (`P9 live stage`)
+    /// over its checklist place. An item with no `plan:` whose title has that shape (one
+    /// promoted from a board row) is named the same way when its plan file exists. None for
+    /// any other item.
+    pub fn plan_title(&self, names: &mut crate::plans::Names) -> Option<String> {
+        use crate::plans::{base, legacy, own_label, path};
+        let title = self.title.trim();
+        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
+            (Some((plan, phases)), old) => {
+                let words = old
+                    .filter(|(b, ..)| *b == base(plan))
+                    .map_or(title, |(.., w)| w);
+                let phases: Vec<&str> = phases.split_whitespace().collect();
+                let tag = format!("P{}", phases.join("+"));
+                (plan.to_string(), tag, words, phases.len() == 1)
+            }
+            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
+                (path(b), tag.to_string(), words, !tag.contains('+'))
+            }
+            _ => return None,
+        };
+        let (label, words) = one
+            .then(|| own_label(words))
+            .flatten()
+            .unwrap_or((tag, words));
+        Some(format!(
+            "{} {label}: {}",
+            names.get(&plan),
+            cap(words, TITLE_MAX)
+        ))
+    }
+
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
     /// (a clock step, a re-run predecessor) counts 0, never a negative span.
     pub fn timing(&self, now: chrono::DateTime<chrono::Utc>) -> Timing {
@@ -304,10 +354,15 @@ impl Item {
                 State::Queued => mins(queued, Some(now)),
                 State::Running => mins(started, Some(now)),
                 State::Waiting => mins(waiting.or(started), Some(now)),
+                State::Review => mins(at(&self.review).or(waiting).or(started), Some(now)),
             },
             wait: mins(at(&self.ready).or(queued), started),
             run: match self.state {
                 State::Waiting => mins(started, waiting.filter(|w| Some(*w) >= started).or(end)),
+                State::Review => {
+                    let parked = at(&self.review).or(waiting);
+                    mins(started, parked.filter(|w| Some(*w) >= started).or(end))
+                }
                 _ => mins(started, end),
             },
             lead: mins(queued, end),
@@ -349,26 +404,7 @@ impl Item {
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        let pr = self.pr.as_deref()?.trim();
-        if pr.is_empty() {
-            return None;
-        }
-        if pr.starts_with("https://") || pr.starts_with("http://") {
-            let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
-            return Some((format!("#{n}"), Some(pr.into())));
-        }
-        match pr.split_once('#') {
-            Some((repo, n))
-                if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
-            {
-                let short = repo.rsplit('/').next().unwrap_or(repo);
-                Some((
-                    format!("{short}#{n}"),
-                    Some(format!("https://github.com/{repo}/pull/{n}")),
-                ))
-            }
-            _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
-        }
+        pr_link_of(self.pr.as_deref()?)
     }
 
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
@@ -387,6 +423,21 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// Why an item in review or waiting sits there, in the words of what its headers record.
+    /// Review is a PR to merge; waiting is the human's turn, by an ask, a note or the question
+    /// its live session shows.
+    pub fn waits_on(&self) -> &'static str {
+        match self.state {
+            State::Review if self.partial.as_deref() == Some("yes") => "on a final landing",
+            State::Review => "on its merge",
+            _ if self.extra_str("ask").is_some() || self.extra_str("report").is_some() => {
+                "on an ask or report"
+            }
+            _ if said(&self.note).is_some() => "parked with a note",
+            _ => "on its session's question",
+        }
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -665,6 +716,30 @@ fn argv(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
+pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
+    let pr = pr.trim();
+    if pr.is_empty() {
+        return None;
+    }
+    if pr.starts_with("https://") || pr.starts_with("http://") {
+        let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
+        return Some((format!("#{n}"), Some(pr.into())));
+    }
+    match pr.split_once('#') {
+        Some((repo, n))
+            if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            let short = repo.rsplit('/').next().unwrap_or(repo);
+            Some((
+                format!("{short}#{n}"),
+                Some(format!("https://github.com/{repo}/pull/{n}")),
+            ))
+        }
+        _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
+    }
+}
+
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
@@ -724,12 +799,20 @@ pub struct Queue {
     pub errors: Vec<String>,
 }
 
+/// What `Queue::read` prefixes a failed `agent-queue list` with.
+pub(crate) const LIST_FAILED: &str = "agent-queue list";
+
 impl Queue {
+    /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.
+    pub fn list_read(&self) -> bool {
+        !self.errors.iter().any(|e| e.starts_with(LIST_FAILED))
+    }
+
     pub fn read(runner: &dyn Runner) -> Queue {
         let mut q = Queue::default();
         match list(runner, "all") {
             Ok(items) => q.items = items,
-            Err(e) => q.errors.push(format!("agent-queue list: {e}")),
+            Err(e) => q.errors.push(format!("{LIST_FAILED}: {e}")),
         }
         match stats(runner) {
             Ok(s) => q.stats = Some(s),
@@ -794,9 +877,10 @@ impl QueueRow<'_> {
         match (self.item.state, self.item.hold.is_some()) {
             (State::Waiting, _) => 0,
             (State::Running, _) => 1,
-            (State::Queued, false) => 2,
-            (State::Queued, true) => 3,
-            (State::Done, _) => 4,
+            (State::Review, _) => 2,
+            (State::Queued, false) => 3,
+            (State::Queued, true) => 4,
+            (State::Done, _) => 5,
         }
     }
 
@@ -804,7 +888,7 @@ impl QueueRow<'_> {
     fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.item.state {
-            State::Waiting => o.timing.in_state.cmp(&self.timing.in_state),
+            State::Waiting | State::Review => o.timing.in_state.cmp(&self.timing.in_state),
             State::Running => o.timing.run.cmp(&self.timing.run),
             State::Done => {
                 // Newest finish first; a stamp that does not parse sorts last.
@@ -827,8 +911,11 @@ impl crate::table::Row for QueueRow<'_> {
     ];
     /// `all` first, because the first chip keeps every row; then the states in the order the
     /// Queue sections list them.
-    const STATES: &'static [&'static str] = &["all", "needs you", "running", "up next", "done"];
+    const STATES: &'static [&'static str] =
+        &["all", "needs you", "running", "on a PR", "up next", "done"];
     const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    const LEAD: &'static str = "title";
+    const GLANCE: &'static [&'static str] = &["state", "in", "project"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -840,6 +927,7 @@ impl crate::table::Row for QueueRow<'_> {
                 match i.state {
                     State::Waiting => "needs",
                     State::Running => "running",
+                    State::Review => "on a PR",
                     State::Queued => "queued",
                     State::Done => "done",
                 }
@@ -862,6 +950,7 @@ impl crate::table::Row for QueueRow<'_> {
         let want = match s {
             "needs you" => State::Waiting,
             "running" => State::Running,
+            "on a PR" => State::Review,
             "up next" => State::Queued,
             "done" => State::Done,
             _ => return false,
@@ -882,7 +971,7 @@ impl crate::table::Row for QueueRow<'_> {
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
-/// section shows. fleet-dispatch ranks it and nothing stores it; this only types it.
+/// section shows. fleet-dispatch ranks and stores it (`suggest --write`); this only types it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Candidate {
@@ -988,6 +1077,9 @@ pub struct Candidates {
     pub urgent_blocked: usize,
     /// Projects worked on in the last day that have a row no worker covers, sorted.
     pub uncovered: Vec<String>,
+    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
+    /// when the rows came from no file.
+    pub as_of: String,
 }
 
 impl Candidates {
@@ -1048,13 +1140,34 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
     c
 }
 
-/// The ranked candidates. Slow (it reads every board), so a view reads it off its draw loop.
-pub fn candidates(runner: &dyn Runner) -> Result<Candidates, String> {
-    let argv: Vec<String> = ["fleet-dispatch", "suggest", "--json"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    runner.run(&argv).map(|out| parse_candidates(&out))
+/// The ranked candidates, from the snapshot each real `fleet-dispatch run` writes (`suggest
+/// --write`, at `boards::candidates_file`): a file read, never a live suggest, which reads every
+/// board (55s on 1,600 rows, 2026-11-09). Stamped with the file's age, since it is up to a pass old.
+pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
+    let body = std::fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!(
+                "no snapshot yet at {}, the next dispatch pass writes one",
+                path.display()
+            )
+        }
+        _ => format!("{}: {e}", path.display()),
+    })?;
+    let mut c = parse_candidates(&body);
+    if let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified()) {
+        c.as_of = as_of(t.into(), chrono::Local::now());
+    }
+    Ok(c)
+}
+
+/// `HH:MM`, with the day in front once it is not today's.
+fn as_of(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
+    let f = if t.date_naive() == now.date_naive() {
+        "%H:%M"
+    } else {
+        "%b %-d %H:%M"
+    };
+    t.format(f).to_string()
 }
 
 /// A slug or a project name as agent-queue writes it, so nothing else reaches its argv.
@@ -1439,17 +1552,15 @@ mod tests {
     );
 
     #[test]
-    fn candidates_type_suggest_lines_in_rank_order() {
-        struct Out(&'static str, RefCell<Vec<String>>);
-        impl Runner for Out {
-            fn run(&self, argv: &[String]) -> Result<String, String> {
-                self.1.borrow_mut().push(argv.join(" "));
-                Ok(self.0.into())
-            }
-        }
-        let r = Out(SUGGEST, RefCell::default());
-        let c = candidates(&r).unwrap();
-        assert_eq!(r.1.borrow()[0], "fleet-dispatch suggest --json");
+    fn candidates_type_the_snapshot_lines_in_rank_order() {
+        let dir = std::env::temp_dir().join(format!("hub-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("candidates.jsonl");
+        let e = candidates(&f).unwrap_err();
+        assert!(e.contains("next dispatch pass"), "no file yet: {e}");
+        std::fs::write(&f, SUGGEST).unwrap();
+        let c = candidates(&f).unwrap();
+        assert_eq!(c.as_of.len(), 5, "stamped HH:MM today: {}", c.as_of);
         assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
         let c = c.rows;
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
@@ -1459,11 +1570,26 @@ mod tests {
         assert_eq!(c[1].title(), "backtest report");
         assert_eq!(c[0].start_label(), "auto dispatch");
         assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
+        std::fs::write(&f, "").unwrap();
+        let c = candidates(&f).unwrap();
         assert_eq!(
-            candidates(&Out("", RefCell::default())).unwrap(),
-            Candidates::default(),
-            "no rows prints nothing"
+            (c.total, c.rows.len()),
+            (0, 0),
+            "an empty snapshot is no rows"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn as_of_names_the_day_once_it_is_not_today() {
+        use chrono::TimeZone;
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 11, d, h, 7, 0)
+                .unwrap()
+        };
+        assert_eq!(as_of(at(9, 8), at(9, 9)), "08:07");
+        assert_eq!(as_of(at(8, 23), at(9, 9)), "Nov 8 23:07");
     }
 
     #[test]
@@ -1784,6 +1910,18 @@ mod tests {
         );
         assert_eq!(
             timed(
+                r#"{"slug":"p","state":"review","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:10:00Z","review":"2026-11-06T11:00:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(60),
+                wait: Some(10),
+                run: Some(110),
+                lead: Some(180)
+            },
+            "review: its run stops when it parked on its PR"
+        );
+        assert_eq!(
+            timed(
                 r#"{"slug":"c","state":"done","status":"cancelled","queued":"2026-11-06T09:00:00Z","finished":"2026-11-06T09:05:00Z","task":"t"}"#
             ),
             Timing {
@@ -1905,6 +2043,7 @@ mod tests {
                 ("all", 3),
                 ("needs you", 1),
                 ("running", 1),
+                ("on a PR", 0),
                 ("up next", 0),
                 ("done", 1)
             ]

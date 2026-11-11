@@ -16,7 +16,7 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export LEDGER_CONF_DIR="$SANDBOX/confs"
   export LEDGER_SRC="$SANDBOX/src" LEDGER_BASELINE="$SANDBOX/baseline"
-  export LEDGER_BOARDS="$SANDBOX/board.md"
+  export BENCH_BOARD_CMD=board-stub BENCH_PROFILE=personal
   export BENCH_NEEDS_CMD=needs-stub BENCH_NOW=1793160000
   mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
   for n in alpha beta; do
@@ -34,7 +34,12 @@ echo '{"errors": [], "needs": [
   {"kind": "ask", "id": "new", "project": "p", "text": "q", "score": {"session": false, "phases": 0, "holds": "", "age_min": 1440}}]}'
 NS
   chmod +x "$SANDBOX/bin/needs-stub"
-  printf '%s\n' '- [ ] open one' '- [/] in progress' '- [x] done one' > "$LEDGER_BOARDS"
+  # the board feed (notes board --json): an open and a started agent row count; a human-lane row,
+  # a row in a project with automation off and a row in another profile do not
+  jq -cn '{rows: [{profile: "personal", lane: "agent", state: "open"}, {profile: "personal", lane: "agent", state: "doing"}, {profile: "personal", lane: "human", state: "open"},
+                   {profile: "personal", lane: "agent", state: "open", automation: false}, {profile: "work", lane: "agent", state: "open"}]}' > "$SANDBOX/board.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
 }
 
 @test "counts runners, the ones switched on, timers and direct launches" {
@@ -72,6 +77,9 @@ NS
   assert_line 'asks_pending=2'
   assert_line 'asks_stale=1'
   assert_line 'board_open=2'
+  # negative control: a feed that cannot be read is ?, never an empty board
+  BENCH_BOARD_CMD=false run "$SUBJECT" ledger
+  assert_line 'board_open=?'
 }
 
 @test "verdict words counts the distinct last-outcome verdicts" {

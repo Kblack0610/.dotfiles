@@ -184,6 +184,51 @@ tmux_calls() { cat "$FIX/calls.log"; }
   (( on < exit && exit < respawn && respawn < off ))
 }
 
+@test "a respawned pane claude keeps its queue item and the launch env, and drops a parent Claude session's identity" {
+  # The pane ran no rc file: fleet-dispatch's launch line carried these, and a respawn without them
+  # exports no cost and loses the item.
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/getent"; chmod +x "$SANDBOX/bin/getent"
+  run "$ACCT" move agent-2 --server lab
+  assert_success
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+  assert_line --partial 'queue.item=fix-menu'
+  assert_line --partial 'claude --model opus --resume sid-1'
+}
+
+@test "a parked pane claude's ledger keeps its queue item, not a launch env, and unpark builds the env then" {
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/getent"; chmod +x "$SANDBOX/bin/getent"
+  run "$ACCT" park agent-2 --server lab
+  assert_success
+  run cat "$(PARKED_LEDGER agent-2)"
+  assert_line 'item=fix-menu'
+  assert_line 'resume=claude --model opus --resume sid-1'
+  run "$ACCT" unpark agent-2
+  assert_success
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+}
+
+@test "a respawn says so when it cannot build the launch env, and still carries the queue item" {
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  run "$ACCT" move agent-2 --server lab
+  assert_success
+  assert_output --partial 'no launch env from'
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu claude --model opus --resume sid-1"
+}
+
 @test "a session with background shells is refused, and the shells are listed" {
   session lab agent-3 %9 300 301 shell ""
   proc 302 301 ""
@@ -463,18 +508,82 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
 }
 
-@test "park and move refuse a claude on the Lazer gateway: it is on no account, a resume would put it on one" {
+@test "park --why and --for land in the ledger and the page, and a preempt resume says why it was parked" {
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" park agent-1 --server lab --why preempt --for now-one
+  assert_success
+  assert_called 'agent-notify -p low -t park: agent-1 parked on main (idle), preempt for now-one (by '
+  run cat "$(PARKED_LEDGER agent-1)"
+  assert_line 'why=preempt'
+  assert_line 'for=now-one'
+  run "$ACCT" unpark agent-1
+  assert_success
+  run cat "$FIX/started"
+  assert_output --partial 'so\ an\ urgent\ queue\ item\ could\ take\ its\ run\ unit'
+  # move and a bad word are refused before tmux is touched
+  run "$ACCT" move agent-1 --server lab --why preempt
+  assert_failure 2
+  assert_output 'claude-acct: move: --why is for park'
+  run "$ACCT" park agent-1 --server lab --for 'two words'
+  assert_failure 2
+  assert_output 'claude-acct: park: --for needs a lowercase word'
+}
+
+# on_gateway <claude pid>: that claude runs on the Lazer gateway, as claude-lazer exports it
+on_gateway() { printf 'ANTHROPIC_BASE_URL=https://llm.example\0ANTHROPIC_AUTH_TOKEN=sk-x\0' > "$CLAUDE_ACCT_PROC/$1/environ"; }
+
+# queue_stub <item>: agent-queue finds that item for the session, and logs each set to $FIX/queue.set
+queue_stub() {
+  printf '#!/usr/bin/env bash\ncase "$1" in mine) echo %s ;; set) echo "$*" >> "$FIX/queue.set" ;; esac\n' "$1" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+@test "park refuses a claude on the Lazer gateway: it is on no account, a resume would put it on one" {
   session lab spill-1 %7 70 71 idle ""
-  printf 'ANTHROPIC_BASE_URL=https://llm.example\0' > "$CLAUDE_ACCT_PROC/71/environ"
-  for verb in park move; do
-    run "$ACCT" "$verb" spill-1 --server lab
-    assert_failure
-    assert_output --partial "claude-acct: $verb spill-1: it runs on the Lazer gateway, not an account"
-  done
+  on_gateway 71
+  run "$ACCT" park spill-1 --server lab
+  assert_failure
+  assert_output --partial "claude-acct: park spill-1: it runs on the Lazer gateway, not an account"
   [ -d "$CLAUDE_ACCT_PROC/71" ]
   [ ! -e "$(PARKED_LEDGER spill-1)" ]
   run tmux_calls
   refute_output --partial 'send-keys'
+}
+
+@test "move takes a claude off the Lazer gateway onto the best account, even main, with the gateway dropped from its resume" {
+  queue_stub ucp-816
+  # main is the best account, and a gateway claude has no CLAUDE_CONFIG_DIR: it must not read as already there
+  usage main 5 10
+  usage alt 20 30
+  session lab spill-1 %7 70 71 idle "" --model sonnet
+  on_gateway 71
+  run "$ACCT" move spill-1 --server lab
+  assert_success
+  assert_output --partial 'from gateway to main (5h 5%, 7d 10%)'
+  assert_output --partial 'claude-acct: moved spill-1 to main'
+  run cat "$FIX/started"
+  assert_output --partial 'env -u CLAUDE_CONFIG_DIR env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN claude --model sonnet --resume sid-1'
+  assert_output --partial 'moved\ from\ the\ Lazer\ gateway\ to\ main'
+  # its item stops holding the gateway source's slot
+  run cat "$FIX/queue.set"
+  assert_output 'set ucp-816 agent=claude account=main'
+}
+
+@test "move --to names the account for a gateway claude; a move off an account leaves its item alone" {
+  queue_stub ucp-772
+  session lab spill-2 %8 80 81 idle ""
+  on_gateway 81
+  run "$ACCT" move spill-2 --server lab --to alt
+  assert_success
+  assert_output --partial 'from gateway to alt'
+  run cat "$FIX/queue.set"
+  assert_output 'set ucp-772 agent=claude account=alt'
+  # Negative control: an account session's item is not relabelled
+  rm "$FIX/queue.set"
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" move agent-1 --server lab
+  assert_success
+  [ ! -e "$FIX/queue.set" ]
 }
 
 @test "park never refuses over accounts: already on the best one, or no usage data at all" {

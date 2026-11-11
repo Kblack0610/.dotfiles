@@ -1,116 +1,114 @@
-//! The pipeline gauges: where items sit between a captured thought and a landed PR, from
-//! fleet-bench's `agent_chain_*` series. `flow` words them as the strip on Home and the Queue
-//! tab. Counts are the gauges' own; a step the gauges lack is None and never a zero.
+//! The pipeline snapshot: one row per step between a captured thought and a landed PR, the JSON
+//! fleet-bench writes each tick (`pipeline_json`), the same one its `agent_chain_*` gauges come
+//! from. `flow` words it as the strip on Home and the line on the Queue tab. A step or number
+//! the snapshot lacks is None and never a zero.
 
-use serde::Serialize;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 
 use chrono::{Local, TimeZone};
 
 use crate::capacity::clock;
-use crate::prom::{self, Series, W};
-
-/// The steps read, in pipeline order. `done` (finished in 24h) is left off: `stats.recent` has it.
-pub const STEPS: [&str; 5] = ["inbox", "backlog", "queued", "running", "waiting"];
 
 /// A step past its age bound.
 #[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct Bottleneck {
     pub step: String,
-    /// The step's age p90 in minutes, when the gauge has it.
+    /// The step's age p90 in minutes, when the snapshot has it.
     pub age_p90_min: Option<f64>,
-    /// age_p90 / ratio: the bound the ratio was taken against.
+    /// The bound the ratio was taken against.
     pub bound_min: Option<f64>,
     pub ratio: f64,
 }
 
+/// One subject that went wrong at a step in the last 24 hours (`notes log --steps`).
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
+pub struct Problem {
+    pub ts: String,
+    pub subject: String,
+    pub kind: String,
+    /// Empty when the record holds no cause.
+    pub why: String,
+    pub n: usize,
+}
+
+/// One step of the snapshot, as `pipeline_json` names its fields.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
+pub struct Step {
+    pub step: String,
+    pub wip: Option<u64>,
+    pub age_p90_min: Option<f64>,
+    pub oldest_min: Option<f64>,
+    pub in_24h: Option<u64>,
+    pub out_24h: Option<u64>,
+    pub bound: Option<f64>,
+    pub ratio: Option<f64>,
+    pub problems_n: Option<usize>,
+    #[serde(default)]
+    pub problems: Vec<Problem>,
+    /// Why nothing can leave this step right now.
+    pub blocked: Option<String>,
+}
+
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct Pipeline {
-    /// WIP for each of `STEPS`, None for a step the gauge has no series for.
-    pub wip: Vec<(String, Option<u64>)>,
+    pub steps: Vec<Step>,
     /// The step with the largest age ratio above 1, if any.
     pub bottleneck: Option<Bottleneck>,
-    /// When fleet-bench last wrote the gauges (unix seconds). They lag the live queue by up to
-    /// one sample, so the line says when they were read; None when the file's age is unknown.
+    /// When fleet-bench wrote the snapshot (unix seconds). It lags the live queue by up to one
+    /// tick, so the surfaces say when it was written.
     pub as_of: Option<i64>,
 }
 
-fn by_step<'a>(s: &'a [Series], step: &str) -> Option<&'a Series> {
-    s.iter()
-        .find(|x| x.label("step") == step && x.value.is_some())
-}
-
-/// The summary from the three instant answers (wip, age p90, age ratio). None when there is no
-/// wip series at all: the gauges are not exported, which is not the same as an empty pipeline.
-pub fn from_series(wip: &[Series], p90: &[Series], ratio: &[Series]) -> Option<Pipeline> {
-    if !wip.iter().any(|s| s.value.is_some()) {
-        return None;
+/// The summary from the snapshot's text. None when it has no steps: fleet-bench could not build
+/// them, which is not the same as an empty pipeline.
+pub fn parse(text: &str) -> Result<Option<Pipeline>, String> {
+    #[derive(Deserialize)]
+    struct Raw {
+        as_of: Option<i64>,
+        #[serde(default)]
+        steps: Vec<Step>,
     }
-    let wip_by = STEPS
+    let raw: Raw =
+        serde_json::from_str(text).map_err(|e| format!("snapshot cannot be read: {e}"))?;
+    if raw.steps.is_empty() {
+        return Ok(None);
+    }
+    let bottleneck = raw
+        .steps
         .iter()
-        .map(|st| {
-            let n = by_step(wip, st)
-                .and_then(|s| s.value)
-                .map(|v| v.max(0.0).round() as u64);
-            (st.to_string(), n)
-        })
-        .collect();
-    let bottleneck = ratio
-        .iter()
-        .filter_map(|s| Some((s.label("step"), s.value.filter(|r| *r > 1.0)?)))
+        .filter_map(|s| Some((s, s.ratio.filter(|r| *r > 1.0)?)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(step, r)| {
-            let age = by_step(p90, step).and_then(|s| s.value);
-            Bottleneck {
-                step: step.to_string(),
-                age_p90_min: age,
-                bound_min: age.map(|a| a / r),
-                ratio: r,
-            }
+        .map(|(s, r)| Bottleneck {
+            step: s.step.clone(),
+            age_p90_min: s.age_p90_min,
+            bound_min: s.bound,
+            ratio: r,
         });
-    Some(Pipeline {
-        wip: wip_by,
+    Ok(Some(Pipeline {
+        steps: raw.steps,
         bottleneck,
-        as_of: None,
-    })
-}
-
-/// Ask Prometheus: the gauges' wip, age p90 and age ratio. Ok(None) when the gauges are absent.
-pub fn read() -> Result<Option<Pipeline>, String> {
-    let base = prom::base()?;
-    let qs = [
-        format!("{W} (agent_chain_wip)"),
-        format!("{W} (agent_chain_age_minutes{{quantile=\"p90\"}})"),
-        format!("{W} (agent_chain_age_ratio)"),
-        // node_exporter's mtime of the textfile fleet-bench writes the gauges to.
-        "max (node_textfile_mtime_seconds{file=~\".*fleet_bench.prom\"})".to_string(),
-    ];
-    let mut a: Vec<_> = std::thread::scope(|s| {
-        let hs: Vec<_> = qs
-            .iter()
-            .map(|q| {
-                let base = &base;
-                s.spawn(move || prom::instant(base, q))
-            })
-            .collect();
-        hs.into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err("panicked".into())))
-            .collect()
-    });
-    let wip = a.remove(0)?;
-    // The age and ratio gauges only decide the second line, and the mtime only the as-of
-    // stamp; their failure leaves each off.
-    let mtime = a.pop().and_then(Result::ok).unwrap_or_default();
-    let ratio = a.pop().and_then(Result::ok).unwrap_or_default();
-    let p90 = a.pop().and_then(Result::ok).unwrap_or_default();
-    Ok(from_series(&wip, &p90, &ratio).map(|mut p| {
-        p.as_of = mtime.iter().find_map(|s| s.value).map(|v| v as i64);
-        p
+        as_of: raw.as_of,
     }))
 }
 
-/// The stamp: a clock time for today, with the date when the gauges were last written on an
-/// earlier day, so a collector that stopped writing cannot pass for a fresh reading.
-fn stamp(epoch: i64, now: i64) -> String {
+fn read_file(path: &Path) -> Result<Option<Pipeline>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// The snapshot. Ok(None) when fleet-bench has written none.
+pub fn read() -> Result<Option<Pipeline>, String> {
+    read_file(&crate::boards::pipeline_snapshot())
+}
+
+/// The stamp: a clock time for today, with the date when the snapshot was last written on an
+/// earlier day, so a writer that stopped cannot pass for a fresh reading.
+pub(crate) fn stamp(epoch: i64, now: i64) -> String {
     let day = |e| Local.timestamp_opt(e, 0).single().map(|t| t.date_naive());
     match Local.timestamp_opt(epoch, 0).single() {
         Some(t) if day(epoch) != day(now) => t.format("%m-%d %H:%M").to_string(),
@@ -123,6 +121,10 @@ fn mins(m: f64) -> String {
 }
 
 impl Pipeline {
+    pub fn step(&self, name: &str) -> Option<&Step> {
+        self.steps.iter().find(|s| s.step == name)
+    }
+
     /// `bottleneck: waiting, age p90 9h (bound 4h)`, only when a step is past its bound.
     pub fn bottleneck_text(&self) -> Option<String> {
         let b = self.bottleneck.as_ref()?;
@@ -133,43 +135,32 @@ impl Pipeline {
         Some(format!("bottleneck: {}{detail}", b.step))
     }
 
-    /// When the gauges were written, if known; a date is added from an earlier day.
+    /// When the snapshot was written, if known; a date is added from an earlier day.
     pub fn as_of_label(&self) -> Option<String> {
         self.as_of.map(|t| stamp(t, Local::now().timestamp()))
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn s(step: &str, v: f64) -> Series {
-        Series {
-            labels: [("step".to_string(), step.to_string())].into(),
-            value: Some(v),
-            points: vec![],
-        }
-    }
-
-    fn wip() -> Vec<Series> {
-        vec![
-            s("inbox", 4.0),
-            s("backlog", 312.0),
-            s("queued", 3.0),
-            s("running", 5.0),
-            s("waiting", 2.0),
-            s("done", 9.0),
-        ]
+    /// A snapshot as `pipeline_json` writes it, one `(step, wip, age p90, ratio)` per row.
+    pub(crate) fn snapshot(rows: &[(&str, u64, f64, f64)]) -> Pipeline {
+        let steps: Vec<_> = rows
+            .iter()
+            .map(|(step, wip, p90, ratio)| {
+                serde_json::json!({"step": step, "wip": wip, "age_p90_min": p90,
+                    "bound": p90 / ratio, "ratio": ratio, "problems_n": null, "blocked": null})
+            })
+            .collect();
+        let text = serde_json::json!({"as_of": null, "steps": steps}).to_string();
+        parse(&text).unwrap().unwrap()
     }
 
     #[test]
     fn a_bottleneck_names_its_step_age_and_bound() {
-        let p = from_series(
-            &wip(),
-            &[s("waiting", 540.0)],
-            &[s("waiting", 2.25), s("queued", 0.5)],
-        )
-        .unwrap();
+        let p = snapshot(&[("waiting", 2, 540.0, 2.25), ("queued", 3, 60.0, 0.5)]);
         assert_eq!(
             p.bottleneck_text().unwrap(),
             "bottleneck: waiting, age p90 9h (bound 4h)"
@@ -177,45 +168,32 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_ratio_over_one_wins() {
-        let r = [s("queued", 1.5), s("waiting", 3.0), s("running", 1.0)];
-        let p = from_series(&wip(), &[s("queued", 90.0), s("waiting", 540.0)], &r).unwrap();
+    fn the_largest_ratio_over_one_wins_and_none_over_one_is_no_bottleneck() {
+        let p = snapshot(&[("queued", 3, 90.0, 1.5), ("waiting", 2, 540.0, 3.0)]);
         assert_eq!(p.bottleneck.unwrap().step, "waiting");
-    }
-
-    #[test]
-    fn no_ratio_over_one_is_no_bottleneck_and_done_is_left_off() {
-        let p = from_series(&wip(), &[], &[s("waiting", 0.9), s("running", 1.0)]).unwrap();
+        let p = snapshot(&[("waiting", 2, 90.0, 0.9), ("running", 1, 60.0, 1.0)]);
         assert_eq!(p.bottleneck_text(), None);
-        assert!(p.wip.iter().all(|(st, _)| st != "done"));
     }
 
     #[test]
-    fn a_bottleneck_without_an_age_names_only_the_step() {
-        let p = from_series(&wip(), &[], &[s("waiting", 2.0)]).unwrap();
-        assert_eq!(p.bottleneck_text().unwrap(), "bottleneck: waiting");
-    }
-
-    #[test]
-    fn a_missing_step_is_none_not_zero() {
-        let w = [s("inbox", 0.0), s("queued", 3.0)];
-        let p = from_series(&w, &[], &[]).unwrap();
-        let got: Vec<_> = p.wip.iter().map(|(s, n)| (s.as_str(), *n)).collect();
+    fn a_step_carries_its_problems_and_why_it_is_blocked() {
+        let p = parse(
+            r#"{"as_of": 7, "steps": [{"step": "queued", "wip": 2, "problems_n": 1, "blocked": "stopped",
+                "problems": [{"ts": "t", "subject": "a", "kind": "failed", "why": "", "n": 2}]}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let q = p.step("queued").unwrap();
         assert_eq!(
-            got,
-            [
-                ("inbox", Some(0)),
-                ("backlog", None),
-                ("queued", Some(3)),
-                ("running", None),
-                ("waiting", None)
-            ]
+            (p.as_of, q.blocked.as_deref(), q.problems[0].n),
+            (Some(7), Some("stopped"), 2)
         );
+        assert_eq!(p.step("running"), None);
     }
 
     #[test]
-    fn the_stamp_says_when_the_gauges_were_written() {
-        let mut p = from_series(&wip(), &[], &[]).unwrap();
+    fn the_stamp_says_when_the_snapshot_was_written() {
+        let mut p = snapshot(&[("queued", 3, 60.0, 0.5)]);
         assert_eq!(p.as_of_label(), None, "unknown age adds nothing");
         p.as_of = Some(Local::now().timestamp() - 60);
         assert_eq!(p.as_of_label(), Some(clock(p.as_of.unwrap())));
@@ -230,16 +208,18 @@ mod tests {
     }
 
     #[test]
-    fn negative_control_no_series_is_the_degraded_form() {
+    fn negative_control_no_file_no_steps_and_a_bad_file_are_not_an_empty_pipeline() {
+        let dir = std::env::temp_dir().join(format!("hub-pipeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("pipeline.json");
+        assert_eq!(read_file(&f), Ok(None), "not written yet");
         assert_eq!(
-            from_series(&[], &[s("waiting", 540.0)], &[s("waiting", 2.0)]),
-            None
+            parse(r#"{"steps": []}"#),
+            Ok(None),
+            "fleet-bench could not build it"
         );
-        // A series with no number (NaN) is no series.
-        let nan = Series {
-            value: None,
-            ..s("inbox", 0.0)
-        };
-        assert_eq!(from_series(&[nan], &[], &[]), None);
+        std::fs::write(&f, "{half").unwrap();
+        assert!(read_file(&f).unwrap_err().contains("cannot be read"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

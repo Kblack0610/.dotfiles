@@ -10,9 +10,13 @@
 #                                   happened; nothing for a repo that is not one of the checkouts
 #
 # Stow serves the main checkouts, so a merged change is live only once its checkout moves, and a
-# file it adds only once it has a link: after any move, `dotfiles-deploy --apply --missing` links
-# every deploy path of both checkouts that resolves to nothing in $HOME (one more line when it
-# linked or failed). It only creates links where nothing is; a file in $HOME is never replaced.
+# file it adds or moves to the other repo only once it has a link: every pass, moved or not (another
+# tool may have pulled), runs `dotfiles-deploy --apply --missing`, which links every deploy path of
+# both checkouts that resolves to nothing in $HOME (one more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
+# is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
+# line when it changed a link or failed). A merged Rust change is live only once its binary is rebuilt,
+# so every pass also runs `cargo build --release` for each Rust tool linked into ~/.local/bin and
+# restarts a running unit named after one whose binary is newer than the unit (agent-web).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
 # every path exits 0, so no network or repo state can break a shell start or a landing.
@@ -24,11 +28,13 @@ THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
 STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
-# The public checkout's own copies, so a pull that changed them runs the new ones.
-OVERLAY_LINK="${REPOS[0]}/.local/bin/dotfiles-overlay-link"
+# The public checkout's own copy, so a pull that changed it runs the new one.
 DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
+SKILL_DEPLOY="${DOTFILES_SKILL_DEPLOY:-${REPOS[0]}/.local/bin/skill-deploy}"
 DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
+BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agent-web from clean takes minutes
+BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -52,9 +58,15 @@ say() {
   echo "$1"
 }
 
+# log_report <cmd> <rc> <output>: a failed attach step's report goes to the log
+log_report() {
+  log "$1 exited $2, its report:"
+  printf '%s\n' "$3" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
+}
+
 # attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
 # tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
-# to nothing. Runs once per pass, after every move. A failure's report goes to the log.
+# to nothing. Runs once per pass, moved or not. A failure's report goes to the log.
 attach_missing() {
   local out rc n
   [ -x "$DEPLOY" ] || return 0
@@ -62,12 +74,97 @@ attach_missing() {
   rc=$?
   n=$(printf '%s\n' "$out" | grep -c '^  linked ')
   if [ "$rc" -ne 0 ]; then
-    log "dotfiles-deploy --apply --missing exited $rc, its report:"
-    printf '%s\n' "$out" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
+    log_report 'dotfiles-deploy --apply --missing' "$rc" "$out"
     say "~: linked $n missing file(s), then dotfiles-deploy --apply --missing failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
   elif [ "$n" -gt 0 ]; then
     say "~: linked $n missing file(s) into \$HOME (dotfiles-deploy --apply --missing)"
   fi
+}
+
+# attach_skills -> one line when it changed a link or failed, nothing otherwise. Idempotent and quiet,
+# so it needs no check of what the move touched, and a skill a hand pull left unlinked heals too. A
+# failure names its skills on the line, a CONFLICT skill-deploy will not resolve for us, and its report
+# goes to the log.
+attach_skills() {
+  local out rc n names
+  [ -x "$SKILL_DEPLOY" ] || return 0
+  out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$SKILL_DEPLOY" --quiet 2>&1)
+  rc=$?
+  n=$(printf '%s\n' "$out" | grep -cE '^(LINKED|RELINKED|REMOVED) ')
+  if [ "$rc" -ne 0 ]; then
+    log_report 'skill-deploy --quiet' "$rc" "$out"
+    names=$(printf '%s\n' "$out" | awk '$1 == "CONFLICT" || $1 == "FAILED" { print $2 }' | paste -sd ' ' -)
+    say "~: updated $n skill link(s), then skill-deploy failed (exit $rc)${names:+ on: $names}; report in ${LOG/#"$HOME"/\~}"
+  elif [ "$n" -gt 0 ]; then
+    say "~: updated $n skill link(s) in ~/.claude/skills (skill-deploy)"
+  fi
+}
+
+# mtime <file> -> seconds since the epoch (GNU stat, else BSD stat)
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# restart_stale <bin> <binary>: a running user unit named <bin>.service that started before <binary>
+# was built still runs the old one, so restart it. One line when it restarted or failed.
+restart_stale() {
+  local unit="$1.service" state started built
+  command -v systemctl >/dev/null 2>&1 || return 0
+  state=$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)
+  [ "$state" = active ] || return 0
+  started=$(systemctl --user show "$unit" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null)
+  started=${started#@}
+  built=$(mtime "$2")
+  [[ "$started" =~ ^[0-9]+$ && "$built" =~ ^[0-9]+$ ]] && [ "$built" -gt "$started" ] || return 0
+  if systemctl --user restart "$unit" 2>/dev/null; then
+    say "~: restarted $unit on the new $1"
+  else
+    say "~: $unit runs an old $1 and its restart failed: systemctl --user restart $unit"
+  fi
+}
+
+# attach_rust -> one line per tool it rebuilt or could not build, and per unit it restarted. A link
+# in ~/.local/bin into <public checkout>/.local/src/<crate>/target/release/<bin> is a Rust tool
+# installed here (build_local_rust_tools writes them). cargo follows path dependencies (hub-core),
+# so it rebuilds a tool whatever crate the move touched, and is a no-op of about 0.1s per tool when
+# nothing changed; so this runs every pass, moved or not, and a hand pull heals too. All builds share
+# one BUILD_SECS budget, since agent-land waits on them. A failed build leaves the binary on disk in
+# place, and its report goes to the log; a unit older than that binary is restarted either way.
+attach_rust() {
+  local link target crate bin before out rc left deadline
+  deadline=$(($(date +%s) + BUILD_SECS))
+  # A runner's or a unit's PATH often lacks rustup's bin dir.
+  command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
+  for link in "$BIN_DIR"/*; do
+    [ -L "$link" ] || continue
+    target=$(readlink "$link")
+    case $target in "${REPOS[0]}"/.local/src/*/target/release/*) ;; *) continue ;; esac
+    crate=${target%/target/release/*}
+    bin=${target##*/}
+    [ -f "$crate/Cargo.toml" ] || continue
+    left=$((deadline - $(date +%s)))
+    if ! command -v cargo >/dev/null 2>&1; then
+      say "~: cargo not found, $bin not rebuilt"
+    elif [ "$left" -le 0 ]; then
+      say "~: build budget of ${BUILD_SECS}s spent, $bin not rebuilt"
+    else
+      before=$(mtime "$target")
+      out=$(cd "$crate" && capped "$left" cargo build --release --quiet 2>&1)
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        log_report "cargo build --release ($bin)" "$rc" "$out"
+        say "~: cargo build of $bin failed (exit $rc), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
+      elif [ "$(mtime "$target")" != "$before" ]; then
+        say "~: rebuilt $bin (cargo build --release)"
+      fi
+    fi
+    restart_stale "$bin" "$target"
+  done
+}
+
+# attach_all: what every pass runs once, moved or not
+attach_all() {
+  attach_missing
+  attach_skills
+  attach_rust
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
@@ -105,8 +202,6 @@ pull() {
     # not dangle. HTTPS avoids SSH:22 hangs on networks that block it; capped and fail-soft.
     capped 120 git -C "$repo" -c url."https://github.com/".insteadOf="git@github.com:" \
       submodule update --init --recursive --quiet >/dev/null 2>&1 || true
-    # Attach anything the move added to, or moved into, the private overlay.
-    [ ! -x "$OVERLAY_LINK" ] || "$OVERLAY_LINK" >/dev/null 2>&1 || true
   else
     # git lists each file it refused to overwrite, dirty or untracked, on its own tab-indented line.
     files=$(printf '%s\n' "$out" | awk 'sub(/^\t/, "")' | paste -sd ' ' -)
@@ -125,7 +220,7 @@ if [ "${1:-}" = --now ]; then
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
     line=$(pull "$repo")
     echo "$line"
-    [[ "$line" != *": fast-forwarded "* ]] || attach_missing
+    attach_all
     exit 0
   done
   exit 0
@@ -141,17 +236,14 @@ fi
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
-moved=0
 for repo in "${REPOS[@]}"; do
   [ -d "$repo/.git" ] || continue
   line=$(pull "$repo")
-  [[ "$line" == *": fast-forwarded "* ]] || continue
-  moved=1
   # Only speak in the foreground: backgrounded from .zshrc it stays silent.
-  [ ! -t 1 ] || echo "$line"
+  if [[ -t 1 && "$line" == *": fast-forwarded "* ]]; then echo "$line"; fi
 done
-if [ "$moved" = 1 ]; then
-  line=$(attach_missing)
-  [[ ! -t 1 || -z "$line" ]] || echo "$line"
-fi
+# Every pass attaches, moved or not: a checkout another tool pulled moved without this script, and
+# its new files would otherwise never link.
+line=$(attach_all)
+[[ ! -t 1 || -z "$line" ]] || echo "$line"
 exit 0

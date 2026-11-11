@@ -472,7 +472,7 @@ gh_stub() {
   assert_output "github: 4200/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
   gh_stub 300 "$(( now + 3000 ))" 4500 "$(( now + 2000 ))"
   run gh_budget
-  assert_output --partial ', LOW; gh running under ci-gate.sh x3'
+  assert_output --partial ', LOW; last 10 min on the user token: ci-gate.sh x3'
   # few left but the reset is minutes away: nothing to act on
   gh_stub 300 "$(( now + 300 ))" 4500 "$(( now + 2000 ))"
   run gh_budget
@@ -480,6 +480,23 @@ gh_stub() {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
   run gh_budget
   assert_output 'github: rate limit unreadable'
+}
+
+@test "gh_callers: the top spenders of the user token in the window, from the gh call log" {
+  local now; now="$(date +%s)"
+  export GH_CALLS_DIR="$SANDBOX/calls"; mkdir -p "$GH_CALLS_DIR"
+  {
+    printf '%s\tuser\t0\tzsh\t-\trun view 1\n' "$(( now - 900 ))" "$(( now - 900 ))"
+    printf '%s\tuser\t0\tzsh\t-\trun view 1\n' "$now" "$now"
+    printf '%s\tuser\t0\tagent-land\t-\trun list\n' "$now" "$now" "$now"
+    printf '%s\tuser:app-error\t0\tagent-land\t-\trun list\n' "$now"
+    printf '%s\tapp:acme\t0\tgh-run-wait\t-\trun view 2\n' "$now" "$now" "$now" "$now" "$now"
+  } > "$GH_CALLS_DIR/$(date +%F).tsv"
+  run gh_callers
+  assert_output 'agent-land x4, zsh x2'
+  rm "$GH_CALLS_DIR/$(date +%F).tsv"
+  run gh_callers
+  assert_output ''
 }
 
 @test "--github prints the budget line and samples nothing else" {
@@ -496,7 +513,7 @@ gh_stub() {
   gh_callers() { echo "ci-gate.sh x3"; }
   gh_stub 2964 "$(( now + 3000 ))" 0 "$(( now + 2000 ))"
   run gh_budget
-  assert_output "github: 0/5000 REST calls left (actions/workflows), resets $(date -d "@$(( now + 2000 ))" +%H:%M), LOW; gh running under ci-gate.sh x3"
+  assert_output "github: 0/5000 REST calls left (actions/workflows), resets $(date -d "@$(( now + 2000 ))" +%H:%M), LOW; last 10 min on the user token: ci-gate.sh x3"
   # an unreadable second bucket leaves the first one's line
   gh_stub 2964 "$(( now + 3000 ))"
   run gh_budget

@@ -35,6 +35,7 @@ set -uo pipefail
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
+: "${GH_CALLERS_WINDOW_S:=600}"  # gh_callers counts the call log over this many seconds
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
@@ -541,13 +542,15 @@ main() {
   awk -F'\t' '{ printf "%-8s %3s %5s  %-12s %-8s %-28s %-34s %-20s %s\n", $1, $2, $3, $4, $5, $6, $7, $8, $9 }' <<<"$blocked"
 }
 
-# gh_callers -> "<script> xN, ..." for the scripts whose children are gh right now, most first.
+# gh_callers -> "<caller> xN, ..." for the top spenders of the human's token over the last
+# GH_CALLERS_WINDOW_S, from the gh wrapper's call log (.local/bin/gh): a caller is the script that
+# ran gh, zsh for an agent's own command. App-routed calls spend another budget and are not counted.
 gh_callers() {
-  local pp
-  ps -eo ppid=,comm= | awk '$2 == "gh" { print $1 }' | while read -r pp; do
-    ps -o args= -p "$pp" | awk '{ s = $1; for (i = 1; i <= NF; i++) if ($i ~ /\//) { s = $i; break }
-                                  n = split(s, a, "/"); print a[n] }'
-  done | sort | uniq -c | sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}"
+  [ -f "$dir/$(date +%F).tsv" ] || return 0
+  tail -n 20000 "$dir/$(date +%F).tsv" | awk -F'\t' -v since=$(( $(date +%s) - GH_CALLERS_WINDOW_S )) \
+    '$1 >= since && $2 ~ /^user/ { n[$4]++ } END { for (c in n) print n[c], c }' |
+    sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
 }
 
 # gh_budget -> one line: REST calls left this hour in the emptier bucket, and who is spending
@@ -570,7 +573,7 @@ gh_budget() {
   line="github: $remaining/$limit REST calls left$bucket, resets $(date -d "@$reset" +%H:%M)"
   if [ "$remaining" -lt "$FLEET_GH_LOW" ] && [ $(( reset - $(date +%s) )) -gt 1200 ]; then
     callers="$(gh_callers)"
-    line="$line, LOW${callers:+; gh running under $callers}"
+    line="$line, LOW${callers:+; last $(( GH_CALLERS_WINDOW_S / 60 )) min on the user token: $callers}"
   fi
   echo "$line"
 }

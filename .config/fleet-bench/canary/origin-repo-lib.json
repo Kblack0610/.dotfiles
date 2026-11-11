@@ -1,0 +1,29 @@
+{
+  "id": "origin-repo-lib",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#1440",
+  "base": "d2ea8cf8b000f6dc03321d24ca342f4472ef3434",
+  "merge": "6a96c35430760053e56c8cefe5670fd8e56948af",
+  "task": "refactor(lib): one origin_repo for every origin URL -> owner/repo parse (ar-890)",
+  "accept": [
+    "every GitHub URL form gives owner/repo",
+    "a non-GitHub host gives its owner/repo too, unless a host is asked for",
+    "the host filter takes every URL form and ignores case",
+    "no origin, or no dir, is nothing and rc 1"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/origin_repo.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(every GitHub URL form gives owner/repo|a non-GitHub host gives its owner/repo too, unless a host is asked for|the host filter takes every URL form and ignores case|no origin, or no dir, is nothing and rc 1)$",
+      "tests/unit/origin_repo.bats"
+    ]
+  }
+}

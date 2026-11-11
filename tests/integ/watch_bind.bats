@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tier 2: Prefix i lands on the hub board's Board tab, p opens the projects finder, o goes to the shepherd pass, read out of
+# Tier 2: Prefix i lands on the hub board's Board tab, p opens the projects finder, P the projects index, o goes to the shepherd pass, read out of
 # .tmux.conf and hub.conf as text.
 #
 # The board is one declared window (hub:board) running `hub`, a ratatui app with a tab per
@@ -16,10 +16,11 @@ setup() {
   HUB_CONF="$REPO_ROOT/.config/tmux-servers/hub.conf"
 }
 
-@test "prefix+i asks the hub for its Home tab, then goes to its window; p opens the projects finder" {
+@test "prefix+i asks the hub for its Home tab, then goes to its window; p opens the projects finder, P the index, S the PRs" {
   assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab home; tmx goto hub hub:board"'
   assert_equal "$(bind_for p)" 'display-popup -E -B -w 100% -h 100% "$HOME/.local/src/tmux/projects.sh"'
-  assert_equal "$(bind_for P)" 'display-popup -E -w 90% -h 85% "$HOME/.local/src/tmux/pr-viewer.sh"'
+  assert_equal "$(bind_for P)" 'run-shell '\''tmx open hub "$(dirname "$(notes path projects)")/index.md" 1'\'''
+  assert_equal "$(bind_for S)" 'display-popup -E -w 90% -h 85% "$HOME/.local/src/tmux/pr-viewer.sh"'
 }
 
 @test "prefix+o only goes to the shepherd pass, and O is unbound" {

@@ -1,53 +1,32 @@
-/* Self-hosted (static/fonts, SIL OFL 1.1), variable weight 400-700, latin only: other scripts
-   fall through to the system font in the stacks below. {{v}} is the asset version (assets.rs). */
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 400 700; font-display: swap; src: url(/static/inter.woff2?v={{v}}) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 700; font-display: swap; src: url(/static/jetbrains-mono.woff2?v={{v}}) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+/* agent-web's own look on top of web-kit's tokens.css (fonts, type scale, palette, page base) and
+   shell.css (the top bar and the grouped tab list). Only what is agent-web's own lives here. */
 :root {
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* type scale: everything is one of these */
-  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
-  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #57564f; --line: #d4d1c8;
-  --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
   --user: #eaf0fb; --tool: #f1efe9;
   /* fleet-sessions buckets */
   --b-needs: #d4483b; --b-stalled: #dd7a1f; --b-landed: #8457d0; --b-chat: #8f8d86; --b-parked: #b5b3ab; --b-working: #2f6fde; --b-done: #3f9a5a;
-  /* categorical series, fixed order (dataviz palette) */
-  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #8f5bd0; --c6: #d6498f; --c-other: #a3a19a;
-  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #b2b0a6; --line: #3d3c38;
-    --accent: #6f9ef0; --user: #1f2a3d; --tool: #24231f; color-scheme: dark;
+    --user: #1f2a3d; --tool: #24231f;
     --b-needs: #e8665a; --b-stalled: #f0953f; --b-landed: #a585e6; --b-chat: #77756e; --b-parked: #57554f; --b-working: #6f9ef0; --b-done: #5cb877;
-    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #9a6bdc; --c6: #d85a99; --c-other: #66645e;
   }
 }
-* { box-sizing: border-box; }
 html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: var(--fs-md)/1.5 var(--sans); font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
-header h1 { font-size: 16px; margin: 0; }
-/* The menu button and the current tab's name show only on a narrow screen, where the tab list
-   is a dropdown the button opens (app.js menuOpen). */
-.menu, .cur { display: none; }
-.menu { position: relative; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; width: 38px; height: 34px; padding: 0; cursor: pointer; }
-.menu .bars, .menu .bars::before, .menu .bars::after { position: absolute; left: 10px; width: 16px; height: 2px; background: currentColor; border-radius: 1px; content: ""; }
-.menu .bars { top: 16px; } .menu .bars::before { left: 0; top: -5px; } .menu .bars::after { left: 0; top: 5px; }
-.menu #menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
-.cur { font-weight: 600; color: var(--muted); }
-.tabs { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
-.tabs button { flex: none; }
-.tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
-.tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* The bar and tab list are web-kit's <kb-shell> (shell.css). The open tab's outline (nav.js) sits
+   under its button; the bar adds the live dot and title. */
+.outl { display: flex; flex-direction: column; margin: 1px 0 4px 10px; border-left: 1px solid var(--line); }
+.outl:empty { display: none; }
+.kb-nav .outl button { border: 0; background: transparent; cursor: pointer; font: inherit; padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted); text-align: left; }
+.kb-nav .outl button:hover { color: var(--ink); }
+.seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
 .signout { white-space: nowrap; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 4px; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
 .live-off { font-size: 12px; color: var(--wait); white-space: nowrap; }
-main { display: grid; grid-template-columns: 1fr; height: calc(100% - 49px - env(safe-area-inset-top, 0px)); }
+main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head) - env(safe-area-inset-top, 0px)); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }
 .dot.waiting { background: var(--wait); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wait) 25%, transparent); }
 .dot.busy, .dot.shell { background: var(--busy); }
@@ -55,6 +34,9 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - 49px - env
 .pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .pill { font: 11px var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); white-space: nowrap; }
 .pill.here { background: var(--accent); color: #fff; }
+/* Inner tabs (app.js innerStrip): a count pill on a tab whose sections need a look. */
+.istrip .pill.warn { background: var(--b-stalled); color: #fff; }
+[data-in][hidden] { display: none; }
 .pill.parked { background: var(--busy); color: #fff; }
 .pill.ask { background: var(--wait); color: #fff; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -132,12 +114,11 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 /* Board tabs */
 #queue > *, #queue h2.sec { max-width: 760px; }
 #home > *, #home h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
-#home .hnum span { white-space: nowrap; }
 #q-list .card { max-width: none; }
-#board > *, #board h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+#b-root > *, #b-root h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 #b-tbl .card, #b-tbl h2.sec, #p-cards .card { max-width: none; }
-#board summary { cursor: pointer; }
-#board summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
+#b-root summary { cursor: pointer; }
+#b-root summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 /* Daily (focus.js): one note read like a page, phone width first; a link into another note or a
    project is in-app (#daily/..., #projects/...), so it is styled apart from an external one. */
@@ -162,6 +143,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .cchip.ok { color: var(--b-done); background: color-mix(in srgb, var(--b-done) 14%, transparent); }
 .cchip.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
 .cline.warn { color: var(--b-stalled); }
+.cline.vital b { display: inline-block; min-width: 5em; }
 .cchip.prio.high { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
 .cline { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }
 .cline a { color: var(--accent); }
@@ -178,6 +160,27 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
 .flow { margin: 0 0 10px; overflow-wrap: anywhere; } .flow .fchip { text-decoration: none; margin: 0 4px 4px 0; } .flow a.fchip:hover { text-decoration: underline; } .fnote { font-size: var(--fs-sm); } .qwarn { color: var(--b-stalled); font-weight: 600; }
+/* The pipeline line: one point per step on a rail; a phone stacks them, the detail under its step. */
+.rail { display: flex; flex-wrap: wrap; }
+.rnode { position: relative; flex: 1 1 0; min-width: 0; padding: 18px 2px 4px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
+.rnode::before { content: ""; position: absolute; top: 8px; left: 0; right: 0; height: 2px; background: var(--line); }
+.rnode:first-of-type::before { left: 50%; } .rnode:last-of-type::before { right: 50%; }
+.rdot { position: absolute; top: 3px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--muted); }
+.rnode.hot .rdot { background: var(--b-stalled); } .rnode.stopped .rdot { background: var(--b-needs); }
+.rnode.sel .rdot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }
+.rcount { font-size: var(--fs-md); font-weight: 650; } .rnode.hot .rcount { color: var(--b-stalled); } .rnode.stopped .rcount { color: var(--b-needs); }
+.rlabel { font-size: var(--fs-sm); } .rnode.sel .rlabel { font-weight: 650; } .rsub { font: var(--fs-xs) var(--mono); color: var(--muted); }
+.rdetail { order: 99; flex-basis: 100%; padding: 6px 2px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.rstop { color: var(--b-needs); font-weight: 600; } .rphead { font-weight: 600; margin-top: 4px; }
+.rprob { display: block; font: var(--fs-xs) var(--mono); color: inherit; text-decoration: none; padding: 1px 0; } a.rprob:hover { text-decoration: underline; }
+@media (max-width: 640px) {
+  .rail { flex-direction: column; flex-wrap: nowrap; }
+  .rnode { flex-direction: row; gap: 10px; padding: 4px 2px 4px 22px; flex: none; }
+  .rnode::before { top: 0; bottom: 0; left: 7px; right: auto; width: 2px; height: auto; }
+  .rnode:first-of-type::before { left: 7px; top: 50%; } .rnode:last-of-type::before { right: auto; bottom: 50%; }
+  .rdot { top: calc(50% - 6px); left: 8px; }
+  .rdetail { order: 0; padding-left: 22px; }
+}
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
 .badge-line { margin: 6px 0; }
 .more { padding: 4px 8px; }
@@ -210,7 +213,18 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
 /* A table's state chips (static/table.js) and a muted mono time. */
 .fseg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tdays { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tdate { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
+/* Inner tabs (app.js innerStrip), the first row of their tab, as fleet-platform's SectionTabs: flush
+   left over one rule across the page, the open tab bright with an accent underline, the rest muted
+   until hovered. A phone scrolls the strip sideways inside itself; the page never does. Scoped to
+   .istrip, so the other .seg controls keep their boxes. */
+.seg.istrip { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 12px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.seg.istrip button { flex: none; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 16px; font-weight: 500; transition: color .15s, border-color .15s; }
+.seg.istrip button:hover { color: var(--ink); }
+.seg.istrip button.on { color: var(--ink); background: transparent; border-color: transparent; border-bottom-color: var(--accent); font-weight: 650; }
+.seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
 .muted { color: var(--muted); font-weight: normal; }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
@@ -239,8 +253,9 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .sec .only { text-transform: none; letter-spacing: 0; font-weight: normal; }
 .legend button.lg.on { font-weight: 600; text-decoration: underline; }
 .legend button.lg:focus-visible { outline: 1px solid var(--accent); }
-.meter { display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
+.meter { position: relative; display: inline-block; width: 56px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 3px; }
+.meter > i { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); }
 .pcard .pprog { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; }
 .pcard .pprog .meter { flex: 1; width: auto; height: 8px; }
 .pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
@@ -251,6 +266,11 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .pcard .prt { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .pcard .prm { color: var(--muted); font-size: var(--fs-xs); }
 .pcard .pep { padding-left: 12px; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
+.pcard .pleaf { padding-left: 28px; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
+.pcard details .cfold { margin-left: 12px; }
+.pcard .psys { margin: 8px 0; padding: 2px 0 2px 14px; font-size: var(--fs-sm); color: var(--muted); }
+.pcard .ptl { font: var(--fs-xs) var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pcard .ptl.warn { color: var(--b-stalled); } .pcard .ptl.bad { color: var(--b-needs); } .pcard .ptl a { color: inherit; }
 .pcard .pstat { font-size: var(--fs-sm); margin-bottom: 8px; overflow-wrap: anywhere; }
 .chip { display: inline-block; padding: 1px 7px; border-radius: 9px; font: 600 11px var(--mono); color: #fff; background: var(--c); }
 .chip.sm { padding: 0 6px; font-size: 10px; }
@@ -300,6 +320,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cx { position: absolute; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--muted); white-space: nowrap; }
 .cols { padding-bottom: 16px; }
 .tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
+.tsort { display: none; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -364,22 +385,57 @@ span.warn { color: var(--b-stalled); }
 /* Schedules: an open row reads at the box's width, however far the table is scrolled. */
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
+/* Releases: a long changelog scrolls inside the opened row. */
+.rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
+.pfold > summary { display: none; }
+.actrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (max-width: 760px) {
-  /* The Queue table keeps state, in, project and title; the detail has the rest. */
-  .tbl th.qx, .tbl td.qx { display: none; }
+  /* One line standing in for a part of a tab (pfold in ui.js). */
+  .pfold { margin-bottom: 6px; }
+  .pfold > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; box-sizing: border-box; min-height: 40px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; cursor: pointer; }
+  .pfold > summary::-webkit-details-marker { display: none; }
+  .pfold > summary::before, details.csec > summary::before { content: "+"; color: var(--muted); font-family: var(--mono); }
+  .pfold[open] > summary::before, details.csec[open] > summary::before { content: "-"; }
+  details.csec > summary { display: flex; align-items: baseline; gap: 6px; }
+  details.csec > summary::-webkit-details-marker { display: none; }
+  /* A feed row's own words are why it is there: they wrap, and what follows goes under. */
+  .pr { flex-wrap: wrap; }
+  .pr .pt { flex: 1 1 60%; white-space: normal; overflow-wrap: anywhere; }
+  .pfold[open] > summary { margin-bottom: 8px; }
+  /* Sessions' filters and spend as chips, so the table starts in the first screen. */
+  .stiles { display: flex; flex-wrap: wrap; gap: 6px; }
+  .stiles .tile { flex-direction: row; align-items: center; gap: 6px; min-height: 40px; padding: 4px 10px 4px 12px; }
+  .stiles .tv { font-size: 15px; }
+  .stiles .ts1 { display: none; }
+  /* A row on a phone: its lead wraps at full width, its glance sits under it, the rest wait for a
+     tap (table.js stamps the roles). Direct children only, so a table nested in a detail is left alone. */
+  .tsort { display: inline-block; }
+  .tbl.tphone, .tbl.tphone > tbody { display: block; font-size: 13px; }
+  .tbl.tphone .btn { min-height: 40px; }
+  .tbl.tphone > * > tr[data-phone=head] { display: none; }
+  .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-named]::before { content: attr(data-label) " "; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest]::before { content: attr(data-label) ": "; color: var(--muted); }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest][data-label=""]::before { content: none; }
+  .tbl.tphone > * > tr:not([data-phone]), .tbl.tphone > * > tr:not([data-phone]) > td { display: block; white-space: normal; overflow-wrap: anywhere; }
+  /* An opened run's jobs: one job per block, each cell a labelled line (releases.js runJobs). */
+  .tbl.rdjobs, .tbl.rdjobs tbody, .tbl.rdjobs tr, .tbl.rdjobs td { display: block; }
+  .tbl.rdjobs tr:first-child { display: none; }
+  .tbl.rdjobs tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .tbl.rdjobs td { border: 0; padding: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .tbl.rdjobs td::before { content: attr(data-label) " "; color: var(--muted); }
+  .seg button, .tsort, .bfilter select, .tdate { min-height: 40px; }
   .board { padding: 12px; }
-  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
-  .menu, .cur { display: inline-block; }
-  .tabs { display: none; }
-  header.open .tabs { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
-  header.open .tabs button { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
-  header.open .tabs button.on { border-color: var(--accent); }
-  header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }
-  .sched .opt { display: none; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }
@@ -499,3 +555,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .tundo { margin: 0 0 10px; }
 .ntag { display: inline-block; text-indent: 0; font: 600 var(--fs-xs) var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); }
 #daily details.cfold { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 0 auto 10px; }
+/* Costs > Spend: the 30-day chart beside the month bars on a wide screen, stacked on a phone. */
+.spendcharts { display: grid; gap: 8px; }
+@media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
+#sec-spend tr[data-sid] { cursor: pointer; }
+#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }

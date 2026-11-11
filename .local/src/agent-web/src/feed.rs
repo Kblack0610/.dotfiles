@@ -2,7 +2,7 @@
 //! runs, the queue), read by `hub_core::actions`, the same reader as `hub actions` and the
 //! briefing's digest.
 
-use crate::cache::{off, ReadCache};
+use crate::cache::EventCache;
 use axum::extract::{Query, State};
 use axum::Json;
 use hub_core::actions::{self, Action, Gathered};
@@ -10,16 +10,16 @@ use hub_core::table::View;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::broadcast::{self, error::TryRecvError};
-use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 
 use crate::Shared;
 
 const HOURS_DEFAULT: i64 = 24;
 /// A week: the shepherd log's busiest days hold about 1000 entries.
 const HOURS_MAX: i64 = 168;
-/// The event kinds that mean a ledger this section reads was written.
-const KINDS: [&str; 3] = ["actions", "fleet", "queue"];
+/// The event kinds that mean a ledger this section reads was written (`outbox` is also the
+/// ingest record's).
+const KINDS: [&str; 4] = ["actions", "fleet", "queue", "outbox"];
 /// The backstop for a read no event outdated, should the watcher be down.
 const READ_FOR_SECS: u64 = 15;
 
@@ -56,53 +56,28 @@ fn read(span: i64) -> Gathered {
 }
 
 /// The last read, so typing in the search box does not re-read every ledger: `agent-queue list`
-/// alone is half a second under load. The page refreshes on the same events, so a read is kept
-/// only until one of `KINDS` arrives, never for more than `READ_FOR_SECS` past it.
-pub struct Cache {
-    events: Mutex<broadcast::Receiver<String>>,
-    last: ReadCache<Gathered, READ_FOR_SECS, i64>,
-}
-
-/// Whether anything queued says a ledger changed; a missed event might have.
-fn written(events: &mut broadcast::Receiver<String>) -> bool {
-    let mut any = false;
-    loop {
-        match events.try_recv() {
-            Ok(m) => {
-                let v: Value = serde_json::from_str(&m).unwrap_or_default();
-                any |= KINDS.iter().any(|k| v["kind"] == *k);
-            }
-            Err(TryRecvError::Lagged(_)) => any = true,
-            Err(_) => return any,
-        }
-    }
-}
+/// alone is half a second under load.
+pub struct Cache(EventCache<Gathered, READ_FOR_SECS, i64>);
 
 impl Cache {
     pub fn new(events: broadcast::Receiver<String>) -> Self {
-        Cache {
-            events: Mutex::new(events),
-            last: ReadCache::new(),
-        }
+        Cache(EventCache::new(events, &KINDS))
     }
 
-    /// `span` seconds of actions. Events are drained before the read, so one arriving during it
-    /// outdates it; the events lock is held across the read, so the next request sees that one.
+    /// `span` seconds of actions.
     async fn gathered<F>(&self, span: i64, read: F) -> Arc<Gathered>
     where
         F: FnOnce(i64) -> Gathered + Send + 'static,
     {
-        let mut events = self.events.lock().await;
-        if written(&mut events) {
-            self.last.clear().await;
-        }
-        let got = self.last.get(span, off(move || read(span))).await;
-        got.unwrap_or_else(|e| {
-            Arc::new(Gathered {
-                errors: vec![e],
-                ..Gathered::default()
+        self.0
+            .get(span, move || read(span))
+            .await
+            .unwrap_or_else(|e| {
+                Arc::new(Gathered {
+                    errors: vec![e],
+                    ..Gathered::default()
+                })
             })
-        })
     }
 }
 

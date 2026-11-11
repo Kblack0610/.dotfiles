@@ -1,0 +1,5 @@
+# The broad set: fast-tier files every pull request runs, whatever tests/pick.sh picked, because
+# they check the whole tree rather than one script. Keep it small: a file here costs every PR.
+unit/smoke.bats            # the harness itself and every .local/bin link resolving
+unit/claude_rules.bats     # each .claude/rules glob still matches a file
+integ/dotfiles_deploy.bats # stow deploys the tree with no conflict

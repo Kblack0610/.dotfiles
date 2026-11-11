@@ -1,13 +1,24 @@
 # Model sources that are not Claude accounts (claude-acct). One per line:
-#   name kind ref [reserve=N] [max_live=N] [parent=name]
+#   name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low]
 # Kinds: codex (ref: the Codex sessions dir), litellm-key (ref: the key file; its budget from the
 # gateway), litellm-team (ref: a member key file; the team's budget). reserve is the last percent of
 # the window kept for the human (pace.conf RESERVE_PCT when absent), max_live caps the running queue
 # items on the source, parent names the pool a key spends inside: it has room only when the pool does.
+# alert=off: `check pace` (the source-pace watch) never calls the source over pace, though an unread one
+# still trips; dispatch keeps to its room either way. priority is the consumer class the source serves,
+# for a source the gateway does not label (a gateway team or key carries its own metadata.priority): the
+# Costs tab's Consumers calls a priority-must consumer on a priority=low source a MISMATCH.
+# Priority split (2026-11-10): `codex` (dispatch sessions) keeps 30% of the Codex plan back, and
+# `codex-core` reads the same rollouts with reserve=5, so priority-must headless work (agentctl-run
+# SOURCE=codex-core) runs on to 95%. Only codex-core alerts: codex inside its 30% is priority-must
+# work spending as intended, not a red. `core` is the gateway team lazer-core (priority must: home
+# services, comms, knowledge-engine, lazer-eval); `lazer` is lazer-pool (priority low: cl --lazer and
+# the rest). Gateway teams and key priorities: home-config apps/litellm/README.md.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
-codex    codex         ~/.codex/sessions                      reserve=5
-lazer    litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20
-reserve  litellm-key   ~/.local/state/claude-lazer/key        max_live=2 parent=lazer
-glm      litellm-key   ~/.local/state/agentctl/glm.key        parent=lazer
-eval     litellm-key   ~/.local/state/agentctl/lazer-eval.key parent=lazer
+codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
+codex-core codex         ~/.codex/sessions                        reserve=5 priority=must
+core       litellm-team  ~/.local/state/agentctl/lazer-eval.key   reserve=10 alert=off
+lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 alert=off
+reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
+eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off

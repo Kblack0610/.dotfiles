@@ -498,11 +498,10 @@ setup_dotfiles_private() {
     fi
 
     # stow silently skips any overlay path that a pre-existing (public-pointing)
-    # symlink already occupies, so on a folded box it attaches nothing. Repoint the
-    # dead links straight at the overlay - idempotent, only touches broken links.
-    if [ -x "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" ]; then
-        "$HOME/.dotfiles/.local/bin/dotfiles-overlay-link" || true
-    fi
+    # symlink already occupies, so on a folded box it attaches nothing. Link whatever
+    # still resolves to nothing - idempotent, a file in $HOME is never replaced.
+    "$HOME/.dotfiles/.local/bin/dotfiles-deploy" --apply --missing \
+        || log_warning "dotfiles-deploy could not attach every overlay path; run it to see which"
 
     # Again, now that the private half exists: apply_dotfiles ran before the
     # overlay was cloned, so its pass linked only the public skills.

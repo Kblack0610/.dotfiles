@@ -170,21 +170,28 @@ project_field() {
 # to a different app's mobile tag entirely. The registry's `tagGlob` overrides both, for
 # a product whose tag prefix is not its name (the portfolio ships `portfolio-v*`).
 project_release_tag() {
-  local proj="$1" repo lib glob
-  repo="$(project_repo_path "$proj")"
-  [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-
-  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
-  [ -f "$lib" ] || return 0
-  # shellcheck source=/dev/null
-  . "$lib" 2>/dev/null || return 0
-
-  glob="$(project_field "$proj" tagGlob)"
-  if [ "$(project_repo_name "$proj")" = "$proj" ]; then
-    git_latest_tag "$repo" "$proj" "$glob"
+  project_tag_scope "$1" || return 0
+  if [ "$_PTS_SCOPED" = 0 ]; then
+    git_latest_tag "$_PTS_REPO" "$1" "$_PTS_GLOB"
   else
-    git_product_tag "$repo" "$proj" "$glob"
+    git_product_tag "$_PTS_REPO" "$1" "$_PTS_GLOB"
   fi
+}
+
+# project_tag_scope <project> -> sets _PTS_REPO, _PTS_SCOPED (0: the project IS its repo, 1: a
+# product inside one) and _PTS_GLOB (the registry's tagGlob), and loads git-release.sh. Returns
+# 1 when the project has no checkout or the library is missing. The one place that decides which
+# tag family a project owns, for the newest tag and for the list.
+project_tag_scope() {
+  local lib
+  _PTS_REPO="$(project_repo_path "$1")"
+  [ -n "$_PTS_REPO" ] && [ -d "$_PTS_REPO/.git" ] || return 1
+  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
+  [ -f "$lib" ] || return 1
+  # shellcheck source=/dev/null
+  . "$lib" 2>/dev/null || return 1
+  _PTS_GLOB="$(project_field "$1" tagGlob)"
+  if [ "$(project_repo_name "$1")" = "$1" ]; then _PTS_SCOPED=0; else _PTS_SCOPED=1; fi
 }
 
 # project_release_version <project> -> `v1.11.0`, or "" if it ships nothing.
@@ -208,14 +215,25 @@ project_release_tag() {
 # Prints the bare VERSION, not the tag: callers want `v1.11.0`, not `<app>-v1.11.0`.
 project_release_version() {
   local tag
+  project_tag_scope "$1" || return 0   # loads git_tag_version here, not in project_release_tag's subshell
   tag="$(project_release_tag "$1")"
   [ -n "$tag" ] || return 0
-  # Tag -> bare version, for BOTH tag shapes. `##*-v` strips a product prefix
-  # (`shipper-v1.11.0` -> `1.11.0`) but leaves an unprefixed tag untouched
-  # (`v2.3.4` -> `v2.3.4`), so the `#v` normalises that second case instead of
-  # emitting `vv2.3.4`. Caught by the single-product-repo test, not by reading it.
-  local ver="${tag##*-v}"
-  printf 'v%s' "${ver#v}"
+  # Both tag shapes (`shipper-v1.11.0`, `v2.3.4`) give `v<version>`; see git_tag_version.
+  printf 'v%s' "$(git_tag_version "$tag")"
+}
+
+# project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
+#   tag    a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
+#   build  a game with no tag yet: it waits for its own `<game>-vX.Y.Z` family, never the
+#          sheet counter, so a cadence cut cannot mint a number its builds will not carry
+#   sheet  nothing ships a build: the sheet's counter, cut on its stage's cadence
+# [shipped] is project_release_version's answer when the caller has it, so tags are read once.
+project_version_owner() {
+  local shipped
+  if [ $# -ge 2 ]; then shipped="$2"; else shipped="$(project_release_version "$1")"; fi
+  if [ -n "$shipped" ]; then echo tag
+  elif [ "$(project_field "$1" type)" = game ]; then echo build
+  else echo sheet; fi
 }
 
 # project_lab_names <repo> -> every project belonging to that repo, one per line.
@@ -242,8 +260,9 @@ project_lab_names() {
 }
 
 # project_board <repo or project> -> the notes board its rows go on, or "" when it has none: its
-# `owner` (a repo with no sheet of its own: dotfiles -> agent-runtime), else itself when it has a
-# `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
+# `owner` (a repo whose work counts on a project in its checkout: dotfiles -> agent-runtime), else
+# its `board` (a repo with no sheet that files on another's: dotfiles-private -> agent-runtime), else
+# itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
 project_board() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
@@ -251,6 +270,7 @@ project_board() {
     (.trackers // {}) as $t
     | (if ($t[$n] | type) == "object" then $t[$n] else {} end) as $own
     | if ($own.owner // "") != "" then $own.owner
+      elif ($own.board // "") != "" then $own.board
       elif ($own.lab // "") != "" then $n
       else [$t | to_entries[] | select(.value | type == "object")
             | select(.value.repo == $n and (.value.lab // "") != "") | .key][0] // empty end

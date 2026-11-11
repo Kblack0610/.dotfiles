@@ -5,6 +5,11 @@ metadata:
   category: ops
   tags: [git, github, pull-requests, ci]
   reviewed: "2026-11-03"
+  replaces:
+    - match: '(?:^|[;&|(){}\s])gh\s+run\s+watch(?=[;&|(){}\s]|$)'
+      use: "a PR: `agent-land <N>` waits for its checks (start it with run_in_background). Any other run: `gh-run-wait <run-id> [label]` with run_in_background; do not write your own waiter"
+      mode: deny
+      why: gh run watch polls the GitHub API for the whole wait and blocks the turn (337 playground sessions tried it in 30 days to 2026-11-09)
 ---
 
 # gh-workflows
@@ -44,7 +49,7 @@ EOF
 
 # Comment, merge, close
 gh pr comment <number> --body "..."
-gh pr merge <number> --squash --delete-branch --match-head-commit <sha>
+agent-land <number>   # merge: never gh pr merge, which forge-guard denies; agent-land records the PR on its queue item
 gh pr close <number>
 ```
 
@@ -68,7 +73,7 @@ gh run list -L 10
 gh run list --workflow=ci.yml --branch=main
 gh run view <run-id>
 gh run view <run-id> --log-failed
-gh-run-wait <run-id> [label]          # wait on the run in the background; exit code is its result (gh run watch is denied by block-poll)
+gh-run-wait <run-id> [label]          # wait on the run in the background; exit code is its result (gh run watch is denied: this skill's metadata.replaces)
 gh pr checks <number> --watch --fail-fast
 gh run cancel <run-id>
 

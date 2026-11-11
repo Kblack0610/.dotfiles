@@ -128,3 +128,19 @@ io.stdout:write(on("~/.notes/a.md", "markdown"), " ", on("/tmp/repo/README.md", 
   on("~/.notes/c.lua", "lua"))'
   assert_output 'true false false'
 }
+
+# An async lsp that returns no items emits twice, and blink then starts its buffer fallback twice;
+# the dropped first run never resolves, so `#` typed after a space opened no menu at all.
+@test "the lsp provider has no fallback in the vault, and falls back to buffer elsewhere" {
+  run lua_run '
+local spec = dofile("'"$REPO_ROOT"'/.config/nvim/lua/kennethblack/plugins/blink.lua")
+local fallbacks = spec[1].opts.sources.providers.lsp.fallbacks
+local function on(name, ft)
+  vim.cmd("enew!")
+  vim.api.nvim_buf_set_name(0, vim.fn.expand(name))
+  vim.bo.filetype = ft
+  return table.concat(fallbacks(), ",")
+end
+io.stdout:write("[", on("~/.notes/a.md", "markdown"), "] [", on("/tmp/repo/README.md", "markdown"), "]")'
+  assert_output '[] [buffer]'
+}

@@ -7,10 +7,19 @@
 #                                         exit 1 naming each drift past grace (default 30), a
 #                                         missing or tripped telemetry watch, a floating prod
 #                                         target, or a snapshot older than max-age (default 60)
+#   release-state changelog [--json|--list] <project> [tag]
+#                                         what a tag shipped (default: the newest release): its
+#                                         CHANGELOG.md section, else the merged PRs since the
+#                                         release before it; --list names every tag to pick from
+#   release-state released <project> <sha>...
+#                                         per commit, one JSON line: the first tag of the project's
+#                                         line that holds it and when that tag was made
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
-# fetched remote branch, live from the cluster or health endpoint, and a failed probe says
-# `unknown`, never the last good value. Schema and statuses: docs/operations/release-state.md.
+# fetched remote branch or, for a store channel, the newest recorded deploy; live from the
+# cluster, health endpoint or store API; deploy history from the GitHub Deployments named after
+# the target id, and a failed probe says `unknown`, never the last good value. Schema and
+# statuses: docs/operations/release-state.md.
 set -uo pipefail
 
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
@@ -18,6 +27,10 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$PROJECT_NAME_LIB"
 # shellcheck source=../lib/agent-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# shellcheck source=../lib/store-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
@@ -27,6 +40,30 @@ WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
 KUBECTL="${KUBECTL:-kubectl}"
 # Timeout guard on every external call (git fetch, kubectl, curl), in seconds.
 PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
+# Most merged-PR lines a tag's changelog lists when it has no CHANGELOG.md section.
+CHANGELOG_LINES=100
+# How many deployments a row keeps: what the opened row lists, and how far back PREV can look.
+DEPLOY_HISTORY=10
+# The read-only store credentials: one rbw entry per store, each a single line. Never the release
+# keys the upload workflows use. Formats: docs/operations/release-state.md, "Store credentials".
+RBW_STEAM=release_state_steam
+RBW_PLAY=release_state_play
+RBW_ASC=release_state_asc
+# How far back GetAppBuilds looks for the build a branch is on.
+STEAM_BUILDS=50
+STEAM_API=https://partner.steam-api.com/ISteamApps
+PLAY_API=https://androidpublisher.googleapis.com/androidpublisher/v3
+ASC_API=https://api.appstoreconnect.apple.com/v1
+# Set once by store_credentials, before the probes' subshells: the value, or why there is none.
+STEAM_KEY="" STEAM_WHY="" PLAY_TOKEN="" PLAY_WHY="" ASC_JWT="" ASC_WHY=""
+# One call per target. The REST list has no status on it, which would be one more call per row.
+DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) {
+    deployments(environments: [$env], first: $n, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes { createdAt description commitOid ref { name } latestStatus { state logUrl createdAt } }
+    }
+  }
+}'
 
 # REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
 # the first die keeps it, so a caller's die does not hide the inner one that caused it.
@@ -35,7 +72,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -82,9 +119,18 @@ default_branch() {
   printf '%s' "${b#origin/}"
 }
 
-# pinned <project> <target-json> -> {value, source, error}
+# pinned <project> <target-json> <deploys-json> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" repo path key image branch dir blob v=""
+  local proj="$1" t="$2" d="$3" repo path key image branch dir blob v=""
+  if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
+    # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
+    # newest successful upload said it put there. Source none is a channel nothing has recorded.
+    jq -c 'if .error then {value: null, source: "github deployments", error: "deploy history unreadable"}
+           else ([.history[] | select(.state == "ok")][0].version) as $v
+             | if $v then {value: $v, source: "github deployments"} else {value: null, source: "none"} end
+           end' <<<"$d"
+    return
+  fi
   if [ "$(jq -r '.pinned.tag // false' <<<"$t")" = true ]; then
     v="$(project_release_tag "$proj" 2>/dev/null || true)"
     if [ -n "$v" ]; then
@@ -129,9 +175,104 @@ pinned() {
   fi
 }
 
+play_credentials() {
+  store_google_token "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher
+  PLAY_TOKEN="$STORE_TOKEN" PLAY_WHY="$STORE_WHY"
+}
+
+asc_credentials() {
+  store_asc_jwt "$RBW_ASC"
+  ASC_JWT="$STORE_TOKEN" ASC_WHY="$STORE_WHY"
+}
+
+# store_credentials <targets> -> read once what these targets need. Runs in the main shell because
+# each probe is a subshell.
+store_credentials() {
+  local kinds
+  kinds="$(jq -r '.target.live | objects | keys[]' <<<"$1" 2>/dev/null | sort -u)"
+  grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
+  if ! store_rbw_ready; then
+    STEAM_WHY="$STORE_WHY" PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
+    return 0
+  fi
+  if grep -qx steam <<<"$kinds"; then
+    STEAM_KEY="$(rbw_read "$RBW_STEAM")"
+    [ -n "$STEAM_KEY" ] || STEAM_WHY="no rbw entry $RBW_STEAM"
+  fi
+  grep -qx play <<<"$kinds" && play_credentials
+  grep -qx testflight <<<"$kinds" && asc_credentials
+  return 0
+}
+
+probe_failed() { jq -nc --arg s "$1" --arg e "$2" '{value: null, source: $s, error: $e}'; }
+
+# bare_version <text> -> x.y.z when the text is only a version, optionally with "(build)"; a
+# store that keeps no tag can be compared on that much and no more.
+bare_version() { sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)( \(.*\))?$/\1/p' <<<"$1"; }
+
+# live_steam: the branch's BuildID, named by the tag stage.sh writes in that build's description
+# ("<build> <tag> <sha>"). A build with no such description shows its BuildID.
+live_steam() {
+  local t="$1" app branch src betas builds bid desc v
+  app="$(jq -r '.live.steam.app' <<<"$t")"
+  branch="$(jq -r '.live.steam.branch' <<<"$t")"
+  src="steam $app/$branch"
+  [ -n "$STEAM_KEY" ] || { probe_failed "$src" "$STEAM_WHY"; return; }
+  betas="$(store_get "$STEAM_API/GetAppBetas/v1/?key=$STEAM_KEY&appid=$app")" \
+    || { probe_failed "$src" "steam GetAppBetas failed"; return; }
+  bid="$(jq -r --arg b "$branch" '.response.betas[$b].BuildID // empty' <<<"$betas" 2>/dev/null)"
+  [ -n "$bid" ] || { probe_failed "$src" "no branch $branch on the app"; return; }
+  builds="$(store_get "$STEAM_API/GetAppBuilds/v1/?key=$STEAM_KEY&appid=$app&count=$STEAM_BUILDS")" \
+    || { probe_failed "$src" "steam GetAppBuilds failed"; return; }
+  jq -e --arg b "$bid" '.response.builds | has($b)' <<<"$builds" >/dev/null 2>&1 \
+    || { probe_failed "$src" "build $bid is not in the last $STEAM_BUILDS builds"; return; }
+  desc="$(jq -r --arg b "$bid" '.response.builds[$b].Description // empty' <<<"$builds")"
+  v="$(tr ' ' '\n' <<<"$desc" | grep -E '^v?[0-9]+\.' | head -1)"
+  jq -nc --arg v "${v:-$bid}" --arg b "$bid" --arg s "$src" '{value: $v, build: $b, source: $s}'
+}
+
+# live_play: the release on the track with the highest version code that users can get. Reads the
+# edit-free tracks.releases list: an open edit could invalidate an upload running at the same time.
+live_play() {
+  local t="$1" pkg track src body rel v
+  pkg="$(jq -r '.live.play.package' <<<"$t")"
+  track="$(jq -r '.live.play.track' <<<"$t")"
+  src="play $pkg/$track"
+  [ -n "$PLAY_TOKEN" ] || { probe_failed "$src" "$PLAY_WHY"; return; }
+  body="$(store_get "$PLAY_API/applications/$pkg/tracks/$track/releases" "$PLAY_TOKEN")" \
+    || { probe_failed "$src" "play releases request failed"; return; }
+  rel="$(jq -c '[.releases[]? | select(.releaseLifecycleState == "RELEASE_LIFECYCLE_STATE_PUBLISHED")
+    | . + {code: ([.activeArtifacts[]?.versionCode | tonumber] | max)}] | max_by(.code) // empty' <<<"$body" 2>/dev/null)"
+  [ -n "$rel" ] || { probe_failed "$src" "nothing published on the track"; return; }
+  v="$(jq -r '.releaseName // empty' <<<"$rel")"
+  [ -n "$v" ] || { probe_failed "$src" "published release has no name"; return; }
+  jq -nc --arg v "$v" --arg b "$(jq -r '.code // empty' <<<"$rel")" --arg s "$src" --arg ver "$(bare_version "$v")" \
+    '{value: $v, build: $b, source: $s} + (if $ver == "" then {} else {version: $ver} end)'
+}
+
+# live_testflight: the newest processed iOS build. TestFlight keeps no tag, only the marketing
+# version and a build number.
+live_testflight() {
+  local t="$1" app src body ver build
+  app="$(jq -r '.live.testflight.app' <<<"$t")"
+  src="testflight $app"
+  [ -n "$ASC_JWT" ] || { probe_failed "$src" "$ASC_WHY"; return; }
+  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_JWT")" \
+    || { probe_failed "$src" "app store connect request failed"; return; }
+  build="$(jq -r '.data[0].attributes.version // empty' <<<"$body" 2>/dev/null)"
+  ver="$(jq -r '[.included[]? | select(.type == "preReleaseVersions")][0].attributes.version // empty' <<<"$body" 2>/dev/null)"
+  [ -n "$build" ] && [ -n "$ver" ] || { probe_failed "$src" "no processed build"; return; }
+  jq -nc --arg v "$ver ($build)" --arg ver "$ver" --arg b "$build" --arg s "$src" '{value: $v, version: $ver, build: $b, source: $s}'
+}
+
 # live <target-json> -> {value, sha, source, error}
 live() {
   local t="$1" ctx ns dep ctr img url field body v
+  case "$(jq -r '.live | objects | keys[0] // empty' <<<"$t" 2>/dev/null)" in
+    steam) live_steam "$t"; return ;;
+    play) live_play "$t"; return ;;
+    testflight) live_testflight "$t"; return ;;
+  esac
   if jq -e '.live.k8s' <<<"$t" >/dev/null 2>&1; then
     ctx="$(jq -r '.live.k8s.context' <<<"$t")"
     ns="$(jq -r '.live.k8s.namespace' <<<"$t")"
@@ -181,6 +322,52 @@ sha_is_tag() {
   [[ "$tsha" == "$3"* ]] || [[ "$3" == "$tsha"* ]]
 }
 
+# deploys_none <source> [error] -> a channel with no history to show.
+deploys_none() {
+  jq -nc --arg s "$1" --arg e "${2:-}" '{source: $s, error: ($e | if . == "" then null else . end), history: [], prev: null, last: null}'
+}
+
+# deploys <project> <target-json> -> {source, error, history, prev, last}.
+# The workflow that deploys a target records a GitHub Deployment whose environment is the target
+# id and whose description is the version. last is the newest finished one, whatever its result;
+# prev is the newest version that succeeded before the one now succeeded.
+deploys() {
+  local proj="$1" t="$2" id slug out read_ok
+  if [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
+    deploys_none none
+    return
+  fi
+  slug="$(origin_repo "$(repo_dir "$proj")" github.com)" || slug=""
+  if [ -z "$slug" ]; then
+    deploys_none none
+    return
+  fi
+  id="$(jq -r '.id' <<<"$t")"
+  if ! out="$(timeout "$PROBE_TIMEOUT" gh api graphql -f query="$DEPLOY_QUERY" -f owner="${slug%%/*}" -f name="${slug##*/}" \
+      -f env="$id" -F n="$DEPLOY_HISTORY" </dev/null 2>/dev/null)"; then
+    deploys_none "$slug" "gh api failed"
+    return
+  fi
+  # Captured, so a jq that dies part way never leaves a half answer beside the error row.
+  if ! read_ok="$(jq -c --arg s "$slug" '
+    def blank: if . == "" then null else . end;
+    def word: ascii_downcase | if . == "success" then "ok" elif . == "failure" or . == "error" then "fail" else . end;
+    [.data.repository.deployments.nodes[] | {
+      version: ((.description | blank) // .ref.name // .commitOid[0:8]),
+      state: ((.latestStatus.state // "pending") | word),
+      at: ((.latestStatus.createdAt // .createdAt) | fromdate),
+      url: (.latestStatus.logUrl | blank)
+    }] as $h
+    | [$h[] | select(.state == "ok")] as $ok
+    | {source: $s, error: null, history: $h,
+       prev: ([$ok[] | select(.version != $ok[0].version)][0].version),
+       last: ([$h[] | select(.state == "ok" or .state == "fail")][0])}' <<<"$out" 2>/dev/null)" || [ -z "$read_ok" ]; then
+    deploys_none "$slug" "unreadable answer"
+    return
+  fi
+  printf '%s' "$read_ok"
+}
+
 # telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
 telemetry() {
   local t="$1" w st since out="[]"
@@ -201,19 +388,25 @@ telemetry() {
 
 # row <project> <target-json> <previous-state-json> -> one snapshot row
 row() {
-  local proj="$1" t="$2" prev="$3" p l status tel id tag drift_since="" now
+  local proj="$1" t="$2" prev="$3" p l d status tel id tag drift_since="" now
   id="$(jq -r '.id' <<<"$t")"
-  p="$(pinned "$proj" "$t")"
+  d="$(deploys "$proj" "$t")"
+  p="$(pinned "$proj" "$t" "$d")"
   l="$(live "$t")"
   tel="$(telemetry "$t")"
   tag="$(project_release_tag "$proj" 2>/dev/null || true)"
   now="$(now_epoch)"
-  local pv lv lsrc
+  local pv lv lsrc psrc lver
   pv="$(jq -r '.value // empty' <<<"$p")"
+  psrc="$(jq -r '.source // empty' <<<"$p")"
+  lver="$(jq -r '.version // empty' <<<"$l")"
   lv="$(jq -r '.value // empty' <<<"$l")"
   lsrc="$(jq -r '.source // empty' <<<"$l")"
   if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
     status=unreleased
+  elif [ -z "$pv" ] && [ "$psrc" = none ] && [ -n "$lv" ]; then
+    # A store channel no upload has been recorded for: live is known, there is nothing to hold it to.
+    status=released
   elif [ -z "$pv" ] || { [ "$lsrc" != none ] && [ -z "$lv" ]; }; then
     status=unknown
   elif [ "$pv" = latest ] || [ "$lv" = latest ]; then
@@ -224,6 +417,8 @@ row() {
     status=ok
   elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
     status=ok
+  elif [ -n "$lver" ] && [ "$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' <<<"$pv" | head -1)" = "$lver" ]; then
+    status=ok
   else
     status=drift
     # Carry the start of a drift across refreshes, so check can tell a rollout in progress
@@ -232,11 +427,11 @@ row() {
       '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv)) | .[0].drift_since // empty' <<<"$prev")"
     drift_since="${drift_since:-$now}"
   fi
-  jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson tel "$tel" \
+  jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson d "$d" --argjson tel "$tel" \
     --arg status "$status" --arg tag "$tag" --arg ds "$drift_since" --argjson now "$now" '{
       project: $proj, id: $t.id, channel: ($t.channel // "release"), where: ($t.where // null),
       implicit: ($t.implicit // false), tag: (if $tag == "" then null else $tag end),
-      pinned: $p, live: $l, status: $status,
+      pinned: $p, live: $l, deploys: $d, status: $status,
       drift_since: (if $ds == "" then null else ($ds | tonumber) end),
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
@@ -252,6 +447,7 @@ refresh_snapshot() {
   # Read before the loop: a die inside a process substitution would only end that subshell,
   # and a full refresh would then overwrite the snapshot with zero rows.
   targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
+  store_credentials "$targets"
   tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -317,10 +513,13 @@ cmd_show() {
   jq -r --arg p "$proj" --argjson rank "$RANK" '
     def v(x): (x.value // (if x.source == "none" or x.error == "no release tag" then "-" else "?" end));
     def tel: (.telemetry | if length == 0 then "-" else "\(map(select(.state == "OK")) | length)/\(length)" end);
-    (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","TELEMETRY"] | @tsv),
+    def prev: (.deploys // {}) | if .error then "?" else (.prev // "-") end;
+    def last: (.deploys // {}) | if .error then "?" elif .last == null then "-"
+      else "\(.last.at | strflocaltime("%m-%d %H:%M")) \(.last.state)" end;
+    (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","PREV","LAST DEPLOY","TELEMETRY"] | @tsv),
     (.rows | map(select($p == "" or .project == $p))
       | sort_by(($rank[.status] // 9), .project, .id)[]
-      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, tel] | @tsv)
+      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, prev, last, tel] | @tsv)
   ' "$STATE" | column -t -s $'\t'
 }
 
@@ -352,7 +551,109 @@ cmd_check() {
   return 1
 }
 
+# changelog_section <repo> <ref> <file> <version> -> the body of <version>'s section of <file> as
+# it stands at <ref>, or nothing. A section is a heading (any level, `[1.2.3]`, `v1.2.3` or bare,
+# then a space, bracket, paren, colon or the end) up to the next heading of its level or higher,
+# so its `### Added` parts stay in. Headings inside a code fence are not headings.
+changelog_section() {
+  git -C "$1" show "$2:$3" 2>/dev/null | awk -v ver="$4" '
+    /^(```|~~~)/ { fence = !fence }
+    !fence && /^#+[ \t]/ {
+      match($0, /^#+/); lvl = RLENGTH
+      h = substr($0, lvl + 1); sub(/^[ \t]+/, "", h); sub(/^\[/, "", h); sub(/^[vV]/, "", h)
+      if (on && lvl <= top) exit
+      if (!on && index(h, ver) == 1) {
+        c = substr(h, length(ver) + 1, 1)
+        if (c == "" || index("] ),:(\t", c) > 0) { on = 1; top = lvl; next }
+      }
+    }
+    on {
+      if (!seen && $0 ~ /^[ \t]*$/) next
+      seen = 1; buf[++n] = $0
+      if ($0 !~ /^[ \t]*$/) last = n
+    }
+    END { for (i = 1; i <= last; i++) print buf[i] }'
+}
+
+cmd_changelog() {
+  local json=0 list=0 proj="" tag="" repo path branch all prev ver text="" source="" range ref file root_changelog
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --list) list=1; shift ;;
+      -h|--help) usage 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) if [ -z "$proj" ]; then proj="$1"; elif [ -z "$tag" ]; then tag="$1"; else die "too many arguments"; fi; shift ;;
+    esac
+  done
+  [ -n "$proj" ] || usage
+  project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
+  repo="$_PTS_REPO"
+  all="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
+  [ -n "$all" ] || die "$proj has no release tags"
+  if [ "$list" = 1 ]; then printf '%s\n' "$all"; return; fi
+  # The newest release: the first tag that is not a prerelease, else the newest of all.
+  [ -n "$tag" ] || tag="$(grep -vE -- "$_GR_PRERELEASE" <<<"$all" | head -1 || true)"
+  [ -n "$tag" ] || tag="$(head -1 <<<"$all")"
+  # Only a tag of this project's line: the argument reaches git, so it is never taken as typed.
+  grep -Fxq -- "$tag" <<<"$all" || die "$tag is not a release tag of $proj"
+  prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB" "$tag")"
+  path="$(project_field "$proj" path)"
+  branch="$(project_field "$proj" branch)"
+  [ -n "$branch" ] || branch="$(default_branch "$repo")"
+  ver="$(git_tag_version "$tag")"
+  # A root CHANGELOG.md is this project's own only when it is its repo or has no folder of its own:
+  # in a monorepo it may hold another product's `## 1.1.0`.
+  root_changelog=""
+  { [ -z "$path" ] || [ "$_PTS_SCOPED" = 0 ]; } && root_changelog=1
+  # The tag's own file first; a project that writes its entry after tagging has it on the branch.
+  for ref in "$tag" ${branch:+"origin/$branch"}; do
+    for file in ${path:+"$path/CHANGELOG.md"} ${root_changelog:+CHANGELOG.md}; do
+      text="$(changelog_section "$repo" "$ref" "$file" "$ver")"
+      [ -n "$text" ] && { source="CHANGELOG.md"; break 2; }
+    done
+  done
+  if [ -z "$source" ]; then
+    source="merged PRs"
+    text="$(git_tag_changes "$repo" "$prev" "$tag" "$path" "$((CHANGELOG_LINES + 1))" | sed 's/^/- /')"
+    if [ "$(wc -l <<<"$text")" -gt "$CHANGELOG_LINES" ]; then
+      text="$(head -n "$CHANGELOG_LINES" <<<"$text")"$'\n'"- ... and older PRs, not shown"
+    fi
+  fi
+  range="${prev:+$prev..}$tag"
+  if [ "$json" = 1 ]; then
+    jq -n --arg project "$proj" --arg tag "$tag" --arg prev "$prev" --arg source "$source" \
+      --arg range "$range" --arg text "$text" --arg all "$all" '{
+        project: $project, tag: $tag, prev: (if $prev == "" then null else $prev end),
+        source: $source, range: $range, text: $text, tags: ($all | split("\n"))}'
+  else
+    printf '%s %s (%s, from %s)\n\n%s\n' "$proj" "$tag" "$range" "$source" "${text:-no merged PRs in $range}"
+  fi
+}
+
+# released <project> <sha>... -> one JSON object a commit: {sha, tag, at}, the oldest tag of the
+# project's line that contains it (git_first_tag) and its creatordate epoch, a lower bound for a
+# lightweight tag; tag and at null when no tag holds it yet. A commit the checkout lacks carries an error instead: an unfetched merge is
+# unknown, never unreleased.
+cmd_released() {
+  local proj="${1:-}" repo sha hit err
+  [ -n "$proj" ] && [ $# -gt 1 ] || usage
+  shift
+  project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
+  repo="$_PTS_REPO"
+  for sha in "$@"; do
+    hit="" err=""
+    if ! [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then err="not a commit sha"
+    elif ! git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null; then err="commit not in the checkout"
+    else hit="$(git_first_tag "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB" "$sha")" || err="tag lookup failed"; fi
+    jq -nc --arg s "$sha" --arg h "$hit" --arg e "$err" '($h | split(" ")) as $f
+      | {sha: $s, tag: ($f[0] // null), at: ($f[1] // "" | tonumber? // null)} + (if $e == "" then {} else {error: $e} end)'
+  done
+}
+
 case "${1:-}" in
+  changelog) shift; cmd_changelog "$@" ;;
+  released) shift; cmd_released "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   show) shift; cmd_show "$@" ;;
   check) shift; cmd_check "$@" ;;

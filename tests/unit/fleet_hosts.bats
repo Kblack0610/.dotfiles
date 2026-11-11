@@ -3,6 +3,8 @@
 # a worker, and the forwarding that keeps a remote session's queue and ask writes on the state host.
 # ssh is a stub that logs its arguments; nothing leaves the sandbox.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -133,10 +135,13 @@ EOF
   assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
-  # `add` reads its task from stdin, so that verb keeps it.
+  # `add` and `retask` read a task from stdin, so those verbs keep it.
   run bash -c 'echo "the task" | "$0" add --project game' "$REPO_ROOT/.local/bin/agent-queue"
   assert_success
   assert_called 'agent-queue add --project game  <<the task'
+  run bash -c 'echo "the fix" | "$0" retask fix-menu' "$REPO_ROOT/.local/bin/agent-queue"
+  assert_success
+  assert_called 'agent-queue retask fix-menu  <<the fix'
 }
 
 @test "an unreachable state host is named, nothing is written here, and ssh's 255 comes back" {
@@ -159,4 +164,52 @@ EOF
   run "$REPO_ROOT/.local/src/tmux/worktree.sh" new --host hp-victus -c /abs/game
   assert_failure
   assert_output --partial 'could not open a session on hp-victus'
+}
+
+# home_config_fixture: a forge (bare repo) whose master holds a roster with razer-laptop placed, and
+# a checkout ($HC) cloned before that commit, so its tree and remote-tracking ref both lag.
+home_config_fixture() {
+  HC="$SANDBOX/home-config"
+  local up="$SANDBOX/up.git" pusher="$SANDBOX/pusher" g=(-c user.name=t -c user.email=t@t)
+  git init -q --bare -b master "$up"
+  git init -q -b master "$pusher"
+  git -C "$pusher" remote add forgejo "$up"
+  mkdir -p "$pusher/ansible"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts: {}\n' > "$pusher/ansible/inventory.yml"
+  git -C "$pusher" add ansible
+  git -C "$pusher" "${g[@]}" commit -qm one
+  git -C "$pusher" push -q forgejo master
+  git clone -q -o forgejo "$up" "$HC"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n          fleet_place: true\n' > "$pusher/ansible/inventory.yml"
+  git -C "$pusher" "${g[@]}" commit -qam two
+  git -C "$pusher" push -q forgejo master
+  unset FLEET_INVENTORY FLEET_HOSTS_JSON
+  export HC
+  project_repo_path() { printf '%s' "$HC"; }
+}
+
+@test "the roster is home-config's mainline as last fetched, never its working tree, whatever branch it is on" {
+  home_config_fixture
+  git -C "$HC" checkout -q -b feature
+  run fleet_hosts
+  assert_success
+  assert_output ''
+  run fleet_roster_fetch
+  assert_success
+  assert_equal "$(fleet_host razer-laptop | jq -r '"\(.dest) \(.place)"')" '192.0.2.26 true'
+  assert_equal "$(fleet_inventory)" "$HC forgejo/master:ansible/inventory.yml"
+  grep -q 'hosts: {}' "$HC/ansible/inventory.yml"
+}
+
+@test "a checkout with no tracked mainline, or a fetch that fails, is said on stderr; no roster comes from the tree" {
+  home_config_fixture
+  git -C "$HC" remote set-url forgejo "$SANDBOX/gone.git"
+  run --separate-stderr fleet_roster_fetch
+  assert_failure 1
+  assert_equal "$stderr" "fleet-hosts: fetching forgejo/master in $HC failed, so the roster is as last fetched"
+  git -C "$HC" branch -q --unset-upstream master
+  run --separate-stderr fleet_hosts
+  assert_success
+  assert_output ''
+  assert_equal "$stderr" "fleet-hosts: $HC has no main or master tracking a remote, so the fleet roster reads as empty"
 }

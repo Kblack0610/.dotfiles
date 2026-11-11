@@ -39,6 +39,8 @@ impl Row for Proposal {
     const COLUMNS: &'static [&'static str] = &["stream", "project", "proposal", "created", "verb"];
     const STATES: &'static [&'static str] = &["all", "queue", "row", "mem0", "none"];
     const FACETS: &'static [&'static str] = &["stream", "project"];
+    const LEAD: &'static str = "proposal";
+    const GLANCE: &'static [&'static str] = &["stream", "project"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());

@@ -58,6 +58,11 @@ pub fn cap(s: &str, max: usize) -> String {
     format!("{}...", cut.trim_end_matches([',', ';', ':']))
 }
 
+/// `MM-DD` of a `YYYY-MM-DD`: a day beside a row, where the year is plain.
+pub fn short_day(d: &str) -> &str {
+    d.get(5..).unwrap_or(d)
+}
+
 /// An age at a glance: minutes, then hours, then days (the phone widget and the needs page).
 pub fn age(secs: i64) -> String {
     match secs.max(0) {
