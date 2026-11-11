@@ -35,10 +35,11 @@ pub struct AlertsView {
 }
 
 /// The row a selection stands for, so a re-read keeps the same alert selected.
-pub type RowId = (String, String);
+pub type RowId = (String, String, String);
 
+/// Source, what and where: one Alertmanager rule fires once per place, under one summary.
 pub fn row_id(a: &Alert) -> RowId {
-    (a.source.clone(), a.what.clone())
+    (a.source.clone(), a.what.clone(), a.place.clone())
 }
 
 fn status(l: Level) -> Option<f64> {
@@ -89,7 +90,7 @@ impl AlertsView {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let (style, word) = match a.level {
             Level::Red => (p.status(Some(2.0)).0, "FIRING"),
-            Level::Warn => (p.status(Some(1.0)).0, "ERRORS ONLY"),
+            Level::Warn => (p.status(Some(1.0)).0, "WARN"),
             Level::Ok => (p.status(Some(0.0)).0, "ALL CLEAR"),
             Level::Nodata => (p.status(None).0, "NO DATA"),
         };
@@ -146,8 +147,8 @@ impl AlertsView {
             heading(
                 "FIRING",
                 format!(
-                    "  {}: {} trip, {} error, {} no owner",
-                    c.firing, c.tripped, c.errors, c.no_owner
+                    "  {}: {} trip, {} error, {} no owner, {} alertmanager",
+                    c.firing, c.tripped, c.errors, c.no_owner, c.alertmanager
                 ),
                 p,
             ),
@@ -634,10 +635,11 @@ pub(crate) mod tests {
     fn a_reselect_follows_the_row_after_a_reread() {
         let a = sample();
         let mut v = AlertsView::default();
-        v.reselect(&a, Some(("sentinel".into(), "dream".into())));
+        let dream = a.firing.iter().find(|r| r.what == "dream").map(row_id);
+        v.reselect(&a, dream);
         assert_eq!(v.selected(&a).map(|r| r.what.as_str()), Some("dream"));
         v.table.sel = 99;
-        v.reselect(&a, Some(("sentinel".into(), "gone".into())));
+        v.reselect(&a, Some(("sentinel".into(), "gone".into(), String::new())));
         assert_eq!(v.table.sel, v.shown(&a).len() - 1);
     }
 
