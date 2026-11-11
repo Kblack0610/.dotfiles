@@ -32,11 +32,11 @@
 # (so_opencode_rows) or Codex's rollout files (so_codex_rows).
 # `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
-# A Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) is looked up through that host's
-# API (so_forgejo_pr_list), only on a host SO_FORGEJO_HOSTS lists (the private runner conf sets
-# it). A failed read holds back the sessions naming that repo until a later run reads it; a host
-# not listed leaves its PRs UNKNOWN. The report says which.
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_FORGEJO_ENTRY SO_BENCH SO_QUEUE SO_LESSONS_DIR
+# A PR's state, merge and body facts come from the PR store (`schedules-sync prs`, one read per repo
+# per run), a Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) as a GitHub one. A
+# failed Forgejo read holds back the sessions naming that repo until a later run reads it; a repo the
+# store does not list has its claims dropped. The report says which.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SCHEDULES_SYNC SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
 # item's `row:` on its project's roadmap, the item's own `type:` when the row is not there. The first
@@ -62,8 +62,6 @@ SESSIONS="${SO_SESSIONS:-$HOME/.agent/sessions}"
 OUT="${SO_OUT:-$HOME/.agent/outcomes}"
 NOW="${SO_NOW:-$(date +%s)}"
 FINAL_DAYS="${SO_FINAL_DAYS:-7}"
-PR_LIMIT="${SO_PR_LIMIT:-1000}"   # newest N PRs per repo; one paginated call covers them
-GH="${SO_GH:-gh}"
 RBW="${SO_RBW:-rbw}"
 CURL="${SO_CURL:-curl}"
 BENCH="${SO_BENCH:-fleet-bench}"
@@ -84,6 +82,7 @@ SO_VERDICTS="${SO_VERDICTS:-$HOME/.agent/dispatch/verdicts.jsonl}"  # the dispat
 NAME=session-outcomes
 
 LIB_DIR="${SO_LIB_DIR:-$HOME/.local/lib}"
+SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-proof.sh"
@@ -248,35 +247,33 @@ cmd_run() {
     n=$((n + 1))
   done < "$work/due.jsonl"
 
-  # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
-  # what tripped the 403 rate limit. The due sessions' repos, plus every repo with a clone in the
-  # project map, where a PR that names a session link may sit. A Forgejo repo is one paged API read
-  # instead; it is the home cluster, so a failed one holds back only its own sessions.
-  local repo forge_note=""
+  # One PR store read per repo per run (unreadable once 30 minutes stale): the due
+  # sessions' repos, plus every repo with a clone in the project map, where a PR that names a session
+  # link may sit. A due session's GitHub repo the store cannot answer for stalls the run; a Forgejo
+  # one (the home cluster) holds back only its own sessions; a clone's alone is skipped and reported.
+  # A repo the store does not list (a test fixture's o/r in a pr-link or printed URL, or one
+  # day-log-ci lacks) is skipped, its claims are dropped from every line, and the report names it.
+  local repo forge_note="" rc
   so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
-  # A due session's repo that cannot be listed stalls the run; a clone's alone is skipped and reported.
-  # A repo gh cannot resolve while `gh auth status` passes is no repo (a test fixture's o/r in a
-  # pr-link or printed URL): it is skipped, its claims are dropped from every line, and the report
-  # names it. With auth failing the same error is the token's fault, so it stalls like any other.
   { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
     sort -u > "$work/repos.due"
   sort -u "$work/repos.due" <(cut -f1 "$work/clones.tsv") > "$work/repos"
   : > "$work/index.jsonl"; : > "$work/repos.gone"
-  local unlisted=0 list_note="" gh_auth=""
+  local unlisted=0 list_note=""
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
-    if [[ "$repo" == */*/* ]]; then
-      so_forgejo_pr_list "$repo" "$work" "$PR_LIMIT" > "$work/prs.json" || {
-        [ $? = 1 ] && printf '%s\n' "$repo" >> "$work/fj.held"
-        forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
-    elif ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
-        --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err"; then
-      if grep -q 'Could not resolve to a Repository' "$work/gh.err"; then
-        [ -n "$gh_auth" ] || { "$GH" auth status >/dev/null 2>&1 && gh_auth=ok || gh_auth=fail; }
-        [ "$gh_auth" = ok ] && { printf '%s\n' "$repo" >> "$work/repos.gone"; continue; }
+    rc=0; "$SCHEDULES" prs "$repo" > "$work/prs.json" 2>"$work/prs.err" || rc=$?
+    if [ "$rc" = 3 ]; then
+      printf '%s\n' "$repo" >> "$work/repos.gone"; continue
+    elif [ "$rc" != 0 ]; then
+      if [[ "$repo" == */*/* ]]; then
+        printf '%s\n' "$repo" >> "$work/fj.held"
+        forge_note="$forge_note; forgejo: $(head -c 160 "$work/prs.err")"
+      elif grep -qixF -- "$repo" "$work/repos.due"; then
+        die_stalled "PR store read of $repo failed: $(head -c 200 "$work/prs.err")"
+      else
+        unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
       fi
-      grep -qixF -- "$repo" "$work/repos.due" && die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
-      unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
       continue
     fi
     so_pr_index "$FINAL_DAYS" < "$work/prs.json" | jq -c --arg r "$repo" '{($r): .}' >> "$work/index.jsonl" \
@@ -284,7 +281,7 @@ cmd_run() {
   done < "$work/repos"
   jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
   if [ -s "$work/repos.gone" ]; then
-    list_note="$list_note; claims dropped, gh cannot resolve: $(paste -sd, "$work/repos.gone")"
+    list_note="$list_note; claims dropped, not in the PR store: $(paste -sd, "$work/repos.gone")"
   fi
 
   # Session links. A PR whose body names a due session's link joins its prs. A link no local
