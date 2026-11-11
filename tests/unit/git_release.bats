@@ -325,6 +325,11 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_success
   run git_version_ge shipper-v1.11.0 1.11.0
   assert_success
+  # a `-v` inside a suffix is not a product prefix
+  run git_tag_version v1.2.0-vnext
+  assert_output '1.2.0-vnext'
+  run git_tag_version my-vapp-v1.0.0
+  assert_output '1.0.0'
   # NEGATIVE CONTROL: a string compare ranks 1.10.0 below 1.9.3
   run git_version_ge v1.9.3 v1.10.0
   assert_failure
@@ -342,7 +347,7 @@ tag() { git -C "$REPO" tag "$1"; }
   commit a; at 86400 v1.0.0
   run git_tag_at "$REPO" v1.0.0
   assert_output "$(git -C "$REPO" rev-parse HEAD) 86400"
-  TZ=UTC run git_tag_date "$REPO" v1.0.0
+  run git_tag_date "$REPO" v1.0.0
   assert_output '1970-01-02'
   # NEGATIVE CONTROL: a missing tag is empty, never a date
   run git_tag_date "$REPO" v9.9.9

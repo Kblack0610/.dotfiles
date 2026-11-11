@@ -70,17 +70,15 @@
 # the `v` of the version, so a dotted number in a product prefix is not one.
 _GR_PRERELEASE='(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)'
 
-# git_tag_version <tag> -> the bare version. `##*-v` strips a product prefix (`shipper-v1.11.0`
-# -> `1.11.0`) but leaves an unprefixed tag as it is (`v2.3.4`), so the `#v` takes that `v` too
-# instead of leaving `vv2.3.4` behind.
+# git_tag_version <tag> -> the bare version: `shipper-v1.11.0` -> `1.11.0`, `v2.3.4` -> `2.3.4`.
+# Product prefixes come off one `-v` at a time until a digit (or `v` and a digit) leads, so a
+# suffix keeps its own `-v` (`v1.2.0-vnext` -> `1.2.0-vnext`, where a greedy strip left `next`).
 git_tag_version() {
-  local ver="${1##*-v}"
+  local ver="$1"
+  while [[ $ver != [0-9]* && $ver != v[0-9]* && $ver == *-v* ]]; do ver="${ver#*-v}"; done
   printf '%s' "${ver#v}"
 }
 
-# _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
-# families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
-# pattern against the working directory, where an unquoted word would.
 # git_version_ge <a> <b> - true when version <a> is at or above <b>. Either may be a tag
 # (`shipper-v1.11.0`) or a bare version (`v1.11.0`, `1.11.0`); both go through git_tag_version
 # first. The one version compare for shell: every `sort -V | tail -1` comparison was a copy.
@@ -90,17 +88,18 @@ git_version_ge() {
   [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
 }
 
-# git_version_max < lines -> the line with the highest version, as given (`v1.10.0` beats
-# `v1.9.3`). Blank lines are skipped; nothing in, nothing out.
+# git_version_max < versions -> the highest, as given (`v1.10.0` beats `v1.9.3`). Bare versions
+# with or without a leading `v`, one a line; blank lines skipped, nothing in, nothing out.
 git_version_max() {
-  local l best=""
+  local l
   while IFS= read -r l; do
-    [ -n "$l" ] || continue
-    if [ -z "$best" ] || git_version_ge "$l" "$best"; then best="$l"; fi
-  done
-  printf '%s' "$best"
+    [ -n "$l" ] && printf '%s\t%s\n' "${l#v}" "$l"
+  done | sort -V -k1,1 | tail -1 | cut -f2
 }
 
+# _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
+# families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
+# pattern against the working directory, where an unquoted word would.
 _gr_pats() { read -ra _GR_PATS <<<"$1"; }
 
 _gr_highest() {
@@ -325,12 +324,11 @@ git_tag_at() {
     "refs/tags/$2" 2>/dev/null || true
 }
 
-# git_tag_date <repo> <tag> -> the local day git_tag_at dates the tag, YYYY-MM-DD, or "".
+# git_tag_date <repo> <tag> -> the day of git_tag_at's creatordate, in the tag's own timezone,
+# YYYY-MM-DD, or "". git formats it, so no platform `date` is involved.
 git_tag_date() {
-  local at
-  at="$(git_tag_at "$1" "$2")"
-  [ -n "${at#* }" ] && [ "$at" != "${at#* }" ] || return 0
-  date -d "@${at#* }" +%F 2>/dev/null || true
+  [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
+  git -C "$1" for-each-ref --count=1 --format='%(creatordate:short)' "refs/tags/$2" 2>/dev/null || true
 }
 
 # git_tag_changes <repo> <prev> <tag> [pathfilter] [limit] - what <tag> shipped: the merged
