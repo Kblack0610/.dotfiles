@@ -345,6 +345,15 @@ test("a burn row carries the 5h window, when it resets and the day's dollars", (
   assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/, "the control: no figures, no numbers");
 });
 
+test("the burn table ends on hub-core's total row, and has none without one", () => {
+  const total = { live: 39, burn: 4.52, sustain: 1.37, over: true, run_out: null, cost_24h: 42.5 };
+  const h = show(board({ burn: burn({ total }) }));
+  assert.match(h, /<tr class="tot"><td><b>total<\/b><\/td><td>-<\/td><td class="n">39<\/td>/);
+  assert.match(h, /<td class="n warn">4\.52<\/td><td class="n">1\.37<\/td>/, "over its line is amber");
+  assert.match(h, /<td class="n">\$42\.50<\/td><\/tr><\/table>/, "the dollars close the row");
+  assert.doesNotMatch(show(board({ burn: burn() })), /class="tot"/, "the control: no total, no row");
+});
+
 test("the token and Langfuse folds follow the Spend sections, in the Models inner tab", () => {
   run("cost.open = {}");
   const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
@@ -524,7 +533,7 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.doesNotMatch(none, /% of fleet/);
 });
 
-test("spend leads with the 30-day chart and month bars, then the picked day's sessions, and keeps the period rows", async () => {
+test("spend leads with burn per session for the picked day, then the 30-day chart and month bars, and keeps the period rows", async () => {
   const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
   const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
   const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
@@ -544,13 +553,17 @@ test("spend leads with the 30-day chart and month bars, then the picked day's se
   assert.match(days, /data-key="2026-11-08" data-tip="2026-11-08: no figure"><div class="cs"><\/div>/, "a day with no figure is an empty column, never a $0 bar");
   assert.match(days, /height:60%;background:var\(--c1\)"><\/i><i style="height:40%;background:var\(--c-other\)/, "billed under estimated");
   assert.match(h, /By month<\/h3>.*data-key="2026-11"/s);
-  assert.match(h, /Sessions 2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
+  assert.match(h, /id="sec-sessions" open><summary><h2 class="sec">Burn per session <span class="muted">2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
+  assert.ok(h.indexOf("sec-sessions") < h.indexOf("sec-spend"), "burn per session leads Spend, above the charts");
+  const chips = h.slice(h.indexOf('id="sec-sessions"'), h.indexOf('data-id="spend-dq"'));
+  assert.match(chips, /<button class="" data-cv="day" data-cval="2026-11-07">11-07<\/button><button class="on" data-cv="day" data-cval="2026-11-09">11-09<\/button>/, "a chip per day with a figure, the picked one on");
+  assert.doesNotMatch(chips, /2026-11-08/, "a day with no figure has no chip");
   assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
   assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
   assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
   assert.match(h, /<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
   assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
-  assert.ok(h.indexOf("Sessions 2026") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
+  assert.ok(h.indexOf("Burn per session") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
   assert.match(h, /\+3 older/);
   assert.match(h, /2 days in the range have no figure and are not counted/);
@@ -657,15 +670,20 @@ test("a tab button brings back the inner tab that tab last showed; a link withou
   assert.equal(run("st.arg"), "", "a tab with no inner tabs keeps no memory");
 });
 
-test("the Budget inner tab is this month's cash: head, what needs a look, one row per bill, the split", () => {
+test("the Budget inner tab is this month's cash: head, what needs a look, the bills grouped agents, CI, infra, the split", () => {
   const budget = { why: null, month: "Nov, day 11 of 30", spent: "$838", projected: "~$1,304", caps: "$1,445", partial: [], as_of: 1700000000, stale: false,
     needs: ["lazer over its $50 cap ($228), paid by lazer, not in our total"],
-    bills: [
-      { name: "lazer", kind: "litellm", cap: "$50", spent: "$228", month: "$228", note: "over, paid by lazer, not in our total", status: "over" },
-      { name: "max4", kind: "subscription", cap: "$200", spent: "$200", month: "$200", note: "$1,126 list work (6x)", status: "ok" },
+    groups: [
+      { id: "agents", name: "Agents", spent: "$200", month: "~$200", bills: [
+        { name: "lazer", kind: "litellm", cap: "$50", spent: "$228", month: "$228", note: "over, paid by lazer, not in our total", status: "over" },
+        { name: "max4", kind: "subscription", cap: "$200", spent: "$200", month: "$200", note: "$1,126 list work (6x)", status: "ok" },
+      ] },
+      { id: "ci", name: "CI", spent: "$113", month: "~$380", bills: [
+        { name: "aws", kind: "aws", cap: "$600", spent: "$113", month: "$380", note: "AWS's own forecast", status: "ok" },
+      ] },
     ],
+    by_lane: ["Agents: queue $175", "CI: ci $141"],
     by_project: [{ name: "unity-core-playground", usd: "$334" }, { name: "unattributed", usd: "$91" }],
-    by_lane: [{ name: "queue", usd: "$175" }],
     foot: "Cash: what we pay, not list price." };
   assert.equal(ctx.route("#costs/budget").arg, "budget", "the Infra Cloud card's link lands here");
   run("st.arg = 'budget'; st.section = null");
@@ -677,6 +695,9 @@ test("the Budget inner tab is this month's cash: head, what needs a look, one ro
   assert.match(b, /<tr><td class="warn">lazer<\/td><td class="muted">litellm<\/td><td class="n">\$50<\/td><td class="n warn">\$228<\/td>/, "a bill over its cap is amber");
   assert.match(b, /<tr><td class="">max4<\/td>.*<td class="n ">\$200<\/td>/, "an ok bill is not amber");
   assert.match(b, /<b>By project<\/b> unity-core-playground \$334, unattributed \$91/);
+  assert.match(b, /<tr class="allrow"><td>Agents<\/td><td><\/td><td><\/td><td class="n">\$200<\/td>/, "a group heads its bills with our cash");
+  assert.ok(b.indexOf(">Agents<") < b.indexOf(">max4<") && b.indexOf(">max4<") < b.indexOf(">CI<") && b.indexOf(">CI<") < b.indexOf(">aws<"), "each bill sits under its group");
+  assert.match(b, /<b>By lane<\/b> Agents: queue \$175, CI: ci \$141/);
   assert.match(b, /<th data-role="lead">bill<\/th>/, "the table folds to a phone row");
   assert.doesNotMatch(b, /of \$\d[\d,]*\/mo/, "no list price shown as a share of a fee");
   assert.match(show(board({ budget: { ...budget, stale: true } })), /class="warn">stale, as of /);
