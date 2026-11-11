@@ -1449,6 +1449,15 @@ EOF
   assert_output "first -> urgent"
   run "$AQ" bump second high
   assert_output "second -> high"
+  # An after: that released leaves a pr: hold, which bump does not name (ar-39 review).
+  "$AQ" move first done --status ok >/dev/null
+  "$AQ" set second tags=pr:Org/game#11 >/dev/null
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  echo CLOSED > "$SANDBOX/pr-11"
+  [[ "$("$AQ" show second --json | jq -r .hold)" == "pr:Org/game#11 closed unmerged"* ]]
+  run "$AQ" bump second urgent
+  assert_output "second -> urgent"
 }
 
 @test "add --plan writes nothing when a slug is taken, and refuses what it cannot expand" {
