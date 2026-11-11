@@ -319,3 +319,38 @@ tag() { git -C "$REPO" tag "$1"; }
   run git_tag_changes "$REPO" '' v1.1.0
   assert_output "$(printf 'api change (#2)\nweb change (#1)')"
 }
+
+@test "git_version_ge: compares numerically across tag and bare shapes" {
+  run git_version_ge v1.10.0 v1.9.3
+  assert_success
+  run git_version_ge shipper-v1.11.0 1.11.0
+  assert_success
+  # a `-v` inside a suffix is not a product prefix
+  run git_tag_version v1.2.0-vnext
+  assert_output '1.2.0-vnext'
+  run git_tag_version my-vapp-v1.0.0
+  assert_output '1.0.0'
+  # NEGATIVE CONTROL: a string compare ranks 1.10.0 below 1.9.3
+  run git_version_ge v1.9.3 v1.10.0
+  assert_failure
+}
+
+@test "git_version_max: the highest version as given, blanks skipped" {
+  run git_version_max <<<"$(printf 'v1.9.3\n\nv1.10.0\nv1.2.0\n')"
+  assert_output 'v1.10.0'
+  run git_version_max </dev/null
+  assert_output ''
+}
+
+@test "git_tag_at and git_tag_date: the tagged commit and git's creatordate" {
+  at() { GIT_COMMITTER_DATE="@$1 +0000" git -C "$REPO" tag -a -m "$2" "$2"; }
+  commit a; at 86400 v1.0.0
+  run git_tag_at "$REPO" v1.0.0
+  assert_output "$(git -C "$REPO" rev-parse HEAD) 86400"
+  run git_tag_date "$REPO" v1.0.0
+  assert_output '1970-01-02'
+  # NEGATIVE CONTROL: a missing tag is empty, never a date
+  run git_tag_date "$REPO" v9.9.9
+  assert_success
+  assert_output ''
+}
