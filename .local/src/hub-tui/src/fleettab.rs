@@ -1426,7 +1426,7 @@ pub mod tests {
         };
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
-            lines.contains(&"WATCHES  2 watches, 1 tripped: 5 Alerts, Watches".to_string()),
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");

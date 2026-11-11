@@ -87,9 +87,32 @@ pub const TABS: [Tab; 13] = [
         pinned: &[],
         inner: &[],
     },
+    // Agents: who is working, then what happened. Infra: what is firing, then the machinery
+    // and what runs on its own (P2 of scalable-plotting-quail.md).
+    Tab {
+        id: "fleet",
+        group: "Agents",
+        title: "Fleet",
+        question: "Who is working, and on what?",
+        sections: &["workers"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
+        id: "log",
+        group: "Agents",
+        title: "Log",
+        question: "What happened?",
+        sections: &[
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
+        ],
+        pinned: &[],
+        inner: &[],
+    },
     Tab {
         id: "alerts",
-        group: "Ops",
+        group: "Infra",
         title: "Alerts",
         question: "What is firing, who owns it, and what fired lately?",
         // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
@@ -100,18 +123,23 @@ pub const TABS: [Tab; 13] = [
     },
     Tab {
         id: "infra",
-        group: "Ops",
+        group: "Infra",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &["machines", "ci", "governor", "jobs", "cloud"],
+        sections: &["machines", "governor", "ci", "jobs", "cloud"],
         // What is red and its fixes moved to Alerts (MOVED); the governor powers machines on
-        // and off, so it sits with them.
+        // and off, so it sits with them, and the CI runners are their own inner tab.
         pinned: &[],
         inner: &[
             Inner {
                 id: "machines",
                 title: "Machines",
-                sections: &["machines", "ci", "governor"],
+                sections: &["machines", "governor"],
+            },
+            Inner {
+                id: "ci",
+                title: "CI",
+                sections: &["ci"],
             },
             Inner {
                 id: "jobs",
@@ -126,38 +154,16 @@ pub const TABS: [Tab; 13] = [
         ],
     },
     Tab {
-        id: "log",
-        group: "Ops",
-        title: "Log",
-        question: "What happened?",
-        sections: &[
-            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
-            "ranked",
-        ],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "fleet",
-        group: "Ops",
-        title: "Fleet",
-        question: "Who is working, and on what?",
-        sections: &["workers"],
-        pinned: &[],
-        inner: &[],
-    },
-    // After the older tabs, so they keep their digits.
-    Tab {
         id: "schedules",
-        group: "Ops",
+        group: "Infra",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
         pinned: &[],
         inner: &[],
     },
-    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
-    // here, cut seven ways; they keep a one-line badge that links in.
+    // Every dollar figure the other tabs showed is here, cut seven ways; they keep a one-line
+    // badge that links in.
     Tab {
         id: "costs",
         group: "Spend, ship",
@@ -202,7 +208,7 @@ pub const TABS: [Tab; 13] = [
             },
         ],
     },
-    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
+    // Last: the channels (`hub_core::releases`) and each opened row, then the
     // Builds section (CI runs, its own reader; release-state has no CI collector), then the Tests
     // section (per-suite results of one tests.yml run, web first; the TUI follows).
     Tab {
@@ -511,7 +517,37 @@ mod tests {
         // The eleventh tab on the number row has no digit; the tenth is 0.
         assert_eq!(bar_digit("costs"), Some(0));
         assert_eq!(bar_digit("releases"), None);
-        assert_eq!(bar_digit("alerts"), Some(5));
+        assert_eq!(bar_digit("alerts"), Some(7));
+    }
+
+    #[test]
+    fn the_sidebar_groups_agents_apart_from_the_infra_section() {
+        let groups: Vec<(&str, Vec<&str>)> = TABS.iter().fold(vec![], |mut g, t| {
+            match g.last_mut() {
+                Some((name, ids)) if *name == t.group => ids.push(t.id),
+                _ => g.push((t.group, vec![t.id])),
+            }
+            g
+        });
+        assert_eq!(
+            groups,
+            [
+                ("Now", vec!["home", "daily"]),
+                ("Work", vec!["queue", "projects", "board", "sessions"]),
+                ("Agents", vec!["fleet", "log"]),
+                ("Infra", vec!["alerts", "infra", "schedules"]),
+                ("Spend, ship", vec!["costs", "releases"]),
+            ]
+        );
+        // The number row: Fleet 5, Log 6, Alerts 7, Infra 8, Schedules 9, Costs 0.
+        let digits: Vec<Option<usize>> = ["fleet", "log", "alerts", "infra", "schedules", "costs"]
+            .iter()
+            .map(|id| bar_digit(id))
+            .collect();
+        assert_eq!(
+            digits,
+            [Some(5), Some(6), Some(7), Some(8), Some(9), Some(0)]
+        );
     }
 
     #[test]
@@ -537,7 +573,7 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
-        assert_eq!(resolve("infra").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
     }
 
     #[test]
@@ -546,11 +582,14 @@ mod tests {
         assert!(infra.pinned.is_empty());
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
         assert_eq!(at(None), Some("machines"));
-        assert_eq!(at(Some("ci")), Some("machines"));
         assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("ci")), Some("ci"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
+        let titles: Vec<&str> = infra.inner.iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Machines", "CI", "Jobs", "Cloud"]);
         // a retired tab name that became a section lands on the inner tab holding it
-        assert_eq!(at(section("ci")), Some("machines"));
+        assert_eq!(at(section("ci")), Some("ci"));
+        assert_eq!(at(section("machines")), Some("machines"));
     }
 
     #[test]
