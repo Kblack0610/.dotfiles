@@ -42,10 +42,12 @@
 #   git_tags          <repo> <name> <scoped> [glob]                  -> every tag, newest first
 #   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
 #   git_tag_changes   <repo> <prev> <tag> [pathfilter] [limit]       -> N subject lines
+#   git_tags_since    <repo> <name> <scoped> <glob> <YYYY-MM-DD>     -> tags created that day or later, oldest version first
 #   git_tag_at        <repo> <tag>                                   -> "<sha> <epoch>"
 #   git_tag_date      <repo> <tag>                                   -> YYYY-MM-DD
 #   git_version_ge    <a> <b>                                        -> 0 when a >= b
 #   git_version_max   < versions                                     -> the highest line
+#   git_version_next_ok <shipped> <v>                                -> 0 when v is a plausible next open version
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
 #
 # A glob is space-separated patterns; one that starts with `!` subtracts (_gr_pats).
@@ -93,6 +95,20 @@ git_version_ge() {
 
 # git_version_max < versions -> the highest, as given (`v1.10.0` beats `v1.9.3`). Bare versions
 # with or without a leading `v`, one a line; blank lines skipped, nothing in, nothing out.
+# git_version_next_ok <shipped> <v> - true when <v> is above <shipped> and a version the
+# project could ship next: the same major at most one minor up, or the next major at minor 0.
+# The sheet's `Version:` is the next open version, so this is what it may hold beside its
+# tag (agentctl-wave-roll's pick, fleet-bench's version_tag_drift). 2026-10-25 a stray
+# `v1.16.0 (planned)` on an app tagged v0.4.0 was promoted, and the sheet ran so far ahead of
+# its tags that no tag could ever roll it again.
+git_version_next_ok() {
+  local s v sa sb va vb
+  s="$(git_tag_version "$1")" v="$(git_tag_version "$2")"
+  [ "$s" != "$v" ] && git_version_ge "$v" "$s" || return 1
+  sa="${s%%.*}" sb="$(cut -d. -f2 <<<"$s")" va="${v%%.*}" vb="$(cut -d. -f2 <<<"$v")"
+  { [ "$va" = "$sa" ] && [ "$vb" -le $((sb + 1)) ]; } || { [ "$va" = $((sa + 1)) ] && [ "$vb" = 0 ]; }
+}
+
 git_version_max() {
   local l
   while IFS= read -r l; do
@@ -359,6 +375,21 @@ git_first_tag() {
 # annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
 # of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
 # tag does not exist.
+# git_tags_since <repo> <name> <scoped> <glob> <YYYY-MM-DD> - every tag in the family whose
+# creatordate (the one tag date, as git_tag_date) is on or after the day, lowest version first:
+# the tags a release note must exist for (agentctl-wave-roll, project-map-doctor 7b). One
+# for-each-ref, not one git_tag_date per tag, since a family can hold a hundred tags.
+git_tags_since() {
+  local repo="$1" name="$2" scoped="$3" glob="${4:-}" since="$5" g t d
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$since" ] && command -v git >/dev/null 2>&1 || return 0
+  g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
+  [ -n "$g" ] || return 0
+  _gr_pats "$g"
+  _gr_tags "$repo" --sort=v:refname --format='%(refname:short) %(creatordate:short)' \
+    | while read -r t d; do [[ $d < $since ]] || printf '%s\n' "$t"; done
+  return 0
+}
+
 git_tag_at() {
   [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
   git -C "$1" for-each-ref --count=1 \

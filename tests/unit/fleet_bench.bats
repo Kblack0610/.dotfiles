@@ -2927,14 +2927,18 @@ LIB
   run "$SUBJECT" chain --check
   assert_success
   rm "$SANDBOX/type"
-  # the sheet a minor ahead of its tag is drift; at the tag (roll pending) or one patch past it is not
-  rel - v1.3.0
+  # the sheet behind its tag, or further ahead than its next release, is drift; at the tag (roll
+  # pending), or a next open version above it (a patch, a minor, the next major), is not
+  rel - v1.2.2
   run "$SUBJECT" chain --check
   assert_failure 1
   assert_output 'version_tag_drift 1 (max 0)'
   run "$SUBJECT" chain
-  assert_line 'version_tag_drift: bnb/tools sheet v1.3.0, tag v1.2.3'
-  for v in v1.2.3 v1.2.4; do
+  assert_line 'version_tag_drift: bnb/tools sheet v1.2.2, tag v1.2.3'
+  rel - v1.5.0
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  for v in v1.2.3 v1.2.4 v1.3.0 v2.0.0; do
     rel - "$v"
     run "$SUBJECT" chain --check
     assert_success

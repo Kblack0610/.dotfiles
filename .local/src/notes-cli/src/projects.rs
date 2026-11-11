@@ -2099,6 +2099,13 @@ fn align_agent_board(dir: &Path) -> Result<Option<String>> {
 ///    with nothing to move, because a release is a filter over the one list.
 ///
 /// No sheet means no release: the `Version:` line is the only thing naming the open version.
+///
+/// `--tag vX.Y.Z` is a release tag closing the version (`agentctl-wave-roll`, for a project
+/// its tag owns): the note is named from the tag, never from the sheet, so the lab has one
+/// note per tag. A tag at or above the open version freezes the open version's rows as that
+/// tag; a tag below it (a hotfix the sheet never planned) gets a note marked
+/// [`NO_PLANNED_ROWS`] and the sheet stays open where it is.
+#[allow(clippy::too_many_arguments)]
 pub fn release(
     p: &Profile,
     log: &Logger,
@@ -2108,6 +2115,7 @@ pub fn release(
     carry: bool,
     next_at: Option<&str>,
     renumber: bool,
+    tag: Option<&str>,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_release(&dir, log)? else {
@@ -2118,6 +2126,17 @@ pub fn release(
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
+    let tag = match tag {
+        None => None,
+        Some(_) if renumber => bail!("--tag and --renumber do not go together"),
+        Some(t) => Some(
+            parse_version(t.trim())
+                .ok_or_else(|| anyhow::anyhow!("--tag wants vX.Y.Z, got '{t}'"))?,
+        ),
+    };
+    if let Some(t) = tag.filter(|t| *t < cur) {
+        return record_unplanned_tag(log, &dir, name, &content, t, cur);
+    }
     let ix = crate::epics::Index::of(&dir, Some(cur));
     let next = match next_at {
         None if renumber => bail!("--renumber needs --next vX.Y.Z"),
@@ -2138,6 +2157,16 @@ pub fn release(
             v
         }
     };
+    if let Some(t) = tag.filter(|t| next <= *t) {
+        bail!(
+            "the next version {} is not above the tag {} that closes {}",
+            fmt_version(next),
+            fmt_version(t),
+            fmt_version(cur)
+        );
+    }
+    // The note's name: the tag that shipped the version, else the version itself.
+    let shipped = tag.unwrap_or(cur);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
@@ -2157,7 +2186,7 @@ pub fn release(
     // 2. the freeze
     let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
-    let frozen = versions.join(format!("{}.md", fmt_version(cur)));
+    let frozen = versions.join(format!("{}.md", fmt_version(shipped)));
     // A plain release never touches an existing note. A carry is the release tag closing
     // the version, and a note already there (a migrated changelog) must not block that
     // forever, so it appends the close-out below what is there instead of overwriting it.
@@ -2169,6 +2198,21 @@ pub fn release(
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    // A note named from its tag says so in its head too: anything scanning a frozen note for
+    // its `Version:` reads the tag, and the version the rows were planned as stays on record.
+    let frozen_body = if shipped == cur {
+        frozen_body
+    } else {
+        frozen_body.replacen(
+            &format!("\nVersion: {}\n", fmt_version(cur)),
+            &format!(
+                "\nVersion: {}\nPlanned as: {}\n",
+                fmt_version(shipped),
+                fmt_version(cur)
+            ),
+            1,
+        )
+    };
     // The sheet's rows that already rolled off its Done window wait in the agent note; the
     // version they belong to is this one, so they freeze with the sheet's own.
     let agent_note = agent_note_path(&dir, &fmt_version(cur));
@@ -2260,6 +2304,50 @@ pub fn release(
         }
     }
     Ok(())
+}
+
+/// The marker on a version note written for a tag no sheet version was planned as: a hotfix
+/// below the open version. Its note holds no rows, and `notes-roll` skips it when it looks for
+/// the previous version's `rolled:` boundary.
+pub(crate) const NO_PLANNED_ROWS: &str = "<!-- no-planned-rows -->";
+
+/// `--release --tag` for a tag below the open version: write `versions/<tag>.md` marked
+/// [`NO_PLANNED_ROWS`] when the tag has no note yet, and leave the sheet alone, since its open
+/// version has not shipped. A note already there is the tag's record, so it is kept.
+fn record_unplanned_tag(
+    log: &Logger,
+    dir: &Path,
+    name: &str,
+    sheet: &str,
+    tag: V,
+    cur: V,
+) -> Result<()> {
+    let (tag_s, cur_s) = (fmt_version(tag), fmt_version(cur));
+    let versions = dir.join("versions");
+    let note = versions.join(format!("{tag_s}.md"));
+    if note.exists() {
+        println!("{name} {tag_s} already has its note ({})", note.display());
+        return Ok(());
+    }
+    fs::create_dir_all(&versions)?;
+    let title = sheet.lines().next().unwrap_or("# project");
+    fs::write(&note, unplanned_note(title, tag_s.as_str(), cur_s.as_str()))?;
+    log.info(
+        "projects",
+        &format!("{name} {tag_s} recorded, no planned rows (open {cur_s})"),
+    );
+    println!(
+        "recorded {name} {tag_s}: no planned rows, the sheet stays open at {cur_s} (unplanned {})",
+        note.display()
+    );
+    Ok(())
+}
+
+/// The body of a tag's note when no rows were planned for it.
+fn unplanned_note(title: &str, tag: &str, open: &str) -> String {
+    format!(
+        "{title}\nVersion: {tag}\n\n{NO_PLANNED_ROWS}\nNo planned rows: {tag} was tagged while the sheet was open at {open}.\n"
+    )
 }
 
 /// `notes projects --migrate <name>` - consolidate a project onto the one version layout.
@@ -4758,6 +4846,95 @@ Some prose left on the board.
         dir
     }
 
+    /// One note per tag, named from the tag (`--release --tag`, what wave-roll passes for a
+    /// project its tag owns): the open version's rows freeze under the tag that shipped them,
+    /// and a tag below the open version gets a note with no planned rows.
+    #[test]
+    fn a_tag_names_the_note_it_freezes_and_a_skipped_tag_gets_an_empty_one() {
+        let root = board_scratch("release-tag");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        let sheet = "# demo\nVersion: v1.18.1 #beta\n\n## Tasks\n\
+                     - [x] feat(a): shipped <!-- pr:11 -->\n\
+                     - [ ] feat(b): open\n";
+        fs::write(dir.join("README.md"), sheet).unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+        let rel = |tag: &str, next: &str| {
+            release(
+                &p,
+                &log,
+                "demo",
+                None,
+                false,
+                true,
+                Some(next),
+                false,
+                Some(tag),
+            )
+        };
+
+        // NEGATIVE CONTROL: a next version not above the tag would reopen what shipped.
+        assert!(rel("v1.19.0", "v1.19.0").is_err());
+        assert!(!dir.join("versions/v1.19.0.md").exists());
+
+        // The app skipped v1.18.1 and tagged v1.19.0: the rows freeze as v1.19.0.
+        rel("v1.19.0", "v1.19.1").unwrap();
+        let note = fs::read_to_string(dir.join("versions/v1.19.0.md")).unwrap();
+        assert!(
+            note.starts_with("# demo\nVersion: v1.19.0\nPlanned as: v1.18.1\n"),
+            "{note}"
+        );
+        assert!(note.contains("feat(a): shipped"), "{note}");
+        assert!(!dir.join("versions/v1.18.1.md").exists());
+        let after = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(after.contains("Version: v1.19.1 #beta"), "{after}");
+
+        // A hotfix below the open version: a note with no planned rows, the sheet untouched.
+        fs::write(
+            dir.join("README.md"),
+            after.replace("v1.19.1", "v1.20.0"),
+        )
+        .unwrap();
+        rel("v1.19.1", "v1.20.1").unwrap();
+        let stub = fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap();
+        assert!(stub.contains(NO_PLANNED_ROWS), "{stub}");
+        assert!(stub.contains("Version: v1.19.1\n"), "{stub}");
+        let still = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(still.contains("Version: v1.20.0 #beta"), "{still}");
+        assert!(still.contains("feat(b): open"), "{still}");
+        // Recording it again keeps the note it has.
+        fs::write(dir.join("versions/v1.19.1.md"), "kept\n").unwrap();
+        rel("v1.19.1", "v1.20.1").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap(),
+            "kept\n"
+        );
+        // NEGATIVE CONTROL: --tag never goes with --renumber.
+        assert!(release(
+            &p,
+            &log,
+            "demo",
+            None,
+            false,
+            true,
+            Some("v1.19.5"),
+            true,
+            Some("v1.19.2")
+        )
+        .is_err());
+    }
+
     #[test]
     fn a_release_note_lists_the_prs_of_both_lanes_closed_rows() {
         let root = board_scratch("release-prs");
@@ -4800,6 +4977,7 @@ Some prose left on the board.
             false,
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -4862,6 +5040,7 @@ Some prose left on the board.
             false,
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -6287,7 +6466,7 @@ mod shape_tests {
         }
         // The release itself: #alpha is not refused, and no level takes the derived minor.
         fs::write(dir.join("README.md"), sheet(feature)).unwrap();
-        release(&s.p, &s.log, "demo", None, false, false, None, false).unwrap();
+        release(&s.p, &s.log, "demo", None, false, false, None, false, None).unwrap();
         let after = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(after.contains("Version: v0.4.0 #alpha"), "{after}");
         // NEGATIVE CONTROL: a level given overrides the derived one.
@@ -6305,6 +6484,7 @@ mod shape_tests {
             false,
             None,
             false,
+            None,
         )
         .unwrap();
         let after = fs::read_to_string(dir.join("README.md")).unwrap();
