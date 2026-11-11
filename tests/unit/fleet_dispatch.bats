@@ -1904,7 +1904,11 @@ J
   run cmd_stopped
   assert_failure
   assert_output 'Dispatch stopped 1h30m: no account has room; bnb is the closest, 4 points over its weekly pace. Clears when an account is back under its pace.'
-  hold_for 90 'budget: could not judge the new rows (stopped at its budget); no new row to judge'
+  hold_for 90 'could not judge the new rows (the retry for 3 left-out row(s) stopped at its budget); no account has room; bnb is the closest'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 1h30m: no account has room; bnb is the closest. Clears when an account is back under its pace.'
+  hold_for 90 'budget: could not judge the new rows (stopped at its budget); tagged 1 for a plan; queued 2 for the night; no new row to judge'
   run cmd_stopped
   assert_failure
   assert_output "Dispatch stopped 1h30m: budget: could not judge the new rows; no new row to judge. Clears when dispatch-judge's daily budget resets."

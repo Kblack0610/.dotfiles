@@ -3168,7 +3168,9 @@ held_state() {
 # notes ahead of its gate (night and plan counts, a judge that could not judge), the item that
 # waits, the run-out forecast and the parentheses.
 held_short() {
-  sed -E 's/^((queued [0-9]+ for the night|tagged [0-9]+ for a plan|could not judge the new rows( \([^)]*\))?); )+//
+  # A judge's reason can hold its own parentheses ("left-out row(s)") but never "; ". A "budget:"
+  # lead is the stop itself (a pass with nothing else to do) and stays, the notes after it go.
+  sed -E 's/^(budget: could not judge the new rows[^;]*; )?((queued [0-9]+ for the night|tagged [0-9]+ for a plan|could not judge the new rows[^;]*); )+/\1/
     s/,? (queue item [^ ]+|every queue item) waits$//
     s/, runs out [^,]* at this rate//
     s/ \([^)]*\)//g' <<<"$1"
