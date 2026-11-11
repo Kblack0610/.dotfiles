@@ -22,7 +22,11 @@ impl ProcMap {
             .args(["-axo", "pid=,ppid=,comm="])
             .output()
             .context("failed to run `ps -axo pid=,ppid=,comm=`")?;
-        anyhow::ensure!(out.status.success(), "`ps -axo pid=,ppid=,comm=` exited {}", out.status);
+        anyhow::ensure!(
+            out.status.success(),
+            "`ps -axo pid=,ppid=,comm=` exited {}",
+            out.status
+        );
         Ok(Self::parse(&String::from_utf8_lossy(&out.stdout)))
     }
 
@@ -117,7 +121,9 @@ mod tests {
 
     #[test]
     fn parses_ps_lines_with_their_command_names() {
-        let pm = ProcMap::parse("  100     1 tmux: server\n  200   100 zsh\n  300   200 /usr/bin/codex\n");
+        let pm = ProcMap::parse(
+            "  100     1 tmux: server\n  200   100 zsh\n  300   200 /usr/bin/codex\n",
+        );
         assert!(pm.is_live(300));
         assert_eq!(pm.comm.get(&100).map(String::as_str), Some("tmux: server"));
         assert_eq!(pm.codex_below(200), Some(300));

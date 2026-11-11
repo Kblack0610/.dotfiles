@@ -18,13 +18,21 @@ pub struct Vocab {
 
 fn names(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// fleet-sessions' state document: `$FLEET_STATE_FILE`, else `fleet/state.json` under the state home.
 pub fn fleet_state_file() -> PathBuf {
-    let set = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let set = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     set("FLEET_STATE_FILE").unwrap_or_else(|| {
         set("XDG_STATE_HOME")
             .or_else(|| set("HOME").map(|h| h.join(".local/state")))
