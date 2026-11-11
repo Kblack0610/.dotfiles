@@ -3,7 +3,9 @@ name: shell tests
 # Five jobs, by what they can catch:
 #
 #   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
-#          it never starts a tmux server. The same files the local stop-hook gates on.
+#          it never starts a tmux server. On a pull request only the files the change can
+#          affect plus tests/broad.txt (tests/pick.sh, the picker the Stop hook uses); on main,
+#          the schedule and a manual run, every file.
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
@@ -37,10 +39,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Each tier is split across runners by tests/shard.sh, balanced by the seconds in
-  # tests/shard-weights.tsv. Whole, unit took 8m45 and integ 6m48 of the 10-minute cap on
-  # 2026-11-07, all CPU: more runners is the lever, never a longer timeout. A shard is
-  # bounded below by its heaviest file (unit/fleet_dispatch.bats, about 40% of unit).
+  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
+  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
+  # them across runners, balanced by the seconds in tests/shard-weights.tsv. A shard is bounded
+  # below by its heaviest file (unit/fleet_dispatch.bats, about 40% of unit).
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     runs-on: ubuntu-24.04
@@ -57,7 +59,11 @@ jobs:
           - {tier: integ, shard: 1/2}
           - {tier: integ, shard: 2/2}
     steps:
+      # A pull request checks out its merge commit; depth 2 brings its first parent, the base
+      # tip, so HEAD^1..HEAD is exactly the change.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - name: Bootstrap bats
         run: make -C tests bootstrap
       # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
@@ -102,13 +108,19 @@ jobs:
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
-      # The list is taken first so a failed split stops the step (bash -e) instead of handing
-      # test-files an empty FILES, which would pass with nothing run.
+      # The lists are taken first so a failed pick or split stops the step (bash -e). An empty
+      # shard is a pick smaller than the matrix, not a failure; the first shard of each tier
+      # puts the pick line ("picked N of M" or "full: <why>") on the run's Summary page.
       - name: Fast tier shard
         env:
           JUNIT: 1
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: |
-          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }})
+          tests/pick.sh ${{ matrix.tier }} $BASE >"$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/why"
+          cat "$RUNNER_TEMP/why"
+          case "${{ matrix.shard }}" in 1/*) cat "$RUNNER_TEMP/why" >>"$GITHUB_STEP_SUMMARY" ;; esac
+          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked")
+          [ -n "$files" ] || { echo "nothing picked for ${{ matrix.tier }} ${{ matrix.shard }}"; exit 0; }
           echo "$(wc -l <<<"$files") files in ${{ matrix.tier }} ${{ matrix.shard }}"
           make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")"
       - name: Upload JUnit
