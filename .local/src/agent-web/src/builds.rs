@@ -37,6 +37,8 @@ struct Shown<'a> {
     /// Each workflow's usual run time: the Run times fold, whatever the view.
     times: &'a [builds::RunTime],
     errors: &'a [String],
+    /// `Builds::needs_look`: the count on Releases' Builds inner tab.
+    look: bool,
     table: Summary,
 }
 
@@ -52,6 +54,7 @@ fn render(b: &Builds, q: &Query) -> String {
         more,
         times: &b.times,
         errors: &b.errors,
+        look: b.needs_look(),
         table,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))

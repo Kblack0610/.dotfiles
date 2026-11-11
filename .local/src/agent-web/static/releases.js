@@ -1,31 +1,64 @@
 "use strict";
-// The Releases tab: every channel, what is pinned there and what is live, from /api/releases
-// (hub_core::releases). The table is the shared one (table.js): the server filters, sorts and
-// folds the green rows by the view in the URL. A new snapshot pushes the `releases` event.
+// The Releases tab: every app, what is live where it matters most and its worst status, from
+// /api/releases (hub_core::releases). The table is the shared one (table.js): the server filters
+// and sorts by the view in the URL. An opened app lists its headline env's channels, the other
+// envs in a fold under them, then its changelog. A new snapshot pushes the `releases` event.
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
+// table and an opened app), Builds, Tests, the strip above them.
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
-// Which folds on the tab are open (the Run times fold), so a repaint keeps them as they were.
+// Which folds on the tab are open (an app's other envs, the Run times fold), so a repaint keeps them as they were.
 const REL_OPEN = {};
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
   open: () => REL_OPEN,
-  head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds() + releaseTests(),
+  head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
+  body: (t) => releasesBody(t.data),
+  wrap: (html) => innerWrap("releases", "table", html),
+  tail: () => innerWrap("releases", "builds", releaseBuilds()) + innerWrap("releases", "tests", releaseTests()),
 });
+// The sections needing a look, the strip's counts: each read says its own (Releases::needs_look,
+// Builds::needs_look, a failed suite in the run on show).
+const relFlagged = () => [relst.data?.look && "table", bld.data?.look && "builds", tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
-const relKey = (r) => `${r.project}|${r.id}`;
+const relKey = (a) => a.project;
 const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
+// The channel whose detail is open inside an opened app, `project|id`.
+let relCh = null;
+const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["project"], channel: ["channel"], pinned: ["pinned"], live: ["live"], status: ["status"], prev: ["prev"], last_deploy: ["last deploy"], telemetry: ["telemetry"], deps: ["deps"] };
+const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], last_deploy: ["last deploy"] };
 
-function releaseRow(r) {
-  const open = relKey(r) === relst.sel;
-  const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(r))}">` +
-    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.label)}</td><td>${esc(r.pinned_text)}</td>` +
-    `<td class="${r.status === "drift" ? "bad" : ""}">${esc(r.live_text)}</td><td class="${relClass(r.status_level)}">${esc(r.status)}</td>` +
-    `<td>${esc(r.prev_text)}</td><td class="${relClass(r.deploy_level)}">${esc(r.last_deploy_text)}</td>` +
-    `<td class="${relClass(r.watch_level)}">${esc(r.telemetry_text)}</td><td class="wrap muted">${esc(r.deps_text)}</td></tr>`;
+function releaseRow(a) {
+  const open = relKey(a) === relst.sel;
+  const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
+    `<td>${esc(a.project)}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
+  return open ? row + appDetail(a) : row;
+}
+
+// One channel of an opened app; its own detail opens under it on a click.
+function channelRow(r) {
+  const open = chKey(r) === relCh;
+  const where = r.status === "unknown" ? `<span class="warn">${esc(r.live.error || r.pinned.error || "")}</span>` : esc(r.where || "");
+  const row = `<tr class="rc${open ? " sel" : ""}" data-ch="${esc(chKey(r))}"><td>${esc(r.channel)}</td><td class="wrap">${esc(r.id)}</td>` +
+    `<td class="${r.status === "drift" ? "bad" : ""}">${esc(r.live_text)}</td><td>${esc(r.pinned_text)}</td>` +
+    `<td class="${relClass(r.status_level)}">${esc(r.status_text)}</td><td class="wrap muted">${where}</td></tr>`;
   return open ? row + releaseDetail(r) : row;
+}
+
+const CH_HEAD = "<tr><th>channel</th><th>id</th><th>live</th><th>pinned</th><th>status</th><th>where</th></tr>";
+const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
+
+// The opened app: its headline env's channels, the other envs folded, then what its newest tag shipped.
+function appDetail(a) {
+  const lead = a.channels.slice(0, a.lead), rest = a.channels.slice(a.lead);
+  const others = rest.length
+    ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN)
+    : "";
+  return `<tr class="wdet"><td colspan="5"><div class="sdet">${chTable(lead)}${others}` +
+    `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 
 function releaseSide(s, text) {
@@ -37,8 +70,8 @@ function releaseWatch(w) {
   return `<div>${esc(w.watch)} <span class="${relClass(w.level)}">${esc(w.state)}</span>${w.since ? ` <span class="muted">since ${when(w.since)}</span>` : ""}</div>`;
 }
 
-// The opened channel's project changelog: one read at a time, and the newest answer wins, so a
-// slow read for a row closed since cannot overwrite the one now open.
+// The opened app's changelog: one read at a time, and the newest answer wins, so a slow read for
+// an app closed since cannot overwrite the one now open.
 const relcl = { project: null, data: null, err: null, loading: false, seq: 0 };
 
 async function loadChangelog(project, tag = "") {
@@ -74,24 +107,22 @@ function releaseDeploy(d) {
   return `<div>${when(d.at)} ${esc(d.version)} <span class="${d.state === "fail" ? "warn" : ""}">${esc(d.state)}</span>${run}</div>`;
 }
 
+// An opened channel: both sides with their sources, its deploys, watches and deps.
 function releaseDetail(r) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const status = [r.drift_since ? `drift since ${when(r.drift_since)}` : "", r.probed_at ? `probed ${when(r.probed_at)}` : ""].filter(Boolean).join(", ");
-  return `<tr class="wdet"><td colspan="9"><div class="sdet"><div class="muted">${status || esc(r.status)}</div>` +
+  return `<tr class="rcd"><td colspan="6"><div class="sdet"><div class="muted">${status || esc(r.status_text)}</div>` +
     line("Pinned", releaseSide(r.pinned, r.pinned_text)) + line("Live", releaseSide(r.live, r.live_text)) +
     line("Tag", esc(r.tag || "")) + line("Where", esc(r.where || "")) +
-    line("Prev", esc(r.deploys.prev || "")) +
+    line("Prev", esc(r.deploys.prev || "")) + line("Last deploy", r.deploys.last ? esc(r.last_deploy_text) : "") +
     line("Deploys", r.deploys.error ? `<span class="warn">${esc(r.deploys.error)} (${esc(r.deploys.source)})</span>` : r.deploys.history.map(releaseDeploy).join("")) +
-    line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") +
-    line("Changelog", releaseChangelog(r)) + `</div></td></tr>`;
+    line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") + `</div></td></tr>`;
 }
 
 function releasesBody(d) {
   const t = d.table, rows = d.rows || [];
-  const fold = d.fold ? `<div class="panel"><button class="btn sm" data-ts="green" title="list the green channels">${esc(d.fold)}</button></div>` : "";
-  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>` + fold;
-  if (fold) return `<div class="panel">Nothing needs attention.</div>` + fold;
-  return `<div class="panel">${t && t.total ? "No channels match." : "No channels."}</div>`;
+  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>`;
+  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>`;
 }
 
 function releasesHead(d) {
@@ -99,12 +130,13 @@ function releasesHead(d) {
   const read = d.at ? `refreshed ${clock(d.at * 1e3)} (${ago(d.at)} ago)` : "no snapshot read";
   let html = `<h2 class="sec">Releases <span class="muted">${esc(d.question || "")}</span></h2>` +
     `<div class="cline">${esc(d.summary || "")} <span class="${stale ? "warn" : "muted"}">${esc(read)}</span></div>`;
+  if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
 }
 
-// The Builds section under the channels: CI runs of the last 30 days from /api/builds
+// The Builds inner tab: CI runs of the last 30 days from /api/builds
 // (hub_core::builds), its own table with its own view keys (bq, bs, bsort, bdir). It draws inside
 // this tab's page, so its render is the tab's and its refresh reads only its own rows.
 const BUILDS_PRE = "b";
@@ -205,7 +237,7 @@ $("releases").addEventListener("click", (e) => {
   if (r) openBuild(key, r);
 });
 
-// The Tests section under Builds: the suites of one finished tests.yml run from /api/tests
+// The Tests inner tab: the suites of one finished tests.yml run from /api/tests
 // (hub_core::junit), the newest unless the picker names another. Its own view keys are tq, ts,
 // tsort and tdir, and the run is trun. A suite's tests are read when its row opens, never before.
 const TESTS_PRE = "t";
@@ -310,11 +342,15 @@ $("releases").addEventListener("click", (e) => {
 
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
-  if (t.closest("a") || t.closest(".wdet") || t.closest("button")) return;
+  if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
+  const ch = t.closest("tr.rc");
+  if (ch) { relCh = relCh === ch.dataset.ch ? null : ch.dataset.ch; relst.render(); return; }
+  if (t.closest(".wdet")) return;
   const tr = t.closest("tr.jr");
   if (!tr) return;
   relst.sel = relst.sel === tr.dataset.key ? null : tr.dataset.key;
-  if (relst.sel) loadChangelog(relst.sel.split("|")[0]);
+  relCh = null;
+  if (relst.sel) loadChangelog(relst.sel);
   else relst.render();
 });
 

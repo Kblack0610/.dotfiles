@@ -3,4 +3,3 @@
 # effort overrides the harness's own default for that lane's runs; with none, the harness's default.
 codex sol medium
 codex sol high
-glm glm

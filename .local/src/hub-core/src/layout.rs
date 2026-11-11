@@ -169,8 +169,26 @@ pub const TABS: [Tab; 12] = [
         title: "Releases",
         question: "What is building, and what is live where?",
         sections: &["table", "detail", "builds", "tests"],
+        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
+        // how the last test run went.
         pinned: &[],
-        inner: &[],
+        inner: &[
+            Inner {
+                id: "apps",
+                title: "Apps",
+                sections: &["table", "detail"],
+            },
+            Inner {
+                id: "builds",
+                title: "Builds",
+                sections: &["builds"],
+            },
+            Inner {
+                id: "tests",
+                title: "Tests",
+                sections: &["tests"],
+            },
+        ],
     },
 ];
 
@@ -509,6 +527,14 @@ mod tests {
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
         assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        // Releases: the apps and an opened one, Builds, Tests; old `#releases/builds` links land
+        let rel = resolve("releases").unwrap();
+        let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
+        assert_eq!(at(None), Some("apps"));
+        assert_eq!(at(Some("detail")), Some("apps"));
+        assert_eq!(at(Some("builds")), Some("builds"));
+        assert_eq!(at(Some("tests")), Some("tests"));
+        assert_eq!(at(Some("project:binks")), Some("apps"));
     }
 
     #[test]

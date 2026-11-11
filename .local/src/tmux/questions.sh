@@ -17,7 +17,8 @@
 #
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
-#                     then oldest, then the sessions with a dialog open (id @<target>)
+#                     then the live asks oldest first, then the sessions with a dialog open
+#                     (id @<target>), then the dead asks oldest first
 #   count             how many rows rows prints, one number: the pending asks plus the open dialogs.
 #                     The agents status bar's !N, so the bar and this panel never disagree
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
@@ -38,10 +39,13 @@ FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/flee
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "<slug>:<agent number>  <age>  <question>" and, under the question, where its answer
-# goes (agent-ask routes: restarts <item>, resume, to session or dead end) and what the session
-# is (its registry title): short enough for the list column beside the card (a third of the
-# panel). Rows are NUL-ended, so fzf shows the two lines as one
+# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
+# session is (its registry title): short enough for the list column beside the card (a third of
+# the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
+# ask whose session has ended, none an ask no session filed (intake, headless), as its card says
+# "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts. Where an answer goes is on the card
+# (agent-ask answer_route), not the row: it reads the queue, 1.8 s, too slow for the open path
+# (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
 # prompt_rows: the sessions with a dialog open now, and prompt_list those rows with the project added:
@@ -70,12 +74,12 @@ prompt_list() {
 }
 
 cmd_rows() {
-  local list prompts here routes epochs names name slugs="" titles
+  local list prompts here live epochs names name slugs="" titles
   list="$("$QUESTIONS_ASK" list --all --pending)"
   prompts="$(prompt_list)"
   [ -n "$list$prompts" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
-  routes="$("$QUESTIONS_ASK" routes 2>/dev/null)"
+  live="$("$QUESTIONS_ASK" live-sessions 2>/dev/null | tr '\n' ' ')"
   titles="$(cut -f16 <<<"$list" | sort -u | "$QUESTIONS_ASK" titles 2>/dev/null)"
   # Every created stamp to epoch seconds in one date call; on a line date cannot read, the
   # ages go blank rather than shift onto the wrong rows.
@@ -87,7 +91,7 @@ cmd_rows() {
     awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
   { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs"); } |
-    awk -F'\t' -v here="$here" -v now="$(date +%s)" -v slugs=";$slugs" \
+    awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
       function age(e,   d) {
         if (e == "") return ""
@@ -100,12 +104,11 @@ cmd_rows() {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
       }
-      # The files are the registry titles, "<claude session>\t<title>", then each route,
-      # "<id>\t<route>", then the prompts (prompt_list), then the asks on stdin.
+      # The files are the registry titles, "<claude session>\t<title>", then the prompts
+      # (prompt_list), then the asks on stdin.
       FNR == 1 { part++ }
       part == 1 { T[$1] = $2; next }
-      part == 2 { R[$1] = $2; next }
-      part == 3 {
+      part == 2 {
         if ($1 == "") next
         s = $1; sub(/^[^\/]*\//, "", s); sub(/:[0-9]+$/, "", s)
         n = $2; if (n == "") { n = s; sub(/-agent-[0-9]+$/, "", n) }
@@ -115,7 +118,7 @@ cmd_rows() {
         else if (match($1, /:[0-9]+$/)) who = who substr($1, RSTART)
         k = "p" FNR; W[k] = who; if (length(who) > w) w = length(who)
         e = now - $3 * 60
-        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e)
+        L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e); M[k] = 2
         tool = $4; sub(/:.*/, "", tool)
         if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval"
         else if (tool == "AskUserQuestion") Q[k] = "question waiting for an answer"
@@ -128,21 +131,22 @@ cmd_rows() {
         who = slug(n)
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
-        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $NF, $1)
+        M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
+        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $NF, $1)
         A[NR] = age($NF); Q[NR] = $6
-        S[NR] = substr(R[$1], 1, 28)
-        if (T[$16] != "") S[NR] = S[NR] (S[NR] != "" ? " . " : "") faint T[$16] off
+        S[NR] = (T[$16] != "") ? faint T[$16] off : ""
       }
       # The name column is as wide as its longest name, up to 12. The second line starts under
       # the question; \037 stands for its newline until the rows are sorted.
       END {
         if (w > 12) w = 12
         for (i in W) {
-          printf "%s%s%-*.*s%s %s%3s%s  %s", L[i], bold, w, w, W[i], off, faint, A[i], off, Q[i]
-          if (S[i] != "") printf "\037%*s%s", w + 6, "", S[i]
+          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : faint "dead" off,
+            bold, w, w, W[i], off, faint, A[i], off, Q[i]
+          if (S[i] != "") printf "\037%*s%s", w + 11, "", S[i]
           print ""
         }
-      }' <(printf '%s\n' "$titles") <(printf '%s\n' "$routes") <(printf '%s\n' "$prompts") - |
+      }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
 # cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read

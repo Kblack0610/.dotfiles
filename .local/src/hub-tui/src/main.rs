@@ -18,6 +18,7 @@ mod fmt;
 mod focustab;
 mod forecast;
 mod hometab;
+mod innertabs;
 mod jobs;
 mod logtab;
 mod outboxtab;
@@ -550,15 +551,33 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         let now = hub_core::jobs::now();
         a.tab = Tab::Releases;
         a.open_query(section);
-        for l in
-            a.rv.status(&s, a.p, now)
-                .iter()
-                .chain(&a.rv.table(&s, a.p, w, false))
-                .chain(&a.rv.foot(&s, a.p, w))
-        {
+        // The strip with its counts, then the inner tab the request names (Apps by default).
+        let b = hub_core::builds::read(&a.files.builds, now);
+        let on = a.rv.on();
+        let mut lines = vec![innertabs::strip(
+            releases::tab(),
+            on,
+            &releases::flagged(&s, Some(&b)),
+            a.p,
+            w,
+        )];
+        match on {
+            "builds" => {
+                lines.extend(a.rv.builds.status(&b, a.p, now));
+                lines.extend(a.rv.builds.table(&b, a.p, w, false, now));
+            }
+            "tests" => lines.extend(releases::tests_note(a.p, w)),
+            _ => {
+                lines.extend(a.rv.status(&s, a.p, now));
+                lines.extend(a.rv.table(&s, a.p, w, false));
+            }
+        }
+        for l in &lines {
             let _ = writeln!(out, "{}", plain(l));
         }
-        return i32::from(!s.errors.is_empty());
+        // The exit code is the shown tab's read: Builds' ledger, else the releases snapshot.
+        let errors = if on == "builds" { &b.errors } else { &s.errors };
+        return i32::from(!errors.is_empty());
     }
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();

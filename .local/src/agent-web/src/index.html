@@ -5,20 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agents</title>
 <link rel="preload" href="/static/inter.woff2?v={{v}}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/tokens.css?v={{v}}">
+<link rel="stylesheet" href="/static/shell.css?v={{v}}">
 <link rel="stylesheet" href="/static/app.css?v={{v}}">
+<script type="module" src="/static/kb-shell.js?v={{v}}"></script>
 </head>
 <body>
-<header id="top">
-  <button class="menu" id="menu" aria-label="Menu" aria-expanded="false" aria-controls="tabs"><span class="bars"></span><span id="menu-badge"></span></button>
+<kb-shell id="top">
+  <span class="kb-menu-badge" id="menu-badge"></span>
   <span class="conn" id="conn" title="live updates"></span>
-  <h1>Agents</h1>
-  <span class="cur" id="cur-tab"></span>
+  <h1 class="kb-brand">Agents</h1>
   <span class="live-off" id="live-off" hidden>live updates off, reload to refresh</span>
-  <nav class="tabs" id="tabs">
-{{nav}}    <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
+  <nav class="kb-nav" id="tabs" aria-label="Tabs">
+{{nav}}    <form class="kb-foot" method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
   </nav>
-</header>
-<main id="main">
+</kb-shell>
+<main id="main" class="kb-main">
   <aside id="side" aria-label="Sessions"></aside>
   <section id="detail">
     <div class="bar">
