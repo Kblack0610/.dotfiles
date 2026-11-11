@@ -37,11 +37,18 @@
 # Public API:
 #   git_latest_tag    <repo> <name> [glob]                          -> one tag, or ""
 #   git_product_tag   <repo> <product> [glob]                       -> one tag, or ""
+#   git_tag_for_version <repo> <product> <version> [glob]          -> the tag that shipped it, or ""
 #   git_shipping_next <repo> <tag> <branch> [pathfilter] [limit]     -> N subject lines
 #   git_tags          <repo> <name> <scoped> [glob]                  -> every tag, newest first
 #   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
 #   git_tag_changes   <repo> <prev> <tag> [pathfilter] [limit]       -> N subject lines
+#   git_tag_at        <repo> <tag>                                   -> "<sha> <epoch>"
+#   git_tag_date      <repo> <tag>                                   -> YYYY-MM-DD
+#   git_version_ge    <a> <b>                                        -> 0 when a >= b
+#   git_version_max   < versions                                     -> the highest line
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
+#
+# A glob is space-separated patterns; one that starts with `!` subtracts (_gr_pats).
 #
 # EVERY function is best-effort and degrades to EMPTY + SUCCESS. A missing repo,
 # a missing `git`, a missing/unauthenticated `gh`, no network, no tags: all of
@@ -66,23 +73,72 @@
 # the `v` of the version, so a dotted number in a product prefix is not one.
 _GR_PRERELEASE='(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)'
 
-# git_tag_version <tag> -> the bare version. `##*-v` strips a product prefix (`shipper-v1.11.0`
-# -> `1.11.0`) but leaves an unprefixed tag as it is (`v2.3.4`), so the `#v` takes that `v` too
-# instead of leaving `vv2.3.4` behind.
+# git_tag_version <tag> -> the bare version: `shipper-v1.11.0` -> `1.11.0`, `v2.3.4` -> `2.3.4`.
+# Product prefixes come off one `-v` at a time until a digit (or `v` and a digit) leads, so a
+# suffix keeps its own `-v` (`v1.2.0-vnext` -> `1.2.0-vnext`, where a greedy strip left `next`).
 git_tag_version() {
-  local ver="${1##*-v}"
+  local ver="$1"
+  while [[ $ver != [0-9]* && $ver != v[0-9]* && $ver == *-v* ]]; do ver="${ver#*-v}"; done
   printf '%s' "${ver#v}"
 }
 
-# _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
-# families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
-# pattern against the working directory, where an unquoted word would.
-_gr_pats() { read -ra _GR_PATS <<<"$1"; }
+# git_version_ge <a> <b> - true when version <a> is at or above <b>. Either may be a tag
+# (`shipper-v1.11.0`) or a bare version (`v1.11.0`, `1.11.0`); both go through git_tag_version
+# first. The one version compare for shell: every `sort -V | tail -1` comparison was a copy.
+git_version_ge() {
+  local a b
+  a="$(git_tag_version "$1")" b="$(git_tag_version "$2")"
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+
+# git_version_max < versions -> the highest, as given (`v1.10.0` beats `v1.9.3`). Bare versions
+# with or without a leading `v`, one a line; blank lines skipped, nothing in, nothing out.
+git_version_max() {
+  local l
+  while IFS= read -r l; do
+    [ -n "$l" ] && printf '%s\t%s\n' "${l#v}" "$l"
+  done | sort -V -k1,1 | tail -1 | cut -f2
+}
+
+# _gr_pats <glob> -> _GR_PATS and _GR_NOT, the glob split on spaces: a registry glob may name
+# several tag families (`buildTags`), each its own pattern to `git tag --list`. An entry that
+# starts with `!` subtracts: `v* !v*-shapecity*` is every v* tag but one game's build tags, so a
+# tag has one owner (project_tag_scope writes those). `read -a` never expands a pattern against
+# the working directory, where an unquoted word would.
+_gr_pats() {
+  local -a ws
+  local w
+  _GR_PATS=() _GR_NOT=()
+  read -ra ws <<<"$1"
+  for w in "${ws[@]}"; do
+    if [ "${w#!}" != "$w" ]; then _GR_NOT+=("${w#!}"); else _GR_PATS+=("$w"); fi
+  done
+}
+
+# _gr_tags <repo> [git tag --list options] - the tags _GR_PATS lists, minus any _GR_NOT
+# matches, in git's order. A line may carry a --format tail; the tag name is its first word.
+# The one listing every reader here uses, so a subtraction can never apply to one and not
+# another. Nothing when the glob only subtracts (`git tag --list` with no pattern lists every
+# tag). 1 when git fails.
+_gr_tags() {
+  local repo="$1" out line p
+  shift
+  [ "${#_GR_PATS[@]}" -gt 0 ] || return 0
+  out=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" "$@" 2>/dev/null) || return 1
+  [ -n "$out" ] || return 0
+  while IFS= read -r line; do
+    for p in "${_GR_NOT[@]}"; do
+      # shellcheck disable=SC2053  # $p is a glob on purpose
+      [[ ${line%% *} == $p ]] && continue 2
+    done
+    printf '%s\n' "$line"
+  done <<<"$out"
+}
 
 _gr_highest() {
   local repo="$1" glob="$2" all="" stable=""
   _gr_pats "$glob"
-  all=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null) || return 0
+  all=$(_gr_tags "$repo" --sort=-v:refname) || return 0
   [ -n "$all" ] || return 0
   stable=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   if [ -n "$stable" ]; then
@@ -186,8 +242,10 @@ git_product_tag() {
   return 0
 }
 
-# git_tag_for_version <repo> <product> <version> -> the tag that SHIPPED this exact
-# version, or "" if none did. `version` is the bare `v1.13.0`.
+# git_tag_for_version <repo> <product> <version> [glob] -> the tag that SHIPPED this exact
+# version, or "" if none did. `version` is the bare `v1.13.0`. A <glob> (the registry's
+# `tagGlob`) is authoritative, as in _gr_glob: the tag is the one of that family whose
+# git_tag_version is the version, so the portfolio's `portfolio-v1.6.4` ships v1.6.4.
 #
 # The asymmetry with git_product_tag is the point: that one answers "what is the
 # newest thing shipped", this one answers "was THIS number shipped". A roll needs
@@ -197,9 +255,16 @@ git_product_tag() {
 # it silently, and that failure refuses a version that really did ship. Exact match
 # only: `v1.13.0-rc1` is not `v1.13.0` shipping.
 git_tag_for_version() {
-  local repo="$1" product="$2" version="$3" glob
+  local repo="$1" product="$2" version="$3" glob t
   [ -n "$repo" ] && [ -n "$product" ] && [ -n "$version" ] && [ -d "$repo/.git" ] \
     && command -v git >/dev/null 2>&1 || return 0
+  if [ -n "${4:-}" ]; then
+    _gr_pats "$4"
+    while IFS= read -r t; do
+      [ "$(git_tag_version "$t")" = "${version#v}" ] && { printf '%s' "$t"; return 0; }
+    done < <(_gr_tags "$repo")
+    return 0
+  fi
   for glob in "${product}-${version}" "${product}-web-${version}" "${version}"; do
     if git -C "$repo" rev-parse -q --verify "refs/tags/${glob}" >/dev/null 2>&1; then
       printf '%s' "$glob"
@@ -254,7 +319,7 @@ git_tags() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null || true
+  _gr_tags "$repo" --sort=-v:refname || true
 }
 
 # git_prev_tag <repo> <name> <scoped> <glob> <tag> - the release before <tag> on its own
@@ -267,7 +332,7 @@ git_prev_tag() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  all=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
+  all=$(_gr_tags "$repo" --merged "${tag}^" --sort=-v:refname) || return 0
   if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
     all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   fi
@@ -285,9 +350,27 @@ git_first_tag() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  out=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --contains "$sha" --sort=creatordate \
-    --format='%(refname:short) %(creatordate:unix)' 2>/dev/null) || return 1
+  out=$(_gr_tags "$repo" --contains "$sha" --sort=creatordate \
+    --format='%(refname:short) %(creatordate:unix)') || return 1
   printf '%s' "${out%%$'\n'*}"
+}
+
+# git_tag_at <repo> <tag> -> "<sha> <epoch>": the commit the tag names (peeled through an
+# annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
+# of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
+# tag does not exist.
+git_tag_at() {
+  [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
+  git -C "$1" for-each-ref --count=1 \
+    --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(creatordate:unix)' \
+    "refs/tags/$2" 2>/dev/null || true
+}
+
+# git_tag_date <repo> <tag> -> the day of git_tag_at's creatordate, in the tag's own timezone,
+# YYYY-MM-DD, or "". git formats it, so no platform `date` is involved.
+git_tag_date() {
+  [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
+  git -C "$1" for-each-ref --count=1 --format='%(creatordate:short)' "refs/tags/$2" 2>/dev/null || true
 }
 
 # git_tag_changes <repo> <prev> <tag> [pathfilter] [limit] - what <tag> shipped: the merged

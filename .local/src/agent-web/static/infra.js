@@ -13,6 +13,9 @@ const ist = { data: null, err: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
+  // An opened history re-reads with the board, so its last state and today's hours stay current
+  // and a failed read retries.
+  for (const h of Object.keys(cst.hist)) loadHist(h);
   if (st.tab === "infra") renderInfra();
 });
 
@@ -127,6 +130,18 @@ const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
 const whereCell = (m) => (m.cloud ? "cloud" : "local");
 const cpuTitle = (m) => m.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
 
+// Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
+// the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
+// no reading is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
+// their disks. A local CI row with none says so plainly (cachyos-x8664-main's disk shows on its node row, workstation).
+function diskCell(free, m) {
+  if (free == null) {
+    if (!m) return `<td class="n">-</td>`;
+    return `<td class="n${m.cloud ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">no reading</td>`;
+  }
+  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
+}
+
 // The one MACHINES table: every machine with stats or a CI slot, those that carry CI first, then
 // the busiest. Its pools column is each pool's busy/slots there, so it is the Pools table's
 // slots and the old CI-by-machine rollup too.
@@ -137,12 +152,13 @@ function machinesTable(cc, inst) {
   const num = (c) => c.split(",").map(Number);
   for (const c of Object.values(cores)) c.sort(([a], [b]) => { const [x, y] = [num(a), num(b)]; return x[0] - y[0] || (x[1] || 0) - (y[1] || 0); });
   const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
+  const disk = Object.fromEntries((inst.disk || []).map((s) => [s.labels.host, s.value]));
   const carries = (h) => !!(ci[h] && (ci[h].slots || ci[h].pools.length));
   // Machines that carry CI first, then the busiest.
   const hosts = [...new Set([...Object.keys(cc["cc:host_cores"] || {}), ...Object.keys(ci).filter(carries)])].sort((a, b) => carries(b) - carries(a) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
-  return `<table class="tbl"><tr><th data-role="lead">machine</th><th>where</th><th class="n" data-role="glance" data-named>busy</th><th>cpu (per core)</th><th class="n" data-role="glance" data-named>now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n" data-role="glance" data-named>temp</th><th>pools</th></tr>${hosts.map((h) => {
+  return `<table class="tbl"><tr><th data-role="lead">machine</th><th>where</th><th class="n" data-role="glance" data-named>busy</th><th>cpu (per core)</th><th class="n" data-role="glance" data-named>now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n" data-role="glance" data-named>temp</th><th class="n" title="free on its fullest disk">disk free</th><th>pools</th></tr>${hosts.map((h) => {
     const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), m = ci[h];
-    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td><td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
+    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td>${diskCell(disk[h], m)}<td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
   }).join("")}</table>`;
 }
 
@@ -294,7 +310,9 @@ function ciSection(cc, inst, t1, ci) {
 const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
 const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
 // The button armed by a first click ("host:action"), and the last answer.
-const cst = { armed: "", msg: "" };
+const cst = { armed: "", msg: "", hist: {} };
+// Rows of an opened history shown before "+N older".
+const HIST_ROWS = 30;
 
 function cloudHosts(inst) {
   const by = {};
@@ -328,14 +346,13 @@ function ruleText(h) {
 
 // The governor's other series: per host and global, by metric name.
 function governorIndex(inst) {
-  const g = { host: {}, alerts: [], actions: [], usd: {} };
+  const g = { host: {}, alerts: [], actions: [] };
   for (const s of inst.governor || []) {
     const l = s.labels, n = l.__name__.replace("ci_governor_", "");
     if (l.host) {
       const h = (g.host[l.host] ||= { host: l.host });
       if (n === "decision") { h.verdict = l.verdict; h.action = l.action; } else h[n] = s.value;
-    } else if (n === "budget_usd") g.usd[l.kind] = s.value;
-    else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
+    } else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
     else if (n === "budget_action_usd") g.actions.push([l.type, l.status, s.value]);
     else g[n] = s.value;
   }
@@ -345,15 +362,11 @@ function governorIndex(inst) {
 // [150, 100, 100] -> "$100 and $150"
 const usdList = (xs) => [...new Set(xs)].sort((a, b) => a - b).map((x) => "$" + x).join(" and ");
 
-// The month as AWS Budgets last gave it, and what happens at each line.
+// What AWS does at each budget line; the month's dollars are Costs > Budget, beside every other bill.
 function budgetLines(g) {
   if (g.budget_ok == null) return "";
-  const u = g.usd;
-  if (u.limit == null) return `<div class="muted">Month: the governor has not read the AWS budget yet${g.budget_ok ? "" : ' (its last read failed: runbook, "budget read")'}.</div>`;
-  // AWS forecasts from history; on a new account it can sit below what is already spent.
-  const fc = u.forecast == null || u.forecast < u.actual ? "no AWS forecast yet" : `forecast ${usd(u.forecast)}`;
-  const stale = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span>`;
-  const month = `<div class="month"><span>Month: <b>${usd(u.actual)}</b> of ${usd(u.limit)}, ${fc}</span><span class="m">${meter(u.limit ? u.actual / u.limit : 0, u.actual >= u.limit * 0.75 ? "var(--b-stalled)" : "var(--c2)")}</span><span class="muted">AWS Budgets, as of ${when(g.budget_updated)}${stale}</span></div>`;
+  const failed = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span> (runbook, "budget read")`;
+  const month = `<div class="month"><span>Month: <a href="#costs/budget">Costs, Budget</a></span><span class="muted">the governor read AWS Budgets ${when(g.budget_updated)}${failed}</span></div>`;
   const act = g.alerts.filter(([b]) => b === "actual").map(([, v]) => v), fore = g.alerts.filter(([b]) => b === "forecasted").map(([, v]) => v);
   const mails = act.length ? `Emails at ${usdList(act)}${usdList(fore) === usdList(act) ? " (spent or forecast)" : fore.length ? `, forecast at ${usdList(fore)}` : ""}` : "";
   const stops = [...new Set(g.actions.map(([, , v]) => v))].map((v) => {
@@ -376,9 +389,35 @@ function cloudCard(inst) {
     const why = h.reason && h.reason !== "none" ? h.reason : "";
     const last = h.changedAt ? `${esc(h.changed)} ${when(h.changedAt)}${why ? ` (${esc(why)})` : ""}` : why ? esc(why) : "-";
     const cost = h.rate != null ? ` ~${usd((h.hours || 0) * h.rate)}` : "";
-    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--c-other)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns}</td></tr>`;
+    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--c-other)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns} <button class="btn sm" data-hist="${esc(h.host)}">${cst.hist[h.host] ? "Hide 7 days" : "7 days"}</button></td></tr>${histRow(h.host)}`;
   }).join("");
   return `<h2 class="sec" id="sec-cloud">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel"><div class="scroll"><table class="tbl"><tr><th data-role="lead">host</th><th data-role="glance">state</th><th>rule</th><th>last</th><th></th><th class="n" data-role="glance" data-named>today</th><th>override</th><th></th></tr>${rows}</table></div>${budgetLines(g)}<div class="err">${esc(cst.msg)}</div></div>`;
+}
+
+// An opened host's last days (GET /api/cloud-runner/history, hub_core::power_history): hours per
+// UTC day, counted from the governor's 2-minute power samples, then each start and stop, newest
+// first. Read when opened, then on the board's refresh while it stays open.
+function histRow(host) {
+  const o = cst.hist[host];
+  if (!o) return "";
+  let body;
+  if (o.err) body = `<div class="err">${esc(o.err)}</div>`;
+  else if (!o.data) body = `<div class="muted">Loading...</div>`;
+  else {
+    const d = o.data, ch = [...d.changes].reverse(), shown = o.all ? ch : ch.slice(0, HIST_ROWS);
+    const days = d.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
+    const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td><span class="chip sm" style="--c:${POWER_COLOR[c.state] || "var(--c-other)"}">${esc(c.state.toUpperCase())}</span></td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
+    const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="${esc(host)}">+${ch.length - shown.length} older</button>` : "";
+    body = `<div>Run per UTC day: ${days || "no samples"} <span class="muted">(counted from ${d.step / 60}-minute samples of the governor's power state)</span></div><table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>${more}`;
+  }
+  return `<tr><td colspan="8">${body}</td></tr>`;
+}
+
+async function loadHist(host) {
+  const o = cst.hist[host];
+  try { o.data = await api(`/api/cloud-runner/history?host=${encodeURIComponent(host)}`); o.err = null; }
+  catch (e) { o.err = `${host}: ${e.message}`; }
+  if (st.tab === "infra") renderInfra();
 }
 
 // The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
@@ -405,6 +444,15 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
+  const hb = e.target.closest("[data-hist]");
+  if (hb) {
+    const h = hb.dataset.hist;
+    if (cst.hist[h]) delete cst.hist[h]; else { cst.hist[h] = { data: null, err: null, all: false }; loadHist(h); }
+    renderInfra();
+    return;
+  }
+  const ha = e.target.closest("[data-hist-all]");
+  if (ha) { const o = cst.hist[ha.dataset.histAll]; if (o) o.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;

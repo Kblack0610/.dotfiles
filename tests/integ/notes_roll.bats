@@ -151,9 +151,9 @@ EOF
 #
 # The guard VERIFIES and never tags - creating one would make an agent able to ship.
 #
-# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only
-# the project -> repo mapping is stubbed. Stubbing the predicate would leave the tag
-# shapes (`<product>-v*`, bare `v*`) untested, which is the half most likely to rot.
+# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only the
+# project -> repo and tag family mapping (project_tag_scope) is stubbed. Stubbing the predicate
+# would leave the tag shapes (`<product>-v*`, bare `v*`) untested, the half most likely to rot.
 
 # $1=project $2=the wave version the sheet would freeze, $3.. = tags that exist
 with_shipping_project() {
@@ -166,7 +166,7 @@ with_shipping_project() {
   printf '%s' "$ver" > "$NOTES_FIXTURE/version-of.$proj"
   cat > "$SANDBOX/pn-lib.sh" <<LIB
 project_release_version() { printf 'v1.0.0'; }
-project_repo_path() { printf '%s' '$repo'; }
+project_tag_scope() { _PTS_REPO='$repo' _PTS_GLOB='${TAG_GLOB:-}'; }
 LIB
   export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
 }
@@ -204,6 +204,23 @@ LIB
   with_frozen
   with_shipping_project demoapp v1.13.0 demoapp-v1.13.0-rc1
   run "$NOTES_ROLL" personal demoapp minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+}
+
+@test "a declared tagGlob finds the tag whose prefix is not the project name" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --release kenneth-black-portfolio'
+}
+
+@test "a declared tagGlob is authoritative: its prerelease, or another family's tag, does not ship the version" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4-rc1 v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
   assert_failure
   assert_output --partial 'no git tag ships it'
 }

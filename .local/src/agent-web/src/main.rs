@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
+        .route("/api/cloud-runner/history", get(cloud::history))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/flow", get(flow_strip))

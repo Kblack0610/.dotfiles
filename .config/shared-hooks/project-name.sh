@@ -178,24 +178,39 @@ project_release_tag() {
   fi
 }
 
+# project_release_lib - load git-release.sh ($GIT_RELEASE_LIB, else the stowed copy) into the
+# calling shell; 1 when it is missing. The one loader, for project_tag_scope and for a caller
+# that needs the library's pure helpers (git_version_ge, git_tag_date) in its own shell.
+project_release_lib() {
+  local lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
+  [ -f "$lib" ] || return 1
+  # shellcheck source=/dev/null
+  . "$lib" 2>/dev/null
+}
+
 # project_tag_scope <project> -> sets _PTS_REPO, _PTS_SCOPED (0: the project IS its repo, 1: a
 # product inside one), _PTS_GLOB (the registry's tagGlob) and _PTS_BUILDS (its `buildTags`
 # globs, space-separated), and loads git-release.sh. Returns 1 when the project has no checkout
 # or the library is missing. The one place that decides which tag family a project owns, for the
 # newest tag and for the list. `buildTags` names per-build tags (`v0.5.0-shapecity3`) that are
 # history only: they never own the version, so a game keeps waiting for its own
-# `<game>-vX.Y.Z` family (project_version_owner).
+# `<game>-vX.Y.Z` family (project_version_owner). One owner per tag: a declared tagGlob loses
+# every other project's buildTags in the same repo (`v* !v*-shapecity*`, _gr_pats), so the
+# playground's `v*` no longer lists a game's build. A ladder glob is never that broad here.
 project_tag_scope() {
-  local lib
+  local repo not
   _PTS_REPO="$(project_repo_path "$1")"
   [ -n "$_PTS_REPO" ] && [ -d "$_PTS_REPO/.git" ] || return 1
-  lib="${GIT_RELEASE_LIB:-$HOME/.local/lib/git-release.sh}"
-  [ -f "$lib" ] || return 1
-  # shellcheck source=/dev/null
-  . "$lib" 2>/dev/null || return 1
+  project_release_lib || return 1
+  repo="$(project_repo_name "$1")"
   _PTS_GLOB="$(project_field "$1" tagGlob)"
-  _PTS_BUILDS="$(jq -r --arg n "$1" '.trackers[$n].buildTags // [] | arrays | join(" ")' "$(project_map_file)" 2>/dev/null || true)"
-  if [ "$(project_repo_name "$1")" = "$1" ]; then _PTS_SCOPED=0; else _PTS_SCOPED=1; fi
+  { IFS= read -r _PTS_BUILDS; IFS= read -r not; } < <(jq -r --arg n "$1" --arg r "$repo" '
+    (.trackers // {}) as $t
+    | ($t[$n].buildTags // [] | arrays | join(" ")),
+      ([$t | to_entries[] | select(.key != $n and (.value | type) == "object" and (.value.repo // .key) == $r)
+        | .value.buildTags // [] | arrays | .[] | "!" + .] | join(" "))' "$(project_map_file)" 2>/dev/null) || true
+  [ -n "$_PTS_GLOB" ] && [ -n "$not" ] && _PTS_GLOB="$_PTS_GLOB $not"
+  if [ "$repo" = "$1" ]; then _PTS_SCOPED=0; else _PTS_SCOPED=1; fi
 }
 
 # project_release_version <project> -> `v1.11.0`, or "" if it ships nothing.

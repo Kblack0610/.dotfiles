@@ -57,7 +57,7 @@ pub fn page(
                 "  {} of {} rows, {}",
                 rows.len(),
                 f.who.len(),
-                hub_core::costs::SPEND_BADGE
+                hub_core::costs::spend_badge()
             ),
             p,
         ),
@@ -588,8 +588,8 @@ pub fn runner_page(
         heading(
             "RUNS",
             format!(
-                "  14 days of runs.jsonl; a run's log: {}Infra, h on {}",
-                hub_core::layout::bar_digit("infra").map_or(String::new(), |d| format!("{d} ")),
+                "  14 days of runs.jsonl; a run's log: {}, h on {}",
+                hub_core::layout::bar_label("infra"),
                 r.name
             ),
             p,
@@ -799,13 +799,12 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         // the count and the way there.
         Extras::SentinelWatches { watches } => {
             let trip = watches.iter().filter(|x| x.state == "TRIP").count();
-            let key =
-                hub_core::layout::bar_digit("alerts").map_or(String::new(), |d| format!("{d} "));
+            let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
                     "WATCHES",
                     format!(
-                        "  {} watches, {trip} tripped: {key}Alerts, Watches",
+                        "  {} watches, {trip} tripped: {alerts}, Watches",
                         watches.len()
                     ),
                     p,
@@ -1067,7 +1066,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 0 Costs",
+            "FLEET  3 of 3 rows, spend: Costs",
             "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
             "KIND",
             "FOR",
@@ -1426,7 +1425,7 @@ pub mod tests {
         };
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
-            lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 8 Alerts, Watches".to_string()),
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");
