@@ -12,7 +12,7 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export BENCH_SESSIONS_CMD=sessions-stub   # on PATH: the sandbox path has a space
   export BENCH_DEFAULT_PHASE_MIN=60
-  export TRIAGE_ITEMS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc"   # nor the real queue or watch state for reds
+  export TRIAGE_ITEMS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc" TRIAGE_PROMOTE_CMD=false   # nor the real queue, watch state or dispatcher for reds
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
@@ -1854,13 +1854,15 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
 }
 
-@test "triage: a high or urgent watch is a row after one pass; a low one under 6h is not" {
+@test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {
   triage_setup
   watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
+  watch late TRIP -2000 low
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_output --partial 'check(watch): hot tripped'
   assert_output --partial 'check(watch): hotter tripped'
+  assert_output --partial 'check(watch): late tripped'
   refute_output --partial 'young'
   refute_output --partial 'slow'
   refute_output --partial 'none'
@@ -1986,7 +1988,9 @@ fix_item() {
   [ "$(grep -c . "$PLOG")" = 2 ]
 }
 
-@test "triage: alert and owned take no row and no item, script files a row, a human route files and pages once" {
+# 2026-11-10 (ar-1531): 12 watches were tripped and 7 had no owner: alert, owned and script routes
+# took no item, so every red item that day was filed by hand.
+@test "triage: an alert, owned or script watch files a row and a red watch item; a human route files and pages once" {
   log_triage_setup
   watch spend TRIP -25200 high; watch drift TRIP -25200 high; watch nightly TRIP -25200 high; watch puck TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
@@ -1996,9 +2000,14 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 for the human'
-  [ ! -s "$PLOG" ]
-  run grep -c 'watch): spend\|watch): nightly\|watch): puck' "$BOARD"
-  assert_output 0
+  assert_output --partial '3 queued as red fixes'
+  [ "$(grep -c -- '--tags red watch cause:' "$PLOG")" = 3 ]
+  run grep -c 'watch): puck' "$PLOG" "$BOARD"
+  assert_output --partial "$BOARD:0"
+  run grep -c 'check(watch): spend tripped since .*; the human decides: the spend watch pages on its own; own it: file that decision as one agent-ask' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): nightly tripped since .*; owned by ar-9: its plan owns it; get that work running' "$BOARD"
+  assert_output 1
   run grep -c 'tripped since .*; script: dotfiles-deploy' "$BOARD"
   assert_output 1
   run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
@@ -2007,6 +2016,37 @@ fix_item() {
   assert_success
   [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
   [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+@test "triage: a tripped watch's item is outside the daily cap and does not count against it" {
+  log_triage_setup
+  today=$(date -u -d "@$T0" +%F)
+  watch spend TRIP -25200 high
+  route 'watch.: (spend) tripped' agent - 'fix the spend'
+  jq -cn --arg d "${today}T01:00:00Z" '{tags: "red cause:other", state: "done", queued: $d}' > "$ITEMS"
+  TRIAGE_FIX_CAP=1 run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c -- '--tags red watch cause:' "$PLOG")" = 1 ]
+  [ "$(grep -c -- '--tags red cause:' "$PLOG")" = 0 ]
+  : > "$PLOG"
+  rm "$TRIAGE_WATCH_STATE/spend.state"
+  lock_route
+  jq -cn --arg d "${today}T01:00:00Z" '{tags: "red watch cause:other", state: "done", queued: $d}' > "$ITEMS"
+  TRIAGE_FIX_CAP=1 run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c -- "--tags red cause:$(cause_of)" "$PLOG")" = 1 ]
+}
+
+@test "triage: each unrouted watch is a cause of its own, so each gets an item" {
+  log_triage_setup
+  : > "$TRIAGE_ROUTES"
+  watch one TRIP -25200 high; watch two TRIP -25200 high
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c -- '--tags red watch cause:' "$PLOG")" = 2 ]
+  [ "$(grep -o 'cause:[^ ]*' "$PLOG" | sort -u | grep -c .)" = 2 ]
+  refute_output --partial 'cause:-'
+  ! grep -q 'fix(logs)' "$PLOG"
 }
 
 @test "triage: a route the table does not know is unrouted, never a silent sink" {
