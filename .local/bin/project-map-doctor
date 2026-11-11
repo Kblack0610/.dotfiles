@@ -96,6 +96,22 @@ done < <(jq -r '(.trackers // {}) as $t | $t | to_entries[] | select(.value | ty
   | @tsv' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n board relations name a sheet" || skip "no board relations to check"
 
+# --- 3c. every tracker `client` names a `clients` entry with a profile ----------------
+# A client marks a work project, listed only on the machine whose notes profile is
+# clients[client].profile (project_visible). A typo'd client hides the project everywhere,
+# the work machine included, so it fails here instead of vanishing quietly.
+n=0 bad=0
+while IFS=$'\t' read -r name client ok; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  [ "$ok" = 1 ] || { bad=$((bad + 1)); fail "trackers.$name has client \"$client\", which clients does not define with a profile"; }
+done < <(jq -r '(.clients // {}) as $c | (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.client != null)
+  | .value.client as $k | [.key, ($k | tostring),
+    (if ($k | type) == "string" and ((($c[$k] // null) | objects | .profile) // "") != "" then 1 else 0 end)]
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+if [ "$n" -eq 0 ]; then skip "no tracker clients to check"
+elif [ "$bad" -eq 0 ]; then pass "all $n tracker clients name a clients profile"; fi
+
 # --- 4. every spelling names one project, and every spelling in use resolves ---------
 # The name index (project_lookup; rule: docs/operations/release-state.md, "Project identity")
 # maps a key, each tracker's `names`, its `github`/`forgejo` slugs and each checkout basename to
