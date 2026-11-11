@@ -743,6 +743,56 @@ setup_freerdp_avd() {
 }
 
 # Override main installation to include AUR
+# Static-check tools for the trader repo (Kblack0610/freqtrade_trading_attempt).
+#
+# Its package.json runs `python -m mypy` and `python -m ruff`, and the
+# 20-node-checks stop hook runs those through `pnpm typecheck` / `pnpm lint` on the
+# system python, which ships neither. The pins live in the repo's
+# lab/requirements-dev.txt (CI installs the same file), so this reads that file
+# instead of copying the versions. The system python is externally managed, so the
+# pins go into the user site-packages with uv --target.
+#
+# Idempotent: skips when the checkout is absent, and installs only when a pin is
+# missing or at another version.
+setup_trader_checks() {
+    log_section "Setting up trader static-check tools (mypy, ruff)"
+
+    local reqs="${TRADER_DIR:-$HOME/dev/crypto/freqtrade_trading_attempt}/lab/requirements-dev.txt"
+    if [[ ! -f "$reqs" ]]; then
+        log_info "No trader checkout at $reqs - skipping"
+        return 0
+    fi
+
+    command -v uv &>/dev/null || install_pacman_package uv
+
+    local site
+    site=$(python -c 'import site; print(site.getusersitepackages())')
+
+    if python - "$reqs" <<'PY'
+import sys
+from importlib.metadata import PackageNotFoundError, version
+
+for line in open(sys.argv[1]):
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    name, _, pin = line.partition("==")
+    try:
+        if version(name) != pin:
+            sys.exit(1)
+    except PackageNotFoundError:
+        sys.exit(1)
+PY
+    then
+        log_info "trader check pins already installed in $site"
+        return 0
+    fi
+
+    log_info "Installing $reqs into $site"
+    uv pip install --python "$(command -v python)" --target "$site" --upgrade -r "$reqs"
+    log_info "trader checks ready - see .config/trader-checks/README.md"
+}
+
 install_all() {
     step base        create_directories
     step base        update_system
@@ -784,6 +834,7 @@ install_all() {
     step shell       install_fonts
     step dotfiles    setup_git
     step dev         install_npm_packages
+    step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
 
     # Must come after apply_dotfiles
