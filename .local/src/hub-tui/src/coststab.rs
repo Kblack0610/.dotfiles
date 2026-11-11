@@ -612,6 +612,30 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             ]
         })
         .collect::<Vec<_>>();
+    let mut rows = rows;
+    if let Some(f) = &b.total {
+        let dash = || Cell::from("-");
+        let over = if f.over { p.warn() } else { Style::new() };
+        rows.push(vec![
+            cell("TOTAL", p.head()),
+            dash(),
+            f.live.to_string().into(),
+            Cell::from(""),
+            dash(),
+            dash(),
+            dash(),
+            dash(),
+            cell(format!("{:.2}", f.burn), over),
+            format!("{:.2}", f.sustain).into(),
+            dash(),
+            dash(),
+            f.run_out.map_or("-".into(), time).into(),
+            dash(),
+            dash(),
+            dash(),
+            costs::usd(f.cost_24h).into(),
+        ]);
+    }
     out.extend(
         Table {
             header: vec![
@@ -1018,7 +1042,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     let mut out = vec![];
     if let Some(why) = &d.why {
         out.push(clip_line(
-            Line::styled(format!("  SESSIONS  {why}"), p.dim()),
+            Line::styled(format!("  BURN PER SESSION  {why}"), p.dim()),
             w,
         ));
         out.push(Line::raw(""));
@@ -1026,7 +1050,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     }
     out.push(clip_line(
         Line::from(vec![
-            Span::styled("  SESSIONS  ", p.head()),
+            Span::styled("  BURN PER SESSION  ", p.head()),
             Span::raw(d.head.clone()),
         ]),
         w,
@@ -1167,7 +1191,10 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
     let title = Span::styled("BUDGET  ", p.head());
     if let Some(why) = &b.why {
         return vec![
-            clip_line(Line::from(vec![title, Span::styled(why.clone(), p.warn())]), w),
+            clip_line(
+                Line::from(vec![title, Span::styled(why.clone(), p.warn())]),
+                w,
+            ),
             Line::raw(""),
         ];
     }
@@ -1178,7 +1205,10 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
         head.push(Span::styled(format!("STALE, as of {as_of}  "), p.warn()));
     }
     head.push(Span::styled(format!("{}  ", b.month), p.dim()));
-    head.push(Span::raw(format!("{} so far  {} by month end  ", b.spent, b.projected)));
+    head.push(Span::raw(format!(
+        "{} so far  {} by month end  ",
+        b.spent, b.projected
+    )));
     head.push(Span::styled(format!("caps {}", b.caps), p.dim()));
     if !b.stale {
         head.push(Span::styled(format!("  as of {as_of}"), p.dim()));
@@ -1186,7 +1216,10 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
     let mut out = vec![clip_line(Line::from(head), w)];
     if !b.partial.is_empty() {
         out.push(clip_line(
-            Line::styled(format!("partial, not counted: {}", b.partial.join(", ")), p.warn()),
+            Line::styled(
+                format!("partial, not counted: {}", b.partial.join(", ")),
+                p.warn(),
+            ),
             w,
         ));
     }
@@ -1202,21 +1235,33 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
             }
         }
     }
-    let rows = b
-        .bills
-        .iter()
-        .map(|x| {
-            let s = if x.status == "ok" { Style::new() } else { p.warn() };
-            vec![
-                cell(x.name.clone(), s),
+    // Each group's heading row (its name and our cash in it), then its bills.
+    let mut rows = vec![];
+    for g in &b.groups {
+        rows.push(vec![
+            cell(g.name.to_uppercase(), p.head()),
+            Cell::from(""),
+            Cell::from(""),
+            cell(g.spent.clone(), p.head()),
+            cell(g.month.clone(), p.head()),
+            Cell::from(""),
+        ]);
+        for x in &g.bills {
+            let s = if x.status == "ok" {
+                Style::new()
+            } else {
+                p.warn()
+            };
+            rows.push(vec![
+                cell(format!("  {}", x.name), s),
                 cell(x.kind.clone(), p.dim()),
                 x.cap.clone().into(),
                 cell(x.spent.clone(), s),
                 x.month.clone().into(),
                 cell(x.note.clone(), p.dim()),
-            ]
-        })
-        .collect();
+            ]);
+        }
+    }
     out.extend(
         Table {
             header: vec!["BILL", "KIND", "CAP", "SO FAR", "MONTH EST", "NOTE"],
@@ -1229,10 +1274,24 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
         }
         .fit(w, p.head()),
     );
-    for (head, cuts) in [("BY PROJECT  ", &b.by_project), ("BY LANE     ", &b.by_lane)] {
-        let items: Vec<String> = cuts.iter().map(|c| format!("{} {}", c.name, c.usd)).collect();
-        for (i, l) in wrap(&items, "  ", w.saturating_sub(head.len())).into_iter().enumerate() {
-            let lead = if i == 0 { head.to_string() } else { " ".repeat(head.len()) };
+    let project: Vec<String> = b
+        .by_project
+        .iter()
+        .map(|c| format!("{} {}", c.name, c.usd))
+        .collect();
+    for (head, items) in [
+        ("BY PROJECT  ", project),
+        ("BY LANE     ", b.by_lane.clone()),
+    ] {
+        for (i, l) in wrap(&items, "  ", w.saturating_sub(head.len()))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if i == 0 {
+                head.to_string()
+            } else {
+                " ".repeat(head.len())
+            };
             out.push(clip_line(
                 Line::from(vec![Span::styled(lead, p.head()), Span::raw(l)]),
                 w,
@@ -1596,8 +1655,8 @@ mod tests {
                  "list_usd": 1125.54, "status": "ok", "note": ""},
                 {"name": "lazer", "kind": "litellm", "paid_by": "lazer", "cap": 50.0, "spent": 228.12,
                  "projected": 228.12, "status": "over", "note": "past its $50 cap"},
-                {"name": "do", "kind": "digitalocean", "spent": 77.71, "projected": 224.0, "status": "ok", "note": ""},
-                {"name": "aws", "kind": "aws", "cap": 600.0, "spent": 112.95, "projected": 379.86,
+                {"name": "do", "kind": "digitalocean", "lane": "infra", "spent": 77.71, "projected": 224.0, "status": "ok", "note": ""},
+                {"name": "aws", "kind": "aws", "lane": "ci", "cap": 600.0, "spent": 112.95, "projected": 379.86,
                  "status": "ok", "note": "AWS's own forecast"}
             ]
         }))
@@ -1617,19 +1676,57 @@ mod tests {
             assert!(crate::fit::len(l) <= 80, "{l:?} is wider than 80");
         }
         let lines: Vec<&str> = screen.lines().collect();
-        assert!(lines[0].contains("Budget 1"), "the strip counts it: {screen}");
-        let at = |head: &str| lines.iter().position(|l| l.starts_with(head)).unwrap_or(usize::MAX);
+        assert!(
+            lines[0].contains("Budget 1"),
+            "the strip counts it: {screen}"
+        );
+        let at = |head: &str| {
+            lines
+                .iter()
+                .position(|l| l.starts_with(head))
+                .unwrap_or(usize::MAX)
+        };
         let (head, needs, bills) = (at("BUDGET"), at("NEEDS LOOK 1"), at("BILL "));
-        assert!(head < needs && needs < bills && bills < lines.len(), "{screen}");
-        assert!(lines[head].contains("$838 so far") && lines[head].contains("~$1,304 by month end"), "{screen}");
-        assert!(lines[needs + 1].contains("lazer over its $50 cap ($228)"), "{screen}");
-        assert!(lines[bills + 1].starts_with("lazer"), "off ok leads: {screen}");
-        assert!(screen.contains("BY PROJECT  unity-core-playground $334"), "{screen}");
+        assert!(
+            head < needs && needs < bills && bills < lines.len(),
+            "{screen}"
+        );
+        assert!(
+            lines[head].contains("$838 so far") && lines[head].contains("~$1,304 by month end"),
+            "{screen}"
+        );
+        assert!(
+            lines[needs + 1].contains("lazer over its $50 cap ($228)"),
+            "{screen}"
+        );
+        assert!(
+            lines[bills + 1].starts_with("AGENTS"),
+            "the agents group leads: {screen}"
+        );
+        assert!(
+            lines[bills + 2].starts_with("  lazer"),
+            "off ok leads its group: {screen}"
+        );
+        let (ci, infra) = (at("CI "), at("INFRA "));
+        assert!(
+            bills < ci && ci < at("  aws") && at("  aws") < infra && infra < at("  do"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("BY PROJECT  unity-core-playground $334"),
+            "{screen}"
+        );
         assert!(screen.contains("unattributed $91"), "{screen}");
-        assert!(!screen.contains("FLEET COST") || at("FLEET COST 24H") < head, "the 24h figure stays pinned above");
+        assert!(
+            !screen.contains("FLEET COST") || at("FLEET COST 24H") < head,
+            "the 24h figure stays pinned above"
+        );
         // negative control: three hours old says STALE and needs a look for it
         let stale = screen_of(&with_budget(3 * 3600), &on("budget"), 80);
-        assert!(stale.contains("STALE, as of") && stale.contains("NEEDS LOOK 2"), "{stale}");
+        assert!(
+            stale.contains("STALE, as of") && stale.contains("NEEDS LOOK 2"),
+            "{stale}"
+        );
     }
 
     #[test]
@@ -1837,12 +1934,15 @@ mod tests {
         let s = page(&v);
         assert!(s.contains("2026-11-08: no figure"), "{s}");
         assert!(
-            s.contains("SESSIONS  2026-11-08: no session rows"),
+            s.contains("BURN PER SESSION  2026-11-08: no session rows"),
             "the picked day stays picked, and says it has no rows: {s}"
         );
         v.fold(KeyCode::Char(','), None, None);
         let s = page(&v);
-        assert!(s.contains("SESSIONS  2026-11-07: 2 sessions"), "{s}");
+        assert!(
+            s.contains("BURN PER SESSION  2026-11-07: 2 sessions"),
+            "{s}"
+        );
         v.fold(KeyCode::Char('v'), None, None);
         v.fold(KeyCode::Char('v'), None, None);
         let s = page(&v);

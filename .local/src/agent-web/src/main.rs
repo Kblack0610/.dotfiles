@@ -91,9 +91,12 @@ struct AppState {
     schedules: schedules::Cache,
     session_table: sessions::Cache,
     briefing: briefing::Cache,
+    queue: queue::Cache,
 }
 
 type Shared = Arc<AppState>;
+/// The events a slow subscriber may fall behind by before it lags (see `main`).
+const EVENT_BACKLOG: usize = 4096;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -104,7 +107,9 @@ fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
 async fn main() -> Result<()> {
     let oauth = auth::OAuth::load()?;
     let sessions = auth::Sessions::load();
-    let (events, _) = broadcast::channel(256);
+    // Transcripts alone write about four events a second; a cache read less often than the
+    // channel holds takes a lag as a change and reads again, so it holds about a quarter hour.
+    let (events, _) = broadcast::channel(EVENT_BACKLOG);
     let watch_off = WatchOff::default();
     watch(events.clone(), watch_off.clone())?;
     let state = Arc::new(AppState {
@@ -113,6 +118,7 @@ async fn main() -> Result<()> {
         actions: feed::Cache::new(events.subscribe()),
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
+        queue: queue::Cache::new(&events),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -1157,10 +1163,9 @@ async fn home_board(
     State(s): State<Shared>,
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
-    let infra = s.infra.infra().await;
+    let (infra, queue) = tokio::join!(s.infra.infra(), s.queue.queue());
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
-        let queue = hub_core::queue::Queue::read(&actions::System);
         let board = hub_core::tasks::feed(&actions::System);
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
@@ -1192,9 +1197,9 @@ async fn infra_board(State(s): State<Shared>) -> Response {
 }
 
 /// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
-async fn flow_strip() -> ApiResult<Json<serde_json::Value>> {
+async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let queue = s.queue.queue().await;
     tokio::task::spawn_blocking(move || {
-        let queue = hub_core::queue::Queue::read(&actions::System);
         let read = hub_core::pipeline::read();
         let line =
             hub_core::flow::Rail::build(Some(&queue), Some(&read), chrono::Utc::now().timestamp());

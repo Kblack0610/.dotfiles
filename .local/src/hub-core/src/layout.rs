@@ -202,6 +202,7 @@ pub const TABS: [Tab; 13] = [
             "fleet",
             "burn",
             "consumers",
+            "sessions",
             "spend",
             "totals",
             "table",
@@ -222,7 +223,7 @@ pub const TABS: [Tab; 13] = [
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["spend", "totals", "table"],
+                sections: &["sessions", "spend", "totals", "table"],
             },
             Inner {
                 id: "models",
