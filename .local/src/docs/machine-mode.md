@@ -21,7 +21,7 @@ The level says how fast the fleet starts work. `mid` is the confs' own numbers. 
 | `DISPATCH_NIGHT_MAX` | fleet-dispatch | 3 | 6 | 12 |
 | `DISPATCH_MAX_LOAD`, a core | fleet-dispatch | 0.9 | 1.5 | 2.1 |
 | `CLAUDE_ACCT_PACE_SLACK_PCT`, points past pace | claude-acct room | 1 | 5 | 10 |
-| `CLAUDE_ACCT_RESERVE_PCT`, kept for you | claude-acct room | 20 | 15 | 10 |
+| `CLAUDE_ACCT_RESERVE_PCT`, kept for you | claude-acct room | 13 | 10 | 7 |
 
 The numbers here are today's conf values. `DISPATCH_PER_PASS` is unset, and 0 is no cap at every level, so the scaled load limit is what bounds a pass; set it above 0 and the level scales it again (the two claude-acct rows come from `.config/claude-acct/pace.conf`; their names are the levels file's column keys, not env vars, so exporting one changes nothing). The conf is the baseline: change it there and every level follows. Nothing is written when you switch, so the next dispatch pass and the next `claude-acct room` read the new level. `cl`, `claude-acct pick` and hand starts are never refused by it: pick's rank ignores the level, and only its stderr hint about an automatic start follows it. Run units (`DISPATCH_MAX_LIVE`), budgets, and the thermal, memory and GitHub gates are not scaled. `fleet-dispatch headroom` prints the level next to the limits it is applying now.
 
@@ -76,10 +76,23 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 - Other builds agents start are not capped. They already run at a low priority.
 - `open` means the two runners on 12 of the 24 threads, as it always has. A third slot waits on a day of load data.
 
+## Release lane
+
+A release cut keeps a pool host's slots for its own build jobs, for a set time:
+
+```bash
+machine-mode release-lane razer-laptop --until 13:00   # keep them until 13:00 (date -d; at most 24h ahead)
+machine-mode release-lane --clear razer-laptop         # end it now (removes the key)
+machine-mode release-lane                              # list them; an ended one says so
+```
+
+It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then, and ignores the key after, so a forgotten one ends by itself. It refuses a host the governor does not report on (`ci_governor_registered`), and only warns when Prometheus does not answer. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
+
 ## Troubleshooting
 
 | What you see | Why | What to do |
 |---|---|---|
+| `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`razer-laptop`) |
 | `could not reach the cluster`, chip amber | The local parts applied and the ConfigMap write failed. Nothing else writes runner labels | Fix cluster access and run the same mode again |
 | `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 2 runners admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
 | `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |

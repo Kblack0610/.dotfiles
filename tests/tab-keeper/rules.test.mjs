@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "../../.config/firefox/tab-keeper/rules.js";
 
-const { withDefaults, configErrors, dedupeAction, planTick } = globalThis.TabKeeperRules;
+const { withDefaults, configErrors, fromPolicy, karakeepOrigin, dedupeAction, planTick } = globalThis.TabKeeperRules;
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
@@ -113,4 +113,20 @@ test("dry run is the default and config mistakes are reported", () => {
   assert.deepEqual(configErrors({ sweepDays: "7" }), ["wrong type: sweepDays"]);
   assert.deepEqual(configErrors({ singleTabHosts: "x" }), ["wrong type: singleTabHosts"]);
   assert.deepEqual(configErrors({ dryRun: false, sweepDays: 3 }), []);
+});
+
+test("settings come from the policy, and anything wrong there falls back to dry run with a reason", () => {
+  assert.match(fromPolicy(null).problem, /no settings/);
+  const typo = fromPolicy({ config: { dryrun: false }, karakeepKey: "k" });
+  assert.equal(typo.config.dryRun, true);
+  assert.match(typo.problem, /unknown setting: dryrun/);
+  assert.match(fromPolicy({ config: { karakeepUrl: "https://k.test" }, karakeepKey: "" }).problem, /no Karakeep key/);
+  const good = fromPolicy({ config: { dryRun: false, karakeepUrl: "https://k.test" }, karakeepKey: "k" });
+  assert.equal(good.problem, null);
+  assert.equal(good.config.dryRun, false);
+  assert.equal(good.key, "k");
+});
+
+test("the Karakeep host grant drops the port", () => {
+  assert.equal(karakeepOrigin("https://k.test:8443/x"), "https://k.test/*");
 });

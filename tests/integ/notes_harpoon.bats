@@ -74,3 +74,53 @@ slots() {
   assert_equal "${#lines[@]}" 5
   assert_line --index 2 'LAB/projects/current/alef/README.md *'
 }
+
+# --- the hub list (hub_slots): daily, index, then today's pins; a new day starts over --------
+
+# Print the slot values hub_slots returns for the given items, with the tmpdir shortened to T.
+hub() {
+  nvim --headless -u NONE -i NONE --cmd "set rtp^=$PLUGIN" \
+    -c "lua local out = require('notes.harpoon').hub_slots($1, {
+          daily = '$BATS_TEST_TMPDIR/daily/2026-11-09.md', index = '$LAB/projects/index.md' })
+        for _, it in ipairs(out) do
+          io.stdout:write((it.value:gsub(vim.pesc('$BATS_TEST_TMPDIR'), 'T')) .. '\n')
+        end" \
+    -c 'qa!' 2>/dev/null
+}
+
+@test "hub: an empty list becomes today's daily then the projects index" {
+  run hub '{}'
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md')"
+}
+
+@test "hub: same day, the user's pins stay after the two, the index is not duplicated" {
+  run hub "{ { value = '$BATS_TEST_TMPDIR/daily/2026-11-09.md' }, { value = '$LAB/projects/index.md' },
+             { value = '$BATS_TEST_TMPDIR/scratch.md' }, { value = '$LAB/projects/current/alef/README.md' } }"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md' \
+    'T/scratch.md' 'T/lab/projects/current/alef/README.md')"
+}
+
+@test "hub: a new day (yesterday's daily in slot 1) wipes old dailies and pins back to the two" {
+  local items="{ { value = '$BATS_TEST_TMPDIR/daily/2026-11-06.md' }"
+  local i
+  for i in $(seq 1 90); do items="$items, { value = '$BATS_TEST_TMPDIR/daily/old-$i.md' }"; done
+  items="$items, { value = '$BATS_TEST_TMPDIR/scratch.md' } }"
+  run hub "$items"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md')"
+}
+
+@test "hub: a pin moved into slot 1 mid-day is not a day turn, the pins stay" {
+  run hub "{ { value = '$BATS_TEST_TMPDIR/scratch.md' }, { value = '$BATS_TEST_TMPDIR/daily/2026-11-09.md' },
+             { value = '$LAB/projects/index.md' } }"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md' 'T/scratch.md')"
+}
+
+@test "hub: yesterday's daily anywhere in the list is the day turn, even when moved out of slot 1" {
+  run hub "{ { value = '$BATS_TEST_TMPDIR/scratch.md' }, { value = '$BATS_TEST_TMPDIR/daily/2026-11-08.md' } }"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md')"
+}

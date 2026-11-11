@@ -128,7 +128,7 @@ push_lands() {
   assert_output --partial 'repo-agent-1'
 
   [ -d "$WT_ROOT/repo-agent-1" ] || fail "the worktree directory was not created"
-  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+  assert_regex "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" '^agent-1-[0-9]{6}-[0-9]{6}$'
   # The session name IS the directory basename -- that identity is what sessionizer and
   # agent-panel both parse.
   assert_called 'new-session -ds repo-agent-1'
@@ -136,7 +136,7 @@ push_lands() {
 }
 
 @test "a fresh worktree branch pushes to its own name, never to main (ar-746)" {
-  # Both ways a branch is cut here track origin/main: `wt new` (-B agent-N origin/main) and
+  # Both ways a branch is cut here track origin/main: `wt new` (-b agent-N-<stamp> origin/main) and
   # the CLAUDE.md recipe (-b <branch> origin/main). Under git's default push.default=simple,
   # `git push -u origin <branch>` goes to <branch>. Under push.default=upstream it goes to
   # main, so a repo config carrying that value breaks the recipe.
@@ -144,7 +144,7 @@ push_lands() {
   run "$WT" new -c "$MAIN"
   assert_success
   assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse --abbrev-ref '@{upstream}')" origin/main
-  push_lands "$WT_ROOT/repo-agent-1" agent-1
+  push_lands "$WT_ROOT/repo-agent-1" "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)"
 
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-recipe" -b fix/recipe origin/main
   assert_equal "$(git -C "$WT_ROOT/repo-recipe" rev-parse --abbrev-ref '@{upstream}')" origin/main
@@ -278,7 +278,7 @@ declare_in_lab() {
   assert_success
   assert_equal "${lines[-1]}" repo-agent-1
   assert_output --partial 'reusing idle repo-agent-1'
-  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+  assert_regex "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" '^agent-1-[0-9]{6}-[0-9]{6}$'
   assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
   [ -f "$WT_ROOT/repo-agent-1/cache/built" ] || fail "the ignored build cache was thrown away"
   run git -C "$MAIN" show-ref --verify --quiet refs/heads/feat/done
@@ -332,7 +332,7 @@ declare_in_lab() {
   SHELL="$(type -P true)" run "$WT" _prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
   assert_success
   assert_output --partial 'ready'
-  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+  assert_regex "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" '^agent-1-[0-9]{6}-[0-9]{6}$'
 }
 
 @test "inside tmux, new hands WT_NEW_CMD to the pane, which runs it in the worktree" {
@@ -410,13 +410,16 @@ declare_in_lab() {
   assert_success
 }
 
-@test "new takes a slot whose only remnant is a MERGED agent-N branch" {
+@test "new takes a slot whose only remnant is an agent-N branch, and leaves that branch alone" {
   make_repo
   git -C "$MAIN" branch agent-1 origin/main
+  git -C "$MAIN" commit --quiet --allow-empty -m only-copy
+  git -C "$MAIN" branch -f agent-1 HEAD
   run "$WT" new -c "$MAIN"
   assert_success
   assert_equal "${lines[-1]}" repo-agent-1
-  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" agent-1
+  assert_regex "$(git -C "$WT_ROOT/repo-agent-1" branch --show-current)" '^agent-1-[0-9]{6}-[0-9]{6}$'
+  assert_equal "$(git -C "$MAIN" rev-parse agent-1)" "$(git -C "$MAIN" rev-parse HEAD)"
 }
 
 @test "new NEVER recycles an idle worktree with uncommitted work" {
@@ -561,6 +564,8 @@ declare_in_lab() {
   printf 'edit\n' > "$WT_ROOT/repo-keep/file.txt"
   git -C "$MAIN" branch agent-7 origin/main              # merged, checked out nowhere
   git -C "$MAIN" branch worktree-agent-ab12 origin/main  # same, the harness's name
+  git -C "$MAIN" branch agent-4-261110-120000 origin/main  # same, a stamped cut
+  git -C "$MAIN" branch agent-5-hotfix origin/main       # merged, agent-shaped, not a slot
   git -C "$MAIN" branch feature origin/main              # merged, but not a slot branch
   git -C "$MAIN" branch agent-8 origin/main
   git -C "$MAIN" worktree add --quiet "$SANDBOX/side" agent-8
@@ -576,10 +581,13 @@ declare_in_lab() {
   assert_success
   assert_output --partial 'deleted agent-7'
   assert_output --partial 'deleted worktree-agent-ab12'
+  assert_output --partial 'deleted agent-4-261110-120000'
+  refute_output --partial 'agent-5-hotfix'
   refute_output --partial 'agent-3'
   git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc"
   git -C "$MAIN" rev-parse --verify --quiet worktree-agent-ab12 >/dev/null && fail "merged harness branch survived gc"
   git -C "$MAIN" rev-parse --verify --quiet feature >/dev/null || fail "gc deleted a branch that is not a slot"
+  git -C "$MAIN" rev-parse --verify --quiet agent-5-hotfix >/dev/null || fail "gc deleted an agent-shaped branch that is not a slot"
   git -C "$MAIN" rev-parse --verify --quiet agent-8 >/dev/null || fail "gc deleted an unmerged branch"
   git -C "$MAIN" rev-parse --verify --quiet agent-3 >/dev/null || fail "gc deleted a checked-out branch"
   [ -d "$WT_ROOT/repo-keep" ] || fail "gc deleted a dirty worktree"
@@ -726,10 +734,8 @@ declare_in_lab() {
 
 # ── reap takes the branch with it ────────────────────────────────────────────
 
-@test "reap deletes the branch it just freed, so the slot is reusable" {
-  # Without this the numbers ratchet forever: wt_next_slot counts an existing `agent-N` branch
-  # as an occupied slot, so four reaped worktrees pushed the next one to agent-5 with
-  # nothing on disk.
+@test "reap deletes the merged branch of the tree it just freed" {
+  # A cut never reuses a branch name, so a branch reap leaves behind is dead weight.
   make_repo
   add_wt repo-agent-1 agent-1
   run "$WT" reap "$WT_ROOT/repo-agent-1"

@@ -1,7 +1,8 @@
-//! The Releases tab, both surfaces: one row per project channel, what is pinned there and what
-//! is actually live, from `release-state show --json`. The collector owns the probes and the
-//! status words; this reader adds only what a row needs to draw: its level, its column text and
-//! the exceptions-first order. The Builds section under the channels is its own reader's.
+//! The Releases tab, both surfaces: one row per app, what is live where it matters most and its
+//! worst status, its channels (what is pinned and what is live on each) opened under it, from
+//! `release-state show --json`. The collector owns the probes and the status words; this reader
+//! adds only what a row needs to draw: the grouping, the levels, the column text and the
+//! exceptions-first order. The Builds inner tab beside the apps is its own reader's.
 
 use std::collections::HashMap;
 
@@ -11,13 +12,11 @@ use crate::pipeline::stamp;
 
 use crate::layout;
 use crate::session_actions::Runner;
-use crate::table::{Row, Val, View};
+use crate::table::{Row, Val};
 
 /// A snapshot older than this is drawn amber: the collector runs every 15 minutes, and this is
 /// `release-state check`'s own `--max-age` default.
 pub const STALE_SECS: i64 = 3600;
-/// How many channels the fold line names before it says "...".
-const FOLD_NAMES: usize = 3;
 /// The collector's words, worst first (`RANK` in `release-state`). A word not listed here is
 /// new, so it is drawn amber and sorts with the exceptions rather than folding as green.
 const STATUSES: [(&str, Level); 6] = [
@@ -28,6 +27,19 @@ const STATUSES: [(&str, Level); 6] = [
     ("released", Level::Ok),
     ("unreleased", Level::Ok),
 ];
+
+/// How the tab says a collector word: `unknown` is a channel the collector could not read, which
+/// is what the human needs to hear. Every other word is said as it is written.
+fn shown(status: &str) -> &str {
+    match status {
+        "unknown" => "not read",
+        s => s,
+    }
+}
+
+/// The order an app's envs are listed in, its headline first; an env not named here follows them
+/// by name.
+const ENVS: [&str; 6] = ["prod", "release", "beta", "alpha", "internal", "preview"];
 
 /// What one row's state means, for its colour (docs/dashboards.md rule 5).
 #[derive(Serialize, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -174,8 +186,8 @@ pub struct Release {
     pub telemetry: Vec<Watch>,
     pub deps: Vec<String>,
     pub probed_at: Option<i64>,
-    /// The worst of the status word, the watches and a failed last deploy: what orders and
-    /// folds the row.
+    /// The worst of the status word, the watches and a failed last deploy: what orders the
+    /// channel within its app.
     #[serde(skip_deserializing)]
     pub level: Level,
     /// The STATUS, TELEMETRY and LAST DEPLOY cells' own levels, for their colour.
@@ -185,6 +197,9 @@ pub struct Release {
     pub watch_level: Level,
     #[serde(skip_deserializing)]
     pub deploy_level: Level,
+    /// The STATUS cell: the collector's word as the tab says it (`not read` for `unknown`).
+    #[serde(skip_deserializing)]
+    pub status_text: String,
     /// The CHANNEL cell: `prod pmp-web-prod`, or `release` on an implicit row.
     #[serde(skip_deserializing)]
     pub label: String,
@@ -210,58 +225,163 @@ impl Release {
         self.level == Level::Ok
     }
 
+    /// The collector could not read this channel: a probe or a credential failed.
+    pub fn unread(&self) -> bool {
+        self.status == "unknown"
+    }
+
+    /// Why the channel could not be read, as the probe said it.
+    pub fn why_unread(&self) -> String {
+        self.live
+            .error
+            .clone()
+            .or_else(|| self.pinned.error.clone())
+            .unwrap_or_else(|| "no reason given".into())
+    }
+
     fn word(&self) -> Level {
         STATUSES
             .iter()
             .find(|(s, _)| *s == self.status)
             .map_or(Level::Warn, |(_, l)| *l)
     }
+
+    /// What the channel says about its app: an unread one's watches and deploys, never its word.
+    fn says_for_app(&self) -> Level {
+        if self.unread() {
+            self.watch_level.min(self.deploy_level)
+        } else {
+            self.level
+        }
+    }
 }
 
-impl Row for Release {
-    // `id` and `where` are last and undrawn: the channel cell shows the one and the opened row the
-    // other, and both still filter.
+/// Where an env sorts among an app's: [`ENVS`] first, any other after them by name.
+fn env_rank(env: &str) -> (usize, &str) {
+    (
+        ENVS.iter().position(|e| *e == env).unwrap_or(ENVS.len()),
+        env,
+    )
+}
+
+/// One app: every channel of one project, what is live where it matters most, and the worst of
+/// what the channels it could read say. A channel the collector could not read is counted, but it
+/// never sets the app's word: a missing store key must not hide a prod that reads fine.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct App {
+    pub project: String,
+    /// The worst collector word among the channels read, `unknown` when none was.
+    pub status: String,
+    /// The STATUS cell: [`App::status`] as the tab says it.
+    pub status_text: String,
+    pub level: Level,
+    /// The LIVE cell: `v1.19.0 prod`, the first value in env order, live before pinned.
+    pub live_text: String,
+    /// The CHANNELS cell: `7: 4 ok, 1 released, 2 not read`.
+    pub channels_text: String,
+    /// The channels the collector could not read.
+    pub unread: usize,
+    /// The LAST DEPLOY cell: the newest finished deployment of any channel, and its level.
+    pub last_deploy_text: String,
+    pub deploy_level: Level,
+    /// The channels in env order (the headline env first), read before unread and the worst
+    /// first within an env.
+    pub channels: Vec<Release>,
+    /// How many of [`App::channels`] are the headline env's: shown when the app opens, the rest
+    /// fold under [`App::others_text`].
+    pub lead: usize,
+    /// The folded envs in one line: `preview 2 ok; beta 1 released; internal 1 not read`.
+    pub others_text: String,
+}
+
+impl App {
+    /// Nothing about this app asks for attention.
+    pub fn green(&self) -> bool {
+        self.level == Level::Ok
+    }
+}
+
+impl Row for App {
+    // `channel` and `id` are last and undrawn: they hold every channel's env and id, so
+    // `channel:prod` and an id still find the app.
     const COLUMNS: &'static [&'static str] = &[
         "project",
-        "channel",
-        "pinned",
         "live",
         "status",
-        "prev",
+        "channels",
         "last_deploy",
-        "telemetry",
-        "deps",
+        "channel",
         "id",
-        "where",
     ];
-    const STATES: &'static [&'static str] = &["all", "attention", "green"];
+    const STATES: &'static [&'static str] = &["all", "attention", "ok"];
     const FACETS: &'static [&'static str] = &["project", "status"];
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["live", "status"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {
             "" | "-" => Val::None,
             s => Val::Text(s.to_string()),
         };
+        let every = |f: fn(&Release) -> &str| {
+            let mut v: Vec<&str> = self.channels.iter().map(f).collect();
+            v.dedup();
+            text(&v.join(" "))
+        };
         match col {
             "project" => text(&self.project),
-            "channel" => text(&self.label),
-            "pinned" => text(&self.pinned_text),
             "live" => text(&self.live_text),
-            "status" => text(&self.status),
-            "prev" => text(&self.prev_text),
+            "status" => text(&self.status_text),
+            "channels" => text(&self.channels_text),
             "last_deploy" => text(&self.last_deploy_text),
-            "telemetry" => text(&self.telemetry_text),
-            "deps" => text(&self.deps_text),
-            "id" => text(&self.id),
-            "where" => text(self.place.as_deref().unwrap_or_default()),
+            "channel" => every(|r| r.channel.as_str()),
+            "id" => every(|r| r.id.as_str()),
             _ => Val::None,
         }
+    }
+
+    /// `channel:prod` matches an app with any prod channel, `status:` the app's word or the
+    /// collector's (`status:unknown` as well as `status:"not read"`).
+    fn vals(&self, col: &str) -> Vec<Val> {
+        let text = |s: &str| Val::Text(s.to_string());
+        match col {
+            "channel" => self.channels.iter().map(|r| text(&r.channel)).collect(),
+            "id" => self.channels.iter().map(|r| text(&r.id)).collect(),
+            "status" => vec![text(&self.status_text), text(&self.status)],
+            c => vec![self.val(c)],
+        }
+    }
+
+    /// A bare word searches every channel too: its versions, word, deps, place and watches,
+    /// so a dep or a version an opened app would show still finds it.
+    fn text(&self) -> String {
+        let mut parts = vec![
+            self.project.clone(),
+            self.live_text.clone(),
+            self.status_text.clone(),
+            self.channels_text.clone(),
+            self.last_deploy_text.clone(),
+        ];
+        for r in &self.channels {
+            parts.extend([
+                r.channel.clone(),
+                r.id.clone(),
+                r.pinned_text.clone(),
+                r.live_text.clone(),
+                r.status.clone(),
+                r.status_text.clone(),
+                r.deps_text.clone(),
+                r.place.clone().unwrap_or_default(),
+            ]);
+            parts.extend(r.telemetry.iter().map(|t| t.watch.clone()));
+        }
+        parts.join("\n").to_lowercase()
     }
 
     fn in_state(&self, state: &str) -> bool {
         match state {
             "attention" => !self.green(),
-            "green" => self.green(),
+            "ok" => self.green(),
             _ => true,
         }
     }
@@ -281,13 +401,24 @@ pub struct Releases {
     pub at: i64,
     /// The tab's question, from `hub_core::layout`.
     pub question: String,
-    /// `18 channels: 1 floating, 8 ok, 5 released, 4 unreleased`.
+    /// `17 apps: 1 floating, 8 ok, 4 released, 4 unreleased`.
     pub summary: String,
+    /// `9 channels not read: steam GetAppBetas failed (6), ...`; empty when every one was read.
+    pub gaps: String,
+    /// Every app, exceptions first: the tab's rows.
+    pub apps: Vec<App>,
+    /// Every channel, flat, for the readers that join one (the briefing).
     pub rows: Vec<Release>,
     pub errors: Vec<String>,
 }
 
 impl Releases {
+    /// An app's word is bad (a drift, a tripped watch) or the snapshot could not be read: the
+    /// Apps inner tab's count (`layout::inner_count`), so it shows while another one is open.
+    pub fn needs_look(&self) -> bool {
+        !self.errors.is_empty() || self.apps.iter().any(|a| a.level == Level::Bad)
+    }
+
     /// The snapshot is older than the collector's cadence can explain.
     pub fn stale(&self, now: i64) -> bool {
         self.at > 0 && now - self.at > STALE_SECS
@@ -316,6 +447,7 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             w.level = w.judged();
         }
         r.status_level = r.word();
+        r.status_text = shown(&r.status).to_string();
         r.watch_level = r
             .telemetry
             .iter()
@@ -359,27 +491,160 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     rows
 }
 
-/// `8 ok, 5 released`, worst first, each status with its count and none with no rows.
-fn counts<'a>(rows: impl IntoIterator<Item = &'a Release>) -> String {
-    let mut n: Vec<(&str, usize)> = vec![];
-    for r in rows {
-        match n.iter_mut().find(|(s, _)| *s == r.status) {
+/// One project's settled channels as its app.
+fn app(project: &str, mut channels: Vec<Release>) -> App {
+    channels.sort_by(|a, b| {
+        let key = |r: &Release| (r.unread(), r.level, rank(&r.status));
+        (env_rank(&a.channel), key(a), &a.id).cmp(&(env_rank(&b.channel), key(b), &b.id))
+    });
+    // Only a channel that was read speaks for what is live: an unread one's pin is not.
+    let value = |r: &Release| r.live.value.clone().or_else(|| r.pinned.value.clone());
+    let head = channels.iter().find(|r| !r.unread() && value(r).is_some());
+    let live_text = head.map_or("-".into(), |h| {
+        // Every distinct version read in the headline env, so a web and an api that differ
+        // both show.
+        let mut vs: Vec<String> = vec![];
+        for v in channels
+            .iter()
+            .filter(|r| r.channel == h.channel && !r.unread())
+            .filter_map(value)
+        {
+            if !vs.contains(&v) {
+                vs.push(v);
+            }
+        }
+        let vs = vs.join(", ");
+        if h.implicit {
+            vs
+        } else {
+            format!("{vs} {}", h.channel)
+        }
+    });
+    let lead_env = head
+        .or(channels.first())
+        .map(|r| r.channel.clone())
+        .unwrap_or_default();
+    // The headline env leads; the rest keep env order behind it.
+    channels.sort_by_key(|r| r.channel != lead_env);
+    let lead = channels.iter().filter(|r| r.channel == lead_env).count();
+    let read: Vec<&Release> = channels.iter().filter(|r| !r.unread()).collect();
+    let status = read
+        .iter()
+        .map(|r| r.status.as_str())
+        .min_by_key(|s| rank(s))
+        .unwrap_or("unknown")
+        .to_string();
+    // A tripped watch or failed deploy on an unread channel still says; nothing read is at
+    // least amber.
+    let says = channels
+        .iter()
+        .map(Release::says_for_app)
+        .min()
+        .unwrap_or_default();
+    let level = if read.is_empty() {
+        says.min(Level::Warn)
+    } else {
+        says
+    };
+    let unread = channels.len() - read.len();
+    let last = channels
+        .iter()
+        .filter(|r| r.deploys.error.is_none())
+        .filter_map(|r| r.deploys.last.as_ref().map(|d| (d.at, r)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, r)| r);
+    // The sort keeps an env's channels together, so each run of one env is one entry.
+    let others: Vec<String> = channels[lead..]
+        .chunk_by(|a, b| a.channel == b.channel)
+        .map(|env| {
+            let words = counts(env.iter().map(|x| x.status.as_str()));
+            format!("{} {words}", env[0].channel)
+        })
+        .collect();
+    App {
+        project: project.to_string(),
+        status_text: shown(&status).to_string(),
+        status,
+        level,
+        live_text,
+        channels_text: format!(
+            "{}: {}",
+            channels.len(),
+            counts(channels.iter().map(|r| r.status.as_str()))
+        ),
+        unread,
+        last_deploy_text: last.map_or("-".into(), |r| r.last_deploy_text.clone()),
+        deploy_level: last.map_or(Level::Ok, |r| r.deploy_level),
+        others_text: others.join("; "),
+        lead,
+        channels,
+    }
+}
+
+/// The settled channels grouped into apps, exceptions first, then by name.
+fn apps(rows: &[Release]) -> Vec<App> {
+    let mut names: Vec<&str> = rows.iter().map(|r| r.project.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut out: Vec<App> = names
+        .into_iter()
+        .map(|p| app(p, rows.iter().filter(|r| r.project == p).cloned().collect()))
+        .collect();
+    out.sort_by(|a, b| {
+        let key = |x: &App| (x.level, rank(&x.status));
+        (key(a), &a.project).cmp(&(key(b), &b.project))
+    });
+    out
+}
+
+/// `9 channels not read: steam GetAppBetas failed (6), no rbw entry release_state_play (3)`, the
+/// biggest cause first; empty when the collector read every channel.
+fn gaps(rows: &[Release]) -> String {
+    let mut n: Vec<(String, usize)> = vec![];
+    for r in rows.iter().filter(|r| r.unread()) {
+        let why = r.why_unread();
+        match n.iter_mut().find(|(w, _)| *w == why) {
             Some((_, c)) => *c += 1,
-            None => n.push((&r.status, 1)),
+            None => n.push((why, 1)),
+        }
+    }
+    if n.is_empty() {
+        return String::new();
+    }
+    let total: usize = n.iter().map(|(_, c)| c).sum();
+    n.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let causes: Vec<String> = n.iter().map(|(w, c)| format!("{w} ({c})")).collect();
+    format!(
+        "{total} channel{} not read: {}",
+        if total == 1 { "" } else { "s" },
+        causes.join(", ")
+    )
+}
+
+/// `4 ok, 1 released, 2 not read`, worst first, each word with its count and none with no rows.
+fn counts<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+    let mut n: Vec<(&str, usize)> = vec![];
+    for w in words {
+        match n.iter_mut().find(|(s, _)| *s == w) {
+            Some((_, c)) => *c += 1,
+            None => n.push((w, 1)),
         }
     }
     n.sort_by_key(|(s, _)| rank(s));
     n.iter()
-        .map(|(s, c)| format!("{c} {s}"))
+        .map(|(s, c)| format!("{c} {}", shown(s)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn says(rows: &[Release]) -> String {
-    match rows.len() {
-        0 => "no channels".into(),
-        1 => format!("1 channel: {}", counts(rows)),
-        n => format!("{n} channels: {}", counts(rows)),
+fn says(apps: &[App]) -> String {
+    match apps.len() {
+        0 => "no apps".into(),
+        1 => format!("1 app: {}", counts(apps.iter().map(|a| a.status.as_str()))),
+        n => format!(
+            "{n} apps: {}",
+            counts(apps.iter().map(|a| a.status.as_str()))
+        ),
     }
 }
 
@@ -394,8 +659,8 @@ fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> 
     serde_json::from_str(&raw).map_err(|e| format!("release-state show: {e}"))
 }
 
-/// The tab: every channel, or what stopped the read. Nothing is carried over from an earlier
-/// read, so a failed probe is never shown as the last good value.
+/// The tab: every app, or what stopped the read. Nothing is carried over from an earlier read, so
+/// a failed probe is never shown as the last good value.
 pub fn read(runner: &dyn Runner) -> Releases {
     let question = layout::resolve("releases")
         .map(|t| t.question.to_string())
@@ -403,10 +668,13 @@ pub fn read(runner: &dyn Runner) -> Releases {
     match show(runner, None) {
         Ok(s) => {
             let rows = settle(s.rows);
+            let apps = apps(&rows);
             Releases {
                 at: s.generated_epoch,
                 question,
-                summary: says(&rows),
+                summary: says(&apps),
+                gaps: gaps(&rows),
+                apps,
                 rows,
                 errors: vec![],
             }
@@ -420,40 +688,10 @@ pub fn read(runner: &dyn Runner) -> Releases {
     }
 }
 
-/// The rows to draw and the one line the green ones fold to (docs/dashboards.md rule 4):
-/// `17 channels green: 8 ok, 5 released, 4 unreleased (binks-api-prod, ...)`. Only the plain view
-/// folds: any query, chip or sort is the human asking for those rows, so they show. The fold's way
-/// open is the `green` chip.
-pub fn fold<'a>(view: &View, rows: Vec<&'a Release>) -> (Vec<&'a Release>, Option<String>) {
-    if !view.is_default() {
-        return (rows, None);
-    }
-    let (green, open): (Vec<&Release>, Vec<&Release>) = rows.into_iter().partition(|r| r.green());
-    if green.is_empty() {
-        return (open, None);
-    }
-    let mut names: Vec<&str> = green
-        .iter()
-        .take(FOLD_NAMES)
-        .map(|r| r.id.as_str())
-        .collect();
-    if green.len() > FOLD_NAMES {
-        names.push("...");
-    }
-    let says = format!(
-        "{} channel{} green: {} ({})",
-        green.len(),
-        if green.len() == 1 { "" } else { "s" },
-        counts(green.iter().copied()),
-        names.join(", ")
-    );
-    (open, Some(says))
-}
-
-/// One project's channels as the Projects card's badge, linking to this tab (rule 2).
+/// One project's app as the Projects card's badge, linking to this tab (rule 2).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Badge {
-    /// `3 channels: 1 drift, 2 ok`.
+    /// `v1.19.0 prod, ok; channels 7: 4 ok, 1 released, 2 not read`.
     pub says: String,
     pub level: Level,
 }
@@ -468,11 +706,19 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
     }
 }
 
-/// The badge for a project's [`channels`]; None when it has none.
+/// The badge for a project's [`channels`], the same words as its row on the tab; None when it
+/// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    rows.first().map(|worst| Badge {
-        says: says(rows),
-        level: worst.level,
+    apps(rows).into_iter().next().map(|a| {
+        let live = if a.live_text == "-" {
+            String::new()
+        } else {
+            format!("{}, ", a.live_text)
+        };
+        Badge {
+            says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
+            level: a.level,
+        }
     })
 }
 
@@ -538,6 +784,7 @@ pub fn changelog(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::View;
 
     struct Fake(Result<String, String>);
     impl Runner for Fake {
@@ -551,9 +798,11 @@ mod tests {
     impl Runner for Asked {
         fn run(&self, argv: &[String]) -> Result<String, String> {
             *self.0.borrow_mut() = argv.to_vec();
-            Ok(r#"{"project":"p","tag":"p-v2","prev":"p-v1","source":"merged PRs",
+            Ok(
+                r#"{"project":"p","tag":"p-v2","prev":"p-v1","source":"merged PRs",
                 "range":"p-v1..p-v2","text":"- a (#1)","tags":["p-v3","p-v2","p-v1"]}"#
-                .into())
+                    .into(),
+            )
         }
     }
 
@@ -565,7 +814,10 @@ mod tests {
             *a.0.borrow(),
             ["release-state", "changelog", "--json", "p", "p-v2"]
         );
-        assert_eq!((c.source.as_str(), c.prev.as_deref()), ("merged PRs", Some("p-v1")));
+        assert_eq!(
+            (c.source.as_str(), c.prev.as_deref()),
+            ("merged PRs", Some("p-v1"))
+        );
         assert_eq!(c.neighbour(-1), Some("p-v3"));
         assert_eq!(c.neighbour(1), Some("p-v1"));
         assert_eq!(c.neighbour(2), None);
@@ -630,8 +882,10 @@ mod tests {
         assert_eq!(ids, ["d-prod", "e-prod", "c-prod", "a-prod", "b-prod"]);
         assert_eq!(
             r.summary,
-            "5 channels: 1 drift, 1 unknown, 1 floating, 1 ok, 1 unreleased"
+            "5 apps: 1 drift, 1 not read, 1 floating, 1 ok, 1 unreleased"
         );
+        let apps: Vec<&str> = r.apps.iter().map(|x| x.project.as_str()).collect();
+        assert_eq!(apps, ["d", "e", "c", "a", "b"]);
         assert_eq!(r.at, 100);
         assert_eq!(r.question, "What is building, and what is live where?");
     }
@@ -750,47 +1004,209 @@ mod tests {
         assert_eq!(labels, ["prod b-prod", "release"]);
     }
 
-    #[test]
-    fn only_the_plain_view_folds_green_rows_to_one_line() {
-        let r = read(&snapshot(vec![
-            row("a", "a-prod", "ok"),
-            row("b", "b-prod", "ok"),
-            row("c", "c-prod", "released"),
-            row("e", "e-prod", "ok"),
-            row("d", "d-prod", "drift"),
-        ]));
-        let plain = View::default();
-        let (shown, f) = fold(&plain, plain.apply(&r.rows));
-        assert_eq!(shown.len(), 1);
-        let f = f.unwrap();
-        assert_eq!(
-            f,
-            "4 channels green: 3 ok, 1 released (a-prod, b-prod, e-prod, ...)"
-        );
-        // Negative controls: a chip, a query and a sort each show what they keep.
-        let chip = View::new::<Release>("", "green", "", "");
-        let (shown, f) = fold(&chip, chip.apply(&r.rows));
-        assert_eq!((shown.len(), f), (4, None));
-        let q = View::new::<Release>("project:a", "", "", "");
-        let (shown, f) = fold(&q, q.apply(&r.rows));
-        assert_eq!((shown.len(), f), (1, None));
-        let sort = View::new::<Release>("", "", "project", "asc");
-        assert!(fold(&sort, sort.apply(&r.rows)).1.is_none());
+    /// One channel as the collector writes it: `live` None is a store it could not read.
+    fn chan(
+        project: &str,
+        id: &str,
+        env: &str,
+        live: Option<&str>,
+        status: &str,
+    ) -> serde_json::Value {
+        let mut v = row(project, id, status);
+        v["channel"] = env.into();
+        v["pinned"] = serde_json::json!({"value": live, "source": "m"});
+        v["live"] = match live {
+            Some(l) => serde_json::json!({"value": l, "source": "k8s"}),
+            None => {
+                serde_json::json!({"value": null, "source": "store", "error": format!("{id} key missing")})
+            }
+        };
+        v
+    }
+
+    /// The 2026-11-10 shape that hid prod: an app whose prod reads fine beside store channels the
+    /// collector could not read, and an app with nothing read at all.
+    fn shipped() -> Releases {
+        let mut a = chan("app", "app-android-prod", "prod", None, "unknown");
+        a["live"]["error"] = "no rbw entry".into();
+        let mut b = chan("app", "app-android-internal", "internal", None, "unknown");
+        b["live"]["error"] = "no rbw entry".into();
+        let mut g1 = chan("game", "game-steam-beta", "beta", None, "unknown");
+        g1["live"]["error"] = "steam 403".into();
+        let mut g2 = chan("game", "game-steam-default", "prod", None, "unknown");
+        g2["live"]["error"] = "steam 403".into();
+        let mut ios = chan("app", "app-ios", "beta", Some("1.19.0 (7)"), "released");
+        ios["pinned"] = serde_json::json!({"value": null, "source": "none"});
+        read(&snapshot(vec![
+            a,
+            chan("app", "app-web-prod", "prod", Some("v1.19.0"), "ok"),
+            chan("app", "app-api-prod", "prod", Some("v1.19.0"), "ok"),
+            chan("app", "app-web-preview", "preview", Some("pre-1"), "ok"),
+            b,
+            ios,
+            g1,
+            g2,
+        ]))
     }
 
     #[test]
-    fn with_nothing_green_there_is_no_fold() {
-        let r = read(&snapshot(vec![row("d", "d", "drift")]));
-        let v = View::default();
-        let (shown, f) = fold(&v, v.apply(&r.rows));
-        assert_eq!((shown.len(), f), (1, None));
+    fn an_app_is_one_row_and_a_channel_it_could_not_read_does_not_hide_its_prod() {
+        let r = shipped();
+        let app = r.apps.iter().find(|a| a.project == "app").unwrap();
+        assert_eq!(app.live_text, "v1.19.0 prod");
+        assert_eq!((app.status_text.as_str(), app.level), ("ok", Level::Ok));
+        assert_eq!(app.channels_text, "6: 2 not read, 3 ok, 1 released");
+        assert_eq!(app.unread, 2);
+        let ids: Vec<&str> = app.channels.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "app-api-prod",
+                "app-web-prod",
+                "app-android-prod",
+                "app-ios",
+                "app-android-internal",
+                "app-web-preview"
+            ],
+            "the headline env first, read before unread, then the envs in order"
+        );
+        assert_eq!(app.lead, 3);
+        assert_eq!(
+            app.others_text,
+            "beta 1 released; internal 1 not read; preview 1 ok"
+        );
+        // Negative control: before, the plain view folded every green channel, so the only rows
+        // left were the four unread ones and no row said v1.19.0.
+        let drawn: Vec<&Release> = r.rows.iter().filter(|c| !c.green()).collect();
+        assert!(drawn.iter().all(|c| c.unread()) && drawn.len() == 4);
+        assert!(drawn.iter().all(|c| c.live_text != "v1.19.0"));
+    }
+
+    #[test]
+    fn an_app_with_nothing_read_is_amber_and_leads() {
+        let r = shipped();
+        let game = &r.apps[0];
+        assert_eq!(game.project, "game");
+        assert_eq!(
+            (game.status_text.as_str(), game.level),
+            ("not read", Level::Warn)
+        );
+        assert_eq!((game.live_text.as_str(), game.unread), ("-", 2));
+        assert_eq!(r.summary, "2 apps: 1 not read, 1 ok");
+    }
+
+    #[test]
+    fn the_gap_line_names_each_cause_once_biggest_first() {
+        let r = shipped();
+        assert_eq!(
+            r.gaps,
+            "4 channels not read: no rbw entry (2), steam 403 (2)"
+        );
+        let none = read(&snapshot(vec![row("a", "a", "ok")]));
+        assert_eq!(none.gaps, "");
+    }
+
+    #[test]
+    fn a_read_drift_still_makes_its_app_red_and_first() {
+        let mut v = shipped().apps;
+        assert!(v.iter().all(|a| a.level != Level::Bad));
+        let r = read(&snapshot(vec![
+            chan("app", "app-web-prod", "prod", Some("v1"), "ok"),
+            chan("app", "app-api-prod", "prod", Some("v2"), "drift"),
+            chan("zed", "zed-prod", "prod", None, "unknown"),
+        ]));
+        // A bad app is what puts a count on the Apps inner tab; unread and floating ones do not.
+        assert!(r.needs_look() && !shipped().needs_look());
+        v = r.apps;
+        assert_eq!((v[0].project.as_str(), v[0].level), ("app", Level::Bad));
+        assert_eq!(v[0].status_text, "drift");
+        assert_eq!(
+            v[0].live_text, "v2, v1 prod",
+            "every prod version read shows, the worst channel's first"
+        );
+    }
+
+    #[test]
+    fn an_unread_channels_pin_does_not_speak_for_what_is_live() {
+        let mut pinned = chan("app", "app-web-prod", "prod", None, "unknown");
+        pinned["pinned"] = serde_json::json!({"value": "v1.19.0", "source": "manifest"});
+        let beta = chan("app", "app-ios", "beta", Some("1.19.0 (7)"), "released");
+        let a = &read(&snapshot(vec![pinned.clone(), beta])).apps[0];
+        assert_eq!(a.live_text, "1.19.0 (7) beta");
+        let a = &read(&snapshot(vec![pinned])).apps[0];
+        assert_eq!(
+            (a.live_text.as_str(), a.status_text.as_str()),
+            ("-", "not read")
+        );
+    }
+
+    #[test]
+    fn a_tripped_watch_on_an_app_with_nothing_read_is_red_not_amber() {
+        let mut c = chan("game", "game-steam-default", "prod", None, "unknown");
+        c["telemetry"] = serde_json::json!([{"watch": "game-probe", "state": "TRIP", "since": 1}]);
+        let a = &read(&snapshot(vec![c])).apps[0];
+        assert_eq!((a.status_text.as_str(), a.level), ("not read", Level::Bad));
+    }
+
+    #[test]
+    fn a_bare_word_finds_an_app_by_what_only_its_channels_say() {
+        let mut c = chan("app", "app-web-prod", "prod", Some("v1.2.2"), "ok");
+        c["deps"] = serde_json::json!(["unity-core"]);
+        c["telemetry"] = serde_json::json!([{"watch": "app-probe", "state": "OK"}]);
+        let beta = chan("app", "app-api-beta", "beta", Some("v9.9.9"), "ok");
+        let r = read(&snapshot(vec![c, beta]));
+        for word in ["unity-core", "app-probe", "v9.9.9", "unknown-word"] {
+            let q = View {
+                q: word.into(),
+                state: "all".into(),
+                ..Default::default()
+            };
+            let n = q.apply(&r.apps).len();
+            assert_eq!(n, usize::from(word != "unknown-word"), "{word}");
+        }
+    }
+
+    #[test]
+    fn an_implicit_app_says_its_tag_with_no_env() {
+        let mut v = row("t", "t", "released");
+        v["implicit"] = true.into();
+        v["channel"] = "release".into();
+        v["pinned"] = serde_json::json!({"value": "t-v1.0.1", "source": "newest release tag"});
+        v["live"] = serde_json::json!({"value": null, "source": "none"});
+        let a = &read(&snapshot(vec![v])).apps[0];
+        assert_eq!(
+            (a.live_text.as_str(), a.status_text.as_str()),
+            ("t-v1.0.1", "released")
+        );
+    }
+
+    #[test]
+    fn a_query_finds_apps_by_any_channel_and_status_by_either_word() {
+        let r = shipped();
+        let find = |q: &str| -> Vec<String> {
+            View::new::<App>(q, "", "", "")
+                .apply(&r.apps)
+                .iter()
+                .map(|a| a.project.clone())
+                .collect()
+        };
+        assert_eq!(find("project:app"), ["app"]);
+        assert_eq!(find("channel:preview"), ["app"]);
+        assert_eq!(find("channel:prod"), ["game", "app"]);
+        assert_eq!(find("status:unknown"), ["game"]);
+        assert_eq!(find("status:\"not read\""), ["game"]);
+        assert_eq!(find("game-steam-beta"), ["game"]);
+        let ok = View::new::<App>("", "ok", "", "");
+        assert_eq!(ok.apply(&r.apps).len(), 1);
+        let attention = View::new::<App>("", "attention", "", "");
+        assert_eq!(attention.apply(&r.apps)[0].project, "game");
     }
 
     #[test]
     fn the_status_column_sorts_worst_first_on_the_first_click() {
         let r = read(&snapshot(vec![row("a", "a", "ok"), row("b", "b", "drift")]));
-        let v = View::new::<Release>("", "", "status", "desc");
-        assert_eq!(v.apply(&r.rows)[0].status, "drift");
+        let v = View::new::<App>("", "", "status", "desc");
+        assert_eq!(v.apply(&r.apps)[0].status, "drift");
     }
 
     #[test]
@@ -817,7 +1233,7 @@ mod tests {
         )
         .unwrap();
         let b = badge(&rows).unwrap();
-        assert_eq!(b.says, "2 channels: 1 drift, 1 ok");
+        assert_eq!(b.says, "v1 prod, drift; channels 2: 1 drift, 1 ok");
         assert_eq!(b.level, Level::Bad);
         assert_eq!(badge(&channels(&snapshot(vec![]), "a").unwrap()), None);
     }

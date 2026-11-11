@@ -1,6 +1,6 @@
 //! Fit a table to a width: columns take their content's width and drop from the least
-//! important end until the rest fit, the flex column (always the last) takes what is left, and
-//! every line is clipped with `~`.
+//! important end until the rest fit, the flex column takes what is left, and every line is
+//! clipped with `~` (or, with `fit_wrapped`, the flex column wraps under itself).
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -120,7 +120,7 @@ impl Table {
 
     /// The header line (in `head` style) and one line per row, fitted to `w` (0: no limit).
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
-        let (on, wid) = self.layout(w);
+        let (on, wid) = self.layout(w, false);
         let header = self.head(head);
         std::iter::once(&header)
             .chain(&self.rows)
@@ -132,29 +132,52 @@ impl Table {
     /// instead of being clipped, so a row's whole text shows. Also returns the line each row
     /// starts on (the header is line 0).
     pub fn fit_wrapped(&self, w: usize, head: Style) -> (Vec<Line<'static>>, Vec<usize>) {
-        let (on, wid) = self.layout(w);
+        let (on, wid) = self.layout(w, true);
         let header = self.head(head);
-        let mut out = vec![clip_line(self.line(&header, &on, &wid, None), w)];
-        let mut starts = vec![];
         let Some(f) = self.flex.filter(|f| on[*f] && w > 0) else {
+            let mut out = vec![clip_line(self.line(&header, &on, &wid, None), w)];
+            let mut starts = vec![];
             for r in &self.rows {
                 starts.push(out.len());
                 out.push(clip_line(self.line(r, &on, &wid, None), w));
             }
             return (out, starts);
         };
-        let indent: usize = (0..self.header.len())
-            .filter(|&j| on[j] && j != f)
-            .map(|j| wid[j] + GAP)
-            .sum();
-        let room = w.saturating_sub(indent).max(1);
+        // The flex column need not be the last: the columns before it set where its wrapped
+        // lines start, and with columns after it, it pads to its room so they line up.
+        let span = |cols: std::ops::Range<usize>| -> usize {
+            cols.filter(|&j| on[j]).map(|j| wid[j] + GAP).sum()
+        };
+        let indent = span(0..f);
+        let after = span(f + 1..self.header.len());
+        let room = w.saturating_sub(indent + after).max(1);
+        let pad = |t: String| {
+            if after > 0 {
+                let n = room.saturating_sub(len(&t));
+                t + &" ".repeat(n)
+            } else {
+                t
+            }
+        };
+        let head_text = header.get(f).map(|c| c.text.clone()).unwrap_or_default();
+        let mut out = vec![clip_line(
+            self.line(&header, &on, &wid, Some(pad(head_text))),
+            w,
+        )];
+        let mut starts = vec![];
         for r in &self.rows {
             starts.push(out.len());
             let c = r.get(f).cloned().unwrap_or_default();
-            let words: Vec<&str> = c.text.split_whitespace().collect();
+            // A word wider than the room (a path, a URL) breaks inside itself, so it never
+            // pushes the columns after it out of line.
+            let words: Vec<String> = c
+                .text
+                .split_whitespace()
+                .flat_map(|word| chunks(word, room))
+                .collect();
             let mut parts = wrap(&words, " ", room).into_iter();
             let first = parts.next().unwrap_or_default();
-            out.push(clip_line(self.line(r, &on, &wid, Some(first)), w));
+            out.push(clip_line(self.line(r, &on, &wid, Some(pad(first))), w));
             for more in parts {
                 let l = Line::from(vec![
                     Span::raw(" ".repeat(indent)),
@@ -166,8 +189,10 @@ impl Table {
         (out, starts)
     }
 
-    /// Which columns show, and each one's width.
-    fn layout(&self, w: usize) -> (Vec<bool>, Vec<usize>) {
+    /// Which columns show, and each one's width. A clipped flex column asks for its whole
+    /// text, so keep columns after it drop to show more of it; a `wrapped` one shows its whole
+    /// text anyway, so it asks only `flexmin` and a long cell cannot push the others off.
+    fn layout(&self, w: usize, wrapped: bool) -> (Vec<bool>, Vec<usize>) {
         let ncol = self.header.len();
         let mut wid: Vec<usize> = self.heads().iter().map(|h| len(h)).collect();
         for r in &self.rows {
@@ -178,14 +203,23 @@ impl Table {
         for &(j, m) in &self.cap {
             wid[j] = wid[j].min(m);
         }
+        let ask = |j: usize| {
+            if wrapped && Some(j) == self.flex {
+                self.flexmin
+            } else {
+                wid[j]
+            }
+        };
         let mut on = vec![false; ncol];
         let mut total: isize = -(GAP as isize);
         for &j in &self.keep {
             on[j] = true;
-            total += (wid[j] + GAP) as isize;
+            total += (ask(j) + GAP) as isize;
         }
-        let need = match (self.flex, self.flexkeep) {
-            (Some(_), true) => (self.flexmin + GAP) as isize,
+        let need = match self.flex {
+            Some(f) if self.flexkeep && !(wrapped && self.keep.contains(&f)) => {
+                (self.flexmin + GAP) as isize
+            }
             _ => 0,
         };
         for &j in self.keep.iter().skip(1).rev() {
@@ -193,13 +227,13 @@ impl Table {
                 break;
             }
             on[j] = false;
-            total -= (wid[j] + GAP) as isize;
+            total -= (ask(j) + GAP) as isize;
         }
         if let Some(f) = self.flex {
             // The room the flex column gets is what the others leave, so its own width is not
             // counted against it.
             let rest = if on[f] {
-                total - (wid[f] + GAP) as isize
+                total - (ask(f) + GAP) as isize
             } else {
                 total
             };
@@ -237,6 +271,23 @@ impl Table {
         }
         trim_end(spans)
     }
+}
+
+/// `s` cut into pieces of at most `n` columns.
+fn chunks(s: &str, n: usize) -> Vec<String> {
+    let mut out = vec![];
+    let mut rest = s;
+    while len(rest) > n {
+        let mut head = take_cols(rest, n);
+        if head.is_empty() {
+            // A wide character in a one-column room: it goes alone, so the loop always moves.
+            head = rest.chars().next().map(String::from).unwrap_or_default();
+        }
+        rest = &rest[head.len()..];
+        out.push(head);
+    }
+    out.push(rest.to_string());
+    out
 }
 
 /// Drop trailing blanks.
@@ -293,6 +344,7 @@ mod tests {
         let out: Vec<String> = t.fit(0, Style::new()).iter().map(plain).collect();
         assert_eq!(out, ["JOB       FOR", "🔨 Build   6m", "Checks     9m"]);
         assert_eq!(plain(&clip_line(Line::raw("🔨 Build xyz"), 6)), "🔨 Bu~");
+        assert_eq!(chunks("🔨🔨a", 1), ["🔨", "🔨", "a"]);
     }
 
     fn t(rows: &[&[&str]]) -> Table {
@@ -354,6 +406,19 @@ mod tests {
     }
 
     #[test]
+    fn a_long_wrapped_flex_cell_does_not_push_the_other_columns_off() {
+        let mut tb = t(&[&["alpha", "7", &"word ".repeat(40)]]);
+        tb.keep = vec![0, 2, 1];
+        tb.flexkeep = true;
+        let (lines, _) = tb.fit_wrapped(30, Style::new());
+        let out: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(out[0], "NAME   N  NOTE", "{out:?}");
+        assert!(out.len() > 2 && out.iter().all(|l| len(l) <= 30 && !l.contains('~')));
+        // Clipped, the same table still drops N to show more of the note.
+        assert_eq!(texts(&tb, 30)[0], "NAME   NOTE");
+    }
+
+    #[test]
     fn wrap_breaks_between_items_never_inside_one() {
         let items: Vec<String> = ["nodes 3/3", "heartbeats 7/8", "lazer $1/$5"]
             .map(String::from)
@@ -390,6 +455,43 @@ mod tests {
         );
         assert_eq!(starts, [1, 4]);
         assert!(got.iter().all(|l| len(l) <= 18 && !l.contains('~')));
+    }
+
+    #[test]
+    fn a_wrapped_flex_column_before_others_keeps_them_aligned() {
+        let tb = Table {
+            header: vec!["N", "NOTE", "ID"],
+            rows: vec![vec!["1".into(), "one two three four".into(), "x-1".into()]],
+            keep: vec![0, 1, 2],
+            flex: Some(1),
+            flexmin: 9,
+            flexkeep: true,
+            ..Default::default()
+        };
+        let (lines, _) = tb.fit_wrapped(17, Style::new());
+        let got: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            got,
+            [
+                "N  NOTE       ID",
+                "1  one two    x-1",
+                "   three",
+                "   four"
+            ]
+        );
+        let mut long = tb;
+        long.rows[0][1] = "see /a/very/long/path".into();
+        let (lines, _) = long.fit_wrapped(17, Style::new());
+        let got: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            got,
+            [
+                "N  NOTE       ID",
+                "1  see        x-1",
+                "   /a/very/l",
+                "   ong/path"
+            ]
+        );
     }
 
     #[test]

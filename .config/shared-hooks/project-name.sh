@@ -222,6 +222,20 @@ project_release_version() {
   printf 'v%s' "$(git_tag_version "$tag")"
 }
 
+# project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
+#   tag    a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
+#   build  a game with no tag yet: it waits for its own `<game>-vX.Y.Z` family, never the
+#          sheet counter, so a cadence cut cannot mint a number its builds will not carry
+#   sheet  nothing ships a build: the sheet's counter, cut on its stage's cadence
+# [shipped] is project_release_version's answer when the caller has it, so tags are read once.
+project_version_owner() {
+  local shipped
+  if [ $# -ge 2 ]; then shipped="$2"; else shipped="$(project_release_version "$1")"; fi
+  if [ -n "$shipped" ]; then echo tag
+  elif [ "$(project_field "$1" type)" = game ]; then echo build
+  else echo sheet; fi
+}
+
 # project_lab_names <repo> -> every project belonging to that repo, one per line.
 #
 # The INVERSE of project_repo_name, and the join the session preflight needs: a
@@ -246,8 +260,9 @@ project_lab_names() {
 }
 
 # project_board <repo or project> -> the notes board its rows go on, or "" when it has none: its
-# `owner` (a repo with no sheet of its own: dotfiles -> agent-runtime), else itself when it has a
-# `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
+# `owner` (a repo whose work counts on a project in its checkout: dotfiles -> agent-runtime), else
+# its `board` (a repo with no sheet that files on another's: dotfiles-private -> agent-runtime), else
+# itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
 project_board() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
@@ -255,6 +270,7 @@ project_board() {
     (.trackers // {}) as $t
     | (if ($t[$n] | type) == "object" then $t[$n] else {} end) as $own
     | if ($own.owner // "") != "" then $own.owner
+      elif ($own.board // "") != "" then $own.board
       elif ($own.lab // "") != "" then $n
       else [$t | to_entries[] | select(.value | type == "object")
             | select(.value.repo == $n and (.value.lab // "") != "") | .key][0] // empty end

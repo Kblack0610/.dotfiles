@@ -74,8 +74,8 @@
 #   dotfiles-deploy --json     machine-readable report
 #   dotfiles-deploy --missing  with any of the above: only MISSING paths, so --apply attaches a
 #                              link where nothing resolves and never converts a copy. Safe to run
-#                              unattended; dotfiles-autopull runs `--apply --missing` after every
-#                              fast-forward, so a newly tracked file is linked when it arrives,
+#                              unattended; every dotfiles-autopull pass runs `--apply --missing`,
+#                              so a newly tracked file is linked however its checkout was pulled,
 #                              and setup_dotfiles_private runs it after the overlay's first stow.
 #
 # Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)

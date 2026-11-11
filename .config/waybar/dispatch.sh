@@ -94,7 +94,7 @@ else
   held="$(get dispatch.held_s)"
   if ((${held:-0} > 0)); then flag 1 "dispatch stopped $(prom_dur "$held"): ${paused:-the last pass left ready work waiting}"
   elif [ "$(get runner.blocked)" = 1 ]; then flag 1 "the last pass left ready work waiting (BLOCKED)"; fi
-  ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping between running and waiting"
+  ((${flapping:-0} > 0)) && flag 1 "$flapping item(s) flapping: reap made the same move twice, so another writer undid it"
   ((${could:-0} > 0)) && flag 1 "$could more could start now: a limit, not the machine, holds them (fleet-dispatch headroom)"
   [ "$(get watch.tripped)" = 1 ] && flag 2 "queue-starved is tripped"
   [ "$(get runner.failed)" = 1 ] && flag 2 "the fleet-dispatch runner failed"
@@ -131,8 +131,8 @@ else
   }
 
   total=-
-  [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
-  qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
+  [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting) + $(n0 review)))
+  qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d review) on a PR, $(d waiting) waiting on you"
   ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"

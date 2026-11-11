@@ -10,6 +10,7 @@
 #
 # Fixture files, all optional:
 #   agent-panel.list    lines for `agent-panel list`
+#   agent-panel.list.json  lines for `agent-panel list --json`; absent: agent-panel.list's
 #   agent-panel.asks    present: `agent-panel asks-human` exits 0 (the turn asks the human)
 #   agent-panel.unsent  present: `agent-panel send` exits 3 (the pane did not take the Enter)
 #   agent-panel.said    the JSON `agent-panel said <transcript> --around <id>` prints; absent:
@@ -26,7 +27,9 @@ FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
 printf 'agent-panel %s\n' "$*" >> "$FIX/calls.log"
 
 case "${1:-}" in
-  list) [ -f "$FIX/agent-panel.list" ] && cat "$FIX/agent-panel.list" ;;
+  list)
+    if [[ " $* " == *" --json "* && -f "$FIX/agent-panel.list.json" ]]; then cat "$FIX/agent-panel.list.json"
+    elif [ -f "$FIX/agent-panel.list" ]; then cat "$FIX/agent-panel.list"; fi ;;
   asks-human) [ -f "$FIX/agent-panel.asks" ] && exit 0; exit 1 ;;
   said) [ -f "$FIX/agent-panel.said" ] || exit 1; cat "$FIX/agent-panel.said" ;;
   send) [ -f "$FIX/agent-panel.unsent" ] && { echo "agent-panel send: did not take the Enter" >&2; exit 3; } ;;

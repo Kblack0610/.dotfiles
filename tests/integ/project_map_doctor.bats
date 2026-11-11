@@ -97,6 +97,24 @@ EOF
   assert_output --partial 'repo "no-such-repo"'
 }
 
+@test "a board naming a project with no sheet fails and names it; one with a lab and a code passes" {
+  clean_map
+  jq '.trackers.labonly.board = "alpha"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has board "alpha", which names no project with a lab and a code'
+  jq '.trackers.alpha.lab = "personal" | .trackers.alpha.code = "al"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 1 board relations name a sheet'
+  refute_output --partial 'has board'
+  # A board that is not a name fails by itself and does not abort the check for the ones after it.
+  jq '.trackers = ({"aaa": {"board": ["x"]}} + .trackers) | .trackers["mono-canon"].board = "nope"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.aaa has board "["x"]"'
+  assert_output --partial 'trackers.mono-canon has board "nope"'
+}
+
 @test "a string comment key in trackers does not hide the relations after it" {
   # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.repo` dies on the
   # first string value, so every relation after it went unchecked and the check still

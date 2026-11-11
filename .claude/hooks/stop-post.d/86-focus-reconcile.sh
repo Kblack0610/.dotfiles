@@ -6,9 +6,10 @@
 #
 # Fires only when ALL of these hold:
 #   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
-#   2. nothing is in progress    — no `- [/]` item in today's Focus
-#   3. the work went untracked   - no `notes ptask` or `agent-queue` write by this
-#                                  session, and no `$AGENT_QUEUE_ITEM` from the dispatcher
+#   2. no queue item             - no `$AGENT_QUEUE_ITEM` from the dispatcher, and no item
+#                                  whose `sessions:` lists this one
+#   3. the work went untracked   - no `notes ptask add|start|done|toggle`, `agent-queue
+#                                  add|claim|move|set` or `agent-land` call by this session
 #   4. not already fired         — at most ONCE per session
 #
 # 1 and 3 are read from THIS session's transcript (`transcript_path` in the payload), so
@@ -20,8 +21,12 @@
 # and a concurrent session's write could satisfy your gate. Without a transcript (a
 # non-Claude caller) the old environment checks still run as the fallback.
 #
-# So a session that keeps one item marked in progress never sees it at all. That is the
-# intended pressure: declare what you are on, and the gate disappears.
+# "In progress" is the session's queue item or its own board write, never a `[/]` checkbox
+# already on a page. A `[/]` Focus item used to switch the gate off: it is the human's list,
+# so one started item silenced every agent session until midnight, while a started board row
+# counted for nothing and the gate fired on every new session working it (ar-257). A started
+# board row is tracked by its queue item (`agent-queue add --row` starts the row), and that
+# item is what the checks below read.
 #
 # Blocks by printing a Stop-hook JSON object on stdout (the protocol the coordinator
 # documents at pre-stop-checks.sh:9) and exiting 0 — NOT by exiting 2. Exit 2 would make
@@ -30,8 +35,8 @@
 #
 # A session that opened or merged a PR is held to more: the PR is a unit of work, so only a
 # queue item satisfies it (`agent-queue add|claim`, `agent-land`, $AGENT_QUEUE_ITEM, or an item
-# whose `sessions:` lists this session); a
-# Focus item in progress or a board write does not, and it has its own once-per-session nudge.
+# whose `sessions:` lists this session); a board write does not, and it has its own
+# once-per-session nudge.
 # Why: 2026-11-05 only 26% of merged PRs since 11-04 had an item, so the work ledger could not
 # answer what was done.
 #
@@ -183,12 +188,6 @@ if [ -n "$SESSION_ID" ] && command -v agent-queue >/dev/null 2>&1; then
   case $? in 0 | 2) save_state; exit 0 ;; esac
 fi
 
-# --- 2b. is something already marked in progress? ---
-DAILY_NOTE=$(focus_daily_note)
-FOCUS_BODY=$(focus_body "$DAILY_NOTE")
-WIP=$(printf '%s\n' "$FOCUS_BODY" | focus_items '/')
-[ -n "$WIP" ] && [ "$PR_WORK" -eq 0 ] && { save_state; exit 0; }
-
 # --- 3. was the work tracked since the last run? ---
 # `notes` logs every command as `[<iso8601>] [INFO] <cmd>: <msg>` (logging.rs). The most
 # recent `ptask:` line is enough - if it postdates our last run, this turn tracked its work
@@ -238,26 +237,28 @@ elif [ -n "$SESSION_ID" ] && [ "$SESSION_ID" = "$BLOCKED_SESSION" ]; then
 fi
 
 # --- block ---
+DAILY_NOTE=$(focus_daily_note)
+FOCUS_BODY=$(focus_body "$DAILY_NOTE")
 OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
 if [ "$PR_WORK" -eq 1 ]; then
   REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
-  agent-queue add --running --project <project> \"<type(area): title>\"   the work this PR is part of
+  agent-queue add --running --project <project> [--row <id>] \"<type(area): title>\"   the work this PR is part of
   agent-queue claim <slug>                                                   when an item for it already exists (done or not)
   agent-land <N> --item <slug>                                               merges and closes it
 
-A board row or a Focus item in progress does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
+A board write or a Focus item does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
   mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
   save_state
   jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
   exit 0
 fi
 
-REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
+REASON="focus-gate: this session edited files or committed, but no queue item or board write tracks the work.
 
 The task you are on is an agent-queue item, NOT a board row and NOT the daily note:
-  agent-queue add --running --project <project> \"<task>\"   you are on it
+  agent-queue add --running --project <project> [--row <id>] \"<task>\"   you are on it
   agent-land <N>, or agent-queue move <slug> done            it landed
 
 A cleanup or agent-runtime fix you will not do now goes into the queue at high priority: agent-queue add --priority high --project <project> \"<task>\".

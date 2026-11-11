@@ -36,12 +36,13 @@ The agent runtime itself: the machinery that takes a piece of agent work from in
 - Sessions: `fleet-sessions` computes each session's bucket and writes the state document every view renders (`fleet-states.md`). `fleet-shepherd` nudges stalled ones.
 - Asks: `agent-ask` is the two-way queue a headless agent uses to ask the human a question and read the answer.
 - Landing: `agent-land <pr>` waits for checks, squash-merges the validated head, records the PR on the queue item and closes its board row.
+- GitHub budget: the `gh` wrapper sends read-only calls out on a GitHub App's installation token (`gh-app`), so they stop spending the one REST budget every account shares, and logs every call to `~/.local/state/gh-calls/` (`operations/github-app.md`).
 - Evals with no model in them: `agentctl-session-outcomes` and `fleet-bench` score sessions from transcript structure, git and gh.
 - Views: the `hub` TUI, `agent-web`, `agent-panel`, waybar chips and a Home Assistant feed (`agent-mqtt-publish`).
 
 ### Status
 
 - In daily use. The confs, queue, dispatch, shepherd and evals run unattended on the human's workstation.
-- Held by tests: `tests/unit/runner_contract.bats` (no direct `claude -p`), `tests/integ/agent_run_budget.bats`, `tests/integ/agent_queue.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch.bats`, `tests/unit/pipelines_doc.bats`.
+- Held by tests: `tests/unit/runner_contract.bats` (no direct `claude -p`), `tests/integ/agent_run_budget.bats`, `tests/integ/agent_queue.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch*.bats`, `tests/unit/pipelines_doc.bats`.
 - Invariants, each with the test that fails when it breaks: `.local/src/docs/standards.md`.
 - Stage and its gaps: `project-stage-check agent-runtime`. Not yet in place: a deploy workflow that runs on merge and a perf baseline on the target (`operations/deploy.md`).

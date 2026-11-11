@@ -3,13 +3,15 @@
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
 //! Grafana's kb-command-center does, so none of them judges anything itself.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
 use crate::prom::{self, Series, W};
+use crate::run_detail::Rates;
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
 const LOCAL_FRESH: &str =
@@ -20,6 +22,11 @@ const LOCAL_FRESH: &str =
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+
+/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
+/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str =
+    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -48,6 +55,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
+        // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
+        // jobs, for the CI runners table's USUAL column.
+        ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
         ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
@@ -57,15 +67,13 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
-        // Recent runs, one series per run: the value is when it finished, or how long it took.
-        ("recent", format!("{W} (github_actions_run_recent)")),
-        ("recent_dur", format!("{W} (github_actions_run_recent_duration_seconds)")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
         // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
+        ("rates", RATES_QUERY.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -78,8 +86,8 @@ pub const OPTIONAL: &[&str] = &[
     "withheld",
     "power",
     "governor",
-    "recent",
-    "recent_dur",
+    "job_usual",
+    "rates",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -96,6 +104,8 @@ pub struct Infra {
     pub instant: BTreeMap<&'static str, Vec<Series>>,
     /// `runners_down()` as `gather` found it, for the browser, which only draws it.
     pub down: Vec<Series>,
+    /// The CI runners board, built once here for both surfaces (`ci::build`).
+    pub ci: Ci,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -149,6 +159,7 @@ pub fn gather() -> Infra {
     }
     judge(&mut out, errors);
     out.down = out.runners_down().into_iter().cloned().collect();
+    out.ci = ci::build(&out);
     out
 }
 
@@ -170,32 +181,51 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 }
 
 impl Infra {
+    /// The rates the board read, or why there are none.
+    pub fn rates(&self) -> Rates {
+        match self.instant.get("rates") {
+            Some(s) => Rates::from_series(s),
+            None => Rates {
+                error: Some(
+                    self.error
+                        .clone()
+                        .unwrap_or_else(|| "no rate series".into()),
+                ),
+                ..Default::default()
+            },
+        }
+    }
+
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// The runners that are down: offline or missing, unless the governor has powered their host
-    /// off, or is starting or stopping it (`ci_governor_power_state` at 1 in a state other than
-    /// `running`), when offline is what it should be. A host the governor does not manage has no
-    /// such series, so its runners are judged as any other. RED NOW on both surfaces and the
-    /// phone's CI line read this, so none of them judges a runner itself. By host, then name.
-    pub fn runners_down(&self) -> Vec<&Series> {
-        let powered_off: HashSet<&str> = self
-            .get("power")
+    /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
+    /// at 1 in a state other than `running`), with that state: offline is what their runners
+    /// should be. A host the governor does not manage has no such series.
+    pub fn powered_off(&self) -> HashMap<&str, &str> {
+        self.get("power")
             .iter()
             .filter(|s| {
                 s.label("__name__") == "ci_governor_power_state"
                     && s.value == Some(1.0)
                     && s.label("state") != "running"
             })
-            .map(|s| s.label("host"))
-            .collect();
+            .map(|s| (s.label("host"), s.label("state")))
+            .collect()
+    }
+
+    /// The runners that are down: offline or missing, unless the governor has powered their host
+    /// off (`powered_off`). RED NOW on both surfaces and the phone's CI line read this, so none
+    /// of them judges a runner itself. By host, then name.
+    pub fn runners_down(&self) -> Vec<&Series> {
+        let off = self.powered_off();
         let mut down: Vec<&Series> = self
             .get("runners")
             .iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
-            .filter(|s| !powered_off.contains(s.label("host")))
+            .filter(|s| !off.contains_key(s.label("host")))
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
         down
@@ -345,6 +375,26 @@ mod tests {
     }
 
     #[test]
+    fn the_rates_come_from_the_boards_answer_or_say_why_not() {
+        let mut i = Infra::default();
+        i.instant.insert(
+            "rates",
+            vec![
+                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
+                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
+            ],
+        );
+        let r = i.rates();
+        assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
+        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        let none = Infra {
+            error: Some("cannot read prom".into()),
+            ..Default::default()
+        };
+        assert_eq!(none.rates().error.as_deref(), Some("cannot read prom"));
+    }
+
+    #[test]
     fn only_the_extras_are_optional() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
@@ -360,8 +410,8 @@ mod tests {
                 "withheld",
                 "power",
                 "governor",
-                "recent",
-                "recent_dur"
+                "job_usual",
+                "rates"
             ]
         );
     }

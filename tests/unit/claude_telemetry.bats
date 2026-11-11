@@ -45,6 +45,11 @@ telemetry_env() {
   assert_output --partial 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative'
 }
 
+@test "metrics export every 5s, or a run under the 60s SDK default never logs its cost" {
+  run telemetry_env 0
+  assert_output --partial 'OTEL_METRIC_EXPORT_INTERVAL=5000'
+}
+
 @test "off-LAN it exports NOTHING — the content-privacy gate" {
   # The paired positive is the on-LAN test above; without it a snippet that exported
   # nothing under any condition would pass this one.

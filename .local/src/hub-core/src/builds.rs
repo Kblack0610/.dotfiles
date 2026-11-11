@@ -3,14 +3,17 @@
 //! the session that owns its branch. The ledger is append-only (a run is written again each time
 //! it changes), so a run is its last line. A failed run's log is fetched only when the row is
 //! opened (docs/dashboards.md rule 10), through the fetch and cache `jobs::read_log` already has.
+//! The opened run's jobs, steps and cost are `detail` (`run_detail`), read from local files only.
 //!
 //! | fact                | home                                                           |
 //! |---------------------|----------------------------------------------------------------|
 //! | the runs            | `$SCHEDULES_RUNS_LEDGER`, else `<state>/ci/runs.jsonl`          |
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
+//! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
+//! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,7 @@ use serde_json::Value;
 
 use crate::jobs::{self, LogRef};
 use crate::releases::Level;
+use crate::run_detail::{self, Rates, RunDetail};
 use crate::table::{Row, Val};
 
 /// How long the ledger keeps a run, and so how far back this section reaches.
@@ -34,6 +38,8 @@ pub struct Paths {
     pub ledger: PathBuf,
     pub sync: PathBuf,
     pub fleet: PathBuf,
+    /// The job archive: every job of each run, keyed as the ledger is.
+    pub jobs: PathBuf,
 }
 
 impl Paths {
@@ -50,12 +56,14 @@ impl Paths {
             sync: ledger.with_file_name("sync.json"),
             ledger,
             fleet: crate::boards::fleet_state(),
+            jobs: env("SCHEDULES_JOBS_LEDGER").unwrap_or_else(|| state.join("ci/jobs.jsonl")),
         }
     }
 
-    /// Whether a changed file is the ledger or its sync record: what wakes the section.
+    /// Whether a changed file is the ledger, its sync record or the job archive: what wakes the
+    /// section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync
+        p == self.ledger || p == self.sync || p == self.jobs
     }
 }
 
@@ -68,10 +76,14 @@ pub struct Run {
     pub id: u64,
     pub attempt: u32,
     pub workflow: String,
+    /// The workflow's file in the repo (`.github/workflows/tests.yml`), when the forge gives one.
+    pub path: String,
     pub title: String,
     pub branch: String,
     pub event: String,
     pub sha: String,
+    /// The commit the jobs checked out, when the workflow records one apart from `sha`.
+    pub tested_sha: String,
     pub status: String,
     pub conclusion: Option<String>,
     pub created_at: String,
@@ -94,6 +106,50 @@ pub struct Run {
     /// How long it ran; a queued run's wait; a running one's time so far.
     #[serde(skip_deserializing)]
     pub took: Option<i64>,
+    /// What its workflow usually takes (`time`); none below `USUAL_MIN` finished runs.
+    #[serde(skip_deserializing)]
+    pub usual: Option<Usual>,
+    /// A running run's expected end: its start plus the usual median, unix seconds.
+    #[serde(skip_deserializing)]
+    pub eta: Option<i64>,
+}
+
+/// A workflow's median and 90th-percentile run time in seconds, over its finished runs.
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Usual {
+    pub median: i64,
+    pub p90: i64,
+}
+
+/// Below this many finished runs a workflow has no usual time and its runs no ETA: a guess
+/// drawn as a number reads as a fact.
+pub const USUAL_MIN: usize = 3;
+
+/// One workflow's run times over the window: the Builds section's Run times fold.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct RunTime {
+    pub forge: String,
+    pub repo: String,
+    /// The name its runs are timed under (`timed_as`).
+    pub workflow: String,
+    /// Finished runs counted: success, failure and timeout. 0 for a workflow only running.
+    pub runs: usize,
+    pub usual: Option<Usual>,
+    pub longest: i64,
+    /// Successes among the runs counted, a whole percent.
+    pub pass: u32,
+    pub running: usize,
+}
+
+impl RunTime {
+    pub fn short_repo(&self) -> &str {
+        short_repo(&self.repo)
+    }
+}
+
+/// The repo as a person names it: the part after the owner.
+pub fn short_repo(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
 }
 
 impl Run {
@@ -111,9 +167,8 @@ impl Run {
         matches!(self.state.as_str(), "green" | "red" | "other")
     }
 
-    /// The repo as a person names it: the part after the owner.
     pub fn short_repo(&self) -> &str {
-        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+        short_repo(&self.repo)
     }
 }
 
@@ -123,6 +178,8 @@ impl Run {
 pub struct RunKey {
     pub forge: String,
     pub repo: String,
+    /// `run_id` in the job archive and on `/api/builds/detail`.
+    #[serde(alias = "run_id")]
     pub id: u64,
     pub attempt: u32,
 }
@@ -131,11 +188,13 @@ impl Row for Run {
     // `forge`, `event`, `title`, `sha` and `url` filter without a column on the page: the first two
     // are dropdowns, the third is the open row's heading.
     const COLUMNS: &'static [&'static str] = &[
-        "started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event",
-        "title",
+        "started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "forge",
+        "event", "title",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "red", "green"];
     const FACETS: &'static [&'static str] = &["repo", "forge", "event", "state"];
+    const LEAD: &'static str = "workflow";
+    const GLANCE: &'static [&'static str] = &["state", "repo", "took"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {
@@ -151,6 +210,8 @@ impl Row for Run {
             "event" => text(&self.event),
             "state" => text(&self.state),
             "took" => self.took.map_or(Val::None, |n| Val::Num(n as f64)),
+            "usual" => self.usual.map_or(Val::None, |u| Val::Num(u.median as f64)),
+            "eta" => self.eta.map_or(Val::None, |n| Val::Num(n as f64)),
             "owner" => text(&self.owner),
             "title" => text(&self.title),
             _ => Val::None,
@@ -236,11 +297,22 @@ pub struct Builds {
     pub at: i64,
     pub counts: Counts,
     pub rows: Vec<Run>,
+    /// Each workflow's run times, by repo, the most-run first.
+    pub times: Vec<RunTime>,
     /// Why the ledger or a repo could not be read: a red line, never a silent blank.
     pub errors: Vec<String>,
+    /// Each archived run's finished jobs, for the Run times fold's money (`run_detail::costs`).
+    #[serde(skip)]
+    pub job_times: HashMap<RunKey, Vec<run_detail::JobTime>>,
 }
 
 impl Builds {
+    /// A run went red in the last `RECENT_SECS`, or the ledger did not read: the Builds inner
+    /// tab's count on Releases. Older reds are history, as `Counts::level` says.
+    pub fn needs_look(&self) -> bool {
+        !self.errors.is_empty() || self.counts.level() == Level::Bad
+    }
+
     pub fn summary(&self) -> String {
         self.counts.says()
     }
@@ -348,19 +420,33 @@ pub fn owners(state: &Value) -> HashMap<String, String> {
         .collect()
 }
 
-/// `generated_at` of `sync.json` as unix seconds, and `<repo>: <error>` for each repo the last
-/// pass could not read.
+/// `generated_at` of `sync.json` as unix seconds, and one line per distinct error the last pass
+/// hit: `<repo>: <error>` for one repo, `<error> (<n> repos: <names>)` when several share it, so
+/// a rate limit that stops every repo reads once rather than once per repo.
 fn synced(text: &str) -> Result<(i64, Vec<String>), String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("sync.json: {e}"))?;
     let at = v["generated_at"]
         .as_str()
         .and_then(crate::fleet::ts)
         .unwrap_or(0);
-    let mut errors: Vec<String> = v["repos"]
-        .as_object()
+    let mut by_error: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (k, r) in v["repos"].as_object().into_iter().flatten() {
+        if let Some(e) = r["error"].as_str() {
+            by_error.entry(e).or_default().push(k);
+        }
+    }
+    let mut errors: Vec<String> = by_error
         .into_iter()
-        .flatten()
-        .filter_map(|(k, r)| Some(format!("{k}: {}", r["error"].as_str()?)))
+        .map(|(e, repos)| match repos[..] {
+            [one] => format!("{one}: {e}"),
+            _ => {
+                let names: Vec<&str> = repos
+                    .iter()
+                    .map(|k| k.split_once(':').map_or(*k, |(_, r)| r))
+                    .collect();
+                format!("{e} ({} repos: {})", repos.len(), names.join(", "))
+            }
+        })
         .collect();
     errors.sort();
     Ok((at, errors))
@@ -405,7 +491,139 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(format!("owner session: {e}")),
     }
+    // The job archive is optional until schedules-sync writes it: runs then price as no record.
+    if let Ok(text) = read_text(&paths.jobs) {
+        let (records, bad) = run_detail::archive(&text, |_| true);
+        if bad > 0 {
+            out.errors
+                .push(format!("jobs.jsonl: {bad} unreadable line(s) skipped"));
+        }
+        out.job_times = run_detail::job_times(&records, now - (KEEP_DAYS + 1) * 86400);
+    }
+    out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
+    out
+}
+
+/// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
+/// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
+/// `Tests (delta)`), so one workflow's runs pool.
+pub fn timed_as(workflow: &str, path: &str) -> String {
+    if path.starts_with("dynamic/dependabot/") {
+        let eco = workflow.split_whitespace().next().unwrap_or_default();
+        return format!("Dependabot ({eco})");
+    }
+    let mut out: Vec<String> = Vec::new();
+    for word in workflow.split_whitespace() {
+        let core = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let id = core.len() >= 7
+            && core.chars().all(|c| c.is_ascii_hexdigit())
+            && core.chars().any(|c| c.is_ascii_digit());
+        if !id {
+            out.push(word.to_string());
+            continue;
+        }
+        if out.last().is_some_and(|w| w == "of") {
+            out.pop();
+        }
+        let tail = &word[word
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+            .len()..];
+        match out.last_mut() {
+            Some(w) => w.push_str(tail),
+            None if !tail.is_empty() => out.push(tail.to_string()),
+            None => {}
+        }
+    }
+    out.join(" ")
+}
+
+/// The value at quantile `q` of sorted `v`, nearest rank.
+fn rank(v: &[i64], q: f64) -> i64 {
+    v[((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
+}
+
+/// Each workflow's run times from `rows`, and each row's usual time and, running, its ETA. Only
+/// a finished success, failure or timeout counts: a cancelled or skipped run stopped early and
+/// would pull the median down. A running run past its workflow's p90 turns amber.
+pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
+    type Key = (String, String, String);
+    let key = |r: &Run| {
+        (
+            r.forge.clone(),
+            r.repo.clone(),
+            timed_as(&r.workflow, &r.path),
+        )
+    };
+    let mut by: HashMap<Key, (Vec<i64>, usize, usize)> = HashMap::new();
+    for r in rows.iter() {
+        let (took, green, running) = by.entry(key(r)).or_default();
+        *running += usize::from(r.state == "running");
+        let counted = matches!(
+            r.conclusion.as_deref(),
+            Some("success" | "failure" | "timed_out")
+        ) && r.done()
+            && r.started_at.is_some();
+        if let (true, Some(t)) = (counted, r.took) {
+            took.push(t);
+            *green += usize::from(r.state == "green");
+        }
+    }
+    let mut out: Vec<RunTime> = by
+        .into_iter()
+        .filter(|(_, (took, _, running))| !took.is_empty() || *running > 0)
+        .map(|((forge, repo, workflow), (mut took, green, running))| {
+            took.sort_unstable();
+            let usual = (took.len() >= USUAL_MIN).then(|| Usual {
+                median: rank(&took, 0.5),
+                p90: rank(&took, 0.9),
+            });
+            RunTime {
+                forge,
+                repo,
+                workflow,
+                runs: took.len(),
+                usual,
+                longest: took.last().copied().unwrap_or_default(),
+                pass: (green * 100).checked_div(took.len()).unwrap_or_default() as u32,
+                running,
+            }
+        })
+        .collect();
+    // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
+    out.sort_by(|a, b| {
+        let k = |t: &RunTime| {
+            (
+                short_repo(&t.repo).to_string(),
+                std::cmp::Reverse(t.runs),
+                t.workflow.clone(),
+                t.repo.clone(),
+                t.forge.clone(),
+            )
+        };
+        k(a).cmp(&k(b))
+    });
+    let usual: HashMap<Key, Usual> = out
+        .iter()
+        .filter_map(|t| {
+            Some((
+                (t.forge.clone(), t.repo.clone(), t.workflow.clone()),
+                t.usual?,
+            ))
+        })
+        .collect();
+    for r in rows.iter_mut() {
+        r.usual = usual.get(&key(r)).copied();
+        if r.state != "running" {
+            continue;
+        }
+        if let Some(u) = r.usual {
+            r.eta = Some(r.started + u.median);
+            if r.took.is_some_and(|t| t > u.p90) {
+                r.level = Level::Warn;
+            }
+        }
+    }
     out
 }
 
@@ -463,6 +681,33 @@ pub fn log(
             run.url
         )),
     }
+}
+
+/// The run `key` names, opened: its jobs, steps and cost from the job archive, priced with
+/// `rates`. Only the ledger and the archive are read, so an open never asks a provider.
+pub fn detail(paths: &Paths, rates: &Rates, key: &RunKey, now: i64) -> Result<RunDetail, String> {
+    let (rows, _) = parse(&read_text(&paths.ledger)?, now);
+    let run = rows
+        .iter()
+        .find(|r| r.key() == *key)
+        .ok_or("that run is not in the ledger (older than 30 days, or never synced)")?;
+    let mut attempts: Vec<u32> = rows
+        .iter()
+        .filter(|r| (&r.forge, &r.repo, r.id) == (&run.forge, &run.repo, run.id))
+        .map(|r| r.attempt)
+        .collect();
+    attempts.sort_unstable();
+    // A missing archive is no record: the run reads pending or unavailable.
+    let text = std::fs::read_to_string(&paths.jobs).unwrap_or_default();
+    let id = key.id.to_string();
+    let (records, _) = run_detail::archive(&text, |l| l.contains(&id));
+    Ok(run_detail::build(
+        run,
+        records.get(key),
+        attempts,
+        rates,
+        now,
+    ))
 }
 
 #[cfg(test)]
@@ -544,6 +789,18 @@ mod tests {
             (1, Level::Ok),
             "an old red is history"
         );
+        // A recent red or an unread ledger puts a count on Releases' Builds inner tab; an old
+        // red does not.
+        let builds = |counts| Builds {
+            counts,
+            ..Default::default()
+        };
+        assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let unread = Builds {
+            errors: vec!["runs.jsonl: unreadable".into()],
+            ..Default::default()
+        };
+        assert!(unread.needs_look());
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 
@@ -575,6 +832,24 @@ mod tests {
     }
 
     #[test]
+    fn repos_that_share_an_error_read_as_one_line() {
+        let (_, errors) = synced(
+            r#"{"generated_at":"2026-11-08T14:16:22Z","repos":{
+                "github:o/a":{"error":"GitHub API rate limit hit"},
+                "github:p/b":{"error":"GitHub API rate limit hit"},
+                "github:o/c":{"error":"HTTP 502"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            errors,
+            [
+                "GitHub API rate limit hit (2 repos: o/a, p/b)",
+                "github:o/c: HTTP 502"
+            ]
+        );
+    }
+
+    #[test]
     fn a_missing_ledger_is_an_error_and_the_rest_still_reads() {
         let d = std::env::temp_dir().join(format!("hub-builds-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
@@ -587,6 +862,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
         };
         let b = read(&p, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -608,6 +884,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -635,6 +912,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -648,6 +926,307 @@ mod tests {
         assert!(
             got.contains("Attempt 1 was re-run") && got.contains("/attempts/1"),
             "{got}"
+        );
+    }
+
+    /// A run ledger and job archive in a fresh directory, and the paths that read them.
+    fn opened(name: &str, runs: &[String], jobs: &str) -> (PathBuf, Paths) {
+        let d = std::env::temp_dir().join(format!("hub-builds-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("runs.jsonl"), runs.join("\n")).unwrap();
+        std::fs::write(d.join("jobs.jsonl"), jobs).unwrap();
+        let p = Paths {
+            ledger: d.join("runs.jsonl"),
+            sync: d.join("sync.json"),
+            fleet: d.join("state.json"),
+            jobs: d.join("jobs.jsonl"),
+        };
+        (d, p)
+    }
+
+    fn job(name: &str, runner: &str, start: i64, secs: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": start, "name": name, "conclusion": "success", "runner_name": runner,
+            "labels": ["self-hosted", "unity"], "created_at": iso(start - 60),
+            "started_at": iso(start), "completed_at": iso(start + secs), "url": "https://x/job",
+            "steps": [{"number": 1, "name": "checkout", "conclusion": "success",
+                       "started_at": iso(start), "completed_at": iso(start + 2)}],
+        })
+    }
+
+    fn record(id: u64, complete: bool, jobs: Vec<serde_json::Value>) -> String {
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "run_id": id, "attempt": 1,
+            "source": "exporter", "complete": complete, "fetched_at": iso(NOW - 60), "jobs": jobs,
+        })
+        .to_string()
+    }
+
+    fn key(id: u64) -> RunKey {
+        RunKey {
+            forge: "github".into(),
+            repo: "Org/app".into(),
+            id,
+            attempt: 1,
+        }
+    }
+
+    #[test]
+    fn an_opened_run_reads_its_jobs_and_prices_them_from_local_files_only() {
+        let start = NOW - 3000;
+        let jobs = vec![
+            job("shard 2", "aws-burst-1-unity-pool-3", start, 32 * 60 + 45),
+            job("report", "hp-victus-light-1", start + 10, 12),
+            job("plan", "razer-laptop-light-2", start, 84),
+        ];
+        let (d, p) = opened(
+            "detail",
+            &[line(9, "completed", Some("failure"), 3060, "b")],
+            &record(9, true, jobs),
+        );
+        // Only the paths and the rates go in: no Prometheus base, no GitHub token, no fetch.
+        let got = detail(&p, &run_detail::tests::rates(), &key(9), NOW);
+        let missing = detail(&p, &run_detail::tests::rates(), &key(10), NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let got = got.unwrap();
+        assert!(missing.unwrap_err().contains("not in the ledger"));
+        assert_eq!(got.coverage, "complete");
+        assert_eq!(got.jobs.len(), 3);
+        let shard = &got.jobs[0];
+        assert_eq!(
+            (shard.class.as_str(), shard.took_text.as_str()),
+            ("aws/on-demand", "32m45")
+        );
+        assert_eq!(shard.price.text, "0.20 (1/5 of $1.855/h)");
+        assert_eq!(
+            got.jobs[1].price.text, "no rate",
+            "hp-victus has slots and no rate"
+        );
+        assert_eq!(got.jobs[2].class, "light/owned");
+        assert_eq!(got.jobs[2].price.text, "0.00 owned");
+        assert_eq!(got.cost.text, "$0.20 + no rate");
+        assert_eq!(shard.steps_text, "checkout 2s");
+        assert!(
+            got.header
+                .starts_with("end to end 33m45 | before first job 1m |"),
+            "{}",
+            got.header
+        );
+        assert!(
+            got.header.ends_with("| tested abc | complete"),
+            "{}",
+            got.header
+        );
+        assert!(got.title.contains("$0.20 + no rate"), "{}", got.title);
+        assert_eq!(got.attempts, [1]);
+    }
+
+    #[test]
+    fn an_interrupted_fetch_reads_partial_and_a_run_without_a_record_pending_then_unavailable() {
+        let runs = [
+            line(1, "completed", Some("success"), 600, "b"),
+            line(2, "completed", Some("success"), 600, "b"),
+            line(3, "completed", Some("success"), 7200, "b"),
+        ];
+        let (d, p) = opened(
+            "cover",
+            &runs,
+            &record(1, false, vec![job("a", "x-1", NOW - 600, 60)]),
+        );
+        let r = run_detail::tests::rates();
+        let got: Vec<String> = [1, 2, 3]
+            .map(|id| detail(&p, &r, &key(id), NOW).unwrap().coverage)
+            .into();
+        std::fs::remove_dir_all(&d).unwrap();
+        // Run 2 ended 90s after it began 600s ago: the next import can still bring it.
+        assert_eq!(got, ["partial", "pending", "unavailable"]);
+    }
+
+    #[test]
+    fn a_run_of_130_jobs_reads_every_one() {
+        let jobs: Vec<serde_json::Value> = (0..130)
+            .map(|i| {
+                job(
+                    &format!("shard {i}"),
+                    "razer-laptop-unity-pool-1",
+                    NOW - 3000 + i,
+                    60,
+                )
+            })
+            .collect();
+        let (d, p) = opened(
+            "many",
+            &[line(4, "completed", Some("success"), 3060, "b")],
+            &record(4, true, jobs),
+        );
+        let got = detail(&p, &run_detail::tests::rates(), &key(4), NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let got = got.unwrap();
+        assert_eq!(got.jobs.len(), 130);
+        assert_eq!(got.jobs[129].name, "shard 129");
+        assert_eq!(got.cost.text, "$0.00 owned");
+    }
+
+    #[test]
+    fn the_run_times_fold_prices_each_workflow_and_reconciles_the_month() {
+        let runs: Vec<String> = (1..=3)
+            .map(|i| timed(i, "Tests", "success", 1965))
+            .collect();
+        let archive: Vec<String> = (1..=3)
+            .map(|i| {
+                record(
+                    i,
+                    true,
+                    vec![job(
+                        "shard",
+                        "aws-burst-1-unity-pool-3",
+                        NOW - 3600 - i as i64,
+                        1965,
+                    )],
+                )
+            })
+            .collect();
+        let (d, p) = opened("times", &runs, &archive.join("\n"));
+        let b = read(&p, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let c = run_detail::costs(&b, &run_detail::tests::rates(), NOW);
+        assert_eq!(c.times, ["$0.20 (3 priced)"]);
+        let idle = &c.idle[0];
+        assert!(
+            idle.starts_with("aws-burst-1: powered 2.0h today $3.71"),
+            "{idle}"
+        );
+        assert!(c
+            .month
+            .as_deref()
+            .unwrap()
+            .contains("jobs priced $0.61, AWS actual $10.00, off by"));
+        assert!(c.month_off);
+    }
+
+    /// A finished run of `workflow` that took `secs`, begun an hour before `NOW`.
+    fn timed(id: u64, workflow: &str, conclusion: &str, secs: i64) -> String {
+        let start = NOW - 3600 - id as i64;
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "id": id, "attempt": 1,
+            "workflow": workflow, "path": ".github/workflows/test.yml", "branch": "b",
+            "status": "completed", "conclusion": conclusion, "created_at": iso(start),
+            "started_at": iso(start), "ended_at": iso(start + secs),
+        })
+        .to_string()
+    }
+
+    fn running(id: u64, workflow: &str, age: i64) -> String {
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "id": id, "attempt": 1,
+            "workflow": workflow, "path": ".github/workflows/test.yml", "branch": "b",
+            "status": "in_progress", "created_at": iso(NOW - age), "started_at": iso(NOW - age),
+        })
+        .to_string()
+    }
+
+    fn timed_rows(lines: &[String]) -> (Vec<Run>, Vec<RunTime>) {
+        let (mut rows, bad) = parse(&lines.join("\n"), NOW);
+        assert_eq!(bad, 0);
+        let times = time(&mut rows);
+        (rows, times)
+    }
+
+    #[test]
+    fn a_workflow_is_timed_by_median_and_p90_of_its_finished_runs_only() {
+        let mut lines: Vec<String> = (1..=10)
+            .map(|i| {
+                timed(
+                    i,
+                    "Tests (affected)",
+                    if i <= 7 { "success" } else { "failure" },
+                    i as i64 * 60,
+                )
+            })
+            .collect();
+        // Cancelled and skipped runs stop early: counted, they would pull the median to a minute.
+        for i in 11..=20 {
+            lines.push(timed(i, "Tests (affected)", "cancelled", 5));
+        }
+        lines.push(timed(21, "Tests (affected)", "skipped", 1));
+        let (_, times) = timed_rows(&lines);
+        assert_eq!(times.len(), 1);
+        let t = &times[0];
+        assert_eq!(t.runs, 10, "cancelled and skipped are left out");
+        assert_eq!(
+            t.usual,
+            Some(Usual {
+                median: 300,
+                p90: 540
+            })
+        );
+        assert_eq!((t.longest, t.pass), (600, 70));
+    }
+
+    #[test]
+    fn a_run_id_in_the_name_and_dependabots_updates_pool_under_one_name() {
+        assert_eq!(
+            timed_as("Tests (delta of 42614501160)", "x"),
+            "Tests (delta)"
+        );
+        assert_eq!(timed_as("Tests (delta of 3f2a9c1d)", "x"), "Tests (delta)");
+        assert_eq!(timed_as("Multi (named)", "x"), "Multi (named)");
+        assert_eq!(timed_as("Release builds", "x"), "Release builds");
+        assert_eq!(
+            timed_as(
+                "github_actions in / for actions/checkout - Update #1687367140",
+                "dynamic/dependabot/dependabot-updates"
+            ),
+            "Dependabot (github_actions)"
+        );
+        let lines = [
+            timed(1, "Tests (delta of 42614501160)", "success", 60),
+            timed(2, "Tests (delta of 42718497697)", "success", 120),
+            timed(3, "Tests (delta of 42862038016)", "failure", 180),
+        ];
+        let (_, times) = timed_rows(&lines);
+        assert_eq!(times.len(), 1);
+        assert_eq!(
+            (times[0].workflow.as_str(), times[0].runs),
+            ("Tests (delta)", 3)
+        );
+    }
+
+    #[test]
+    fn a_running_run_gets_an_eta_and_turns_amber_past_its_p90() {
+        let mut lines: Vec<String> = (1..=10)
+            .map(|i| timed(i, "Tests", "success", i as i64 * 60))
+            .collect();
+        lines.push(running(30, "Tests", 120));
+        lines.push(running(31, "Tests", 900));
+        let (rows, _) = timed_rows(&lines);
+        let on_time = rows.iter().find(|r| r.id == 30).unwrap();
+        assert_eq!(on_time.eta, Some(NOW - 120 + 300));
+        assert_eq!(on_time.level, Level::Ok);
+        let late = rows.iter().find(|r| r.id == 31).unwrap();
+        assert_eq!(late.level, Level::Warn, "900s is past the 540s p90");
+        let done = rows.iter().find(|r| r.id == 1).unwrap();
+        assert_eq!((done.usual.map(|u| u.median), done.eta), (Some(300), None));
+    }
+
+    #[test]
+    fn below_three_finished_runs_there_is_no_usual_and_no_eta() {
+        let lines = [
+            timed(1, "Soak", "success", 600),
+            timed(2, "Soak", "success", 700),
+            running(3, "Soak", 60),
+        ];
+        let (rows, times) = timed_rows(&lines);
+        assert_eq!(
+            (times[0].runs, times[0].usual, times[0].running),
+            (2, None, 1)
+        );
+        assert!(rows.iter().all(|r| r.usual.is_none() && r.eta.is_none()));
+        let (_, only) = timed_rows(&[running(4, "Brand new", 60)]);
+        assert_eq!(
+            (only[0].runs, only[0].running, only[0].pass),
+            (0, 1, 0),
+            "a workflow only running is still listed"
         );
     }
 

@@ -26,6 +26,8 @@ set -uo pipefail
 # lane; judge.sh comes with it (judge_ask_docs, the calls.jsonl path).
 # shellcheck source=agent-ask
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
@@ -87,7 +89,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
-    --arg hard "$JUDGE_HARD_STOPS" \
+    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -132,7 +134,8 @@ JQ_EVAL="$JQ_EPOCH"'
        elif $human == null then (if ($a.options // "") == "" then "free text in session" else "answer naming no option" end)
        elif $kind == "answer" then null
        elif ($a.judge_rule // "") == "unclear-ask" then "unclear ask"
-       elif ($hard | split(" ") | index($a.judge_type // "")) then "hard-stop type"
+       elif any($a.judge_type, $a.judge_rule; IN(($hard | splits(" +"))) and . != "") then "hard stop"
+       elif ($a.judge_type // "") == "" then "untyped deferral"
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
        type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),
@@ -150,11 +153,16 @@ JQ_EVAL="$JQ_EPOCH"'
     | . + {unscorable: (if .outcome == "unscorable" then $why else null end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
-   # `failed` line did not.
-   | ($verdicts | map(select(.verdict == "failed")) | map({key: "\(.project)\u0000\(.key)", value: (.at | epoch)})
-      | group_by(.key) | map({(.[0].key): (map(.value) | max)}) | add // {}) as $failed
+   # `failed` line did not. A run that ended for a cause outside the model (UNRATED_ENDS) labels
+   # nothing, and a `failed` line a later `cleared` released does not count (later in the file, as
+   # judged_keys in fleet-dispatch reads it; group_by keeps file order within a key).
+   | ($verdicts | map(select(.verdict == "failed" or .verdict == "cleared"))
+      | map({key: "\(.project)\u0000\(.key)", verdict, e: (.at | epoch)}) | group_by(.key)
+      | map(last | select(.verdict == "failed") | {(.key): .e}) | add // {}) as $failed
    | ($queue | map(select((.from // "") | startswith("board:")))
-      | map({key: (.from | ltrimstr("board:")), value: (.state + "/" + (.status // ""))}) | from_entries) as $item
+      | map({key: (.from | ltrimstr("board:")),
+             value: (.state + "/" + (if .status != "ok" and ((.end_reason // "") | IN($unrated[])) then "unrated" else .status // "" end))})
+      | from_entries) as $item
    # Every start of a queue item, keyed by its board row; run is fleet-dispatch, resume a restore.
    | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), origin})) as $starts
    | ($starts | bykey(.key)) as $startsby | ($starts | bykey(.key | split(":") | last)) as $startsbyid
@@ -168,9 +176,9 @@ JQ_EVAL="$JQ_EPOCH"'
         | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
       | bykey(.p)) as $kids
    | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
-   # Triage: each row the triager filed (no session or queue item behind the write), right when
-   # nothing edits, drops, moves or re-tags it for the settle window.
-   | [$ev[] | select(.action == "filed" and ((.by // "human") | . == "" or . == "human")) | . as $f
+   # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
+   # the record named the runner), right when nothing edits, drops, moves or re-tags it for the settle window.
+   | [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | . as $f
       | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
       | {agent: $by["triage-untouched"], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
          question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",

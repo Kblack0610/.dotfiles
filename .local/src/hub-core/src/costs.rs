@@ -11,6 +11,7 @@
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
+//! | every LLM consumer: priority, what it runs on, budget, spend, fallback (Consumers) | `claude-acct gateway`'s snapshot and `agentctl list --json` | `gateway::read` |
 //! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | the outcomes read above |
 //!
 //! The query filters slices (a session's cost on one model) before grouping, so `-model:opus`
@@ -22,10 +23,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::burn::{self, Burn};
+use crate::fleet_cost::FleetCost;
 use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
-use crate::table::{Row, Summary, Val, View};
+use crate::table::{self, Row, Summary, Val, View};
 
 const DAY: i64 = 24 * 3600;
 
@@ -53,14 +55,6 @@ pub const UNPRICED: &str =
 /// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
-
-/// Claude Code's cost over the last 24 hours by `service_name` and `agentctl_runner`. Home's
-/// `cc:claude_code_cost_24h_usd` is its sum (home-config's command-center rules), so the split
-/// Costs and Fleet show never disagrees with that total. What each source has spent of its window
-/// or dollars is the Burn section's, from claude-acct.
-pub(crate) const BY_RUNNER_Q: &str = "cc:claude_code_cost_24h_usd:by_runner";
-/// Who a Claude series with no runner is when it is an interactive session (`claude-code`).
-pub const YOU: &str = "you";
 
 /// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -169,106 +163,6 @@ pub struct Snapshot {
     pub langfuse_error: Option<String>,
 }
 
-/// Claude Code's live 24h cost, whole and by who spent it; missing when Prometheus has none.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Live {
-    pub claude_24h: Option<f64>,
-    /// Keyed by the runner (`agentctl_runner`), else `YOU` for an interactive session, else the
-    /// series' `service_name`.
-    pub by_who: BTreeMap<String, f64>,
-}
-
-/// The live figures out of `BY_RUNNER_Q`'s series; the whole is their sum.
-pub fn live(series: &[crate::prom::Series]) -> Live {
-    let mut by_who: BTreeMap<String, f64> = BTreeMap::new();
-    for s in series.iter().filter(|s| s.label("__name__") == BY_RUNNER_Q) {
-        let who = match (s.label("agentctl_runner"), s.label("service_name")) {
-            ("", "claude-code") => YOU,
-            ("", service) => service,
-            (runner, _) => runner,
-        };
-        *by_who.entry(who.to_string()).or_default() += s.value.unwrap_or(0.0);
-    }
-    Live {
-        // a fold from 0.0, not `sum`: an empty f64 sum is -0.0
-        claude_24h: (!by_who.is_empty()).then(|| by_who.values().fold(0.0, |a, v| a + v)),
-        by_who,
-    }
-}
-
-/// One row of WHO SPENT 24H: a Claude spender from Prometheus, or another harness's sessions
-/// from the outcomes rows.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Spender {
-    pub who: String,
-    /// None when nothing in it is priced: unknown, never $0.
-    pub usd: Option<f64>,
-    pub share: f64,
-    /// `Prometheus` or `outcomes`, which say how fresh the row is.
-    pub source: &'static str,
-    /// An outcomes row's sessions in the window, and how many have no cost: spend unknown, never $0.
-    pub sessions: Option<usize>,
-    pub unpriced: Option<usize>,
-}
-
-/// Who spent the last 24 hours, costliest first. Claude Code is the live export (sessions that
-/// do not export are not in it); other harnesses are the nightly outcomes rows.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct WhoSpent {
-    pub usd: f64,
-    pub claude_usd: Option<f64>,
-    pub rows: Vec<Spender>,
-}
-
-/// A harness whose cost the live export carries: Claude Code, whatever the account or gateway.
-fn exports_live(s: &Spent) -> bool {
-    s.harness.as_deref().is_none_or(|h| h.starts_with("claude"))
-}
-
-pub fn who_spent(live: &Live, sessions: &[Spent], now: i64) -> WhoSpent {
-    let mut rows: Vec<Spender> = live
-        .by_who
-        .iter()
-        .map(|(who, usd)| Spender {
-            who: who.clone(),
-            usd: Some(*usd),
-            source: "Prometheus",
-            ..Spender::default()
-        })
-        .collect();
-    let mut other: BTreeMap<&str, Spender> = BTreeMap::new();
-    for s in sessions
-        .iter()
-        .filter(|s| !exports_live(s) && s.updated_epoch.unwrap_or(0) >= now - DAY)
-    {
-        let h = s.harness.as_deref().unwrap_or_default();
-        let r = other.entry(h).or_insert_with(|| Spender {
-            who: h.into(),
-            source: "outcomes",
-            sessions: Some(0),
-            unpriced: Some(0),
-            ..Spender::default()
-        });
-        r.sessions = r.sessions.map(|n| n + 1);
-        match cost(s) {
-            Some(c) => r.usd = Some(r.usd.unwrap_or(0.0) + c),
-            None => r.unpriced = r.unpriced.map(|n| n + 1),
-        }
-    }
-    rows.extend(other.into_values());
-    let usd = rows.iter().filter_map(|r| r.usd).sum::<f64>();
-    for r in &mut rows {
-        r.share = r.usd.filter(|_| usd > 0.0).map_or(0.0, |u| u / usd);
-    }
-    let key = |r: &Spender| r.usd.unwrap_or(-1.0);
-    rows.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.who.cmp(&b.who)));
-    WhoSpent {
-        usd,
-        claude_usd: live.claude_24h,
-        rows,
-    }
-}
-
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
 /// provider `lazer` active since the 1st (UTC), the pool's own period, each at its whole cost (a
 /// session from last month still running counts all of it). Nightly, as the outcomes rows are.
@@ -323,9 +217,17 @@ pub struct Costs {
     pub calls: Vec<Call>,
     /// Newest first.
     pub snapshots: Vec<Snapshot>,
-    pub live: Live,
+    /// The whole fleet's 24h cost; `why` says so when its file could not be read.
+    pub fleet_cost: FleetCost,
+    /// The History section: the fleet's dollars per day, month and year from every snapshot.
+    pub history: crate::spend_history::History,
+    /// Every snapshot day with its session rows, for the day table; too big to send whole.
+    #[serde(skip)]
+    pub spend_days: Vec<crate::spend_history::Day>,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
+    pub consumers: crate::gateway::Read,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
     pub sections: Sections,
     /// Where the tokens go and what Langfuse sees, summed from `snapshots`; None with no snapshot.
@@ -342,6 +244,10 @@ pub struct Paths {
     pub dispatch_log: PathBuf,
     /// fleet-dispatch's `headroom.json`, the last real pass's `headroom --json`.
     pub headroom: PathBuf,
+    /// `agent-usage fleet-cost`'s file.
+    pub fleet_cost: PathBuf,
+    /// `claude-acct gateway`'s snapshot.
+    pub gateway: PathBuf,
 }
 
 impl Paths {
@@ -351,6 +257,8 @@ impl Paths {
             dispatch_log: crate::boards::dispatch_dir().join("log.md"),
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
+            fleet_cost: crate::boards::fleet_cost(),
+            gateway: crate::boards::gateway_snapshot(),
         }
     }
 }
@@ -398,16 +306,12 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Err(e) => c.errors.push(format!("fleet-bench sections: {e}")),
     }
     read_files(&mut c, paths, now);
-    // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
-    match base
-        .clone()
-        .and_then(|b| crate::prom::instant(&b, BY_RUNNER_Q))
-    {
-        Ok(series) => c.live = live(&series),
-        Err(e) => c.errors.push(format!("Prometheus: {e}")),
+    if let Err(e) = &base {
+        c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
+    c.consumers = crate::gateway::read(runner, &paths.gateway);
     c
 }
 
@@ -420,21 +324,30 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
+    let today = chrono::DateTime::from_timestamp(now, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default();
+    c.spend_days = crate::spend_history::read(&paths.tokens);
+    c.history = crate::spend_history::build(&c.spend_days, &today);
+    c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
+        Ok(f) => crate::fleet_cost::build(&f, now),
+        Err(e) => crate::fleet_cost::missing(e),
+    };
 }
 
 /// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
 /// resolved), the dispatch log for the drip, and the cached headroom for why it is held. A
 /// source that fails is named in `errors` and the rest still show.
 fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
-    let (mut series, mut rate) = (vec![], None);
+    let mut series = vec![];
     if let Some(b) = base {
         match crate::prom::instant(b, burn::ACCOUNTS) {
             Ok(s) => series = s,
             Err(e) => errors.push(format!("claude-acct series: {e}")),
-        }
-        match crate::prom::instant(b, burn::RATE_Q) {
-            Ok(s) => rate = s.first().and_then(|s| s.value),
-            Err(e) => errors.push(format!("session rate: {e}")),
         }
     }
     // The tail is bounded (LOG_TAIL), which covers a day of starts; a longer day undercounts.
@@ -444,12 +357,7 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
             errors.push(format!("dispatch log: {e}"));
             String::new()
         });
-    burn::build(
-        &series,
-        rate,
-        burn::drip(&log, now, held(&paths.headroom)),
-        now,
-    )
+    burn::build(&series, burn::drip(&log, now, held(&paths.headroom)), now)
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
@@ -755,6 +663,9 @@ impl Row for Line {
     }
 }
 
+/// Under a cut's first column on a phone: what the row cost.
+pub const CUT_GLANCE: &[&str] = &["cost", "share", "tokens"];
+
 /// The columns a cut shows, in order; both surfaces draw these and no others.
 pub fn columns(cut: &str) -> &'static [&'static str] {
     match cut {
@@ -1018,6 +929,10 @@ pub fn totals(sessions: &[Spent], now: i64) -> Vec<Total> {
         .collect()
 }
 
+/// Under the 7D and 30D tiles: outcomes rows carry a session's whole life, not the window's share.
+pub const TOTALS_NOTE: &str =
+    "whole-life cost of the sessions touched in the window, from outcomes";
+
 /// One source's freshness, as the tab's head lists them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Source {
@@ -1060,10 +975,19 @@ pub struct Board {
     pub cuts: &'static [&'static str],
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
-    pub live: Live,
-    pub who: WhoSpent,
+    pub fleet_cost: FleetCost,
+    pub history: crate::spend_history::History,
+    /// One day's sessions ranked by cost, and the opened session's own days.
+    pub day: crate::spend_history::DayView,
+    pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    /// The Consumers section in its own order; a surface re-sorts it with `gateway::build`.
+    pub consumers: crate::gateway::Consumers,
+    /// The sections that need a look (layout section ids), which an inner tab's label counts so
+    /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
+    /// Langfuse with no figures or stale.
+    pub amber: Vec<&'static str>,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
     /// the window (the snapshots are nightly).
     pub tokens: Option<crate::tokens::Tokens>,
@@ -1086,6 +1010,31 @@ pub struct Board {
     pub grafana: Option<String>,
 }
 
+/// The sections of the tab that need a look (`Board::amber`).
+fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> {
+    let mut out = vec![];
+    if matches!(c.burn.level, "warn" | "bad") {
+        out.push("burn");
+    }
+    if matches!(consumers.level, "warn" | "bad") {
+        out.push("consumers");
+    }
+    if let Some(t) = &c.tokens {
+        if t.stale {
+            out.push("tokens");
+        }
+        if t.stale || t.langfuse.figures.is_none() {
+            out.push("langfuse");
+        }
+    }
+    out
+}
+
+/// The Consumers section of one read under a sort (blank: its own order).
+pub fn consumers(c: &Costs, sort: &str, dir: &str) -> crate::gateway::Consumers {
+    crate::gateway::build(&c.consumers, &c.burn, c.at, sort, dir)
+}
+
 /// A cut or window the tab knows, else its default, so a stale link still opens.
 pub fn cut(by: &str) -> &'static str {
     CUTS.iter()
@@ -1105,7 +1054,9 @@ pub fn window(w: &str) -> (&'static str, i64) {
 
 /// The view `by`/`w`/`q`/`sort`/`dir` over one read.
 ///
-/// `sec` is the Sections block's own `(sort, dir)`, which the main table's sort does not touch.
+/// `sec` is the Sections block's own `(sort, dir)`, which the main table's sort does not touch, and
+/// `spend` the Spend day table's own day, query, sort and opened session.
+#[allow(clippy::too_many_arguments)]
 pub fn board(
     c: &Costs,
     by: &str,
@@ -1114,6 +1065,7 @@ pub fn board(
     sort: &str,
     dir: &str,
     sec: (&str, &str),
+    spend: &crate::spend_history::Pick,
 ) -> Board {
     let by = cut(by);
     let (w, secs) = window(w);
@@ -1182,6 +1134,10 @@ pub fn board(
             .columns
             .into_iter()
             .filter(|col| cols.contains(&col.key))
+            .map(|col| table::Column {
+                role: table::role_of(col.key, cols[0], CUT_GLANCE),
+                ..col
+            })
             .collect(),
         facets: filter
             .facets
@@ -1189,17 +1145,25 @@ pub fn board(
             .filter(|f| !f.values.is_empty())
             .collect(),
     };
+    let consumers = consumers(c, "", "");
     Board {
         at: c.at,
         by: by.into(),
         window: w.into(),
         cuts: &CUTS,
         windows: WINDOWS.iter().map(|w| w.0).collect(),
-        totals: totals(&c.sessions, c.at),
-        live: c.live.clone(),
-        who: who_spent(&c.live, &c.sessions, c.at),
+        totals: totals(&c.sessions, c.at)
+            .into_iter()
+            .filter(|t| t.window != "24h")
+            .collect(),
+        fleet_cost: c.fleet_cost.clone(),
+        history: c.history.clone(),
+        day: crate::spend_history::day_view(&c.spend_days, spend),
+        totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
+        amber: amber(c, &consumers),
+        consumers,
         tokens: c.tokens.clone(),
         sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
@@ -1247,6 +1211,8 @@ mod tests {
             tokens: d.clone(),
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
+            fleet_cost: d.join("fleet-cost.json"),
+            gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
         // Negative control: no snapshot, no tokens and no error.
@@ -1270,9 +1236,40 @@ mod tests {
             "",
             "desc",
             ("", "desc"),
+            &Default::default(),
         );
         assert!(b.tokens.is_some() && b.errors.len() == 1);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_amber_sections_are_the_ones_that_need_a_look() {
+        let amber_of = |c: &Costs| {
+            board(
+                c,
+                DEFAULT_CUT,
+                DEFAULT_WINDOW,
+                "",
+                "",
+                "desc",
+                ("", "desc"),
+                &Default::default(),
+            )
+            .amber
+        };
+        let mut c = Costs::default();
+        assert!(amber_of(&c).is_empty(), "nothing read is not amber");
+        c.burn.level = "ok";
+        assert!(amber_of(&c).is_empty());
+        c.burn.level = "warn";
+        assert_eq!(amber_of(&c), ["burn"]);
+        c.burn.level = "bad";
+        assert_eq!(amber_of(&c), ["burn"]);
+        // A Consumers input that could not be read needs a look on its own.
+        c.consumers
+            .errors
+            .push("agentctl list --json: not found".into());
+        assert_eq!(amber_of(&c), ["burn", "consumers"]);
     }
 
     #[test]
@@ -1287,25 +1284,50 @@ mod tests {
             ..Costs::default()
         };
         let names = |sec| {
-            board(&c, "model", "7d", "", "cost", "asc", sec)
-                .sections
-                .rows
-                .iter()
-                .map(|r| r[0].clone())
-                .collect::<Vec<_>>()
+            board(
+                &c,
+                "model",
+                "7d",
+                "",
+                "cost",
+                "asc",
+                sec,
+                &Default::default(),
+            )
+            .sections
+            .rows
+            .iter()
+            .map(|r| r[0].clone())
+            .collect::<Vec<_>>()
         };
         assert_eq!(names(("", "")), ["a", "b"], "fleet-bench's order");
         assert_eq!(names(("prs", "desc")), ["b", "a"]);
         assert_eq!(names(("prs", "asc")), ["a", "b"]);
-        let b = board(&c, "model", "7d", "", "cost", "asc", ("prs", "asc"));
+        let b = board(
+            &c,
+            "model",
+            "7d",
+            "",
+            "cost",
+            "asc",
+            ("prs", "asc"),
+            &Default::default(),
+        );
         assert_eq!(b.table.sort, "cost", "the main table's sort is its own");
         assert_eq!(b.sections.all[0], "All PRs");
-        assert!(
-            board(&Costs::default(), "model", "7d", "", "", "", ("", ""))
-                .sections
-                .table
-                .is_none()
-        );
+        assert!(board(
+            &Costs::default(),
+            "model",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default()
+        )
+        .sections
+        .table
+        .is_none());
     }
 
     #[test]
@@ -1481,14 +1503,34 @@ mod tests {
         let mut c = costs();
         c.sessions[0].cost_usd = None;
         c.sessions[0].cost_by_model = Some(BTreeMap::from([("claude-opus-5-5".into(), 4.0)]));
-        let b = board(&c, "session", "24h", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "session",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
         assert_eq!(b.totals[0].unpriced, 0);
+        let windows: Vec<&str> = b.totals.iter().map(|t| t.window).collect();
+        assert_eq!(windows, ["7d", "30d"], "the fleet figure is the 24h answer");
     }
 
     #[test]
     fn the_model_cut_splits_a_session_by_its_cost_by_model_and_joins_the_evaluation() {
-        let b = board(&costs(), "model", "7d", "", "", "", ("", ""));
+        let b = board(
+            &costs(),
+            "model",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "model"), ["opus-5-5", "haiku-4-5", "gpt-5.4"]);
         let opus = &b.rows[0];
         assert!((opus.cost - 12.0).abs() < 1e-9, "8 of s1 and all of s2");
@@ -1510,24 +1552,69 @@ mod tests {
         c.sessions[0].harness = None;
         c.sessions[1].harness = Some(" ".into());
         c.sessions[1].account = Some(agent_panel::account::GATEWAY.into());
-        let b = board(&c, "harness", "30d", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "harness",
+            "30d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "harness"), ["claude", "claude-lazer"]);
     }
 
     #[test]
     fn each_cut_groups_by_its_own_key() {
         let c = costs();
-        let b = board(&c, "session", "30d", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "session",
+            "30d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "session"), ["s1", "s2", "s3", "s4"]);
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5, haiku-4-5"));
-        let b = board(&c, "harness", "30d", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "harness",
+            "30d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "harness"), ["claude", "codex", "claude-lazer"]);
         assert_eq!(b.rows[0].landed, Some(0.9));
-        let b = board(&c, "project", "30d", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "project",
+            "30d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "project"), ["dotfiles", "playground", "_runner"]);
-        let b = board(&c, "kind", "30d", "", "", "", ("", ""));
+        let b = board(&c, "kind", "30d", "", "", "", ("", ""), &Default::default());
         assert_eq!(names(&b, "kind"), ["human", "automated"]);
-        let b = board(&c, "runner", "24h", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "runner",
+            "24h",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "runner"), ["dream", "ask-judge"]);
         assert_eq!(
             b.rows[0].calls,
@@ -1535,7 +1622,7 @@ mod tests {
             "the 2-day-old call is outside 24h"
         );
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5"));
-        let b = board(&c, "tool", "7d", "", "", "", ("", ""));
+        let b = board(&c, "tool", "7d", "", "", "", ("", ""), &Default::default());
         assert_eq!(names(&b, "tool"), ["Bash", "Read", "(no tool)"]);
         assert!(
             (b.shown_usd - 10.0).abs() < 1e-9,
@@ -1548,14 +1635,32 @@ mod tests {
         }
         old.snapshots[0].unallocated_usd = None;
         assert!(
-            board(&old, "tool", "7d", "", "", "", ("", ""))
-                .unpriced
-                .is_some(),
+            board(
+                &old,
+                "tool",
+                "7d",
+                "",
+                "",
+                "",
+                ("", ""),
+                &Default::default()
+            )
+            .unpriced
+            .is_some(),
             "a snapshot from before the allocation"
         );
         let mut stale = costs();
         stale.snapshots[0].date = "2026-12-01".into();
-        let b = board(&stale, "tool", "7d", "", "", "", ("", ""));
+        let b = board(
+            &stale,
+            "tool",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert!(
             b.rows.is_empty(),
             "a snapshot from before the window is not in it"
@@ -1565,20 +1670,56 @@ mod tests {
     #[test]
     fn a_sort_goes_both_ways_and_the_default_is_the_costliest_first() {
         let c = costs();
-        let up = board(&c, "project", "30d", "", "cost", "asc", ("", ""));
+        let up = board(
+            &c,
+            "project",
+            "30d",
+            "",
+            "cost",
+            "asc",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&up, "project"), ["_runner", "playground", "dotfiles"]);
-        let down = board(&c, "project", "30d", "", "cost", "", ("", ""));
+        let down = board(
+            &c,
+            "project",
+            "30d",
+            "",
+            "cost",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(
             names(&down, "project"),
             ["dotfiles", "playground", "_runner"]
         );
-        let by_name = board(&c, "project", "30d", "", "project", "asc", ("", ""));
+        let by_name = board(
+            &c,
+            "project",
+            "30d",
+            "",
+            "project",
+            "asc",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(
             names(&by_name, "project"),
             ["_runner", "dotfiles", "playground"]
         );
         // A column the cut does not show sorts nothing.
-        let off = board(&c, "project", "30d", "", "landed", "asc", ("", ""));
+        let off = board(
+            &c,
+            "project",
+            "30d",
+            "",
+            "landed",
+            "asc",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(off.table.sort, "");
         assert!(off
             .table
@@ -1590,7 +1731,16 @@ mod tests {
     #[test]
     fn the_query_filters_the_slices_before_they_are_grouped() {
         let c = costs();
-        let b = board(&c, "project", "7d", "harness:codex", "", "", ("", ""));
+        let b = board(
+            &c,
+            "project",
+            "7d",
+            "harness:codex",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "project"), ["dotfiles"]);
         assert!((b.shown_usd - 1.5).abs() < 1e-9, "only s3's cost");
         assert_eq!(
@@ -1598,9 +1748,27 @@ mod tests {
             (1, 2),
             "rows of the cut, not slices"
         );
-        let b = board(&c, "model", "7d", "-model:opus", "", "", ("", ""));
+        let b = board(
+            &c,
+            "model",
+            "7d",
+            "-model:opus",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "model"), ["haiku-4-5", "gpt-5.4"]);
-        let b = board(&c, "session", "7d", "-model:opus", "", "", ("", ""));
+        let b = board(
+            &c,
+            "session",
+            "7d",
+            "-model:opus",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert!(
             (b.rows[0].cost - 2.0).abs() < 1e-9,
             "s1 without its opus share"
@@ -1610,7 +1778,16 @@ mod tests {
 
     #[test]
     fn a_query_with_no_match_is_an_empty_table_that_says_so() {
-        let b = board(&costs(), "model", "7d", "harness:nope", "", "", ("", ""));
+        let b = board(
+            &costs(),
+            "model",
+            "7d",
+            "harness:nope",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert!(b.rows.is_empty());
         assert_eq!(b.table.shown, 0);
         assert!(b.table.total > 0, "the surfaces say no match, not no data");
@@ -1619,7 +1796,16 @@ mod tests {
 
     #[test]
     fn a_stale_link_opens_the_default_view() {
-        let b = board(&costs(), "nope", "1y", "", "", "", ("", ""));
+        let b = board(
+            &costs(),
+            "nope",
+            "1y",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!(
             (b.by.as_str(), b.window.as_str()),
             (DEFAULT_CUT, DEFAULT_WINDOW)
@@ -1699,102 +1885,55 @@ not json
         assert_eq!(tokens(Some(61e6)), "61M");
     }
 
-    fn by_runner(service: &str, runner: &str, v: f64) -> crate::prom::Series {
-        let mut labels = BTreeMap::from([
-            ("__name__".to_string(), BY_RUNNER_Q.to_string()),
-            ("service_name".to_string(), service.to_string()),
-        ]);
-        if !runner.is_empty() {
-            labels.insert("agentctl_runner".into(), runner.into());
-        }
-        crate::prom::Series {
-            labels,
-            value: Some(v),
-            points: vec![],
-        }
-    }
-
     #[test]
-    fn the_live_split_names_each_runner_and_you_and_its_whole_is_their_sum() {
-        let l = live(&[
-            by_runner("claude-code", "", 57.0),
-            by_runner("claude-agentctl", "fleet-dispatch", 58.0),
-            by_runner("claude-agentctl", "shepherd", 40.0),
-            by_runner("claude-agentctl", "", 1.5),
-            by_runner("claude-code", "ask-judge", 2.5),
-        ]);
-        assert_eq!(l.claude_24h, Some(159.0));
-        assert_eq!(l.by_who.get(YOU), Some(&57.0));
-        assert_eq!(l.by_who.get("fleet-dispatch"), Some(&58.0));
-        assert_eq!(
-            l.by_who.get("ask-judge"),
-            Some(&2.5),
-            "a runner is its runner, whatever its service"
-        );
-        assert_eq!(
-            l.by_who.get("claude-agentctl"),
-            Some(&1.5),
-            "no runner is its service"
-        );
-        // negative control: another gauge is not the split, and none is unknown, never $0
-        let other = crate::prom::Series {
-            labels: BTreeMap::from([(
-                "__name__".to_string(),
-                "cc:claude_code_cost_24h_usd".to_string(),
-            )]),
-            value: Some(11.5),
-            points: vec![],
+    fn the_fleet_block_reads_its_file_and_history_reads_the_snapshots() {
+        let d = std::env::temp_dir().join(format!("hub-costs-fleet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let paths = Paths {
+            calls: d.join("calls.jsonl"),
+            tokens: d.clone(),
+            dispatch_log: d.join("log.md"),
+            headroom: d.join("headroom.json"),
+            fleet_cost: d.join("fleet-cost.json"),
+            gateway: d.join("gateway.json"),
         };
-        assert_eq!(live(&[other]), Live::default());
-    }
-
-    #[test]
-    fn who_spent_is_the_live_split_plus_other_harnesses_from_outcomes_costliest_first() {
-        let l = live(&[
-            by_runner("claude-code", "", 6.0),
-            by_runner("claude-agentctl", "fleet-dispatch", 3.0),
-        ]);
-        let mut c = costs();
-        // s1 (claude, 1h ago) is in the live export already; a codex session today and an
-        // unpriced one count from outcomes, s3 (codex, 3 days ago) is outside the window.
-        c.sessions.push(spent(
-            "c1",
-            "dotfiles",
-            "codex",
-            1.0,
-            &[("gpt-5.4", 0.0)],
-            600,
-        ));
-        let mut unpriced = spent("c2", "dotfiles", "codex", 0.0, &[], 900);
-        unpriced.cost_usd = None;
-        c.sessions.push(unpriced);
-        // a harness with nothing priced is unknown, not $0, and sorts after every priced row
-        let mut dark = spent("o1", "dotfiles", "opencode", 0.0, &[], 300);
-        dark.cost_usd = None;
-        c.sessions.push(dark);
-        let w = who_spent(&l, &c.sessions, NOW);
-        let rows: Vec<(&str, Option<f64>, &str)> = w
-            .rows
-            .iter()
-            .map(|r| (r.who.as_str(), r.usd, r.source))
-            .collect();
+        std::fs::write(&paths.calls, "").unwrap();
+        // Negative control: no file says so, and shows no figure.
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        assert!(c
+            .fleet_cost
+            .why
+            .as_deref()
+            .unwrap()
+            .starts_with("nothing read: "));
+        assert!(c.fleet_cost.rows.is_empty());
+        std::fs::write(
+            d.join("2027-01-14.json"),
+            r#"{"errors":[],"fleet_cost":{"total":{"usd":738.4}}}"#,
+        )
+        .unwrap();
+        std::fs::write(d.join("2027-01-13.json"), r#"{"errors":[]}"#).unwrap();
+        std::fs::write(
+            &paths.fleet_cost,
+            format!(r#"{{"as_of_epoch":{NOW},"total":{{"usd":5.0,"measured":5.0}}}}"#),
+        )
+        .unwrap();
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        let f = &c.fleet_cost;
         assert_eq!(
-            rows,
-            vec![
-                (YOU, Some(6.0), "Prometheus"),
-                ("fleet-dispatch", Some(3.0), "Prometheus"),
-                ("codex", Some(1.0), "outcomes"),
-                ("opencode", None, "outcomes")
-            ]
+            (f.why.clone(), f.usd.as_str(), f.as_of),
+            (None, "about $5.00", Some(NOW))
         );
-        assert_eq!((w.usd, w.claude_usd), (10.0, Some(9.0)));
-        assert_eq!((w.rows[2].sessions, w.rows[2].unpriced), (Some(2), Some(1)));
-        assert!((w.rows[0].share - 0.6).abs() < 1e-9);
-        // negative control: with no live export the Claude sessions in outcomes are not counted
-        // in its place, so the block says it has no Claude figure instead of a partial one
-        let w = who_spent(&Live::default(), &c.sessions, NOW);
-        assert_eq!(w.claude_usd, None);
-        assert_eq!(w.rows.len(), 2);
+        let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
+        assert_eq!(
+            (days.len(), days[0].period.as_str(), days[0].total.as_str()),
+            (1, "01-14", "$738"),
+            "a day with no fitted rate is not a $0 day"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -1840,15 +1979,19 @@ not json
             updated_epoch: Some(NOW - 60),
             ..Spent::default()
         });
-        let b = board(&c, "harness", "7d", "", "", "", ("", ""));
+        let b = board(
+            &c,
+            "harness",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
-        assert!(j["live"].get("claude_24h").is_some());
-        assert!(j["who"]["rows"].is_array());
-        assert!(
-            j["live"].get("reserve_spend").is_none(),
-            "the key tiles are Burn rows now"
-        );
+        assert!(j["fleet_cost"]["rows"].is_array());
     }
 }

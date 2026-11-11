@@ -1,4 +1,5 @@
-# Lanes `fleet-bench retro` canaries beside the claude lane each week: `harness model`, one a line.
-# A lane runs only when the source its harness spends from (harnesses.json `source`) has room.
-codex sol
-glm glm
+# Lanes `fleet-bench retro` canaries beside the claude lane each week: `harness model [effort]`, one a line.
+# A lane runs only when the source its harness spends from (harnesses.json `source`) has room. An
+# effort overrides the harness's own default for that lane's runs; with none, the harness's default.
+codex sol medium
+codex sol high

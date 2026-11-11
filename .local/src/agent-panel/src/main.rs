@@ -39,6 +39,11 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
+        /// Add a row per Codex run in a pane (`"harness": "codex"`, always busy): fleet-sessions.
+        /// Left out by default, since the other readers take every row for a Claude conversation.
+        /// fleet-sessions sets the env form, which a binary older than the flag ignores.
+        #[arg(long, env = "AGENT_PANEL_CODEX", value_parser = clap::builder::FalseyValueParser::new())]
+        codex: bool,
     },
     /// Exit 0 when the transcript's last word asks the human something (a question, a step for
     /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
@@ -104,6 +109,17 @@ enum Cmd {
         /// Move the saved sort first: `next` key (C-o) or `reverse` direction (A-o).
         #[arg(long, value_enum)]
         sort: Option<agent_panel::sort::Step>,
+        /// The search box text; only the matching rows print.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
+    },
+    /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
+    #[command(hide = true)]
+    Match {
+        #[arg(long)]
+        map_file: PathBuf,
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
     },
     /// Internal ctrl-n callback: a new Claude in a fresh worktree of the repo the agent at
     /// `target` works in (not meant to be run by hand).
@@ -123,38 +139,71 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
+        Some(Cmd::List {
+            json,
+            parked,
+            codex,
+        }) => chooser::run_list(json, parked, codex),
         Some(Cmd::AsksHuman { transcript }) => {
-            std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
+            std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) {
+                0
+            } else {
+                1
+            })
         }
         Some(Cmd::TimeUse { transcript }) => {
-            println!("{}", serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?);
+            println!(
+                "{}",
+                serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?
+            );
             Ok(())
         }
         Some(Cmd::Jump { target }) => chooser::run_jump(&target),
-        Some(Cmd::Send { pane, no_submit, text }) => {
-            if agent_panel::send::message(&pane, &text, !no_submit)? == agent_panel::send::Sent::NotSubmitted {
+        Some(Cmd::Send {
+            pane,
+            no_submit,
+            text,
+        }) => {
+            if agent_panel::send::message(&pane, &text, !no_submit)?
+                == agent_panel::send::Sent::NotSubmitted
+            {
                 eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
                 std::process::exit(3);
             }
             Ok(())
         }
-        Some(Cmd::Said { transcript, around }) => match agent_panel::jsonl::said_around_at(&transcript, &around) {
-            Some(said) => {
-                println!("{}", serde_json::to_string(&said)?);
-                Ok(())
+        Some(Cmd::Said { transcript, around }) => {
+            match agent_panel::jsonl::said_around_at(&transcript, &around) {
+                Some(said) => {
+                    println!("{}", serde_json::to_string(&said)?);
+                    Ok(())
+                }
+                None => std::process::exit(1),
             }
-            None => std::process::exit(1),
-        },
+        }
         Some(Cmd::Dialog { target, options }) => agent_panel::dialog::run_card(&target, options),
-        Some(Cmd::Answer { target, key, expect, text }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
+        Some(Cmd::Answer {
+            target,
+            key,
+            expect,
+            text,
+        }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
         Some(Cmd::Plain { width }) => {
             let mut text = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
-            println!("{}", agent_panel::md::plain(&text, width.unwrap_or_else(agent_panel::md::width)));
+            println!(
+                "{}",
+                agent_panel::md::plain(&text, width.unwrap_or_else(agent_panel::md::width))
+            );
             Ok(())
         }
-        Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
+        Some(Cmd::Rows {
+            map_file,
+            asking,
+            sort,
+            query,
+        }) => chooser::run_rows(&map_file, asking, sort, &query),
+        Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
         Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }

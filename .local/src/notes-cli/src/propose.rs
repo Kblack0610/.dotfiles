@@ -62,7 +62,7 @@ pub(crate) fn proposed_row(text: &str, project: &str) -> String {
 /// row with no type, in every profile. The human sheet takes free text, which triage rewrites.
 pub fn untyped_report() -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for profile in config::all_profile_names()? {
+    for profile in config::managed_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };
@@ -167,7 +167,7 @@ fn classify<'a>(text: &'a str, area: &str) -> (&'a str, String, &'a str) {
     (guess(text), area.to_string(), text)
 }
 
-/// The row type a label names: one of the types (an epic is the human's to file), or a near miss.
+/// The row type a label names: one of the filer types (never `epic`), or a near miss.
 fn label_type(word: &str) -> Option<&'static str> {
     let word = word.to_lowercase();
     projects::filer_types()

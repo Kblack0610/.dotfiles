@@ -56,6 +56,24 @@ repo_of() {
   assert_failure
 }
 
+@test "origin_host: every URL form gives its host, lower-cased; a path origin gives none" {
+  local url
+  for url in https://Git.Example.lan/o/r.git git@git.example.lan:o/r.git ssh://git@git.example.lan:2222/o/r.git \
+    'https://u:p@ss@git.example.lan/o/r.git'; do
+    repo_of "$url" >/dev/null
+    run origin_host "$CLONE"
+    assert_output git.example.lan
+  done
+  repo_of /srv/r.git >/dev/null
+  run origin_host "$CLONE"
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: no origin is rc 1, not an empty host
+  git -C "$CLONE" remote remove origin
+  run origin_host "$CLONE"
+  assert_failure
+}
+
 @test "no origin, or no dir, is nothing and rc 1" {
   run origin_repo "$CLONE"
   assert_failure

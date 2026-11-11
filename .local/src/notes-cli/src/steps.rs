@@ -16,7 +16,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// The chain's steps, in order. `done` is terminal: it counts arrivals, never what sits in it.
-pub const STEPS: [&str; 6] = ["inbox", "backlog", "queued", "running", "waiting", "done"];
+pub const STEPS: [&str; 7] = [
+    "inbox", "backlog", "queued", "running", "review", "waiting", "done",
+];
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Key {
@@ -116,6 +118,105 @@ pub struct Row {
     /// The queue items the record holds in the step, by slug, so a reader can set each against
     /// the queue folders.
     pub items: Vec<String>,
+    /// How many subjects went wrong at this step in the last 24 hours.
+    pub problems_n: usize,
+    /// The newest [`MAX_PROBLEMS`] of them, newest first.
+    pub problems: Vec<Problem>,
+}
+
+/// The problems one step reports. Bounded so the rollup stays one `jq --argjson` argument.
+const MAX_PROBLEMS: usize = 20;
+const MAX_WHY_CHARS: usize = 200;
+
+/// One subject that went wrong at a step; repeats of it fold into `n`, and `ts` is the newest.
+#[derive(Serialize, Debug, PartialEq, Clone)]
+pub struct Problem {
+    pub ts: String,
+    pub subject: String,
+    pub kind: &'static str,
+    /// Empty when the record holds no cause.
+    pub why: String,
+    pub n: usize,
+}
+
+/// What an event says went wrong: the step, the kind and the cause. The action-to-problem table
+/// lives here and only here. `dropped` is absent because a person or a dedupe chose it, and a
+/// reap of a waiting item is absent because a parked session closing is the normal case.
+fn problem(e: &Event) -> Option<(&'static str, &'static str, String)> {
+    let why = e.why.clone().unwrap_or_default();
+    match e.action.as_str() {
+        "item-moved" if e.to == "done" && why.ends_with("(failed)") => {
+            step(why.split(" -> ").next()?).map(|s| (s, "failed", String::new()))
+        }
+        "reaped" if why == "item was running" => Some(("running", "reaped", e.text.clone())),
+        "refused" => Some(("inbox", "refused", why)),
+        "left" => Some(("inbox", "left", why)),
+        "asked" => Some(("inbox", "asked you", why)),
+        "sweep-stopped" => Some(("inbox", "sweep stopped", why)),
+        "land-failed" => Some(("done", "land failed", why)),
+        _ => None,
+    }
+}
+
+/// Record `e`'s problem against its step, folding a repeat of the same subject and kind.
+fn note_problem(rows: &mut [Row], e: &Event) {
+    if e.action == "merged" {
+        // A landing that failed and then merged is fixed; a failure after this event still counts.
+        if let Some(r) = rows.iter_mut().find(|r| r.step == "done") {
+            let of = |p: &Problem| {
+                [&e.item, &e.pr]
+                    .iter()
+                    .any(|n| n.as_deref() == Some(&p.subject))
+            };
+            r.problems.retain(|p| p.kind != "land failed" || !of(p));
+        }
+        return;
+    }
+    let Some((at, kind, why)) = problem(e) else {
+        return;
+    };
+    let subject = [&e.item, &e.id]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| e.text.clone());
+    let Some(r) = rows.iter_mut().find(|r| r.step == at) else {
+        return;
+    };
+    match r
+        .problems
+        .iter_mut()
+        .find(|p| p.subject == subject && p.kind == kind)
+    {
+        Some(p) => {
+            p.ts = e.ts.clone();
+            p.why = why;
+            p.n += 1;
+        }
+        None => r.problems.push(Problem {
+            ts: e.ts.clone(),
+            subject,
+            kind,
+            why,
+            n: 1,
+        }),
+    }
+}
+
+/// Fill a failure's cause from its item's latest note, then count, order and bound the list.
+fn finish_problems(r: &mut Row, notes: &HashMap<String, String>) {
+    for p in r.problems.iter_mut() {
+        if p.why.is_empty() {
+            p.why = notes.get(&p.subject).cloned().unwrap_or_default();
+        }
+        p.why = p.why.chars().take(MAX_WHY_CHARS).collect();
+    }
+    r.problems_n = r.problems.len();
+    // By instant, not text: the record's offsets differ across a DST change.
+    r.problems
+        .sort_by_key(|p| std::cmp::Reverse(DateTime::parse_from_rfc3339(&p.ts).ok()));
+    r.problems.truncate(MAX_PROBLEMS);
 }
 
 /// Nearest-rank percentile of sorted `v`.
@@ -136,10 +237,21 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
     let mut dwell: Vec<Vec<i64>> = vec![vec![]; STEPS.len()];
     let idx = |s: &str| STEPS.iter().position(|x| *x == s).unwrap_or(0);
     let (h1, h24) = (now - Duration::hours(1), now - Duration::hours(24));
+    let mut notes: HashMap<String, String> = HashMap::new();
     for e in events {
         let Ok(ts) = DateTime::parse_from_rfc3339(&e.ts) else {
             continue;
         };
+        if ts > h24 {
+            note_problem(&mut rows, e);
+        }
+        if let (true, Some(item), Some(note)) = (
+            e.action == "item-set",
+            &e.item,
+            e.why.as_deref().and_then(|w| w.strip_prefix("note=")),
+        ) {
+            notes.insert(item.clone(), note.to_string());
+        }
         for m in moves(e) {
             let was = at.get(&m.key).copied();
             let left = was.map(|(s, _)| s).or(m.from);
@@ -185,6 +297,7 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
         r.dwell_n = d.len();
         r.dwell_p50_min = pct(d, 50);
         r.dwell_p90_min = pct(d, 90);
+        finish_problems(r, &notes);
     }
     rows
 }
@@ -391,5 +504,175 @@ mod tests {
         let v: Vec<i64> = (1..=10).collect();
         assert_eq!((pct(&v, 50), pct(&v, 90)), (Some(5), Some(9)));
         assert_eq!(pct(&[], 50), None);
+    }
+
+    fn item_ev(ts: &str, action: &str, to: &str, item: &str, why: &str) -> Event {
+        with(
+            ev(ts, action, "ucp", to, "gone"),
+            None,
+            Some(item),
+            Some(why),
+        )
+    }
+
+    #[test]
+    fn each_kind_of_problem_lands_on_its_step_with_its_cause() {
+        let events = vec![
+            with(
+                ev("09:00", "sweep-stopped", "outbox", "", "inbox sweep"),
+                None,
+                None,
+                Some("model call failed"),
+            ),
+            item_ev("10:00", "item-set", "", "a", "note=session ended early"),
+            item_ev(
+                "10:01",
+                "item-moved",
+                "done",
+                "a",
+                "running -> done (failed)",
+            ),
+            item_ev("11:00", "reaped", "", "b", "item was running"),
+            with(
+                ev("12:00", "refused", "outbox", "", "line"),
+                None,
+                None,
+                Some("no project"),
+            ),
+            with(
+                ev("13:00", "left", "outbox", "", "other"),
+                None,
+                None,
+                Some("unclear"),
+            ),
+            with(
+                ev("14:00", "land-failed", "dotfiles", "", "o/r#42"),
+                None,
+                Some("ship"),
+                Some("checks: Checks"),
+            ),
+        ];
+        let rows = replay(&events, now());
+        let done = get(&rows, "done");
+        assert_eq!(
+            (
+                done.problems_n,
+                done.problems[0].subject.as_str(),
+                done.problems[0].kind,
+                done.problems[0].why.as_str()
+            ),
+            (1, "ship", "land failed", "checks: Checks")
+        );
+        let running = get(&rows, "running");
+        assert_eq!(running.problems_n, 2);
+        assert_eq!(
+            (
+                running.problems[0].subject.as_str(),
+                running.problems[0].kind
+            ),
+            ("b", "reaped")
+        );
+        assert_eq!(running.problems[0].why, "gone");
+        assert_eq!(
+            (running.problems[1].kind, running.problems[1].why.as_str()),
+            ("failed", "session ended early")
+        );
+        let inbox = get(&rows, "inbox");
+        assert_eq!(inbox.problems_n, 3);
+        assert_eq!(
+            (
+                inbox.problems[0].subject.as_str(),
+                inbox.problems[0].why.as_str()
+            ),
+            ("other", "unclear")
+        );
+        assert_eq!(
+            (inbox.problems[2].kind, inbox.problems[2].why.as_str()),
+            ("sweep stopped", "model call failed")
+        );
+    }
+
+    #[test]
+    fn a_merge_clears_the_land_failures_before_it_and_not_after() {
+        let failed = |ts, item| {
+            with(
+                ev(ts, "land-failed", "dotfiles", "", "o/r#42"),
+                None,
+                Some(item),
+                Some("checks: Checks"),
+            )
+        };
+        let merged = with(
+            ev("11:00", "merged", "dotfiles", "", "ship it"),
+            None,
+            Some("ship"),
+            None,
+        );
+        let rows = replay(
+            &[
+                failed("10:00", "ship"),
+                failed("10:30", "other"),
+                merged.clone(),
+            ],
+            now(),
+        );
+        let done = get(&rows, "done");
+        assert_eq!(
+            (done.problems_n, done.problems[0].subject.as_str()),
+            (1, "other")
+        );
+        let rows = replay(&[merged, failed("12:00", "ship")], now());
+        assert_eq!(get(&rows, "done").problems_n, 1);
+    }
+
+    #[test]
+    fn a_repeat_folds_and_a_normal_end_is_no_problem() {
+        let events = vec![
+            item_ev("10:00", "reaped", "", "b", "item was running"),
+            item_ev("11:00", "reaped", "", "b", "item was running"),
+            item_ev("11:30", "reaped", "", "c", "item was waiting"),
+            item_ev("12:00", "item-moved", "done", "d", "running -> done (ok)"),
+            item_ev("12:30", "dropped", "", "e", "dup:ar-1"),
+        ];
+        let rows = replay(&events, now());
+        let running = get(&rows, "running");
+        assert_eq!((running.problems_n, running.problems[0].n), (1, 2));
+        assert!(rows
+            .iter()
+            .filter(|r| r.step != "running")
+            .all(|r| r.problems.is_empty()));
+    }
+
+    #[test]
+    fn problems_sort_by_instant_across_an_offset_change() {
+        let mut a = item_ev("10:00", "reaped", "", "older", "item was running");
+        a.ts = "2026-11-05T10:30:00-07:00".into();
+        let mut b = item_ev("10:00", "reaped", "", "newer", "item was running");
+        b.ts = "2026-11-05T10:00:00-08:00".into();
+        let rows = replay(&[a, b], now());
+        assert_eq!(get(&rows, "running").problems[0].subject, "newer");
+    }
+
+    #[test]
+    fn problems_older_than_a_day_are_gone_and_the_list_is_bounded() {
+        let mut old = item_ev("10:00", "reaped", "", "b", "item was running");
+        old.ts = "2026-11-03T10:00:00-08:00".into();
+        let mut events = vec![old];
+        for i in 0..(MAX_PROBLEMS + 5) {
+            events.push(item_ev(
+                "10:00",
+                "reaped",
+                "",
+                &format!("i{i}"),
+                "item was running",
+            ));
+        }
+        let rows = replay(&events, now());
+        let running = get(&rows, "running");
+        assert_eq!(
+            (running.problems_n, running.problems.len()),
+            (MAX_PROBLEMS + 5, MAX_PROBLEMS)
+        );
+        assert!(running.problems.iter().all(|p| p.subject != "b"));
     }
 }

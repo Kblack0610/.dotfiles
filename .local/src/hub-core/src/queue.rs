@@ -39,8 +39,11 @@ pub fn harness_of(said: &str, account: &str) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
+    /// The session needs the human: a plan, a dialog or an ask.
     Waiting,
     Running,
+    /// Parked on its open PR, its session ended or stopped there; reap closes it on the merge.
+    Review,
     #[default]
     Queued,
     Done,
@@ -48,9 +51,10 @@ pub enum State {
 
 /// The old section ids (`#queue/running`, `hub --tab "queue running"`) and the state chip each
 /// one opens the table on, so a link made before the table still lands on that view.
-pub const SECTION_ALIASES: [(&str, &str); 4] = [
+pub const SECTION_ALIASES: [(&str, &str); 5] = [
     ("waiting", "needs you"),
     ("running", "running"),
+    ("review", "on a PR"),
     ("queued", "up next"),
     ("done", "done"),
 ];
@@ -106,6 +110,9 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// `yes` while an item that landed one PR still has its final landing to make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
     /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
@@ -140,6 +147,9 @@ pub struct Item {
     /// When it moved to `waiting/`, the human's turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// When it moved to `review/`, parked on its open PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     /// The merge commit `agent-land` proved, beside `pr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<String>,
@@ -242,6 +252,7 @@ impl Item {
             ("ready", &self.ready),
             ("started", &self.started),
             ("waiting", &self.waiting),
+            ("review", &self.review),
             ("finished", &self.finished),
         ] {
             let Some(at) = said(v) else { continue };
@@ -288,6 +299,45 @@ impl Item {
         }
     }
 
+    /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
+    pub fn plan(&self) -> Option<(&str, &str)> {
+        Some((self.extra_str("plan")?, self.extra_str("phases")?))
+    }
+
+    /// `<plan name> P5: <phase words>`, a plan item's title as the Log's Work row says it: the
+    /// plan by its heading (`plans::name`) in place of the file name `agent-queue add --plan`
+    /// titles it with. A one-phase item takes the label its words lead with (`P9 live stage`)
+    /// over its checklist place. An item with no `plan:` whose title has that shape (one
+    /// promoted from a board row) is named the same way when its plan file exists. None for
+    /// any other item.
+    pub fn plan_title(&self, names: &mut crate::plans::Names) -> Option<String> {
+        use crate::plans::{base, legacy, own_label, path};
+        let title = self.title.trim();
+        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
+            (Some((plan, phases)), old) => {
+                let words = old
+                    .filter(|(b, ..)| *b == base(plan))
+                    .map_or(title, |(.., w)| w);
+                let phases: Vec<&str> = phases.split_whitespace().collect();
+                let tag = format!("P{}", phases.join("+"));
+                (plan.to_string(), tag, words, phases.len() == 1)
+            }
+            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
+                (path(b), tag.to_string(), words, !tag.contains('+'))
+            }
+            _ => return None,
+        };
+        let (label, words) = one
+            .then(|| own_label(words))
+            .flatten()
+            .unwrap_or((tag, words));
+        Some(format!(
+            "{} {label}: {}",
+            names.get(&plan),
+            cap(words, TITLE_MAX)
+        ))
+    }
+
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
     /// (a clock step, a re-run predecessor) counts 0, never a negative span.
     pub fn timing(&self, now: chrono::DateTime<chrono::Utc>) -> Timing {
@@ -304,10 +354,15 @@ impl Item {
                 State::Queued => mins(queued, Some(now)),
                 State::Running => mins(started, Some(now)),
                 State::Waiting => mins(waiting.or(started), Some(now)),
+                State::Review => mins(at(&self.review).or(waiting).or(started), Some(now)),
             },
             wait: mins(at(&self.ready).or(queued), started),
             run: match self.state {
                 State::Waiting => mins(started, waiting.filter(|w| Some(*w) >= started).or(end)),
+                State::Review => {
+                    let parked = at(&self.review).or(waiting);
+                    mins(started, parked.filter(|w| Some(*w) >= started).or(end))
+                }
                 _ => mins(started, end),
             },
             lead: mins(queued, end),
@@ -349,26 +404,7 @@ impl Item {
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        let pr = self.pr.as_deref()?.trim();
-        if pr.is_empty() {
-            return None;
-        }
-        if pr.starts_with("https://") || pr.starts_with("http://") {
-            let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
-            return Some((format!("#{n}"), Some(pr.into())));
-        }
-        match pr.split_once('#') {
-            Some((repo, n))
-                if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
-            {
-                let short = repo.rsplit('/').next().unwrap_or(repo);
-                Some((
-                    format!("{short}#{n}"),
-                    Some(format!("https://github.com/{repo}/pull/{n}")),
-                ))
-            }
-            _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
-        }
+        pr_link_of(self.pr.as_deref()?)
     }
 
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
@@ -387,6 +423,21 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// Why an item in review or waiting sits there, in the words of what its headers record.
+    /// Review is a PR to merge; waiting is the human's turn, by an ask, a note or the question
+    /// its live session shows.
+    pub fn waits_on(&self) -> &'static str {
+        match self.state {
+            State::Review if self.partial.as_deref() == Some("yes") => "on a final landing",
+            State::Review => "on its merge",
+            _ if self.extra_str("ask").is_some() || self.extra_str("report").is_some() => {
+                "on an ask or report"
+            }
+            _ if said(&self.note).is_some() => "parked with a note",
+            _ => "on its session's question",
+        }
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -665,6 +716,30 @@ fn argv(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
+pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
+    let pr = pr.trim();
+    if pr.is_empty() {
+        return None;
+    }
+    if pr.starts_with("https://") || pr.starts_with("http://") {
+        let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
+        return Some((format!("#{n}"), Some(pr.into())));
+    }
+    match pr.split_once('#') {
+        Some((repo, n))
+            if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            let short = repo.rsplit('/').next().unwrap_or(repo);
+            Some((
+                format!("{short}#{n}"),
+                Some(format!("https://github.com/{repo}/pull/{n}")),
+            ))
+        }
+        _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
+    }
+}
+
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
@@ -725,7 +800,7 @@ pub struct Queue {
 }
 
 /// What `Queue::read` prefixes a failed `agent-queue list` with.
-const LIST_FAILED: &str = "agent-queue list";
+pub(crate) const LIST_FAILED: &str = "agent-queue list";
 
 impl Queue {
     /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.
@@ -802,9 +877,10 @@ impl QueueRow<'_> {
         match (self.item.state, self.item.hold.is_some()) {
             (State::Waiting, _) => 0,
             (State::Running, _) => 1,
-            (State::Queued, false) => 2,
-            (State::Queued, true) => 3,
-            (State::Done, _) => 4,
+            (State::Review, _) => 2,
+            (State::Queued, false) => 3,
+            (State::Queued, true) => 4,
+            (State::Done, _) => 5,
         }
     }
 
@@ -812,7 +888,7 @@ impl QueueRow<'_> {
     fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.item.state {
-            State::Waiting => o.timing.in_state.cmp(&self.timing.in_state),
+            State::Waiting | State::Review => o.timing.in_state.cmp(&self.timing.in_state),
             State::Running => o.timing.run.cmp(&self.timing.run),
             State::Done => {
                 // Newest finish first; a stamp that does not parse sorts last.
@@ -835,8 +911,11 @@ impl crate::table::Row for QueueRow<'_> {
     ];
     /// `all` first, because the first chip keeps every row; then the states in the order the
     /// Queue sections list them.
-    const STATES: &'static [&'static str] = &["all", "needs you", "running", "up next", "done"];
+    const STATES: &'static [&'static str] =
+        &["all", "needs you", "running", "on a PR", "up next", "done"];
     const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    const LEAD: &'static str = "title";
+    const GLANCE: &'static [&'static str] = &["state", "in", "project"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -848,6 +927,7 @@ impl crate::table::Row for QueueRow<'_> {
                 match i.state {
                     State::Waiting => "needs",
                     State::Running => "running",
+                    State::Review => "on a PR",
                     State::Queued => "queued",
                     State::Done => "done",
                 }
@@ -870,6 +950,7 @@ impl crate::table::Row for QueueRow<'_> {
         let want = match s {
             "needs you" => State::Waiting,
             "running" => State::Running,
+            "on a PR" => State::Review,
             "up next" => State::Queued,
             "done" => State::Done,
             _ => return false,
@@ -1065,7 +1146,10 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
 pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
     let body = std::fs::read_to_string(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            format!("no snapshot yet at {}, the next dispatch pass writes one", path.display())
+            format!(
+                "no snapshot yet at {}, the next dispatch pass writes one",
+                path.display()
+            )
         }
         _ => format!("{}: {e}", path.display()),
     })?;
@@ -1826,6 +1910,18 @@ mod tests {
         );
         assert_eq!(
             timed(
+                r#"{"slug":"p","state":"review","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:10:00Z","review":"2026-11-06T11:00:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(60),
+                wait: Some(10),
+                run: Some(110),
+                lead: Some(180)
+            },
+            "review: its run stops when it parked on its PR"
+        );
+        assert_eq!(
+            timed(
                 r#"{"slug":"c","state":"done","status":"cancelled","queued":"2026-11-06T09:00:00Z","finished":"2026-11-06T09:05:00Z","task":"t"}"#
             ),
             Timing {
@@ -1947,6 +2043,7 @@ mod tests {
                 ("all", 3),
                 ("needs you", 1),
                 ("running", 1),
+                ("on a PR", 0),
                 ("up next", 0),
                 ("done", 1)
             ]

@@ -31,8 +31,9 @@ It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
 The agents leaves act in the terminal you typed in last, never a new window: a popup on it (`tmx popup`), or a hop of it (`o` and `h` land through `tmx goto`). With no tmux client attached anywhere, one floating kitty opens instead.
 
 ```
-Super+A                L1 pinbar          space control menu | a agents> | i inputs> | m machine mode> | k keys | t toggle | u utils> | s settings> | esc/q exit
+Super+A                L1 pinbar          space control menu | a agents> | i inputs> | m machine mode> | k keys> | t toggle | u utils> | s settings> | esc/q exit
   a agents             L2 pinbar-agents   a agent panel | w all sessions | c scratch claude | n pick a page | o open newest page | h triage newest page | esc back
+  k keys               L2 pinbar-keys     a all | h hyprland | t tmux | n nvim | esc back
   i inputs             L2 pinbar-input    m mic direct | g guitar | b guitar+mic | w guitar+webcam | esc back
   m machine mode       L2 pinbar-mode     r reserved | s shared | o open | f full | esc back
   u utils              L2 pinbar-utils    h ssh | r reload | t timebox> | y sync> | g git> | esc back

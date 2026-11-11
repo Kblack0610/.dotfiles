@@ -67,7 +67,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
   assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
   assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
-  assert.match(html, /<th class="n"><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
+  assert.match(html, /<th class="n"[^>]*><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
   assert.match(html, /data-tsort="waited"[^>]*>waited<\/button>/);
   const row = /<tr class="jr" data-need="ask:a1"><td class="n">1<\/td><td>Question<\/td><td>p<\/td><td class="n" title="(\d{4}-\d\d-\d\dT[^"]+Z)">1h 5m<\/td><td class="wrap muted">session, 2 phases<\/td><td class="wrap">Ship it\?<\/td><\/tr>/.exec(html);
   assert.ok(row, html);
@@ -80,7 +80,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
 test("a sort asked for marks its own header and takes the mark off the rank", () => {
   const cols = COLS.map((key) => ({ key, sort: key === "waited" ? "asc" : null, next_sort: key, next_dir: "desc" }));
   const html = draw(home({ needs: [{ kind: "ask", need: "ask", project: "p", text: "x", id: "a1" }], table: { sort: "waited", dir: "asc", columns: cols } }));
-  assert.match(html, /<th class="n" aria-sort="ascending">.*waited \^<\/button>/);
+  assert.match(html, /<th class="n" aria-sort="ascending"[^>]*>.*waited \^<\/button>/);
   assert.match(html, />rank<\/button>/);
 });
 

@@ -72,6 +72,17 @@ proof_why() {
   _AGENT_PROOF_WHY+=("$r")
 }
 
+# proof_reasons - the reasons given since the last report as one line, the distinct ones up to
+# AGENT_PROOF_WHY_MAX and the rest counted. proof_report clears them, so call it before that.
+proof_reasons() {
+  local why="" i
+  for ((i = 0; i < ${#_AGENT_PROOF_WHY[@]} && i < AGENT_PROOF_WHY_MAX; i++)); do
+    why+="${why:+; }${_AGENT_PROOF_WHY[i]}"
+  done
+  [ "${#_AGENT_PROOF_WHY[@]}" -le "$AGENT_PROOF_WHY_MAX" ] || why+=" (+$((${#_AGENT_PROOF_WHY[@]} - AGENT_PROOF_WHY_MAX)) more)"
+  printf '%s' "$why"
+}
+
 # proof_watch FILE... — record a fingerprint of each artifact before the run.
 # mtime AND size: two writes inside the same second are common for small files,
 # and mtime alone would call that "unchanged".
@@ -159,7 +170,7 @@ proof_state_dir() {
 # when the runner gave none: a missing reason is a counted defect (fleet-bench
 # failed_unexplained), never silence. The reasons are cleared for the next pass.
 proof_report() {
-  local name="$1" verdict="$2" detail="${3:-}" why="" i
+  local name="$1" verdict="$2" detail="${3:-}" why=""
   local dir="$(proof_state_dir)/$name"
   # A word outside the vocabulary is a caller bug. Record it as FAILED, loudly, rather
   # than store a value no reader's trip list knows (a runner's free-text FAILED once sat
@@ -170,10 +181,7 @@ proof_report() {
   esac
   case "$verdict" in
     FAILED|STALLED|BLOCKED)
-      for ((i = 0; i < ${#_AGENT_PROOF_WHY[@]} && i < AGENT_PROOF_WHY_MAX; i++)); do
-        why+="${why:+; }${_AGENT_PROOF_WHY[i]}"
-      done
-      [ "${#_AGENT_PROOF_WHY[@]}" -gt "$AGENT_PROOF_WHY_MAX" ] && why+=" (+$((${#_AGENT_PROOF_WHY[@]} - AGENT_PROOF_WHY_MAX)) more)"
+      why="$(proof_reasons)"
       detail+="${detail:+ }why: ${why:-unrecorded}"
       ;;
   esac

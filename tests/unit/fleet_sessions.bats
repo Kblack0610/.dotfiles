@@ -620,6 +620,80 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "self_wait finds a tail --pid on its own parent under the claude, and nothing else (ar-1118)" {
+  # 2026-11-09 agent-51: a shell waited 100m on tail --pid=<its own pid> while the row read WORKING.
+  # root stands in for the session's claude; `; :` keeps bash from exec-ing tail in its place.
+  setsid bash -c 'bash -c "tail --pid=\$\$ -f /dev/null; :"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
+  LIVE_PIDS="-$root"   # teardown kills the group, pass or fail
+  # the process is the event: wait until /proc shows tail's exec, not for a delay
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
+    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+  done
+  run self_wait "$root"
+  assert_output 'hung'
+  # negative controls: no claude pid, an unrelated one, junk
+  run self_wait
+  assert_output ''
+  run self_wait junk
+  assert_output ''
+  sleep 60 3>&- &
+  LIVE_PIDS="$LIVE_PIDS $!"
+  run self_wait "$!"
+  assert_output ''
+}
+
+@test "self_wait finds a tail the shell exec-ed, waiting on its own pid (ar-1118)" {
+  printf 'exec tail --pid=$$ -f /dev/null\n' > "$SANDBOX/waits.sh"
+  setsid bash -c 'bash "$1"; :' _ "$SANDBOX/waits.sh" >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
+  LIVE_PIDS="-$root"
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
+    tl="$(pgrep -P "$root" -x tail || :)"
+  done
+  run self_wait "$root"
+  assert_output 'hung'
+}
+
+@test "self_wait leaves a tail --pid on another process alone (ar-1118)" {
+  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
+  LIVE_PIDS="-$root"
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
+    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+  done
+  run self_wait "$root"
+  assert_output ''
+}
+
+@test "a shell waiting on itself is not WORKING, and is a blocker on the row (ar-1118)" {
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  # an open green PR, 25m idle: a real gate would read WORKING shell
+  run b shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - gate
+  assert_output 'WORKING shell'
+  run b shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output 'STALLED PR #875 green, not merged, background shell is waiting on itself (tail --pid of its own parent)'
+  # just ended a turn: not yet
+  run b shell 0 0 0 19 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output 'WORKING shell'
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output --partial 'background shell is waiting on itself'
+  # negative controls: any other job names no such blocker, nor does a session that is not in a shell
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - gate
+  refute_output --partial 'waiting on itself'
+  run work_blockers '' idle 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  refute_output --partial 'waiting on itself'
+  # a finished plan is DONE and told to stop its shell: not a blocker
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - hung
+  assert_output ''
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
@@ -1237,6 +1311,27 @@ queue_item() {
   rm -r "$HOME/.agent/queue/waiting"; queue_item running default:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
+}
+
+@test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  local row
+  row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"th-1\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"codex\",\"harness\":\"codex\"}"
+  # agent-panel lists a Codex run only when asked, as the real one does
+  printf '#!/usr/bin/env bash\n[ "${AGENT_PANEL_CODEX:-}" = 1 ] && echo %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: cx-1\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-7\norigin: run\nagent: codex\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: th-0 th-1\n---\nfix it\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-cx-1.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"cx-1","is":"own","row":"apociseum:ar-7","origin":"run"}' ]
+  # negative control: a panel that lists no Codex run gives no row at all
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_output ''
 }
 
 @test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
@@ -2235,6 +2330,98 @@ SH
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
 }
 
+@test "end to end: a source that fails for one repo holds only that repo's rows; every other row still logs (ar-1116)" {
+  landed_fixture
+  local oid line1
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # a second session, s2 (sid-8), in a clone of another repo
+  git init -q --bare "$SANDBOX/origin2.git"
+  git clone -q "$SANDBOX/origin2.git" "$SANDBOX/wt2" 2>/dev/null
+  git -C "$SANDBOX/wt2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt2" push -q origin HEAD:main 2>/dev/null
+  line1="$("$SANDBOX/bin/agent-panel")"
+  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$line1" \
+    "$(jq -c --arg c "$SANDBOX/wt2" '.target = "lab/s2:1" | .pane = "lab/%8" | .session_id = "sid-8" | .cwd = $c | .plan_file = ""' <<<"$line1")" \
+    > "$SANDBOX/bin/agent-panel"
+  # gh answers for wt, and for wt2 only while gh.down is absent
+  printf '#!/usr/bin/env bash\ncase "$PWD" in */wt2) [ -e %q ] && exit 1 ;; esac\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%%s\\n" %q\n' \
+    "$SANDBOX/gh.down" "$oid" > "$SANDBOX/bin/gh"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(cut -f1 "$FLEET_SHEPHERD_DIR/watch.state" | sort | paste -sd' ')" = 'sid-8 sid-9' ]
+  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" > "$SANDBOX/s2.ok"
+
+  touch "$SANDBOX/gh.down"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s2 +quality:reviewing >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '["gh pr list (wt2)"]' ]
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
+  # s1 read clean, so its change is logged; s2 read a failed source, so it keeps its last cells
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
+  refute_line --partial 's2:1'
+  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" | cmp - "$SANDBOX/s2.ok"
+
+  # NEGATIVE CONTROL: the read comes back, and s2's change is logged then, once
+  rm "$SANDBOX/gh.down"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(grep -c 's2:1  quality - -> reviewing$' "$FLEET_SHEPHERD_DIR/watch.log")" = 1 ]
+  [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 2 ]
+
+  # agent-panel exit 3 lists s1 only: s1's change is logged, s2 is a gap, not gone
+  printf '#!/usr/bin/env bash\necho %q\nexit 3\n' "$line1" > "$SANDBOX/bin/agent-panel"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 -quality:simplifying >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '["agent-panel"]' ]
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality simplifying -> -$'
+  refute_line --partial 's2:1  gone'
+  grep -qP '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state"
+}
+
+@test "end to end: a clone on another forge asks gh nothing and is never an unreadable source (ar-1116)" {
+  landed_fixture
+  export SO_FORGEJO_HOSTS='git.example.lan git.example.test'
+  git -C "$SANDBOX/wt" remote set-url origin https://git.example.lan/o/asset-library.git
+  printf '#!/usr/bin/env bash\necho "$PWD $*" >> %q\nexit 1\n' "$SANDBOX/gh.calls" > "$SANDBOX/bin/gh"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
+  run grep -c 'pr list' "$SANDBOX/gh.calls"
+  [ "${output:-0}" = 0 ]
+  # NEGATIVE CONTROL: the same clone on a host not listed as Forgejo (GitHub, or an ssh alias of it)
+  # asks gh, which fails, and is named
+  git -C "$SANDBOX/wt" remote set-url origin git@github.com-work:o/asset-library.git
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  jq -e '.unreadable | index("gh pr list (wt)")' "$doc" >/dev/null
+}
+
+@test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {
+  printf 'a\ts1:1\told\nb\ts2:1\told\nc\ts3:1\told\n' > "$SANDBOX/prev"
+  printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\n' > "$SANDBOX/cur"
+  # b's source failed: b keeps old; c left and d is new, as read
+  echo b > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\told\nd\ts4:1\tnew')"
+  # a blind row never seen before waits for a good read
+  echo d > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew')"
+  # a session list read with a gap: c is not gone
+  echo + > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\nc\ts3:1\told')"
+  # the local agent-panel failed: every row is the last good state
+  echo '*' > "$SANDBOX/blind"
+  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
+  assert_output "$(cat "$SANDBOX/prev")"
+}
+
 @test "an ask counts only for the Claude session that asked, never by tmux session name" {
   ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
   printf 'status: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
@@ -2252,6 +2439,11 @@ SH
   printf 'status: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
   run asks_for sid-asker
   assert_output a
+  # A pass's one read of the store is the answer, an empty read included.
+  PENDING_ASKS=$'sid-asker\tother' run asks_for sid-asker
+  assert_output other
+  PENDING_ASKS='' run asks_for sid-asker
+  assert_output ''
 }
 
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {
@@ -2282,6 +2474,18 @@ SH
   [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
   # no temp file left beside it
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
+}
+
+@test "--write: rows and asks past the 128 KB one-argument cap still build the document" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json" q
+  q="$(head -c 70000 /dev/zero | tr '\0' q)"
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 --context "$q" 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --session s2 --context "$q" 'hold it?' >/dev/null
+  [ "$("$AGENT_ASK" list --all --pending | wc -c)" -gt 131072 ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
 }
 
 @test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {

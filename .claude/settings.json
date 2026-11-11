@@ -62,10 +62,16 @@
       "Bash(chown -R * /)",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git push --force-if-includes*)",
       "Bash(git reset --hard*)",
       "Bash(git clean -fd*)",
       "Bash(git clean -fx*)",
       "Bash(git clean -ffd*)",
+      "Bash(git clean -f)",
+      "Bash(git clean -f *)",
+      "Bash(git clean -fdx*)",
+      "Bash(git clean -xdf*)",
       "Bash(curl * | sh)",
       "Bash(curl * | bash)",
       "Bash(curl * | zsh)",
@@ -93,7 +99,16 @@
       "Read(//**/id_ed25519)",
       "Read(//**/id_ecdsa)",
       "Read(//**/*.pem)",
-      "Read(//**/.ssh/**)",
+      "Read(//**/.ssh/**/id_*)",
+      "Read(//**/.ssh/**/*key*)",
+      "Read(//**/.ssh/**/*_rsa*)",
+      "Read(//**/.ssh/**/*_ed25519*)",
+      "Read(//**/.ssh/**/*_ecdsa*)",
+      "Read(//**/.ssh/**/*_dsa*)",
+      "Read(//**/.ssh/**/known_hosts*)",
+      "Read(//**/.ssh/**/*.ppk)",
+      "Read(//**/.ssh/**/*.bak)",
+      "Read(//**/.ssh/**/*.old)",
       "Read(//etc/shadow)",
       "Read(//etc/sudoers)",
       "Read(//etc/sudoers.d/**)",
@@ -103,7 +118,16 @@
       "Edit(//**/id_ed25519)",
       "Edit(//**/id_ecdsa)",
       "Edit(//**/*.pem)",
-      "Edit(//**/.ssh/**)",
+      "Edit(//**/.ssh/**/id_*)",
+      "Edit(//**/.ssh/**/*key*)",
+      "Edit(//**/.ssh/**/*_rsa*)",
+      "Edit(//**/.ssh/**/*_ed25519*)",
+      "Edit(//**/.ssh/**/*_ecdsa*)",
+      "Edit(//**/.ssh/**/*_dsa*)",
+      "Edit(//**/.ssh/**/known_hosts*)",
+      "Edit(//**/.ssh/**/*.ppk)",
+      "Edit(//**/.ssh/**/*.bak)",
+      "Edit(//**/.ssh/**/*.old)",
       "Edit(//etc/shadow)",
       "Edit(//etc/sudoers)",
       "Edit(//etc/sudoers.d/**)"
@@ -197,6 +221,16 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/block-poll.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hand_methods.py || true",
             "timeout": 5
           }
         ]

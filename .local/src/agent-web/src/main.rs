@@ -19,6 +19,7 @@ mod cache;
 mod cli;
 mod cloud;
 mod costs;
+mod deliverables;
 mod feed;
 mod fleet;
 mod focus;
@@ -26,7 +27,6 @@ mod infra;
 mod jobs;
 mod outbox;
 mod outcomes;
-mod pipeline;
 mod projects;
 mod proposals;
 mod queue;
@@ -35,6 +35,8 @@ mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod suites;
+mod worklog;
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -84,9 +86,9 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
+    work: worklog::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
-    pipeline: pipeline::Cache,
     briefing: briefing::Cache,
 }
 
@@ -108,13 +110,13 @@ async fn main() -> Result<()> {
         oauth,
         sessions,
         actions: feed::Cache::new(events.subscribe()),
+        work: worklog::Cache::new(events.subscribe()),
         events,
         watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
-        pipeline: pipeline::Cache::default(),
         briefing: briefing::Cache::default(),
     });
 
@@ -152,7 +154,11 @@ async fn main() -> Result<()> {
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
+        .route("/api/builds/detail", get(build_detail))
+        .route("/api/tests", get(tests_list))
+        .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/deliverables", get(deliverables::get))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))
@@ -170,6 +176,7 @@ async fn main() -> Result<()> {
         .route("/api/reds", get(reds::get))
         .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
+        .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -1135,7 +1142,6 @@ async fn home_board(
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
     let infra = s.infra.infra().await;
-    let gauges = s.pipeline.get().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
@@ -1143,7 +1149,7 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&gauges);
+        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await
@@ -1169,15 +1175,14 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-/// The flow strip (hub_core::flow) over the live queue and the cached gauges: the Queue tab's
-/// copy of what Home's `/api/home` carries as `flow`.
-async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
-    let gauges = s.pipeline.get().await;
+/// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
+async fn flow_strip() -> ApiResult<Json<serde_json::Value>> {
     tokio::task::spawn_blocking(move || {
         let queue = hub_core::queue::Queue::read(&actions::System);
-        let mut flow = hub_core::flow::Strip::build(Some(&queue));
-        flow.set_pipeline(&gauges);
-        serde_json::json!({ "flow": flow, "grafana": hub_core::infra::grafana() })
+        let read = hub_core::pipeline::read();
+        let line =
+            hub_core::flow::Rail::build(Some(&queue), Some(&read), chrono::Utc::now().timestamp());
+        serde_json::json!({ "line": line, "grafana": hub_core::infra::grafana() })
     })
     .await
     .map(Json)
@@ -1220,10 +1225,10 @@ async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
         .into_response()
 }
 
-async fn builds_list(Query(q): Query<builds::Query>) -> Response {
+async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q).await,
+        builds::get(q, s.infra.rates().await).await,
     )
         .into_response()
 }
@@ -1234,6 +1239,31 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
+/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+async fn build_detail(
+    State(s): State<Shared>,
+    Query(key): Query<hub_core::builds::RunKey>,
+) -> ApiResult<Response> {
+    let body = builds::detail(key, s.infra.rates().await)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+async fn tests_list(Query(q): Query<suites::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        suites::get(q).await,
+    )
+        .into_response()
+}
+
+/// A suite is named by its run and its place in that run's results, never by a path.
+async fn tests_cases(Query(q): Query<suites::CasesQuery>) -> ApiResult<Response> {
+    let body = suites::cases(q).await.map_err(|(code, e)| bad(code, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {

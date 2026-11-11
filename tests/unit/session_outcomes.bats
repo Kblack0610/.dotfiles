@@ -1256,7 +1256,7 @@ EOF
 # cx_rollouts -- Codex rollout files as 0.164 writes them: a root exec session in /w/proj that ran
 # 600s to $STOP, a `gh pr create` that printed #12 beside a `gh pr view` of #99, and a subagent rollout.
 cx_rollouts() {
-  export SO_CODEX_SESSIONS="$SANDBOX/codex" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
+  export SO_CODEX_SESSIONS="$SANDBOX/.codex/sessions" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
   echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
   mkdir -p "$SO_CODEX_SESSIONS/2026/10/19"
   local t0 t1 d="$SO_CODEX_SESSIONS/2026/10/19"
@@ -1291,6 +1291,72 @@ cx_rollouts() {
   assert_equal "$(r '.cost_usd')" null
   assert_equal "$(r '[.prs[].number] | join(" ")')" '12 13'
   assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
+}
+
+# cx_item_rollouts -- the item format 0.164 writes for a run the fleet starts: UserMessage and
+# CommandExecution items with exit codes, token_usage_record per response, a turn that ended in a
+# usage limit. A root with a failing test, a passing one, a gh poll, a commit that printed
+# "3 files changed" and a PR create, a grep whose output looks like a commit, a FileChange item with its
+# apply_patch call (one edit, not two), plus a subagent that ran one failing command.
+cx_item_rollouts() {
+  export SO_CODEX_SESSIONS="$SANDBOX/.codex/sessions" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
+  echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
+  local d="$SO_CODEX_SESSIONS/2026/10/19" t0 t1 t2
+  mkdir -p "$d"
+  t0=$(date -u -d "@$((STOP - 600))" +%Y-%m-%dT%H:%M:%S.000Z); t1=$(date -u -d "@$((STOP - 300))" +%Y-%m-%dT%H:%M:%S.000Z)
+  t2=$(date -u -d "@$STOP" +%Y-%m-%dT%H:%M:%S.000Z)
+  jq -cn --arg t0 "$t0" --arg t1 "$t1" --arg t2 "$t2" '
+    def cmd($c; $out; $exit): {timestamp: $t1, type: "event_msg", payload: {type: "item_completed", item: {type: "CommandExecution", command: ["/usr/bin/zsh", "-lc", $c], aggregated_output: $out, exit_code: $exit, duration: {secs: 0, nanos: 4000}}}};
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-item", cwd: "/w/proj", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6.1-sol", effort: "high"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "task_started"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "item_completed", item: {type: "UserMessage", content: [{type: "text", text: "Read the skill and follow it for this task:\nfix the menu #size/s\nmore"}]}}},
+    cmd("bats tests/unit/menu.bats"; "not ok 1"; 1),
+    cmd("bats tests/unit/menu.bats"; "ok 1"; 0),
+    cmd("gh pr checks 12"; "pass"; 0),
+    cmd("git add -A && git commit -m x"; "[b 1a2b3c4] x\n 3 files changed, 9 insertions(+)"; 0),
+    cmd("gh pr create --fill"; "https://github.com/o/r/pull/12\n"; 0),
+    cmd("rg \"git commit\" notes.md"; "[b 1234567] x\n 50 files changed"; 0),
+    {timestamp: $t1, type: "event_msg", payload: {type: "item_completed", item: {type: "FileChange", changes: {"a.txt": {}}}}},
+    {timestamp: $t1, type: "response_item", payload: {type: "function_call", name: "apply_patch", call_id: "p1"}},
+    {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r1"}},
+    {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r2"}},
+    {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r2"}},
+    {timestamp: $t1, type: "event_msg", payload: {type: "token_count", info: {last_token_usage: {input_tokens: 400}, total_token_usage: {input_tokens: 100, cached_input_tokens: 60, output_tokens: 20}}}},
+    {timestamp: $t2, type: "event_msg", payload: {type: "token_count", info: {last_token_usage: {input_tokens: 900}, total_token_usage: {input_tokens: 200, cached_input_tokens: 100, output_tokens: 40}}}},
+    {timestamp: $t2, type: "event_msg", payload: {type: "task_complete", error: {message: "limit", codex_error_info: "usage_limit_exceeded"}}}
+  ' > "$d/rollout-2026-10-19T00-00-00-cx-item.jsonl"
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-isub", cwd: "/w/proj", source: {subagent: {thread_spawn: {parent_thread_id: "cx-item"}}}}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6.1-sol", effort: "low"}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "item_completed", item: {type: "CommandExecution", command: ["/usr/bin/zsh", "-lc", "pytest -q"], aggregated_output: "1 failed", exit_code: 2}}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "token_count", info: {last_token_usage: {input_tokens: 1500}, total_token_usage: {input_tokens: 10, cached_input_tokens: 0, output_tokens: 5}}}}
+  ' > "$d/rollout-2026-10-19T00-01-00-cx-isub.jsonl"
+}
+
+@test "a codex item-format row carries the Claude row's facts: errors, counts, durations, peak context, effort, account, title" {
+  cx_item_rollouts
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"cx-item\")) | last | $1"; }
+  assert_equal "$(r '[.title, .effort, .error, .account, .transcript, .edits] | join("|")')" 'fix the menu #size/s|high|usage_limit_exceeded|.codex|true|3'
+  assert_equal "$(r '.hard_errors | [.api_error, .denied, .tool_errors] | tostring')" '[1,null,2]'
+  assert_equal "$(r '.activity | [.tool_calls, .test_runs, .test_failures, .ci_polls, .api_messages, .tokens] | tostring')" '[8,3,2,1,2,255]'
+  assert_equal "$(r '[.delivery.peak_context, .time_use.work_min, .time_use.test_min] | tostring')" '[900,10,null]'
+  assert_equal "$(r '[.prs[].number] | tostring')" '[12]'
+  assert_equal "$(r '[.activity.tokens_after_last_edit, .activity.compactions, .corrections] | tostring')" '[null,null,null]'
+}
+
+@test "a codex row from the older format has null for what it lacks: no exit codes, no effort, no response ids; edits from patches" {
+  cx_rollouts
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"cx-root\")) | last | $1"; }
+  assert_equal "$(r '.hard_errors | [.api_error, .denied, .tool_errors] | tostring')" '[0,null,null]'
+  assert_equal "$(r '.activity | [.tool_calls, .test_failures, .api_messages] | tostring')" '[3,null,null]'
+  assert_equal "$(r '[.effort, .error, .delivery.peak_context, .edits] | tostring')" '[null,null,null,1]'
 }
 
 # cx_prices [MODEL...] -- a harness map pricing the named Codex models (USD per million tokens).

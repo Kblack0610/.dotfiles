@@ -76,12 +76,12 @@ test("a chip, a header and a window each go into the URL and the API query", asy
   click({ tsort: "when", tdir: "asc" });
   await settle();
   assert.equal(run("st.views.log"), "s=failed&sort=when&dir=asc");
-  click({ hours: "72" });
+  click({ twin: "hours", tval: "72" });
   await settle();
   assert.equal(run("st.views.log"), "s=failed&sort=when&dir=asc&hours=72");
   assert.match(asked.at(-1), /hours=72$/);
-  assert.match(box.innerHTML, /class="on" data-hours="72"/);
-  click({ hours: "24" });
+  assert.match(box.innerHTML, /class="on" data-twin="hours" data-tval="72"/);
+  click({ twin: "hours", tval: "" });
   await settle();
   assert.equal(run("st.views.log"), "s=failed&sort=when&dir=asc", "the default window leaves the URL bare");
 });
@@ -110,6 +110,14 @@ test("a window that is not one of the buttons reads as the default", () => {
   }
   run("st.views.log = 'hours=168'");
   assert.equal(run("actionHours()"), 168);
+});
+
+test("only the Actions table's own keys count as its view, since Work shares Log's query", () => {
+  fresh();
+  run("st.views.log = 'wday=today&wq=project%3Anotes&ws=done'");
+  assert.equal(run("actionsView()"), "");
+  run("st.views.log = 'wday=today&s=loud&hours=72'");
+  assert.equal(run("actionsView()"), "s=loud&hours=72");
 });
 
 test("the view already read does not reopen a section the human folded", async () => {

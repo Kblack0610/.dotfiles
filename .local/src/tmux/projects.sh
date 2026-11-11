@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # projects.sh - Prefix+p, the projects finder. Every profile's projects in one short list,
 # main ones first, each with its stage and open count; the selected project's card and open
-# rows show on the right. Enter opens the hub's Projects tab on that project, where tasks are
-# added, moved, edited, rewaved and closed; e opens the project's sheet in the hub notes editor.
+# rows show on the right. Enter opens the project's sheet in the hub notes editor and puts the
+# hub's Projects tab on that project (where tasks are added, moved, edited, rewaved and closed)
+# without going there; b goes to that tab instead.
 # a, g and c reach the repo the project lives in (project-map.json, via project_repo_path):
 # its agents in the agent panel, its session, or a new Claude in a fresh worktree of it.
 #
@@ -16,6 +17,8 @@
 #                          alpha, unstaged, then by open count. Drafts only with --drafts.
 #   --preview <prof> <name>  the project's card over its open rows, the hub Projects tab's own
 #                          text (`hub --once`), at the preview's width
+#   --open <prof> <name> <sheet>  the sheet in the hub notes editor, the hub Projects tab
+#                          set to the project behind it
 #   --board <prof> <name>  show the hub Projects tab on one project and go to its window
 #   --repo <name>          the checkout the project lives in, or exit 1 for a notes-only one
 #   --key <view> <key>     the fzf action a key runs in a view (list). The keys mean one
@@ -24,8 +27,8 @@
 #   --help, -h             this text
 #
 # Keys, project list (it opens in hotkey mode, no input line):
-#   1-9 / Enter / o  hub Projects   j k  move   /  search (Esc: leave the box, clear, quit)
-#   e  the sheet in the hub notes editor   n  new project   d  show/hide drafts
+#   1-9 / Enter / o  the sheet in the hub notes editor   j k  move   /  search (Esc: leave
+#   the box, clear, quit)   b  hub Projects tab   n  new project   d  show/hide drafts
 #   a  its agents (agent panel)   g  its repo's session   c  new Claude in a fresh worktree
 #   s  set stage   x  archive   ctrl-/  preview below, hidden, back   q / Esc  quit
 #
@@ -33,7 +36,7 @@
 # come from hub-core, so the popup and the hub cannot disagree (docs/dashboards.md rule 8).
 #
 # Every write here is a `notes` CLI call, so the CLI stays the only writer of a sheet or an index.
-# The counts come from one `notes projects --stats` call. `e` is `tmx open hub <sheet>`: the
+# The counts come from one `notes projects --stats` call. Enter is `tmx open hub <sheet>`: the
 # hub world's landing nvim (~/.notes), wherever the popup was opened from.
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
@@ -94,7 +97,7 @@ cmd_preview() {
 # hotkey. Placeholders ({1}, {2}, {3}) are left for fzf to fill and quote, so a project's own
 # name never has to survive being spliced into an action string.
 #
-# The accept actions print a word (`enter` or `edit`) above the row, which is what cmd_pick
+# The accept actions print a word (`enter`, `board`, ...) above the row, which is what cmd_pick
 # reads back to know what to do.
 cmd_key() {
   local view="$1" key="$2" typing=0 drafts='' state=main
@@ -136,7 +139,7 @@ cmd_key() {
   *:/) echo show-input ;;
   list:[1-9]) echo "pos($key)+print(enter)+accept" ;;
   list:o) echo 'print(enter)+accept' ;;
-  list:e) echo 'print(edit)+accept' ;;
+  list:b) echo 'print(board)+accept' ;;
   list:a) echo 'print(agents)+accept' ;;
   list:g) echo 'print(repo)+accept' ;;
   list:c) echo 'print(claude)+accept' ;;
@@ -227,6 +230,18 @@ cmd_board() {
   hub tab projects "$1/$2" && tmx goto hub hub:board
 }
 
+# --- Open ---
+# Enter: the sheet in the hub notes editor, and the Projects tab set to the same project so
+# the board is one window away. The tab request never blocks the sheet: a hub that cannot be
+# reached takes it on its next start (see cmd_board).
+cmd_open() {
+  # A project with no sheet file has nothing to open in the editor: go to its board instead.
+  [[ -n "$3" && -f "$3" ]] || { cmd_board "$1" "$2"; return; }
+  panel_need hub tmx
+  hub tab projects "$1/$2" || true
+  tmx open hub "$3" 1
+}
+
 # --- Repo ---
 # The checkout a project lives in: project-map.json's trackers.<p>.repo, then its paths, the
 # lookup fleet-dispatch uses. Several projects can share one repo (every BNB app is platform).
@@ -279,16 +294,16 @@ cmd_pick() {
 
   local out profile name sheet
   local -a BINDS
-  _binds list j k / 1 2 3 4 5 6 7 8 9 o e a g c q n s x d esc enter
+  _binds list j k / 1 2 3 4 5 6 7 8 9 o b a g c q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header=$'1-9/o open  e sheet  a agents  g repo\nc claude  n new  s stage  x archive  d drafts\n/ search  ctrl-/ layout  q quit  !N urgent' \
+    --header=$'1-9/o sheet  b board  a agents  g repo\nc claude  n new  s stage  x archive  d drafts\n/ search  ctrl-/ layout  q quit  !N urgent' \
     "${PANEL_FZF_LAYOUT[@]}" --preview="$Q --preview {1} {2}" \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"
   case "${out%%$'\n'*}" in
-  edit) panel_need tmx && tmx open hub "$sheet" 1 ;;
-  enter) cmd_board "$profile" "$name" ;;
+  enter) cmd_open "$profile" "$name" "$sheet" ;;
+  board) cmd_board "$profile" "$name" ;;
   agents | repo | claude) _to_repo "${out%%$'\n'*}" "$name" ;;
   esac
 }
@@ -301,6 +316,7 @@ case "${1:-}" in
 '') cmd_pick ;;
 --list) cmd_list "${2:-}" ;;
 --preview) cmd_preview "${2:?profile}" "${3:?name}" ;;
+--open) cmd_open "${2:?profile}" "${3:?name}" "${4:-}" ;;
 --board) cmd_board "${2:?profile}" "${3:?name}" ;;
 --repo) cmd_repo "${2:?name}" ;;
 --key) cmd_key "${2:?view}" "${3:?key}" ;;

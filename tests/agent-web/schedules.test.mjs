@@ -42,7 +42,7 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "red", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 3 }, { name: "red", n: 2 }, { name: "ok", n: 1 }, { name: "unknown", n: 0 }, { name: "no-purpose", n: 1 }],
-  columns: ["kind", "name", "schedule", "last", "result", "streak", "triage", "repo", "next"].map(col),
+  columns: ["kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo"].map(col),
   facets: [{ key: "kind", on: null, clear: "", values: [{ value: "ci", n: 2, q: "kind:ci" }] }],
 };
 const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
@@ -62,7 +62,7 @@ test("the table draws the summary, the mock's columns and a missing purpose", ()
   show();
   const h = box.innerHTML;
   assert.match(h, /3 scheduled, 2 red, 1 no purpose, CI read 7m ago/);
-  for (const c of ["kind", "name", "schedule", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
+  for (const c of ["kind", "name", "schedule", "next", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
   assert.doesNotMatch(h, /data-tsort="repo"/, "repo sorts and filters without a column");
   assert.match(h, /<td class="bad">red 6<\/td>/);
   assert.match(h, /<td class="">green 9<\/td>/);
@@ -70,6 +70,16 @@ test("the table draws the summary, the mock's columns and a missing purpose", ()
   assert.match(h, /queued nightly-triage-1/);
   assert.match(h, /<button class="on" data-ts="red">red <span class="n">2<\/span><\/button>/);
   assert.match(h, /id="sched-q"/);
+});
+
+test("next shows the time of a start today, the day too for a later one, and a dash for none", () => {
+  const at = (ms) => run(`nextStart(${Math.round(ms / 1e3)})`);
+  const hm = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const soon = new Date(); soon.setHours(23, 59, 0, 0);
+  assert.equal(at(soon.getTime()), hm(soon));
+  const later = new Date(soon.getTime() + 3 * 86400e3);
+  assert.match(at(later.getTime()), /^\d\d-\d\d \d\d:\d\d$/);
+  assert.equal(run("nextStart(null)"), "-");
 });
 
 test("a row opens its detail and folds runs past the second", () => {

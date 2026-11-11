@@ -18,6 +18,11 @@ subshell's cd stays in it), then `git -C <dir>`; for `gh -R <owner>/<repo>`, GH_
 the clone project-map.json `paths` lists under that repo name. `bash -c` and `eval` payloads and
 backticks are checked as code. Not covered: `gh api` writes, `--git-dir`, and an unresolvable cd
 target ($(...)), which allow. Fail-open: any error allows the command.
+
+Anywhere else, `gh pr merge` is denied too, naming `agent-land`: a GitHub PR lands through
+agent-land, the one writer of a queue item's pr:, so the work ledger can credit it. 2026-11-09: of
+the 62 merged PRs since 11-07 that no item named (fleet-bench ledger_coverage), 41 were merged by a
+bare `gh pr merge` in a session that had an item (ar-1153).
 """
 import importlib.util
 import json
@@ -35,6 +40,8 @@ PREFIXES = {"env", "command", "builtin", "exec", "time", "nohup", "sudo", "then"
 SHELLS = {"bash", "sh", "zsh", "dash"}
 GIT_OPT_ARG = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 PUSH_OPT_ARG = {"-o", "--push-option", "--receive-pack", "--exec"}
+# gh pr merge flags that take a value, so a digit after one is not the PR number
+MERGE_VALUE_FLAGS = {"-R", "--repo", "--match-head-commit", "-t", "--subject", "-b", "--body", "-F", "--body-file", "-A", "--author-email"}
 
 MSG = (
     "forge-guard: {top} is a Forgejo-canonical checkout (it commits {marker}), so GitHub is a "
@@ -42,6 +49,14 @@ MSG = (
     "erases it. Push to the Forgejo remote ({forgejo}) and open and merge the PR through the "
     "forgejo-ops skill's PR API; agent-land cannot run there (one-shot step 6). Read that repo's "
     "CLAUDE.md \"Canonical Remote\" first."
+)
+
+LAND_MSG = (
+    "forge-guard: `gh pr merge` records the PR on no queue item, so the work ledger never credits it "
+    "(fleet-bench ledger_coverage). From the PR's own checkout, run `agent-land {pr}{repo} --item <slug>` with this session's "
+    "queue item: it adds the \"Item: <slug>\" line, waits for the checks, merges, and records the PR "
+    "on the item (--partial on every PR of a task but its last). A PR already merged: "
+    "the same command records it. No item yet: `agent-queue add --running` first."
 )
 
 
@@ -223,23 +238,39 @@ def check_git(cwd, argv):
     return MSG.format(top=top, marker=marker, what="`git push %s` (%s)" % (target, url), forgejo=forgejo_remote(top))
 
 
+def gh_words(argv):
+    """gh's command words, without its flags: `gh -R o/r pr merge 1` is a merge too."""
+    words, rest = [], iter(argv[1:])
+    for a in rest:
+        if a in ("-R", "--repo"):
+            next(rest, None)
+        elif not a.startswith("-"):
+            words.append(a)
+    return words
+
+
 def check_gh(cwd, argv, env):
-    if len(argv) < 3 or argv[1] != "pr" or argv[2] not in ("create", "merge"):
+    words = gh_words(argv)
+    if words[:1] != ["pr"] or words[1:2] not in (["create"], ["merge"]):
         return None
     slug = env.get("GH_REPO") or os.environ.get("GH_REPO")
+    i = argv.index("merge") if "merge" in argv else len(argv)
+    pr = next((a for j, a in enumerate(argv[i + 1 :], i + 1) if a.isdigit() and argv[j - 1] not in MERGE_VALUE_FLAGS), "<N>")
     for j, a in enumerate(argv):
-        url = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/", a)
+        url = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/([0-9]+)", a)
         if url:
-            slug = url.group(1)
+            slug, pr = url.group(1), url.group(2)
         elif a in ("-R", "--repo") and j + 1 < len(argv):
             slug = argv[j + 1]
         elif a.startswith("--repo="):
             slug = a.split("=", 1)[1]
     hit = canonical(clone_for(slug) if slug else cwd)
-    if not hit:
-        return None
-    top, marker = hit
-    return MSG.format(top=top, marker=marker, what="`gh pr %s`" % argv[2], forgejo=forgejo_remote(top))
+    if hit:
+        top, marker = hit
+        return MSG.format(top=top, marker=marker, what="`gh pr %s`" % words[1], forgejo=forgejo_remote(top))
+    if words[1] == "merge":
+        return LAND_MSG.format(pr=pr, repo=" --repo %s" % slug if slug else "")
+    return None
 
 
 def check_land(cwd):

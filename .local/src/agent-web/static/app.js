@@ -74,6 +74,10 @@ st.act = { confirm: null, busy: false, msg: "", err: false };
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
+// A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.pfold") && isPhone()) PFOLD[e.target.dataset.pf] = e.target.open; }, true);
+if (typeof matchMedia === "function") matchMedia(PHONE_WIDTH).addEventListener("change", pfoldFit);
+
 function renderActs() {
   const a = st.sel, box = $("acts");
   if (!a) { box.hidden = true; return; }
@@ -91,7 +95,8 @@ function renderActs() {
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
   if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
   box.innerHTML = html;
@@ -302,6 +307,31 @@ const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "projects/all": ["board", ""] };
+// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
+// `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
+const INNER_TABS = {"infra":{"pinned":["health","red"],"tabs":[["reds","Reds",["fixes"]],["machines","Machines",["machines","ci","governor"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+// The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
+// holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
+function innerOf(tab, name) {
+  const g = INNER_TABS[tab];
+  if (!g) return null;
+  const n = String(name || "").trim().toLowerCase();
+  return homeOf(tab, n) || g.tabs.find((t) => t[0] === n) || g.tabs[0];
+}
+// The inner tab holding a section id, if any; the one lookup every caller shares.
+const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
+// The inner tab each tab last showed, so a tab button brings it back as it was.
+const lastInner = {};
+// A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
+// its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
+function innerRoute(r) {
+  const g = INNER_TABS[r.tab];
+  if (!g) return r;
+  const want = (r.section || r.arg || "").toLowerCase();
+  const hit = homeOf(r.tab, want);
+  if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
+  return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : "" };
+}
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
 // sec-table) and a hidden board keeps its HTML, so a lookup stays on the board that shows.
@@ -310,10 +340,15 @@ const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
 // it paints; the first paint that has the section clears it.
 function seekSection() {
+  // A section on another inner tab switches to it first, so the anchor is on screen.
+  const home = st.section && homeOf(st.tab, st.section);
+  if (home && home[0] !== innerOf(st.tab, st.arg)[0]) innerGo(st.tab, home[0]);
   const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
   if (!e) return;
   st.section = null;
-  if (e.tagName === "DETAILS") e.open = true;
+  // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
+  const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
+  if (fold) fold.open = true;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
@@ -328,22 +363,83 @@ function route(hash) {
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
   const moved = MOVED[name + "/" + arg.toLowerCase()];
-  if (moved) return { name, tab: moved[0], arg: "", query, section: moved[1] };
-  return { name, tab: tabOf(name), arg, query };
+  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query, section: moved[1] });
+  // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
+  const tab = tabOf(name);
+  if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
+  return innerRoute({ name, tab, arg, query });
 }
+// Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
+// the groups' visibility and the strip's marks flip without a repaint.
+function innerGo(tab, id) {
+  st.arg = lastInner[tab] = id;
+  showUrl();
+  const board = $(tab);
+  if (!board) return;
+  board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
+  board.querySelectorAll("[data-itab]").forEach((b) => {
+    const on = b.dataset.itab === id;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+  });
+}
+// The strip: one button per inner tab, the open one marked, a count pill beside one whose
+// sections need a look (`flagged`: section ids) and only above zero.
+function innerStrip(tab, flagged) {
+  const on = innerOf(tab, st.arg)[0];
+  return `<div class="seg fseg istrip" role="tablist">` + INNER_TABS[tab].tabs.map(([id, title, secs]) => {
+    const n = secs.filter((s) => (flagged || []).includes(s)).length;
+    return `<button role="tab" data-itab="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
+  }).join("") + `</div>`;
+}
+// A section's html in its inner tab's group, hidden while another inner tab is open; a pinned
+// section, or a tab with no strip, is left as it is.
+function innerWrap(tab, section, html) {
+  const home = homeOf(tab, section);
+  if (!home || !html) return html;
+  return `<div data-in="${home[0]}"${innerShown(tab, home) ? "" : " hidden"}>${html}</div>`;
+}
+// Whether inner tab `home` (a homeOf entry) of `tab` is the one open.
+const innerShown = (tab, home) => home[0] === innerOf(tab, st.arg)[0];
+// innerWrap for an element the page keeps rather than draws (Infra's #jobs, which jobs.js paints
+// on its own timer): it joins its section's group, hidden while another inner tab is open.
+function innerHide(tab, section, el) {
+  const home = homeOf(tab, section);
+  if (!home || !el) return;
+  el.dataset.in = home[0];
+  el.hidden = !innerShown(tab, home);
+}
+// A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to the ends.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("[data-itab]");
+  if (b) innerGo(st.tab, b.dataset.itab);
+});
+document.addEventListener("keydown", (e) => {
+  const b = e.target.closest && e.target.closest("[data-itab]");
+  if (!b) return;
+  const all = [...b.parentNode.querySelectorAll("[data-itab]")], i = all.indexOf(b);
+  const to = { ArrowRight: (i + 1) % all.length, ArrowLeft: (i + all.length - 1) % all.length, Home: 0, End: all.length - 1 }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  innerGo(st.tab, all[to].dataset.itab);
+  all[to].focus();
+});
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
 // button leaves as it was. A tab button replaces the URL, so tab hopping makes no history; an
 // in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
 function setTab(t, arg, query) {
   st.tab = t;
-  st.arg = arg || "";
+  // A tab button (no arg) brings back the inner tab that tab last showed.
+  st.arg = arg || (arg === undefined && lastInner[t]) || "";
+  if (INNER_TABS[t]) lastInner[t] = st.arg;
   st.views[t] = query ?? st.views[t] ?? "";
+  // The open tab carries aria-current; web-kit's <kb-shell> marks it and names it on the bar.
   for (const n of TAB_NAMES) {
-    $("tab-" + n).classList.toggle("on", t === n);
+    if (t === n) $("tab-" + n).setAttribute("aria-current", "page");
+    else $("tab-" + n).removeAttribute("aria-current");
     if (n !== "sessions") $(n).hidden = t !== n;
   }
-  $("cur-tab").textContent = $("tab-" + t).firstChild.textContent;
-  menuOpen(false);
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
   showUrl();
@@ -360,16 +456,6 @@ function setQuery(q) {
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
-// Under 760px the tabs fold behind the menu button (app.css); a pick, Escape or a tap outside
-// closes it. The button carries the Needs you count, so a closed menu still says something waits.
-function menuOpen(on) {
-  $("top").classList.toggle("open", on);
-  $("menu").setAttribute("aria-expanded", on ? "true" : "false");
-}
-$("menu").onclick = (e) => { e.stopPropagation(); menuOpen(!$("top").classList.contains("open")); };
-document.addEventListener("click", (e) => { if (!e.target.closest || !e.target.closest("#top")) menuOpen(false); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") menuOpen(false); });
-
 function showLive(ev) {
   // The server could not watch some paths (the user's inotify limit, usually); it retries.
   const off = ev.off || [];
@@ -380,7 +466,12 @@ function showLive(ev) {
 }
 
 function dispatch(ev) {
-  if (ev.kind === "sessions" || ev.kind === "resync") { refreshAgents(); if (st.view === "screen") loadScreen(); }
+  if (ev.kind === "sessions" || ev.kind === "resync") {
+    refreshAgents();
+    if (st.view === "screen") loadScreen();
+    // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
+    if (st.tab === "home") refreshHome();
+  }
   if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
   if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
     if (st.view === "screen") loadScreen(); else loadNewer();

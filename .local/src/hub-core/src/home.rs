@@ -207,6 +207,8 @@ impl crate::table::Row for Need {
     ];
     const FACETS: &'static [&'static str] = &["project"];
     const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "what";
+    const GLANCE: &'static [&'static str] = &["kind", "project", "waited"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -365,7 +367,7 @@ pub struct Home {
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
     pub running: Vec<Running>,
-    /// Where work sits from inbox to done; `set_pipeline` adds the gauges' half.
+    /// Where work sits from inbox to done; `set_pipeline` adds the snapshot's half.
     pub flow: crate::flow::Strip,
     /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
     /// fleet-sessions' state has no counts.
@@ -517,7 +519,7 @@ pub fn needs(
     let items: Vec<&Item> = queue.map(|q| q.items.iter().collect()).unwrap_or_default();
     let item_of = |name: &str| {
         items.iter().copied().find(|i| {
-            matches!(i.state, State::Waiting | State::Running)
+            matches!(i.state, State::Waiting | State::Running | State::Review)
                 && i.session.as_deref().is_some_and(|s| tmux_name(s) == name)
         })
     };
@@ -811,7 +813,7 @@ pub fn needs(
 }
 
 impl Home {
-    /// The gauges' half of the flow strip (inbox, board, the amber step).
+    /// The snapshot's half of the flow strip (inbox, board, the amber step).
     pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
         self.flow.set_pipeline(read);
     }

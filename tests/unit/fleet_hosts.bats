@@ -135,10 +135,13 @@ EOF
   assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
-  # `add` reads its task from stdin, so that verb keeps it.
+  # `add` and `retask` read a task from stdin, so those verbs keep it.
   run bash -c 'echo "the task" | "$0" add --project game' "$REPO_ROOT/.local/bin/agent-queue"
   assert_success
   assert_called 'agent-queue add --project game  <<the task'
+  run bash -c 'echo "the fix" | "$0" retask fix-menu' "$REPO_ROOT/.local/bin/agent-queue"
+  assert_success
+  assert_called 'agent-queue retask fix-menu  <<the fix'
 }
 
 @test "an unreachable state host is named, nothing is written here, and ssh's 255 comes back" {

@@ -99,12 +99,13 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
         // The rank's two factors (WAITED, HOLDS) outlast PROJECT as the page narrows.
         keep: vec![1, 5, 3, 4, 2, 0, 6],
         flex: Some(5),
-        flexmin: 20,
+        // WHAT wraps, so this is the width it reads at: narrow pages drop ID and RANK first.
+        flexmin: 40,
         flexkeep: true,
         right: vec![0, 3],
         cap: vec![(2, 22), (4, 20), (6, 34)],
     };
-    out.extend(t.fit(w, p.dim()));
+    out.extend(t.fit_wrapped(w, p.dim()).0);
     more(&mut out, rows.len(), h.shown, "more", p);
     out
 }
@@ -232,7 +233,7 @@ fn night_section(out: &mut Vec<Line<'static>>, v: &NightView, p: Palette, w: usi
             right: vec![],
             cap: vec![(3, 34)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
     }
     if !n.ok_line.is_empty() {
         out.push(clip_line(Line::styled(n.ok_line.clone(), p.dim()), w));
@@ -250,7 +251,7 @@ pub const FLOW_KEYS: [(char, &str); 6] = [
     ('b', "board"),
 ];
 
-/// Home as lines. `flow` is (the gauges have not answered yet, the `o graph` hint applies).
+/// Home as lines. `flow` is (the snapshot has not been read yet, the `o graph` hint applies).
 pub fn page(
     h: &Home,
     view: &DataTable,
@@ -332,7 +333,7 @@ pub fn page(
             right: vec![2],
             cap: vec![(0, 18), (1, 18)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
         more(&mut out, h.proposals.len(), h.shown, "more", p);
     }
 
@@ -617,7 +618,9 @@ mod tests {
         let out = text(&home());
         // The flow strip leads, then health and spend; the queue's counts are the strip's.
         assert!(
-            out.starts_with("FLOW  inbox - | board - | queued 2 | running 1 | needs you 1"),
+            out.starts_with(
+                "FLOW  inbox - | board - | queued 2 | running 1 | on a PR 0 | needs you 1"
+            ),
             "{out}"
         );
         assert!(!out.contains("NUMBERS"), "{out}");

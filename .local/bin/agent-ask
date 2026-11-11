@@ -152,6 +152,16 @@ load_queue_asks() {
   QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
 }
 
+# settle_queue <id>: once the human answered or cancelled this ask, the queue fails each item it can
+# no longer release (agent-queue settle-ask), so none waits for good behind it (2026-11-10: three
+# items behind vmToL3 and VOEW9i). Its failure must not fail the answer or the cancel.
+settle_queue() {
+  queue_waits "$1" || return 0
+  $AGENT_ASK_QUEUE_CMD settle-ask "$1" >&2 || echo "agent-ask: items held on $1 not settled: agent-queue settle-ask $1" >&2
+  unset QUEUE_ASKS QUEUE_HOLDS
+  return 0
+}
+
 # queue_holders <id>: the active items held behind this ask, `<slug><TAB><releasing options>` each.
 queue_holders() {
   load_queue_asks
@@ -268,7 +278,7 @@ judge_line() {
 }
 
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
-# (post), the questions panel and the agent-panel preview (card). Colour only on a terminal
+# (post) and the questions panel (card). Colour only on a terminal
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""
@@ -547,7 +557,7 @@ cmd_list() {
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
-  #      answer_note, assume_at  (append new columns at the end only)
+  #      answer_note, assume_at, resume  (append new columns at the end only)
   # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
   # 368 asks. A key's first `key: ` line wins, as in `field`.
   local files=()
@@ -555,7 +565,7 @@ cmd_list() {
   [ "${#files[@]}" -gt 0 ] || return 0
   awk -v want="$want" -v cutoff="$cutoff" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume", K, " ")
     }
     function flush(   i, d, p, row) {
       if (cur == "") return
@@ -616,14 +626,20 @@ cmd_answer() {
 
   local row said="$answer"; row="$(live_row "$(field "$f" claude_session)")"
   [ "$by" = judge ] && said="$answer (the judge, $(field "$f" judge_rule): $(field "$f" judge_reason | sed 's/\.$//'); the human can override in this session)"
+  # A human answer that releases queue items held on the ask is their restart (start_held), so it files
+  # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
+  # releases nothing and still files one. A judge's answer does not release them
+  # (agent-queue ask_pending), so its row stays the human's way to override.
+  local held=""; [ "$by" != human ] || held="$(released_by "$id" "$answer")"
   if [ -n "$row" ]; then
     deliver_to_session "$f" "$said" "$row"
-  elif [ -n "$beside" ] || [ -z "$(field "$f" resume)" ]; then
+  elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
     # Boards list pending asks only, so a row for a judge answer says how to disagree with it.
     local how=""; [ "$by" = judge ] && how=" (the judge; to override: agent-ask answer $id <option>)"
     file_board_row "$f" "$(field "$f" question) -> answered: $answer$how"
   fi
   [ -n "$beside" ] || start_resume "$id"
+  [ -z "$held" ] || start_held
 }
 
 # record_answer <file> <by> <answer>: the ask's answer fields in one locked rewrite, so no reader
@@ -637,6 +653,7 @@ record_answer() {
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
+  [ "$by" != human ] || settle_queue "$(field "$f" id)"
 }
 
 # start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
@@ -645,6 +662,22 @@ start_resume() {
   if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
     ask-resume "$1" >&2 || true
   fi
+}
+
+# released_by <id> <answer>: the queue items this human answer releases, one slug a line: those held on
+# the ask with no option named, or with the answer's first word among theirs (agent-queue ask_pending).
+released_by() {
+  local pick="${2%% *}"; pick="${pick%[.,;:!]}"
+  queue_holders "$1" | awk -F'\t' -v a="${pick,,}" '$2 == "" || index("+" tolower($2) "+", "+" a "+") { print $1 }'
+}
+
+# start_held: the human's answer released the queue items held on its ask, and a fleet-dispatch pass
+# starts them now, behind every gate a pass holds a start to (room, load, run units), not at the timer's
+# next fire. --no-block: the pass takes minutes; while one runs, systemd merges this start into it and
+# the next timer pass takes them.
+start_held() {
+  [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v agentctl >/dev/null 2>&1 || return 0
+  agentctl start fleet-dispatch --no-block >/dev/null 2>&1 || true
 }
 
 # --- live answers ----------------------------------------------------------
@@ -828,6 +861,7 @@ cmd_target() {
   [ -n "$sid" ] || { echo "no session is waiting on this ask; answer it here" >&2; return 1; }
   row="$(live_row "$sid")"
   if [ -z "$row" ]; then
+    session_resumable "$sid" || { echo "no Claude conversation $sid to reopen; answer it here" >&2; return 1; }
     [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
     reopen_session "$f" "$sid"
     return
@@ -861,6 +895,11 @@ reopen_session() {
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
 # any copy will do.
 session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+
+# session_resumable <session id>: claude --resume can open it, because it has a Claude
+# transcript. A headless run that owns an ask under another harness's id (a Codex thread) has
+# none, so nothing offers to reopen it and its answer is given on the card.
+session_resumable() { [ -n "$(session_transcript "$1")" ]; }
 
 # session_cwd <claude session>: the directory the conversation started in, from the first
 # transcript line that records one.
@@ -950,7 +989,7 @@ session_alive() {
 }
 
 # live_sessions: every Claude session id with a running process, one per line; the questions
-# panel marks the rest gone. Same source as session_alive.
+# panel marks the rest dead. Same source as session_alive.
 # session_titles: Claude session ids on stdin -> "<id><TAB><title>", the newest titled registry
 # row per id. The card's request line and the questions panel's rows both read it here.
 session_titles() {
@@ -999,7 +1038,7 @@ answer_route() {
   else
     echo "  ${who}the answer becomes a row on the ${ASK[project]:-} board"
   fi
-  [ -z "$sid" ] || [ -n "$alive" ] || echo "  g reopens the session"
+  [ -z "$sid" ] || [ -n "$alive" ] || ! session_resumable "$sid" || echo "  g reopens the session"
 }
 
 # render_story <file>: what a panel's card adds under render_ask, one labelled block per line
@@ -1199,6 +1238,7 @@ cmd_settle_session() {
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
     if [ -z "$opts" ] && ! not_an_answer "$full"; then
+      set_field "$f" answer_note "in session: $text"
       record_answer "$f" human "in session: ${text:-(no text)}"
     elif [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
@@ -1265,6 +1305,7 @@ close_ask() {
   [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
   queue_changed
   echo "$to $id" >&2
+  settle_queue "$id"
 }
 
 cmd_cancel() { close_ask cancelled "$@"; }

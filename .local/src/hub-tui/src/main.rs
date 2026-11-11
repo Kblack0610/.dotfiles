@@ -12,11 +12,13 @@ mod day;
 mod fit;
 mod fleet;
 mod fleettab;
+mod flowline;
 mod flowstrip;
 mod fmt;
 mod focustab;
 mod forecast;
 mod hometab;
+mod innertabs;
 mod jobs;
 mod logtab;
 mod outboxtab;
@@ -44,34 +46,48 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub vitals [--json]
        hub needs --json | --page
-       hub briefing --json | --md [--since WHEN]
+       hub ci [--json | --pool-match SECS]
+       hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
-       hub projects --page NAME
+       hub projects --page NAME | --status NAME
+       hub board --json
        hub tabs
   TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
           that lands on its new tab, on the section it became when it became one
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its open rows, 'fleet RUNNER' that runner's page)
+          over its rows, 'fleet RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would); fleet takes
           a runner: `hub tab fleet inbox-triage` opens its page
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
+  ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
+          whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
+          or longer, as metric<TAB>label<TAB>value rows. Exits 1 when Prometheus failed
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
-  briefing what needs you, then one line per area (Infra, Sessions, Workers overnight, Nightly,
-          Delivery, Costs) and the detail, for the window from WHEN (epoch seconds or RFC 3339,
-          default 12h ago); --md is the file agentctl-briefing writes. Exits 1 when a source could
-          not be read (the output says which)
+  briefing the human overview (what needs you, what landed, builds and releases, overnight,
+          money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
+          the file agentctl-briefing writes as briefing.md, and --agents-md FILE writes the agent
+          briefing (what needs you, one line per area: Infra, Sessions, Workers overnight,
+          Nightly, Delivery, Costs, and the detail) from the same read. Exits 1 when a source
+          could not be read (the output says which)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
   projects --page NAME
           one project's page, what its card shows when opened: the flow line, what needs you,
           the epics by system with each system's criteria, the next stage and shipped versions
+  projects --status NAME
+          the numbers of the project's lab STATUS line, which write-lab-status.sh appends: each
+          system's current wave and its percent, the version and its ETA, the next stage's gate
+          and the playtests waiting. Exits non-zero when a source it says could not be read
+  board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
+          forecast day and queue state, one head line per project and the words beside each
+          sheet row (what nvim draws as virtual text over a project sheet)
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -109,13 +125,17 @@ fn main() {
         it.next();
         let rest: Vec<String> = it.cloned().collect();
         if let [flag, name] = rest.as_slice() {
-            if flag != "--page" {
-                die(USAGE);
-            }
             let sys = hub_core::session_actions::System;
-            match hub_core::page::named(&sys, name, hub_core::jobs::now()) {
-                Ok(p) => println!("{}", hub_core::page::to_json(&p)),
-                Err(e) => die(&format!("hub projects --page: {e}")),
+            let now = hub_core::jobs::now();
+            let out = match flag.as_str() {
+                "--page" => hub_core::page::named(&sys, name, now)
+                    .map(|p| hub_core::page::to_json(&p).to_string()),
+                "--status" => hub_core::page::status(&sys, name, now),
+                _ => die(USAGE),
+            };
+            match out {
+                Ok(s) => println!("{s}"),
+                Err(e) => die(&format!("hub projects {flag}: {e}")),
             }
             return;
         }
@@ -124,6 +144,14 @@ fn main() {
         }
         let p = hub_core::projects::gather();
         println!("{}", hub_core::projects::to_json(&p));
+        return;
+    }
+    if it.peek().map(|a| a.as_str()) == Some("board") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--json"] {
+            die(USAGE);
+        }
+        println!("{}", hub_core::sheet_view::gather());
         return;
     }
     if it.peek().map(|a| a.as_str()) == Some("phone") {
@@ -137,6 +165,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("briefing") {
         it.next();
         std::process::exit(briefing(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("ci") {
+        it.next();
+        std::process::exit(ci(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
@@ -236,9 +268,49 @@ fn needs(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
+fn ci(args: Vec<String>) -> i32 {
+    enum Mode {
+        Text,
+        Json,
+        PoolMatch(i64),
+    }
+    let mode = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => Mode::Text,
+        ["--json"] => Mode::Json,
+        ["--pool-match", secs] => match secs.parse() {
+            Ok(secs) => Mode::PoolMatch(secs),
+            Err(_) => die(USAGE),
+        },
+        _ => die(USAGE),
+    };
+    let infra = hub_core::infra::gather();
+    if !infra.ok {
+        eprintln!(
+            "hub ci: {}",
+            infra
+                .error
+                .as_deref()
+                .unwrap_or("Prometheus did not answer")
+        );
+        return 1;
+    }
+    match mode {
+        Mode::Text => {
+            let p = fmt::Palette { no_color: true };
+            for l in board::ci_runners(&infra, p, 120) {
+                println!("{}", plain(&l));
+            }
+        }
+        Mode::Json => println!("{}", serde_json::to_string(&infra.ci).unwrap_or_default()),
+        Mode::PoolMatch(secs) => print!("{}", hub_core::ci::pool_match_rows(&infra, secs)),
+    }
+    0
+}
+
 /// `hub briefing`: hub-core's briefing over the window from `--since`.
 fn briefing(args: Vec<String>) -> i32 {
-    let (mut since, mut md) = (None, None);
+    let (mut since, mut md, mut agents) = (None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -251,6 +323,7 @@ fn briefing(args: Vec<String>) -> i32 {
             }
             "--json" => md = Some(false),
             "--md" => md = Some(true),
+            "--agents-md" => agents = Some(it.next().unwrap_or_else(|| die(USAGE)).clone()),
             _ => die(USAGE),
         }
     }
@@ -258,6 +331,12 @@ fn briefing(args: Vec<String>) -> i32 {
     let now = chrono::Utc::now().timestamp();
     let since = since.unwrap_or(now - hub_core::briefing::DEFAULT_WINDOW_SECS);
     let b = hub_core::briefing::build(&hub_core::briefing::gather(since, now));
+    if let Some(path) = agents {
+        if let Err(e) = std::fs::write(&path, b.agents_markdown()) {
+            eprintln!("hub: {path}: {e}");
+            return 2;
+        }
+    }
     if md {
         print!("{}", b.markdown());
     } else {
@@ -398,7 +477,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.proposals = Some(hub_core::proposals::read(
             &hub_core::session_actions::System,
         ));
-        // Home leads with the flow strip, whose inbox and board are the gauges.
+        // Home leads with the flow strip, whose inbox and board are the snapshot's.
         a.pipeline = Some(hub_core::pipeline::read());
     }
     // Home counts the queue too, so it is read for the default pages as well.
@@ -427,7 +506,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Projects) {
         let sys = hub_core::session_actions::System;
         a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(hub_core::tasks::feed(&sys));
+        a.tasks = Some(hub_core::sheet_view::feed(&sys));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
         // `--tab 'projects <name>'` prints that project's opened card, its page read here, over
@@ -472,15 +551,33 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         let now = hub_core::jobs::now();
         a.tab = Tab::Releases;
         a.open_query(section);
-        for l in
-            a.rv.status(&s, a.p, now)
-                .iter()
-                .chain(&a.rv.table(&s, a.p, w, false))
-                .chain(&a.rv.foot(&s, a.p, w))
-        {
+        // The strip with its counts, then the inner tab the request names (Apps by default).
+        let b = hub_core::builds::read(&a.files.builds, now);
+        let on = a.rv.on();
+        let mut lines = vec![innertabs::strip(
+            releases::tab(),
+            on,
+            &releases::flagged(&s, Some(&b)),
+            a.p,
+            w,
+        )];
+        match on {
+            "builds" => {
+                lines.extend(a.rv.builds.status(&b, a.p, now));
+                lines.extend(a.rv.builds.table(&b, a.p, w, false, now));
+            }
+            "tests" => lines.extend(releases::tests_note(a.p, w)),
+            _ => {
+                lines.extend(a.rv.status(&s, a.p, now));
+                lines.extend(a.rv.table(&s, a.p, w, false));
+            }
+        }
+        for l in &lines {
             let _ = writeln!(out, "{}", plain(l));
         }
-        return i32::from(!s.errors.is_empty());
+        // The exit code is the shown tab's read: Builds' ledger, else the releases snapshot.
+        let errors = if on == "builds" { &b.errors } else { &s.errors };
+        return i32::from(!errors.is_empty());
     }
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();
@@ -502,6 +599,17 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     // them here or Infra prints "reading".
     if matches!(tab, None | Some(Tab::Infra)) {
         a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
+        // `--tab 'infra machines'` prints that inner tab; with none named, every one prints.
+        a.tab = Tab::Infra;
+        a.infra_all = section.is_none();
+        a.open_query(section.clone());
+    }
+    // The live app reads Deliverables off-thread (about 10s); a printed page has no next frame,
+    // so it waits for them here.
+    if matches!(tab, None | Some(Tab::Projects)) {
+        a.deliverables = Some(hub_core::deliverables::read(
+            &hub_core::session_actions::System,
+        ));
     }
     // Home's NEEDS YOU joins the human-sheet rows.
     if matches!(tab, None | Some(Tab::Home)) {
@@ -595,6 +703,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_proposal_file(p)) {
             let _ = files.send(Msg::ProposalFiles);
+        }
+        if e.paths.iter().any(|p| boards.is_session_file(p)) {
+            let _ = files.send(Msg::SessionFiles);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.

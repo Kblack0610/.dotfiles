@@ -1,15 +1,15 @@
-//! The Sessions tab's frame around the session table (controls.rs): the stage counts from
-//! `fleet-sessions`' state document over it, and what waits on main, the open asks and the newest
-//! lines of watch.log under it. It judges nothing: the bucket, the reason and every cell come
-//! from fleet-sessions, as agent-web's Sessions tab reads them (`hub_core::boards`).
+//! The Sessions tab's frame around the session table (controls.rs): the state document's age over
+//! it. `changes` (watch.log) lives here but the Log tab draws it. Nightly reds and the open asks
+//! are Home's Needs you (`hub_core::home::needs`). It judges nothing: the bucket, the reason and
+//! every cell come from fleet-sessions, as agent-web's Sessions tab reads them (`hub_core::boards`).
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{Local, TimeZone};
 use hub_core::boards::Watch;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, Cell};
 use crate::fmt::{older, Palette};
 
 /// Changes listed under the table; watch.log keeps them all.
@@ -192,13 +192,7 @@ fn ago(ts: i64, now: i64) -> String {
 }
 
 /// The whole tab, top to bottom, with the session table in its place under the counts.
-pub fn page(
-    watch: &Watch,
-    table: Vec<Line<'static>>,
-    p: Palette,
-    now: i64,
-    w: usize,
-) -> Vec<Line<'static>> {
+pub fn page(watch: &Watch, table: Vec<Line<'static>>, p: Palette, now: i64) -> Vec<Line<'static>> {
     let st = &watch.state;
     let mut out = vec![];
     if st.is_null() {
@@ -223,53 +217,6 @@ pub fn page(
                 ),
                 p.warn(),
             ));
-        }
-
-        if let Some(main) = st["main"].as_array().filter(|m| !m.is_empty()) {
-            out.push(Line::raw(""));
-            out.push(Line::styled("NIGHTLY", p.head()));
-            for m in main {
-                out.push(clip_line(
-                    Line::styled(format!("  {}", s(m, "reason")), p.bad()),
-                    w,
-                ));
-            }
-        }
-
-        let asks: Vec<&Value> = st["asks"]
-            .as_array()
-            .map(|a| a.iter().collect())
-            .unwrap_or_default();
-        out.push(Line::raw(""));
-        out.push(Line::styled(format!("ASKS ({})", asks.len()), p.head()));
-        if asks.is_empty() {
-            out.push(Line::styled("  nothing waits on you", p.dim()));
-        } else {
-            let t = Table {
-                mark: None,
-                header: vec!["ID", "PROJECT", "AGE", "SESSION", "QUESTION"],
-                rows: asks
-                    .iter()
-                    .map(|a| {
-                        let age = DateTime::parse_from_str(s(a, "created"), "%Y-%m-%dT%H:%M:%S%z")
-                            .map_or("-".into(), |t| ago(t.timestamp(), now));
-                        vec![
-                            s(a, "id").into(),
-                            s(a, "project").into(),
-                            age.into(),
-                            a["session"].as_str().map_or("-".into(), short).into(),
-                            s(a, "question").replace(['\n', '\t'], " ").into(),
-                        ]
-                    })
-                    .collect(),
-                keep: vec![0, 1, 2, 3],
-                flex: Some(4),
-                flexmin: 20,
-                flexkeep: true,
-                right: vec![2],
-                cap: vec![(1, 22), (3, 28)],
-            };
-            out.extend(t.fit(w, p.head()));
         }
     }
 
@@ -359,7 +306,7 @@ pub mod tests {
     fn page(watch: &Watch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         let mut c = crate::controls::Controls::default();
         c.read(Some(&watch.state), None);
-        super::page(watch, c.lines(p, now, w), p, now, w)
+        super::page(watch, c.lines(p, now, w), p, now)
     }
 
     #[test]
@@ -377,8 +324,16 @@ pub mod tests {
         assert!(
             out.contains("#1645 open PENDING") && out.contains("1/4") && out.contains("21:30 s3")
         );
-        assert!(out.contains("unity-core-playground red: Shots"), "{out}");
-        assert!(out.contains("ggK2ey") && out.contains("rename?"));
+    }
+
+    #[test]
+    fn nightly_reds_and_asks_are_homes_not_drawn_here() {
+        let p = Palette { no_color: true };
+        let out = text(&page(&fixture(), p, 1_000_000, 240));
+        // The fixture has a red nightly and an open ask: Home's Needs you lists both.
+        assert!(!out.contains("NIGHTLY") && !out.contains("ASKS ("), "{out}");
+        assert!(!out.contains("unity-core-playground red: Shots"), "{out}");
+        assert!(!out.contains("ggK2ey") && !out.contains("rename?"), "{out}");
     }
 
     #[test]

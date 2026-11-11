@@ -1,6 +1,7 @@
 //! One project's page, read when its card is opened (dashboards rule 10), never for every card:
-//! the Flow line, what needs the human, the epics by system with each system's criteria, the
-//! next stage's gaps, the shipped versions and the dev timeline. Every number is counted by its
+//! its systems first (each with its progress, its features and their percents, and each
+//! feature's tasks one level deeper), the Flow line, what needs the human, the next stage's
+//! gaps, the shipped versions and the dev timeline. Every number is counted by its
 //! owner and this module only joins them and says the words, so agent-web and the hub TUI print
 //! the same lines: `fleet-bench epics` (the chain, `epics.rs`), `project-stage-check` (next stage
 //! and system criteria), `notes projects --roadmap --json` (shipped versions) and
@@ -13,26 +14,68 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::epics::{self, Chain, Epic};
+use crate::projects::Card;
 use crate::session_actions::Runner;
 
 /// Plans with no epic the Needs you list names one by one; the rest are one "+N more" line.
 pub const PLANS_SHOWN: usize = 5;
 
-/// One epic as its system's line: `one project page  [rows]  brief yes  plan 2 of 7 ...`.
+/// Next stage's head at the top of the ladder.
+pub const NO_NEXT: &str = "no stage after this one";
+
+/// One task under an epic, as opening the epic lists it: `[x] db-131  feat: skin palette  s  pr 412`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Leaf {
+    /// The row's id, which a surface finds the row by to open it.
+    pub id: String,
+    pub line: String,
+    pub done: bool,
+}
+
+/// One epic as its system's line: `one project page  20%  [rows]  brief yes  plan 2 of 7 ...`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct EpicLine {
+    pub id: String,
     pub line: String,
     /// Behind its frozen baseline, which a surface marks.
     pub behind: bool,
+    /// Its tasks, done and open, in sheet order: what opening it lists.
+    pub leaves: Vec<Leaf>,
 }
 
-/// A system: its criteria from `systems.md`, then its open epics; closed ones are a count.
+/// A system's current wave (`lifecycle.md`, "What an epic is"): its first open feature epic in
+/// sheet order, and how many more feature epics it has open.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Wave {
+    pub id: String,
+    pub title: String,
+    /// The epic's own weighted done share; None when its leaves carry no weight.
+    pub percent: Option<u32>,
+    pub more: usize,
+}
+
+/// The next stage's gate as numbers: what `next_says` says, for a reader that composes its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Gate {
+    pub stage: String,
+    pub met: u32,
+    pub total: u32,
+}
+
+/// A system: its progress and criteria, then its open epics; closed ones are a count.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct System {
     pub id: String,
-    /// `ui  criteria 5 of 7`, or `ui  no criteria` for a system the project type does not list.
+    /// `gameplay  41%  4 features, 0 done, 1 standard epic  criteria 3 of 5`; a system with no
+    /// epic has no percent (`ui  criteria 5 of 7`), and one the project type does not list says
+    /// `no criteria`.
     pub head: String,
+    /// The weighted done share of its leaves over its open epics and the epics closed in the
+    /// open version; None with no epic to count.
+    pub percent: Option<u32>,
     pub epics: Vec<EpicLine>,
+    /// None when it has no open feature epic: no epic, or only its standing one.
+    pub wave: Option<Wave>,
     /// `+3 closed, 2 verified`, empty when none closed.
     pub closed: String,
 }
@@ -59,6 +102,8 @@ pub struct Page {
     /// Next stage's head: `beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet`, or
     /// `no stage after this one` at the top.
     pub next_says: String,
+    /// None at the top stage or when the check could not be read.
+    pub gate: Option<Gate>,
     pub next_rows: Vec<Requirement>,
     /// Shipped's head: `2 versions`, `1 version` or `none yet`.
     pub shipped_says: String,
@@ -104,14 +149,56 @@ pub fn next_on(ladder: &[String], stage: &str) -> Option<String> {
     ladder.get(i + 1).cloned()
 }
 
-fn plan_name(path: &str) -> &str {
-    let base = path.rsplit('/').next().unwrap_or(path);
-    base.strip_suffix(".md").unwrap_or(base)
+/// The leaves-only weighted done share of `epics`, as `projects::percent` counts a version.
+fn weighted<'a>(epics: impl IntoIterator<Item = &'a Epic>) -> Option<u32> {
+    let (done, open) = epics
+        .into_iter()
+        .fold((0, 0), |(d, o), e| (d + e.done_weight, o + e.open_weight));
+    crate::projects::percent(&crate::projects::Progress {
+        done_weight: done,
+        open_weight: open,
+        ..Default::default()
+    })
 }
 
-/// An epic's line on its system: title, step, brief, plan phases, rows, PRs, ETA and track.
+/// A system's standing epic, `epic(<system>): <system> to standard`, where upkeep that serves no
+/// feature is linked (`lifecycle.md`, "What an epic is"); every other epic is a feature. Case
+/// aside, as the writer (`notes-cli` `standing::find`) matches it.
+pub fn is_standing(e: &Epic) -> bool {
+    e.title
+        .to_ascii_lowercase()
+        .strip_suffix(" to standard")
+        .is_some_and(|s| s.eq_ignore_ascii_case(&e.system))
+}
+
+/// One task's line: `[x] db-131  feat: skin palette  s  pr 412`, `[/]` for one started.
+fn leaf_line(r: &crate::epics::Row) -> String {
+    let mark = match r.state.as_str() {
+        "done" => 'x',
+        "doing" => '/',
+        _ => ' ',
+    };
+    let mut s = format!("[{mark}] {}  ", r.id);
+    if !r.kind.is_empty() && r.kind != "untyped" {
+        s += &format!("{}: ", r.kind);
+    }
+    s += &r.title;
+    if !r.size.is_empty() {
+        s += &format!("  {}", r.size);
+    }
+    if !r.prs.is_empty() {
+        s += &format!("  pr {}", r.prs.join(", "));
+    }
+    s
+}
+
+/// An epic's line on its system: title, percent, step, brief, plan phases, rows, PRs, ETA and track.
 pub fn epic_line(e: &Epic, now: i64) -> String {
-    let mut s = format!("{}  [{}]", e.title, e.step);
+    let mut s = e.title.clone();
+    if let Some(p) = weighted([e]) {
+        s += &format!("  {p}%");
+    }
+    s += &format!("  [{}]", e.step);
     s += if e.brief.is_some() {
         "  brief yes"
     } else {
@@ -168,7 +255,7 @@ pub fn needs(c: &Chain) -> Vec<String> {
         plans
             .iter()
             .take(PLANS_SHOWN)
-            .map(|p| format!("plan with no epic: {}", plan_name(p))),
+            .map(|p| format!("plan with no epic: {}", crate::plans::base(p))),
     );
     if plans.len() > PLANS_SHOWN {
         out.push(format!(
@@ -180,52 +267,124 @@ pub fn needs(c: &Chain) -> Vec<String> {
 }
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
-/// then any system an epic names that the type lacks, then epics with none.
-pub fn systems(c: &Chain, criteria: &[Criteria], now: i64) -> Vec<System> {
+/// then any system an epic names that the type lacks, then epics with none. `in_open` is the ids
+/// of the epics closed in the open version, which count toward their system's percent.
+pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -> Vec<System> {
     let mut by: BTreeMap<&str, Vec<&Epic>> = BTreeMap::new();
     for e in &c.epics {
         by.entry(e.system.as_str()).or_default().push(e);
     }
-    let mut out: Vec<System> = criteria
+    let mut out: Vec<(System, String)> = criteria
         .iter()
-        .map(|c| System {
-            id: c.id.clone(),
-            head: format!("{}  criteria {} of {}", c.id, c.met, c.total),
-            ..Default::default()
+        .map(|c| {
+            let sys = System {
+                id: c.id.clone(),
+                ..Default::default()
+            };
+            (sys, format!("criteria {} of {}", c.met, c.total))
         })
         .collect();
     for sys in by.keys() {
-        if !out.iter().any(|s| s.id == *sys) {
-            let id = if sys.is_empty() { "no system" } else { sys };
-            out.push(System {
+        if !out.iter().any(|(s, _)| s.id == *sys) {
+            let sys = System {
                 id: sys.to_string(),
-                head: format!("{id}  no criteria"),
                 ..Default::default()
-            });
+            };
+            out.push((sys, "no criteria".into()));
         }
     }
-    for s in &mut out {
-        let Some(es) = by.get(s.id.as_str()) else {
-            continue;
-        };
-        s.epics = es
-            .iter()
-            .filter(|e| e.state == "open")
-            .map(|e| EpicLine {
-                line: epic_line(e, now),
-                behind: e.track.as_deref() == Some("behind"),
-            })
-            .collect();
-        let closed = es.iter().filter(|e| e.state != "open").count();
-        if closed > 0 {
-            let verified = es
+    out.into_iter()
+        .map(|(mut s, criteria)| {
+            let name = if s.id.is_empty() {
+                "no system"
+            } else {
+                s.id.as_str()
+            };
+            let mut head = name.to_string();
+            let es: &[&Epic] = by.get(s.id.as_str()).map_or(&[], |v| v.as_slice());
+            // A system's progress counts its open epics and the ones closed in the open version,
+            // never one number for the whole project.
+            let counted: Vec<&Epic> = es
                 .iter()
-                .filter(|e| e.state != "open" && e.verified)
+                .copied()
+                .filter(|e| e.state == "open" || in_open.contains(&e.id))
+                .collect();
+            s.percent = weighted(counted.iter().copied());
+            if let Some(p) = s.percent {
+                head += &format!("  {p}%");
+            }
+            let features: Vec<&&Epic> = counted.iter().filter(|e| !is_standing(e)).collect();
+            let standing = es
+                .iter()
+                .filter(|e| is_standing(e) && e.state == "open")
                 .count();
-            s.closed = format!("+{closed} closed, {verified} verified");
-        }
-    }
-    out
+            let mut parts = vec![];
+            if !features.is_empty() {
+                let done = features.iter().filter(|e| e.state != "open").count();
+                let n = features.len();
+                parts.push(format!(
+                    "{n} feature{}, {done} done",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            if standing > 0 {
+                parts.push(format!(
+                    "{standing} standard epic{}",
+                    if standing == 1 { "" } else { "s" }
+                ));
+            }
+            if !parts.is_empty() {
+                head += &format!("  {}", parts.join(", "));
+            }
+            s.head = format!("{head}  {criteria}");
+            s.epics = es
+                .iter()
+                .filter(|e| e.state == "open")
+                .map(|e| EpicLine {
+                    id: e.id.clone(),
+                    line: epic_line(e, now),
+                    behind: e.track.as_deref() == Some("behind"),
+                    leaves: e
+                        .rows
+                        .iter()
+                        .map(|r| Leaf {
+                            id: r.id.clone(),
+                            line: leaf_line(r),
+                            done: r.state == "done",
+                        })
+                        .collect(),
+                })
+                .collect();
+            let mut open_features = es.iter().filter(|e| e.state == "open" && !is_standing(e));
+            s.wave = open_features.next().map(|e| Wave {
+                id: e.id.clone(),
+                title: e.title.clone(),
+                percent: weighted([*e]),
+                more: open_features.count(),
+            });
+            let closed = es.iter().filter(|e| e.state != "open").count();
+            if closed > 0 {
+                let verified = es
+                    .iter()
+                    .filter(|e| e.state != "open" && e.verified)
+                    .count();
+                s.closed = format!("+{closed} closed, {verified} verified");
+            }
+            s
+        })
+        .collect()
+}
+
+/// The ids of the epics closed in the open version: the current entry of `--roadmap --json`.
+pub fn closed_in_open(roadmap: &Value) -> Vec<String> {
+    roadmap
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["state"] == "current")
+        .flat_map(|r| r["closed_epics"].as_array().into_iter().flatten())
+        .filter_map(|e| e["id"].as_str().map(String::from))
+        .collect()
 }
 
 /// `--roadmap --json`'s shipped versions, newest first, each as its closes by kind.
@@ -308,10 +467,31 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
             vec![]
         }
     };
+    let roadmap = match runner.run(&[
+        "notes".into(),
+        "projects".into(),
+        "--roadmap".into(),
+        name.into(),
+        "--json".into(),
+    ]) {
+        Ok(o) => match serde_json::from_str::<Value>(&o) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                p.errors
+                    .push(format!("notes projects --roadmap --json: {e}"));
+                None
+            }
+        },
+        Err(e) => {
+            p.errors.push(format!("notes projects --roadmap: {e}"));
+            None
+        }
+    };
     if let Some(c) = &chain {
         p.flow_line = Some(epics::flow_line(&c.flow));
         p.needs = needs(c);
-        p.systems = systems(c, &criteria, now);
+        let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
+        p.systems = systems(c, &criteria, &in_open, now);
     }
     let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
     p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
@@ -336,7 +516,16 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 vec![]
             }
         };
-    p.next_says = "no stage after this one".into();
+    // NO_NEXT only for the ladder's last stage: an unread ladder, or a stage it lacks, is unread.
+    p.next_says = if ladder.iter().any(|s| s == stage) {
+        NO_NEXT.into()
+    } else {
+        if !ladder.is_empty() {
+            p.errors
+                .push(format!("notes projects --stages: no stage {stage}"));
+        }
+        "next stage  not read".into()
+    };
     if let Some(next) = next_on(&ladder, stage) {
         p.next_says = format!("{next}  not read");
         match stage_json::<StageOut>(
@@ -345,6 +534,11 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         ) {
             Ok(o) => {
                 p.next_says = stage_line(&o);
+                p.gate = Some(Gate {
+                    stage: o.stage.clone(),
+                    met: o.met,
+                    total: o.total,
+                });
                 p.next_rows = o
                     .requirements
                     .into_iter()
@@ -356,20 +550,8 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 .push(format!("project-stage-check --stage {next}: {e}")),
         }
     }
-    match runner.run(&[
-        "notes".into(),
-        "projects".into(),
-        "--roadmap".into(),
-        name.into(),
-        "--json".into(),
-    ]) {
-        Ok(o) => match serde_json::from_str::<Value>(&o) {
-            Ok(v) => p.shipped = shipped(&v),
-            Err(e) => p
-                .errors
-                .push(format!("notes projects --roadmap --json: {e}")),
-        },
-        Err(e) => p.errors.push(format!("notes projects --roadmap: {e}")),
+    if let Some(v) = &roadmap {
+        p.shipped = shipped(v);
     }
     let channels = crate::releases::channels(runner, name).unwrap_or_else(|e| {
         p.errors.push(e);
@@ -390,12 +572,92 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
 /// `notes projects --stats --json`. A name no lab project has is an error, never an empty page.
 pub fn named(runner: &dyn Runner, name: &str, now: i64) -> Result<Page, String> {
-    let stats = crate::projects::stats(runner)?;
-    let s = stats
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("notes projects lists no project {name}"))?;
+    let s = stats_of(runner, name)?;
     Ok(read(runner, name, &s.stage, now))
+}
+
+/// The `notes projects --stats --json` row of `name`; a name no lab project has is an error.
+fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, String> {
+    crate::projects::stats(runner)?
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("notes projects lists no project {name}"))
+}
+
+/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: each system's
+/// current wave and its percent, the systems with only upkeep open, the open version and its
+/// ETA, the next stage's gate and the playtests waiting. Every number is one this page or the
+/// card already counts; only the words are here, and the model writing the status adds none.
+pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::NaiveDate) -> String {
+    let waves: Vec<String> = p
+        .systems
+        .iter()
+        .filter_map(|s| {
+            let w = s.wave.as_ref()?;
+            let name = if s.id.is_empty() { "no system" } else { &s.id };
+            let mut t = format!("{name} on \"{}\"", w.title);
+            if let Some(pc) = w.percent {
+                t += &format!(" {pc}%");
+            }
+            if w.more > 0 {
+                t += &format!(" ({} more open)", w.more);
+            }
+            Some(t)
+        })
+        .collect();
+    let mut out = vec![if waves.is_empty() {
+        "Waves: none open.".to_string()
+    } else {
+        format!("Waves: {}.", waves.join("; "))
+    }];
+    let upkeep = p
+        .systems
+        .iter()
+        .filter(|s| s.wave.is_none() && !s.epics.is_empty())
+        .count();
+    if upkeep > 0 {
+        out.push(format!(
+            "Upkeep only: {upkeep} system{}.",
+            if upkeep == 1 { "" } else { "s" }
+        ));
+    }
+    out.push(match (&c.version, c.percent) {
+        (None, _) => "No open version.".to_string(),
+        (Some(v), None) => format!("{v} has no rows."),
+        (Some(v), Some(pc)) => format!(
+            "{v} is {pc}% done, {}.",
+            crate::projects::eta_words(c, today)
+        ),
+    });
+    if let Some(g) = &p.gate {
+        out.push(format!(
+            "Gate to {}: {} of {} met.",
+            g.stage, g.met, g.total
+        ));
+    }
+    out.push(format!("Playtests waiting: {playtest_open}."));
+    out.join(" ")
+}
+
+/// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
+/// says (the chain, the next stage's check, the board feed) that could not be read is an error,
+/// never a line that leaves it out.
+pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, String> {
+    let s = stats_of(runner, name)?;
+    let p = read(runner, name, &s.stage, now);
+    let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
+    if p.flow_line.is_none() || next_unread {
+        return Err(p.errors.join("; "));
+    }
+    let feed = crate::tasks::feed(runner)?;
+    let playtest_open = feed
+        .projects
+        .iter()
+        .find(|f| f.project == name && f.profile == s.profile)
+        .map(|f| f.playtest_open)
+        .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
+    let today = crate::sheet_view::today_of(&feed);
+    Ok(status_line(&p, &Card::from_stats(&s), playtest_open, today))
 }
 
 pub fn to_json(p: &Page) -> Value {
@@ -439,11 +701,19 @@ mod tests {
             "unlinked": {"rows": ["gm-7", "gm-15"], "plans": ["/p/a.md", "/p/b.md", "/p/c.md", "/p/d.md", "/p/e.md", "/p/f.md"]},
             "epics": [
                 {"id": "gm-1", "title": "Menus", "system": "ui", "state": "open", "step": "rows", "open": 2, "done": 2,
+                 "open_weight": 3, "done_weight": 1,
                  "brief": "/b.md", "plans": [{"file": "/p/m.md", "done": 1, "total": 3}], "prs": ["101"],
+                 "rows": [{"id": "gm-3", "kind": "feat", "title": "Main menu", "size": "m", "state": "done", "prs": ["101"]},
+                          {"id": "gm-4", "kind": "untyped", "title": "Pause menu", "size": "", "state": "open", "prs": []},
+                          {"id": "gm-8", "kind": "fix", "title": "Back key", "size": "s", "state": "doing", "prs": []}],
                  "eta": {"p50": NOW + 3 * 86_400, "slow": NOW + 5 * 86_400, "basis": "queue"}, "track": "behind"},
                 {"id": "gm-2", "title": "Saves", "system": "ui", "state": "open", "step": "landed", "open": 0, "done": 4,
-                 "prs": ["102", "103"]},
-                {"id": "gm-5", "title": "Shipped", "system": "ui", "state": "closed", "step": "verified", "verified": true, "done": 1},
+                 "done_weight": 4, "prs": ["102", "103"]},
+                {"id": "gm-6", "title": "ui to standard", "system": "ui", "state": "open", "step": "rows", "open": 1,
+                 "open_weight": 2},
+                {"id": "gm-5", "title": "Shipped", "system": "ui", "state": "closed", "step": "verified", "verified": true,
+                 "done": 1, "done_weight": 2},
+                {"id": "gm-10", "title": "Old", "system": "ui", "state": "closed", "step": "verified", "verified": true, "done": 9, "done_weight": 10},
                 {"id": "gm-9", "title": "Odd", "system": "", "state": "open", "step": "epic",
                  "eta": {"p50": NOW - 60, "slow": NOW, "basis": "queue"}}
             ]}]})
@@ -456,7 +726,7 @@ mod tests {
         let stage = r#"{"stage":"beta","met":4,"total":12,"fail":1,"human":1,"todo":6,"requirements":[
             {"stage":"draft","result":"PASS","requirement":"a brief"},
             {"stage":"beta","result":"FAIL","requirement":"a soak test"}]}"#;
-        let roadmap = r#"[{"version":"v0.2.0","state":"current","progress":{"done":3}},
+        let roadmap = r#"[{"version":"v0.2.0","state":"current","progress":{"done":3},"closed_epics":[{"id":"gm-5"}]},
             {"version":"v0.1.0","state":"shipped","progress":{"done":20,"by_kind":{"fix":{"done":7},"feat":{"done":9},"docs":{"done":4},"ci":{"done":0}}}}]"#;
         Fake {
             answers: vec![
@@ -517,25 +787,45 @@ mod tests {
         assert_eq!(
             heads,
             vec![
-                "ui  criteria 5 of 7",
+                "ui  58%  3 features, 1 done, 1 standard epic  criteria 5 of 7",
                 "ci  criteria 1 of 2",
-                "no system  no criteria"
+                "no system  1 feature, 0 done  no criteria"
             ],
-            "every system the type has, in its order, then epics with no system"
+            "every system the type has, in its order, then epics with no system; a system with no \
+             epic, or none with a weight, shows no percent, never 0%"
         );
         let ui = &p.systems[0];
         assert_eq!(
+            ui.percent,
+            Some(7 * 100 / 12),
+            "open epics and the one closed in the open version, by weight; gm-10 closed earlier"
+        );
+        assert_eq!(p.systems[1].percent, None);
+        assert_eq!(
             ui.epics.iter().map(|e| e.line.as_str()).collect::<Vec<_>>(),
             vec![
-                "Menus  [rows]  brief yes  plan 1 of 3  rows 2 of 4  PRs 1  ETA 3d  behind",
-                "Saves  [landed]  brief no  plan no  rows 4 of 4  PRs 2",
+                "Menus  25%  [rows]  brief yes  plan 1 of 3  rows 2 of 4  PRs 1  ETA 3d  behind",
+                "Saves  100%  [landed]  brief no  plan no  rows 4 of 4  PRs 2",
+                "ui to standard  0%  [rows]  brief no  plan no  rows 0 of 1",
             ]
         );
         assert_eq!(
             ui.epics.iter().map(|e| e.behind).collect::<Vec<_>>(),
-            vec![true, false]
+            vec![true, false, false]
         );
-        assert_eq!(ui.closed, "+1 closed, 1 verified");
+        assert_eq!(
+            ui.epics[0]
+                .leaves
+                .iter()
+                .map(|l| (l.id.as_str(), l.line.as_str(), l.done))
+                .collect::<Vec<_>>(),
+            vec![
+                ("gm-3", "[x] gm-3  feat: Main menu  m  pr 101", true),
+                ("gm-4", "[ ] gm-4  Pause menu", false),
+                ("gm-8", "[/] gm-8  fix: Back key  s", false),
+            ]
+        );
+        assert_eq!(ui.closed, "+2 closed, 2 verified");
         assert_eq!(
             p.systems[2].epics[0].line, "Odd  [epic]  brief no  plan no  rows 0 of 0  ETA overdue",
             "an estimate already past says so, never 0d"
@@ -543,7 +833,7 @@ mod tests {
         assert!(p.systems[1].epics.is_empty() && p.systems[1].closed.is_empty());
         assert_eq!(
             p.systems_says,
-            "3 systems, 3 open epics (2 rows with no epic)"
+            "3 systems, 4 open epics (2 rows with no epic)"
         );
         assert_eq!(
             p.next_says,
@@ -562,8 +852,22 @@ mod tests {
             vec!["v0.1.0: 20 rows closed; feat 9, fix 7, docs 4"]
         );
         assert_eq!(p.shipped_says, "1 version");
-        assert_eq!(p.releases.unwrap().says, "1 channel: 1 drift");
+        assert_eq!(p.releases.unwrap().says, "drift; channels 1: 1 drift");
         assert_eq!(p.timeline.unwrap().says, "7d: 1 tag");
+    }
+
+    #[test]
+    fn a_standing_epic_is_its_system_to_standard_case_aside_as_the_writer_matches_it() {
+        let e = |title: &str, system: &str| Epic {
+            title: title.into(),
+            system: system.into(),
+            ..Default::default()
+        };
+        assert!(is_standing(&e("ui to standard", "ui")));
+        assert!(is_standing(&e("UI to Standard", "ui")));
+        // NEGATIVE CONTROL: another system's title, or a feature, is no standing epic.
+        assert!(!is_standing(&e("look to standard", "ui")));
+        assert!(!is_standing(&e("ui pause menu", "ui")));
     }
 
     #[test]
@@ -615,6 +919,132 @@ mod tests {
         assert!(p.next_says.starts_with("beta"), "{p:?}");
         let e = named(&f, "nosuch", NOW).unwrap_err();
         assert!(e.contains("no project nosuch"), "{e}");
+    }
+
+    #[test]
+    fn each_system_s_wave_is_its_first_open_feature_epic_never_its_standing_one() {
+        let p = read(&fake(0), "game", "alpha", NOW);
+        let waves: Vec<Option<(&str, Option<u32>, usize)>> = p
+            .systems
+            .iter()
+            .map(|s| s.wave.as_ref().map(|w| (w.id.as_str(), w.percent, w.more)))
+            .collect();
+        assert_eq!(
+            waves,
+            vec![Some(("gm-1", Some(25), 1)), None, Some(("gm-9", None, 0))],
+            "ui's wave is Menus with Saves still open and its standing epic not counted; ci has \
+             no epic; an epic with no weight has no percent, never 0%"
+        );
+        assert_eq!(
+            p.gate,
+            Some(Gate {
+                stage: "beta".into(),
+                met: 4,
+                total: 12
+            })
+        );
+    }
+
+    fn status_fake() -> Fake {
+        let mut f = fake(0);
+        f.answers.insert(
+            0,
+            (
+                "notes projects --stats",
+                0,
+                r#"[{"profile":"lab","name":"game","stage":"alpha","version":"v0.2.0",
+                    "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28}}]"#
+                    .into(),
+            ),
+        );
+        f.answers.push((
+            "notes board --json",
+            0,
+            r#"{"today":"2026-11-09","projects":[
+                {"profile":"other","project":"game","playtest_open":9},
+                {"profile":"lab","project":"game","playtest_open":3}]}"#
+                .into(),
+        ));
+        f
+    }
+
+    #[test]
+    fn the_status_line_says_every_number_the_readers_counted_and_nothing_else() {
+        let line = status(&status_fake(), "game", NOW).unwrap();
+        assert_eq!(
+            line,
+            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 is 60% done, \
+             ETA ~11-13. Gate to beta: 4 of 12 met. Playtests waiting: 3.",
+            "the playtests are this profile's, the ETA is the card's 4 days from the feed's day"
+        );
+        assert!(line.is_ascii() && !line.contains("  "), "{line}");
+    }
+
+    #[test]
+    fn upkeep_only_systems_are_a_count_and_a_version_with_no_closes_has_no_eta() {
+        let sys = |id: &str, wave: Option<Wave>, epics: usize| System {
+            id: id.into(),
+            wave,
+            epics: vec![EpicLine::default(); epics],
+            ..Default::default()
+        };
+        let p = Page {
+            systems: vec![sys("ci", None, 1), sys("docs", None, 2), sys("ui", None, 0)],
+            ..Default::default()
+        };
+        let mut c = Card {
+            version: Some("v0.1.0".into()),
+            percent: Some(40),
+            eta_days: None,
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        assert_eq!(
+            status_line(&p, &c, 0, today),
+            "Waves: none open. Upkeep only: 2 systems. v0.1.0 is 40% done, no ETA (no closes in \
+             28d). Playtests waiting: 0.",
+            "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
+        );
+        c.eta_days = Some(0);
+        c.percent = Some(100);
+        assert!(status_line(&p, &c, 0, today).contains("v0.1.0 is 100% done, nothing open."));
+        c.percent = None;
+        assert!(status_line(&p, &c, 0, today).contains(" v0.1.0 has no rows. "));
+        c.version = None;
+        assert!(status_line(&p, &c, 0, today).contains(" No open version. "));
+    }
+
+    #[test]
+    fn a_status_whose_sources_failed_is_an_error_not_a_line_that_leaves_them_out() {
+        let mut f = status_fake();
+        f.answers.retain(|(k, ..)| !k.starts_with("fleet-bench"));
+        let e = status(&f, "game", NOW).unwrap_err();
+        assert!(e.contains("fleet-bench"), "{e}");
+        let mut f = status_fake();
+        f.answers
+            .retain(|(k, ..)| !k.starts_with("project-stage-check game --stage"));
+        assert!(status(&f, "game", NOW).is_err(), "an unread gate");
+        for ladder in [None, Some("draft dev\n")] {
+            let mut f = status_fake();
+            f.answers.retain(|(k, ..)| *k != "notes projects --stages");
+            if let Some(l) = ladder {
+                f.answers.push(("notes projects --stages", 0, l.into()));
+            }
+            let e = status(&f, "game", NOW).unwrap_err();
+            assert!(
+                e.contains("--stages"),
+                "an unread ladder is no top stage: {e}"
+            );
+        }
+        let mut f = status_fake();
+        f.answers.retain(|(k, ..)| !k.starts_with("notes board"));
+        assert!(status(&f, "game", NOW).is_err(), "an unread feed");
+        // NEGATIVE CONTROL: a source the line does not say (the timeline) failing still gives it.
+        let mut f = status_fake();
+        f.answers
+            .retain(|(k, ..)| !k.starts_with("project-timeline"));
+        assert!(status(&f, "game", NOW).is_ok());
+        assert!(status(&status_fake(), "nosuch", NOW).is_err());
     }
 
     #[test]

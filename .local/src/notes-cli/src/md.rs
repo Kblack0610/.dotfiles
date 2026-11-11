@@ -710,6 +710,11 @@ fn created_date(tag: &str, today: NaiveDate) -> Option<NaiveDate> {
     tag_date(tag.strip_prefix('c')?, today)
 }
 
+/// The day a task line was created: its first `#cMMDD` tag.
+pub fn find_created(line: &str, today: NaiveDate) -> Option<NaiveDate> {
+    created_date(&split_created(line).1?, today)
+}
+
 /// True when `tag` (bare, no `#`) is a created tag. `notes tags` skips these: one per day
 /// would bury every real tag, and `rg '#c10'` is the date search.
 pub fn is_created_tag(tag: &str) -> bool {
@@ -750,10 +755,55 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(str::to_string))
 }
 
+/// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
+/// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
+/// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
+/// stripping the tag rewrites the human's prose. The space before is taken when the previous
+/// cut has not; a tag glued to the word before it (`?)#c1110`) takes no space, so the words
+/// either side stay apart; at the line start, or when the space before is gone, the space
+/// after is taken.
+fn tag_cut(
+    bytes: &[u8],
+    start: usize,
+    spans: &[(usize, usize)],
+    hash_at: usize,
+    k: usize,
+    end: usize,
+) -> (usize, usize) {
+    let mut cut_e = k;
+    while cut_e > end && bytes[cut_e - 1] == b'.' {
+        cut_e -= 1;
+    }
+    let prev_end = spans.last().map_or(0, |&(_, e)| e);
+    let mut cut_s = hash_at;
+    let glued = cut_s > start && bytes[cut_s - 1] != b' ';
+    if cut_s > start && cut_s > prev_end && !glued {
+        cut_s -= 1;
+    } else if !glued && bytes.get(cut_e) == Some(&b' ') {
+        cut_e += 1;
+    }
+    (cut_s, cut_e)
+}
+
+/// `line` with each `(start, end)` span cut out, in order. A repeated tag (`#c1110 #c1110`)
+/// cuts the space the first cut already took, so its span starts before the cursor: clamp it
+/// instead of slicing backwards.
+fn apply_cuts(line: &str, spans: &[(usize, usize)]) -> String {
+    let mut cleaned = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for &(s, e) in spans {
+        let s = s.max(cursor);
+        cleaned.push_str(&line[cursor..s]);
+        cursor = e.max(s);
+    }
+    cleaned.push_str(&line[cursor..]);
+    cleaned
+}
+
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
 /// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
-/// tags instead of taking the first, so it keeps its own loop.
+/// tags instead of taking the first, so it walks them itself and shares only [`tag_cut`] and [`apply_cuts`].
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
     let start = scan_start(line);
@@ -766,31 +816,12 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
         if found.is_none() {
             found = Some(&line[tag_start..end]);
         }
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back for the same reason `split_priority` gives it back: it is the
-        // human's punctuation, not part of the tag.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
     });
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (cleaned.trim_end().to_string(), found)
 }
 
@@ -892,7 +923,7 @@ pub fn project_tag(line: &str) -> Option<String> {
 }
 
 /// The project a single `#p:<name>` word names, trailing punctuation off.
-fn project_tag_word(w: &str) -> Option<String> {
+pub(crate) fn project_tag_word(w: &str) -> Option<String> {
     let rest = w.get(..3).filter(|p| p.eq_ignore_ascii_case("#p:"))?;
     let name = w[rest.len()..].trim_end_matches(['.', ',', ';', ':', '-']);
     (!name.is_empty()).then(|| name.to_lowercase())
@@ -912,6 +943,12 @@ pub fn agent_tag(line: &str) -> bool {
 
 fn is_agent_word(w: &str) -> bool {
     w.eq_ignore_ascii_case("#agent")
+}
+
+/// Is `tag` (with or without its `#`) one of the priority words?
+pub fn is_priority(tag: &str) -> bool {
+    let t = tag.trim_start_matches('#').to_lowercase();
+    PRIORITIES.iter().any(|(w, _, _)| *w == t)
 }
 
 /// `line` without its `#agent` tag, the rest as it was.
@@ -1185,18 +1222,14 @@ pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
 }
 
-/// Give a task line the default priority when it carries none. Non-tasks, and the empty
-/// `- [ ] ` placeholder, are returned untouched.
+/// Give a row headed to `## Focus` the Focus default priority when it carries none. Non-tasks,
+/// and the empty `- [ ] ` placeholder, are returned untouched. A sheet row gets no default: an
+/// untagged sheet row is untriaged, and triage gives it a real priority.
 ///
 /// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
 /// tagging it would make each sweep differ from the one before it and the file would churn
 /// forever. Prose is excluded for a simpler reason: it is not a task and cannot have a
 /// priority.
-pub fn with_default_priority(line: &str) -> String {
-    with_priority(line, default_priority())
-}
-
-/// [`with_default_priority`] for a row headed to `## Focus`.
 pub fn with_focus_priority(line: &str) -> String {
     with_priority(line, PRIORITIES[FOCUS_DEFAULT_PRIORITY].1)
 }
@@ -1247,34 +1280,14 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
         else {
             return;
         };
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back: `-` and `/` are tag noise and are cut with the tag, but a
-        // sentence-final `#high.` must keep its full stop or stripping the tag silently
-        // rewrites the human's prose.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
         best = Some(best.map_or(rank, |b| b.min(rank)));
     });
 
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (
         cleaned.trim_end().to_string(),
         best.map(|r| PRIORITIES[r].1),
@@ -1536,6 +1549,29 @@ pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     t[t.rfind("<!--")? + 4..]
         .split_whitespace()
         .find_map(|tok| tok.strip_prefix(key))
+}
+
+/// `line` with every `<key>value` token taken out of its trailing marker, and the comment
+/// itself gone when nothing is left in it. A line without the token comes back as it is.
+pub fn remove_marker_token(line: &str, key: &str) -> String {
+    let trimmed = line.trim_end();
+    let (Some(i), true) = (trimmed.rfind("<!--"), trimmed.ends_with("-->")) else {
+        return line.to_string();
+    };
+    let inner = &trimmed[i + 4..trimmed.len() - 3];
+    if !inner.split_whitespace().any(|t| t.starts_with(key)) {
+        return line.to_string();
+    }
+    let kept: Vec<&str> = inner
+        .split_whitespace()
+        .filter(|t| !t.starts_with(key))
+        .collect();
+    let head = trimmed[..i].trim_end();
+    if kept.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head} <!-- {} -->", kept.join(" "))
+    }
 }
 
 /// True when `s` is shaped like a row id: 2-4 lowercase letters, a hyphen, a number.
@@ -2260,29 +2296,41 @@ after
         assert_eq!(w.as_deref(), Some("#v0.0.2"));
     }
 
-    // Every task carries a priority. The two exclusions are what keep the sweep stable and
+    // Every Focus task carries a priority. The two exclusions are what keep the sweep stable and
     // the untagged bucket alive for lines that cannot have one.
     #[test]
-    fn the_default_applies_to_untagged_tasks_only() {
+    fn remove_marker_token_takes_one_key_and_an_empty_comment() {
         assert_eq!(
-            with_default_priority("- [ ] a thing"),
-            "- [ ] a thing #high"
+            remove_marker_token("- [/] a <!-- id:x-1 run:1109 -->", "run:"),
+            "- [/] a <!-- id:x-1 -->"
         );
+        assert_eq!(
+            remove_marker_token("- [/] a <!-- run:1109 -->", "run:"),
+            "- [/] a"
+        );
+        let none = "- [/] a <!-- id:x-1 -->";
+        assert_eq!(remove_marker_token(none, "run:"), none);
+        assert_eq!(remove_marker_token("- [/] a", "run:"), "- [/] a");
+    }
+
+    #[test]
+    fn the_default_applies_to_untagged_tasks_only() {
+        assert_eq!(with_focus_priority("- [ ] a thing"), "- [ ] a thing #low");
         // an explicit tag is never overwritten, at either end of the range
         assert_eq!(
-            with_default_priority("- [ ] fire #urgent"),
+            with_focus_priority("- [ ] fire #urgent"),
             "- [ ] fire #urgent"
         );
         assert_eq!(
-            with_default_priority("- [ ] someday #low"),
-            "- [ ] someday #low"
+            with_focus_priority("- [ ] someday #high"),
+            "- [ ] someday #high"
         );
         // the placeholder the sweep re-emits: tagging it would churn the file every run
-        assert_eq!(with_default_priority("- [ ] "), "- [ ] ");
-        assert_eq!(with_default_priority("    - [ ] "), "    - [ ] ");
+        assert_eq!(with_focus_priority("- [ ] "), "- [ ] ");
+        assert_eq!(with_focus_priority("    - [ ] "), "    - [ ] ");
         // prose is not a task and cannot carry a priority
-        assert_eq!(with_default_priority("just a line"), "just a line");
-        assert_eq!(with_default_priority("## Tasks"), "## Tasks");
+        assert_eq!(with_focus_priority("just a line"), "just a line");
+        assert_eq!(with_focus_priority("## Tasks"), "## Tasks");
     }
 
     // A row with two priority tags is written with one: the most urgent, which is what every
@@ -2304,7 +2352,7 @@ after
             "- [ ] a #high-priority #c1 #high"
         );
         assert_eq!(
-            with_default_priority("- [ ] new #urgent #low"),
+            with_focus_priority("- [ ] new #urgent #low"),
             "- [ ] new #urgent"
         );
     }
@@ -2314,12 +2362,12 @@ after
     #[test]
     fn a_defaulted_tag_lands_where_a_typed_one_would() {
         assert_eq!(
-            with_default_priority("- [x] shipped <!-- pr:307 -->"),
-            "- [x] shipped #high <!-- pr:307 -->"
+            with_focus_priority("- [x] shipped <!-- pr:307 -->"),
+            "- [x] shipped #low <!-- pr:307 -->"
         );
         assert_eq!(
-            with_default_priority("- [ ] a thing #v0.12.1"),
-            "- [ ] a thing #high #v0.12.1"
+            with_focus_priority("- [ ] a thing #v0.12.1"),
+            "- [ ] a thing #low #v0.12.1"
         );
     }
 
@@ -2684,6 +2732,51 @@ after
             .unwrap()
             .iter()
             .any(|l| *l == "plain"));
+    }
+
+    // A tag glued to the word before it takes no space, so the words either side stay apart,
+    // and no cut reaches back into the one before it (Focus, 2026-11-10).
+    #[test]
+    fn a_glued_tag_keeps_the_words_apart() {
+        assert_eq!(
+            split_created("- [ ] bridge (q?)#c1110 #c1110 #urgent").0,
+            "- [ ] bridge (q?) #urgent"
+        );
+        assert_eq!(split_created("- [ ] (q?)#c1110 rest").0, "- [ ] (q?) rest");
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110 #c1110 rest").0,
+            "- [ ] (q?) rest"
+        );
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110 #c1110 #c1110 rest").0,
+            "- [ ] (q?) rest"
+        );
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110. rest").0,
+            "- [ ] (q?). rest"
+        );
+        assert_eq!(split_created("- [ ] #c1110 #c1110 rest").0, "- [ ] rest");
+        assert_eq!(split_priority("- [ ] #high #low rest").0, "- [ ] rest");
+        assert_eq!(
+            split_priority("- [ ] ask (why?)#high #low"),
+            ("- [ ] ask (why?)".to_string(), Some("#high"))
+        );
+        assert_eq!(split_created("- [ ] a #c1110 b").0, "- [ ] a b");
+        assert_eq!(split_created("- [ ] a #c1110").0, "- [ ] a");
+    }
+
+    #[test]
+    fn split_priority_survives_a_repeated_tag() {
+        let (text, tag) = split_priority("- [ ] ask (q?)#urgent #urgent");
+        assert_eq!(tag, Some("#urgent"));
+        assert_eq!(text, "- [ ] ask (q?)");
+    }
+
+    #[test]
+    fn split_created_survives_a_repeated_tag() {
+        let (text, tag) = split_created("- [ ] ask (q?)#c1110 #c1110 #urgent");
+        assert_eq!(tag.as_deref(), Some("c1110"));
+        assert_eq!(text, "- [ ] ask (q?) #urgent");
     }
 
     #[test]

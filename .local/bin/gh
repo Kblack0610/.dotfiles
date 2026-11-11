@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# gh - the fleet's gh: read-only calls go out on the GitHub App's installation token (gh-app),
+# everything else on the human's token, and every call is logged for attribution.
+# Why: every agent account is the same GitHub user, so all of them spend one 5000/h REST budget;
+# it ran out at 22:36 and 04:36 PST 2026-11-10 and every push, merge and probe failed with it.
+#
+# Routed: run list|view|download, pr list|view with --json, pr checks|diff, issue list|view with
+# --json, workflow list|view, release list|view|download, and `gh api` GETs under repos/<owner>/,
+# when the repo's owner is known (-R, GH_REPO, the api path, or a lone github.com origin). Not
+# routed: writes, @me, --watch, graphql, a caller that set GH_TOKEN, or no App configured.
+# A read the App's token is refused for reruns on the user's.
+# Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
+# user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
+# redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
+# Docs: docs/operations/github-app.md.
+set -u
+
+[ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
+self=$(readlink -f "${BASH_SOURCE[0]}")
+real="${GH_REAL:-}"
+if [ -z "$real" ]; then
+  IFS=: read -r -a dirs <<<"$PATH"
+  for d in "${dirs[@]}"; do
+    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && { real="$d/gh"; break; }
+  done
+fi
+[ -n "$real" ] || { echo "gh: no gh on PATH besides this wrapper ($self)" >&2; exit 127; }
+
+# owner_of <[host/]owner/repo or URL> -> the owner, when the host is github.com.
+owner_of() {
+  local r="${1#https://}"
+  r="${r#http://}"
+  r="${r#github.com/}"
+  case "$r" in */*/*) return 1 ;; */*) printf '%s' "${r%%/*}" ;; *) return 1 ;; esac
+}
+
+# origin_owner -> the owner of this directory's origin, when it is the only GitHub remote and
+# no `gh repo set-default` names another: gh would pick a different repo otherwise.
+origin_owner() {
+  local cfg url
+  cfg=$(git config --get-regexp '^remote\..*\.(url|gh-resolved)$' 2>/dev/null) || return 1
+  [ "$(grep -c 'github\.com' <<<"$cfg")" -eq 1 ] && ! grep -q 'gh-resolved' <<<"$cfg" || return 1
+  url=$(awk '$1 == "remote.origin.url" { print $2 }' <<<"$cfg")
+  [[ "$url" =~ github\.com[:/]([^/]+)/ ]] || return 1
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# route_owner <gh args> -> the owner whose installation token this read-only call can use.
+route_owner() {
+  local grp="${1:-}" sub="${2:-}" a repo="${GH_REPO:-}" path="" method="" fields=0 json=0
+  [ "${GH_HOST:-github.com}" = github.com ] || return 1
+  # --watch: a watch can outlive the token's hour and die with a 401 partway through.
+  for a in "$@"; do case "$a" in *@me* | --watch) return 1 ;; --json | --json=*) json=1 ;; esac; done
+  case "$grp $sub" in
+    'run list' | 'run view' | 'run download' | 'pr checks' | 'pr diff' | 'workflow list' | 'workflow view' | \
+      'release list' | 'release view' | 'release download') ;;
+    'pr list' | 'pr view' | 'issue list' | 'issue view') [ "$json" = 1 ] || return 1 ;; # the text view reads project fields an App may not see
+    'api '*) ;;
+    *) return 1 ;;
+  esac
+  shift
+  [ "$grp" = api ] || shift
+  while [ $# -gt 0 ]; do
+    a="$1"
+    shift
+    case "$a" in
+      -R | --repo) repo="${1:-}"; shift ;;
+      --repo=*) repo="${a#--repo=}" ;;
+      -R?*) repo="${a#-R}" ;;
+      -X | --method) method="${1:-}"; shift ;;
+      --method=*) method="${a#--method=}" ;;
+      -X?*) method="${a#-X}" ;;
+      -f | -F | --field | --raw-field | --input) fields=1; shift ;;
+      -f?* | -F?* | --field=* | --raw-field=* | --input=*) fields=1 ;;
+      --hostname) [ "${1:-}" = github.com ] || return 1; shift ;;
+      --hostname=*) [ "${a#--hostname=}" = github.com ] || return 1 ;;
+      -H | --header | -q | --jq | -t | --template | -p | --preview | --cache) shift ;;
+      -*) ;;
+      https://github.com/*/*) a="${a#https://github.com/}"; repo="${a%%/*}/x" ;; # a PR or run URL names its repo
+      *) [ -n "$path" ] || path="$a" ;;
+    esac
+  done
+  if [ "$grp" = api ]; then
+    method=$(tr '[:lower:]' '[:upper:]' <<<"${method:-$([ "$fields" = 1 ] && echo POST || echo GET)}")
+    [ "$method" = GET ] || return 1
+    path="${path#/}"
+    case "$path" in
+      'repos/{owner}/'* | 'repos/:owner/'*) ;; # gh fills these from GH_REPO, else the directory
+      repos/*/*) repo="${path#repos/}"; repo="${repo%%/*}/x" ;;
+      *) return 1 ;;
+    esac
+  fi
+  if [ -n "$repo" ]; then owner_of "$repo"; else origin_owner; fi
+}
+
+# caller -> the parent's program, or for an interpreter the script it runs. A `zsh -c '<cmd>'`
+# (an agent's own Bash call) stays zsh: its payload is a command line, not a script.
+caller() {
+  local a name=""
+  if [ -r "/proc/$PPID/cmdline" ]; then
+    while IFS= read -r -d '' a; do
+      if [ -z "$name" ]; then
+        name="${a##*/}"
+        [[ "$name" =~ ^(ba|z|da|k)?sh$|^python[0-9.]*$|^perl$|^node$|^env$ ]] || break
+      else
+        case "$a" in -*) ;; *' '*) break ;; *) name="${a##*/}"; break ;; esac
+      fi
+    done < "/proc/$PPID/cmdline"
+  else
+    name=$(ps -o comm= -p "$PPID" 2>/dev/null)
+    name="${name##*/}"
+  fi
+  printf '%s' "${name:--}"
+}
+
+# redact <gh args> -> the command line with bodies, fields and headers blanked, and only the
+# subcommand of secret, variable and auth: the log must not keep a secret for a week.
+redact() {
+  local a out="" skip=0
+  case "${1:-}" in secret | variable | auth) printf '%s %s' "${1:-}" "${2:-}"; return ;; esac
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then a="_"; skip=0; else
+      case "$a" in
+        -b | --body | -f | -F | --field | --raw-field | -H | --header) skip=1 ;;
+        --body=* | --field=* | --raw-field=* | --header=*) a="${a%%=*}=_" ;;
+        -b?* | -f?* | -F?* | -H?*) a="${a:0:2}_" ;;
+      esac
+    fi
+    out="$out${out:+ }$a"
+  done
+  printf '%s' "$out"
+}
+
+log_call() {
+  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}" f what
+  umask 077
+  f="$dir/$(date +%F).tsv"
+  if [ ! -f "$f" ]; then
+    mkdir -p "$dir" && find "$dir" -name '*.tsv' -mtime +7 -delete
+  fi
+  what=$(redact "$@")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
+    "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" >> "$f"
+}
+
+bucket=user
+tok=""
+if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+  bucket="env"
+elif owner=$(route_owner "$@"); then
+  tok=$(gh-app token "$owner" 2>/dev/null)
+  case $? in
+    0) bucket="app:$owner" ;;
+    2) tok="" ;;
+    *) tok="" bucket=user:app-error ;;
+  esac
+fi
+
+export GH_WRAPPED=1 GH_REAL="$real"
+if [ -n "$tok" ]; then
+  # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
+  # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows.
+  err=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX")
+  GH_TOKEN="$tok" "$real" "$@" 2>"$err"
+  rc=$?
+  if [ "$rc" -ne 0 ] && grep -qE 'HTTP 40[13]|Bad credentials|not accessible by integration' "$err"; then
+    bucket="user:app-denied"
+    "$real" "$@"
+    rc=$?
+  else
+    cat "$err" >&2
+  fi
+  rm -f "$err"
+else
+  "$real" "$@"
+  rc=$?
+fi
+{ log_call "$@"; } 2>/dev/null || true
+exit "$rc"
