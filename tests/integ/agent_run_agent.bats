@@ -135,6 +135,21 @@ schema_conf() {
   assert_output 'gave up'
 }
 
+@test "a call's --schema replaces the conf's SCHEMA for that call only" {
+  schema_conf
+  printf '{"type":"object","properties":{"call":{"type":"string"}},"minItems":2}\n' > "$SANDBOX/call.schema.json"
+  run "$RUN" --agent judge --schema "$SANDBOX/call.schema.json" -p x
+  assert_success
+  run grep -Fx -A1 -- --json-schema "$SANDBOX/claude.argv"
+  assert_line '{"type":"object","properties":{"call":{"type":"string"}},"minItems":2}'
+  # negative control: an unreadable one is refused before the harness runs
+  rm -f "$SANDBOX/claude.argv"
+  run "$RUN" --agent judge --schema "$SANDBOX/missing.json" -p x
+  assert_failure
+  assert_output --partial 'not a readable JSON file'
+  assert [ ! -e "$SANDBOX/claude.argv" ]
+}
+
 @test "an agent without a SCHEMA passes no --json-schema (negative control)" {
   run "$RUN" --agent judge -p x
   assert_success
