@@ -151,9 +151,9 @@ EOF
 #
 # The guard VERIFIES and never tags - creating one would make an agent able to ship.
 #
-# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only
-# the project -> repo mapping is stubbed. Stubbing the predicate would leave the tag
-# shapes (`<product>-v*`, bare `v*`) untested, which is the half most likely to rot.
+# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only the
+# project -> repo and tag family mapping (project_tag_scope) is stubbed. Stubbing the predicate
+# would leave the tag shapes (`<product>-v*`, bare `v*`) untested, the half most likely to rot.
 
 # $1=project $2=the wave version the sheet would freeze, $3.. = tags that exist
 with_shipping_project() {
@@ -166,8 +166,7 @@ with_shipping_project() {
   printf '%s' "$ver" > "$NOTES_FIXTURE/version-of.$proj"
   cat > "$SANDBOX/pn-lib.sh" <<LIB
 project_release_version() { printf 'v1.0.0'; }
-project_repo_path() { printf '%s' '$repo'; }
-project_field() { [ "\$2" = tagGlob ] && printf '%s' '${TAG_GLOB:-}'; return 0; }
+project_tag_scope() { _PTS_REPO='$repo' _PTS_GLOB='${TAG_GLOB:-}'; }
 LIB
   export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
 }

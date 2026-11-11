@@ -287,6 +287,9 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output 'v1.0.0'
   run git_prev_tag "$REPO" repo 0 'v* !v*-game* !v1.0*' v1.1.0
   assert_output ''
+  # Only a subtraction lists nothing, never every other tag.
+  run git_tags "$REPO" repo 0 '!v*-game*'
+  assert_output ''
 }
 
 @test "git_tag_for_version: a glob is authoritative, its family's exact version or nothing" {

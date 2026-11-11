@@ -78,13 +78,13 @@ note_body() {
 }
 
 # git_subjects <repo> <project> <pathfilter> <prevver> <ver> -> commit subjects for the version
-# range. Each version resolves to its tag through git_tag_for_version (the registry's tagGlob,
-# else the product ladder), so `portfolio-v1.6.4` answers v1.6.4. Uses <prev>..<tag> when both
-# resolve, else recent commits touching the pathfilter.
+# range. Each version resolves to its tag through git_tag_for_version in the project's tag
+# family (project_tag_scope, else the product ladder), so `portfolio-v1.6.4` answers v1.6.4.
+# Uses <prev>..<tag> when both resolve, else recent commits touching the pathfilter.
 git_subjects() {
-  local repo="$1" proj="$2" pf="$3" glob tag prev="" range=""
+  local repo="$1" proj="$2" pf="$3" glob="" tag prev="" range=""
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-  glob="$(project_field "$proj" tagGlob 2>/dev/null)"
+  project_tag_scope "$proj" 2>/dev/null && glob="$_PTS_GLOB"
   tag="$(git_tag_for_version "$repo" "$proj" "$5" "$glob")"
   if [ -n "$tag" ]; then
     [ -n "$4" ] && prev="$(git_tag_for_version "$repo" "$proj" "$4" "$glob")"

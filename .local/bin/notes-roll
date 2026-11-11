@@ -58,7 +58,7 @@ ver_above() { [ "$(git_tag_version "$1")" != "$(git_tag_version "$2")" ] && git_
 # would let an agent ship). Empty `project_release_version` = NOTES-ONLY project, where
 # the sheet counter is the only counter, so it skips rather than refuses.
 roll_tag_guard() { # $1=profile $2=project
-  local profile="$1" name="$2" target shipped repo tag
+  local profile="$1" name="$2" target shipped tag
   [ "${ROLL_TAG_CHECK:-on}" = off ] && return 0
   command -v project_release_version >/dev/null 2>&1 || return 0
 
@@ -95,13 +95,14 @@ roll_tag_guard() { # $1=profile $2=project
     return 1
   fi
 
-  repo="$(project_repo_path "$name" 2>/dev/null)"
-  if [ -z "$repo" ]; then
+  # The tag family project_release_version read $shipped from (project_tag_scope), so the
+  # guard and the version agree on which tags are this project's.
+  if ! project_tag_scope "$name" 2>/dev/null; then
     printf 'roll: refusing - no repo path for %s, cannot verify %s.\n' "$name" "$target" >&2
     printf '  to override: ROLL_TAG_CHECK=off\n' >&2
     return 1
   fi
-  tag="$(git_tag_for_version "$repo" "$name" "$target" "$(project_field "$name" tagGlob 2>/dev/null)" 2>/dev/null)"
+  tag="$(git_tag_for_version "$_PTS_REPO" "$name" "$target" "$_PTS_GLOB" 2>/dev/null)"
   [ -n "$tag" ] && return 0
   # A newer release already shipped past the sheet: the open version will never get a tag of
   # its own, and refusing would pin the sheet behind the app forever.

@@ -118,10 +118,12 @@ _gr_pats() {
 # _gr_tags <repo> [git tag --list options] - the tags _GR_PATS lists, minus any _GR_NOT
 # matches, in git's order. A line may carry a --format tail; the tag name is its first word.
 # The one listing every reader here uses, so a subtraction can never apply to one and not
-# another. 1 when git fails.
+# another. Nothing when the glob only subtracts (`git tag --list` with no pattern lists every
+# tag). 1 when git fails.
 _gr_tags() {
   local repo="$1" out line p
   shift
+  [ "${#_GR_PATS[@]}" -gt 0 ] || return 0
   out=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" "$@" 2>/dev/null) || return 1
   [ -n "$out" ] || return 0
   while IFS= read -r line; do
