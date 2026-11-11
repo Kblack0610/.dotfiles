@@ -604,9 +604,19 @@ pub fn run_next() -> Result<()> {
     match next_needing(&agents, current.as_deref()) {
         Next::Jump(target) => tmux::jump(target),
         Next::OnlyHere => tmux::message("only this session needs you"),
-        Next::Nobody => tmux::message("no session needs you"),
+        Next::Nobody => tmux::message(&nobody_message(asks::pending_count(&asks::root()))),
     }
     Ok(())
+}
+
+/// With no live session to jump to, every pending ask belongs to a session that ended or to a
+/// headless job (a live owner would have been a jump), so its only home is the Prefix y panel.
+fn nobody_message(orphan_asks: usize) -> String {
+    match orphan_asks {
+        0 => "no session needs you".to_string(),
+        1 => "no live session needs you: 1 question from an ended session waits in Prefix y".to_string(),
+        n => format!("no live session needs you: {n} questions from ended sessions wait in Prefix y"),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -788,6 +798,13 @@ mod tests {
         // Only the current one: say so instead of jumping to itself.
         let solo = vec![prompt("a"), quiet("b")];
         assert_eq!(next_needing(&solo, Some("hub/a:1")), Next::OnlyHere);
+    }
+
+    #[test]
+    fn prefix_g_with_nobody_live_points_at_the_orphaned_asks() {
+        assert_eq!(nobody_message(0), "no session needs you");
+        assert!(nobody_message(1).contains("1 question from an ended session waits in Prefix y"));
+        assert!(nobody_message(26).contains("26 questions from ended sessions wait in Prefix y"));
     }
 
     #[test]

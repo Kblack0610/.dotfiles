@@ -27,10 +27,10 @@ pub fn question(id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Claude session id -> the id of a pending ask it owns under `root` (its `id:` line, else
-/// the file name). A session with several keeps the first one read.
-pub fn pending_sessions(root: &Path) -> HashMap<String, String> {
-    let mut out = HashMap::new();
+/// Every pending ask under `root` as (its id, the Claude sessions it names): the `id:` line,
+/// else the file name.
+fn pending(root: &Path) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
     let Ok(projects) = fs::read_dir(root) else {
         return out;
     };
@@ -56,16 +56,34 @@ pub fn pending_sessions(root: &Path) -> HashMap<String, String> {
                 .map(str::to_string)
                 .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            for sid in text
+            let sessions = text
                 .lines()
                 .filter_map(|l| l.strip_prefix("claude_session: "))
                 .filter(|s| !s.is_empty())
-            {
-                out.entry(sid.to_string()).or_insert_with(|| id.clone());
-            }
+                .map(str::to_string)
+                .collect();
+            out.push((id, sessions));
         }
     }
     out
+}
+
+/// Claude session id -> the id of a pending ask it owns under `root`. A session with several
+/// keeps the first one read.
+pub fn pending_sessions(root: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (id, sessions) in pending(root) {
+        for sid in sessions {
+            out.entry(sid).or_insert_with(|| id.clone());
+        }
+    }
+    out
+}
+
+/// How many asks under `root` are pending, whether or not their session still runs: the
+/// Prefix y panel's ask rows, and the ask part of the status bar's `!N`.
+pub fn pending_count(root: &Path) -> usize {
+    pending(root).len()
 }
 
 #[cfg(test)]
@@ -103,17 +121,22 @@ mod tests {
             "status: pending\nclaude_session: sid-txt\n",
         )
         .unwrap();
+        // A headless job's ask names no session: it marks none, but it is still pending.
+        ask(&root, "other", "a7", "pending", "");
 
         let got = pending_sessions(&root);
+        let count = pending_count(&root);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(
             got,
             HashMap::from([("sid-pending".to_string(), "a1".to_string())])
         );
+        assert_eq!(count, 2, "a1 and a7; the answered, cancelled, stale and non-.md files are not pending");
     }
 
     #[test]
     fn missing_root_is_empty() {
         assert!(pending_sessions(Path::new("/nonexistent/agent-panel-asks")).is_empty());
+        assert_eq!(pending_count(Path::new("/nonexistent/agent-panel-asks")), 0);
     }
 }
