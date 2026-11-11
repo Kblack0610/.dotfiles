@@ -40,7 +40,8 @@ return {
             end,
             -- An async lsp that answers with no items emits twice, so blink starts its `buffer`
             -- fallback twice; the second run drops the first, whose task never resolves, and the
-            -- menu never opens. buffer is a top-level source here instead.
+            -- menu never opens. buffer still runs as path's fallback, so in a note its words can
+            -- show beside marksman's items.
             fallbacks = function()
               return require("notes.tag_source").enabled() and {} or { "buffer" }
             end,
