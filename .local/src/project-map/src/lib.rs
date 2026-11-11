@@ -314,9 +314,16 @@ mod tests {
     /// through project-name.sh.
     #[test]
     fn every_visibility_row_matches_the_shell_rule() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tests/fixtures");
-        let r = Registry::from_path(&Path::new(dir).join("project-visibility.json")).unwrap();
-        let rows = std::fs::read_to_string(Path::new(dir).join("project-visibility.tsv")).unwrap();
+        let r = Registry::from_path(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/fixtures/project-visibility.json"
+        )))
+        .unwrap();
+        let rows = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/fixtures/project-visibility.tsv"
+        ))
+        .unwrap();
         let mut n = 0;
         for line in rows
             .lines()
