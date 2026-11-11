@@ -78,11 +78,17 @@ row() { # <pane> <target> [status] [idle_since]
   assert_not_called 'agent-panel send'
 }
 
-@test "a new session that cannot start is still delivered: it stays queued" {
+@test "a new session that cannot start stays queued and exits 4" {
   touch "$NOTES_FIXTURE/start.fail"
-  run "$AV" send --to new:dotfiles "x"
-  assert_success
-  assert_output --partial 'queued said-it'
+  run -4 "$AV" send --to new:dotfiles "x"
+  assert_output --partial 'queued said-it, but it did not start'
+}
+
+@test "a queue add that names no item is a fault, not a queued take" {
+  stub agent-queue 'cat > /dev/null'
+  run -1 "$AV" send --to new:dotfiles "x"
+  assert_output --partial 'agent-queue add printed no item'
+  assert_not_called fleet-dispatch
 }
 
 @test "targets: the paged session first, then idle by newest, busy and shell, no dialogs, then new per project" {
@@ -143,7 +149,7 @@ row() { # <pane> <target> [status] [idle_since]
   run "$AV" pick "$SANDBOX/take"
   assert_success
   assert_equal "$(grep '^notify-send' "$NOTES_FIXTURE/calls.log")" \
-    'notify-send -t 5000 -h string:x-dunst-stack-tag:gungan Voice: not sent gungan history has the text.'
+    'notify-send -t 5000 -h string:x-dunst-stack-tag:gungan Voice: not sent The text is on the clipboard and in gungan history.'
 }
 
 @test "no loss: a send that fails says the text is in gungan history" {
@@ -154,17 +160,15 @@ row() { # <pane> <target> [status] [idle_since]
   assert_failure
   assert_not_called 'agent-panel send'
   run grep '^notify-send' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial 'Voice: not sent'
-  assert_output --partial '(gungan history has the text)'
+  assert_output --partial 'Voice: not sent The text is on the clipboard and in gungan history.'
 }
 
-@test "no loss: a new session that cannot start toasts sent, naming the queued item" {
+@test "no loss: a new session that cannot start toasts queued, naming the item" {
   touch "$NOTES_FIXTURE/start.fail"
   stub fzf 'cat > /dev/null; printf "new:dotfiles\\tx\\n"'
   echo "hello" > "$SANDBOX/take"
-  run "$AV" pick "$SANDBOX/take"
-  assert_success
+  run -4 "$AV" pick "$SANDBOX/take"
   run grep '^notify-send' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial 'Voice: sent queued said-it'
+  assert_output --partial 'Voice: queued, not started agent-voice: queued said-it'
   assert_equal "$(cat "$NOTES_FIXTURE/queue.stdin")" 'hello'
 }
