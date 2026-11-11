@@ -81,7 +81,8 @@ function releaseHistory(a) {
 }
 
 function releaseSide(s, text) {
-  return esc(text) + ` <span class="muted">from ${esc(s.source)}${s.image ? ", image " + esc(s.image) : ""}</span>` +
+  return esc(text) + ` <span class="muted">from ${esc(s.source)}${s.image ? ", image " + esc(s.image) : ""}` +
+    `${s.build ? ", build " + esc(s.build) : ""}${s.reason ? ": " + esc(s.reason) : ""}</span>` +
     (s.error ? ` <span class="warn">${esc(s.error)}</span>` : "");
 }
 
@@ -123,7 +124,7 @@ function releaseChangelog(r) {
 
 function releaseDeploy(d) {
   const run = /^https:/.test(d.url || "") ? ` <a href="${esc(d.url)}" target="_blank" rel="noopener">run</a>` : "";
-  return `<div>${when(d.at)} ${esc(d.version)} <span class="${d.state === "fail" ? "warn" : ""}">${esc(d.state)}</span>${run}</div>`;
+  return `<div>${when(d.at)} ${esc(d.version)}${d.build ? ` <span class="muted">build ${esc(d.build)}</span>` : ""} <span class="${d.state === "fail" ? "warn" : ""}">${esc(d.state)}</span>${run}</div>`;
 }
 
 // An opened channel: both sides with their sources, its deploys, watches and deps.

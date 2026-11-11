@@ -62,7 +62,7 @@ STEAM_KEY="" STEAM_WHY="" PLAY_TOKEN="" PLAY_WHY="" ASC_JWT="" ASC_WHY=""
 DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     deployments(environments: [$env], first: $n, orderBy: {field: CREATED_AT, direction: DESC}) {
-      nodes { createdAt description commitOid ref { name } latestStatus { state logUrl createdAt } }
+      nodes { createdAt description commitOid payload ref { name } latestStatus { state logUrl createdAt } }
     }
   }
 }'
@@ -123,13 +123,21 @@ default_branch() {
 
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v=""
-  if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
+  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v="" deployed
+  deployed="$(jq -r '.pinned.deployed // false' <<<"$t")"
+  if [ "$deployed" = manual ]; then
+    # A channel moved by hand (Steam's public branch is set in Steamworks): nothing records a
+    # deploy there, so the pin is the reason the registry gives and live is the only fact.
+    jq -c '{value: null, source: "manual", reason: (.pinned.reason // null)}' <<<"$t"
+    return
+  fi
+  if [ "$deployed" = true ]; then
     # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
     # newest successful upload said it put there. Source none is a channel nothing has recorded.
     jq -c 'if .error then {value: null, source: "github deployments", error: "deploy history unreadable"}
-           else ([.history[] | select(.state == "ok")][0].version) as $v
-             | if $v then {value: $v, source: "github deployments"} else {value: null, source: "none"} end
+           else [.history[] | select(.state == "ok")][0] as $d
+             | if $d.version then {value: $d.version, source: "github deployments", build: $d.build}
+               else {value: null, source: "none"} end
            end' <<<"$d"
     return
   fi
@@ -351,7 +359,8 @@ deploys_none() {
 
 # deploys <project> <target-json> -> {source, error, history, prev, last}.
 # The workflow that deploys a target records a GitHub Deployment whose environment is the target
-# id and whose description is the version. last is the newest finished one, whatever its result;
+# id, whose description is the version, whose ref is the commit it shipped (`sha`) and whose
+# payload may carry the store's build number (`build`). last is the newest finished one, whatever its result;
 # prev is the newest version that succeeded before the one now succeeded.
 deploys() {
   local proj="$1" t="$2" id slug out read_ok
@@ -378,7 +387,9 @@ deploys() {
       version: ((.description | blank) // .ref.name // .commitOid[0:8]),
       state: ((.latestStatus.state // "pending") | word),
       at: ((.latestStatus.createdAt // .createdAt) | fromdate),
-      url: (.latestStatus.logUrl | blank)
+      url: (.latestStatus.logUrl | blank),
+      sha: (.commitOid | blank),
+      build: ((.payload // "" | fromjson? | objects | .build | values | tostring | blank) // null)
     }] as $h
     | [$h[] | select(.state == "ok")] as $ok
     | {source: $s, error: null, history: $h,
@@ -456,16 +467,20 @@ row() {
   l="$(live "$t")"
   tel="$(telemetry "$t")"
   now="$(now_epoch)"
-  local pv lv lsrc psrc lver
+  local pv lv lsrc psrc lver pb lb
   pv="$(jq -r '.value // empty' <<<"$p")"
   psrc="$(jq -r '.source // empty' <<<"$p")"
   lver="$(jq -r '.version // empty' <<<"$l")"
   lv="$(jq -r '.value // empty' <<<"$l")"
   lsrc="$(jq -r '.source // empty' <<<"$l")"
+  pb="$(jq -r '.build // empty' <<<"$p")"
+  lb="$(jq -r '.build // empty' <<<"$l")"
   if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
     status=unreleased
-  elif [ -z "$pv" ] && [ "$psrc" = none ] && [ -n "$lv" ]; then
-    # A store channel no upload has been recorded for: live is known, there is nothing to hold it to.
+  elif [ -z "$pv" ] && { { [ "$psrc" = none ] && [ -n "$lv" ]; } ||
+         { [ "$psrc" = manual ] && { [ -n "$lv" ] || [ "$lsrc" = none ]; }; }; }; then
+    # A store channel no upload has been recorded for, with live known, or one moved by hand
+    # whose live is known or not probed: there is nothing to hold live to.
     status=released
   elif [ -z "$pv" ] || { [ "$lsrc" != none ] && [ -z "$lv" ]; }; then
     status=unknown
@@ -473,6 +488,11 @@ row() {
     status=floating
   elif [ "$lsrc" = none ]; then
     status=released
+  elif [ -n "$pb" ] && [ -n "$lb" ]; then
+    # The upload recorded the store's build number and the store reports one (TestFlight, Play,
+    # Steam's BuildID): the build decides, since two builds of one version are two deploys and
+    # the version alone would call the older one live.
+    if [ "$pb" = "$lb" ]; then status=ok; else status=drift; fi
   elif [ "$pv" = "$lv" ]; then
     status=ok
   elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
@@ -481,10 +501,14 @@ row() {
     status=ok
   else
     status=drift
+  fi
+  if [ "$status" = drift ]; then
     # Carry the start of a drift across refreshes, so check can tell a rollout in progress
     # from one that stalled.
-    drift_since="$(jq -r --arg id "$id" --arg pv "$pv" --arg lv "$lv" \
-      '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv)) | .[0].drift_since // empty' <<<"$prev")"
+    # A build-decided drift is a new one when either build moves, though the versions do not.
+    drift_since="$(jq -r --arg id "$id" --arg pv "$pv" --arg lv "$lv" --arg pb "$pb" --arg lb "$lb" \
+      '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv
+         and (.pinned.build // "" | tostring) == $pb and (.live.build // "" | tostring) == $lb)) | .[0].drift_since // empty' <<<"$prev")"
     drift_since="${drift_since:-$now}"
   fi
   jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson d "$d" --argjson tel "$tel" \
@@ -580,7 +604,7 @@ cmd_show() {
   fi
   jq -r --argjson now "$(now_epoch)" '"refreshed \(.generated_at) (\((($now - .generated_epoch) / 60) | floor)m ago)"' "$STATE"
   jq -r --arg p "$proj" --argjson rank "$RANK" '
-    def v(x): (x.value // (if x.source == "none" or x.error == "no release tag" then "-" else "?" end));
+    def v(x): (x.value // (if x.source == "manual" then "manual" elif x.source == "none" or x.error == "no release tag" then "-" else "?" end));
     def tel: (.telemetry | if length == 0 then "-" else "\(map(select(.state == "OK")) | length)/\(length)" end);
     def prev: (.deploys // {}) | if .error then "?" else (.prev // "-") end;
     def last: (.deploys // {}) | if .error then "?" elif .last == null then "-"
@@ -609,7 +633,7 @@ cmd_check() {
      then "STALE snapshot is \((($now - .generated_epoch) / 60) | floor)m old (max \($max)m)" else empty end),
     (.rows[]
      | (select(.status == "drift" and (.drift_since != null) and ($now - .drift_since) > ($grace * 60))
-        | "DRIFT \(.project) \(.id): pinned \(.pinned.value) live \(.live.value) for \((($now - .drift_since) / 60) | floor)m"),
+        | "DRIFT \(.project) \(.id): pinned \(.pinned.value)\(if .pinned.build then " build \(.pinned.build)" else "" end) live \(.live.value)\(if .live.build then " build \(.live.build)" else "" end) for \((($now - .drift_since) / 60) | floor)m"),
        (select(.status == "floating" and .channel == "prod")
         | "FLOATING \(.project) \(.id): prod runs an unpinned image"),
        (.project as $p | .id as $i | .telemetry[] | select(.state == "missing" or .state == "TRIP")
