@@ -114,4 +114,7 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   assert_output "2026-11-03T13:15:00Z 4 1"
   SENTINEL_SINCE=$(date -d 2026-10-01T00:00:00Z +%s) run field "d['since'], d['runs'], d['red_runs']"
   assert_output "2026-11-01T00:00:00Z 8 5"
+  # a fix after the window's end leaves an empty window ending there, never one that ends before it starts
+  SENTINEL_SINCE=$(date -d 2026-11-05T00:00:00Z +%s) run field "d['since'], d['until'], d['runs']"
+  assert_output "2026-11-04T00:00:00Z 2026-11-04T00:00:00Z 0"
 }

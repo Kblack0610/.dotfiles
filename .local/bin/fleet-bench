@@ -262,8 +262,9 @@ set -uo pipefail
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
 # none. ledger_coverage, untracked_merged_prs, wants_unstamped and reds_unfixed count from the later of
-# their window start and this, so a watch's fixed red stops counting the events before its fix. The
-# step ages and the other chain KPIs read the state now, which a watermark would only hide.
+# their window start and this, so a watch's fixed red stops counting the events before its fix; a row
+# with no readable time still counts, so a watermark never hides it. The step ages and the other
+# chain KPIs read the state now, which a watermark would only hide.
 FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINEL_SINCE; fi
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
@@ -1700,7 +1701,7 @@ KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open
 wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
   jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" --argjson fix "$FIX_SINCE" "$JQ_LIB"'
-    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch 0) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
+    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and ($fix == 0 or ((try ((.ts // "") | sub("\\.[0-9]+"; "") | iso_epoch) catch $fix) >= $fix)) and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
          | {from: (.from // "?"), stamped: ((.want // "") != "" or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"

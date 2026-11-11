@@ -5151,6 +5151,10 @@ epics_fixture() {
   # NEGATIVE CONTROL: a fix before the 10:02 unstamped add leaves it counted
   SENTINEL_SINCE=$(date -d "${day}T10:01:30-08:00" +%s) run "$SUBJECT" chain --json
   assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
+  # a row whose time cannot be read is never hidden by a watermark: it counts
+  jq -cn --arg d "$day" '{ts: "\($d) late", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): no readable time"}' >> "$BENCH_INGEST"
+  SENTINEL_SINCE=$(date -d "${day}T10:02:15-08:00" +%s) run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {
