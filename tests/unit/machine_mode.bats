@@ -54,11 +54,12 @@ pin() { jq -r --arg h "$HOST" '.data[$h]' "$FX/applied.json"; }
 state() { sed -n "s/^$1=//p" "$STATE"; }
 
 @test "with nothing set the mode is the last row and the numbers are today's" {
+  prom 0 2
   run "$MM"
   assert_success
   assert_line "mode: open"
   assert_line "level: mid"
-  assert_line "runners: 2 of 2 taking new jobs"
+  assert_line "runners: 0 of 2 taking new jobs"
   assert_line "local Unity runs: 2, plus 1 when there is room"
   assert_line "new agent sessions: as today"
 }
@@ -85,22 +86,22 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   "$MM" reserved
   run "$MM" shared
   assert_success
-  assert_equal "$(pin)" '{"slots":1}'
+  assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_SLOTS)" 2
   assert_equal "$(state UNITY_BURST_SLOTS)" 0
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   "$MM" open
-  assert_equal "$(pin)" '{"slots":2}'
+  assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_BURST_SLOTS)" 1
 }
 
-@test "full is open's numbers at the high level, and one click from it is reserved" {
+@test "full is open's Unity numbers and one runner at the high level, and one click from it is reserved" {
   run "$MM" full
   assert_success
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":2}'
+  assert_equal "$(pin)" '{"slots":1}'
   assert_equal "$(state UNITY_SLOTS)" 2
   assert_equal "$(state UNITY_BURST_SLOTS)" 1
   # The level is the mode row's, never a second copy in the state file.
@@ -193,9 +194,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 }
 
 @test "a mode above what is registered does not read as moving" {
-  prom 1 1
+  "$MM" full
+  prom 0 0
   run "$MM"
-  assert_line "runners: 1 of 1 taking new jobs"
+  assert_line "runners: 0 of 0 taking new jobs"
 }
 
 @test "an unknown mode changes nothing, and a regex is not a mode" {
