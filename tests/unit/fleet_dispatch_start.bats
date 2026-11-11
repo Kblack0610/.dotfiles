@@ -448,6 +448,28 @@ load 'fleet_dispatch/common'
   assert_called '-u CLAUDE_CODE_SESSION_ATTENDED'
 }
 
+@test "a queue session's launch line labels it fleet-dispatch's, whichever runner ran the start" {
+  # On 2026-11-11 16 of 24 queue sessions past 1h exported as shepherd, inbox-plan or claude-code.
+  stub getent 'exit 0'
+  AGENTCTL_NAME=shepherd CLAUDE_TELEMETRY_SERVICE=claude-agentctl run telemetry_env "$SANDBOX" gm-1
+  assert_success
+  assert_output --partial 'agentctl.runner=fleet-dispatch'
+  assert_output --partial 'service.name=claude-agentctl'
+  refute_output --partial 'agentctl.runner=shepherd'
+  env -u AGENTCTL_NAME -u CLAUDE_TELEMETRY_SERVICE bash -c "source '$REPO_ROOT/.local/bin/fleet-dispatch'; telemetry_env '$SANDBOX' gm-1" > "$SANDBOX/hand"
+  run grep -c 'service.name=claude-agentctl.*agentctl.runner=fleet-dispatch' "$SANDBOX/hand"
+  assert_output 1
+}
+
+@test "a resume with no queue item keeps the caller's labels: it may be the human's own session" {
+  stub getent 'exit 0'
+  env -u AGENTCTL_NAME -u CLAUDE_TELEMETRY_SERVICE bash -c "source '$REPO_ROOT/.local/bin/fleet-dispatch'; telemetry_env '$SANDBOX' ''" > "$SANDBOX/human"
+  run grep -c 'service.name=claude-code' "$SANDBOX/human"
+  assert_output 1
+  run grep -c 'agentctl.runner' "$SANDBOX/human"
+  assert_output 0
+}
+
 @test "off the LAN a started session's launch line exports no telemetry, and still drops the parent's identity" {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
