@@ -277,6 +277,25 @@ load 'fleet_dispatch/common'
   [ -f "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] && [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] || fail "$(cat "$FLEET_DISPATCH_DIR/verdicts.jsonl")"
 }
 
+# 2026-11-11 (ar-1675): the judge's daily cap led every gated pass's reason, so the Stopped line,
+# hub Home and the queue-starved red named the judge's budget instead of the account hold.
+@test "a judge budget stop in a pass a gate held is a note: the gate leads the reason and the Stopped line" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  two_items
+  row game human 'fix the new crash' "- [ ] fix the new crash $T"
+  stub judge-stub 'exit 75'
+  export DISPATCH_RUN_FLOOR=0
+  acct "main:pace::5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
+  grep -q 'outcome=BLOCKED why: could not judge the new rows (stopped at its budget); no account has room' "$d/activity.log" ||
+    fail "$(cat "$d/activity.log")"
+  echo "$(( $(date +%s) - 2 * 3600 - 30 ))" > "$d/held_since"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output 'Dispatch stopped 2h00m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
+}
+
 @test "a judge budget stop does not stop the pass: a row the cache already judged still starts" {
   game_ready
   row game human 'fix the new crash' "- [ ] fix the new crash $T"

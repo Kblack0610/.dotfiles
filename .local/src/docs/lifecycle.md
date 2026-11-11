@@ -29,6 +29,6 @@ A plan also names the board rows it answers on a lowercase `rows: <id>, <id>` li
 
 ## Merged is not done
 
-An epic whose leaves have all landed is ready to verify, and nothing closes it automatically. Closing its last leaf with `notes ptask <p> done` files one `check(<system>): verify <epic id> <title> #high` row on the human sheet (with automation on for the profile), so the epic asks to be checked instead of waiting unseen; an open twin of that row files none. Closing it takes proof of the outcome: a URL, a run, a screenshot, the human's word. `notes projects --roadmap <p> --json` lists each closed epic with that `proof`, and `verified` is false for one closed `--unverified`.
+An epic whose leaves have all landed is ready to verify, and nothing closes it automatically. `fleet-dispatch` reap queues one verify item for it (`reconcile_epics`, with automation on for the profile), so it does not wait unseen: that session gathers proof of the outcome, a URL, a run or a screenshot, and closes the epic on it, posting one agent-ask only when the proof is the human's word. A part that does not work gets a gap row under the epic, and once those land the next verify is queued. `notes projects --roadmap <p> --json` lists each closed epic with that `proof`, and `verified` is false for one closed `--unverified`.
 
 Who files an epic and who closes one: `~/.claude/skills/notes-system/SKILL.md`, "Project board".

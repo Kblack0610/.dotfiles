@@ -2,12 +2,13 @@
 //! later, the validator): the collector writes raw facts only (`release-state refresh`'s
 //! `releases` tag history, each channel's Deployments and pin), and a link between two of them
 //! is never stored, so it cannot drift from the facts it joins. Today: release -> the channels
-//! it reached. The relationship model: docs/operations/release-state.md, "Relationships".
+//! it reached, by the Deployment's version, then its commit. The relationship model:
+//! docs/operations/release-state.md, "Relationships".
 
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::stamp;
-use crate::releases::Release;
+use crate::releases::{Deploy, Release};
 
 /// One tag of a project's line as the collector read it from git.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -67,16 +68,34 @@ fn names(value: &str, t: &Tag) -> bool {
     value == t.tag || (!t.version.is_empty() && value.trim_start_matches('v') == t.version)
 }
 
-/// release -> channels: each channel whose successful Deployment or current pin names the tag.
-/// A channel counts once per release, at its earliest successful deploy of it.
-pub fn reached(t: &Tag, channels: &[Release]) -> Vec<Reached> {
+/// Whether a Deployment's commit is the tag's: either may be abbreviated.
+fn same_commit(d: Option<&str>, t: Option<&str>) -> bool {
+    match (d, t) {
+        (Some(d), Some(t)) if d.len() >= 7 && t.len() >= 7 => d.starts_with(t) || t.starts_with(d),
+        _ => false,
+    }
+}
+
+/// Whether a Deployment shipped this tag: its version names the tag, or it names no tag of the
+/// line (a build id, a bare version two tags share) and its commit is the tag's. The version
+/// wins, so two tags on one commit (an rc and its release) each keep their own deploys.
+fn shipped(d: &Deploy, t: &Tag, line: &[Tag]) -> bool {
+    names(&d.version, t)
+        || (!line.iter().any(|o| names(&d.version, o))
+            && same_commit(d.sha.as_deref(), t.sha.as_deref()))
+}
+
+/// release -> channels: each channel whose successful Deployment of it (see [`shipped`]) or
+/// current pin names the tag. A channel counts once per release, at its earliest successful
+/// deploy of it. `line` is every tag of the project's line, `t` among them.
+pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
     let mut out: Vec<Reached> = vec![];
     for r in channels {
         let deployed = r
             .deploys
             .history
             .iter()
-            .filter(|d| d.state == "ok" && names(&d.version, t))
+            .filter(|d| d.state == "ok" && shipped(d, t, line))
             .map(|d| d.at)
             .min();
         let hit = match deployed {
@@ -106,7 +125,7 @@ pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
     line.tags
         .iter()
         .map(|t| {
-            let reached = reached(t, channels);
+            let reached = reached(t, &line.tags, channels);
             let reached_text = if reached.is_empty() {
                 "not recorded".into()
             } else {
@@ -162,7 +181,7 @@ mod tests {
                         version: v.into(),
                         state: s.into(),
                         at,
-                        url: None,
+                        ..Default::default()
                     })
                     .collect(),
                 ..Default::default()
@@ -189,7 +208,7 @@ mod tests {
             channel("flux", vec![], Some(("v1.2.0", 250))),
             channel("old", vec![("v1.1.0", "ok", 90)], Some(("v1.1.0", 80))),
         ];
-        let got = reached(&t, &chans);
+        let got = reached(&t, std::slice::from_ref(&t), &chans);
         let ids: Vec<(&str, Option<i64>, &str)> = got
             .iter()
             .map(|x| (x.id.as_str(), x.at, x.how.as_str()))
@@ -222,5 +241,35 @@ mod tests {
             1000,
         );
         assert_eq!(h[0].reached[0].id, "steam");
+    }
+
+    #[test]
+    fn a_deploy_naming_no_tag_joins_by_its_commit_and_a_named_one_never_does() {
+        let mut rc = tag("app-v1.2.0-rc1", "1.2.0-rc1", 100);
+        let mut rel = tag("app-v1.2.0", "1.2.0", 110);
+        rc.sha = Some("abcdef0123456789".into());
+        rel.sha = Some("abcdef0123456789".into());
+        let line = vec![rel.clone(), rc.clone()];
+        let deploy = |v: &str, sha: &str, at| Deploy {
+            version: v.into(),
+            state: "ok".into(),
+            at,
+            sha: Some(sha.into()),
+            ..Default::default()
+        };
+        let mut steam = channel("steam", vec![], None);
+        // A build id the upload wrote, on the release's commit (abbreviated): joins both tags of
+        // that commit, since nothing tells them apart.
+        steam.deploys.history = vec![deploy("20834411", "abcdef0", 200)];
+        assert_eq!(reached(&rel, &line, std::slice::from_ref(&steam)).len(), 1);
+        // One that names the rc stays the rc's, though the release shares its commit.
+        steam.deploys.history = vec![deploy("v1.2.0-rc1", "abcdef0123456789", 120)];
+        assert!(reached(&rel, &line, std::slice::from_ref(&steam)).is_empty());
+        assert_eq!(reached(&rc, &line, std::slice::from_ref(&steam)).len(), 1);
+        // Another commit, or a sha too short to trust, never joins.
+        steam.deploys.history = vec![deploy("20834411", "1234567", 200)];
+        assert!(reached(&rel, &line, std::slice::from_ref(&steam)).is_empty());
+        steam.deploys.history = vec![deploy("20834411", "abc", 200)];
+        assert!(reached(&rel, &line, &[steam]).is_empty());
     }
 }
