@@ -664,11 +664,11 @@ cmd_export() {
     [ -z "${seen[$d]:-}" ] || continue
     seen[$d]=1
     for f in "$d"/*.json; do
-      [ -e "$f" ] || continue
-      IFS="$TAB" read -r pid sid pstart started < <(jq -r '[.pid, (.sessionId // ""), (.procStart // ""),
-        ((.startedAt // 0) / 1000 | floor)] | @tsv' "$f" 2>/dev/null) || continue
-      [[ "$pid" =~ ^[0-9]+$ && "$sid" =~ ^[0-9a-f-]+$ ]] || continue
-      (( now - started >= secs )) || continue
+      pid=${f##*/}; [ -d "$AU_PROC/${pid%.json}" ] || continue  # most files are dead pids': skip the jq
+      # Tab is IFS whitespace, so an empty field collapses into the next: the optional one goes last.
+      IFS="$TAB" read -r pid sid started pstart < <(jq -r '[.pid, (.sessionId // ""),
+        ((.startedAt // 0) / 1000 | floor), (.procStart // "")] | @tsv' "$f" 2>/dev/null) || continue
+      [[ "$pid" =~ ^[0-9]+$ && "$sid" =~ ^[0-9a-f-]+$ ]] && (( started > 0 && now - started >= secs )) || continue
       read -ra st < <(sed 's/.*) //' "$AU_PROC/$pid/stat" 2>/dev/null) || continue
       [ "${st[0]:-Z}" != Z ] || continue  # stat after "comm) ": [0] state, [19] starttime
       [ -z "$pstart" ] || [ "${st[19]:-}" = "$pstart" ] || continue

@@ -531,14 +531,17 @@ spend_curl() {
 
 # -- export check: the one check behind the queue-cost-export watch --
 
-# qproc <pid> <session id> <age s> [item] [procStart]: a live claude with its sessions/<pid>.json, in a fake /proc.
+# qproc <pid> <session id> <age s> [item] [procStart]: a live claude with its sessions/<pid>.json, in a fake /proc;
+# an age or procStart of - leaves that field out of the json.
 qproc() {
   local d="$SANDBOX/proc/$1" now; now=$(date +%s)
   mkdir -p "$d" "$HOME/.claude/sessions"
   printf '%s (claude) S %s777\n' "$1" "$(printf '0 %.0s' $(seq 18))" > "$d/stat"
   printf 'PATH=/bin\0%s' "${4:+AGENT_QUEUE_ITEM=$4}" > "$d/environ"
-  jq -nc --argjson pid "$1" --arg sid "$2" --arg ps "${5:-777}" --argjson at "$(( (now - $3) * 1000 ))" \
-    '{pid:$pid, sessionId:$sid, procStart:$ps, startedAt:$at}' > "$HOME/.claude/sessions/$1.json"
+  jq -nc --argjson pid "$1" --arg sid "$2" --arg ps "${5:-777}" --arg age "$3" --argjson now "$now" \
+    '{pid:$pid, sessionId:$sid, procStart:$ps, startedAt:(($now - ($age | tonumber? // 0)) * 1000)}
+     | if $ps == "-" then del(.procStart) else . end | if $age == "-" then del(.startedAt) else . end' \
+    > "$HOME/.claude/sessions/$1.json"
 }
 # export_curl <session ids exporting> <fleet-dispatch series count>: Prometheus, answering by query.
 export_curl() {
@@ -584,10 +587,13 @@ STUB
   qproc 104 a-0004 7200 ar-4; sed -i 's/(claude) S/(claude) Z/' "$SANDBOX/proc/104/stat"
   qproc 105 a-0005 7200 ar-5; rm -r "$SANDBOX/proc/105"
   qproc 106 a-0006 7200 ar-6       # the control: the one that is asked about
+  qproc 107 a-0007 - ar-7          # no startedAt: its age is unknown, not 56 years
+  qproc 108 a-0008 7200 ar-8 -     # no procStart: still asked about, its fields do not shift
   export_curl '' 1
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 1
-  assert_output 'no cost exported in the last 1h: ar-6 (session a-0006, pid 106)'
+  assert_output "$(printf '%s\n' 'no cost exported in the last 1h: ar-6 (session a-0006, pid 106)' \
+    'no cost exported in the last 1h: ar-8 (session a-0008, pid 108)')"
 }
 
 @test "export check: the age is a parameter, and one sessions/ seen through two account dirs counts once" {
