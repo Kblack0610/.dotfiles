@@ -302,6 +302,20 @@ test("a menu ticked in waits for the answer, then stays open on the box last tic
   assert.equal(run("tblMenu.want"), null);
 });
 
+test("clear waits for its answer like a tick", () => {
+  const d = menuOf("a", "n", ["x"]);
+  d.closest = (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "n" } } : null);
+  fireDoc("click", { target: { closest: (sel) => (sel === "details.tfacet" ? d : sel === "[data-tqc]" ? { dataset: { tqc: "b:1" } } : null) } });
+  assert.equal(run("tblMenu.want"), "b:1");
+  assert.ok(d.classes.has("busy"));
+  const next = menuOf("a", "n", ["x"], "b:1");
+  ctx.root = { querySelectorAll: () => [next] };
+  run("tblMenuKeep(root)");
+  assert.equal(run("tblMenu.want"), null);
+  assert.equal(next.classes.has("busy"), false);
+  run("tblMenu = null");
+});
+
 test("a click outside a menu or Escape inside it shuts it, and nothing reopens on the next draw", () => {
   const d = menuOf("a", "n", ["x"]);
   d.open = true;
@@ -334,6 +348,9 @@ test("a menu opens under its pill, or over it when the window has more room ther
   assert.equal(at(500).top, "526px", "room enough below stays below");
   assert.equal(at(700).maxHeight, "360px");
   assert.equal(at(700).top, "398px", "more room above, too little below, flips up");
+  ctx.innerHeight = 150;
+  assert.equal(at(90).top, "4px", "a window too short for either side never puts the menu above its top");
+  ctx.innerHeight = 900;
 });
 
 test("the filter row is never stamped as a phone row", () => {

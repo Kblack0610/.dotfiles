@@ -268,7 +268,7 @@ function tblPlace(d) {
   const below = innerHeight - r.bottom - 6, above = r.top - 6;
   const up = below < Math.min(m.scrollHeight, TBL_MENU_MAX) && above > below;
   m.style.maxHeight = `${Math.round(Math.max(80, Math.min(TBL_MENU_MAX, up ? above : below)))}px`;
-  m.style.top = `${Math.round(up ? r.top - 2 - m.offsetHeight : r.bottom + 2)}px`;
+  m.style.top = `${Math.round(Math.max(4, up ? r.top - 2 - m.offsetHeight : r.bottom + 2))}px`;
   m.style.left = `${Math.round(Math.max(4, Math.min(r.left, innerWidth - m.offsetWidth - 4)))}px`;
 }
 
