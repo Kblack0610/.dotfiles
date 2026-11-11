@@ -240,6 +240,17 @@ pub fn build(f: &File, now: i64) -> Budget {
         .chain(others)
         .collect();
     let mut by_lane = vec![];
+    for id in &ids {
+        let in_group = |c: &&Cut| &c.name == id || (id == "agents" && !ids.contains(&c.name));
+        for (i, c) in f.by_lane.iter().filter(in_group).enumerate() {
+            let lead = if i == 0 {
+                format!("{}: ", group_name(id))
+            } else {
+                String::new()
+            };
+            by_lane.push(format!("{lead}{} {}", c.name, dollars(c.usd)));
+        }
+    }
     let groups: Vec<Group> = ids
         .iter()
         .cloned()
@@ -257,22 +268,11 @@ pub fn build(f: &File, now: i64) -> Budget {
                 })
             });
             let ours = || lines.iter().filter(|l| l.paid_by.is_none());
-            let name = GROUPS
-                .iter()
-                .find(|(g, _)| *g == id)
-                .map_or(id.clone(), |(_, n)| n.to_string());
-            let in_group = |c: &&Cut| c.name == id || (id == "agents" && !ids.contains(&c.name));
-            for (i, c) in f.by_lane.iter().filter(in_group).enumerate() {
-                let lead = if i == 0 {
-                    format!("{name}: ")
-                } else {
-                    String::new()
-                };
-                by_lane.push(format!("{lead}{} {}", c.name, dollars(c.usd)));
-            }
+            let name = group_name(&id);
             Some(Group {
-                spent: dollars(ours().filter_map(|l| l.spent).sum()),
-                month: format!("~{}", dollars(ours().filter_map(|l| l.projected).sum())),
+                spent: sum(ours().filter_map(|l| l.spent)).map_or("-".into(), dollars),
+                month: sum(ours().filter_map(|l| l.projected))
+                    .map_or("-".into(), |m| format!("~{}", dollars(m))),
                 bills: lines.into_iter().map(bill).collect(),
                 id,
                 name,
@@ -300,6 +300,19 @@ pub fn build(f: &File, now: i64) -> Budget {
         by_lane,
         foot: FOOT,
     }
+}
+
+/// A group's display name, its id when it is not one of [`GROUPS`].
+fn group_name(id: &str) -> String {
+    GROUPS
+        .iter()
+        .find(|(g, _)| *g == id)
+        .map_or(id.to_string(), |(_, n)| n.to_string())
+}
+
+/// The sum of the figures read, None when none was: an unread bill is unknown, never $0.
+fn sum(figures: impl Iterator<Item = f64>) -> Option<f64> {
+    figures.reduce(|a, b| a + b)
 }
 
 fn bill(l: &Line) -> Bill {
@@ -399,6 +412,21 @@ mod tests {
             (bills(0), bills(1), bills(2)),
             (vec!["lazer", "alt"], vec!["github", "aws"], vec!["do"])
         );
+        assert_eq!(
+            b.by_lane,
+            ["Agents: queue $175", "CI: ci $141", "Infra: infra $78"]
+        );
+        // with no CI bill read, the CI lane still shows, and an all-unread group is unknown
+        let mut f = file(&[]);
+        f.lines.retain(|l| l.name != "aws");
+        let b = build(&f, NOW);
+        assert_eq!(
+            (b.groups[1].spent.as_str(), b.groups[1].month.as_str()),
+            ("-", "-")
+        );
+        f.lines.retain(|l| l.name != "github");
+        let b = build(&f, NOW);
+        assert_eq!(b.groups.len(), 2);
         assert_eq!(
             b.by_lane,
             ["Agents: queue $175", "CI: ci $141", "Infra: infra $78"]

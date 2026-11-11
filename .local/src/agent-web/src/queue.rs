@@ -251,13 +251,17 @@ pub struct SlugBody {
 
 pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::cancel(&System, &b.slug)).await;
-    s.queue.clear().await;
+    if r.is_ok() {
+        s.queue.clear().await;
+    }
     r
 }
 
 pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await;
-    s.queue.clear().await;
+    if r.is_ok() {
+        s.queue.clear().await;
+    }
     r
 }
 

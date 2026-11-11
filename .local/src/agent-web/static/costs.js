@@ -146,7 +146,7 @@ function sessCell(r, k) {
 // so a day is one tap without finding its bar.
 function dayChips(chart, on) {
   const days = chart.filter((b) => b.usd != null).slice(-7).map((b) => b.key);
-  if (on && !days.includes(on)) days.push(on);
+  if (on && !days.includes(on)) days.push(on), days.sort();
   return costsSwitch("day", days, on, "day", (k) => k.slice(5));
 }
 
@@ -368,7 +368,7 @@ function costsHead(d) {
   const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
   let html = innerStrip("costs", d.amber) + fleetCostSection(d) + innerWrap("costs", "burn", costsBurn(d)) +
-    innerWrap("costs", "consumers", costsConsumers(d)) + innerWrap("costs", "spend", sessionsSection(d) + historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
+    innerWrap("costs", "consumers", costsConsumers(d)) + innerWrap("costs", "sessions", sessionsSection(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
