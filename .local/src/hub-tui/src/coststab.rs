@@ -765,7 +765,7 @@ fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
 /// `hub_core::spend_history` built, then what the figures are.
 fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mark = if open { "-" } else { "+" };
-    let title = Span::styled(format!("{mark} SPEND HISTORY  "), p.head());
+    let title = Span::styled(format!("{mark} SPEND  "), p.head());
     if let Some(why) = &h.why {
         return vec![
             clip_line(
@@ -1503,7 +1503,7 @@ mod tests {
         let mut v = on("spend");
         let shut = page(&v);
         assert!(
-            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"),
+            shut.contains("+ SPEND  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"),
             "{shut}"
         );
         assert!(shut.lines().all(|l| l.chars().count() <= 80), "{shut}");
@@ -1511,7 +1511,7 @@ mod tests {
         assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("spend")));
         let open = page(&v);
         assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
-        assert!(open.contains("- SPEND HISTORY"), "{open}");
+        assert!(open.contains("- SPEND  "), "{open}");
         assert!(open.contains("vs prev"), "{open}");
         let row = |p: &str| {
             open.lines()
