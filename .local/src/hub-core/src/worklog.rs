@@ -10,7 +10,6 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::boards;
-use crate::plans::Names;
 use crate::queue::{self, Item, State};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -260,13 +259,7 @@ fn pr_words(item: &Item) -> Vec<&str> {
         .collect()
 }
 
-fn item_row<Tz: TimeZone>(
-    i: &Item,
-    keys: &[String],
-    prs: &HashMap<&str, &Pr>,
-    plans: &mut Names,
-    tz: &Tz,
-) -> Work
+fn item_row<Tz: TimeZone>(i: &Item, keys: &[String], prs: &HashMap<&str, &Pr>, tz: &Tz) -> Work
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -301,7 +294,7 @@ where
         state,
         when,
         project: i.project.trim().to_string(),
-        what: tagged(i.plan_title(plans).unwrap_or_else(|| i.title()), first),
+        what: tagged(i.title(), first),
         kind: i.kind.clone().filter(|k| !k.is_empty()),
         pr: label.map(|l| if more > 0 { format!("{l} +{more}") } else { l }),
         url: first
@@ -365,7 +358,6 @@ where
     }
 
     let mut claims = HashSet::new();
-    let mut plans = Names::default();
     let mut rows: Vec<Work> = items
         .iter()
         .map(|i| {
@@ -373,7 +365,7 @@ where
                 .into_iter()
                 .filter_map(|w| claimed(w, i.project.trim(), &by_number))
                 .collect();
-            let row = item_row(i, &keys, &by_key, &mut plans, tz);
+            let row = item_row(i, &keys, &by_key, tz);
             claims.extend(keys);
             row
         })
@@ -479,13 +471,14 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
+    /// An item as every view reads one: through `queue::parse`, which names a plan item.
     fn item(slug: &str, state: &str, extra: Value) -> Item {
         let mut v = json!({"slug": slug, "project": "dotfiles", "state": state, "task": slug,
             "queued": "2026-11-01T10:00:00Z"});
         v.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        serde_json::from_value(v).unwrap()
+        queue::parse(&v.to_string()).remove(0)
     }
 
     fn pr(repo: &str, n: u32, at: &str) -> Value {

@@ -304,14 +304,14 @@ impl Item {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
     }
 
-    /// `<plan name> P5: <phase words>`, a plan item's title as the Log's Work row says it: the
-    /// plan by its heading (`plans::name`) in place of the file name `agent-queue add --plan`
-    /// titles it with. A one-phase item takes the label its words lead with (`P9 live stage`)
-    /// over its checklist place. An item with no `plan:` whose title has that shape (one
-    /// promoted from a board row) is named the same way when its plan file exists. None for
-    /// any other item.
-    pub fn plan_title(&self, names: &mut crate::plans::Names) -> Option<String> {
-        use crate::plans::{base, legacy, own_label, path};
+    /// `<plan name> P5: <phase words>`, a plan item's title as every view says it (`parse`
+    /// sets it): the plan by its heading (`plans::named`) in place of the file name
+    /// `agent-queue add --plan` titles it with. A one-phase item takes the label its words lead
+    /// with (`P9 live stage`) over its checklist place. An item with no `plan:` whose title has
+    /// that shape (one promoted from a board row) is named the same way when its plan file
+    /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
+    fn plan_title(&self) -> Option<String> {
+        use crate::plans::{base, legacy, named, own_label, path};
         let title = self.title.trim();
         let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
             (Some((plan, phases)), old) => {
@@ -331,10 +331,9 @@ impl Item {
             .then(|| own_label(words))
             .flatten()
             .unwrap_or((tag, words));
-        Some(format!(
-            "{} {label}: {}",
-            names.get(&plan),
-            cap(words, TITLE_MAX)
+        Some(cap(
+            &format!("{} {label}: {words}", named(&plan)),
+            TITLE_MAX,
         ))
     }
 
@@ -741,12 +740,14 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
+/// Each item's `title` becomes the one every view shows: `plan_title` for a plan item, else
+/// `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            i.title = i.title();
+            i.title = i.plan_title().unwrap_or_else(|| i.title());
             i
         })
         .collect()
@@ -1445,6 +1446,28 @@ mod tests {
         );
         let parsed = parse(r#"{"slug":"s","state":"queued","title":"From the header","task":"x"}"#);
         assert_eq!(parsed[0].title, "From the header");
+    }
+
+    #[test]
+    fn a_parsed_plan_item_is_titled_by_its_plans_heading_for_every_view() {
+        let dir = std::env::temp_dir().join(format!("queue-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("snuggly-bachman.md");
+        std::fs::write(&plan, "# Systems you can see, every task\n").unwrap();
+        let line = serde_json::json!({"slug": "p4", "state": "queued", "title": "Fourth thing",
+            "plan": plan.to_str().unwrap(), "phases": "4"});
+        let i = parse(&line.to_string()).remove(0);
+        // Queue, Home, Sessions and pages all call title(), so each reads this.
+        assert_eq!(i.title(), "Systems you can see P4: Fourth thing");
+        let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
+            "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
+        let long = parse(&long.to_string()).remove(0).title();
+        assert!(
+            long.starts_with("Systems you can see P5: word")
+                && long.chars().count() <= TITLE_MAX + 3,
+            "a plan title is capped like any other: {long}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

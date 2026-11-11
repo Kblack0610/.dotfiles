@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use crate::text::cap;
 
@@ -105,16 +107,23 @@ pub fn name(path: &str) -> String {
         .unwrap_or_else(|| base(path).to_string())
 }
 
-/// `name`, each file read once however many rows name it.
-#[derive(Default)]
-pub struct Names(HashMap<String, String>);
+/// Each plan file's name and the mtime it was read at, one map for the whole process.
+type Names = HashMap<String, (Option<SystemTime>, String)>;
+static NAMES: LazyLock<Mutex<Names>> = LazyLock::new(Mutex::default);
 
-impl Names {
-    pub fn get(&mut self, path: &str) -> String {
-        self.0
-            .entry(path.to_string())
-            .or_insert_with(|| name(path))
-            .clone()
+/// `name`, shared by every view in the process (Queue, Home, Sessions, the Log, pages): a file
+/// is read once however many rows name it, and again only when its mtime moves, so a
+/// long-running hub or agent-web sees a heading edit.
+pub fn named(path: &str) -> String {
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    match names.get(path) {
+        Some((at, n)) if *at == mtime => n.clone(),
+        _ => {
+            let n = name(path);
+            names.insert(path.to_string(), (mtime, n.clone()));
+            n
+        }
     }
 }
 
@@ -167,6 +176,44 @@ mod tests {
         );
         assert_eq!(n("# , oops"), None);
         assert_eq!(name("/nonexistent/quiet-ocean.md"), "quiet-ocean");
+    }
+
+    #[test]
+    fn the_shared_name_is_read_again_only_when_the_file_changes() {
+        let dir = std::env::temp_dir().join(format!("plans-named-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("quiet-ocean.md");
+        let p = plan.to_str().unwrap();
+        let write = |text: &str, secs: u64| {
+            std::fs::write(&plan, text).unwrap();
+            let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&plan)
+                .unwrap()
+                .set_modified(at)
+                .unwrap();
+        };
+        write("# First name, more\n", 1_000);
+        assert_eq!(named(p), "First name");
+        write("# Same mtime, so cached\n", 1_000);
+        assert_eq!(
+            named(p),
+            "First name",
+            "an unchanged mtime keeps the cached name"
+        );
+        write("# Second name, edited\n", 2_000);
+        assert_eq!(
+            named(p),
+            "Second name",
+            "a heading edit shows without a restart"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            named(p),
+            "quiet-ocean",
+            "a removed plan falls back to its file name"
+        );
     }
 
     #[test]
