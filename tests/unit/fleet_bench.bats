@@ -2018,18 +2018,23 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  # one that merged a fix with the red still here did not hold, so it is queued again
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  # one that merged a PR beside the red stands too (ar-1663): no merge clears an alert red
   : > "$ITEMS"; watch_item ar-1 ok "$this" o/r#5
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial '1 queued as red fixes'
-  : > "$PLOG"; : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'the spend watch pages on its own'
+  [ ! -s "$PLOG" ]
   # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
   : > "$ITEMS"; watch_item ar-1 ok "$before"
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
   assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  # ... and so is one that merged a PR before this trip
+  : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
   # an item that failed this trip did not do its job either
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 failed "$this"
   run "$SUBJECT" triage
@@ -5206,6 +5211,21 @@ epics_fixture() {
   jq -cn --arg d "$day" '{ts: "\($d) late", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): no readable time"}' >> "$BENCH_INGEST"
   SENTINEL_SINCE=$(date -d "${day}T10:02:15-08:00" +%s) run "$SUBJECT" chain --json
   assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
+}
+
+@test "chain: wants_unstamped counts a named runner's want-stamped filing as a human channel; a runner's own row is no channel" {
+  chain_fixture
+  local day; day=$(date -d "@$((T0 - 86400))" +%F)
+  jq -cn --arg d "$day" '
+    {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): typed by hand"},
+    {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "filed", from: "game", by: "inbox-triage", want: "outbox", text: "an outbox line"},
+    {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "added", from: "game", by: "ask-sweep", want: "ask", text: "an answered ask"},
+    {ts: "\($d)T10:03:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", text: "check(watch): a runner row"},
+    {ts: "\($d)T10:04:00.1-08:00", lane: "agent", action: "added", from: "game", by: "fleet-bench", want: "", text: "an empty want is no channel"},
+    {ts: "\($d)T10:05:00.1-08:00", lane: "human", action: "filed", from: "game", by: "inbox-triage", want: "outbox", text: "a sheet row is never counted"}' > "$BENCH_INGEST"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'wants_unstamped: 1 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/3)'
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {

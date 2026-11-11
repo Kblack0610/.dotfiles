@@ -494,19 +494,25 @@ email_of() {
     jq -r '.oauthAccount.emailAddress // empty' "$f" 2>/dev/null
 }
 
-# live_of -> one line per running claude, "@" and the account dir it runs under. The "@" keeps the
-# main account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as
-# one main session to grep. A claude on the Lazer gateway spends no account, so it is not one.
-# Builtins only per /proc entry: every agentctl-run call pays for this loop through pick.
+# live_of -> one line per running claude, "@" and the account dir it runs under, "~@" instead when
+# the session registry says it is idle or waiting on the human: it spends nothing until someone
+# types, so it is live but not working (busy, running a shell, or not in the registry, as a
+# `claude -p` is not). The "@" keeps the main account's line non-empty: a trailing empty line is
+# lost to $(...), and none at all reads as one main session to grep. A claude on the Lazer gateway
+# spends no account, so it is not one. Builtins only per /proc entry: every agentctl-run call pays
+# for this loop through pick.
 live_of() {
-    local c comm
+    local c comm pid reg mark
     for c in "$PROC"/[0-9]*/comm; do
         comm=""
         read -r comm 2>/dev/null < "$c"
         [[ "$comm" == claude ]] || continue
-        c="${c%/comm}"
-        [[ -z "$(gateway_of "${c##*/}")" ]] || continue
-        printf '@%s\n' "$(config_dir_of "${c##*/}")"
+        c="${c%/comm}"; pid="${c##*/}"
+        [[ -z "$(gateway_of "$pid")" ]] || continue
+        reg="" mark="@"
+        read -r -d '' reg 2>/dev/null < "$REGISTRY/$pid.json"
+        [[ "$reg" =~ \"status\":[[:space:]]*\"(idle|waiting)\" ]] && mark="~@"
+        printf '%s%s\n' "$mark" "$(config_dir_of "$pid")"
     done
 }
 
@@ -531,19 +537,20 @@ cmd_cost() {
     printf '%s\n' "$out"
 }
 
-# session_rate [nospend] [source] -> points of an account's week one live session uses an hour: the
+# session_rate [nospend] [source] -> points of an account's week one working session uses an hour: the
 # fleet's last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be
 # read. A reset inside the window reads low, never high. nospend reads the cache at any age and never
 # asks Prometheus; the claude-acct-usage timer's `textfile` keeps the cache fresh. With a source name
-# it is that source's own 6h change in used percent per live session, SESSION_RATE until it has history.
+# it is that source's own 6h change in used percent per working session, SESSION_RATE until it has history.
+# Working, not live, as burn multiplies it by (live_of): a rate per live session counts idle ones in.
 # Each account is one series (max by account) before the offset and the average: a label added to the
 # textfile (kind, #1488) leaves the new series no partner 6h back, and a raw subtraction reads nothing.
 session_rate() {
     local f="$CACHE/session_rate" r q sel='kind=~"claude|"'
     if [[ -n "${2:-}" ]]; then f="$CACHE/session_rate.$2" sel="account=\"$2\""; fi
     q="sum(clamp_min(max by (account) (claude_account_week_used_percent{$sel}) - max by (account) (claude_account_week_used_percent{$sel} offset 6h), 0))"
-    # only the accounts the numerator has a 6h-old sample for count their live sessions
-    q+=" / sum(avg_over_time((max by (account) (claude_account_live_sessions{$sel}))[6h:5m])"
+    # only the accounts the numerator has a 6h-old sample for count their working sessions
+    q+=" / sum(avg_over_time((max by (account) (claude_account_working_sessions{$sel}))[6h:5m])"
     q+=" and on (account) max by (account) (claude_account_week_used_percent{$sel} offset 6h)) / 6"
     if [[ -s "$f" ]] && { [[ "${1:-}" == nospend ]] || (( $(date +%s) - $(stat -c %Y "$f") < RATE_TTL )); }; then
         cat "$f"; return
@@ -560,7 +567,7 @@ session_rate() {
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
-    local own_reserve max_live parent win paced srclive row_reserve email
+    local own_reserve max_live parent win paced srclive row_reserve email working
     srclive='{}'; [[ "${USAGE_SOURCES:-0}" == 1 ]] && srclive=$(source_live)
     # The room verdict is for automatic starts, so the machine-mode level scales its slack and reserve;
     # pick's rank, which `cl` uses, keeps the conf's own reserve.
@@ -589,15 +596,17 @@ usage_json() {
             start=$((resets - win))
             gone=$(awk -v n="$now" -v s="$start" -v w="$win" 'BEGIN { g = (n - s) * 100 / w; print (g < 0 ? 0 : g > 100 ? 100 : g) }')
         fi
-        if [[ "$kind" == claude ]]; then live=$(grep -cxF -- "@$dir" <<< "$lives"); email=$(email_of "$dir")
-        else live=$(jq -r --arg n "$name" '.[$n] // 0' <<< "$srclive"); email=""; fi
+        if [[ "$kind" == claude ]]; then
+            working=$(grep -cxF -- "@$dir" <<< "$lives"); live=$((working + $(grep -cxF -- "~@$dir" <<< "$lives")))
+            email=$(email_of "$dir")
+        else live=$(jq -r --arg n "$name" '.[$n] // 0' <<< "$srclive"); working=$live; email=""; fi
         # A source's own reserve is scaled by the machine-mode level like the default one.
         row_reserve=$reserve
         [[ -z "$own_reserve" ]] || read -r _ row_reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$own_reserve")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$email" --arg state "$state" \
             --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
-            --arg resets "$resets" --argjson live "${live:-0}" --argjson spend "$spend" \
+            --arg resets "$resets" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
             --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" '
             def num: if . == "" then null else tonumber end;
@@ -620,7 +629,7 @@ usage_json() {
                         | if .resets != null and $t >= .resets then null else $t end
                       end
                 end;
-            # When the live sessions empty the window at their burn now (live x rate, the estimator
+            # When the working sessions empty the window at their burn now (working x rate, the estimator
             # room judges committed by); null with no burn, or when it lasts to the reset. Past the
             # limit it is a time already gone, as capped says.
             def run_out:
@@ -639,7 +648,7 @@ usage_json() {
             # The verdict on an automatic start, the one place the rule is written. reasons lists every
             # refusal, in this order: unread, capped (window empty, or the plan says its limit is
             # reached), reserve (inside the last of the window), pace (past the line after slack),
-            # five_hour (its window inside the reserve), committed (its live sessions already use the
+            # five_hour (its window inside the reserve), committed (its working sessions already use the
             # rest of the window), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
@@ -672,7 +681,7 @@ usage_json() {
                   elif $r.reason == "pace" then
                     "\($r.over_points | pts) over its weekly pace (\(.week_used | floor)% used, \((.week_gone // 0) | floor)% of its week gone, \($r.slack | pts) of slack)"
                   elif $r.reason == "five_hour" then (if (.five_hour // 0) >= 100 then "its 5h window is spent" else "its 5h window at \(.five_hour | floor)%" end)
-                  elif $r.reason == "committed" then "its \(.live) live sessions use the rest of its week before the reset"
+                  elif $r.reason == "committed" then "its \(.working) working sessions use the rest of its week before the reset"
                   elif $r.reason == "max_live" then "its \(.live) live sessions are all it takes (max_live \(.max_live))"
                   else "it has room" end;
             {name: $name, kind: $kind, dir: $dir, email: $email, state: $state,
@@ -682,9 +691,10 @@ usage_json() {
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
              week_used: ($used | num), week_gone: ($gone | num),
-             resets: ($resets | num), live: $live,
-             # points an hour its live sessions burn: their count times the fleet rate
-             burn: ($live * $rate), rate: $rate,
+             resets: ($resets | num), live: $live, working: $working,
+             # points an hour its working sessions burn: their count times the fleet rate (an idle
+             # or waiting session spends nothing, ar-1682)
+             burn: ($working * $rate), rate: $rate,
              usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}
             | .sustain = (if .week_used == null or (.paced | not) then null else sustain end)
             | .run_out = run_out
@@ -815,7 +825,7 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
     | (if $a == [] then null else [$a[].burn] | add end) as $burn
     | ([$p[].left] | add // 0) as $left
     | [range(0; $p | length) as $k | {at: $p[$k].at, has: ($left + ([$p[0:$k][].week] | add // 0))}] as $steps
-    | {live: ([$c[].live] | add // 0), rows: $a, rate: ($c[0].rate // null), burn: $burn,
+    | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), rows: $a, rate: ($c[0].rate // null), burn: $burn,
        keeps: (if $p == [] then null
                else ([[$p[] | .week / .hours] | add] + [$steps[] | select(.at > 0) | .has / .at]) | min end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
@@ -827,12 +837,12 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
 fleet_line() {
     local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     j=$(jq -sc --argjson now "$now" "$FLEET_JQ"' fleet($now)
-        | {live, rate, burn: (.burn // 0), keeps: (.keeps // 0), runs_out,
+        | {live, working, rate, burn: (.burn // 0), keeps: (.keeps // 0), runs_out,
            burn_at: ([.rows[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
            idle_at: ([.rows[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
     jq -r --argjson now "$now" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
-        "fleet: \(.live) live, burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
+        "fleet: \(.live) live (\(.working) working), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
         + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
         + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor))" else ")" end)
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
@@ -866,13 +876,14 @@ cmd_textfile() {
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
         (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
         (rows("claude_account_live_sessions"; .live)),
+        (rows("claude_account_working_sessions"; .working)),
         (rows("claude_account_burn_points_per_hour"; if .week_used == null then null else .burn end)),
         (rows("claude_account_sustain_points_per_hour"; .sustain)),
         (rows("claude_account_on_pace_idle_timestamp_seconds"; .on_pace_idle)),
         (rows("claude_account_on_pace_burn_timestamp_seconds"; .on_pace_burn)),
         # the fleet sum (FLEET_JQ); no burn or sustain line when no Claude account was summed
         (fleet($now) | (.rate // empty | "claude_fleet_session_rate_points_per_hour \(.)"),
-            "claude_fleet_live_sessions \(.live)",
+            "claude_fleet_live_sessions \(.live)", "claude_fleet_working_sessions \(.working)",
             (.burn // empty | "claude_fleet_burn_points_per_hour \(.)"),
             (.keeps // empty | "claude_fleet_sustain_points_per_hour \(.)"),
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
@@ -1020,7 +1031,7 @@ cmd_room() {
         | map(tostring) | join("\u001f")' <<< "$rows")
     if [[ -n "$pick" ]]; then :
     elif [[ "$unread" == true ]]; then why="no account has room and one cannot be read"
-    elif [[ -z "$closest" ]]; then why="no account has room under its weekly pace and after its live sessions"
+    elif [[ -z "$closest" ]]; then why="no account has room under its weekly pace and after its working sessions"
     else
         # Name the account a start would fall back to and why room refused it, from its own row: "no
         # account has room" alone read as every account being full (2026-11-05).

@@ -483,6 +483,34 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
+@test "an idle or waiting session is live but burns nothing; busy, shell and unregistered ones work" {
+  # 2026-11-11 (ar-1682): max4 carried 27 claudes, 11 of them idle, and its burn read 1.4/h against
+  # a measured 1.0/h; bnb read committed only through its idle and waiting ones, and dispatch stopped.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # 1 point an hour to spare
+  mkdir -p "$HOME/.claude/sessions"
+  local p
+  for p in 1:idle 2:waiting 3:busy 4:shell 5:none 6:idle 7:idle 8:idle 9:idle 10:idle 11:idle 12:idle; do
+    IFS=: read -r pid st <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo claude > "$SANDBOX/proc/$pid/comm"
+    printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
+    # the registry writes compact JSON; pid 2 is spaced, which the match allows too
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","updatedAt":1}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" > "$HOME/.claude/sessions/$pid.json"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .live <<<"$output")" = 12 ]
+  [ "$(field alt .working <<<"$output")" = 3 ]
+  [ "$(field alt '.burn * 10 | round' <<<"$output")" = 3 ]
+  [ "$(field alt .room.ok <<<"$output")" = true ]
+  # counted live, 12 x 0.1 would read committed
+  for p in 1 2 6 7 8 9 10 11 12; do sed -i -E 's/"status": ?"[a-z]*"/"status":"busy"/' "$HOME/.claude/sessions/$p.json"; done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .working <<<"$output")" = 12 ]
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+}
+
 @test "live_of forks no tool per process" {
   # pick runs this loop on every agentctl-run call; a fork per /proc entry cost 2.3s of 2.5s (ar-1007).
   local p
@@ -644,7 +672,7 @@ live() {
   live "" 12
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'live sessions use the rest of its week before the reset'* ]]
+  [[ "$stderr" == *'working sessions use the rest of its week before the reset'* ]]
   # a hand start is told, never refused
   run --separate-stderr "$ACCT" pick
   assert_success
@@ -653,7 +681,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *live_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -687,7 +715,7 @@ STUB
   assert_output 1
   run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -cF 'avg_over_time((max by (account) (claude_account_live_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_working_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
@@ -746,7 +774,7 @@ STUB
   live "$ALT" 13
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 live sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 working sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
   # an account over its pace is not named again: the closest already says what pace refuses
   rm -rf "${CLAUDE_ACCT_PROC:?}"/*
   # its 5h window alone: named, with no week clock, which is not what refuses it
@@ -989,7 +1017,7 @@ seen_claude() {
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1283,7 +1311,7 @@ budget() {
   run --separate-stderr "$ACCT" status
   assert_success
   assert_line --regexp '^codex '
-  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.1/h sustainable .*, lasts to the resets, '
+  assert_line --regexp '^fleet: 0 live \(0 working\), burn 0/h vs 0\.1/h sustainable .*, lasts to the resets, '
 }
 
 @test "sources: the textfile publishes the fleet line's own sum, and no burn when no Claude row is read" {
@@ -1300,13 +1328,15 @@ budget() {
   run cat "$SANDBOX/prom/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
   assert_line 'claude_fleet_live_sessions 5'
+  assert_line 'claude_fleet_working_sessions 5'
+  assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
   assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
   # 10 points at 0.3 an hour: 33.3h, before main's reset in 84h
   assert_line 'claude_fleet_run_out_timestamp_seconds 1800120000'
   run --separate-stderr "$ACCT" status
-  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.1/h sustainable'
+  assert_line --regexp '^fleet: 5 live \(5 working\), burn 0\.3/h vs 0\.1/h sustainable'
   # negative control: with no Claude account read, live stays and burn and sustain are not written
   rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
   "$ACCT" textfile "$SANDBOX/prom"

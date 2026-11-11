@@ -397,12 +397,14 @@ mod tests {
                             state: "fail".into(),
                             at: at(14, 45),
                             url: Some("https://x/runs/d".into()),
+                            ..Default::default()
                         },
                         crate::releases::Deploy {
                             version: "v1.1.0".into(),
                             state: "ok".into(),
                             at: at(0, 0) - 1,
                             url: None,
+                            ..Default::default()
                         },
                     ],
                     ..Default::default()

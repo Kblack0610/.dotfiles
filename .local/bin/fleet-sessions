@@ -126,7 +126,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
-#                 requeued or running in another session, here:<slug> waiting here, or ->
+#                 requeued or running in another session, here:<slug> waiting here,
+#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -290,6 +291,15 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item"; fi ;;
     OPEN)
+      if handed_off "$item" "$pr" "$dirty" "$inpr"; then
+        local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        case "$phases" in
+          -|none) echo "DONE $why" ;;
+          *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then echo "DONE $why"
+             else echo "LANDED $why, next phase: $next"; fi ;;
+        esac
+        return
+      fi
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
@@ -305,6 +315,14 @@ bucket_facts() {
       elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1 "$item"
       else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item"; fi ;;
   esac
+}
+
+# handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
+# item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
+# dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
+# (fix_red_pr gives a red one a fix-ci session), so it is no longer the session's to finish.
+handed_off() {
+  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
 
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
@@ -337,7 +355,8 @@ work_blockers() {
       [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
-    OPEN) b+=("PR #$pr open, CI ${ci:--}") ;;
+    OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr"; then merged=1
+          else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
     *)
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
@@ -1129,6 +1148,10 @@ parked_lines() {
 # An item still running or waiting here wins over one that moved on; an item that recorded no
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
+# review:<slug> is one this session parked in review/: its open PR is the item's, and
+# fleet-dispatch's reap owns it once the session ends (fix_red_pr gives a red one a fix-ci session),
+# so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
+# refused, and the reap, which waits for the session to end, never took over.
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
@@ -1137,6 +1160,7 @@ item_of() {
       if (!bysid && !bysess) next
       if (($1 == "running" || $1 == "waiting" || $1 == "review") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
+        else if ($1 == "review") { if (rev == "") rev = $4 " pr " ($6 == "" ? "-" : $6); next }
         if (hereslug == "") hereslug = $4
         here = 1; next
       }
@@ -1148,6 +1172,7 @@ item_of() {
     END {
       if (own != "") print "own:" own
       else if (here) print "here:" hereslug
+      else if (rev != "") print "review:" rev
       else if (moved != "") print "moved:" moved
       else print "-"
     }' <<<"$1"
@@ -1213,7 +1238,8 @@ collect() {
   # "<state>\t<session>\t<sessions>\t<slug>\t<finished epoch>" per item, for item_of.
   qitems="$(jq -r '[.state, (.session // "" | if . == "" then "-" else . end),
       (.sessions // "" | if . == "" then "-" else . end), .slug,
-      (.finished // "" | fromdateiso8601? // 0)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
+      (.finished // "" | fromdateiso8601? // 0),
+      (.pr // "" | tostring | sub(".*#"; "") | if . == "" then "-" else . end)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
   # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
   items="$(jq -r <<<"$qjson" '
     select(.state != "queued" and ((.session // "") | contains(":")))
@@ -1297,7 +1323,7 @@ collect() {
     # The row's queue item (item_of's one join), with the board row it came from and its origin.
     local islug=- irel=- irow=- iorigin=-
     case "$item" in
-      own:* | moved:* | here:*)
+      own:* | moved:* | here:* | review:*)
         irel="${item%%:*}"; islug="${item#*:}"; islug="${islug%% *}"; islug="${islug%%,*}"
         IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)

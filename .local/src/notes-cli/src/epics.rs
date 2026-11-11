@@ -324,26 +324,6 @@ impl Index {
         (0..self.nodes.len()).filter(|&i| self.nodes[i].title.is_some() && self.nodes[i].open)
     }
 
-    /// The nearest open epic above row `id`, when every one of its leaves is done: a close
-    /// just finished it, and only the human's check of its outcome is left (lifecycle.md).
-    pub(crate) fn landed_epic_above(&self, id: &str) -> Option<EpicProgress> {
-        let mut seen = HashSet::new();
-        let mut at = self.node(id)?.parent.clone();
-        while let Some(pid) = at {
-            let &i = self.by_id.get(&pid)?;
-            if !seen.insert(i) {
-                return None;
-            }
-            let n = &self.nodes[i];
-            if n.title.is_some() {
-                let r = self.rollup(i);
-                return (n.open && r.open == 0 && r.done > 0).then_some(r);
-            }
-            at = n.parent.clone();
-        }
-        None
-    }
-
     /// Every open epic with its rollup, in sheet order.
     pub(crate) fn epics(&self) -> Vec<EpicProgress> {
         self.open_epics().map(|i| self.rollup(i)).collect()
