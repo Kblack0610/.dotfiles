@@ -47,10 +47,10 @@ jobs:
   # main run's JUnit. A shard is bounded below by its heaviest file; unit/fleet_dispatch.bats,
   # 40% of unit, is six files for that. The shard counts are sized so a full run fits the budget
   # on a 4-core runner: the files are CPU-bound, so past an even split only more shards cut the
-  # wall. Unit's shard steps add up to 870-1000 s of wall and one run's table leaves the heaviest
-  # shard 10-20% over the mean, against about 60 s of run start, weights, setup and report: six
-  # unit shards put a full run near 4.3 min, four left it at 5.3-5.6 (runs 43012047899,
-  # 43012878581). No job waited for a runner in 554 on 2026-11-11, so a shard costs no queueing.
+  # wall. Unit's shard steps add up to 870-1000 s of wall, a split leaves the heaviest shard
+  # 10-20% over the mean, and about 60 s of each run is fixed (start, weights, setup, report), so
+  # four unit shards ran a full run in 5.3-5.6 min and six fit it (#1812). Hosted minutes are free
+  # on this public repo and jobs start within seconds of their run, so a shard costs neither.
   # unit/shard.bats checks that the matrix lists every shard of each tier.
   #
   # The table is computed once, here, because two shards splitting by two tables can each leave

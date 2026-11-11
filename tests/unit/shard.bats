@@ -25,9 +25,9 @@ fixture() {
 @test "every real file of each tier is in exactly one shard, for 1 to the CI matrix's shard count" {
   unset SHARD_DIR SHARD_WEIGHTS
   local tests="$BATS_TEST_DIRNAME/.." top
-  top=$(matrix_shards "$tests/../.github/workflows/tests.yml" | awk '$2 > m { m = $2 } END { print m }')
-  [ "$top" -ge 2 ]
   for tier in unit integ; do
+    top=$(matrix_shards "$tests/../.github/workflows/tests.yml" | awk -v t="$tier" '$1 == t { print $2 }')
+    [[ $top =~ ^[0-9]+$ ]] || fail "no $tier shard count read from tests.yml's matrix"
     for ((n = 1; n <= top; n++)); do
       local all=()
       for ((i = 1; i <= n; i++)); do
