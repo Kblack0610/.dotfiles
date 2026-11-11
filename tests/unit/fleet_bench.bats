@@ -5489,7 +5489,7 @@ STUB
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
   echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
-  printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1" = codex ] && { echo "codex: room"; exit 0; }\necho "$1: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" retro
   assert_success
@@ -5509,6 +5509,27 @@ STUB
   assert_success
   refute_output --partial 'codex/sol'
   [ -f "$CQ/canary-greet-$week.json" ]
+}
+
+@test "canary lanes: a claude lane needs no source, is queued while a Claude account has room and skipped while none has" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'claude haiku max\n' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{}}' > "$BENCH_HARNESSES"
+  # Room for any account is asked with no --source; ROOM is what the stub says this run.
+  printf '#!/usr/bin/env bash\necho "room $*" >> "%s"\n[ "$ROOM" = yes ] && { echo /home/u/.claude; exit 0; }\necho "every account is past its pace line" >&2; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  chmod +x "$SANDBOX/bin/room-stub"
+  ROOM=no run "$SUBJECT" retro
+  assert_success
+  assert_line "fleet-bench: canary: claude/haiku@max not queued, no Claude account has room: every account is past its pace line"
+  [ ! -f "$CQ/canary-greet-$week-haiku-ma.json" ]
+  ROOM=yes run "$SUBJECT" retro
+  assert_success
+  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (claude/haiku@max)"
+  # The slug names the model alone, so the id keeps letters to tell tasks apart; the item pins all three.
+  assert_equal "$(jq -c '[.agent, .model, .effort]' "$CQ/canary-greet-$week-haiku-ma.json")" '["claude","haiku","max"]'
+  assert_equal "$(sort -u "$SANDBOX/room.log")" 'room '
 }
 
 @test "canary lanes: score takes harness, model and session from the queue item; one lane scores once, another lane on the same task and week is its own run" {

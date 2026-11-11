@@ -225,7 +225,7 @@ set -uo pipefail
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model [effort]` a line (content as data)
 : "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
 : "${BENCH_HARNESSES:=$HOME/.config/agentctl/harnesses.json}"   # each harness's `source`: a lane's capacity, a session's and an item's source
-: "${BENCH_ROOM_CMD:=claude-acct room --source}"   # retro: given a source name, exit 0 when it has room
+: "${BENCH_ROOM_CMD:=claude-acct room}"   # retro: exit 0 when a Claude account has room, or with --source <name>, when that source has
 : "${BENCH_SOURCES_CMD:=claude-acct status --json}"   # sources: every source's row, the one writer's
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
@@ -4644,9 +4644,14 @@ canary_brief() {
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
 # A lane with an effort ends in its first two letters (me, hi, lo, mi, xh): the whole word would
-# leave the id too few letters to tell the tasks apart. Retro refuses a lane whose slug repeats one before it.
+# leave the id too few letters to tell the tasks apart. For the same reason a claude lane with a model
+# is named by the model alone, as the baseline lane names no harness. Retro refuses a lane whose slug
+# repeats one before it.
 # canary_lane_name <harness> [model] [effort] -> the lane part of the slug, as canary_slug keeps it whole
-canary_lane_name() { printf '%s' "$1${2:+-$2}${3:+-${3:0:2}}"; }
+canary_lane_name() {
+  local h=$1; [ "$h" != claude ] || [ -z "$2" ] || h=''
+  printf '%s' "$h${2:+${h:+-}$2}${3:+-${3:0:2}}"
+}
 
 canary_slug() {
   local id tail
@@ -4693,7 +4698,8 @@ canary_queue() {
 # canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model [effort]` a
 # line, # comments), when the source its harness spends from (harnesses.json `source`) has room by
 # BENCH_ROOM_CMD; a lane with no source or no room is said and skipped, so retro never queues a run
-# its source cannot carry. Returns 1 when any lane could not be queued.
+# its source cannot carry. A claude lane spends a Claude account, so it asks for any with room, as a
+# start does. Returns 1 when any lane could not be queued.
 canary_queue_lanes() {
   local h m e src why label lane rc=0
   local -A lanes=()
@@ -4703,9 +4709,13 @@ canary_queue_lanes() {
     label="$h${m:+/$m}${e:+@$e}" lane=$(canary_lane_name "$h" "$m" "$e")
     if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
     lanes[$lane]=$label
-    src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
-    if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
-    if ! why=$($BENCH_ROOM_CMD "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+    if [ "$h" = claude ]; then
+      if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
+    else
+      src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
+      if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
+      if ! why=$($BENCH_ROOM_CMD --source "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+    fi
     canary_queue --harness "$h" ${m:+--model "$m"} ${e:+--effort "$e"} || rc=1
   done 3<"$BENCH_CANARY_LANES"
   return "$rc"
