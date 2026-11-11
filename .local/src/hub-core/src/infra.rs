@@ -1,12 +1,14 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
 //! TUI's Infra tab (and Home's health line) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
-//! Grafana's kb-command-center does, so none of them judges anything itself.
+//! Grafana's kb-command-center does, so none of them judges anything itself. Alertmanager is
+//! asked in the same gather (`alertmanager::read`), so the Alerts tab's rules ride this cadence.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
@@ -106,6 +108,11 @@ pub struct Infra {
     pub down: Vec<Series>,
     /// The CI runners board, built once here for both surfaces (`ci::build`).
     pub ci: Ci,
+    /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
+    /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
+    /// leaves it out.
+    #[serde(skip)]
+    pub alertmanager: Option<Result<Vec<Firing>, String>>,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -124,6 +131,18 @@ fn grafana_base(url: &str) -> String {
 /// Ask every query at once (each is a curl with its own timeout) and keep what answered.
 /// Any required query failing, or no `cc:overall_status`, makes the whole answer an error.
 pub fn gather() -> Infra {
+    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
+    // Alerts tab shows each source's answer on its own.
+    let (am, mut out) = std::thread::scope(|s| {
+        let am = s.spawn(alertmanager::read);
+        let out = prometheus();
+        (am.join().unwrap_or_else(|_| Err("panicked".into())), out)
+    });
+    out.alertmanager = Some(am);
+    out
+}
+
+fn prometheus() -> Infra {
     let mut out = Infra {
         at: crate::jobs::now().max(0) as u64,
         grafana: grafana(),
