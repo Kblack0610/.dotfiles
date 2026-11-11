@@ -16,6 +16,15 @@ pub const OPEN_DAYS: i64 = 7;
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
+
+/// A bench session's plan by its heading (`plans::named`), as the web Log's bench says it.
+fn plan_name(plan: &str) -> String {
+    if plan.is_empty() {
+        return String::new();
+    }
+    hub_core::plans::named(&hub_core::plans::path(plan))
+}
+
 fn or_dash(x: &str) -> String {
     if x.is_empty() {
         "-".into()
@@ -268,7 +277,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
                         let t = t.split_once('/').map_or(t, |(_, r)| r);
                         vec![
                             t.strip_suffix(":1").unwrap_or(t).to_string().into(),
-                            or_dash(s(x, "plan")).into(),
+                            or_dash(&plan_name(s(x, "plan"))).into(),
                             or_dash(s(x, "phase")).into(),
                             num(&x["working_h"]).into(),
                             num(&x["waiting_h"]).into(),
