@@ -32,6 +32,7 @@ The class column tells you how each consumer can be stopped:
 | `claude` | a Claude session drove it | parked (`claude-acct park`) when idle or waiting on GitHub, a `fleet-comms` message when busy, plus the hold |
 | `shell` | a tmux pane with no Claude, usually a suite loop | the hold at the resource gate, or a kill. It has no inbox |
 | `agentctl` | an agentctl unit | `agentctl stop <name>` |
+| `ci` | a job of this host's CI runner pool (cgroup under `ci.slice`; the runner slice is in the session column) | `machine-mode` runner slots: a busy runner finishes its job, then takes no new one. Never a kill |
 | `orphan` | reparented to init, its driver gone | nothing will reap it; a kill, with the human's OK |
 
 ## Verdicts
