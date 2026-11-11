@@ -11,6 +11,7 @@ use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
 use crate::prom::{self, Series, W};
+use crate::run_detail::Rates;
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
 const LOCAL_FRESH: &str =
@@ -21,6 +22,11 @@ const LOCAL_FRESH: &str =
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+
+/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
+/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str =
+    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -67,6 +73,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
+        ("rates", RATES_QUERY.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -80,6 +87,7 @@ pub const OPTIONAL: &[&str] = &[
     "power",
     "governor",
     "job_usual",
+    "rates",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -173,6 +181,21 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 }
 
 impl Infra {
+    /// The rates the board read, or why there are none.
+    pub fn rates(&self) -> Rates {
+        match self.instant.get("rates") {
+            Some(s) => Rates::from_series(s),
+            None => Rates {
+                error: Some(
+                    self.error
+                        .clone()
+                        .unwrap_or_else(|| "no rate series".into()),
+                ),
+                ..Default::default()
+            },
+        }
+    }
+
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
@@ -352,6 +375,26 @@ mod tests {
     }
 
     #[test]
+    fn the_rates_come_from_the_boards_answer_or_say_why_not() {
+        let mut i = Infra::default();
+        i.instant.insert(
+            "rates",
+            vec![
+                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
+                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
+            ],
+        );
+        let r = i.rates();
+        assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
+        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        let none = Infra {
+            error: Some("cannot read prom".into()),
+            ..Default::default()
+        };
+        assert_eq!(none.rates().error.as_deref(), Some("cannot read prom"));
+    }
+
+    #[test]
     fn only_the_extras_are_optional() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
@@ -367,7 +410,8 @@ mod tests {
                 "withheld",
                 "power",
                 "governor",
-                "job_usual"
+                "job_usual",
+                "rates"
             ]
         );
     }

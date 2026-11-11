@@ -23,6 +23,14 @@ private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_r
 sent in curl's stdin config, never argv; with neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
+  schedules-sync jobs <repo> [--run ID] [--since T]
+                          the job archive's records of one GitHub repo, a JSON array in
+                          created_at order, one object per run attempt: forge, repo, run_id,
+                          attempt (the key), created_at, source (exporter or github), complete,
+                          fetched_at, jobs (id, name, conclusion, runner_name, labels,
+                          created_at, started_at, completed_at, url, steps). A run missing here,
+                          or with complete false, has no full job detail yet. ci-cost.py and the
+                          hub's run detail read jobs here, never from actions/jobs
   schedules-sync pending <repo> [--day YYYY-MM-DD]
                           what an agent-queue `nightly:<repo>` hold still waits for, one line;
                           exit 0 and no output when nothing is (repo: owner/name or name);
@@ -40,13 +48,23 @@ sent in curl's stdin config, never argv; with neither, a public repo still reads
                           after the last sync: that window is not yet complete, and the next
                           pass completes it
 
+Job detail goes to the job archive SCHEDULES_JOBS_LEDGER (~/.local/state/ci/jobs.jsonl),
+kept 90 days, deduped and pruned like the run ledger. For the repos the github-runner-exporter
+collects (its feed names them; there is no second list here) it comes from the exporter's
+changes feed, read through the API server's Service proxy with SCHEDULES_KUBECTL (kubectl):
+the cursor, epoch, repos and last error are in sync.json's "exporter", and a new epoch reads the exporter's
+24h window again. A feed that fails is recorded there and those repos wait; it is never
+covered by asking GitHub. Every other GitHub repo, and an exporter repo's runs older than its
+window, are read per attempt from actions/runs/<id>/attempts/<n>/jobs, every page, newest run
+first, at most SCHEDULES_JOB_CALLS (40) gh calls a pass for the last day's runs and
+SCHEDULES_BACKFILL_CALLS (20) for older ones. A run's failed jobs come from here.
+
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
 
 gh cost per GitHub repo per pass: one workflows listing, one conditional runs page (a 304,
 which costs no rate limit, when nothing on it changed; more pages only on a cold start or
-after a gap), one blob per changed workflow file and one jobs call per newly failed scheduled
-run. The scheduled runs are the runs page's `event: schedule` rows, so there is no second
+after a gap), one blob per changed workflow file, and the job calls above. The scheduled runs are the runs page's `event: schedule` rows, so there is no second
 listing. The ETag, the last sync and the last error per repo are in ci/sync.json beside the
 ledger. The previous state is the cache: a workflow whose blob sha is unchanged is not
 re-read, a finished run's failed jobs are not re-asked. Runs come from actions/runs, not
@@ -90,6 +108,21 @@ LEDGER = os.environ.get(
     os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "ci/runs.jsonl"),
 )
 SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
+JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
+JOBS_KEEP = timedelta(days=90)  # the job archive's window
+KUBECTL = os.environ.get("SCHEDULES_KUBECTL", "kubectl")
+# The exporter's changes feed, through the API server's Service proxy: no ingress, and the
+# kubeconfig this machine already has is the credential.
+FEED = "/api/v1/namespaces/monitoring/services/github-runner-exporter:9320/proxy/api/ci/details"
+FEED_LIMIT = 100
+FEED_PAGES = 50  # a cold 24h window is ~1,500 runs; this bounds one pass at 5,000
+# gh calls a pass may spend on job detail it reads itself, newest run first; the rest waits for
+# the next pass. Live is the last day of repos outside the exporter's; backfill is older runs of
+# any repo, apart so a cold 30-day ledger never starves a live run.
+JOB_CALLS = int(os.environ.get("SCHEDULES_JOB_CALLS", "40"))
+BACKFILL_CALLS = int(os.environ.get("SCHEDULES_BACKFILL_CALLS", "20"))
+JOB_KEYS = ("id", "name", "conclusion", "runner_name", "labels", "created_at", "started_at", "completed_at")
+STEP_KEYS = ("number", "name", "conclusion", "started_at", "completed_at")
 CURL = os.environ.get("SCHEDULES_CURL", "curl")
 RBW = os.environ.get("SCHEDULES_RBW", "rbw")
 FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
@@ -454,11 +487,16 @@ def run_key(r):
     return (r["forge"], r["repo"], r["id"], r["attempt"])
 
 
-def read_ledger(repo=None):
+def job_key(r):
+    return (r["forge"], r["repo"].lower(), r["run_id"], r["attempt"])  # GitHub names are case-blind
+
+
+def read_ledger(repo=None, path=None, key=run_key):
     """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger. With
-    <repo> (owner/name) only lines naming it are parsed: a reader of one repo skips the rest."""
+    <repo> (owner/name) only lines naming it are parsed: a reader of one repo skips the rest.
+    The run ledger by default; the job archive with path=JOBS_LEDGER, key=job_key."""
     try:
-        f = open(LEDGER)
+        f = open(path or LEDGER)
     except OSError:
         return None, 0, False
     last, n, line = {}, 0, ""
@@ -468,45 +506,178 @@ def read_ledger(repo=None):
                 continue
             try:
                 r = json.loads(line)
-                last[run_key(r)] = r
+                last[key(r)] = r
                 n += 1
             except (ValueError, KeyError, TypeError):
                 continue  # a torn last line, or not a row
     return last, n, bool(line) and not line.endswith("\n")
 
 
-def write_ledger(last, n, torn, rows, t):
+def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
     """Append the rows that changed since their key's last row. Rewrite instead, through a tmp
-    file, when a run has aged past KEEP or superseded rows outnumber live ones. -> the rows the
+    file, when a run has aged past `keep` or superseded rows outnumber live ones. -> the rows the
     file now holds; `last` is left holding only the live runs."""
+    path = path or LEDGER
     changed = []
     for r in rows:
-        if last.get(run_key(r)) != r:
-            last[run_key(r)] = r
+        if last.get(key(r)) != r:
+            last[key(r)] = r
             changed.append(r)
-    live = {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - KEEP}
-    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    live = {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - keep}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     line = lambda r: json.dumps(r, separators=(",", ":")) + "\n"
     if len(live) < len(last) or n + len(changed) - len(live) > len(live):
-        tmp = f"{LEDGER}.{os.getpid()}"
+        tmp = f"{path}.{os.getpid()}"
         with open(tmp, "w") as f:
-            f.writelines(line(r) for r in sorted(live.values(), key=lambda r: (r.get("created_at") or "", run_key(r))))
-        os.replace(tmp, LEDGER)
+            f.writelines(line(r) for r in sorted(live.values(), key=lambda r: (r.get("created_at") or "", key(r))))
+        os.replace(tmp, path)
         for k in set(last) - set(live):
             del last[k]
         return len(live)
     else:  # opened even with nothing to add: an ETag in sync.json is only trusted beside a ledger
-        with open(LEDGER, "a") as f:
+        with open(path, "a") as f:
             f.write(("\n" if torn else "") + "".join(line(r) for r in changed))
     return n + len(changed)
 
 
-def read_sync():
+def job_record(forge, repo, run_id, attempt, created_at, source, complete, jobs, t):
+    """One run attempt's jobs as the archive keeps them (the hub's run detail reads this shape)."""
+    slim = [{**{k: j.get(k) for k in JOB_KEYS}, "url": j.get("html_url") or j.get("url"),
+             "steps": [{k: st.get(k) for k in STEP_KEYS} for st in j.get("steps") or []]} for j in jobs]
+    return {"forge": forge, "repo": repo, "run_id": run_id, "attempt": attempt, "created_at": created_at,
+            "source": source, "complete": complete, "fetched_at": iso(t), "jobs": slim}
+
+
+def feed_get(cursor):
+    path = f"{FEED}?cursor={cursor}&limit={FEED_LIMIT}"
+    try:
+        p = subprocess.run([KUBECTL, "get", "--raw", path], capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise GhError(f"exporter feed: {e}")
+    try:
+        if p.returncode == 0:
+            return json.loads(p.stdout)
+    except ValueError:
+        pass
+    raise GhError(f"exporter feed: {(p.stderr or p.stdout).strip()[:160] or 'no answer'}")
+
+
+def import_feed(entry, t):
+    """The exporter's records since entry's cursor -> job records. `entry` (sync.json "exporter")
+    keeps the cursor, the epoch it belongs to and the repos the exporter collects for; a new
+    epoch (the exporter restarted) reads its window from 0. A failure keeps the last cursor and
+    repos and sets error: those repos' runs then wait as pending, never read from GitHub here."""
+    cursor = entry.get("cursor", 0) if entry.get("epoch") else 0
+    out = []
+    try:
+        for _ in range(FEED_PAGES):
+            d = feed_get(cursor)
+            if d.get("epoch") != entry.get("epoch") and cursor:
+                entry["epoch"], cursor = d.get("epoch"), 0
+                continue
+            for r in d.get("records", []):
+                run = r.get("run") or {}
+                out.append(job_record(r["forge"], r["repo"], r["run_id"], r["attempt"], run.get("created_at"),
+                                      "exporter", bool(r.get("complete")), r.get("jobs", []), t))
+            cursor = d.get("next", cursor)
+            entry.update(epoch=d.get("epoch"), cursor=cursor, repos=d.get("repos", []),
+                         window_secs=d.get("window_secs", 86400))
+            if not d.get("more"):
+                break
+        entry.update(synced_at=iso(t), error=None)
+    except GhError as e:
+        print(f"schedules-sync: {e.detail}", file=sys.stderr)
+        entry["error"] = str(e)
+    return out
+
+
+def fetch_jobs(repo, run, budget):
+    """Every job of one GitHub run's attempt, paged -> (jobs, complete), or None when the first
+    page fails or the budget ([calls spent, limit]) is spent."""
+    base = f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['attempt']}/jobs?per_page=100"
+    jobs, page = [], 1
+    while True:
+        if budget[0] >= budget[1]:
+            return (jobs, False) if page > 1 else None
+        budget[0] += 1
+        try:
+            got = gh(base if page == 1 else f"{base}&page={page}")
+        except GhError:
+            return (jobs, False) if page > 1 else None
+        batch = got.get("jobs", []) if isinstance(got, dict) else []
+        jobs += batch
+        if not batch or len(jobs) >= (got.get("total_count") or 0):
+            return jobs, True
+        page += 1
+
+
+def direct_jobs(repo, runs_last, jobs_last, exporter, budgets, t):
+    """Job records this pass reads from GitHub for one repo: every finished run outside the
+    exporter's window (budgets["backfill"]), and inside it too when the exporter does not collect
+    the repo (budgets["live"]). Nothing while the exporter's repo list is unknown, so a dead feed
+    is never papered over."""
+    if exporter.get("repos") is None:
+        return []
+    owned = repo.lower() in {r.lower() for r in exporter["repos"]}
+    edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
+    todo = {"live": [], "backfill": []}
+    for r in runs_last.values():
+        if r["forge"] != "github" or r["repo"] != repo or r.get("status") != "completed":
+            continue
+        have = jobs_last.get(("github", repo.lower(), r["id"], r["attempt"]))
+        if have and have.get("complete"):
+            continue
+        live = (when(r.get("created_at")) or t) >= edge
+        if owned and live:
+            continue  # the feed's
+        todo["live" if live else "backfill"].append(r)
+    out = []
+    for kind, runs in todo.items():
+        budget = budgets[kind]
+        for r in sorted(runs, key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True):
+            if budget[0] >= budget[1]:
+                break
+            got = fetch_jobs(repo, r, budget)
+            if got is not None:
+                out.append(job_record("github", repo, r["id"], r["attempt"], r.get("created_at"), "github", got[1], got[0], t))
+    return out
+
+
+def read_sync(part="repos"):
     try:
         with open(SYNC) as f:
-            return json.load(f).get("repos", {})
+            return json.load(f).get(part) or {}
     except (OSError, ValueError, AttributeError):
         return {}
+
+
+def new_jobs(jlast, rows):
+    """Rows whose content differs from the archive's, fetched_at aside: a feed re-read after an
+    exporter restart appends nothing it already has."""
+    bare = lambda r: {k: v for k, v in (r or {}).items() if k != "fetched_at"}
+    return [r for r in rows if bare(jlast.get(job_key(r))) != bare(r)]
+
+
+def jobs(argv):
+    """`jobs <repo> [--run ID] [--since T]` -> (exit code, JSON or a reason)."""
+    if not argv or argv[0].startswith("-") or len(argv) % 2 != 1:
+        return 2, "jobs <repo> [--run ID] [--since T]"
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    if set(opts) - {"--run", "--since"} or len(opts) * 2 != len(argv) - 1:
+        return 2, "jobs: --run ID and --since T, each once"
+    try:
+        run = int(opts["--run"]) if "--run" in opts else None
+        since = parse_iso(opts["--since"]) if "--since" in opts else None
+    except ValueError:
+        return 2, "jobs: --run is a run id, --since is YYYY-MM-DDTHH:MM:SSZ"
+    name = argv[0].rpartition(":")[2].lower()
+    last, _, _ = read_ledger(f'"repo":"{name}"', JOBS_LEDGER, job_key)
+    if last is None:
+        return 1, f"no job archive at {JOBS_LEDGER}"
+    rows = [r for r in last.values() if r["repo"].lower() == name and (run is None or r["run_id"] == run)
+            and not (since and (when(r.get("created_at")) or since) < since)]
+    rows.sort(key=lambda r: (r.get("created_at") or "", r["run_id"], r["attempt"]))
+    return 0, json.dumps(rows, separators=(",", ":"))
 
 
 def runs(argv, t):
@@ -565,21 +736,21 @@ def write_json(path, doc):
     os.replace(tmp, path)
 
 
-def failed_jobs(repo, run, old):
-    """Names of the failed jobs of a failed run; reused from the last pass for the same attempt."""
+def failed_jobs(repo, run, old, jobs_last):
+    """Names of the failed jobs of a failed run, from the job archive; reused from the last pass
+    for the same attempt. None (unknown) until the archive has that attempt whole."""
     if run["conclusion"] not in FAILED:
         return []
+    rec = jobs_last.get(("github", repo.lower(), run["id"], run["attempt"]))
+    if rec and rec.get("complete"):
+        return [j["name"] for j in rec["jobs"] if j.get("conclusion") in FAILED]
     if (old and old.get("attempt") == run["attempt"] and old.get("conclusion") == run["conclusion"]
             and old.get("failed_jobs") is not None):
         return old["failed_jobs"]
-    try:
-        got = gh(f"repos/{repo}/actions/runs/{run['id']}/attempts/{run['attempt']}/jobs?per_page=100")
-    except GhError:
-        return None  # unknown, asked again next pass
-    return [j["name"] for j in got.get("jobs", []) if j.get("conclusion") in FAILED]
+    return None
 
 
-def sync_repo(repo, base, prev, t, sched):
+def sync_repo(repo, base, prev, t, sched, jobs_last):
     """The state entry of one repo; `sched` is this pass's new scheduled runs."""
     workflows, unscheduled = scheduled_workflows(repo, base, prev)
     paths = {w["path"] for w in workflows}
@@ -592,7 +763,7 @@ def sync_repo(repo, base, prev, t, sched):
         mine = [r for p, r in merged.values() if p == w["path"]]
         w["runs"] = sorted(mine, key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)[:RUNS_KEPT]
         for r in w["runs"]:  # only the kept runs are asked about
-            r["failed_jobs"] = failed_jobs(repo, r, old_runs.get(r["id"], (None, None))[1])
+            r["failed_jobs"] = failed_jobs(repo, r, old_runs.get(r["id"], (None, None))[1], jobs_last)
     return {"repo": repo, "base": base, "synced_at": iso(t), "error": None,
             "workflows": workflows, "unscheduled": unscheduled}
 
@@ -693,8 +864,12 @@ def main(argv):
         rc, out = runs(argv[1:], now())
         print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
+    if argv and argv[0] == "jobs":
+        rc, out = jobs(argv[1:])
+        print(out, file=sys.stdout if rc == 0 else sys.stderr)
+        return rc
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, jobs, --help)", file=sys.stderr)
         return 2
     try:
         repos = read_repos()
@@ -706,6 +881,11 @@ def main(argv):
     sync = read_sync() if last is not None else {}  # no ledger: an ETag would hide its rows
     last = last or {}
     opened = {}  # (forge, repo) -> the oldest run the ledger still has open
+    jlast, jn, jtorn = read_ledger(path=JOBS_LEDGER, key=job_key)
+    exporter = read_sync("exporter") if jlast is not None else {}  # no archive: read the window again
+    jlast = jlast or {}
+    jn, jtorn = write_ledger(jlast, jn, jtorn, new_jobs(jlast, import_feed(exporter, t)), t, JOBS_LEDGER, job_key, JOBS_KEEP), False
+    budgets = {"live": [0, JOB_CALLS], "backfill": [0, BACKFILL_CALLS]}
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None
         if c:
@@ -726,8 +906,11 @@ def main(argv):
                           for r in w.get("runs", []) if r.get("status") != "completed" and r.get("created_at")]
                 got, etag = fetch_runs(repo, entry, min(since, default=None), t)
                 got = got or []
-                out.append(sync_repo(repo, base, p, t, [r for r in got if r.get("event") == "schedule"]))
                 rows.extend(gh_row(repo, r) for r in got)
+                seen = {**last, **{run_key(r): r for r in rows}}  # the ledger with this pass's runs
+                jn = write_ledger(jlast, jn, jtorn, new_jobs(jlast, direct_jobs(repo, seen, jlast, exporter, budgets, t)), t,
+                                  JOBS_LEDGER, job_key, JOBS_KEEP)
+                out.append(sync_repo(repo, base, p, t, [r for r in got if r.get("event") == "schedule"], jlast))
                 entry["etag"] = etag  # only once its rows are kept: a 304 must not hide them
             else:
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
@@ -744,7 +927,7 @@ def main(argv):
         # Per repo, so a cold pass the service timeout cuts keeps the repos it finished. The
         # ledger goes first: a crash between the two re-reads the repo, it never skips it.
         n, torn = write_ledger(last, n, torn, rows, t), False
-        write_json(SYNC, {"generated_at": iso(t), "repos": sync})
+        write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
     write_json(STATE, {"generated_at": iso(t), "repos": out})
     print(STATE)
     return 1 if bad else 0
