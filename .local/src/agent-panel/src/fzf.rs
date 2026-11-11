@@ -7,10 +7,16 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-/// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
-const PROMPT_ALL: &str = "Select agent > ";
+/// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back. A
+/// held row (S-Tab) shows as `Moving <target> > `, which `agent-panel move` reads.
+pub const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  A-n next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+pub const PROMPT_MOVING: &str = "Moving ";
+/// Up and Down step over the non-selectable project header rows.
+pub const UP_SKIPPING_HEADERS: &str = "up+transform:case {} in *━━*) echo up ;; esac";
+pub const DOWN_SKIPPING_HEADERS: &str = "down+transform:case {} in *━━*) echo down ;; esac";
+/// The keys that open the shortcuts page (`agent-panel keys`); the panel draws no header bar.
+pub const HELP_KEYS: [&str; 2] = ["alt-?", "f1"];
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -112,7 +118,6 @@ fn args(
         "--border".into(),
         "--cycle".into(),
         format!("--prompt={PROMPT_ALL}"),
-        format!("--header={HEADER}"),
         "--ansi".into(),
         "--no-sort".into(),
         "--disabled".into(),
@@ -141,12 +146,27 @@ fn args(
         sort_next_bind,
         "--bind".into(),
         sort_reverse_bind,
-        // Skip non-selectable project header rows when navigating.
-        "--bind".into(),
-        "up:up+transform:case {} in *━━*) echo up ;; esac".into(),
-        "--bind".into(),
-        "down:down+transform:case {} in *━━*) echo down ;; esac".into(),
     ]);
+    // S-Tab grabs a row and Up/Down carry it; holding one, Enter and Esc drop it. Each of these
+    // keys asks `move` what to do, since only it knows (the prompt) whether a row is held; held
+    // or not, Up and Down skip the project header rows.
+    for (key, action) in [
+        ("btab", "grab"),
+        ("up", "up"),
+        ("down", "down"),
+        ("enter", "accept"),
+        ("esc", "abort"),
+    ] {
+        args.push("--bind".into());
+        args.push(format!(
+            "{key}:transform:{exe} move {action} --map-file '{map}' {{1}}"
+        ));
+    }
+    let help = format!("execute({exe} keys)");
+    for key in HELP_KEYS {
+        args.push("--bind".into());
+        args.push(format!("{key}:{help}"));
+    }
     if let Some(q) = query {
         args.push(format!("--query={q}"));
     }
@@ -183,7 +203,6 @@ mod tests {
             a.contains(&"ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string()),
             "{a:?}"
         );
-        assert!(HEADER.contains("C-s shepherd") && HEADER.contains("C-y asking"));
         let y = a
             .iter()
             .find(|x| x.starts_with("ctrl-y:"))
@@ -201,11 +220,36 @@ mod tests {
             a.contains(&format!("alt-o:reload({rows} --sort reverse {asking})")),
             "{a:?}"
         );
-        assert!(HEADER.contains("C-o sort") && HEADER.contains("A-o reverse"));
         // Negative control: no active agent, no load bind.
         assert!(!args("/bin/ap", "/tmp/m.map", None, None, &stacked)
             .iter()
             .any(|x| x.starts_with("load:")));
+    }
+
+    #[test]
+    fn grab_keys_ask_move_and_the_help_keys_open_the_page_with_no_header_bar() {
+        let a = args("/bin/ap", "/tmp/m.map", None, None, &[]);
+        for (key, action) in [
+            ("btab", "grab"),
+            ("up", "up"),
+            ("down", "down"),
+            ("enter", "accept"),
+            ("esc", "abort"),
+        ] {
+            let bind =
+                format!("{key}:transform:/bin/ap move {action} --map-file '/tmp/m.map' {{1}}");
+            assert!(a.contains(&bind), "{bind} not in {a:?}");
+        }
+        assert!(
+            a.contains(&"alt-?:execute(/bin/ap keys)".to_string()),
+            "{a:?}"
+        );
+        assert!(a.contains(&"f1:execute(/bin/ap keys)".to_string()), "{a:?}");
+        // The bar is gone: the keys live on the help page.
+        assert!(!a.iter().any(|x| x.starts_with("--header")), "{a:?}");
+        // Negative control: each grab key is bound once, so no older up/down bind shadows it.
+        assert_eq!(a.iter().filter(|x| x.starts_with("up:")).count(), 1);
+        assert_eq!(a.iter().filter(|x| x.starts_with("down:")).count(), 1);
     }
 
     #[test]
@@ -216,7 +260,6 @@ mod tests {
             a.contains(&"ctrl-n:execute-silent(/bin/ap new-agent {1})+abort".to_string()),
             "{a:?}"
         );
-        assert!(HEADER.contains("C-n new agent"));
         // fzf does not match: typing reloads the rows the panel matched (`search`).
         assert!(a.contains(&"--disabled".to_string()), "{a:?}");
         assert!(

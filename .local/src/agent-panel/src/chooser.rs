@@ -61,6 +61,9 @@ pub struct Agent {
     /// thread file it writes, which dates its last activity.
     pub codex: bool,
     pub rollout: Option<PathBuf>,
+    /// Epoch seconds of its last activity: the transcript's (or rollout's) last write, else the
+    /// process start. Filled by `write_rows` for the recent sort; display only, like `stage`.
+    pub last_active: Option<u64>,
 }
 
 impl Agent {
@@ -185,6 +188,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             parked: false,
             codex: false,
             rollout: None,
+            last_active: None,
         });
     }
     // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
@@ -361,7 +365,7 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
 
     refresh_index();
     let map_file = map_file_path();
-    let rows = write_rows(&agents, &map_file, saved_sort())?;
+    let rows = write_rows(agents, &map_file, saved_sort())?;
     // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
     let rows_text = match query.filter(|q| !q.trim().is_empty()) {
         Some(q) => search::filter(
@@ -432,11 +436,17 @@ fn refresh_index() {
 
 /// Render the rows in `sort` and write the preview map file they need, and the search notes
 /// beside it (`search::notes`).
-fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
+fn write_rows(
+    mut agents: Vec<Agent>,
+    map_file: &Path,
+    sort: sort::Sort,
+) -> Result<Vec<render::Row>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    with_last_active(&mut agents);
+    let agents = &agents[..];
     let (rows, map_lines) = render::build(agents, sort, now);
     write_whole(map_file, &map_lines.join("\n"))?;
     // A missing index leaves each note to its row text: search still works on what is shown.
@@ -448,6 +458,14 @@ fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec
         &search::notes(&rows, agents, &search::index_notes(&index)),
     )?;
     Ok(rows)
+}
+
+/// Date each row's last activity for the recent sort: one stat of its transcript (or rollout).
+fn with_last_active(agents: &mut [Agent]) {
+    for a in agents {
+        let mtime = mtime_secs(a.jsonl.as_deref().or(a.rollout.as_deref()));
+        a.last_active = Some(idle_since(None, mtime, a.started_at)).filter(|&t| t > 0);
+    }
 }
 
 /// Write by rename, so a `match` or preview callback reading the file while a reload rewrites
@@ -486,7 +504,7 @@ pub fn run_rows(
             sort::save(&file, sort)?;
         }
     }
-    write_rows(&only_asking(collect(), asking), map_file, sort)?;
+    write_rows(only_asking(collect(), asking), map_file, sort)?;
     print_matches(&fs::read_to_string(search::notes_path(map_file))?, query);
     Ok(())
 }
@@ -512,8 +530,109 @@ fn print_matches(notes: &str, query: &str) {
     }
 }
 
+/// A key the S-Tab grab changes, read by `agent-panel move`: what it does depends on whether a
+/// row is held, which the prompt says (`fzf::PROMPT_MOVING`), the way ctrl-y's view lives in
+/// the prompt too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum MoveKey {
+    /// S-Tab: grab the row, or drop the one held.
+    Grab,
+    Up,
+    Down,
+    /// Enter: drop the held row, else jump.
+    Accept,
+    /// Esc: drop the held row, else close.
+    Abort,
+}
+
+/// fzf `transform` callback for the keys a grab changes: prints the actions to run. Holding a
+/// row, Up and Down swap it with its neighbour in the custom order (saved, then the rows
+/// rewritten), and the cursor follows it by `pos`, after a `reload-sync` so it lands on the new
+/// list. A grab out of another sort starts the custom order from the rows as shown.
+pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
+    let moving = std::env::var("FZF_PROMPT").is_ok_and(|p| p.starts_with(fzf::PROMPT_MOVING));
+    let query = std::env::var("FZF_QUERY").unwrap_or_default();
+    let drop = format!("change-prompt({})", fzf::PROMPT_ALL);
+    let step = match (key, moving) {
+        (MoveKey::Grab | MoveKey::Accept | MoveKey::Abort, true) => return say(&drop),
+        (MoveKey::Up, false) => return say(fzf::UP_SKIPPING_HEADERS),
+        (MoveKey::Down, false) => return say(fzf::DOWN_SKIPPING_HEADERS),
+        (MoveKey::Accept, false) => return say("accept"),
+        (MoveKey::Abort, false) => return say("abort"),
+        (MoveKey::Grab, false) if target.is_empty() => return Ok(()), // a header row
+        (MoveKey::Grab, false) => 0,
+        (MoveKey::Up, true) => -1,
+        (MoveKey::Down, true) => 1,
+    };
+    let mut agents = collect();
+    with_last_active(&mut agents);
+    let saved = saved_sort();
+    let custom = sort::Sort {
+        key: sort::Key::Custom,
+        reverse: false,
+    };
+    let order_file = sort::order_file().context("no HOME for the panel's state")?;
+    // The rows as shown are the order moved: the custom one itself (live rows only, so a gone
+    // session drops out here), or the sort being left, reversed or not.
+    let mut order = shown_order(&agents, saved);
+    if saved != custom {
+        if let Some(file) = sort::state_file() {
+            sort::save(&file, custom)?;
+        }
+    }
+    swap(&mut order, target, step);
+    sort::save_order(&order_file, &order)?;
+    write_rows(agents, map_file, custom)?;
+    let notes = fs::read_to_string(search::notes_path(map_file))?;
+    let rows = search::filter(&notes, &query, &search::read_topics());
+    let pos = rows
+        .lines()
+        .position(|l| l.split('\t').next() == Some(target))
+        .map_or(1, |i| i + 1);
+    let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+    let reload = format!(
+        "reload-sync({exe} match --map-file '{}' --query={{q}})+pos({pos})",
+        map_file.display()
+    );
+    if key == MoveKey::Grab {
+        say(&format!(
+            "change-prompt({}{} > )+{reload}",
+            fzf::PROMPT_MOVING,
+            target.replace([')', '('], "")
+        ))
+    } else {
+        say(&reload)
+    }
+}
+
+fn say(actions: &str) -> Result<()> {
+    println!("{actions}");
+    Ok(())
+}
+
+/// The targets in the order `sort` shows them.
+fn shown_order(agents: &[Agent], sort: sort::Sort) -> Vec<String> {
+    render::build(agents, sort, 0)
+        .0
+        .into_iter()
+        .map(|r| r.target)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Move `target` one place up (-1) or down (1) in `order`; at either end, or not in it, nothing.
+fn swap(order: &mut [String], target: &str, step: i32) {
+    let Some(i) = order.iter().position(|t| t == target) else {
+        return;
+    };
+    let j = i as i64 + step as i64;
+    if step != 0 && j >= 0 && (j as usize) < order.len() {
+        order.swap(i, j as usize);
+    }
+}
+
 /// The sort the panel was last left in (`sort::state_file`), project when none.
-fn saved_sort() -> sort::Sort {
+pub fn saved_sort() -> sort::Sort {
     sort::state_file()
         .map(|f| sort::load(&f))
         .unwrap_or_default()
@@ -800,6 +919,24 @@ mod tests {
         let b = codex_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, &root);
         assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_moves_one_place_and_stops_at_either_end() {
+        let order = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut o = order(&["a", "b", "c"]);
+        swap(&mut o, "b", -1);
+        assert_eq!(o, order(&["b", "a", "c"]));
+        swap(&mut o, "b", -1);
+        assert_eq!(o, order(&["b", "a", "c"]), "the top stays put");
+        swap(&mut o, "c", 1);
+        assert_eq!(o, order(&["b", "a", "c"]), "the bottom stays put");
+        swap(&mut o, "a", 1);
+        assert_eq!(o, order(&["b", "c", "a"]));
+        // Negative control: a grab (0) or an unknown target moves nothing.
+        swap(&mut o, "c", 0);
+        swap(&mut o, "zz", 1);
+        assert_eq!(o, order(&["b", "c", "a"]));
     }
 
     #[test]
