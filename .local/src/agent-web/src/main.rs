@@ -19,6 +19,7 @@ mod cache;
 mod cli;
 mod cloud;
 mod costs;
+mod deliverables;
 mod feed;
 mod fleet;
 mod focus;
@@ -156,6 +157,7 @@ async fn main() -> Result<()> {
         .route("/api/tests", get(tests_list))
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/deliverables", get(deliverables::get))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))

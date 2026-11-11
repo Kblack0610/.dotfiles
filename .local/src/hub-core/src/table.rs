@@ -295,6 +295,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::queue::QueueRow<'static>>(),
         phone_table::<crate::tasks::Row>(),
         phone_table::<crate::projects::Card>(),
+        phone_table::<crate::deliverables::Deliverable>(),
         phone_table::<crate::session_table::SessionRow>(),
         phone_table::<crate::jobs::Job>(),
         phone_table::<crate::actions::Action>(),
