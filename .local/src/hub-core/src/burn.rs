@@ -13,8 +13,10 @@ use serde::Serialize;
 
 use crate::prom::Series;
 
-/// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "4 Sessions";
+/// Where the dispatch hold is explained (the Sessions header), as `costs::spend_badge` names Costs.
+pub fn hold_badge() -> String {
+    crate::layout::bar_label("sessions")
+}
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -744,7 +746,9 @@ mod tests {
         // under an hour, or a file a little older than the run-out, is not "in 0h"
         let mut s = fixture();
         s.push(fleet("run_out_timestamp_seconds", (NOW - 60) as f64));
-        assert!(build(&s, quiet(), NOW).head.contains(", into the reserve within the hour,"));
+        assert!(build(&s, quiet(), NOW)
+            .head
+            .contains(", into the reserve within the hour,"));
     }
 
     #[test]
@@ -901,16 +905,6 @@ mod tests {
         );
         let d = drip(&log, at, None);
         assert_eq!((d.hour, d.day), (1, 2));
-    }
-
-    #[test]
-    fn the_hold_badge_names_the_sessions_key() {
-        assert_eq!(
-            crate::layout::bar_digit("sessions")
-                .map(|d| format!("{d} Sessions"))
-                .as_deref(),
-            Some(HOLD_BADGE)
-        );
     }
     fn reason(account: &str, why: &str) -> Series {
         let mut s = series(account, "room_reason", 1.0);
