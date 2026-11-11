@@ -30,7 +30,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | `id` | Unique across the registry, lowercase and `-`. Also the GitHub Deployments environment its deploy workflow records under |
 | `channel` | `prod`, `beta`, `alpha`, `preview` or `internal` |
 | `where` | Free text for the UI: the cluster or store |
-| `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
+| `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store, with that Deployment's `build` when it recorded one), `{"deployed": "manual", "reason": "..."}` (a channel moved by hand, such as Steam `default` set live in Steamworks: nothing records its deploys, so the pin reads `manual`, the row is `released` with live alone, and the doctor wants the reason), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
 | `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
 | `telemetry` | Sentinel watch names that must exist and be OK |
 | `deps` | Registry projects this one depends on |
@@ -43,12 +43,12 @@ The workflow that deploys a target records one GitHub Deployment: `environment` 
 
 | Field | Meaning |
 |---|---|
-| `history` | The newest deployments, each `{version, state, at, url}`; `state` is `ok`, `fail` or GitHub's word for one not finished |
+| `history` | The newest deployments, each `{version, state, at, url, sha, build}`; `state` is `ok`, `fail` or GitHub's word for one not finished, `sha` the Deployment's commit (the recorder's `ref`, the tag it shipped), `build` the store build number its payload carried (`{"build": "..."}`), else null |
 | `last` | The newest that finished, success or not: the LAST DEPLOY column. A failure makes the row amber |
 | `prev` | The version that succeeded before the newest success: the PREV column |
 | `error` | Why the read failed; PREV and LAST DEPLOY then say `?` |
 
-A target nothing records under, or a project whose repo is not on GitHub, has an empty history and `-` in both columns. The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. Recording is the `record-deployment` action in each repo; it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
+A target nothing records under, or a project whose repo is not on GitHub, has an empty history and `-` in both columns. The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. The platform records `pmp-api-prod` and `pmp-web-prod` from `deploy-production.yml`. Recording is the `record-deployment` action in each repo; it never gates a deploy, and it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
 
 ## Release history
 
@@ -78,7 +78,7 @@ The collector writes raw facts only, and every link between two of them is compu
 |---|---|---|
 | release -> previous release | tag ancestry | `git-release.sh` (`git_prev_tag`) |
 | release -> PRs | `(#N)` subjects in `prev..tag` | `git-release.sh` (the changelog) |
-| release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; the earliest successful deploy per channel | `hub_core::release_graph::reached` |
+| release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; then a Deployment whose version names no tag of the line, by its commit; the earliest successful deploy per channel | `hub_core::release_graph::reached` |
 
 An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, and where each reached (`not recorded` when no channel says so); a release opens its changelog. The RELEASED column is the newest tag and its date.
 
@@ -104,8 +104,8 @@ The shell lookup is `project_canonical` (and `project_lookup`, `project_of_repos
 | Store | Live value | Compared with the pin |
 |---|---|---|
 | Steam | The tag in the description of the build the branch is on (`<build> <tag> <sha>`, written by the upload), with the BuildID in `live.build`. A build with no tag shows its BuildID | Exactly |
-| Play | The name of the published release with the highest version code, from the edit-free `tracks.releases.list`, with the code in `live.build`. Never `edits.insert`: an open edit can invalidate an upload running at the same time | Exactly; a release named only `x.y.z` compares as TestFlight does |
-| TestFlight | `<marketing version> (<build>)` of the newest processed iOS build | The pin's first `x.y.z` against the marketing version, so two tags that share a version compare equal |
+| Play | The name of the published release with the highest version code, from the edit-free `tracks.releases.list`, with the code in `live.build`. Never `edits.insert`: an open edit can invalidate an upload running at the same time | The build when the upload recorded one, else exactly; a release named only `x.y.z` compares as TestFlight does |
+| TestFlight | `<marketing version> (<build>)` of the newest processed iOS build | The build number when the upload recorded one; else the pin's first `x.y.z` against the marketing version, so two tags that share a version compare equal |
 
 ### Store credentials
 
@@ -124,9 +124,11 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 | `drift` | Pinned and live differ. `drift_since` carries across refreshes, so `check` waits out a rollout in progress |
 | `unknown` | A probe failed (fetch, kubectl, health); the row says which in `pinned.error` or `live.error`. The Releases tab draws it `not read` and counts it in the app's CHANNELS and the gap line, but it never sets the app's word |
 | `floating` | Pinned or live is `latest`, so no version can be named |
-| `ok` | Live equals pinned, or the served SHA is the pinned tag's commit |
-| `released` | Nothing to compare: a tag-only row (the newest tag, no live source), or a store channel with no recorded upload (the store's value, pin `-`) |
+| `ok` | Live equals pinned, the served SHA is the pinned tag's commit, or the store's build is the build the upload recorded |
+| `released` | Nothing to compare: a tag-only row (the newest tag, no live source), a store channel with no recorded upload (the store's value, pin `-`), or a channel moved by hand (pin `manual`) |
 | `unreleased` | An app with no release tag yet |
+
+The platform repo has a second drift reader by design: `release-drift.yml` and `mobile-release-drift.yml` post drift to the team's ntfy `ship` feed, which teammates outside the fleet read, and the mobile one also opens GitHub issues. They stay as the team's view; `release-state` and the `release-drift` Sentinel watch are the fleet's.
 
 ## Changelog for a version
 
@@ -145,6 +147,8 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 | A Steam row is `unknown` with `build <id> is not in the last 50 builds` | The branch has not moved in longer than `STEAM_BUILDS` covers. Raise that constant in `release-state` |
 | A Steam row is `unknown` with `no branch <name> on the app` | The branch does not exist on that app yet, or the registry says `default` where Steam says `public` |
 | A row is `unknown` with `no checkout for repo` | The repo key has no `paths` entry in the registry on this machine |
+| A TestFlight or Play row is `drift` while the versions match | The store's newest build is not the build the upload recorded: a second build of that version was uploaded by hand or by another workflow. `release-state show --json \| jq '.rows[] \| select(.id == "<id>") \| [.pinned.build, .live.build]'` shows both |
+| The doctor says `tag <t> in <repo> is listed by <a> and <b>` | Two projects' release lines (`tagGlob`, or the bare `v*` fallback of a key with no `tagGlob`) or `buildTags` match one real tag, so both histories and version rolls would claim it. Narrow one glob; a repo-only key (no `lab`, no `targets`) is not counted |
 | A game shows no row | It has no store target in the registry. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind. Its build tags belong in `buildTags`, which feed its history and changelog only |
 | An app's release history says `no tags read` | The project has no release tag and no `buildTags`, or the checkout has not fetched its tags. `release-state show --json \| jq '.releases["<p>"]'` gives the glob and any error |
 | `changelog` says `<tag> is not a release tag of <project>` | The tag is not on the project's line (a candidate of another product, or not fetched). `release-state changelog --list <project>` shows the ones it offers; fetch the checkout if a new tag is missing |

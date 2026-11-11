@@ -263,7 +263,7 @@ EOF
   AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
   assert_failure
   assert_output --partial 'target "Bad Id": id must be lowercase'
-  assert_output --partial 'target "Bad Id": pinned needs {tag: true}, {deployed: true} or repo and path'
+  assert_output --partial 'target "Bad Id": pinned needs {tag: true}, {deployed: true}, {deployed: "manual", reason} or repo and path'
   assert_output --partial 'target "dup": channel "staging" is not one of'
   assert_output --partial 'target "dup": live needs k8s'
   assert_output --partial 'dep "ghost" is not a registered project'
@@ -524,9 +524,12 @@ MD
   [ "$(cl web web-v1.1.0 | jq -r .text)" = "- the web product" ]
 }
 
-# node <version> <state> <at> - one Deployment as the GraphQL answer carries it.
+# node <version> <state> <at> [build] - one Deployment as the GraphQL answer carries it; a build
+# goes in the payload, which GraphQL returns as a JSON string.
 node() {
-  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$2" "$1" "$3"
+  local payload='""'
+  [ -z "${4:-}" ] || payload="\"{\\\"build\\\":\\\"$4\\\"}\""
+  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$2" "$1" "$3"
 }
 reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
 
@@ -880,4 +883,63 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   assert_equal "$(unb64url "$h" | jq -c '[.alg, .kid]')" '["ES256","KID1"]'
   assert_equal "$(unb64url "$c" | jq -c '[.iss, .aud]')" '["ISS1","appstoreconnect-v1"]'
   assert_equal "$(unb64url "$s" | wc -c)" 64
+}
+
+@test "deploys: each carries the commit it shipped and the build its payload names" {
+  reply "$(node v2 SUCCESS 2026-11-02T10:00:00Z 4321)" "$(node v1 SUCCESS 2026-11-01T10:00:00Z)" \
+    '{"createdAt":"2026-10-31T10:00:00Z","description":"v0","commitOid":"abcdef1234","payload":"not json","ref":{"name":"main"},"latestStatus":{"state":"SUCCESS","logUrl":"","createdAt":"2026-10-31T10:00:00Z"}}'
+  "$RS" refresh shop
+  assert_equal "$(row shop-prod | jq -c '[.deploys.history[] | [.sha, .build]]')" '[["abcdef1234","4321"],["abcdef1234",null],["abcdef1234",null]]'
+}
+
+@test "testflight: a recorded build number decides over the marketing version" {
+  store_setup
+  asc_key
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4321)"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -c '[.pinned.build, .status]')" '["4321","ok"]'
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -r .status)" drift
+}
+
+@test "store: a channel moved by hand is released, its pin reads manual with the reason" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual", "reason": "set in Steamworks"}' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -c '[.pinned.source, .pinned.reason, .live.value, .status]')" '["manual","set in Steamworks","v0.5.0-g1","released"]'
+  run "$RS" show game
+  assert_line --regexp '^game +beta game-steam-beta +manual +v0\.5\.0-g1 +released'
+}
+
+@test "doctor 4c wants a reason on a manual pin" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual"} | .trackers.game.targets[1].pinned = {"deployed": "manual", "reason": "by hand"}' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial 'target "game-steam-beta": {deployed: "manual"} needs a reason'
+  refute_output --partial 'target "game-play-internal"'
+}
+
+@test "doctor: a tag two projects of one repo list fails, a repo-only key does not count" {
+  git -C "$CODE" config user.email t@t; git -C "$CODE" config user.name t
+  git -C "$CODE" commit -q --allow-empty -m one
+  git -C "$CODE" tag v0.1.0; git -C "$CODE" tag game-v0.2.0
+  cat > "$PROJECT_MAP_FILE" <<EOF
+{
+  "paths": { "$CODE": "code" },
+  "trackers": {
+    "code": { "system": "none" },
+    "api": { "repo": "code", "tagGlob": "v*", "targets": [{"id": "api-prod", "channel": "prod", "pinned": {"tag": true}}] },
+    "game": { "repo": "code", "tagGlob": "game-v*", "lab": "game" }
+  }
+}
+EOF
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  refute_output --partial 'one tag, one project'
+  jq '.trackers.game.tagGlob = "v0.1*"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial "tag v0.1.0 in $CODE is listed by api and game: one tag, one project"
+  refute_output --partial 'tag game-v0.2.0'
 }
