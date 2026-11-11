@@ -72,6 +72,12 @@ impl BuildsView {
             ));
         }
         let mut out = vec![Line::from(head), Line::from(spans)];
+        for l in &b.quarantine {
+            out.push(Line::from(vec![
+                Span::styled("Quarantine  ", p.head()),
+                Span::styled(l.says(), level(l.level(), p)),
+            ]));
+        }
         if !b.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", b.errors.join("; ")),
@@ -279,10 +285,6 @@ pub fn times(
             p.dim(),
         ),
     ])];
-    if b.times.is_empty() {
-        out.push(Line::styled("no finished runs in the ledger", p.dim()));
-        return out;
-    }
     let mut table = Table {
         header: TIMES_HEADER.to_vec(),
         rows: b
@@ -318,12 +320,74 @@ pub fn times(
         tail.push(Line::styled(format!("no rates: {e}"), p.warn()));
     }
     let head = table.remove(0);
+    if b.times.is_empty() {
+        table.push(Line::styled("no finished runs in the ledger", p.dim()));
+    }
+    table.extend(quarantine(b, p, w));
     let body = h.saturating_sub(out.len() + 1 + tail.len());
     let top = top.min(table.len().saturating_sub(body));
     out.push(head);
     out.extend(table.into_iter().skip(top).take(body));
     out.extend(tail);
     out
+}
+
+const QUARANTINE_HEADER: [&str; 4] = ["OWNER ROW", "ENTRIES", "ENDS", "LEFT"];
+
+/// The Quarantine section under the Run times rows: each repo's line, then its owner rows,
+/// soonest end first, each coloured by how near its end is.
+fn quarantine(b: &Builds, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if b.quarantine.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![Line::default(), Line::styled("Quarantine", p.head())];
+    for l in &b.quarantine {
+        out.push(Line::styled(l.says(), level(l.level(), p)));
+        if l.rows().is_empty() {
+            continue;
+        }
+        let rows = l
+            .rows()
+            .iter()
+            .map(|r| {
+                let left = if r.days_left <= 0 {
+                    "ended".to_string()
+                } else {
+                    format!("{}d", r.days_left)
+                };
+                vec![
+                    r.row.clone().into(),
+                    r.entries.to_string().into(),
+                    r.ends.clone().into(),
+                    cell(left, level(r.level(), p)),
+                ]
+            })
+            .collect();
+        out.extend(
+            Table {
+                header: QUARANTINE_HEADER.to_vec(),
+                rows,
+                keep: vec![0, 3, 1, 2],
+                right: vec![1, 3],
+                ..Default::default()
+            }
+            .fit(w, p.head()),
+        );
+    }
+    out
+}
+
+/// How far the `t` pane scrolls: its Run times rows and the Quarantine lines under them.
+pub fn times_rows(b: &Builds) -> usize {
+    let lanes: usize = b
+        .quarantine
+        .iter()
+        .map(|l| match l.rows().len() {
+            0 => 1,
+            n => 2 + n,
+        })
+        .sum();
+    b.times.len().max(1) + if lanes > 0 { 2 + lanes } else { 0 }
 }
 
 fn time_row(t: &RunTime) -> Vec<Cell> {
@@ -482,6 +546,88 @@ pub mod tests {
             .map(plain)
             .collect();
         assert!(late[0].contains("ledger older than 30m"), "{late:?}");
+    }
+
+    fn quarantined() -> Builds {
+        use hub_core::quarantine::{Lane, Nightly, OwnerRow, Report};
+        let row = |row: &str, entries, ends: &str, days_left| OwnerRow {
+            row: row.into(),
+            entries,
+            ends: ends.into(),
+            days_left,
+        };
+        Builds {
+            quarantine: vec![Lane {
+                repo: "Org/play".into(),
+                report: Some(Report {
+                    entries: 5,
+                    rows: vec![
+                        row("ucp-1", 2, "2026-11-10", -1),
+                        row("ucp-2", 3, "2026-11-30", 19),
+                    ],
+                    ..Default::default()
+                }),
+                nightly: Some(Nightly {
+                    created_at: Some("2026-11-11T08:00:00Z".into()),
+                    known: 12,
+                    now_passing: Some(3),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..fixture()
+        }
+    }
+
+    #[test]
+    fn the_status_says_each_quarantine_and_its_nightlys_counts() {
+        let p = Palette { no_color: true };
+        let s: Vec<String> = BuildsView::default()
+            .status(&quarantined(), p, 1400)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            s[2],
+            "Quarantine  play: 5 quarantined over 2 owner rows, 2 ended, next end 11-30 (19d); nightly 11-11: 12 known red, 3 now pass"
+        );
+        let none: Vec<String> = BuildsView::default()
+            .status(&fixture(), p, 1400)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(!none.iter().any(|l| l.contains("Quarantine")), "{none:?}");
+    }
+
+    #[test]
+    fn the_times_pane_lists_each_owner_row_under_run_times_and_scrolls_to_the_last() {
+        let b = quarantined();
+        let p = Palette { no_color: true };
+        let all: Vec<String> = times(&b, &RunCosts::default(), p, 100, 100, 0)
+            .iter()
+            .map(plain)
+            .collect();
+        let at = all.iter().position(|l| l == "Quarantine").unwrap();
+        assert!(all[at + 1].starts_with("play: 5 quarantined"), "{all:?}");
+        assert!(all[at + 2].starts_with("OWNER ROW"), "{all:?}");
+        assert!(
+            all[at + 3].contains("ucp-1") && all[at + 3].ends_with("ended"),
+            "{all:?}"
+        );
+        assert!(
+            all[at + 4].contains("ucp-2") && all[at + 4].ends_with("19d"),
+            "{all:?}"
+        );
+        assert_eq!(
+            times_rows(&b),
+            all.len() - 2,
+            "the scroll bound is every line under the pinned heading and header"
+        );
+        let end: Vec<String> = times(&b, &RunCosts::default(), p, 100, 6, times_rows(&b) - 1)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(end.last().unwrap().contains("ucp-2"), "{end:?}");
     }
 
     #[test]

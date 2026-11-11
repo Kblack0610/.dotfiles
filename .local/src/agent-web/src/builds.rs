@@ -6,6 +6,8 @@
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
 use hub_core::jobs::{self, now};
+use hub_core::quarantine::{Lane, OwnerRow};
+use hub_core::releases::Level;
 use hub_core::run_detail::{self, Rates, RunCosts};
 use hub_core::table::{Summary, View};
 use std::sync::Arc;
@@ -41,9 +43,46 @@ struct Shown<'a> {
     /// The Run times fold's money: a cost per `times` row, the idle and month lines.
     costs: RunCosts,
     errors: &'a [String],
+    /// The Quarantine fold: a lane per repo whose base carries a quarantine.
+    quarantine: Vec<Quarantined<'a>>,
     /// `Builds::needs_look`: the count on Releases' Builds inner tab.
     look: bool,
     table: Summary,
+}
+
+/// One repo's quarantine as the fold draws it: its line and colour, then each owner row's.
+#[derive(Serialize)]
+struct Quarantined<'a> {
+    repo: &'a str,
+    says: String,
+    level: Level,
+    /// The nightly the counts came from.
+    url: Option<&'a str>,
+    rows: Vec<Owned<'a>>,
+}
+
+#[derive(Serialize)]
+struct Owned<'a> {
+    #[serde(flatten)]
+    row: &'a OwnerRow,
+    level: Level,
+}
+
+fn quarantined(l: &Lane) -> Quarantined<'_> {
+    Quarantined {
+        repo: &l.repo,
+        says: l.says(),
+        level: l.level(),
+        url: l.nightly.as_ref().and_then(|n| n.url.as_deref()),
+        rows: l
+            .rows()
+            .iter()
+            .map(|row| Owned {
+                row,
+                level: row.level(),
+            })
+            .collect(),
+    }
 }
 
 fn render(b: &Builds, q: &Query, rates: &Rates) -> String {
@@ -59,6 +98,7 @@ fn render(b: &Builds, q: &Query, rates: &Rates) -> String {
         times: &b.times,
         costs: run_detail::costs(b, rates, now()),
         errors: &b.errors,
+        quarantine: b.quarantine.iter().map(quarantined).collect(),
         look: b.needs_look(),
         table,
     };
@@ -189,6 +229,46 @@ mod tests {
             serde_json::from_str(&render(&b, &Query::default(), &Rates::default())).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), builds::LIST_ROWS);
         assert_eq!(v["more"], 5);
+    }
+
+    #[test]
+    fn each_quarantine_lane_carries_its_line_colour_and_owner_rows() {
+        use hub_core::quarantine::{Nightly, Report};
+        let b = Builds {
+            quarantine: vec![Lane {
+                repo: "Org/play".into(),
+                report: Some(Report {
+                    entries: 3,
+                    rows: vec![OwnerRow {
+                        row: "ucp-1".into(),
+                        entries: 3,
+                        ends: "2026-11-12".into(),
+                        days_left: 1,
+                    }],
+                    ..Default::default()
+                }),
+                nightly: Some(Nightly {
+                    url: Some("https://x/runs/9".into()),
+                    known: 2,
+                    now_passing: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&b, &Query::default(), &Rates::default())).unwrap();
+        let q = &v["quarantine"][0];
+        assert_eq!(q["level"], "warn");
+        assert_eq!(q["url"], "https://x/runs/9");
+        assert!(q["says"]
+            .as_str()
+            .unwrap()
+            .contains("2 known red, 1 now pass"));
+        assert_eq!(q["rows"][0]["row"], "ucp-1");
+        assert_eq!(q["rows"][0]["days_left"], 1);
+        assert_eq!(q["rows"][0]["level"], "warn");
     }
 
     #[test]

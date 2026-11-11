@@ -61,6 +61,17 @@ window, are read per attempt from actions/runs/<id>/attempts/<n>/jobs, every pag
 first, at most SCHEDULES_JOB_CALLS (40) gh calls a pass for the last day's runs and
 SCHEDULES_BACKFILL_CALLS (20) for older ones. A run's failed jobs come from here.
 
+Each GitHub repo whose base carries scripts/test/quarantine.py and quarantine.txt gets a lane in
+SCHEDULES_QUARANTINE (quarantine.json beside the ledger), which the hub's Builds section draws:
+the base's own `quarantine.py report --json` (entries per owner row, end date, days left, as of
+the local date), run from the two files read through the contents API (a conditional listing, a
+304 when unchanged; blobs re-read only when a sha moves), and the newest finished `Tests (all)`
+run on the base that uploaded playmode-summary: its KNOWN count (summary.txt's "N known red",
+summed) and the tests results.py says "known red now passes" in the test-runs-* artifacts,
+downloaded once per run attempt. A repo without the files is listed under "absent" and asked
+again a day later. A lane whose read fails keeps its last numbers with `error` set; a quarantine
+failure never changes the exit status.
+
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
 
@@ -90,10 +101,13 @@ only repos whose schedules run nightly.
 """
 
 import base64
+import io
 import json
 import os
+import re
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timedelta, timezone
 
 import yaml
@@ -113,6 +127,20 @@ SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
 JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
 JOBS_KEEP = timedelta(days=90)  # the job archive's window
 KUBECTL = os.environ.get("SCHEDULES_KUBECTL", "kubectl")
+QUARANTINE = os.environ.get("SCHEDULES_QUARANTINE", os.path.join(os.path.dirname(LEDGER), "quarantine.json"))
+# The repo's own quarantine reader and list; a repo whose base has the script has a lane.
+QUARANTINE_DIR = "scripts/test"
+QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
+QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
+# The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
+# summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
+# suite output, where results.py names a quarantined test that passed.
+NIGHT_TITLE = "Tests (all)"
+NIGHT_SUMMARY = "playmode-summary"
+NIGHT_LOGS = "test-runs-"
+NIGHT_LOOKS = 5  # finished nightlies a pass asks for artifacts, newest first
+KNOWN_RED = re.compile(r"\b(\d+) known red\b")
+NOW_PASSES = re.compile(r"^==> known red now passes, take it off \S+: (.+)$", re.M)
 # The exporter's changes feed, through the API server's Service proxy: no ingress, and the
 # kubeconfig this machine already has is the credential.
 FEED = "/api/v1/namespaces/monitoring/services/github-runner-exporter:9320/proxy/api/ci/details"
@@ -215,8 +243,9 @@ def gh(path, missing=None):
     raise gh_fail(path, p.stderr or p.stdout)
 
 
-def gh_page(path, etag=None):
-    """gh api -i <path>, conditional on `etag` -> (body, etag); body is None on a 304."""
+def gh_page(path, etag=None, missing=None):
+    """gh api -i <path>, conditional on `etag` -> (body, etag); body is None on a 304. A 404
+    returns (`missing`, None) when one is given, else it is an error."""
     cmd = [GH, "api", "-i"] + (["-H", f"If-None-Match: {etag}"] if etag else []) + [path]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
@@ -233,7 +262,20 @@ def gh_page(path, etag=None):
         body = None
     if p.returncode == 0 and body is not None:
         return body, tag
+    if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
+        return missing, None
     raise gh_fail(path, p.stderr or raw)
+
+
+def gh_bytes(path):
+    """gh api <path>'s raw body: an artifact's zip."""
+    try:
+        p = subprocess.run([GH, "api", path], capture_output=True, timeout=GH_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh api {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    if p.returncode:
+        raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"))
+    return p.stdout
 
 
 FJ_TOKEN = []
@@ -782,6 +824,144 @@ def sync_repo(repo, base, prev, t, sched, jobs_last):
             "workflows": workflows, "unscheduled": unscheduled}
 
 
+def quarantine_report(repo, base, old, t):
+    """(report, etag, files) of `repo`'s quarantine on `base`: its own `quarantine.py report
+    --json` over its quarantine.txt, both read through gh and kept beside QUARANTINE, so a pass
+    where the listing is unchanged (a 304, free) asks for nothing more. None for no quarantine."""
+    listing, etag = gh_page(f"repos/{repo}/contents/{QUARANTINE_DIR}?ref={base}", old.get("etag"), missing=[])
+    cache = os.path.join(os.path.dirname(QUARANTINE), "quarantine", repo.replace("/", "_"))
+    files = dict(old.get("files") or {})
+    if listing is None:  # unchanged since the last pass
+        etag = old.get("etag")
+    else:
+        shas = {f.get("name"): f.get("sha") for f in listing if isinstance(f, dict) and f.get("type") == "file"}
+        if not all(shas.get(n) for n in QUARANTINE_FILES):
+            return None, None, {}
+        files = {n: shas[n] for n in QUARANTINE_FILES}
+    os.makedirs(cache, exist_ok=True)
+    for name, sha in files.items():
+        path = os.path.join(cache, name)
+        if old.get("files", {}).get(name) == sha and os.path.isfile(path):
+            continue
+        blob = gh(f"repos/{repo}/git/blobs/{sha}")
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(blob.get("content", "")))
+    today = t.astimezone().date().isoformat()
+    p = subprocess.run([sys.executable, "-I", os.path.join(cache, "quarantine.py"), "report", "--json",
+                        "--today", today, "--file", os.path.join(cache, "quarantine.txt")],
+                       capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S, cwd=cache)
+    try:
+        report = json.loads(p.stdout) if p.returncode == 0 else None
+    except ValueError:
+        report = None
+    if not isinstance(report, dict):
+        why = (p.stderr or p.stdout).strip().splitlines()
+        raise GhError(f"quarantine.py report: {why[-1] if why else f'exit {p.returncode}'}")
+    return report, etag, files
+
+
+def artifact_zip(repo, art):
+    return zipfile.ZipFile(io.BytesIO(gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")))
+
+
+def run_artifacts(repo, run_id):
+    """Every artifact of one run, expired ones left out."""
+    out, page = [], 1
+    while True:
+        got = gh(f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
+        arts = got.get("artifacts") or []
+        out += [a for a in arts if not a.get("expired")]
+        if len(arts) < 100 or page >= MAX_PAGES:
+            return out
+        page += 1
+
+
+def night_counts(repo, run, arts):
+    """The nightly's KNOWN count (summary.txt's "N known red", every class's line summed) and
+    its quarantined tests that passed (results.py's "known red now passes" lines in the suite
+    output; a test seen twice, in a batch and alone, counts once)."""
+    summary = next(a for a in arts if a.get("name") == NIGHT_SUMMARY)
+    with artifact_zip(repo, summary) as z:
+        text = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist() if n.endswith("summary.txt"))
+    passing, logs = set(), 0
+    for a in arts:
+        if not str(a.get("name", "")).startswith(NIGHT_LOGS):
+            continue
+        logs += 1
+        with artifact_zip(repo, a) as z:
+            for n in z.namelist():
+                if n.endswith(".txt"):
+                    passing.update(m.strip() for m in NOW_PASSES.findall(z.read(n).decode("utf-8", "replace")))
+    return {"run_id": run["id"], "attempt": run["attempt"], "url": run.get("url"), "sha": run.get("sha"),
+            "created_at": run.get("created_at"), "conclusion": run.get("conclusion"),
+            "known": sum(int(m) for m in KNOWN_RED.findall(text)),
+            "now_passing": len(passing) if logs else None, "now_passing_tests": sorted(passing), "logs": logs}
+
+
+def last_nightly(repo, base, runs_last, old):
+    """(nightly, no_summary): the newest finished `Tests (all)` run on base that uploaded its
+    summary, read once per run attempt; `no_summary` keys the newer ones that did not (a skipped
+    night, a shard that never reported), so they are asked once."""
+    newest = {}
+    for r in runs_last.values():
+        if (r.get("forge") == "github" and r.get("repo") == repo and r.get("branch") == base
+                and r.get("title") == NIGHT_TITLE and r.get("status") == "completed"
+                and r.get("conclusion") not in ("cancelled", "skipped")):
+            if r["attempt"] >= newest.get(r["id"], {}).get("attempt", 0):
+                newest[r["id"]] = r
+    runs = sorted(newest.values(), key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)
+    had, skip, no_summary = old.get("nightly"), set(old.get("no_summary") or []), []
+    for r in runs[:NIGHT_LOOKS]:
+        key = f"{r['id']}:{r['attempt']}"
+        if had and (had.get("run_id"), had.get("attempt")) == (r["id"], r["attempt"]):
+            return had, no_summary
+        if key in skip:
+            no_summary.append(key)
+            continue
+        arts = run_artifacts(repo, r["id"])
+        if any(a.get("name") == NIGHT_SUMMARY for a in arts):
+            return night_counts(repo, r, arts), no_summary
+        no_summary.append(key)
+    return had, no_summary
+
+
+def quarantine_pass(repos, runs_last, t):
+    """Write QUARANTINE: one lane per GitHub repo whose base has a quarantine, each with its
+    report and its last nightly's counts. A lane whose read fails keeps its last good numbers with
+    `error` set, as sync.json does for a repo; a failure here never fails the pass."""
+    try:
+        with open(QUARANTINE) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        prev = {}
+    lanes = {l["repo"]: l for l in prev.get("repos") or [] if isinstance(l, dict) and "repo" in l}
+    absent = {r: a for r, a in (prev.get("absent") or {}).items() if isinstance(a, str)}
+    out, gone = [], {}
+    for forge, repo, base, _ in repos:
+        if forge != "github":
+            continue
+        old = lanes.get(repo) or {}
+        if not old and repo in absent and (when(absent[repo]) or t) > t - QUARANTINE_RECHECK:
+            gone[repo] = absent[repo]
+            continue
+        lane = {**old, "repo": repo, "base": base}
+        try:
+            report, etag, files = quarantine_report(repo, base, old, t)
+            if report is None:
+                gone[repo] = iso(t)
+                continue
+            lane.update(report=report, etag=etag, files=files)
+            lane["nightly"], lane["no_summary"] = last_nightly(repo, base, runs_last, old)
+            lane.update(synced_at=iso(t), error=None)
+        except (GhError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, KeyError) as e:
+            print(f"schedules-sync: {repo} quarantine: {getattr(e, 'detail', e)}", file=sys.stderr)
+            if not old:
+                continue  # not yet known to have a quarantine: asked again next pass, not drawn
+            lane["error"] = str(e)
+        out.append(lane)
+    write_json(QUARANTINE, {"generated_at": iso(t), "repos": out, "absent": gone})
+
+
 def cron_field(spec, lo, hi):
     vals = set()
     for part in spec.upper().split(","):
@@ -943,6 +1123,7 @@ def main(argv):
         n, torn = write_ledger(last, n, torn, rows, t), False
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
     write_json(STATE, {"generated_at": iso(t), "repos": out})
+    quarantine_pass(repos, last, t)
     print(STATE)
     return 1 if bad else 0
 

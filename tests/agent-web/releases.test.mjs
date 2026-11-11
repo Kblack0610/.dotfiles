@@ -340,6 +340,22 @@ test("the Run times fold prices each workflow and flags a month off the AWS actu
   assert.match(b, /<div class="cline warn">month to date: jobs priced \$4.00/);
 });
 
+test("the Quarantine fold says each repo's line, links its nightly and colours each owner row by its end", () => {
+  showBuilds(bdata({
+    quarantine: [{ repo: "o/play", level: "bad", url: "https://github.com/o/play/actions/runs/9",
+      says: "play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass",
+      rows: [{ row: "ucp-1", entries: 2, ends: "2026-11-10", days_left: -1, level: "bad" }, { row: "ucp-2", entries: 3, ends: "2026-11-30", days_left: 19, level: "ok" }] }],
+  }));
+  const b = box.innerHTML;
+  assert.match(b, /data-k="bld-quar"[^>]*><summary><b>Quarantine<\/b> <span class="bad">5 entries in 1 repo<\/span>/);
+  assert.match(b, /<div class="cline bad">play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass <a href="https:\/\/github.com\/o\/play\/actions\/runs\/9"/);
+  assert.match(b, /<td>ucp-1<\/td><td class="n">2<\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td>/);
+  assert.match(b, /<td>ucp-2<\/td><td class="n">3<\/td><td>2026-11-30<\/td><td class="n ">19d<\/td>/);
+  assert.ok(b.indexOf("bld-quar") < b.indexOf("bld-body"), "in the head, above the runs");
+  showBuilds(bdata({ quarantine: [] }));
+  assert.doesNotMatch(box.innerHTML, /bld-quar/, "no repo with a quarantine draws no fold");
+});
+
 test("the Builds table sorts and filters under its own view keys", async () => {
   showBuilds();
   const patch = run("tblPatch")({ type: "input", target: { dataset: { tsearch: "" }, value: "repo:binks" } });
