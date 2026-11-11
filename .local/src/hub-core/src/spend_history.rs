@@ -7,7 +7,7 @@ use crate::table::{Row, Summary, Val, View};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 /// Day rows shown before the "+N older" line.
@@ -58,13 +58,14 @@ pub struct Sess {
     pub item: Option<String>,
 }
 
-/// One priced day. `sessions` is empty for a day snapshotted before the rows were kept.
+/// One priced day. `sessions` is empty for a day snapshotted before the rows were kept; it is
+/// shared, so a cached or cloned day never copies its few hundred rows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Day {
     pub date: String,
     pub usd: f64,
     pub estimated: f64,
-    pub sessions: Vec<Sess>,
+    pub sessions: Arc<Vec<Sess>>,
 }
 
 /// One bar of a chart: a day (`key` 2026-11-09) or a month (2026-11). `usd` is None for a day
@@ -111,8 +112,8 @@ pub struct History {
 
 /// Parsed snapshot days, by file: a past day's file changes only when a backfill rewrites it, so a
 /// read parses only what is new or changed (a day with its session rows is a few hundred KB).
-/// A parsed day and the file's (mtime, size) when it was parsed.
-type Parsed = HashMap<String, (SystemTime, u64, Day)>;
+/// A parsed day, by its file's path, and the file's (mtime, size) when it was parsed.
+type Parsed = HashMap<std::path::PathBuf, (SystemTime, u64, Day)>;
 static PARSED: Mutex<Option<Parsed>> = Mutex::new(None);
 
 /// Every snapshot day, oldest first. A file that does not parse, or a total that is missing or $0
@@ -121,14 +122,16 @@ pub fn read(dir: &Path) -> Vec<Day> {
     let mut guard = PARSED.lock().unwrap_or_else(|e| e.into_inner());
     let kept = guard.get_or_insert_with(HashMap::new);
     let days = crate::boards::days(dir);
-    kept.retain(|k, _| days.contains(k));
+    let paths: Vec<std::path::PathBuf> =
+        days.iter().map(|d| dir.join(format!("{d}.json"))).collect();
+    kept.retain(|k, _| k.parent() != Some(dir) || paths.contains(k));
     days.into_iter()
-        .map(|date| {
-            let path = dir.join(format!("{date}.json"));
+        .zip(paths)
+        .map(|(date, path)| {
             let stamp = std::fs::metadata(&path)
                 .ok()
                 .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
-            if let (Some((at, len)), Some((kat, klen, d))) = (stamp, kept.get(&date)) {
+            if let (Some((at, len)), Some((kat, klen, d))) = (stamp, kept.get(&path)) {
                 if at == *kat && len == *klen {
                     return d.clone();
                 }
@@ -143,10 +146,10 @@ pub fn read(dir: &Path) -> Vec<Day> {
                 date: date.clone(),
                 usd: t.usd.max(0.0),
                 estimated: t.estimated,
-                sessions: fc.by_session,
+                sessions: Arc::new(fc.by_session),
             };
             if let Some((at, len)) = stamp {
-                kept.insert(date, (at, len, d.clone()));
+                kept.insert(path, (at, len, d.clone()));
             }
             d
         })
@@ -155,6 +158,7 @@ pub fn read(dir: &Path) -> Vec<Day> {
 
 /// The section from the snapshot days (oldest first) and today's local date (`YYYY-MM-DD`).
 pub fn build(all: &[Day], today: &str) -> History {
+    // Cheap: a day's session rows are shared, not copied.
     let days: Vec<Day> = all.iter().filter(|d| d.usd > 0.0).cloned().collect();
     let days = days.as_slice();
     let (Some(first), Some(last)) = (all.first(), days.last()) else {
@@ -394,12 +398,19 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
         dir,
         sid,
     } = *pick;
-    let with_rows: Vec<&Day> = all.iter().filter(|d| !d.sessions.is_empty()).collect();
-    let Some(d) = with_rows
+    if !day.is_empty() && !all.iter().any(|d| d.date == day && !d.sessions.is_empty()) {
+        return DayView {
+            day: day.to_string(),
+            why: Some(format!(
+                "{day}: no session rows (no snapshot, or one from before they were kept)"
+            )),
+            ..DayView::default()
+        };
+    }
+    let Some(d) = all
         .iter()
-        .find(|d| d.date == day)
-        .or(with_rows.last())
-        .copied()
+        .rev()
+        .find(|d| !d.sessions.is_empty() && (day.is_empty() || d.date == day))
     else {
         return DayView {
             why: Some(
@@ -408,13 +419,12 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
             ..DayView::default()
         };
     };
-    let since = day_number(&d.date) - CHART_DAYS as i64;
+    // The chart's 30 days, which the opened session's bars cover too.
+    let newest = all.last().map_or(d.date.as_str(), |x| x.date.as_str());
+    let since = day_number(newest) - CHART_DAYS as i64;
     let mut seen: HashMap<&str, u64> = HashMap::new();
-    for x in all
-        .iter()
-        .filter(|x| day_number(&x.date) > since && day_number(&x.date) <= day_number(&d.date))
-    {
-        for s in &x.sessions {
+    for x in all.iter().filter(|x| day_number(&x.date) > since) {
+        for s in x.sessions.iter() {
             *seen.entry(s.sid.as_str()).or_default() += 1;
         }
     }
@@ -448,13 +458,14 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
     let (kept, table) = v.summary(&all_rows);
     let shown: f64 = kept.iter().map(|r| r.cost).sum();
     let more = kept.len().saturating_sub(SESSION_ROWS);
-    let series = all
+    // The opened session is named as the picked day's row names it, else as its newest day does.
+    let series = d
+        .sessions
         .iter()
-        .flat_map(|x| x.sessions.iter())
+        .chain(all.iter().rev().flat_map(|x| x.sessions.iter()))
         .find(|s| !sid.is_empty() && s.sid == sid)
         .map(|s| {
-            // The same 30 days as the fleet chart, so its bars line up with the day picked.
-            let mut bars = chart(&[], &all.last().map_or(d.date.clone(), |x| x.date.clone()));
+            let mut bars = chart(&[], newest);
             let mut total = 0.0;
             for b in &mut bars {
                 let hit = all
@@ -855,12 +866,13 @@ mod tests {
     #[test]
     fn the_day_table_ranks_queries_and_opens_a_sessions_own_days() {
         let mut a = day("2026-11-08", 40.0, 0.0);
-        a.sessions = vec![sess("s1", 10.0, 10.0, "dotfiles")];
+        a.sessions = vec![sess("s1", 10.0, 10.0, "dotfiles")].into();
         let mut b = day("2026-11-09", 100.0, 0.0);
         b.sessions = vec![
             sess("s1", 20.0, 5.0, "dotfiles"),
             sess("s2", 70.0, 70.0, "playground"),
-        ];
+        ]
+        .into();
         let older = day("2026-11-07", 9.0, 0.0);
         let all = [older, a, b];
         let v = day_view(&all, &Pick::default());
@@ -897,9 +909,12 @@ mod tests {
                 ..Pick::default()
             },
         );
+        assert_eq!(none.day, "2026-11-07", "the picked day stays picked");
+        assert!(none.rows.is_empty() && none.why.as_deref().unwrap().contains("no session rows"));
         assert_eq!(
-            none.day, "2026-11-09",
-            "a day with no rows falls back to the newest"
+            day_view(&all, &Pick::default()).rows[1].days,
+            2,
+            "days counts the chart's range"
         );
         let s = day_view(
             &all,

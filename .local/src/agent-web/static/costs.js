@@ -17,6 +17,8 @@ const cost = tblTab({
   // The table (its bar and rows) belongs to the Spend inner tab, with the switches above it.
   wrap: (html) => innerWrap("costs", "table", html),
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
+  // A poll repaints the whole tab: the day search being typed keeps its text and focus.
+  draw: (html) => keepTyping("#costs [data-id]", () => paint($("costs"), html, cost.open)),
 });
 
 // Every source is a file written nightly or per call; only the token snapshots push (onEvent), so
@@ -125,7 +127,7 @@ function dayTable(dv, dq) {
   const rows = dv.rows.map((r) => `<tr data-sid="${esc(r.sid)}" class="${dv.series && dv.series.sid === r.sid ? "sel" : ""}">` +
     Object.keys(SESS_COLS).map((k) => sessCell(r, k)).join("") + `</tr>`).join("");
   return `<h3 class="sub">Sessions ${esc(dv.head)}</h3>` +
-    `<div class="tbar"><input class="tsearch" data-dq placeholder="search the day, or project:dotfiles origin:runner" value="${esc(dq)}"> <span class="muted">${t.shown} of ${t.total}, ${esc(dv.shown_usd)}</span></div>` +
+    `<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free placeholder="search the day, or project:dotfiles origin:runner" value="${esc(dq)}"> <span class="muted">${t.shown} of ${t.total}, ${esc(dv.shown_usd)}</span></div>` +
     series + `<div class="panel scroll"><table class="tbl">${tblHead(t, SESS_COLS, "d")}${rows}</table>` +
     (dv.more ? `<div class="muted">+${dv.more} more under this query: narrow it to see them</div>` : "") + `</div>`;
 }

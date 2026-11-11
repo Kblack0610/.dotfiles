@@ -43,6 +43,8 @@ pub struct CostsView {
     pub day_back: usize,
     /// The session opened in the day's table, 1-based (`v` steps it, 0 opens none).
     pub sess_at: usize,
+    /// Rows the day's table last drew, so `v` wraps at the last one.
+    pub sess_n: std::cell::Cell<usize>,
     /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
     pub ssort: String,
     pub sasc: bool,
@@ -79,6 +81,7 @@ impl Default for CostsView {
             history_open: false,
             day_back: 0,
             sess_at: 0,
+            sess_n: std::cell::Cell::new(0),
             ssort: String::new(),
             sasc: false,
             tokens: TokensView::default(),
@@ -129,6 +132,8 @@ impl CostsView {
             && !self.asc
             && self.ssort.is_empty()
             && !self.sasc
+            && self.day_back == 0
+            && self.sess_at == 0
     }
 
     /// `hub --tab costs --q '<words>'`: a cut or window name sets it, `key=value` sets `by`, `w`
@@ -277,7 +282,7 @@ impl CostsView {
             }
             KeyCode::Char('v') => {
                 self.reveal("spend");
-                self.sess_at = (self.sess_at + 1) % (SESS_ROWS + 1);
+                self.sess_at = (self.sess_at + 1) % (self.sess_n.get() + 1);
                 return Some(Some("spend"));
             }
             _ => {}
@@ -330,11 +335,24 @@ impl CostsView {
     pub fn board(&self, c: &Costs) -> Board {
         let dir = if self.asc { "asc" } else { "desc" };
         let sdir = if self.sasc { "asc" } else { "desc" };
-        let mut pick = spend_history::Pick {
-            day: self.picked(c),
+        let day = self.picked(c);
+        // The opened session is the `sess_at`th row of the day's own table.
+        let sid = self.sess_at.checked_sub(1).and_then(|i| {
+            let pick = spend_history::Pick {
+                day,
+                ..Default::default()
+            };
+            spend_history::day_view(&c.spend_days, &pick)
+                .rows
+                .get(i)
+                .map(|r| r.sid.clone())
+        });
+        let pick = spend_history::Pick {
+            day,
+            sid: sid.as_deref().unwrap_or(""),
             ..Default::default()
         };
-        let mut b = costs::board(
+        costs::board(
             c,
             self.by,
             self.window,
@@ -343,13 +361,7 @@ impl CostsView {
             dir,
             (&self.ssort, sdir),
             &pick,
-        );
-        if let Some(r) = self.sess_at.checked_sub(1).and_then(|i| b.day.rows.get(i)) {
-            let sid = r.sid.clone();
-            pick.sid = &sid;
-            b.day = spend_history::day_view(&c.spend_days, &pick);
-        }
-        b
+        )
     }
 
     /// The page, and where each of its sections starts (layout.rs's Costs sections, for `seek`):
@@ -372,9 +384,12 @@ impl CostsView {
                 "burn" => out.extend(burn(&b.burn, self.keys, p, w)),
                 "spend" => {
                     out.extend(history(&b.history, self.history_open, p, w));
-                    out.extend(spend_chart(&b.history.chart, self.picked(c), p, w));
-                    out.extend(day_table(&b.day, self.sess_at, p, w));
-                    out.extend(history_rows(&b.history, self.history_open, p, w));
+                    if b.history.why.is_none() {
+                        out.extend(spend_chart(&b.history.chart, self.picked(c), p, w));
+                        out.extend(day_table(&b.day, self.sess_at, p, w));
+                        self.sess_n.set(b.day.rows.len().min(SESS_ROWS));
+                        out.extend(history_rows(&b.history, self.history_open, p, w));
+                    }
                 }
                 "totals" => self.totals(&b, p, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
@@ -872,7 +887,11 @@ fn spend_chart(bars: &[Bar], sel: &str, p: Palette, w: usize) -> Vec<Line<'stati
         for b in bars {
             let units = |v: f64| v / max * CHART_ROWS as f64;
             let total = units(b.usd.unwrap_or(0.0));
-            let fill = ((total - row as f64).clamp(0.0, 1.0) * 8.0).round() as usize;
+            let mut fill = ((total - row as f64).clamp(0.0, 1.0) * 8.0).round() as usize;
+            // A priced day too small to round to a block still shows, never as a gap or $0.
+            if row == 0 && fill == 0 && b.usd.is_some_and(|u| u > 0.0) {
+                fill = 1;
+            }
             let ch = if b.usd.is_none() && row == 0 {
                 '.'
             } else {
@@ -1527,7 +1546,7 @@ mod tests {
             Day {
                 date: "2026-11-07".into(),
                 usd: 30.0,
-                sessions: vec![sess("a", 20.0, "dream"), sess("b", 10.0, "shepherd")],
+                sessions: vec![sess("a", 20.0, "dream"), sess("b", 10.0, "shepherd")].into(),
                 ..Day::default()
             },
             // 11-08 has no snapshot: a gap, not a $0 bar.
@@ -1535,7 +1554,7 @@ mod tests {
                 date: "2026-11-09".into(),
                 usd: 100.0,
                 estimated: 40.0,
-                sessions: vec![sess("b", 5.0, "shepherd"), sess("c", 90.0, "big run")],
+                sessions: vec![sess("b", 5.0, "shepherd"), sess("c", 90.0, "big run")].into(),
             },
         ];
         let c = Costs {
@@ -1582,8 +1601,8 @@ mod tests {
         let s = page(&v);
         assert!(s.contains("2026-11-08: no figure"), "{s}");
         assert!(
-            s.contains("SESSIONS  2026-11-09"),
-            "a day with no rows shows the newest that has them: {s}"
+            s.contains("SESSIONS  2026-11-08: no session rows"),
+            "the picked day stays picked, and says it has no rows: {s}"
         );
         v.fold(KeyCode::Char(','), None, None);
         let s = page(&v);

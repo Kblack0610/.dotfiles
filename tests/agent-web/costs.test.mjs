@@ -505,6 +505,7 @@ test("spend leads with the 30-day chart and month bars, then the picked day's se
   assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
   assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
   assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
+  assert.match(h, /<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
   assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
   assert.ok(h.indexOf("Sessions 2026") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
