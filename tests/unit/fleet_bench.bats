@@ -1530,6 +1530,15 @@ watch() {
   assert_equal "$output" "$first"
 }
 
+@test "triage: a probe of one OK or RED line a stage names its first RED line, not its last OK one" {
+  triage_setup
+  watch release-runs TRIP -25200 high
+  printf 'TRIP exit 1 (want 0)\nOK  release.yml: success on main\nRED steam.yml: failure on main\nRED ios-release.yml: failure on main\nOK  Multi (all) of a tag: no run in 72 h\n' > "$TRIAGE_WATCH_STATE/release-runs.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'expected: release-runs is healthy., why: RED steam.yml: failure on main, evidence:'
+}
+
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"

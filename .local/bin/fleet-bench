@@ -3311,9 +3311,12 @@ triage_rows() {
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
-    # The last line of the redacted evidence is usually the error. Normalized, so a new pid or
-    # timestamp in it does not edit the row every pass.
-    why=$(grep -v '^[[:space:]]*$' "$TRIAGE_WATCH_STATE/$n.out" 2>/dev/null | tail -n 1 | log_norm | tr -d '#' | cut -c1-100)
+    # A probe that prints one OK or RED line a stage (unity-core-playground's release-ready.py)
+    # names its first RED line; otherwise the last line of the redacted evidence, usually the
+    # error. Normalized, so a new pid or timestamp in it does not edit the row every pass.
+    o="$TRIAGE_WATCH_STATE/$n.out"
+    why=$({ grep -m 1 -E '^RED[[:space:]]' "$o" || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
+      | log_norm | tr -d '#' | cut -c1-100)
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
