@@ -1449,16 +1449,12 @@ mod tests {
     }
 
     #[test]
-    fn a_parsed_plan_item_is_titled_by_its_plans_heading_for_every_view() {
+    fn a_parsed_plan_items_title_is_capped_like_any_other() {
         let dir = std::env::temp_dir().join(format!("queue-plan-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let plan = dir.join("snuggly-bachman.md");
         std::fs::write(&plan, "# Systems you can see, every task\n").unwrap();
-        let line = serde_json::json!({"slug": "p4", "state": "queued", "title": "Fourth thing",
-            "plan": plan.to_str().unwrap(), "phases": "4"});
-        let i = parse(&line.to_string()).remove(0);
-        // Queue, Home, Sessions and pages all call title(), so each reads this.
-        assert_eq!(i.title(), "Systems you can see P4: Fourth thing");
+        // worklog's plan test covers the shapes; this is the cap every other title has.
         let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
             "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
         let long = parse(&long.to_string()).remove(0).title();
