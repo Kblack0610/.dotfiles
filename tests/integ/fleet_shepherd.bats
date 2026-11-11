@@ -974,6 +974,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: queue-starved tripped (high)'
 }
 
+@test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
+  doc "[$(row a DONE false false)]"
+  stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nfleet-thermal\tlow\nneptune-health\tnormal\n' STUB_K3S='[]'
+  run "$SH" run
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
+  refute_output --partial 'watch: fleet-thermal'
+  refute_output --partial 'watch: neptune-health'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
