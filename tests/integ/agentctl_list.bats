@@ -215,3 +215,22 @@ skill_fixture() {
   assert_line '["beta","low","claude","subscription","codex-core","anthropic-native",null]'
   assert_line '["gamma",null,null,null,null,null,true]'
 }
+
+@test "list --json takes a role's model and route pins as agentctl-run does, and names a role that does not load" {
+  mkdir -p "$HOME/.config/agentctl/roles"
+  printf 'ROLE_WRITE=no\nROLE_TASK=no\nROLE_BASH=no\nROLE_MCP=""\nROLE_MCP_DENY=""\nROLE_APPROVE=""\nROLE_MODEL="pinned-model"\nROLE_ROUTE=role-route\n' \
+    > "$HOME/.config/agentctl/roles/pinned.role"
+  printf 'ROLE=pinned\nMODEL=conf-model\nPRIORITY=must\n' >> "$HOME/.config/agentctl/agents/alpha.conf"
+  # A conf's own ROUTE still beats the role's default route; the role's model pin beats the conf's.
+  printf 'ROLE=pinned\nROUTE=conf-route\n' >> "$HOME/.config/agentctl/agents/beta.conf"
+  printf 'NAME=gamma\nKIND=oneshot\nLANE=observe\nDESCRIPTION=g\nEFFECT=none\nCOMMAND=true\nSCHEDULE=daily\nROLE=broken\nMODEL=conf-model\n' \
+    > "$HOME/.config/agentctl/agents/gamma.conf"
+  printf 'ROLE_WRITE=no\nROLE_MODEL=never-used\n' > "$HOME/.config/agentctl/roles/broken.role"
+  run "$AGENTCTL_BIN" list --json
+  assert_success
+  run jq -c '.[] | [.name, .model, .route, (.role_error != null)]' <<< "$output"
+  assert_line '["alpha","pinned-model","role-route",false]'
+  assert_line '["beta","pinned-model","conf-route",false]'
+  # negative control: a role that does not load pins nothing, and says why
+  assert_line '["gamma","conf-model","subscription",true]'
+}

@@ -2039,6 +2039,17 @@ EOS
   assert_output 0
 }
 
+@test "gateway: a key list longer than one page keeps the old snapshot and exits 1" {
+  gw_setup
+  echo '{"old":true}' > "$SRC/gw.json"
+  jq -c '. + {total_count: 101, current_page: 1, total_pages: 2}' "$SANDBOX/gw/key-list.json" > "$SRC/kl.json" && mv "$SRC/kl.json" "$SANDBOX/gw/key-list.json"
+  run "$ACCT" gateway --out "$SRC/gw.json"
+  assert_failure 1
+  assert_output --partial 'more keys than one page'
+  run cat "$SRC/gw.json"
+  assert_output '{"old":true}'
+}
+
 @test "gateway: the config comes from the home-config clone's upstream tip, not its working tree" {
   gw_setup
   unset CLAUDE_ACCT_GATEWAY_CONFIG

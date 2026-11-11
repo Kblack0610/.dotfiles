@@ -885,6 +885,11 @@ cmd_gateway() {
     reader=${reader/#\~/$HOME}
     teams=$(gateway_get "$reader" /team/list) && keys=$(gateway_get "$reader" "/key/list?return_full_object=true&size=100") ||
         { echo "claude-acct: gateway: the team or key list could not be read; $out is unchanged" >&2; return 1; }
+    # One page of 100 keys covers the gateway many times over; a second page fails loudly rather
+    # than show a Consumers table with keys missing.
+    if jq -e '(.total_pages // 1) > 1 or (.total_count // 0) > ((.keys // []) | length)' <<<"$keys" >/dev/null 2>&1; then
+        echo "claude-acct: gateway: more keys than one page (size=100); $out is unchanged" >&2; return 1
+    fi
     local hc=${HOME_CONFIG:-$HOME/dev/home/home-config} yml
     if [[ -n "${CLAUDE_ACCT_GATEWAY_CONFIG:-}" ]]; then
         conf=$CLAUDE_ACCT_GATEWAY_CONFIG; yml=$(cat "$conf" 2>/dev/null)

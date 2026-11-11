@@ -6,6 +6,8 @@ ConditionPathIsDirectory=/var/lib/node_exporter/textfile
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/claude-acct textfile /var/lib/node_exporter/textfile
-# The Consumers snapshot (Costs tab) rides the same 15 min timer.
-ExecStart=%h/.local/bin/claude-acct gateway
+# The Consumers snapshot (Costs tab) rides the same 15 min timer. The `-` keeps a failed
+# snapshot from failing the textfile unit: the old snapshot stays, and Consumers turns amber
+# once it is stale (gateway::STALE_SECS), which is the signal.
+ExecStart=-%h/.local/bin/claude-acct gateway
 TimeoutStartSec=90

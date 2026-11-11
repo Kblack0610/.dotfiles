@@ -323,7 +323,8 @@ impl<'a> Ctx<'a> {
     }
     /// The key a route's ROUTE_KEY_SOURCE names, when the gateway has a key by that alias:
     /// `rbw:litellm_comms_triage_key` is comms-triage, `file:.../knowledge-engine/key` is
-    /// knowledge-engine and `file:.../lazer-eval.key` is lazer-eval.
+    /// knowledge-engine and `file:.../lazer-eval.key` is lazer-eval. A file named plainly `key` names
+    /// no key, so only its directory is a candidate.
     fn route_key(&self, src: &str) -> Option<&'a Key> {
         let mut cands = vec![];
         if let Some(r) = src.strip_prefix("rbw:") {
@@ -332,7 +333,11 @@ impl<'a> Ctx<'a> {
         }
         if let Some(f) = src.strip_prefix("file:") {
             let p = Path::new(f);
-            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if let Some(stem) = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| *s != "key")
+            {
                 cands.push(stem.to_string());
             }
             if let Some(dir) = p
@@ -345,8 +350,14 @@ impl<'a> Ctx<'a> {
         }
         cands.iter().find_map(|c| self.key(c))
     }
-    /// Why a must consumer on this team or source is in the wrong place, if it is.
-    fn mismatch(&self, prio: &str, team: Option<&Team>, src: Option<&Source>) -> Option<String> {
+    /// Why a must consumer on this key, team or source is in the wrong place, if it is.
+    fn mismatch(
+        &self,
+        prio: &str,
+        key: Option<&Key>,
+        team: Option<&Team>,
+        src: Option<&Source>,
+    ) -> Option<String> {
         if prio != "must" {
             return None;
         }
@@ -359,11 +370,29 @@ impl<'a> Ctx<'a> {
                 return Some(format!("{name} is at its cap"));
             }
         }
+        if let Some(k) = key {
+            let name = k.alias.as_deref().unwrap_or("its key");
+            if let Some(p @ ("low" | "off")) = k.priority.as_deref() {
+                return Some(format!("key {name} is {p} priority"));
+            }
+            if k.blocked {
+                return Some(format!("key {name} is blocked"));
+            }
+        }
         if let Some(s) = src.filter(|s| s.priority.as_deref() == Some("low")) {
             return Some(format!("source {} is low priority", s.name));
         }
         None
     }
+}
+
+/// Where a Codex source stops: its own reserve, or claude-acct's RESERVE_PCT (scaled by the pace
+/// level, so not a fixed number here) when the sources file gives it none.
+fn stops(x: &Source) -> String {
+    x.reserve
+        .map_or("stops at the default reserve".into(), |r| {
+            format!("stops at {:.0}%", 100.0 - r)
+        })
 }
 
 /// A key's own state: blocked, at its cap, its team at cap, or no room in claude-acct.
@@ -444,9 +473,7 @@ fn runner_row(c: &Ctx, f: &Conf, key: Option<&Key>) -> Consumer {
         src = c.source(s);
         let acct = c.account(s);
         row.budget = match src {
-            Some(x) if x.kind == "codex" => {
-                format!("{s} plan, stops {:.0}%", 100.0 - x.reserve.unwrap_or(0.0))
-            }
+            Some(x) if x.kind == "codex" => format!("{s} plan, {}", stops(x)),
             Some(x) => format!("{s} ({})", x.kind),
             None => format!("{s} (not a source)"),
         };
@@ -469,7 +496,7 @@ fn runner_row(c: &Ctx, f: &Conf, key: Option<&Key>) -> Consumer {
     }
     let stopped = f.enabled && status.is_some();
     row.status = status.unwrap_or_else(|| "ok".into());
-    finish(row, c.mismatch(&prio, team, src), stopped)
+    finish(row, c.mismatch(&prio, key, team, src), stopped)
 }
 
 fn key_row(c: &Ctx, k: &Key, taken: &BTreeSet<&str>) -> Consumer {
@@ -500,7 +527,7 @@ fn key_row(c: &Ctx, k: &Key, taken: &BTreeSet<&str>) -> Consumer {
         who: k.consumer.clone(),
         ..Consumer::default()
     };
-    finish(row, c.mismatch(&prio, team, None), stopped)
+    finish(row, c.mismatch(&prio, Some(k), team, None), stopped)
 }
 
 /// The section under one sort (`sort`/`dir` over `Consumer::COLUMNS`; blank is the section's own
@@ -654,10 +681,10 @@ fn pools(c: &Ctx) -> Vec<String> {
             .account(&x.name)
             .map_or("-".into(), |a| a.used_text.clone());
         format!(
-            "source {} {} Codex plan, stops at {:.0}%, week used {used}",
+            "source {} {} Codex plan, {}, week used {used}",
             x.priority.as_deref().unwrap_or("-"),
             x.name,
-            100.0 - x.reserve.unwrap_or(0.0)
+            stops(x)
         )
     }));
     out
@@ -790,6 +817,84 @@ mod tests {
         assert_eq!(c.rows[0].consumer, "nightly-thing", "a MISMATCH leads");
     }
 
+    fn built_with(s: Snapshot, confs: Vec<Conf>) -> Consumers {
+        let r = Read {
+            snapshot: Some(s),
+            confs,
+            errors: vec![],
+        };
+        build(&r, &Burn::default(), NOW, "", "")
+    }
+
+    #[test]
+    fn a_must_runner_on_a_must_team_still_mismatches_on_a_low_off_or_blocked_key() {
+        let mut s = snap();
+        let base = s.keys[0].clone();
+        for (alias, prio, blocked) in [
+            ("low-pin", "low", false),
+            ("off-pin", "off", false),
+            ("shut-pin", "must", true),
+        ] {
+            s.keys.push(Key {
+                alias: Some(alias.into()),
+                priority: Some(prio.into()),
+                blocked,
+                ..base.clone()
+            });
+        }
+        let c = built_with(
+            s,
+            vec![
+                gateway_conf("a", "rbw:litellm_low_pin_key"),
+                gateway_conf("b", "rbw:litellm_off_pin_key"),
+                gateway_conf("d", "rbw:litellm_shut_pin_key"),
+                gateway_conf("e", "rbw:litellm_comms_triage_key"),
+            ],
+        );
+        assert_eq!(row(&c, "a").status, "MISMATCH: key low-pin is low priority");
+        assert_eq!(row(&c, "b").status, "MISMATCH: key off-pin is off priority");
+        assert_eq!(row(&c, "d").status, "MISMATCH: key shut-pin is blocked");
+        assert!(
+            !row(&c, "e").mismatch,
+            "a must key on a must team is the control"
+        );
+    }
+
+    #[test]
+    fn a_codex_source_with_no_reserve_stops_at_the_default_reserve_not_100() {
+        let mut s = snap();
+        s.sources[0].reserve = None;
+        let mut ke = conf("ke", "low", "codex", "codex-personal", "openai-native");
+        ke.source = Some("codex".into());
+        let c = built_with(s, vec![ke]);
+        assert_eq!(
+            row(&c, "ke").budget,
+            "codex plan, stops at the default reserve"
+        );
+        assert!(c
+            .pools
+            .iter()
+            .any(|p| p.contains("codex Codex plan, stops at the default reserve")));
+        assert!(!c.pools.iter().any(|p| p.contains("100%")), "{:?}", c.pools);
+    }
+
+    #[test]
+    fn a_key_file_named_key_matches_by_its_directory_never_a_key_aliased_key() {
+        let mut s = snap();
+        let mut generic = s.keys[0].clone();
+        generic.alias = Some("key".into());
+        s.keys.push(generic);
+        let c = built_with(
+            s,
+            vec![
+                gateway_conf("stray", "file:/home/x/.local/state/no-such-dir/key"),
+                gateway_conf("named", "file:/home/x/.local/state/comms-triage/key"),
+            ],
+        );
+        assert_eq!(row(&c, "stray").budget, "-", "{:?}", row(&c, "stray"));
+        assert_eq!(row(&c, "named").budget, "lazer-core (key comms-triage)");
+    }
+
     #[test]
     fn the_same_low_consumer_on_lazer_pool_is_no_mismatch() {
         let mut f = gateway_conf("dream-ish", "rbw:litellm_claude_reserve_key");
@@ -824,7 +929,7 @@ mod tests {
         );
         let k = row(&c, "knowledge-engine");
         assert_eq!(k.status, "MISMATCH: source codex is low priority");
-        assert_eq!(k.budget, "codex plan, stops 70%");
+        assert_eq!(k.budget, "codex plan, stops at 70%");
         assert_eq!(k.fallback, "none (native)");
     }
 
@@ -841,7 +946,7 @@ mod tests {
         let c = built(vec![ke]);
         let k = row(&c, "knowledge-engine");
         assert!(!k.mismatch && k.status == "ok", "{k:?}");
-        assert_eq!(k.budget, "codex-core plan, stops 95%");
+        assert_eq!(k.budget, "codex-core plan, stops at 95%");
     }
 
     #[test]
