@@ -491,3 +491,22 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   assert_success
   assert_output --partial 'SKIP  no app or game here has a sheet and a release tag to compare'
 }
+
+@test "a repo whose games declare buildTags must declare its own tagGlob, one owner per tag" {
+  cat > "$MAP" <<'EOF'
+{
+  "paths":    { "/tmp/mono": "mono-canon" },
+  "trackers": {
+    "mono-canon": { "system": "board" },
+    "game":       { "repo": "mono-canon", "buildTags": ["v*-game*"] }
+  }
+}
+EOF
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.mono-canon has no tagGlob'
+  # Negative control: the same map with the repo's family declared passes that check.
+  sed -i 's/"mono-canon": { "system": "board" }/"mono-canon": { "system": "board", "tagGlob": "v*" }/' "$MAP"
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'has no tagGlob'
+}

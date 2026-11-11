@@ -37,6 +37,7 @@
 # Public API:
 #   git_latest_tag    <repo> <name> [glob]                          -> one tag, or ""
 #   git_product_tag   <repo> <product> [glob]                       -> one tag, or ""
+#   git_tag_for_version <repo> <product> <version> [glob]          -> the tag that shipped it, or ""
 #   git_shipping_next <repo> <tag> <branch> [pathfilter] [limit]     -> N subject lines
 #   git_tags          <repo> <name> <scoped> [glob]                  -> every tag, newest first
 #   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
@@ -46,6 +47,8 @@
 #   git_version_ge    <a> <b>                                        -> 0 when a >= b
 #   git_version_max   < versions                                     -> the highest line
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
+#
+# A glob is space-separated patterns; one that starts with `!` subtracts (_gr_pats).
 #
 # EVERY function is best-effort and degrades to EMPTY + SUCCESS. A missing repo,
 # a missing `git`, a missing/unauthenticated `gh`, no network, no tags: all of
@@ -97,15 +100,45 @@ git_version_max() {
   done | sort -V -k1,1 | tail -1 | cut -f2
 }
 
-# _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
-# families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
-# pattern against the working directory, where an unquoted word would.
-_gr_pats() { read -ra _GR_PATS <<<"$1"; }
+# _gr_pats <glob> -> _GR_PATS and _GR_NOT, the glob split on spaces: a registry glob may name
+# several tag families (`buildTags`), each its own pattern to `git tag --list`. An entry that
+# starts with `!` subtracts: `v* !v*-shapecity*` is every v* tag but one game's build tags, so a
+# tag has one owner (project_tag_scope writes those). `read -a` never expands a pattern against
+# the working directory, where an unquoted word would.
+_gr_pats() {
+  local -a ws
+  local w
+  _GR_PATS=() _GR_NOT=()
+  read -ra ws <<<"$1"
+  for w in "${ws[@]}"; do
+    if [ "${w#!}" != "$w" ]; then _GR_NOT+=("${w#!}"); else _GR_PATS+=("$w"); fi
+  done
+}
+
+# _gr_tags <repo> [git tag --list options] - the tags _GR_PATS lists, minus any _GR_NOT
+# matches, in git's order. A line may carry a --format tail; the tag name is its first word.
+# The one listing every reader here uses, so a subtraction can never apply to one and not
+# another. Nothing when the glob only subtracts (`git tag --list` with no pattern lists every
+# tag). 1 when git fails.
+_gr_tags() {
+  local repo="$1" out line p
+  shift
+  [ "${#_GR_PATS[@]}" -gt 0 ] || return 0
+  out=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" "$@" 2>/dev/null) || return 1
+  [ -n "$out" ] || return 0
+  while IFS= read -r line; do
+    for p in "${_GR_NOT[@]}"; do
+      # shellcheck disable=SC2053  # $p is a glob on purpose
+      [[ ${line%% *} == $p ]] && continue 2
+    done
+    printf '%s\n' "$line"
+  done <<<"$out"
+}
 
 _gr_highest() {
   local repo="$1" glob="$2" all="" stable=""
   _gr_pats "$glob"
-  all=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null) || return 0
+  all=$(_gr_tags "$repo" --sort=-v:refname) || return 0
   [ -n "$all" ] || return 0
   stable=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   if [ -n "$stable" ]; then
@@ -209,8 +242,10 @@ git_product_tag() {
   return 0
 }
 
-# git_tag_for_version <repo> <product> <version> -> the tag that SHIPPED this exact
-# version, or "" if none did. `version` is the bare `v1.13.0`.
+# git_tag_for_version <repo> <product> <version> [glob] -> the tag that SHIPPED this exact
+# version, or "" if none did. `version` is the bare `v1.13.0`. A <glob> (the registry's
+# `tagGlob`) is authoritative, as in _gr_glob: the tag is the one of that family whose
+# git_tag_version is the version, so the portfolio's `portfolio-v1.6.4` ships v1.6.4.
 #
 # The asymmetry with git_product_tag is the point: that one answers "what is the
 # newest thing shipped", this one answers "was THIS number shipped". A roll needs
@@ -220,9 +255,16 @@ git_product_tag() {
 # it silently, and that failure refuses a version that really did ship. Exact match
 # only: `v1.13.0-rc1` is not `v1.13.0` shipping.
 git_tag_for_version() {
-  local repo="$1" product="$2" version="$3" glob
+  local repo="$1" product="$2" version="$3" glob t
   [ -n "$repo" ] && [ -n "$product" ] && [ -n "$version" ] && [ -d "$repo/.git" ] \
     && command -v git >/dev/null 2>&1 || return 0
+  if [ -n "${4:-}" ]; then
+    _gr_pats "$4"
+    while IFS= read -r t; do
+      [ "$(git_tag_version "$t")" = "${version#v}" ] && { printf '%s' "$t"; return 0; }
+    done < <(_gr_tags "$repo")
+    return 0
+  fi
   for glob in "${product}-${version}" "${product}-web-${version}" "${version}"; do
     if git -C "$repo" rev-parse -q --verify "refs/tags/${glob}" >/dev/null 2>&1; then
       printf '%s' "$glob"
@@ -277,7 +319,7 @@ git_tags() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --sort=-v:refname 2>/dev/null || true
+  _gr_tags "$repo" --sort=-v:refname || true
 }
 
 # git_prev_tag <repo> <name> <scoped> <glob> <tag> - the release before <tag> on its own
@@ -290,7 +332,7 @@ git_prev_tag() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  all=$(git -C "$repo" -c versionsort.suffix=- tag --list "${_GR_PATS[@]}" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
+  all=$(_gr_tags "$repo" --merged "${tag}^" --sort=-v:refname) || return 0
   if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
     all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   fi
@@ -308,8 +350,8 @@ git_first_tag() {
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
   _gr_pats "$g"
-  out=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --contains "$sha" --sort=creatordate \
-    --format='%(refname:short) %(creatordate:unix)' 2>/dev/null) || return 1
+  out=$(_gr_tags "$repo" --contains "$sha" --sort=creatordate \
+    --format='%(refname:short) %(creatordate:unix)') || return 1
   printf '%s' "${out%%$'\n'*}"
 }
 

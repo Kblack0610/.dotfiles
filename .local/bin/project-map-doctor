@@ -175,6 +175,14 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
   | .key as $p | .value.buildTags
   | if type != "array" or length == 0 then "trackers.\($p).buildTags is not a list of globs"
     else .[] | select(type != "string" or . == "" or test("\\s")) | "trackers.\($p).buildTags has \(tojson): each entry is one glob, no spaces" end' "$MAP_FILE" 2>/dev/null)
+# One owner per tag: project_tag_scope subtracts a game's buildTags from its repo's declared
+# tagGlob. A repo project with none falls back to the bare `v*` ladder rung, which lists them.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object")] as $e
+  | [$e[] | select(.value.buildTags != null and (.value.repo // .key) != .key) | .value.repo] | unique[] as $r
+  | $e[] | select(.key == $r and (.value.tagGlob // "") == "")
+  | "trackers.\($r) has no tagGlob, so its bare v* tag fallback lists the buildTags of the projects inside it: declare one"' "$MAP_FILE" 2>/dev/null)
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 
