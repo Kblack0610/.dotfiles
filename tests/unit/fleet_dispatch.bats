@@ -783,7 +783,7 @@ app urgent: fleet, #urgent, alpha"
   it='{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): cut all 3pm, upload beta", "task": "release(steam): cut all 3pm, upload beta", "row": "game:ar-7", "lane": "agent"}'
   run item_brief "$it"
   assert_line --index 0 '/release release(steam): cut all 3pm, upload beta'
-  assert_output --partial 'a release row: it ends on the live proof its skill names, never a PR or agent-land'
+  assert_output --partial 'a release row: it ends on live proof, never a PR or agent-land'
   assert_output --partial 'agent-queue set rel note="<proof>"; notes ptask game --agent done "ar-7" --proof "<proof>"; agent-queue move rel done --status ok'
   assert_output --partial 'If a step needs a decision from the human'
   refute_output --partial 'Merge with agent-land'
@@ -2297,6 +2297,34 @@ J
   assert_failure 2
   assert_output --partial "cannot enforce lane sandbox 'lane'"
   assert_not_called 'wt new'
+}
+
+@test "item_brief: a verify item starts on its own task and closes on proof, never a PR, whatever its title parses as" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "verify-gm-5-3", "mode": "oneshot", "project": "agent-runtime", "title": "check(ui): verify gm-5 ranked matches", "task": "Verify epic gm-5 on game.", "type": "check", "tags": "verify", "row": "game:gm-9", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  assert_output --partial 'a verify row: it ends on live proof, never a PR or agent-land'
+  assert_output --partial 'agent-queue set verify-gm-5-3 note="<proof>"; notes ptask game --agent done "gm-9" --proof "<proof>"; agent-queue move verify-gm-5-3 done --status ok'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  refute_output --partial 'already opened'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$it" opencode
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  refute_output --partial 'SKILL.md'
+  # negative control: without the tag the same check item is a /one-shot that lands a PR
+  run item_brief "${it/\"tags\": \"verify\", /}"
+  assert_line --index 0 --partial '/one-shot'
+}
+
+@test "pr_line: an item with no PR names none, so its session is never told to check out PR null" {
+  run pr_line '{"slug": "a", "pr": null}'
+  assert_output ''
+  run pr_line '{"slug": "a"}'
+  assert_output ''
+  run pr_line '{"slug": "a", "pr": "o/game#12"}'
+  assert_output --partial 'already opened o/game#12'
 }
 
 @test "item_brief for claude-cloud names the Item and Task lines and leaves out local tooling" {

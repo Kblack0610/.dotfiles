@@ -141,6 +141,8 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 : "${DISPATCH_REQUESTED_FLOOR:=4}"
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
+# 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
+: "${DISPATCH_EPIC_VERIFY:=1}"
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
@@ -1960,12 +1962,15 @@ item_brief() {
   kind=$(item_kind "$it")
   [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
   entry=${entry:-/one-shot}
+  # A verify item (reconcile_epics) carries its whole method in its task: no entry skill, and it
+  # closes on proof, whatever kind its title parses as.
+  [[ "$tags" != *" verify "* ]] || { entry='' exit_=proof kind=verify; }
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
   case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
     [ "$mode" != plan ] || plan_stage "$slug" "$tags"
-    printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
-  elif [ "$mode" != plan ]; then
+    [ -z "$entry" ] || printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
+  elif [ "$mode" != plan ] && [ -n "$entry" ]; then
     printf '%s%s ' "$entry" "$pr_only"
   fi
   jq -r .task <<<"$it"
@@ -2103,7 +2108,7 @@ proof_brief() {
   project=${project:-$4}
   [ "${lane:-agent}" = agent ] && flag=' --agent'
   [ -z "$prof" ] || pf=" --profile $prof"
-  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on the live proof its skill names, never a PR or agent-land."
+  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on live proof, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
   if headless "$5"; then no_human "$slug"; else ask_rule; fi
@@ -3565,6 +3570,7 @@ cmd_reap() {
   done
   unstart_orphans
   reconcile_plans
+  reconcile_epics
   return 0
 }
 
@@ -3591,6 +3597,50 @@ reconcile_plans() {
       say "could not queue the phases of $plan: $out"
     fi
   done <<<"$orphans"
+}
+
+# reconcile_epics -- queue one verify item for each open epic whose every leaf has landed (fleet-bench's
+# landed_unverified, read the same way): its session gathers proof of the outcome and closes the epic
+# on it (epic_verify_task), asking the human only when the proof is their word. Nothing else closes a
+# landed epic (lifecycle.md, "Merged is not done"). Its slug carries the epic's done count, so a slug
+# the queue ever held is never queued again: a verify that failed or found gaps waits for a human or
+# for the gap rows to land, which raises the count and queues the next check. A profile with board
+# automation off gets none. An automated filer's add (`from: auto:epics`), so a queue a day of drain
+# deep holds it (agent-queue admit) and the next pass tries again. Its title's area, `epics`, names no
+# system, so the story row agent-queue files for it links under no standing epic: one that did would
+# be a leaf there, and its close would queue a verify of that epic in turn.
+reconcile_epics() {
+  [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
+  local landed prof project id done_ title slug out rc
+  landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
+    | (.epics // [])[] | select(.open == 0 and .done > 0)
+    | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
+  [ -n "$landed" ] || return 0
+  while IFS=$'\x1f' read -r prof project id done_ title; do
+    slug="verify-$id-$done_"
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
+    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
+    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" \
+      --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+      logline "queued $slug: every leaf of epic $id on $project has landed"
+    elif [ "$rc" -ne "$AQ_EX_HELD" ] && [ "$rc" -ne "$AQ_EX_FINISHED" ]; then
+      say "could not queue the verify of epic $id on $project: ${out##*$'\n'}"
+    fi
+  done <<<"$landed"
+}
+
+# epic_verify_task <profile> <project> <epic id> <title> -> the task of a verify item (reconcile_epics):
+# what the epic promised, proof of it seen live, and the epic closed on that proof. item_brief gives
+# a `verify` item proof_brief's close (its own story row and the item), never a PR.
+epic_verify_task() {
+  local pf=''
+  [ -z "$1" ] || pf=" --profile $1"
+  echo "Verify epic $3 on $2: \"$4\". Every leaf has landed, so it waits on proof of its outcome, and a PR only proves a leaf landed."
+  echo "Read what it promised: its row on the human sheet and its leaves, plans and PRs (notes$pf projects --roadmap $2 --json). Then see that outcome work live and keep the evidence: a run id, a URL, a screenshot path, a command and its output."
+  echo "When it works, close the epic on that evidence: notes$pf ptask $2 done $3 --proof \"<evidence>\". An open check(...): verify $3 row on the human sheet is this same check: close it with the same proof."
+  echo "When part of it does not work, file one row per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\"), leave the epic open, and close this item with those row ids as its proof: the rows landing queue the epic's next verify."
+  echo "Only when no artifact can prove it (a look, a feel, a play only the human can judge) post one agent-ask naming what to try and what counts as yes, and once they answer yes close the epic with --proof \"human: <their words>\"."
 }
 
 # waiting_sessions -> "<server>/<tmux session>" for each Claude waiting on its human (agent-panel),
