@@ -211,6 +211,7 @@ set -uo pipefail
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
+: "${TRIAGE_ASKS_CMD:=agent-ask list --all --pending}"   # triage: pending asks, whose asking session holds its cause
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
 : "${TRIAGE_NOTIFY_CMD:=agent-notify}"   # triage: pages a human route once, when its row lands
 : "${TRIAGE_PROMOTE_CMD:=fleet-dispatch promote}"   # triage: queue one board row as it stands
@@ -3494,12 +3495,15 @@ triage_human() {
 }
 
 # cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
-# or closed with a PR that is not merged (it waits on a merge, and a second session would only
-# repeat it). Else how many items the window queued for it. Every row triage reads is red now, so
-# an item that closed cancelled, failed, or merged with its red still here did not hold.
+# closed with a PR that is not merged (it waits on a merge, and a second session would only
+# repeat it), or closed with its ask pending (an alert watch's item ends once it files the
+# decision, which is the human's until answered). Else how many items the window queued for it.
+# Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
+# red still here did not hold.
 cause_tries() {
   jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
+                or .ask == true
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
       then -1 else length end' <<<"$1"
 }
@@ -3509,9 +3513,16 @@ cause_slugs() {
   jq -r --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))] | sort_by(.queued // "") | map(.slug) | join(",")' <<<"$1"
 }
 
-# triage_items -> the queue items of the last TRIAGE_FIX_DAYS as one array; rc 1 when unreadable
+# triage_items -> the queue items of the last TRIAGE_FIX_DAYS as one array, `ask: true` on each
+# whose session posted an ask still pending (column 16 of the ask list is its Claude session);
+# rc 1 when the queue or the asks are unreadable
 triage_items() {
-  $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
+  local items asks
+  items=$($TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .) || return 1
+  asks=$($TRIAGE_ASKS_CMD 2>/dev/null) || return 1
+  jq -c --rawfile a <(printf '%s' "$asks") '
+    (reduce ($a | split("\n")[] | split("\t") | .[15] // "" | select(. != "")) as $k ({}; .[$k] = true)) as $s
+    | map(.ask = any((.sessions // "") | splits(" +"); $s[.] == true))' <<<"$items"
 }
 
 # triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at

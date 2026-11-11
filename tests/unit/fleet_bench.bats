@@ -12,7 +12,7 @@ setup() {
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export BENCH_SESSIONS_CMD=sessions-stub   # on PATH: the sandbox path has a space
   export BENCH_DEFAULT_PHASE_MIN=60
-  export TRIAGE_ITEMS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc" TRIAGE_PROMOTE_CMD=false   # nor the real queue, watch state or dispatcher for reds
+  export TRIAGE_ITEMS_CMD=true TRIAGE_ASKS_CMD=true TRIAGE_WATCH_STATE="$SANDBOX/no-wc" TRIAGE_PROMOTE_CMD=false   # nor the real queue, watch state or dispatcher for reds
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
@@ -1763,9 +1763,11 @@ quietrun() {
 log_triage_setup() {
   triage_setup
   mkdir -p "$AGENTCTL_STATE_DIR"; PLOG="$SANDBOX/promote.log"
-  export TRIAGE_ROUTES="$SANDBOX/triage-routes" TRIAGE_PROMOTE_CMD=promote-stub TRIAGE_HOLD_CMD=true TRIAGE_ITEMS_CMD=items-stub TRIAGE_NOTIFY_CMD=notify-stub
-  ITEMS="$SANDBOX/items.jsonl"; NOTIFY="$SANDBOX/notify.log"; : > "$ITEMS"
+  export TRIAGE_ROUTES="$SANDBOX/triage-routes" TRIAGE_PROMOTE_CMD=promote-stub TRIAGE_HOLD_CMD=true TRIAGE_ITEMS_CMD=items-stub TRIAGE_ASKS_CMD=asks-stub TRIAGE_NOTIFY_CMD=notify-stub
+  ITEMS="$SANDBOX/items.jsonl"; ASKS="$SANDBOX/asks.tsv"; NOTIFY="$SANDBOX/notify.log"; : > "$ITEMS"; : > "$ASKS"
   printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$ASKS" > "$SANDBOX/bin/asks-stub"
+  chmod +x "$SANDBOX/bin/asks-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
@@ -1940,6 +1942,29 @@ fix_item() {
   done
 }
 
+# pending_ask <claude session>: a pending ask row of `agent-ask list`, its session in column 16
+pending_ask() { printf 'Ab12Cd\tdotfiles\t\tpending\tquestion\tq?\ta|b\t\t\t\ta\t2026-11-11T01:57:17-0800\tdotfiles-agent-6\t\t\t%s\n' "$1" >> "$ASKS"; }
+
+# 2026-11-11: an alert watch's item (ar-1555) closed once it filed its ask, and triage queued a
+# retry (ar-1586) while that ask was pending, then would page the human that two fixes did not hold.
+@test "triage: an item that closed with its ask pending holds the cause: no retry and no page" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done ok
+  jq -c '.sessions = "s0 s1"' "$ITEMS" > "$ITEMS.x" && mv "$ITEMS.x" "$ITEMS"
+  pending_ask s1
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  [ ! -e "$BOARD.agent-runtime" ]
+  # Negative control: an ask some other session posted holds nothing.
+  : > "$ASKS"; pending_ask s9
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+}
+
 @test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
   log_triage_setup
   lock_route
@@ -1972,6 +1997,9 @@ fix_item() {
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   TRIAGE_ITEMS_CMD=false run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  TRIAGE_ASKS_CMD=false run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
 }
