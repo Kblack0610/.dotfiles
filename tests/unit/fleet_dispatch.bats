@@ -954,10 +954,12 @@ EOF
   RETRY_EXIT=7 run judge "$(c a; c b)"
   assert_success
   assert_equal "$(e)" 'b the reply had no verdict for this row, and the retry call failed (exit 7): rate limited '
-  # the retry stops at its budget: no verdict on b at all, so the next pass judges it
+  # the retry stops at its budget: no verdict on b at all, so the next pass judges it, and the
+  # pass gets the budget code (settle names the stop) while a's verdict stands
   rm -f "$NOTES_FIXTURE/n" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   RETRY_EXIT=75 run judge "$(c a; c b)"
-  assert_success
+  assert_equal "$status" 75
+  assert_output --partial 'the retry for 1 left-out row(s) stopped at its budget'
   assert_equal "$(e)" ''
   assert_equal "$(jq -r .key "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'a'
 }

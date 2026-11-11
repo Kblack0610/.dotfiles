@@ -1068,25 +1068,25 @@ judge() {
   if [ "$rc" = "$EX_BUDGET" ]; then touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
   # A pass that could not judge must not read as "no row qualifies".
   if [ "$rc" != 0 ] || [ -z "$JUDGE_VERDICTS" ]; then
-    [ "$rc" != 0 ] || JUDGE_WHY="the reply had no verdicts"
     verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
     say "judge $JUDGE_WHY for $(wc -l <<<"$cands") row(s)${JUDGE_REPLY:+: $JUDGE_REPLY}"; return 1
   fi
   verdicts=$JUDGE_VERDICTS
   printf '%s\n' "$verdicts" >> "$VERDICTS"
-  missing=$(judge_missing "$cands" "$verdicts")
-  if [ -n "$missing" ]; then
-    say "judge: the reply left out $(wc -l <<<"$missing") row(s), asking again for them"
-    cid=$(judge_call_id)
-    judge_ask "$missing" "$cid" "$rules"; rc=$?
-    if [ "$rc" = "$EX_BUDGET" ]; then say "judge retry $JUDGE_WHY"
-    elif [ "$rc" != 0 ]; then verdict_errors "$missing" "the reply had no verdict for this row, and the retry $JUDGE_WHY" "$cid" >> "$VERDICTS"
-    else
-      [ -z "$JUDGE_VERDICTS" ] || { printf '%s\n' "$JUDGE_VERDICTS" >> "$VERDICTS"; verdicts+=$'\n'"$JUDGE_VERDICTS"; }
-      verdict_errors "$(judge_missing "$missing" "$JUDGE_VERDICTS")" "neither the reply nor its retry had a verdict for this row" "$cid" >> "$VERDICTS"
-    fi
-  fi
   size_back "$cands" "$verdicts"
+  missing=$(judge_missing "$cands" "$verdicts")
+  [ -n "$missing" ] || return 0
+  say "judge: the reply left out $(wc -l <<<"$missing") row(s), asking again for them"
+  cid=$(judge_call_id)
+  judge_ask "$missing" "$cid" "$rules"; rc=$?
+  # A retry stopped at its budget leaves no error line either; the pass names the stop (settle).
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="the retry for $(wc -l <<<"$missing") left-out row(s) $JUDGE_WHY"; say "judge: $JUDGE_WHY"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then
+    verdict_errors "$missing" "the reply had no verdict for this row, and the retry $JUDGE_WHY" "$cid" >> "$VERDICTS"
+    return 0
+  fi
+  [ -z "$JUDGE_VERDICTS" ] || { printf '%s\n' "$JUDGE_VERDICTS" >> "$VERDICTS"; size_back "$missing" "$JUDGE_VERDICTS"; }
+  verdict_errors "$(judge_missing "$missing" "$JUDGE_VERDICTS")" "neither the reply nor its retry had a verdict for this row" "$cid" >> "$VERDICTS"
 }
 
 # judge_ask <rows> <call id> <policy rule ids> -- one model call for <rows>; on success sets
