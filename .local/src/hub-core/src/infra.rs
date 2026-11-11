@@ -57,6 +57,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
+        // Each host's emptiest real filesystem, free share: the NodeDisk* alerts' recording
+        // rule, keyed by host through cc:host_instance. A CI host with no row here (the AWS
+        // hosts, never scraped) has no disk reading at all, and the machines table says so.
+        ("disk", "min by (host) (device:node_filesystem_avail:ratio * on (instance) group_left (host) cc:host_instance)".into()),
         // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
@@ -87,6 +91,7 @@ pub const OPTIONAL: &[&str] = &[
     "runner_cores",
     "withheld",
     "power",
+    "disk",
     "governor",
     "job_usual",
     "rates",
@@ -428,6 +433,7 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
+                "disk",
                 "governor",
                 "job_usual",
                 "rates"
