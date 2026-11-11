@@ -921,12 +921,12 @@ registry() {
   mkdir -p "$HOME/.config/shared-hooks"
   ln -sf "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  printf '%s\n' '{"paths":{"/r/big":"big-platform"},"aliases":{"monorepo":"big-platform"},
-    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"},
+  printf '%s\n' '{"paths":{"/r/big":"big-platform"},
+    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"},"big-platform":{"names":["monorepo"]},
       "shop":{"repo":"big-platform","path":"apps/shop"}}}' > "$PROJECT_MAP_FILE"
 }
 
-@test "post refuses an explicit project the registry does not know, or an alias" {
+@test "post refuses an explicit project the registry does not know, or another spelling of one" {
   registry
   run "$AGENT_ASK" post --project shpo 'typo?'
   assert_failure 2

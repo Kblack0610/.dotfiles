@@ -15,8 +15,8 @@ setup() {
   git init -q "$REPO"
   # Two games in the game repo (level, arena), a repo whose work counts on its owner (tools ->
   # cockpit), and a project with a row code in another checkout (elsewhere).
-  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app", "/x/tools": "tools"}, aliases: {"g2": "game"},
-    trackers: {"level": {repo: "game", path: "Assets/Level", code: "lv"}, "arena": {repo: "game", path: "Assets/Arena/", code: "ar"},
+  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app", "/x/tools": "tools"},
+    trackers: {"game": {names: ["g2"]}, "level": {repo: "game", path: "Assets/Level", code: "lv"}, "arena": {repo: "game", path: "Assets/Arena/", code: "ar"},
       "notes": {repo: null}, "app": {}, "tools": {owner: "cockpit"}, "cockpit": {repo: "tools"},
       "elsewhere": {repo: "app", code: "el"}}}' > "$AGENT_QUEUE_PROJECT_MAP"
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
@@ -141,7 +141,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ ! -d "$AGENT_QUEUE_DIR/queued" ] || [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
 }
 
-@test "an alias is filed as its project, and a slug cannot be active twice" {
+@test "another spelling is filed as its project, and a slug cannot be active twice" {
   run "$AQ" add --project g2 --slug dup "x"
   assert_success
   [ "$(field "$(item queued dup)" project)" = game ]
@@ -1129,7 +1129,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$(field "$f" from)" = "board:level:fix the lobby: soon" ]
 }
 
-@test "set refuses a project the registry does not know, or an alias, and writes nothing" {
+@test "set refuses a project the registry does not know, or another spelling of one, and writes nothing" {
   "$AQ" add --project game --slug s "fix the lobby"
   run "$AQ" set s project=nowhere
   assert_failure

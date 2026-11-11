@@ -340,16 +340,15 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
 }
 
 /// The project a merged PR counts under: the `project` day-log writes, or for a record from
-/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+/// before it did, its repo, each read through the name index (`project_map::canonical`), so an
+/// old spelling counts under today's key.
 pub fn pr_project(pr: &Value) -> String {
-    match pr["project"].as_str() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => pr["repo"]
-            .as_str()
-            .map(|r| r.trim_start_matches('.').to_string())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "other".into()),
-    }
+    let name = [&pr["project"], &pr["repo"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(project_map::canonical)
+        .find(|p| !p.is_empty());
+    name.unwrap_or_else(|| "other".into())
 }
 
 /// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
