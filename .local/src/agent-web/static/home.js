@@ -192,18 +192,13 @@ function needsBody(h) {
 // One running item: its row opens its session page, or its queue item when no session runs it,
 // and each cell that names a record links to that record's home.
 const runCellLink = (href, text, cls = "") => href ? `<a${cls ? ` class="${cls}"` : ""} href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : (text ? `<span class="${cls}">${esc(text)}</span>` : "-");
-const runEtaCell = (p) => {
-  if (!p || !p.eta_epoch) return "-";
-  const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return late > 0 ? `<span class="qlate" title="ETA was ${stamp(p.eta_epoch)}">overdue ${ageMin(late)}</span>` : `<span title="estimate ${esc(p.eta || "")}">${stamp(p.eta_epoch)}</span>`;
-};
 function runRow(r) {
-  const p = r.phases, row = r.row && `#board?q=id:${encodeURIComponent(r.row)}`, epic = r.epic && `#board?q=id:${encodeURIComponent(r.epic)}`;
+  const p = r.phases, row = r.row && `#board?q=id:=${encodeURIComponent(r.row)}`, epic = r.epic && `#board?q=id:=${encodeURIComponent(r.epic)}`;
   const pr = r.pr ? runCellLink(r.pr_url, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
   return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
     `<td class="wrap">${esc(r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
     `<td>${runCellLink(`#projects/${encodeURIComponent(r.project)}`, r.project)}</td><td>${runCellLink(row, r.row)}</td><td>${runCellLink(epic, r.epic)}</td>` +
-    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${runEtaCell(p)}</td><td>${pr}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
     `<td>${r.ci ? runCellLink(r.ci_url, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };

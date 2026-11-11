@@ -609,16 +609,6 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .unwrap_or_default();
     let phases = boards::phases(state);
     let now = state["generated_epoch"].as_i64();
-    let parents: std::collections::HashMap<(String, &str), &str> = board
-        .into_iter()
-        .flat_map(|f| f.rows.iter().chain(&f.done))
-        .filter_map(|r| {
-            Some((
-                (r.project.as_deref()?.to_lowercase(), r.id.as_deref()?),
-                r.parent.as_deref()?,
-            ))
-        })
-        .collect();
     q.in_state(State::Running)
         .map(|i| {
             let target = i
@@ -631,7 +621,8 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
             let phases = target.as_ref().and_then(|t| phases.get(t).cloned());
             let board_row = i.board_row();
             let epic = board_row
-                .and_then(|(p, id)| parents.get(&(p.to_lowercase(), id)).map(|e| e.to_string()));
+                .zip(board)
+                .and_then(|((p, id), f)| f.row(p, id)?.parent.clone());
             let (pr, pr_url) = pr_of(live, i).map_or((None, None), |(l, u)| (Some(l), u));
             let ci = said_lower(live, "ci").filter(|_| pr.is_some());
             Running {

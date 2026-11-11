@@ -387,9 +387,10 @@ pub fn page(
                 .take(h.shown)
                 .map(|r| {
                     let ph = r.phases.as_ref();
+                    // Late by `overdue`, the clock the web's Overdue chip counts by.
                     let eta = ph.and_then(|x| x.eta_epoch).map_or("-".into(), |e| {
                         let s = clock(e, now);
-                        if e < now {
+                        if r.overdue {
                             cell(format!("{s} late"), p.warn())
                         } else {
                             s.into()

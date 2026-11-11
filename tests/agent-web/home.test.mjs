@@ -267,8 +267,8 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const cells = row[1];
   assert.match(cells, /Queue cards<div class="muted">next: docs<\/div>/);
   assert.match(cells, /<a href="#projects\/agent-runtime">agent-runtime<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:ar-1494">ar-1494<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:ar-1292">ar-1292<\/a>/);
+  assert.match(cells, /<a href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
+  assert.match(cells, /<a href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
   assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
   assert.match(cells, /<a href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
   assert.match(cells, /<a class="ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
@@ -276,6 +276,10 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap">No session yet<\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
+  // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
+  // not call overdue is drawn as an ETA, not late.
+  const calm = draw(home({ running: [{ slug: "ar-3", title: "t", project: "p", phases: { done: 1, total: 2, eta_epoch: due } }] }));
+  assert.doesNotMatch(calm, /qlate/, calm);
 });
 
 test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {

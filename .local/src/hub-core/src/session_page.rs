@@ -227,13 +227,13 @@ fn item_part(r: &SessionRow, item: Option<&Item>, live: Option<&Value>) -> Part 
     Part::new(label, format!("{} ({})", i.slug, said.join(", "))).link(format!("#queue/{}", i.slug))
 }
 
-/// A link to one board row: the Board filtered to its id.
+/// A link to one board row: the Board filtered to exactly its id (`id:ar-1` alone would match
+/// `ar-10`).
 fn row_link(id: &str) -> String {
-    format!("#board?q=id:{id}")
+    format!("#board?q=id:={id}")
 }
 
-/// `<project>:<id>`'s row off the open board, and the epic its `#of/` tag names. A row that is
-/// closed is not on it, which is no failure: a done item closed its row.
+/// `<project>:<id>`'s row, open or closed, and the epic its `#of/` tag names.
 fn board_parts(
     runner: &dyn Runner,
     project: &str,
@@ -242,21 +242,12 @@ fn board_parts(
 ) -> (Part, Option<Part>) {
     let label = "Board row";
     let named = format!("{project} {id}");
-    let in_project = |r: &&tasks::Row, want: &str| {
-        r.id.as_deref() == Some(want)
-            && r.project
-                .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(project))
-    };
     let (part, epic) = match tasks::feed(runner) {
-        Ok(f) => match f.rows.iter().find(|r| in_project(r, id)) {
+        Ok(f) => match f.row(project, id) {
             Some(r) => {
                 let epic = r.parent.as_deref().map(|e| {
                     let title = f
-                        .rows
-                        .iter()
-                        .chain(&f.done)
-                        .find(|x| in_project(x, e))
+                        .row(project, e)
                         .map(|x| format!(" \"{}\"", cap(&x.text, TITLE_MAX)))
                         .unwrap_or_default();
                     Part::new("Epic", format!("{e}{title}")).link(row_link(e))
@@ -265,7 +256,7 @@ fn board_parts(
                 (Part::new(label, text), epic)
             }
             None => (
-                Part::new(label, format!("{named} (closed, or not on the open board)")),
+                Part::new(label, format!("{named} (not on the board)")),
                 None,
             ),
         },
@@ -663,8 +654,8 @@ mod tests {
         };
         assert_eq!(link("Queue item"), Some("#queue/the-item"));
         assert_eq!(link("Project"), Some("#projects/agent-runtime"));
-        assert_eq!(link("Board row"), Some("#board?q=id:ar-455"));
-        assert_eq!(link("Epic"), Some("#board?q=id:ar-400"));
+        assert_eq!(link("Board row"), Some("#board?q=id:=ar-455"));
+        assert_eq!(link("Epic"), Some("#board?q=id:=ar-400"));
         assert_eq!(link("PR"), Some("https://github.com/o/r/pull/12"));
         assert_eq!(
             (text(&p, "CI"), link("CI")),
@@ -725,7 +716,7 @@ mod tests {
         assert_eq!(text(&p, "Queue item"), "the-item (done, high)");
         assert_eq!(
             text(&p, "Board row"),
-            "agent-runtime ar-999 (closed, or not on the open board)"
+            "agent-runtime ar-999 (not on the board)"
         );
         assert_eq!(text(&p, "Plan"), "/p/from-item.md");
         assert_eq!(
