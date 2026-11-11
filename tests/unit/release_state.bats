@@ -943,3 +943,26 @@ EOF
   assert_output --partial "tag v0.1.0 in $CODE is listed by api and game: one tag, one project"
   refute_output --partial 'tag game-v0.2.0'
 }
+
+@test "store: a channel moved by hand with no live probe is released, not unknown" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual", "reason": "by hand"} | del(.trackers.game.targets[0].live)' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -r .status)" released
+}
+
+@test "testflight: a build drift restarts when the recorded build moves, and check names both builds" {
+  store_setup
+  asc_key
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
+  "$RS" refresh game
+  jq '(.rows[] | select(.id == "game-testflight") | .drift_since) = 1000' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -r .drift_since)" 1000
+  run "$RS" check --grace 0
+  assert_output --partial 'DRIFT game game-testflight: pinned v0.5.0-g1 build 4400 live 0.5.0 (4321) build 4321'
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-03T10:00:00Z 4500)"
+  "$RS" refresh game
+  [ "$(row game-testflight | jq -r .drift_since)" -gt 1000 ]
+}

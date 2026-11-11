@@ -235,7 +235,7 @@ if declare -F project_tag_scope >/dev/null 2>&1 && project_release_lib 2>/dev/nu
       g="$(_gr_glob "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_GLOB")"
       { [ -z "$g" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$g"
         [ -z "$_PTS_BUILDS" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_BUILDS"; } |
-        sort -u | sed "s|^|$_PTS_REPO\t|; s|\$|\t$p|"
+        sort -u | while IFS= read -r tag; do printf '%s\t%s\t%s\n' "$_PTS_REPO" "$tag" "$p"; done
     done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object")] as $e
       | [$e[] | (.value.repo // .key)] | group_by(.) | map(select(length > 1) | .[0]) as $shared
       | $e[] | select((.value.repo // .key) as $r | $shared | index($r)) | select(.value.lab or .value.targets) | .key' "$MAP_FILE" 2>/dev/null)
@@ -244,6 +244,8 @@ if declare -F project_tag_scope >/dev/null 2>&1 && project_release_lib 2>/dev/nu
     [ -n "$tag" ] && fail "tag $tag in $repo is listed by $who: one tag, one project (tagGlob, buildTags)"
   done < <(awk -F'\t' 'NF == 3 { k = $1 FS $2; o[k] = (k in o) ? o[k] " and " $3 : $3; n[k]++ }
     END { for (k in n) if (n[k] > 1) print k FS o[k] }' <<<"$owned" | sort)
+else
+  skip "project-name.sh or git-release.sh unavailable; cannot check one owner per tag"
 fi
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"

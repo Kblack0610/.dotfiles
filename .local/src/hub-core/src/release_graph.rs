@@ -2,7 +2,8 @@
 //! later, the validator): the collector writes raw facts only (`release-state refresh`'s
 //! `releases` tag history, each channel's Deployments and pin), and a link between two of them
 //! is never stored, so it cannot drift from the facts it joins. Today: release -> the channels
-//! it reached, by the Deployment's version, then its commit. The relationship model: docs/operations/release-state.md, "Relationships".
+//! it reached, by the Deployment's version, then its commit. The relationship model:
+//! docs/operations/release-state.md, "Relationships".
 
 use serde::{Deserialize, Serialize};
 

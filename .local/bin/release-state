@@ -477,9 +477,10 @@ row() {
   lb="$(jq -r '.build // empty' <<<"$l")"
   if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
     status=unreleased
-  elif [ -z "$pv" ] && { [ "$psrc" = none ] || [ "$psrc" = manual ]; } && [ -n "$lv" ]; then
-    # A store channel no upload has been recorded for, or one moved by hand: live is known, there
-    # is nothing to hold it to.
+  elif [ -z "$pv" ] && { { [ "$psrc" = none ] && [ -n "$lv" ]; } ||
+         { [ "$psrc" = manual ] && { [ -n "$lv" ] || [ "$lsrc" = none ]; }; }; }; then
+    # A store channel no upload has been recorded for, with live known, or one moved by hand
+    # whose live is known or not probed: there is nothing to hold live to.
     status=released
   elif [ -z "$pv" ] || { [ "$lsrc" != none ] && [ -z "$lv" ]; }; then
     status=unknown
@@ -504,8 +505,10 @@ row() {
   if [ "$status" = drift ]; then
     # Carry the start of a drift across refreshes, so check can tell a rollout in progress
     # from one that stalled.
-    drift_since="$(jq -r --arg id "$id" --arg pv "$pv" --arg lv "$lv" \
-      '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv)) | .[0].drift_since // empty' <<<"$prev")"
+    # A build-decided drift is a new one when either build moves, though the versions do not.
+    drift_since="$(jq -r --arg id "$id" --arg pv "$pv" --arg lv "$lv" --arg pb "$pb" --arg lb "$lb" \
+      '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv
+         and (.pinned.build // "" | tostring) == $pb and (.live.build // "" | tostring) == $lb)) | .[0].drift_since // empty' <<<"$prev")"
     drift_since="${drift_since:-$now}"
   fi
   jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson d "$d" --argjson tel "$tel" \
@@ -630,7 +633,7 @@ cmd_check() {
      then "STALE snapshot is \((($now - .generated_epoch) / 60) | floor)m old (max \($max)m)" else empty end),
     (.rows[]
      | (select(.status == "drift" and (.drift_since != null) and ($now - .drift_since) > ($grace * 60))
-        | "DRIFT \(.project) \(.id): pinned \(.pinned.value) live \(.live.value) for \((($now - .drift_since) / 60) | floor)m"),
+        | "DRIFT \(.project) \(.id): pinned \(.pinned.value)\(if .pinned.build then " build \(.pinned.build)" else "" end) live \(.live.value)\(if .live.build then " build \(.live.build)" else "" end) for \((($now - .drift_since) / 60) | floor)m"),
        (select(.status == "floating" and .channel == "prod")
         | "FLOATING \(.project) \(.id): prod runs an unpinned image"),
        (.project as $p | .id as $i | .telemetry[] | select(.state == "missing" or .state == "TRIP")
