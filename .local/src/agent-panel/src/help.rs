@@ -28,7 +28,11 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
                 "S-Tab",
                 "grab the row; Up / Down carry it; S-Tab, Enter or Esc drop it",
             ),
-            ("", "a grab switches to your order, which the panel keeps"),
+            (
+                "",
+                "a grab shows every session in your order, which the panel keeps",
+            ),
+            ("", "a search narrows what the row moves past"),
             ("C-o", "next sort"),
             ("A-o", "reverse the sort"),
             ("C-y", "only the sessions waiting on you, and back"),
@@ -103,10 +107,13 @@ pub fn run(current: Sort) -> anyhow::Result<()> {
     if tty {
         write!(out, "\n{DIM}any key to go back{RESET}")?;
         out.flush()?;
-        // One key, raw, from the terminal; the settings are put back as they were.
+        // One key, raw, from the terminal; the settings are put back as they were. An arrow or
+        // F-key is several bytes: one read takes the whole sequence (up to 16 bytes, ending at
+        // the terminal's 0.1 s inter-byte timer, which is how escape sequences are told apart),
+        // so none of it is left for fzf to read as typed text.
         let _ = Command::new("sh")
             .arg("-c")
-            .arg("s=$(stty -g </dev/tty); stty -icanon -echo min 1 </dev/tty; dd bs=1 count=1 </dev/tty >/dev/null 2>&1; stty \"$s\" </dev/tty")
+            .arg("s=$(stty -g </dev/tty); stty -icanon -echo min 16 time 1 </dev/tty; dd bs=16 count=1 </dev/tty >/dev/null 2>&1; stty \"$s\" </dev/tty")
             .status();
     }
     Ok(())

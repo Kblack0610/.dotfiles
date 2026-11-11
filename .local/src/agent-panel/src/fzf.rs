@@ -17,6 +17,9 @@ pub const UP_SKIPPING_HEADERS: &str = "up+transform:case {} in *━━*) echo up
 pub const DOWN_SKIPPING_HEADERS: &str = "down+transform:case {} in *━━*) echo down ;; esac";
 /// The keys that open the shortcuts page (`agent-panel keys`); the panel draws no header bar.
 pub const HELP_KEYS: [&str; 2] = ["alt-?", "f1"];
+/// Off while a row is held, back on when it drops: a sort or view change mid-move would move
+/// the row in an order you cannot see.
+pub const KEYS_OFF_WHILE_MOVING: &str = "ctrl-o,alt-o,ctrl-y";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is

@@ -222,15 +222,18 @@ pub fn load_order(file: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Save the order as given. The caller passes only live targets, so a gone session drops out
-/// on the next move instead of piling up.
+/// Save the order as given, by rename: a reload rendering the custom sort while a move writes
+/// reads the old order or the new one, never a truncated one. A grab prunes gone sessions.
 pub fn save_order(file: &Path, order: &[String]) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
     let mut text = order.join("\n");
     text.push('\n');
-    fs::write(file, text)
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(".tmp");
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, file)
 }
 
 /// The saved sort, or project when there is none. A file that does not parse says so on

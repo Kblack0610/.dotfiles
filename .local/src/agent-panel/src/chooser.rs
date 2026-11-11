@@ -552,9 +552,14 @@ pub enum MoveKey {
 pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
     let moving = std::env::var("FZF_PROMPT").is_ok_and(|p| p.starts_with(fzf::PROMPT_MOVING));
     let query = std::env::var("FZF_QUERY").unwrap_or_default();
-    let drop = format!("change-prompt({})", fzf::PROMPT_ALL);
     let step = match (key, moving) {
-        (MoveKey::Grab | MoveKey::Accept | MoveKey::Abort, true) => return say(&drop),
+        (MoveKey::Grab | MoveKey::Accept | MoveKey::Abort, true) => {
+            return say(&format!(
+                "change-prompt({})+rebind({})",
+                fzf::PROMPT_ALL,
+                fzf::KEYS_OFF_WHILE_MOVING
+            ))
+        }
         (MoveKey::Up, false) => return say(fzf::UP_SKIPPING_HEADERS),
         (MoveKey::Down, false) => return say(fzf::DOWN_SKIPPING_HEADERS),
         (MoveKey::Accept, false) => return say("accept"),
@@ -564,28 +569,56 @@ pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
         (MoveKey::Up, true) => -1,
         (MoveKey::Down, true) => 1,
     };
-    let mut agents = collect();
-    with_last_active(&mut agents);
-    let saved = saved_sort();
     let custom = sort::Sort {
         key: sort::Key::Custom,
         reverse: false,
     };
     let order_file = sort::order_file().context("no HOME for the panel's state")?;
-    // The rows as shown are the order moved: the custom one itself (live rows only, so a gone
-    // session drops out here), or the sort being left, reversed or not.
-    let mut order = shown_order(&agents, saved);
-    if saved != custom {
-        if let Some(file) = sort::state_file() {
-            sort::save(&file, custom)?;
+    let notes_file = search::notes_path(map_file);
+    // The rows on screen, as the last reload wrote them: what is moved, and among which rows.
+    let notes = fs::read_to_string(&notes_file)?;
+    let topics = search::read_topics();
+    let shown: Vec<&str> = notes.lines().filter_map(note_target).collect();
+    let visible = search::filter(&notes, &query, &topics);
+    let neighbour = next_to(&visible, target, step);
+    let saved = saved_sort();
+    let mut order = if saved == custom {
+        sort::load_order(&order_file)
+    } else {
+        Vec::new() // leaving another sort: your order starts as the rows are shown
+    };
+    for t in &shown {
+        if !order.iter().any(|o| o == t) {
+            order.push(t.to_string());
         }
     }
-    swap(&mut order, target, step);
-    sort::save_order(&order_file, &order)?;
-    write_rows(agents, map_file, custom)?;
-    let notes = fs::read_to_string(search::notes_path(map_file))?;
-    let rows = search::filter(&notes, &query, &search::read_topics());
-    let pos = rows
+    if let Some(n) = neighbour {
+        swap_with(&mut order, target, n);
+    }
+    let notes = if step == 0 || saved != custom {
+        // A grab: read every session once, drop gone ones from the order, and show them all
+        // in your order (this leaves the asking-only view).
+        let agents = collect();
+        order.retain(|t| agents.iter().any(|a| &a.target == t));
+        sort::save_order(&order_file, &order)?;
+        if saved != custom {
+            if let Some(file) = sort::state_file() {
+                sort::save(&file, custom)?;
+            }
+        }
+        write_rows(agents, map_file, custom)?;
+        fs::read_to_string(&notes_file)?
+    } else {
+        // A step: the rows already on screen, two of them swapped. No session is read again.
+        let Some(n) = neighbour else {
+            return Ok(()); // at either end of the shown rows
+        };
+        sort::save_order(&order_file, &order)?;
+        let swapped = swap_lines(&notes, target, n);
+        write_whole(&notes_file, &swapped)?;
+        swapped
+    };
+    let pos = search::filter(&notes, &query, &topics)
         .lines()
         .position(|l| l.split('\t').next() == Some(target))
         .map_or(1, |i| i + 1);
@@ -596,9 +629,10 @@ pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
     );
     if key == MoveKey::Grab {
         say(&format!(
-            "change-prompt({}{} > )+{reload}",
+            "change-prompt({}{} > )+unbind({})+{reload}",
             fzf::PROMPT_MOVING,
-            target.replace([')', '('], "")
+            target.replace([')', '('], ""),
+            fzf::KEYS_OFF_WHILE_MOVING
         ))
     } else {
         say(&reload)
@@ -610,25 +644,43 @@ fn say(actions: &str) -> Result<()> {
     Ok(())
 }
 
-/// The targets in the order `sort` shows them.
-fn shown_order(agents: &[Agent], sort: sort::Sort) -> Vec<String> {
-    render::build(agents, sort, 0)
-        .0
-        .into_iter()
-        .map(|r| r.target)
-        .filter(|t| !t.is_empty())
-        .collect()
+/// A notes line's target (`search::notes`: `note \t target \t ...`); none for a header.
+fn note_target(line: &str) -> Option<&str> {
+    let (_, row) = line.split_once('\t')?;
+    row.split('\t').next().filter(|t| !t.is_empty())
 }
 
-/// Move `target` one place up (-1) or down (1) in `order`; at either end, or not in it, nothing.
-fn swap(order: &mut [String], target: &str, step: i32) {
-    let Some(i) = order.iter().position(|t| t == target) else {
-        return;
-    };
-    let j = i as i64 + step as i64;
-    if step != 0 && j >= 0 && (j as usize) < order.len() {
-        order.swap(i, j as usize);
+/// The row `step` places from `target` among the `visible` rows (`search::filter` output); none
+/// at either end, for a grab (0), or when `target` is not shown.
+fn next_to<'a>(visible: &'a str, target: &str, step: i32) -> Option<&'a str> {
+    let rows: Vec<&str> = visible
+        .lines()
+        .filter_map(|l| l.split('\t').next().filter(|t| !t.is_empty()))
+        .collect();
+    let i = rows.iter().position(|t| *t == target)? as i64 + step as i64;
+    (step != 0 && i >= 0)
+        .then(|| rows.get(i as usize).copied())
+        .flatten()
+}
+
+/// Swap `a` and `b` in `order`; rows between them (hidden by a search) keep their places.
+fn swap_with(order: &mut [String], a: &str, b: &str) {
+    let i = order.iter().position(|t| t == a);
+    let j = order.iter().position(|t| t == b);
+    if let (Some(i), Some(j)) = (i, j) {
+        order.swap(i, j);
     }
+}
+
+/// The notes with the lines of targets `a` and `b` swapped, the same swap `swap_with` made.
+fn swap_lines(notes: &str, a: &str, b: &str) -> String {
+    let mut lines: Vec<&str> = notes.lines().collect();
+    let i = lines.iter().position(|l| note_target(l) == Some(a));
+    let j = lines.iter().position(|l| note_target(l) == Some(b));
+    if let (Some(i), Some(j)) = (i, j) {
+        lines.swap(i, j);
+    }
+    lines.join("\n")
 }
 
 /// The sort the panel was last left in (`sort::state_file`), project when none.
@@ -922,21 +974,35 @@ mod tests {
     }
 
     #[test]
-    fn swap_moves_one_place_and_stops_at_either_end() {
+    fn a_step_swaps_with_the_next_shown_row_and_skips_rows_a_search_hides() {
         let order = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A search shows a and c; b is hidden between them.
+        let visible = "\t\tall\na\trow a\nc\trow c";
+        assert_eq!(next_to(visible, "a", 1), Some("c"));
+        assert_eq!(next_to(visible, "c", -1), Some("a"));
         let mut o = order(&["a", "b", "c"]);
-        swap(&mut o, "b", -1);
-        assert_eq!(o, order(&["b", "a", "c"]));
-        swap(&mut o, "b", -1);
-        assert_eq!(o, order(&["b", "a", "c"]), "the top stays put");
-        swap(&mut o, "c", 1);
-        assert_eq!(o, order(&["b", "a", "c"]), "the bottom stays put");
-        swap(&mut o, "a", 1);
-        assert_eq!(o, order(&["b", "c", "a"]));
-        // Negative control: a grab (0) or an unknown target moves nothing.
-        swap(&mut o, "c", 0);
-        swap(&mut o, "zz", 1);
-        assert_eq!(o, order(&["b", "c", "a"]));
+        swap_with(&mut o, "a", "c");
+        assert_eq!(o, order(&["c", "b", "a"]), "the hidden row keeps its place");
+        // Negative control: the ends, a grab, and an unshown target have no neighbour.
+        assert_eq!(next_to(visible, "a", -1), None);
+        assert_eq!(next_to(visible, "c", 1), None);
+        assert_eq!(next_to(visible, "a", 0), None);
+        assert_eq!(next_to(visible, "b", 1), None);
+    }
+
+    #[test]
+    fn swap_lines_swaps_two_rows_and_leaves_headers_and_the_rest() {
+        let notes = "h\t\tall, your order\nna\ta\trow a\nnb\tb\trow b\nnc\tc\trow c";
+        assert_eq!(
+            swap_lines(notes, "a", "c"),
+            "h\t\tall, your order\nnc\tc\trow c\nnb\tb\trow b\nna\ta\trow a"
+        );
+        assert_eq!(note_target("h\t\tall"), None, "a header has no target");
+        assert_eq!(
+            swap_lines(notes, "a", "zz"),
+            notes,
+            "an unknown row moves nothing"
+        );
     }
 
     #[test]
