@@ -558,16 +558,11 @@ account_env() {
 # telemetry_env <cwd> [item]: the launch-line prefix claude-telemetry.sh's claude_launch_env gives:
 # a parent Claude session's identity dropped, the shared launch env and (on the LAN) the OTel export,
 # with spans labelled by project and queue item. A pane gets the tmux server's environment and runs no
-# rc file, so only its launch line can carry these. A session with an item is fleet-dispatch's, whoever
-# ran the start: the caller's runner name leaked in, so on 2026-11-11 16 of 24 queue sessions past 1h
-# exported as shepherd, inbox-plan or (a hand start) the human's claude-code. A resume with no item
-# may be the human's own session, and keeps the caller's labels.
+# rc file, so only its launch line can carry these.
 telemetry_env() {
   local f="$HOME/.config/shared-hooks/claude-telemetry.sh" env
   # shellcheck disable=SC2016
-  env=$(cd "$1" 2>/dev/null && AGENT_QUEUE_ITEM=${2:-} bash -c '
-    [ -z "$AGENT_QUEUE_ITEM" ] || export AGENTCTL_NAME=fleet-dispatch CLAUDE_TELEMETRY_SERVICE=claude-agentctl
-    . "$1" >/dev/null && claude_launch_env' _ "$f") ||
+  env=$(cd "$1" 2>/dev/null && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$1" >/dev/null && claude_launch_env' _ "$f") ||
     { say "no launch env from $f, so this start exports no telemetry and keeps the tmux server's Claude session vars"; return 0; }
   printf '%s' "$env"
 }
