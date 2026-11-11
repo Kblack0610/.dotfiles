@@ -134,7 +134,8 @@ JQ_EVAL="$JQ_EPOCH"'
        elif $human == null then (if ($a.options // "") == "" then "free text in session" else "answer naming no option" end)
        elif $kind == "answer" then null
        elif ($a.judge_rule // "") == "unclear-ask" then "unclear ask"
-       elif ($hard | split(" ") | index($a.judge_type // "")) then "hard-stop type"
+       elif any($a.judge_type, $a.judge_rule; IN(($hard | splits(" +"))) and . != "") then "hard stop"
+       elif ($a.judge_type // "") == "" then "untyped deferral"
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
        type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),

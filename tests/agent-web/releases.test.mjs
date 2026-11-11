@@ -24,6 +24,7 @@ let body = {};
 let builds = {};
 let tests = {};
 let cases = {};
+let detail = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -37,7 +38,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds") ? builds : body;
+    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -254,7 +255,7 @@ const bdata = (o = {}) => ({
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
-const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null }); run("relst.render()"); };
+const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
 const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: key } } : null) });
 const BKEY = "github.com|binks|77|2";
 
@@ -284,13 +285,59 @@ test("opening a run reads its log then, and only then; clicking again closes it"
   asked.length = 0;
   fire("click", { type: "click", target: brow(BKEY) });
   await settled();
-  assert.deepEqual(asked, ["/api/builds/log?forge=github.com&repo=binks&id=77&attempt=2"]);
+  const q = "forge=github.com&repo=binks&run_id=77&attempt=2";
+  assert.deepEqual(asked, [`/api/builds/detail?${q}`, `/api/builds/log?${q}`]);
   const b = box.innerHTML;
   assert.match(b, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
   assert.match(b, /<b>Run<\/b> github.com binks #77 attempt 2/);
   assert.match(b, /<b>PRs<\/b> #12/);
   fire("click", { type: "click", target: brow(BKEY) });
   assert.doesNotMatch(box.innerHTML, /joblog/);
+});
+
+const job = (i, o = {}) => ({
+  name: `PlayMode ${i}`, class: "aws/on-demand", wait_text: "1m", took_text: "32m45", runner: "aws-burst-1-pool-2",
+  price: { usd: 0.2, basis: "on-demand", text: "$0.20 (1/5 of $1.855/h)" }, steps_text: "checkout 2s, PlayMode 32m40", ...o,
+});
+const rdetail = (o = {}) => ({
+  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
+  header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
+  coverage_text: "partial: the archive holds 2 of the run's jobs so far", tested_sha: "abc1234ff", workflow_sha: "def5678aa", attempts: [1, 2],
+  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
+});
+
+test("an opened run shows its header, every job with its price, the steps and the coverage", async () => {
+  detail = rdetail({ jobs: Array.from({ length: 130 }, (_, i) => job(i)) });
+  showBuilds();
+  fire("click", { type: "click", target: brow(BKEY) });
+  await settled();
+  const b = box.innerHTML;
+  assert.match(b, /<b>#77 Tests red 46m \$0.20 \+ no rate<\/b>/);
+  assert.match(b, /end to end 46m \| before first job 2m/);
+  assert.equal((b.match(/<td data-label="job"/g) || []).length, 130, "every job, none capped");
+  assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
+  assert.match(b, /<b>Steps<\/b>/);
+  assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
+  assert.match(b, /tested abc1234, workflow from def5678/);
+  assert.match(b, /<b>Attempts<\/b> 1, 2/);
+  fire("click", { type: "click", target: brow(BKEY) });
+  detail = rdetail();
+  fire("click", { type: "click", target: brow(BKEY) });
+  await settled();
+  assert.match(box.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
+  fire("click", { type: "click", target: brow(BKEY) });
+});
+
+test("the Run times fold prices each workflow and flags a month off the AWS actual", () => {
+  showBuilds(bdata({
+    times: [{ repo: "o/binks", workflow: "Tests", runs: 3, pass: 66, longest: 600, usual: { median: 300, p90: 500 } }],
+    costs: { times: ["$0.20 (3 priced)"], idle: ["aws-burst-1: powered 2.0h today $3.71, jobs $1.00, idle $2.71"], month: "month to date: jobs priced $4.00, AWS actual $10.00, off by 60%", month_off: true },
+  }));
+  const b = box.innerHTML;
+  assert.match(b, /<th>\$ per run<\/th>/);
+  assert.match(b, /<td class="n">\$0.20 \(3 priced\)<\/td>/);
+  assert.match(b, /aws-burst-1: powered 2.0h today/);
+  assert.match(b, /<div class="cline warn">month to date: jobs priced \$4.00/);
 });
 
 test("the Builds table sorts and filters under its own view keys", async () => {
