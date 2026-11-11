@@ -180,6 +180,16 @@ git log -1'
   run at /tmp 'gh api -X PUT repos/o/r/pulls/3/merge -f merge_method=squash'
   denied
   assert_output --partial 'agent-land 3'
+  # Flag clusters and attached values, and a gh field alone, which makes gh api send a POST.
+  run at /tmp 'curl -sXPOST "$API/pulls/5/merge"'
+  denied
+  run at /tmp 'curl -s -d'"'"'{"Do":"merge"}'"'"' "$API/pulls/5/merge"'
+  denied
+  run at /tmp 'gh api -XPUT repos/o/r/pulls/5/merge'
+  denied
+  run at /tmp 'gh api repos/o/r/pulls/6/merge -f merge_method=squash'
+  denied
+  assert_output --partial 'agent-land 6'
 }
 
 @test "reads of the merge endpoint and other PR API writes pass" {
@@ -189,6 +199,9 @@ git log -1'
   run at /tmp 'curl -s -X POST -d @pr.json "$API/pulls"; curl -s -X POST -d @c.json "$API/issues/12/comments"'
   allowed
   run at /tmp 'echo "curl -X POST \$API/pulls/12/merge"'
+  allowed
+  # A cluster stops at a flag that takes a value: the X in an attached header is not -X.
+  run at /tmp 'curl -sSf -H'"'"'X-Trace: 1'"'"' "$API/pulls/12/merge"; curl -sSfo merged.json "$API/pulls/12/merge"'
   allowed
 }
 

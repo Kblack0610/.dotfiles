@@ -1439,7 +1439,10 @@ case "$method $path" in
       merge_commit_sha: (if $st == "MERGED" then $m else null end)}' ;;
 'PATCH pulls/42') jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
 'GET commits/'*'/status') cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
-'POST pulls/42/merge') cp "$F/merged.state" "$F/state" ;;
+# fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
+'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
+  cp "$F/merged.state" "$F/state" ;;
+'GET branch_protections') cat "$F/fj.protections" 2>/dev/null || echo '[]' ;;
 'GET pulls/42/files'*) cat "$F/fj.files" 2>/dev/null || echo '[{"filename":"a.sh"}]' ;;
 *) echo "curl: (22) The requested URL returned error: 404" >&2 && exit 22 ;;
 esac
@@ -1499,6 +1502,43 @@ EOF
   assert_failure 1
   assert_output --partial 'checks failed: checks / test'
   run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  export AGENT_LAND_CHECKS_TRIES=1 AGENT_LAND_CHECKS_POLL=0
+  echo '[{"rule_name":"main","enable_status_check":true,"block_on_outdated_branch":false}]' >"$NOTES_FIXTURE/fj.protections"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'origin/main requires checks, so Forgejo would refuse the merge'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+  echo '[{"rule_name":"release","enable_status_check":true}]' >"$NOTES_FIXTURE/fj.protections"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: none reported'
+}
+
+@test "a Forgejo merge refusal ends with Forgejo's reason, not only curl's status line" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '{"message":"Please try again later","url":"https://forgejo.example/api/swagger"}' >"$NOTES_FIXTURE/fj.refuse"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'Forgejo: Please try again later'
+}
+
+@test "a Forgejo dry run reads no token and calls nothing" {
+  forgejo
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/rbw"
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship --dry-run
+  assert_success
+  assert_line --partial 'forge: Forgejo forgejo.example/o/r on remote origin'
+  run grep -c '^curl ' "$LOG"
   assert_output 0
 }
 

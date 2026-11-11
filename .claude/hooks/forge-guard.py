@@ -11,12 +11,13 @@ and merged with `gh pr merge` 22 seconds later, from a dotfiles session that had
 home-config worktree, so the home-config lessons never loaded. The mirror's reject-pull-requests
 workflow closes a PR only after it opens, too late to stop that merge.
 
-Denied in such a checkout: `gh pr create`, `gh pr merge`, and `git push` to a github.com remote (an ssh Host alias is resolved with `ssh -G`). The checkout is
-the one each segment runs in: the payload cwd, moved by `cd`/`pushd` earlier in the command (a
-subshell's cd stays in it), then `git -C <dir>`; for `gh -R <owner>/<repo>`, GH_REPO or a PR URL,
-the clone project-map.json `paths` lists under that repo name. `bash -c` and `eval` payloads and
-backticks are checked as code. Not covered: `gh api` writes, `--git-dir`, and an unresolvable cd
-target ($(...)), which allow. Fail-open: any error allows the command.
+Denied in such a checkout: `gh pr create`, `gh pr merge`, and `git push` to a github.com remote
+(an ssh Host alias is resolved with `ssh -G`). The checkout is the one each segment runs in: the
+payload cwd, moved by `cd`/`pushd` earlier in the command (a subshell's cd stays in it), then
+`git -C <dir>`; for `gh -R <owner>/<repo>`, GH_REPO or a PR URL, the clone project-map.json `paths`
+lists under that repo name. `bash -c` and `eval` payloads and backticks are checked as code. Not
+covered: `gh api` writes other than a merge (below), `--git-dir`, and an unresolvable cd target
+($(...)), which allow. Fail-open: any error allows the command.
 
 Anywhere else, `gh pr merge` is denied too, naming `agent-land`: a GitHub PR lands through
 agent-land, the one writer of a queue item's pr:, so the work ledger can credit it. 2026-11-09: of
@@ -70,8 +71,11 @@ API_MSG = (
     "merged: the same command records it."
 )
 API_MERGE = re.compile(r"/pulls/([^/\s]+)/merge/?(?=\?|$)")
-DATA_FLAGS = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--json", "-F", "--form")
-DATA_PREFIXES = tuple(f + "=" for f in DATA_FLAGS if f.startswith("--"))
+# The flags that give a request a body, which makes it a POST unless -X says otherwise.
+CURL_BODY = ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json", "-F", "--form", "-T", "--upload-file")
+GH_BODY = ("-f", "--raw-field", "-F", "--field", "--input")
+# Short flags of curl and gh api that take a value: in a cluster, the rest of the token is that value.
+SHORT_VALUE = set("AbcCDeEHKmoPqQrtuUwxyYz")
 
 
 def _strip_heredocs():
@@ -288,23 +292,34 @@ def check_gh(cwd, argv, env):
 
 
 def api_merge(head, argv):
-    """API_MSG when argv is a write to a PR's merge endpoint: curl with a non-GET method or a body,
-    or `gh api` with a non-GET method. A GET there only asks whether the PR merged."""
+    """API_MSG when argv writes to a PR's merge endpoint: an explicit method other than GET or HEAD,
+    or a body flag, which makes both curl and `gh api` send a POST. A GET there only asks whether
+    the PR merged. A short-flag cluster counts too: -X takes the rest of its token or the next one
+    (`-sXPOST`, `-XPUT`), and a body flag with its value attached (`-d{...}`) is a body."""
     m = next(filter(None, map(API_MERGE.search, argv[1:])), None)
     if not m:
         return None
-    method, i, curl = None, 1, head == "curl"
+    body = CURL_BODY if head == "curl" else GH_BODY
+    method, i = None, 1
     while i < len(argv):
-        a = argv[i]
-        if a in ("-X", "--request", "--method") and i + 1 < len(argv):
-            method = argv[i + 1].upper()
-            i += 1
+        a, nxt = argv[i], argv[i + 1] if i + 1 < len(argv) else ""
+        if a in ("--request", "--method"):
+            method, i = nxt.upper(), i + 1
         elif a.startswith(("--request=", "--method=")):
             method = a.split("=", 1)[1].upper()
-        elif curl and a.startswith("-X") and len(a) > 2:
-            method = a[2:].upper()
-        elif curl and (a in DATA_FLAGS or a.startswith(DATA_PREFIXES)):
+        elif a in body or a.startswith(tuple(f + "=" for f in body if f.startswith("--"))):
             method = method or "POST"
+        elif a.startswith("-") and not a.startswith("--"):
+            for j, c in enumerate(a[1:], 2):
+                if c == "X":
+                    method = (a[j:] or nxt).upper()
+                    i += 0 if a[j:] else 1
+                    break
+                if "-" + c in body:
+                    method = method or "POST"
+                    break
+                if c in SHORT_VALUE:
+                    break
         i += 1
     if method in (None, "GET", "HEAD"):
         return None

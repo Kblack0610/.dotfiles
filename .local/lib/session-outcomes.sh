@@ -374,11 +374,12 @@ so_forgejo_auth() {
   fi
 }
 
-# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API read, after so_forgejo_auth
+# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API call, after so_forgejo_auth; on
+# an HTTP error it fails and still prints the body, which carries Forgejo's reason (.message).
 so_forgejo_get() {
   local repo="$1" path="$2"; shift 2
   printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-    "${SO_CURL:-curl}" -sSf -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
+    "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
