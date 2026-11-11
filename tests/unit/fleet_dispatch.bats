@@ -132,6 +132,43 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
 }
 
+@test "candidates: an edit that adds #of/, a priority tag or a comment field keeps the verdict; a scope or title edit re-judges" {
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in linked prio scoped titled; do row game agent "$k" "- [ ] chore(plan): $k it $T <!-- id:$k -->"; verdict game agent "$k" skip; done
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent linked "- [ ] chore(plan): linked it $T #of/ga-1 <!-- id:linked -->"
+  row game agent prio "- [ ] chore(plan): prio it   $T #high <!-- id:prio run:3 -->"
+  row game agent scoped "- [ ] chore(gameplay): scoped it $T <!-- id:scoped -->"
+  row game agent titled "- [ ] chore(plan): titled it now $T <!-- id:titled -->"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'scoped,titled'
+}
+
+@test "candidates: a verdict keyed on the raw line still holds; only the run pass records it again under row_sig, once" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent old "- [ ] old row $T #high <!-- id:old -->"
+  verdict game agent old skip
+  jq -c --arg raw "$(printf '%s' "- [ ] old row $T #high <!-- id:old -->" | sig)" '.line = $raw' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" &&
+    mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+
+  run cmd_candidates
+  assert_success
+  assert_output ''
+  assert_equal "$(wc -l < "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 1
+
+  export REKEY_OUT="$SANDBOX/rk"
+  run cmd_candidates
+  rekey "$REKEY_OUT"
+  assert_equal "$(jq -r .line "$FLEET_DISPATCH_DIR/verdicts.jsonl" | tail -1)" "$(row_sig "- [ ] old row $T #high <!-- id:old -->")"
+  : > "$REKEY_OUT"
+  run cmd_candidates
+  rekey "$REKEY_OUT"
+  assert_equal "$(wc -l < "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 2
+}
+
 @test "candidates: the judge reads a row's details, and an edit to them re-judges only a verdict that recorded them" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] fix the jump $T <!-- id:ga-1 -->"
