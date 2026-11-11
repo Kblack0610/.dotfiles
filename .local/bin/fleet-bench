@@ -185,7 +185,6 @@ set -uo pipefail
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
 : "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
-: "${BENCH_PR_LIST_MAX:=1000}"       # the most a GitHub search returns: a full page means PRs were cut
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
@@ -1264,14 +1263,14 @@ section_cfg() {
 # what session-outcomes says merged since then, plus on a repo with sections whatever merged
 # there, since about a third of those no session claims. A PR is counted once, except that a row
 # from before its repo had sections or from before a session claimed it counts again, and
-# ci_keep_newest drops the old one. A recount keeps the session an older row had.
+# ci_keep_newest drops the old one. A recount keeps the session an older row had. A sections repo's
+# merges come from the PR store (`schedules-sync prs`), which holds its whole history, so no list is cut.
 merged_new() {
   local repo prs listed='[]'
   for repo in $(jq -r 'keys[]' <<<"$2"); do
-    prs=$(gh pr list -R "$repo" --state merged --limit "$BENCH_PR_LIST_MAX" \
-      --search "merged:>=$(date -u -d "@$1" +%FT%TZ)" --json number) || return 1
-    [ "$(jq length <<<"$prs")" -lt "$BENCH_PR_LIST_MAX" ] || { say "$repo: $BENCH_PR_LIST_MAX PRs is a cut list, use fewer --days"; return 1; }
-    listed=$(jq -c --argjson l "$listed" --arg r "$repo" '$l + map({repo: $r, number, session_id: ""})' <<<"$prs")
+    prs=$("$SCHEDULES_SYNC" prs "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
+    listed=$(jq -c --argjson l "$listed" --arg r "$repo" --argjson since "$1" \
+      '$l + map(select(.merged_at and (.merged_at | fromdateiso8601) >= $since) | {repo: $r, number, session_id: ""})' <<<"$prs") || return 1
   done
   outcomes_newest | jq -rs --argjson since "$1" --argjson cfg "$2" --argjson listed "$listed" --slurpfile c "$(ci_file)" "$JQ_LIB"'
     ($c | INDEX(key)) as $old

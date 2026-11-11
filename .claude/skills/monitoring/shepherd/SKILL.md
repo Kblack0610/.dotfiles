@@ -20,7 +20,7 @@ Use for "which sessions are stuck", "nudge the stalled ones", "wind down the fin
 
 ## Verb: `status`
 
-Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and `gh pr list`), with no judgment:
+Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and the PR store), with no judgment:
 
 The buckets (PARKED, NEEDS, STALLED, WORKING, LANDED, DONE, CHAT and NIGHTLY) are defined once, each with its entry facts, exit, actor, action and pinning test, in the bucket table of `~/.local/src/docs/fleet-states.md`. Read it there; `tests/unit/fleet_states_doc.bats` keeps it equal to what `fleet-sessions` emits.
 

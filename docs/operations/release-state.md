@@ -74,6 +74,8 @@ The collector writes raw facts only, and every link between two of them is compu
 | Gitops pin, when it moved, what it held before | the manifest in the gitops repo | `git log -S` on the pinned file |
 | PRs a release carried | the merge subjects in `prev..tag` | `changelog` |
 
+PRs have one store of their own, not yet read by `refresh`: `~/.agent/prs/<owner>__<repo>.jsonl` (a Forgejo repo `<host>__<owner>__<repo>`), one row per PR with its canonical repo (`owner/repo`, Forgejo `host/owner/repo`), number, head branch, base, state, `merged_at` (UTC), merge sha, title and author. `schedules-sync` writes it on every pass for each repo in `~/.config/agentctl/day-log-ci`, where a `prs-only:` line names a work or client repo read for its PRs alone (GitHub's first page ETag-conditional, Forgejo paged by update), and `agent-land` refreshes the landed repo with `schedules-sync sync-prs` after a merge. Every PR list is read with `schedules-sync prs <repo|all>` (exit 1 when the store is older than 30 minutes, 3 for a repo it does not list), never a script's own `gh pr list`; a single PR checked at land time (`agent-land`, `agent-queue` `pr_state`, `fleet-dispatch reap`) stays a live read. A run's PRs are not stored on the run: that link is a join against this store.
+
 | Link | Join | Computed in |
 |---|---|---|
 | release -> previous release | tag ancestry | `git-release.sh` (`git_prev_tag`) |

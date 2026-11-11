@@ -53,10 +53,13 @@
 # A glob is space-separated patterns; one that starts with `!` subtracts (_gr_pats).
 #
 # EVERY function is best-effort and degrades to EMPTY + SUCCESS. A missing repo,
-# a missing `git`, a missing/unauthenticated `gh`, no network, no tags: all of
+# a missing `git`, a PR store that cannot answer, no tags: all of
 # these are normal states for a project nobody has released yet, not errors. A
 # caller running under `set -e` must be able to call these without a guard, which
 # is the whole reason the private regen scripts kept growing their own copies.
+
+# shellcheck source=origin-repo.sh
+. "$(dirname "${BASH_SOURCE[0]}")/origin-repo.sh"
 
 # _gr_highest <repo> <glob> — the highest NON-PRERELEASE tag matching <glob>.
 #
@@ -412,22 +415,22 @@ git_tag_changes() {
   _gr_subjects "$repo" "${prev:+$prev..}$tag" "$pf" "$limit"
 }
 
-# git_open_prs <repo> [title-regex] [limit] — open, non-draft PRs as "#N title".
+# git_open_prs <repo> [title-regex] [limit] - open, non-draft PRs as "#N title", newest first.
 #
 # Answers "what is open in THIS repo", which is a different question from the
 # `--author=@me` cross-repo sweeps in the daily/* commands. Do not fold those in.
 #
-# gh infers owner/repo from the cwd's git remote — its `-R` flag wants owner/repo,
-# not a filesystem path — so this runs from inside the repo. In a monorepo the
-# optional title regex keeps one app's surface from listing another app's PRs.
-# gh's own --jq cannot take `--arg`, so the JSON goes to standalone jq.
+# Read from the PR store (`schedules-sync prs`, $SCHEDULES_SYNC), keyed by the origin's
+# owner/repo, or host/owner/repo for a non-GitHub origin. A repo the store does not list, or
+# whose rows are stale, reads as none. In a monorepo the optional title regex keeps one
+# app's surface from listing another app's PRs.
 git_open_prs() {
-  local repo="$1" filt="${2:-}" limit="${3:-4}"
+  local repo="$1" filt="${2:-}" limit="${3:-4}" name host
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-  command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-
-  ( cd "$repo" && gh pr list --state open --limit 20 --json number,title,isDraft 2>/dev/null ) \
-    | jq -r --arg f "$filt" '.[] | select(.isDraft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"' 2>/dev/null \
+  name=$(origin_repo "$repo") || return 0
+  host=$(origin_host "$repo"); [ "$host" = github.com ] || name="$host/$name"
+  { "${SCHEDULES_SYNC:-schedules-sync}" prs "$name" --state open 2>/dev/null || true; } \
+    | jq -r --arg f "$filt" '.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"' 2>/dev/null \
     | head -"$limit" || true
 }
