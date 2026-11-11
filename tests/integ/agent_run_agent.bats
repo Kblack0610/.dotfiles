@@ -157,20 +157,45 @@ schema_conf() {
   assert_failure
 }
 
+# arg_after <flag> -> the argv element after <flag> in the fake claude's argv, or exit 1 when absent
+arg_after() {
+  local -a a; mapfile -t a < "$SANDBOX/claude.argv"
+  local i; for ((i = 0; i + 1 < ${#a[@]}; i++)); do [ "${a[i]}" = "$1" ] && { printf '%s' "${a[i + 1]}"; return 0; }; done
+  return 1
+}
+
 @test "a CALL_CONTEXT=lean agent drops the skills, the tools and the CLAUDE.md files from its call" {
   printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
   run "$RUN" --agent judge -p x
   assert_success
-  run grep -Fx -A1 -- --tools "$SANDBOX/claude.argv"
-  assert_line --index 1 ''
+  run arg_after --tools
+  assert_success
+  assert_output ''
   run grep -Fx -- --disable-slash-commands "$SANDBOX/claude.argv"
   assert_success
   run grep -Fx NO_MDS=1 "$SANDBOX/claude.env"
   assert_success
 }
 
-@test "an agent without CALL_CONTEXT keeps the full call context (negative control)" {
+@test "a lean agent with a SCHEMA keeps StructuredOutput, the tool its reply comes back through" {
+  schema_conf
+  printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
   run "$RUN" --agent judge -p x
+  assert_success
+  assert_output '{"call":"human","reason":"a b"}'
+  run arg_after --tools
+  assert_output StructuredOutput
+}
+
+@test "a lean agent on another harness is refused (negative control)" {
+  printf 'CALL_CONTEXT=lean\n' >> "$AGENTCTL_CONF_DIR/judge.conf"
+  run "$RUN" --agent judge --harness codex -p x
+  assert_failure
+  assert_output --partial 'needs the claude harness'
+}
+
+@test "an agent without CALL_CONTEXT keeps the full call context, whatever its parent exported (negative control)" {
+  AGENT_CALL_CONTEXT=lean CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 run "$RUN" --agent judge -p x
   assert_success
   run grep -Fx -e --tools -e --disable-slash-commands "$SANDBOX/claude.argv"
   assert_failure

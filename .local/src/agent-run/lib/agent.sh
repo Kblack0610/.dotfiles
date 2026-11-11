@@ -13,7 +13,7 @@
 AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 
 # agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
-#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE, and for
+#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE AGENT_CALL_CONTEXT, and for
 #                      the raw harness AGENT_MAX_TOKENS AGENT_TEMPERATURE, or exit 78; and the
 #                      conf's budget (lib/budget.sh), which replaces a parent runner's
 agent_load() {

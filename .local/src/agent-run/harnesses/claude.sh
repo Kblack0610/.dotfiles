@@ -95,10 +95,13 @@ harness_exec() {
   if [ "$print" = 1 ] && [ -n "${AGENT_SCHEMA:-}" ]; then flags+=(--json-schema "$(jq -c . "$AGENT_SCHEMA")"); fi
   # A lean agent call (conf CALL_CONTEXT=lean) gets its PROMPT and input, without the skill listing,
   # the CLAUDE.md files or the tool definitions a session loads: about 21k cached tokens a call that
-  # dispatch-judge never read (2026-11-11).
-  # Not --bare: that skips OAuth, which moves the call off the subscription.
+  # dispatch-judge never read (2026-11-11). --tools keeps StructuredOutput, the tool --json-schema
+  # answers through: claude 2.1.322 withholds every non-MCP tool a --tools list does not name. Not
+  # --bare: that skips OAuth, which moves the call off the subscription. The env var is set only
+  # here, so one a parent exported never trims a call that did not ask.
+  unset CLAUDE_CODE_DISABLE_CLAUDE_MDS
   if [ "$print" = 1 ] && [ "${AGENT_CALL_CONTEXT:-}" = lean ]; then
-    flags+=(--disable-slash-commands --tools "")
+    flags+=(--disable-slash-commands --tools "$([ -z "${AGENT_SCHEMA:-}" ] || echo StructuredOutput)")
     export CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
   fi
   if [ "$print" = 1 ]; then
