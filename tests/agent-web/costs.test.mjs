@@ -73,7 +73,7 @@ const board = (o = {}) => ({
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
-const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) ? { dataset: attrs } : null });
+const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) || (sel === "[data-csort]" && "csort" in attrs) ? { dataset: attrs } : null });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
   const h = show(board());
@@ -110,25 +110,64 @@ test("with no direct rows the direct tile says unknown, never $0 or blank", () =
   assert.doesNotMatch(h, /unpriced<\/span>, /);
 });
 
-test("the keys fold under their pool, and only a key refusing on its own starts open", () => {
+test("Burn points at Consumers for the keys inside a pool, and lists the pool only", () => {
   const key = acct("glm", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
   const pool = acct("lazer", { kind: "litellm-team", unpaced: true, used: 90, used_text: "90% $226/$250", gone: null });
   const paced = acct("alt", { used: 80, gone: 64 });
   const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest glm 96%", level } }) }));
   const quiet = page("ok");
-  assert.match(quiet, /<details class="cfold" data-k="burn-keys"><summary>KEYS <span class="muted">1 in lazer, 0 live, tightest glm 96%/, "closed by default");
-  assert.ok(quiet.indexOf("<td>lazer</td>") < quiet.indexOf('data-k="burn-keys"'), "the fold is under the pool");
-  assert.equal([...quiet.matchAll(/<td>glm<\/td>/g)].length, 1, "the key is listed once, in the fold");
-  assert.ok(quiet.indexOf("<td>glm</td>") > quiet.indexOf('data-k="burn-keys"'));
-  assert.match(quiet, /<tr><th data-role="lead">source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n" data-role="glance" data-named>used<\/th><th class="n">reserve<\/th><th data-role="glance">room<\/th><th>resets<\/th><th class="n">\$24h<\/th><\/tr>/);
+  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest glm 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
+  assert.ok(quiet.includes("<td>lazer</td>"), "the pool is a Burn row");
+  assert.doesNotMatch(quiet, /<td>glm<\/td>/, "the key is a Consumers row, not a Burn one");
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
-  assert.doesNotMatch(quiet, /<td>glm<\/td>.*?<i style/, "a dollar budget has none");
-  // negative control: the same key with a warn level opens, under the key paint has not remembered
-  assert.match(page("warn"), /<details class="cfold" data-k="burn-keys-warn" open><summary>KEYS <span class="warn">/);
-  cost.open["burn-keys"] = true;
-  assert.match(page("ok"), /data-k="burn-keys" open>/, "the reader's open wins");
-  delete cost.open["burn-keys"];
-  delete cost.open["burn-keys-warn"];
+  assert.match(page("warn"), /KEYS<\/span> <span class="warn">/, "a key refusing on its own is amber");
+  assert.equal(ctx.route("#costs/consumers").arg, "limits", "the pointer opens the inner tab holding Consumers");
+});
+
+// hub_core::gateway::Consumers as serialized: one runner on the core key, one on the low pool.
+const consumer = (o) => ({ consumer: "version-summary", kind: "runner", priority: "must", runs_on: "raw fast via gateway-fast", budget: "lazer-core (key comms-triage)", spent: "$0.02/$25.00 30d", fallback: "gemini-flash", status: "ok", who: null, mismatch: false, level: "ok", ...o });
+const CONSUMER_COLS = ["consumer", "priority", "runs_on", "budget", "spent", "fallback", "status"];
+const consumers = (o = {}) => ({
+  head: "2 consumers: must 1, low 1 | lazer-core $0.50/$200", level: "ok", stale: null, errors: [], columns: CONSUMER_COLS,
+  headers: ["CONSUMER", "PRI", "RUNS ON", "BUDGET", "SPENT", "FALLBACK", "STATUS"],
+  rows: [consumer(), consumer({ consumer: "claude-reserve", kind: "key", priority: "low", budget: "lazer-pool", status: "team at cap" })],
+  pools: ["team must lazer-core $0.50/$200 per 1mo", "team low lazer-pool $228/$50.00 AT CAP per 1mo"],
+  routes: "aliases: fast -> gpt-oss-120b; fallbacks: gpt-oss-120b -> gemini-flash",
+  legend: [["PRI", "the priority its conf or key declares: must, low, off"]],
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [], columns: CONSUMER_COLS.map((k) => col(k)), facets: [] }, ...o,
+});
+
+test("green Consumers fold to their headline after Burn; a MISMATCH opens red under its own fold key", () => {
+  const quiet = show(board({ consumers: consumers() }));
+  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers"><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is shut");
+  assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="spend"'), "after Burn, before Spend");
+  for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
+  assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
+  assert.match(quiet, /<div>team low lazer-pool \$228\/\$50\.00 AT CAP per 1mo<\/div><div>aliases: fast -&gt; gpt-oss-120b; fallbacks: gpt-oss-120b -&gt; gemini-flash<\/div>/);
+  assert.match(quiet, /pri: the priority its conf or key declares/);
+  const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
+  const h = show(board({ consumers: red }));
+  assert.match(h, /data-k="consumers-bad" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="burn bad">1 MISMATCH \| /);
+  assert.match(h, /<td class="bad">nightly-thing<\/td>.*?<td class="bad">MISMATCH: lazer-pool is low priority<\/td>/);
+  // negative control: the reader's fold wins over the amber default, and a stale read says why
+  cost.open["consumers-warn"] = false;
+  const stale = show(board({ consumers: consumers({ level: "warn", stale: "stale: the gateway snapshot is 3h old (claude-acct gateway, timer claude-acct-usage)" }) }));
+  assert.match(stale, /data-k="consumers-warn" id="sec-consumers"><summary>/);
+  assert.match(stale, /<div class="warn">stale: the gateway snapshot is 3h old/);
+  delete cost.open["consumers-warn"];
+  assert.doesNotMatch(show(board()), /sec-consumers/, "no Consumers data draws no section");
+});
+
+test("a Consumers header click sorts it apart from the main table", async () => {
+  asked = [];
+  body = board({ consumers: consumers() });
+  run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
+  fire("click", { type: "click", target: target({ csort: "priority", cdir: "desc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority");
+  fire("click", { type: "click", target: target({ csort: "priority", cdir: "asc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority&cdir=asc");
 });
 
 test("a dollar source is a burn row with its kind, dollars and reserve, and no pace cells", () => {
@@ -481,25 +520,56 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.doesNotMatch(none, /% of fleet/);
 });
 
-test("spend history folds to its headline under the fleet figure and lists year, month and day rows", () => {
+test("spend leads with the 30-day chart and month bars, then the picked day's sessions, and keeps the period rows", async () => {
   const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
+  const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
+  const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
   const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
     rows: [p("year", "2026", "$61,300", 54, "$1,135", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "+43%", "21%"),
       p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
-    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens" };
-  const h = show(board({ history }));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "history sits in Spend, after the pinned fleet figure");
-  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
+    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens", chart, months: [bar("2026-11", 130, 80, 50)] };
+  const srow = (sid, session, cost) => ({ sid, session, project: "dotfiles", origin: "runner", agent: null, harness: "claude", cost, share: cost, est: 0, days: 2 });
+  const day = { day: "2026-11-09", head: "2026-11-09: 2 sessions, $95 of the day's $100", why: null, rows: [srow("c", "big run", 90), srow("b", "shepherd", 5)], more: 0, shown_usd: "$95",
+    table: { q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2, states: [], columns: ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"].map((k) => col(k)), facets: [] },
+    series: { sid: "b", session: "shepherd", total: "$15", bars: [bar("2026-11-07", 10, 10, 0), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 5, 5, 0)] } };
+  const h = show(board({ history, day }));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "spend sits after the pinned fleet figure");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend <span class="muted">Nov \$1,579\/day vs Oct/, "open until the reader folds it");
+  const days = h.slice(h.indexOf('id="spend-days"'), h.indexOf("By month"));
+  assert.match(days, /class="cc sel" data-key="2026-11-09"/, "the picked day is marked");
+  assert.match(days, /data-key="2026-11-08" data-tip="2026-11-08: no figure"><div class="cs"><\/div>/, "a day with no figure is an empty column, never a $0 bar");
+  assert.match(days, /height:60%;background:var\(--c1\)"><\/i><i style="height:40%;background:var\(--c-other\)/, "billed under estimated");
+  assert.match(h, /By month<\/h3>.*data-key="2026-11"/s);
+  assert.match(h, /Sessions 2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
+  assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
+  assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
+  assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
+  assert.match(h, /<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
+  assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
+  assert.ok(h.indexOf("Sessions 2026") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
-  assert.match(h, /<tr class=""><td>11-09<\/td>/);
   assert.match(h, /\+3 older/);
   assert.match(h, /2 days in the range have no figure and are not counted/);
-  assert.match(h, /<th data-role="lead">period<\/th>/, "the table folds to a phone row");
-  assert.match(show(board({ history: { ...history, stale: true } })), /class="warn">stale: no snapshot for yesterday/);
-  // negative control: no snapshot says so, never a $0 table
+  assert.match(show(board({ history: { ...history, stale: true }, day })), /class="warn">stale: no snapshot for yesterday/);
+  // a click on a day or a row is the day or sid key in the URL and the request
+  asked = [];
+  body = board({ history, day });
+  run("st.tab = 'costs'; st.views.costs = ''");
+  const at = (sel, data) => ({ dataset: data, closest: (q) => (q === sel ? { dataset: data } : null) });
+  fire("click", { type: "click", target: at("#spend-days [data-key], #spend-series [data-key]", { key: "2026-11-07" }) });
+  await tick();
+  assert.equal(ctx.history.url, "#costs?day=2026-11-07");
+  assert.match(asked.at(-1), /day=2026-11-07/);
+  fire("click", { type: "click", target: at("tr[data-sid]", { sid: "c" }) });
+  await tick();
+  assert.equal(ctx.history.url, "#costs?day=2026-11-07&sid=c");
+  fire("click", { type: "click", target: at("tr[data-sid]", { sid: "c" }) });
+  await tick();
+  assert.doesNotMatch(ctx.history.url, /sid=c/, "the open row again closes it");
+  // negative control: no snapshot says so, never a $0 chart
   const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
-  assert.match(none, /id="sec-spend"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
-  assert.doesNotMatch(none, /vs prev/);
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend <span class="muted">no snapshot with a fleet figure yet/);
+  assert.doesNotMatch(none, /spend-days/);
 });
 
 // Inner tabs: the five behaviours of fleet-platform's device-tabs.test.ts, over hub_core::layout's groups.

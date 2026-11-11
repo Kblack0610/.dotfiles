@@ -130,7 +130,12 @@
 0.7	unit/firefox_install.bats
 12.7	unit/fleet_assess.bats
 156.6	unit/fleet_bench.bats
-433.0	unit/fleet_dispatch.bats
+90.7	unit/fleet_dispatch.bats
+88.9	unit/fleet_dispatch_run_floors.bats
+80.8	unit/fleet_dispatch_run.bats
+76.4	unit/fleet_dispatch_reap.bats
+57.9	unit/fleet_dispatch_run_holds.bats
+38.3	unit/fleet_dispatch_start.bats
 2.2	unit/fleet_roles.bats
 2.8	unit/fleet_rows.bats
 63.5	unit/fleet_sessions.bats

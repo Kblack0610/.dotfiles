@@ -2206,6 +2206,27 @@ red_item() {
   assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
 }
 
+@test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  printf '^check.watch.: (paged|repaged) tripped\talert\t-\tthe watch pages\t-\n' > "$TRIAGE_ROUTES"
+  watch paged TRIP -90000 normal; watch repaged TRIP -600 normal; watch stuck TRIP -90000 normal
+  red_item a done 'check(watch): paged tripped since 2026-11-01, expected: paged' -7200 -3600 r#1 sha1
+  red_item b done 'check(watch): stuck tripped since 2026-11-01, expected: stuck' -7200 -3600 r#2 sha2
+  red_item c done 'check(watch): repaged tripped since 2026-11-01, expected: repaged' -7200 -3600 r#3 sha3   # tripped again after the merge
+  for w in paged repaged stuck; do parses "check(watch): $w tripped since 2026-11-01, expected: $w" check watch "$w tripped since 2026-11-01, expected: $w"; done
+  run "$SUBJECT" reds --json
+  assert_success
+  run jq -rs 'map("\(.slug) \(.outcome)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' 'a alert route' 'b still red' 'c alert route')"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 1
+  # NEGATIVE CONTROL: with no alert line for it, the same red counts as unfixed
+  : > "$TRIAGE_ROUTES"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
+}
+
 @test "reds: a red's area and name come from one notes row parse; a title it does not parse reads as itself, and a failed parse fails" {
   log_triage_setup
   red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -

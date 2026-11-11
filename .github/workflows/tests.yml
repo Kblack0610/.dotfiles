@@ -42,7 +42,7 @@ jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
   # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
   # them across runners, balanced by the seconds in tests/shard-weights.tsv. A shard is bounded
-  # below by its heaviest file (unit/fleet_dispatch.bats, about 40% of unit).
+  # below by its heaviest file; unit/fleet_dispatch.bats, 40% of unit, is six files for that.
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     runs-on: ubuntu-24.04

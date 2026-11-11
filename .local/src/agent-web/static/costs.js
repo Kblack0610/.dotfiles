@@ -1,21 +1,25 @@
 "use strict";
 // The Costs tab: what the fleet spent, cut seven ways, with fleet-bench's evaluation on the model
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
-// draws its answer and turns a click into the view keys (by, w, q, sort, dir) in the URL, so
+// draws its answer and turns a click into the view keys (by, w, q, sort, dir, and Spend's day, dq,
+// dsort, ddir, sid) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
-// tiles: the whole fleet's 24h cost, who pays (Burn, one row per source claude-acct reads), where the tokens
-// go and what Langfuse sees.
+// tiles: the whole fleet's 24h cost, who pays (Burn, one row per source claude-acct reads), who
+// spends (Consumers, one row per runner or gateway key with a priority), where the tokens go and
+// what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
   tab: "costs", id: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
   state: { open: {}, tokWin: "week" }, open: () => cost.open,
   // The view keys past the table's: the cut, the window and the sessions sort.
-  params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k)); },
+  params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir", "day", "dq", "dsort", "ddir", "sid", "csort", "cdir"]) if (v.get(k)) p.set(k, v.get(k)); },
   head: (t) => costsHead(t.data),
   // The table (its bar and rows) belongs to the Spend inner tab, with the switches above it.
   wrap: (html) => innerWrap("costs", "table", html),
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
+  // A poll repaints the whole tab: the day search being typed keeps its text and focus.
+  draw: (html) => keepTyping("#costs [data-id]", () => paint($("costs"), html, cost.open)),
 });
 
 // Every source is a file written nightly or per call; only the token snapshots push (onEvent), so
@@ -94,22 +98,61 @@ function fleetCostSection(d) {
     `<div class="muted">${esc(f.foot)}</div></div>`);
 }
 
-// The History section (hub_core::spend_history, the TUI's coststab.rs `history`): the fleet's
-// dollars per year, month and day from every token snapshot. Folded to its headline until opened.
+// The Spend section (hub_core::spend_history, the TUI's coststab.rs `history`, `spend_chart` and
+// `day_table`): the fleet's $/day over 30 calendar days (billed and estimated stacked, a day with
+// no figure an empty column), its months, then the picked day's sessions on the shared table and
+// the opened session's own days. Open unless the reader folds it; the year/month/day rows fold.
+const SESS_COLS = {
+  session: ["session"], project: ["project"], origin: ["origin"], agent: ["agent"], harness: ["harness"],
+  cost: ["cost", "n"], share: ["of day", "n"], est: ["est.", "n"], days: ["days", "n"],
+};
+const spendBars = (bars, every) => bars.map((b, i) => ({
+  key: b.key, tip: b.tip, label: i % every === every - 1 || i === bars.length - 1 ? b.label : "",
+  segs: [{ v: b.measured, color: "var(--c1)" }, { v: b.estimated, color: "var(--c-other)" }],
+}));
+const SPEND_KEY = legend([["billed", "var(--c1)"], ["estimated from tokens", "var(--c-other)"]]);
+
+function sessCell(r, k) {
+  if (k === "cost") return `<td class="n">${usd(r.cost)}</td>`;
+  if (k === "share" || k === "est") return `<td class="n">${Math.round(r[k])}%</td>`;
+  if (k === "days") return `<td class="n">${r.days}</td>`;
+  if (k === "session") return `<td title="${esc(r.sid)}">${esc(r.session)}</td>`;
+  return `<td>${r[k] == null ? "-" : esc(r[k])}</td>`;
+}
+
+function dayTable(dv, dq) {
+  if (dv.why) return `<div class="panel muted">${esc(dv.why)}</div>`;
+  const t = dv.table;
+  const series = dv.series ? `<div class="panel"><h3>${esc(dv.series.session)} <span class="muted">${esc(dv.series.total)} in the chart's 30 days; its row again closes this</span></h3>` +
+    `<div id="spend-series">${columns(spendBars(dv.series.bars, 7), { height: 80, sel: dv.day, yfmt: usd })}</div></div>` : "";
+  const rows = dv.rows.map((r) => `<tr data-sid="${esc(r.sid)}" class="${dv.series && dv.series.sid === r.sid ? "sel" : ""}">` +
+    Object.keys(SESS_COLS).map((k) => sessCell(r, k)).join("") + `</tr>`).join("");
+  return `<h3 class="sub">Sessions ${esc(dv.head)}</h3>` +
+    `<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free placeholder="search the day, or project:dotfiles origin:runner" value="${esc(dq)}"> <span class="muted">${t.shown} of ${t.total}, ${esc(dv.shown_usd)}</span></div>` +
+    series + `<div class="panel scroll"><table class="tbl">${tblHead(t, SESS_COLS, "d")}${rows}</table>` +
+    (dv.more ? `<div class="muted">+${dv.more} more under this query: narrow it to see them</div>` : "") + `</div>`;
+}
+
 function historySection(d) {
   const h = d.history;
   if (!h) return "";
-  const title = `<h2 class="sec">Spend history`;
+  const title = `<h2 class="sec">Spend`;
   if (h.why) return `<div id="sec-spend">${title} <span class="muted">${esc(h.why)}</span></h2></div>`;
   const stale = h.stale ? ` <span class="warn">stale: no snapshot for yesterday</span>` : "";
   const row = (r) => `<tr class="${r.kind === "day" ? "" : "allrow"}"><td>${esc(r.period)}</td><td class="n">${esc(r.total)}</td><td class="n">${r.days}</td>` +
     `<td class="n">${esc(r.per_day)}</td><td class="n">${esc(r.vs_prev)}</td><td class="n">${esc(r.est)}</td></tr>`;
-  const days = h.rows.filter((r) => r.kind === "day").length;
-  return `<details class="csec" data-k="spend" id="sec-spend"${cost.open.spend ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
+  const dv = d.day || {};
+  const charts = `<div class="spendcharts"><div class="panel"><h3>$/day, last 30 days, click a day for its sessions ${SPEND_KEY}</h3>` +
+    `<div id="spend-days">${columns(spendBars(h.chart, 7), { height: 160, sel: dv.day, yfmt: usd })}</div></div>` +
+    (h.months.length ? `<div class="panel"><h3>By month</h3>${columns(spendBars(h.months, 1), { height: 160, yfmt: usd })}</div>` : "") + `</div>`;
+  const periods = `<details class="sec-d" data-k="spend-periods"${cost.open["spend-periods"] ? " open" : ""}><summary class="muted fold">Year, month and day rows</summary>` +
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">period</th><th class="n">total</th><th class="n">days</th><th class="n" data-role="glance" data-named>$/day</th><th class="n" data-role="glance" data-named>vs prev</th><th class="n" data-role="glance" data-named>est.</th></tr>` +
     h.rows.map(row).join("") + `</table>${h.older ? older(h.older) : ""}` +
     (h.missing ? `<div class="warn">${h.missing} days in the range have no figure and are not counted</div>` : "") +
     `</div><div class="muted fold">${esc(h.note)}</div></details>`;
+  const dq = new URLSearchParams(st.views.costs || "").get("dq") || "";
+  return `<details class="csec" data-k="spend" id="sec-spend"${cost.open.spend !== false ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
+    charts + dayTable(dv, dq) + periods + `</details>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
@@ -134,7 +177,6 @@ const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != nu
 const BURN_COLS = [["source", false, ' data-role="lead"'], ["kind"], ["live", true], ["bar"], ["used", true, ' data-role="glance" data-named'], ["gone", true, ' data-role="glance" data-named'], ["reserve", true], ["room", false, ' data-role="glance"'], ["burn/h", true], ["keeps/h", true],
   ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
-const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "$24h"].includes(t));
 
 function burnRow(a, at, note, cols) {
   // a row with no figures: its name, then one cell across the rest
@@ -161,13 +203,26 @@ function burnRow(a, at, note, cols) {
 const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n, phone]) => `<th${n ? ' class="n"' : ""}${phone || ""}>${t}</th>`).join("")}</tr>` +
   rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + `</table>`;
 
-// The keys inside a pool, folded under its row. Amber starts open under its own fold key, because
-// paint remembers every fold it saw and the quiet key's memory would keep it shut.
-function burnKeys(b) {
-  if (!b.keys) return "";
-  const warn = b.keys.level !== "ok", k = warn ? "burn-keys-warn" : "burn-keys";
-  const head = `KEYS <span class="${warn ? "warn" : "muted"}">${esc(b.keys.head)}</span>`;
-  return `<div class="panel scroll">${cfold(k, head, burnTable(b, KEY_COLS, b.accounts.filter((a) => a.nested)), { [k]: cost.open[k] ?? warn })}</div>`;
+// The keys inside a pool are Consumers rows, so Burn only points there.
+const burnKeys = (b) => (b.keys ? `<div class="panel"><span class="muted">KEYS</span> <span class="${b.keys.level !== "ok" ? "warn" : "muted"}">${esc(b.keys.head)}</span> <a href="#costs/consumers">rows in Consumers</a></div>` : "");
+
+// Every LLM consumer (hub_core::gateway, the TUI's coststab.rs `consumers`): a runner with a
+// priority, or a gateway key no runner names, with what it runs on, its budget, spend and fallback.
+// Folded to its headline while green, open when amber or red (rule 4) under its own fold key,
+// because paint remembers every fold it saw; its headers sort apart from the table's (csort/cdir).
+function costsConsumers(d) {
+  const c = d.consumers;
+  if (!c || !c.table) return "";
+  const cls = c.level === "ok" ? "muted" : `burn ${c.level === "bad" ? "bad" : "warn"}`;
+  const key = c.level === "ok" ? "consumers" : `consumers-${c.level}`, open = cost.open[key] ?? c.level !== "ok";
+  const labels = Object.fromEntries(c.columns.map((k, i) => [k, [c.headers[i].toLowerCase()]]));
+  const row = (r) => `<tr>${c.columns.map((k) => `<td${r.level === "bad" ? ' class="bad"' : ""}>${esc(r[k])}</td>`).join("")}</tr>`;
+  const notes = [c.stale, ...c.errors].filter(Boolean).map((e) => `<div class="warn">${esc(e)}</div>`).join("");
+  return `<details class="csec" data-k="${key}" id="sec-consumers"${open ? " open" : ""}><summary><h2 class="sec">Consumers <span class="${cls}">${esc(c.head)}</span></h2></summary>` +
+    (notes ? `<div class="panel">${notes}</div>` : "") +
+    (c.rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(c.table, labels, "c")}${c.rows.map(row).join("")}</table></div>` : "") +
+    `<div class="panel muted">${c.pools.map((l) => `<div>${esc(l)}</div>`).join("")}<div>${esc(c.routes)}</div></div>` +
+    `<div class="muted fold">${c.legend.map(([t, x]) => `${esc(t.toLowerCase())}: ${esc(x)}`).join("; ")}</div></details>`;
 }
 
 function costsBurn(d) {
@@ -257,14 +312,14 @@ function costsSections(d) {
 
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the fleet figure
 // pinned above the strip, then each section inside its inner tab's group in the layout's order
-// (Limits: burn; Spend: history, totals, the table; Models: tokens, langfuse, sections).
+// (Limits: burn, consumers; Spend: history, totals, the table; Models: tokens, langfuse, sections).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
   let html = fleetCostSection(d) + innerStrip("costs", d.amber) + innerWrap("costs", "burn", costsBurn(d)) +
-    innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
+    innerWrap("costs", "consumers", costsConsumers(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -295,8 +350,18 @@ $("costs").addEventListener("click", (e) => {
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
   const ss = t.closest && t.closest("[data-ssort]");
-  if (ss) costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" });
+  if (ss) { costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" }); return; }
+  const cs = t.closest && t.closest("[data-csort]");
+  if (cs) { costsView({ csort: cs.dataset.csort, cdir: cs.dataset.csort && cs.dataset.cdir === "asc" ? "asc" : "" }); return; }
+  // Spend: a day column picks the day, a session row opens (or closes) its own days.
+  const ds = t.closest && t.closest("[data-dsort]");
+  if (ds) { costsView({ dsort: ds.dataset.dsort, ddir: ds.dataset.dsort && ds.dataset.ddir === "asc" ? "asc" : "" }); return; }
+  const day = t.closest && t.closest("#spend-days [data-key], #spend-series [data-key]");
+  if (day) { costsView({ day: day.dataset.key }); return; }
+  const sess = t.closest && t.closest("tr[data-sid]");
+  if (sess) { const v = new URLSearchParams(st.views.costs || ""); costsView({ sid: v.get("sid") === sess.dataset.sid ? "" : sess.dataset.sid }); }
 });
+$("costs").addEventListener("change", (e) => { if (e.target.dataset && e.target.dataset.dq != null) costsView({ dq: e.target.value }); });
 
 const pollCosts = poll("costs", cost.refresh, COSTS_REFRESH_MS);
 TABS.costs = {
