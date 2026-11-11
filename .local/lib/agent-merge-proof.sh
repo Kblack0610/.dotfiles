@@ -128,20 +128,20 @@ merge_proof() {
   git -C "$repo" fetch -q "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" 2>/dev/null || true
 
   if ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/$remote/$branch" >/dev/null 2>&1; then
-    echo "merge_proof: no $remote/$branch in $repo — cannot prove anything" >&2
+    echo "merge_proof: no $remote/$branch in $repo: cannot prove anything" >&2
     return 2
   fi
 
   if [ -n "$evidence" ]; then
     if ! git -C "$repo" rev-parse --verify --quiet "${evidence}^{commit}" >/dev/null 2>&1; then
-      echo "merge_proof: REFUSING — evidence '$evidence' is not a commit in $repo" >&2
+      echo "merge_proof: REFUSING: evidence '$evidence' is not a commit in $repo" >&2
       return 2
     fi
     if ! git -C "$repo" merge-base --is-ancestor "$evidence" "$remote/$branch" 2>/dev/null; then
       # Hard error, NOT a fall-through to the grep. A caller that names a SHA is
       # making a specific claim; if that claim is false the weaker check finding
       # some other commit would launder a lie into a proof.
-      echo "merge_proof: REFUSING — evidence $evidence is not an ancestor of $remote/$branch" >&2
+      echo "merge_proof: REFUSING: evidence $evidence is not an ancestor of $remote/$branch" >&2
       return 2
     fi
     short="$(git -C "$repo" rev-parse --short "$evidence" 2>/dev/null)"
