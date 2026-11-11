@@ -1899,6 +1899,17 @@ J
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
 }
 
+@test "stopped: every pass note ahead of the gate is dropped, and a judge budget stop alone clears at its reset" {
+  hold_for 90 'could not judge the new rows (stopped at its budget); tagged 1 for a plan; queued 2 for the night; no account has room; bnb is the closest, 4 points over its weekly pace, queue item x waits'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 1h30m: no account has room; bnb is the closest, 4 points over its weekly pace. Clears when an account is back under its pace.'
+  hold_for 90 'budget: could not judge the new rows (stopped at its budget); no new row to judge'
+  run cmd_stopped
+  assert_failure
+  assert_output "Dispatch stopped 1h30m: budget: could not judge the new rows; no new row to judge. Clears when dispatch-judge's daily budget resets."
+}
+
 # 2026-11-06 (P3 live): with every account full and another source open, gate names no account, so each pass
 # fleet-assess held too read "held by load" and queue-starved cleared five times under one hold.
 @test "starved: an account hold under a load hold still starves while another source has room" {
