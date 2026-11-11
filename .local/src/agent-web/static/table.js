@@ -41,12 +41,13 @@ function tblSort(t) {
 
 // One facet's dropdown: a pill naming the column and what is ticked, opening a checklist of its
 // values with their counts. Each box's value is the whole query a tick gives (hub-core decides it:
-// ticks on one column OR, columns AND), so a tick is a plain change on [data-tq].
-function tblFacet(f) {
+// ticks on one column OR, columns AND), so a tick is a plain change on [data-tq]. data-fq is the
+// view `q` the boxes were built on (tblMenuKeep).
+function tblFacet(f, q) {
   const on = f.on || [];
   const label = on.length ? `${f.key}: ${on[0]}${on.length > 1 ? ` +${on.length - 1}` : ""}` : f.key;
   const clear = on.length ? `<button type="button" class="tfclear" data-tqc="${esc(f.clear)}">clear ${esc(f.key)}</button>` : "";
-  return `<details class="tfacet${on.length ? " on" : ""}" data-fkey="${esc(f.key)}"><summary title="filter ${esc(f.key)}: tick one or more">${esc(label)}</summary><div class="tfmenu">${clear}` +
+  return `<details class="tfacet${on.length ? " on" : ""}" data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"><summary title="filter ${esc(f.key)}: tick one or more">${esc(label)}</summary><div class="tfmenu">${clear}` +
     f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") +
     `</div></details>`;
 }
@@ -59,7 +60,7 @@ const tblDrawn = new WeakMap();
 // Draw a table's body before its bar, forgetting what an earlier draw put in the header, so a body
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
-const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map(tblFacet).join(""); };
+const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
 // One count chip, here and on the tabs that still filter their own lists.
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
@@ -93,7 +94,7 @@ function tblHead(t, labels, pre = "t") {
   // The filter row under the headers: a column with a facet carries its dropdown (fleet-platform's
   // filter row, multi-pick here). tblStamp skips it; a phone shows it as a strip of pills.
   const filters = mine.length ? `<tr class="tfilters" data-phone="filters">` +
-    cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key))}</th>` : `<td></td>`)).join("") + "</tr>" : "";
+    cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key), t.q)}</th>` : `<td></td>`)).join("") + "</tr>" : "";
   return "<tr>" + cols.map((c) => {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
@@ -252,17 +253,32 @@ function tblStamp(table) {
 }
 
 // The facet menu open, by its tab, table block (data-tbl), part and column, with the value last
-// ticked and how far it is scrolled: a tick or a push re-reads the table and the redraw replaces
-// the menu, so each new draw opens it again where it was. One menu is open at a time.
+// ticked, how far it is scrolled, and the query a tick or clear asked for (want): a tick or a push
+// re-reads the table and the redraw replaces the menu, so each new draw opens it again where it was.
+// One menu is open at a time.
 let tblMenu = null;
 const tblWhere = (d) => `${typeof st === "undefined" ? "" : st.tab}|${d.closest("[data-tbl]")?.dataset.tbl || ""}|${d.closest("[id]")?.id || ""}`;
 
-// A menu sits in a scrolling panel, so it is fixed to the page under its pill rather than clipped.
+// A menu sits in a scrolling panel, so it is fixed to the page by its pill rather than clipped:
+// under it, or over it when the window has more room there, and never taller than that room.
+const TBL_MENU_MAX = 360;
 function tblPlace(d) {
   const m = d.querySelector(".tfmenu"), r = d.querySelector("summary")?.getBoundingClientRect?.();
   if (!m || !r) return;
-  m.style.top = `${Math.round(r.bottom + 2)}px`;
+  const below = innerHeight - r.bottom - 6, above = r.top - 6;
+  const up = below < Math.min(m.scrollHeight, TBL_MENU_MAX) && above > below;
+  m.style.maxHeight = `${Math.round(Math.max(80, Math.min(TBL_MENU_MAX, up ? above : below)))}px`;
+  m.style.top = `${Math.round(Math.max(4, up ? r.top - 2 - m.offsetHeight : r.bottom + 2))}px`;
   m.style.left = `${Math.round(Math.max(4, Math.min(r.left, innerWidth - m.offsetWidth - 4)))}px`;
+}
+
+// Every box's query is built on the view its menu was drawn from, so until the answer to a tick is
+// drawn a second tick would drop the first: a menu drawn from any other view (a redraw from the hash
+// change, a poll or a push before the answer lands) waits, its boxes off and focus on its pill.
+const tblSameQ = (a, b) => (a || "").trim().split(/\s+/).join(" ") === (b || "").trim().split(/\s+/).join(" ");
+function tblBusy(d, busy) {
+  d.classList[busy ? "add" : "remove"]("busy");
+  d.querySelectorAll("input[data-fv], button[data-tqc]").forEach((i) => { i.disabled = busy; });
 }
 
 function tblMenuKeep(root) {
@@ -274,7 +290,9 @@ function tblMenuKeep(root) {
   tblPlace(d);
   const m = d.querySelector(".tfmenu");
   if (m && tblMenu.top) m.scrollTop = tblMenu.top;
-  const box = [...d.querySelectorAll("input[data-fv]")].find((i) => i.dataset.fv === tblMenu.fv);
+  if (tblMenu.want != null && tblSameQ(d.dataset.fq, tblMenu.want)) tblMenu.want = null;
+  if (tblMenu.want != null) tblBusy(d, true);
+  const box = tblMenu.want == null && [...d.querySelectorAll("input[data-fv]")].find((i) => i.dataset.fv === tblMenu.fv);
   (box || d.querySelector("summary"))?.focus({ preventScroll: true });
 }
 
@@ -289,16 +307,20 @@ if (typeof document !== "undefined" && document.addEventListener) {
     if (!d.matches?.("details.tfacet")) return;
     if (d.open) {
       tblMenuShut(d);
-      if (tblMenu?.key !== d.dataset.fkey || tblMenu?.tbl !== tblWhere(d)) tblMenu = { tbl: tblWhere(d), key: d.dataset.fkey, fv: null };
+      if (tblMenu?.key !== d.dataset.fkey || tblMenu?.tbl !== tblWhere(d)) { tblMenu = { tbl: tblWhere(d), key: d.dataset.fkey, fv: null }; tblBusy(d, false); }
       tblPlace(d);
     } else if (d.isConnected && tblMenu?.key === d.dataset.fkey && tblMenu?.tbl === tblWhere(d)) tblMenu = null;
   }, true);
   document.addEventListener("change", (e) => {
     const d = e.target.closest?.("details.tfacet");
-    if (d && e.target.dataset.fv != null) tblMenu = { ...tblMenu, tbl: tblWhere(d), key: d.dataset.fkey, fv: e.target.dataset.fv };
+    if (!d || e.target.dataset.fv == null) return;
+    tblMenu = { ...tblMenu, tbl: tblWhere(d), key: d.dataset.fkey, fv: e.target.dataset.fv, want: e.target.value };
+    tblBusy(d, true);
+    d.querySelector("summary")?.focus({ preventScroll: true });
   }, true);
   document.addEventListener("click", (e) => {
-    if (!e.target.closest?.("details.tfacet")) { tblMenu = null; tblMenuShut(); }
+    const d = e.target.closest?.("details.tfacet"), clear = d && e.target.closest("[data-tqc]");
+    if (!d) { tblMenu = null; tblMenuShut(); } else if (clear) { tblMenu = { ...tblMenu, tbl: tblWhere(d), key: d.dataset.fkey, want: clear.dataset.tqc }; tblBusy(d, true); }
   });
   document.addEventListener("keydown", (e) => {
     const d = e.key === "Escape" && e.target.closest?.("details.tfacet[open]");
