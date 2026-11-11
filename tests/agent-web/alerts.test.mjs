@@ -39,13 +39,13 @@ const fixes = {
   settled: [fix("ar-1", "fixed"), fix("ar-4", "cancelled")],
   summary: "2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m",
 };
-const alert = (what, o = {}) => ({ sev: "high", what, source: "sentinel", since: NOW - 3600, owner: "-", state: "no owner", about: "", place: "", action: "", evidence: "", ...o });
+const alert = (what, o = {}) => ({ sev: "high", what, project: "", source: "sentinel", since: NOW - 3600, owner: "-", state: "no owner", about: "", place: "", action: "", evidence: "", ...o });
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "trip", n: 1 }, { name: "error", n: 1 }, { name: "no owner", n: 1 }],
-  columns: ["sev", "what", "source", "since", "owner", "state"].map(col), facets: [] };
+  columns: ["sev", "what", "project", "source", "since", "owner", "state"].map(col), facets: [] };
 const watch = (name, state) => ({ name, state, severity: "normal", since: NOW - 60, lastrun: NOW - 30, lasttrip: null, place: "GitHub", what: "", action: "", evidence: "" });
 const firing = [
-  alert("playground-nightly", { owner: "ar-9 fixing", state: "fixing", slug: "ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
+  alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
   alert("dream", { state: "error", sev: "normal" }),
 ];
 const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0 };
@@ -64,6 +64,13 @@ test("the sections come in the layout's order: health, firing, fixes, history, w
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(h, /cchip bad">FIRING<\/span>/);
   assert.match(h, /Firing <span class="muted">2: 1 trip, 1 error, 0 no owner, 0 alertmanager<\/span>/);
+});
+
+test("a firing row names its project, a fleet-wide one a dash, and the watches list carries it too", () => {
+  const h = show(data({ watches: [{ ...watch("playground-nightly", "TRIP"), project: "unity-core-playground" }, watch("disk", "OK")] }));
+  assert.match(h, /<td class="wrap">playground-nightly<\/td><td class="muted">unity-core-playground<\/td><td class="muted">sentinel<\/td>/);
+  assert.match(h, /<td class="wrap">dream<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
+  assert.match(h, /<td>playground-nightly<\/td><td class="bad">TRIP<\/td><td class="muted">normal<\/td><td class="muted">unity-core-playground<\/td>/);
 });
 
 test("health names every domain, the red first, then each component that is not green", () => {

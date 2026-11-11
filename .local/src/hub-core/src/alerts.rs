@@ -41,6 +41,9 @@ pub struct Alert {
     pub sev: String,
     /// The watch's name, or the red item as Prometheus words it.
     pub what: String,
+    /// The watch's `project:`, else the project of its fix item's queue item; empty for a
+    /// fleet-wide watch or a red nothing files a fix for.
+    pub project: String,
     /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`), `infra` (the
     /// machinery: down runners, stuck runs, the exporter or GitHub not answering) or
     /// `alertmanager` (a cluster rule firing).
@@ -89,9 +92,11 @@ impl Alert {
 }
 
 impl Row for Alert {
-    const COLUMNS: &'static [&'static str] = &["sev", "what", "source", "since", "owner", "state"];
+    const COLUMNS: &'static [&'static str] = &[
+        "sev", "what", "project", "source", "since", "owner", "state",
+    ];
     const STATES: &'static [&'static str] = &["all", "trip", "error", "no owner", ALERTMANAGER];
-    const FACETS: &'static [&'static str] = &["sev", "source", "state"];
+    const FACETS: &'static [&'static str] = &["sev", "project", "source", "state"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["sev", "since", "state"];
 
@@ -103,6 +108,7 @@ impl Row for Alert {
         match col {
             "sev" => text(&self.sev),
             "what" => text(&self.what),
+            "project" => text(&self.project),
             "source" => text(&self.source),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "owner" => text(&self.owner),
@@ -133,6 +139,7 @@ impl Row for Alert {
         [
             &self.sev,
             &self.what,
+            &self.project,
             &self.source,
             &self.owner,
             &self.state,
@@ -332,6 +339,9 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
     let fix = key.and_then(|k| fixes.iter().find(|r| r.red == k));
     a.owner = fix.map_or("-".into(), |r| format!("{} {}", r.slug, r.outcome));
     if let Some(r) = fix {
+        if a.project.is_empty() {
+            a.project = r.project.clone();
+        }
         a.slug = r.slug.clone();
         a.pr_url = r.pr_url.clone();
     }
@@ -453,6 +463,7 @@ pub fn join(
         let mut a = Alert {
             sev: label(&w.severity).to_string(),
             what: w.name.clone(),
+            project: w.project.clone(),
             source: "sentinel".into(),
             since: w.since,
             state: if error { "error".into() } else { String::new() },
@@ -582,6 +593,37 @@ pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
     let watches = runner::watches(&dir, &state);
     let notify = crate::jobs::read_or_empty(&actions::Paths::from_env().notify_log);
     join(infra, watches, fixes, notify, now)
+}
+
+/// A project card's count line over `watches`: how many carry `project:` and how many of them
+/// are tripped or failing. None when no watch names the project, so a project nothing watches
+/// shows no line rather than "0 watches".
+pub fn project_badge(watches: &[Watch], project: &str) -> Option<crate::releases::Badge> {
+    let mine: Vec<&Watch> = watches.iter().filter(|w| w.project == project).collect();
+    let n = |s: &str| mine.iter().filter(|w| w.state == s).count();
+    let (trip, error) = (n("TRIP"), n("ERROR"));
+    (!mine.is_empty()).then(|| crate::releases::Badge {
+        says: format!(
+            "{} watch{}, {} firing",
+            mine.len(),
+            if mine.len() == 1 { "" } else { "es" },
+            trip + error
+        ),
+        level: if trip > 0 {
+            crate::releases::Level::Bad
+        } else if error > 0 {
+            crate::releases::Level::Warn
+        } else {
+            crate::releases::Level::Ok
+        },
+    })
+}
+
+/// `project_badge` over the watches this process's environment names; an unreadable watch
+/// directory shows no line (the Alerts tab is the one that says why).
+pub fn project_badge_here(project: &str) -> Option<crate::releases::Badge> {
+    let (dir, state) = watch_dirs();
+    project_badge(&runner::watches(&dir, &state).ok()?, project)
 }
 
 /// Sentinel's watch and state directories as this process's environment says.
@@ -1070,6 +1112,81 @@ mod tests {
             s.states.iter().any(|c| c.name == "trip" && c.n == 1),
             "{:?}",
             s.states
+        );
+    }
+
+    #[test]
+    fn a_firing_row_takes_its_watchs_project_else_its_fix_items_and_the_facet_filters_on_it() {
+        let mut ws = ok_watches();
+        let mut tagged = watch("ucp-nightly", "TRIP", "high", None);
+        tagged.project = "unity-core-playground".into();
+        ws.push(tagged);
+        ws.push(watch("fleet-drain", "TRIP", "normal", None));
+        ws.push(watch("untracked", "TRIP", "normal", None));
+        let mut fix = red("ar-5", "watch fleet-drain", "fixing");
+        fix.project = "agent-runtime".into();
+        let mut other = red("ar-6", "watch ucp-nightly", "queued");
+        other.project = "dotfiles".into();
+        let fixes = Reds {
+            open: vec![fix, other],
+            ..Default::default()
+        };
+        let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
+        let project = |what: &str| {
+            a.firing
+                .iter()
+                .find(|r| r.what == what)
+                .map(|r| r.project.clone())
+        };
+        assert_eq!(
+            project("ucp-nightly").as_deref(),
+            Some("unity-core-playground")
+        );
+        assert_eq!(project("fleet-drain").as_deref(), Some("agent-runtime"));
+        assert_eq!(project("untracked").as_deref(), Some(""));
+        let v = crate::table::View::new::<Alert>("project:unity-core-playground", "", "", "");
+        let (rows, s) = v.summary(&a.firing);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].what, "ucp-nightly");
+        let facet = s
+            .facets
+            .iter()
+            .find(|f| f.key == "project")
+            .expect("a project facet");
+        assert!(
+            facet.values.iter().any(|x| x.value == "agent-runtime"),
+            "{:?}",
+            facet.values
+        );
+    }
+
+    #[test]
+    fn a_project_card_counts_its_watches_and_the_ones_firing_and_a_fleet_wide_watch_is_nobodys() {
+        let mut ws = vec![
+            watch("a", "OK", "high", None),
+            watch("b", "TRIP", "high", None),
+            watch("c", "ERROR", "high", None),
+            watch("d", "OK", "high", None),
+            watch("fleet", "TRIP", "high", None),
+        ];
+        for w in &mut ws[..3] {
+            w.project = "dotfiles".into();
+        }
+        ws[3].project = "home-config".into();
+        let b = project_badge(&ws, "dotfiles").expect("three watches name it");
+        assert_eq!(b.says, "3 watches, 2 firing");
+        assert_eq!(b.level, crate::releases::Level::Bad);
+        let one = project_badge(&ws, "home-config").unwrap();
+        assert_eq!(
+            (one.says.as_str(), one.level),
+            ("1 watch, 0 firing", crate::releases::Level::Ok)
+        );
+        assert!(project_badge(&ws, "trader").is_none(), "no watch, no line");
+        ws[1].state = "OK".into();
+        assert_eq!(
+            project_badge(&ws, "dotfiles").unwrap().level,
+            crate::releases::Level::Warn,
+            "an error alone is amber"
         );
     }
 }
