@@ -15,7 +15,9 @@ use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
-const HEADER: [&str; 6] = ["SEV", "WHAT", "SOURCE", "SINCE", "OWNER", "STATE"];
+const HEADER: [&str; 7] = [
+    "SEV", "WHAT", "PROJECT", "SOURCE", "SINCE", "OWNER", "STATE",
+];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
 /// The selected firing row's line, a section only so the app can keep it in view; the app takes
@@ -170,12 +172,12 @@ impl AlertsView {
         let (mut table, starts) = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![1, 5, 4, 0, 3, 2],
+            keep: vec![1, 6, 5, 0, 4, 2, 3],
             flex: Some(1),
             flexmin: 16,
             flexkeep: true,
-            right: vec![3],
-            cap: vec![(4, 22)],
+            right: vec![4],
+            cap: vec![(5, 22), (2, 16)],
             mark: self.table.mark::<Alert>(),
         }
         .fit_wrapped(w, p.head());
@@ -234,6 +236,7 @@ impl AlertsView {
                     x.name.clone().into(),
                     cell(x.state.clone(), style),
                     cell(x.severity.clone(), p.dim()),
+                    cell(dash(&x.project), p.dim()),
                     at(x.since).into(),
                     at(x.lastrun).into(),
                     cell(x.place.clone(), p.dim()),
@@ -242,10 +245,12 @@ impl AlertsView {
             .collect();
         out.extend(
             Table {
-                header: vec!["WATCH", "STATE", "SEVERITY", "SINCE", "LAST RUN", "WHERE"],
+                header: vec![
+                    "WATCH", "STATE", "SEVERITY", "PROJECT", "SINCE", "LAST RUN", "WHERE",
+                ],
                 rows,
-                keep: vec![0, 1, 3, 4, 2, 5],
-                flex: Some(5),
+                keep: vec![0, 1, 4, 5, 2, 3, 6],
+                flex: Some(6),
                 flexmin: 10,
                 ..Default::default()
             }
@@ -253,6 +258,11 @@ impl AlertsView {
         );
         out
     }
+}
+
+/// A project cell: its name, or `-` for a fleet-wide watch.
+fn dash(project: &str) -> String {
+    if project.is_empty() { "-" } else { project }.into()
 }
 
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
@@ -269,6 +279,7 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
     vec![
         cell(r.sev.clone(), sev),
         r.what.clone().into(),
+        cell(dash(&r.project), p.dim()),
         cell(r.source.clone(), p.dim()),
         r.since
             .map_or("-".into(), |t| hub_core::text::age(now - t))
@@ -383,7 +394,16 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("  {:<11}", f.outcome.to_uppercase()), style),
-                Span::raw(format!("  {}  {}{pr}  ", f.red, f.slug)),
+                Span::raw(format!(
+                    "  {}{}  {}{pr}  ",
+                    f.red,
+                    if f.project.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", f.project)
+                    },
+                    f.slug
+                )),
                 Span::styled(f.age(now), p.dim()),
             ]),
             w,

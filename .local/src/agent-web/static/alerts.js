@@ -8,11 +8,11 @@
 // A watch's state change and a queue change push (main.rs classify); Prometheus does not, so the
 // open tab also re-reads on its rules' cadence, as Infra does.
 const ALERTS_REFRESH_MS = 60e3;
-const ALERT_COLS = { sev: ["sev"], what: ["what"], source: ["source"], since: ["since", "n"], owner: ["owner"], state: ["state"] };
+const ALERT_COLS = { sev: ["sev"], what: ["what"], project: ["project"], source: ["source"], since: ["since", "n"], owner: ["owner"], state: ["state"] };
 // Each section's fold, kept across the redraw on every read; a section with no entry is open.
 const alertsOpen = {};
 const alst = tblTab({
-  tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or source:sentinel state:no owner",
+  tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles source:sentinel state:no owner",
   open: () => alertsOpen,
   head: (t) => alertsHead(t.data), wrap: (html) => alertsFold("firing", alertsFiringTitle(alst.data), html, true),
   body: (t) => alertsBody(t.data), tail: (t) => alertsTail(t.data),
@@ -67,7 +67,7 @@ function alertRow(a) {
   const owner = a.slug ? `<a href="${esc("#queue?q=" + encodeURIComponent(a.slug))}">${esc(a.owner)}</a>` : esc(a.owner);
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(alertKey(a))}">` +
     `<td class="${a.sev === "urgent" || a.sev === "high" ? "bad" : "muted"}">${esc(a.sev || "-")}</td><td class="wrap">${esc(a.what)}</td>` +
-    `<td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
+    `<td class="muted">${esc(a.project || "-")}</td><td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
     `<td>${cchip(alertState(a.state), esc(a.state))}</td></tr>`;
   return open ? row + alertDetail(a) : row;
 }
@@ -94,7 +94,7 @@ const ALERTS_FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-
 function alertsFixRow(r) {
   const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
   return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
-    `<span class="pt">${esc(r.red)}</span><span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
+    `<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}<span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }
 
 function alertsFixes(d) {
@@ -120,9 +120,9 @@ function alertsHistory(d) {
 // Watches: every one, tripped and failing first; folded to its count when none is.
 function alertsWatches(d) {
   const c = d.counts, cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
-  const rows = (d.watches || []).map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td>` +
+  const rows = (d.watches || []).map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td>` +
     `<td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="wrap muted">${esc(w.place || "-")}</td></tr>`).join("");
-  const body = rows ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">watch</th><th data-role="glance">state</th><th>severity</th><th class="n" data-role="glance">since</th><th class="n">last run</th><th>where</th></tr>${rows}</table></div>`
+  const body = rows ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">watch</th><th data-role="glance">state</th><th>severity</th><th>project</th><th class="n" data-role="glance">since</th><th class="n">last run</th><th>where</th></tr>${rows}</table></div>`
     : `<div class="panel muted">No watch defined.</div>`;
   const title = `Watches <span class="muted">${c.watches}: ${c.watches_tripped} tripped, ${c.watches_error} error, ${c.watches_ok} ok, ${c.watches_new} new</span>`;
   return alertsFold("watches", title, body, !d.watches_folded);

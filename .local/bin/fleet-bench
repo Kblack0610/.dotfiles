@@ -3820,7 +3820,7 @@ reds_json() {
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
     | ([.[] | select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != "")
-        | {slug, red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
+        | {slug, project, red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
            fix_min: null, cleanup: true,
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
@@ -3830,7 +3830,7 @@ reds_json() {
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
-    | {slug, red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+    | {slug, project, red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
        queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (

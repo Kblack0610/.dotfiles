@@ -2308,6 +2308,12 @@ impl App {
             self.open_releases(&name);
             return true;
         }
+        if let (false, KeyCode::Char('A'), Some((_, name))) =
+            (self.tv.typing(), k.code, self.tv.project.clone())
+        {
+            self.open_alerts(&name);
+            return true;
+        }
         if !self.tv.typing() {
             let v = &self.tv;
             let filtered = !v.table.is_default() || v.said.is_some();
@@ -3013,6 +3019,15 @@ impl App {
     fn open_releases(&mut self, project: &str) {
         self.rv.open_view(format!("project:{project}"));
         self.go(Tab::Releases);
+    }
+
+    /// The Alerts tab, on one project's rows: where a Projects card's count line leads.
+    fn open_alerts(&mut self, project: &str) {
+        self.av.table.clear();
+        self.av.table.view.q = format!("project:{project}");
+        self.av.open = false;
+        self.av.follow = true;
+        self.go(Tab::Alerts);
     }
 
     fn selected_build(&self) -> Option<&hub_core::builds::Run> {
@@ -6194,6 +6209,23 @@ mod tests {
         assert_eq!(a.rv.table.view.q, "project:garden");
         assert!(a.rv.table.view.state.is_empty() && a.rv.table.view.sort.is_empty());
         assert!(!a.rv.open, "the promise is this project's app, unfiltered");
+    }
+
+    #[test]
+    fn a_on_an_opened_card_opens_alerts_for_that_project() {
+        let mut a = app(Tab::Projects);
+        a.pv.open = true;
+        a.tv.project = Some(("personal".into(), "garden".into()));
+        a.av.table.view.state = "trip".into();
+        a.av.open = true;
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('A')))));
+        assert_eq!(a.tab, Tab::Alerts);
+        assert_eq!(a.av.table.view.q, "project:garden");
+        assert!(
+            a.av.table.view.state.is_empty(),
+            "the count line is every row of the project"
+        );
+        assert!(!a.av.open);
     }
 
     #[test]
