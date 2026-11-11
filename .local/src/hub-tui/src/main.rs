@@ -383,18 +383,6 @@ fn phone(args: Vec<String>) -> i32 {
     0
 }
 
-/// `hub vitals`: the one-line summary, then a row per question, for tmux, waybar and the briefing;
-/// `--json` is the same read whole. Exit 1 when Prometheus did not answer.
-/// The queue's items for a one-shot read, and why there are none when agent-queue failed.
-fn queue_items(
-    sys: &hub_core::session_actions::System,
-) -> (Vec<hub_core::queue::Item>, Option<String>) {
-    match hub_core::queue::list(sys, "all") {
-        Ok(items) => (items, None),
-        Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
-    }
-}
-
 /// `hub releases --json`: the Releases tab's read, joined to the queue. `hub releases check`:
 /// one line per place the stores disagree. Either exits 1 when a source could not be read; check
 /// also exits 1 when a line is printed.
@@ -407,7 +395,7 @@ fn releases_cmd(args: Vec<String>) -> i32 {
         .as_slice()
     {
         ["--json"] => {
-            let (items, queue_error) = queue_items(&sys);
+            let (items, queue_error) = hub_core::actions::queue_items();
             let mut r = hub_core::releases::read(&sys, &items);
             r.errors.extend(queue_error);
             match serde_json::to_string(&r) {
@@ -430,6 +418,8 @@ fn releases_cmd(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub vitals`: the one-line summary, then a row per question, for tmux, waybar and the briefing;
+/// `--json` is the same read whole. Exit 1 when Prometheus did not answer.
 fn vitals(args: Vec<String>) -> i32 {
     let json = match args.as_slice() {
         [] => false,
@@ -610,7 +600,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     if tab == Some(Tab::Releases) {
         let sys = hub_core::session_actions::System;
-        let (items, queue_error) = queue_items(&sys);
+        let (items, queue_error) = hub_core::actions::queue_items();
         let mut s = hub_core::releases::read(&sys, &items);
         let now = hub_core::jobs::now();
         a.tab = Tab::Releases;

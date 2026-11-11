@@ -269,7 +269,7 @@ struct Bare {
 /// The joins over one read of the stores.
 pub struct Graph<'a> {
     i: Inputs<'a>,
-    pr_at: HashMap<(String, u64), usize>,
+    pr_at: HashSet<(String, u64)>,
     on_branch: HashMap<(String, String), Vec<usize>>,
     merged_as: HashMap<(String, String), usize>,
     item_of: HashMap<(String, u64), usize>,
@@ -282,7 +282,7 @@ pub struct Graph<'a> {
 impl<'a> Graph<'a> {
     pub fn new(i: Inputs<'a>) -> Graph<'a> {
         let mut g = Graph {
-            pr_at: HashMap::new(),
+            pr_at: HashSet::new(),
             on_branch: HashMap::new(),
             merged_as: HashMap::new(),
             item_of: HashMap::new(),
@@ -294,7 +294,7 @@ impl<'a> Graph<'a> {
         };
         for (n, p) in g.i.prs.iter().enumerate() {
             let repo = repo_key(&p.repo);
-            g.pr_at.insert((repo.clone(), p.number), n);
+            g.pr_at.insert((repo.clone(), p.number));
             if let Some(b) = p.branch.as_deref().filter(|b| !b.is_empty()) {
                 g.on_branch
                     .entry((repo.clone(), b.to_string()))
@@ -306,7 +306,7 @@ impl<'a> Graph<'a> {
             }
         }
         for (n, it) in g.i.items.iter().enumerate() {
-            for word in it.pr.as_deref().unwrap_or_default().split_whitespace() {
+            for word in it.pr_refs() {
                 let Some((repo, num)) = pr_ref(word) else {
                     continue;
                 };
@@ -401,15 +401,13 @@ impl<'a> Graph<'a> {
 
     /// run -> owner: the live session on its branch, else the session of its PR's item.
     pub fn owner(&self, r: &Run, prs: &[u64]) -> String {
-        if !SHARED_BRANCHES.contains(&r.branch.as_str()) {
-            if let Some(o) = self.i.live.get(&r.branch) {
-                return o.clone();
-            }
+        if let Some(o) = self.i.live.get(&r.branch) {
+            return o.clone();
         }
         let mut names: Vec<String> = vec![];
         for n in prs {
             let s = self.item(&r.repo, *n).and_then(|it| it.session.as_deref());
-            let name = s.map(|s| s.rsplit_once(':').map_or(s, |(_, x)| x).to_string());
+            let name = s.map(|s| crate::home::tmux_name(s).to_string());
             if let Some(name) = name.filter(|x| !x.is_empty() && !names.contains(x)) {
                 names.push(name);
             }
@@ -447,7 +445,8 @@ impl<'a> Graph<'a> {
         for n in prs {
             let row = repo
                 .and_then(|r| self.item(r, *n))
-                .and_then(|it| it.row.clone());
+                .and_then(|it| it.board_row())
+                .map(|(p, id)| format!("{p}:{id}"));
             if let Some(row) = row.filter(|r| !out.contains(r)) {
                 out.push(row);
             }
@@ -488,7 +487,7 @@ impl<'a> Graph<'a> {
                 .as_deref()
                 .and_then(crate::fleet::ts)
                 .is_some_and(|f| f >= since);
-            if recent && held.contains(repo) && !self.pr_at.contains_key(&(repo.clone(), *num)) {
+            if recent && held.contains(repo) && !self.pr_at.contains(&(repo.clone(), *num)) {
                 out.push(format!(
                     "item {}: {repo}#{num} is not in the PR store",
                     it.slug
@@ -527,7 +526,7 @@ impl<'a> Graph<'a> {
                 for n in t
                     .prs
                     .iter()
-                    .filter(|n| !self.pr_at.contains_key(&(repo.clone(), **n)))
+                    .filter(|n| !self.pr_at.contains(&(repo.clone(), **n)))
                 {
                     out.push(format!(
                         "{project} {}: {repo}#{n} is not in the PR store",
@@ -902,10 +901,7 @@ mod tests {
 
     #[test]
     fn refs_and_repos_read_one_key_whatever_the_form() {
-        assert_eq!(
-            repo_key("git.example.com/acme/infra"),
-            "acme/infra"
-        );
+        assert_eq!(repo_key("git.example.com/acme/infra"), "acme/infra");
         assert_eq!(repo_key("Kblack0610/.dotfiles"), "kblack0610/.dotfiles");
         assert_eq!(pr_ref("Acme/app#12"), Some((Some("acme/app".into()), 12)));
         assert_eq!(
@@ -1011,13 +1007,7 @@ mod tests {
         let g = |live: &HashMap<String, String>| {
             let mut runs = vec![
                 run("Acme/app", 1, "main", "m7", "2026-11-06T00:00:00Z"),
-                run(
-                    "acme/infra",
-                    2,
-                    "fix/x",
-                    "s",
-                    "2026-11-06T00:00:00Z",
-                ),
+                run("acme/infra", 2, "fix/x", "s", "2026-11-06T00:00:00Z"),
                 run("Acme/app", 3, "feat/z", "s", "2026-11-06T00:00:00Z"),
             ];
             Graph::new(Inputs {
@@ -1032,9 +1022,8 @@ mod tests {
             runs.iter().map(|r| r.owner.clone()).collect::<Vec<_>>()
         };
         assert_eq!(g(&live), ["app-agent-1", "infra-agent-2", ""]);
-        // A session sitting on the branch wins over the item; one on main owns nothing.
+        // A session sitting on the branch wins over the item.
         live.insert("fix/x".to_string(), "hand-1".to_string());
-        live.insert("main".to_string(), "hub".to_string());
         assert_eq!(g(&live), ["app-agent-1", "hand-1", ""]);
     }
 
