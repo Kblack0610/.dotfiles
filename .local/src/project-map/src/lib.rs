@@ -246,12 +246,17 @@ impl Registry {
 mod tests {
     use super::*;
 
-    fn fixture_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/fixtures")
-    }
+    const FIXTURE_JSON: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tests/fixtures/project-names.json"
+    );
+    const FIXTURE_TSV: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tests/fixtures/project-names.tsv"
+    );
 
     fn fixture() -> Registry {
-        Registry::from_path(&fixture_dir().join("project-names.json")).expect("fixture registry")
+        Registry::from_path(Path::new(FIXTURE_JSON)).expect("fixture registry")
     }
 
     /// The shared conformance fixture: tests/unit/project_names.bats reads the same rows
@@ -259,7 +264,7 @@ mod tests {
     #[test]
     fn every_fixture_spelling_resolves_as_the_shell_lookup_does() {
         let r = fixture();
-        let rows = std::fs::read_to_string(fixture_dir().join("project-names.tsv")).unwrap();
+        let rows = std::fs::read_to_string(FIXTURE_TSV).unwrap();
         let mut n = 0;
         for line in rows
             .lines()

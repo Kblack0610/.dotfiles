@@ -119,7 +119,7 @@ doctor"
 <   \"paths\": { \"$REPO\": \"mono\", \"/elsewhere/tools\": \"tools\" },
 ---
 >   \"paths\": { \"$REPO\": \"mono\", \"/elsewhere/tools\": \"tools\", \"$SANDBOX/repos/solo\": \"solo\" },
-7c7,10
+6c6,9
 <     \"taken\": { \"repo\": \"mono\", \"lab\": \"alpha\", \"type\": \"app\" }
 ---
 >     \"taken\": { \"repo\": \"mono\", \"lab\": \"alpha\", \"type\": \"app\" },
