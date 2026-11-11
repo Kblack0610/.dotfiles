@@ -606,6 +606,7 @@ if [ "$dry" -eq 1 ]; then
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
   echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
+  echo "prs: schedules-sync sync-prs <owner>/<repo>  (the PR store reads the merge now, not at its next poll; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
@@ -710,6 +711,15 @@ echo "proof: $out"
 # fast-forward it now. Prints nothing for any other repo, and never fails the landing.
 live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
 [ -z "$live" ] || printf '%s\n' "$live" | sed 's/^/live: /'
+# The PR store reads this merge now, not at its next poll, so its readers see it at once. A repo the
+# store does not list (exit 3) is not one it serves; any other failure is said, and the next poll
+# reads the merge.
+if [[ "$pr_ref" == */*#* ]]; then
+  store=${pr_ref%#*} host=$(url_host "$url")
+  [ "$host" = github.com ] || store="$host/$store"
+  rc=0; out=$("${SCHEDULES_SYNC:-schedules-sync}" sync-prs "$store" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ] || echo "prs: $store not refreshed ($(lastline "$out")); its next poll reads the merge" >&2
+fi
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 

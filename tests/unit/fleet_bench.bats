@@ -607,9 +607,10 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", project: \"
 
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# A gh stand-in: pr view served from $GHD, every call logged, and a run ledger stand-in serving
-# $GHD/runs-<branch>.json (gh run list field names) as `schedules-sync runs` rows: exit 3 while
-# $GHD/unsynced exists, 4 while $GHD/later does. agentctl-run is stubbed too, so a test can prove
+# A gh stand-in: pr view served from $GHD, every call logged, and a schedules-sync stand-in: `runs`
+# serves $GHD/runs-<branch>.json (gh run list field names) as run ledger rows, exit 3 while
+# $GHD/unsynced exists, 4 while $GHD/later does; `prs` serves $GHD/repo-prs.json as the PR store,
+# each row's merged_at its own or its pr-<n>.json's mergedAt, exit 1 while $GHD/prs-stale exists. agentctl-run is stubbed too, so a test can prove
 # the count never launches a model.
 docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; done; }
 drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
@@ -621,7 +622,6 @@ echo "gh $*" >> "$D/calls.log"
 [ -e "$D/fail" ] && exit 1
 case "$1 $2" in
   "pr view") cat "$D/pr-$3.json" ;;
-  "pr list") cat "$D/repo-prs.json" ;;
   "api --paginate") case $3 in
       repos/o/r/commits/*) n=${3#repos/o/r/commits/sha}; cat "$D/files-${n%%\?*}" ;;
       *) echo 'gh: Sorry, this diff is taking too long to generate. (HTTP 422)' >&2; exit 1 ;;
@@ -636,6 +636,12 @@ AR
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
 echo "schedules-sync $*" >> "$D/calls.log"
+if [ "$1" = prs ]; then
+  [ ! -e "$D/prs-stale" ] || { echo "$2: PRs last synced 2026-10-01T00:00:00Z, older than 30m" >&2; exit 1; }
+  jq -c --slurpfile pv <(for f in "$D"/pr-*.json; do [ ! -e "$f" ] || jq -c '{key: (.headRefName | ltrimstr("b")), value: .mergedAt}' "$f"; done) \
+    '($pv | from_entries) as $m | map(. + {state: "MERGED", merged_at: (.merged_at // $m[.number | tostring])})' "$D/repo-prs.json"
+  exit
+fi
 [ -e "$D/unsynced" ] && { echo "$2 is not in the run ledger" >&2; exit 3; }
 [ -e "$D/later" ] && { echo "$2 not yet past $6" >&2; exit 4; }
 [ "$1 $3 $5" = "runs --branch --until" ] || exit 2
@@ -958,11 +964,19 @@ GH
   assert_output '[7,8]'
 }
 
-@test "review: a full search page fails rather than count a cut list" {
+@test "review: a sections repo's merges come from the PR store, only those merged in the window; a stale store fails" {
   stub_review
   sections_map
-  echo '[{"number":1},{"number":2}]' > "$GHD/repo-prs.json"
-  BENCH_PR_LIST_MAX=2 BENCH_NOW=$T0 run "$SUBJECT" review
+  merged_pr s1 7 35
+  echo '[{"number":7},{"number":9,"merged_at":"2020-01-01T00:00:00Z"}]' > "$GHD/repo-prs.json"
+  docs_prs 7
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
+  grep -q "^schedules-sync prs o/r --state merged --since $(iso $((T0 - 86400)))\$" "$GHD/calls.log"
+  touch "$GHD/prs-stale"
+  BENCH_NOW=$T0 run "$SUBJECT" review
   assert_failure
   run outcome
   assert_output FAILED
