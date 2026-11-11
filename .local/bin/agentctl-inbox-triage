@@ -111,6 +111,21 @@ answered() {
   return 1
 }
 
+# read_board: `notes board --json` into BOARD. A failed read puts notes' own first error line in
+# the log and the pass's reason, so the red it raises names its cause.
+read_board() {
+  local err rc why
+  err="$(mktemp)"
+  BOARD="$(notes board --json 2>"$err")"; rc=$?
+  if [ "$rc" != 0 ]; then
+    why="$(grep -m1 '[^[:space:]]' "$err" | clean 120)"
+    why="notes board --json failed (exit $rc)${why:+: $why}"
+    say "$why"; proof_why "$why"
+  fi
+  rm -f -- "$err"
+  return "$rc"
+}
+
 # ask_line <raw> <text> <details>: a `#ask` outbox line. One read-only call answers it, `notes
 # outbox answer` writes question and answer to today's notes inbox and takes the line out of the
 # outbox. A failed call leaves the line to the next sweep; an answer that came back without its
@@ -633,8 +648,8 @@ $listing"
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
   local board names homes rc=0 p lane
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
@@ -697,8 +712,8 @@ $listing"
 # --retag-high its #high rows), in batches, the boards with the most such rows first.
 priority_pass() {
   local board epics rows p lane total off size r rc=0
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   epics="$(epics_open "$board")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --argjson hi "$RETAG_HIGH" --arg only "$ONLY" '[.rows[]
@@ -826,8 +841,8 @@ $listing"
 # standing epic to fall back on.
 link_pass() {
   local board epics rows p lane tsv cache kept mine total off size r rc=0 raw sys of epic
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   epics="$(epics_open "$board")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg only "$ONLY" '[.rows[]
@@ -881,8 +896,8 @@ split_waiting() {
   local p sheets rc=0
   [ "$DRY" = 1 ] && return 0
   [ -n "$ONLY" ] || notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
-  sheets="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  sheets="$(managed_board <<<"$sheets" | jq -r '.projects[].project' | sort -u)"
+  read_board || return 1
+  sheets="$(managed_board <<<"$BOARD" | jq -r '.projects[].project' | sort -u)"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
@@ -954,8 +969,8 @@ pass() {
   done < <(jq -j --argjson seen "$seen" --arg only "$ONLY" ".[] | select(.project and (\$only == \"\" or .project == \$only))
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   # A `<id>: <words>` line answers its open row, with no model.
   [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
     answer "$p" "$raw" "$text" "$board" || rc=1

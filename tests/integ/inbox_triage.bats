@@ -113,6 +113,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   inbox | grep -q 'the gun sound is off'
 }
 
+@test "a failed board read names notes' own error in the log and the outcome" {
+  # 2026-11-10: the board read failed for 15 hours and the log said only "notes board --json
+  # failed", because notes' stderr went to /dev/null.
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "$NOTES_BIN" "$@"\n' >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes board --json failed (exit 2): error: sheet other: bad heading'
+  grep -q 'outcome=FAILED .*notes board --json failed (exit 2): error: sheet other: bad heading' "$HOME/.local/state/agentctl/inbox-triage/activity.log"
+  inbox | grep -q 'the gun sound is off'
+}
+
 @test "a budget stop ends the sweep BLOCKED with exit 75: one call, no refusal, the lines wait" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 75\n' >"$SANDBOX/bin/model-stub"
