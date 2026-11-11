@@ -1301,6 +1301,9 @@ real_notes_board() {
   run "$LAND" 42 --item ship
   assert_success
   assert_line 'live: ~/.dotfiles: fast-forwarded main 01234567..fedcba98'
+  printf '%s\n' '~/.dotfiles: fast-forwarded main 01234567..fedcba98' '~: rebuilt agent-web (cargo build --release)' >"$NOTES_FIXTURE/autopull.out"
+  run "$LAND" 42 --item ship
+  assert_line 'live: ~: rebuilt agent-web (cargo build --release)'
   run grep 'pr merge 42\|^dotfiles-autopull' "$LOG"
   assert_line --index 0 --partial 'pr merge 42'
   assert_line --index 1 'dotfiles-autopull --now .'
