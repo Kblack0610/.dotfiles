@@ -15,7 +15,7 @@
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
-  state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "", leaf: null },
+  state: { open: null, unlinked: true, page: {}, folds: {}, viewed: "", leaf: null },
   head: (t) => `<h2 class="sec" id="sec-projects">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
@@ -87,9 +87,10 @@ const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><t
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td><td class="n">${c.held}</td>` +
   `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
-// A fold of the opened card: its title and what it holds, kept open across redraws by pst.folds.
+// A fold of the opened card: its title and what it holds; it starts open, and one the reader
+// folded stays folded across redraws (pst.folds).
 const pFold = (k, title, says, inner) =>
-  cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds);
+  cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds, true);
 const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
 // The Timeline fold: its notes, then one line per event newest first, colored by its level,
 // linked to its PR, run or deploy when it has one, then how many older ones the cap left out.
@@ -99,7 +100,7 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
 }).join("") + older(t.older);
 
 // Build by system, always shown: one fold per system with an epic, its head carrying its percent,
-// each epic a fold of its own over its tasks. An open task is a link that opens its row below
+// each epic a fold of its own over its tasks, every fold open until the reader folds it. An open task is a link that opens its row below
 // (pLeaf); a done one is only a line.
 const pLeafLine = (l) => l.done ? `<div class="pleaf muted">${esc(l.line)}</div>`
   : `<div class="pleaf"><a href="#" data-leaf="${esc(l.id)}">${esc(l.line)}</a></div>`;
@@ -109,8 +110,8 @@ const pSystems = (pg) => `<h2 class="sec">Build by system <span class="muted">${
     if (!s.epics.length && !s.closed) return `<div class="psys">${head}</div>`;
     return cfold(`pg:sys:${s.id}`, head, s.epics.map((e) =>
       cfold(`pg:ep:${e.id}`, `<span class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</span>`,
-        e.leaves.length ? e.leaves.map(pLeafLine).join("") : `<div class="pleaf muted">no tasks yet</div>`, pst.folds)).join("") +
-      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : ""), pst.folds);
+        e.leaves.length ? e.leaves.map(pLeafLine).join("") : `<div class="pleaf muted">no tasks yet</div>`, pst.folds, true)).join("") +
+      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : ""), pst.folds, true);
   }).join("")}</div>`;
 
 // The opened card, over its rows: the card, its goal and Flow, Build by system and what needs the
