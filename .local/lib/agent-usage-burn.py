@@ -693,6 +693,13 @@ def runner_calls(state_dir):
     return out
 
 
+def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item):
+    """One by_session row: what one session cost in the window, and who it was."""
+    return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
+            "origin": origin, "harness": harness, "agent": agent, "account": account,
+            "project": project, "title": title, "item": item}
+
+
 def other_harnesses(start, end, root):
     """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
     Sessions that went through the gateway are left out: its metered line already has their dollars."""
@@ -721,10 +728,9 @@ def other_harnesses(start, end, root):
             b["usd"] += r["cost_usd"]
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-            rows.append({"sid": sid, "usd": r["cost_usd"], "measured": 0.0, "estimated": r["cost_usd"],
-                         "origin": "runner" if r.get("runner") else "interactive", "harness": r["harness"],
-                         "agent": r.get("agent"), "account": None, "project": r.get("project"),
-                         "title": r.get("title"), "item": None})
+            if sid and r["cost_usd"] > 0:   # priced from a table or the harness's own sum: estimated, as in total
+                rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
+                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None))
     return out, rows
 
 
@@ -797,10 +803,9 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
             reg = reg_last.get(sid) or {}
             cwd = acc["meta"].get(sid, ("", "", None))[1]
             agent = name if origin in ("runner", "shepherd") else ((it or {}).get("tmux") or os.path.basename(cwd.rstrip("/")) or None)
-            by_session.append({"sid": sid, "usd": s["measured"] + s["estimated"], "measured": s["measured"],
-                               "estimated": s["estimated"], "origin": origin, "harness": reg.get("harness") or "claude",
-                               "agent": agent, "account": account, "project": (it or {}).get("project") or reg.get("project"),
-                               "title": reg.get("title"), "item": (it or {}).get("slug")})
+            by_session.append(session_row(sid, s["measured"], s["estimated"], origin, reg.get("harness") or "claude",
+                                          agent, account, (it or {}).get("project") or reg.get("project"),
+                                          reg.get("title"), (it or {}).get("slug")))
         if s["measured"] > 0 and s["priced"] > 0 and s["whole"]:
             billed[origin] += s["measured"]
             priced[origin] += s["priced"]
@@ -843,10 +848,11 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         "by_origin": rows(by["origin"]), "by_runner": rows(by["runner"]),
         "by_account": rows(by["account"]), "by_model": rows(by["model"]),
         "other_harness": other,
-        # Every session the window priced, dearest first. Their sum is the total less the gateway's
-        # metered line and the helper estimate, which no session can be charged with.
-        "by_session": [{**r, **{k: round(r[k], 2) for k in ("usd", "measured", "estimated")}}
-                       for r in sorted(by_session, key=lambda r: -r["usd"]) if round(r["usd"], 2) > 0],
+        # Every session the window priced, dearest first, to the tenth of a cent so short calls keep a row.
+        # Their sum is the total less the gateway's metered line and the helper estimate, which no session
+        # can be charged with.
+        "by_session": [{**r, **{k: round(r[k], 3) for k in ("usd", "measured", "estimated")}}
+                       for r in sorted(by_session, key=lambda r: (-r["usd"], r["sid"]))],
     }
 
 
