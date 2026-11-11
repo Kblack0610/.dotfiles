@@ -4,7 +4,7 @@ The cases step 6 and step 7 of `../SKILL.md` name by section. Read the one the r
 
 ## Forgejo repo (home-config)
 
-`gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<owner>/home-config#<N> merged=<sha>; agent-queue move <slug> done --status ok` (reap proves that sha in the checkout project-map `paths` has for the repo the ref names, then closes the row), and tick the plan phase by hand. With `--pr-only`, whoever merges records it: `agent-queue set <slug> merged=<sha>; agent-queue move <slug> done --status ok`.
+`gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<owner>/home-config#<N> merged=<sha>; agent-queue move <slug> done --status ok` (reap proves that sha in the checkout project-map `paths` has for the repo the ref names, then closes the row), and tick the plan phase by hand. When an earlier PR of the task landed with `agent-land --partial`, the item holds `partial: yes` and its pr and merged: list every PR in the set, as `agent-queue set <slug> "pr=<first> <owner>/home-config#<N>" "merged=<first-sha> <sha>" partial=`, then move it done. With `--pr-only`, whoever merges records it: `agent-queue set <slug> merged=<sha>; agent-queue move <slug> done --status ok`.
 
 ## Work that can only run later
 
