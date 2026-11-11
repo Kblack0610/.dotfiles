@@ -1,8 +1,9 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
 //! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per source
-//! (the Fleet tab's accounts table until 2026-11-07), and `K` opens the keys folded under their
-//! pool. Under it the token folds
+//! (the Fleet tab's accounts table until 2026-11-07). Under it Consumers has one row per LLM
+//! consumer (a runner with a priority, or a gateway key no runner names): `K` opens or folds it,
+//! and it starts open when amber or red. Under them the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
 //! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
 //! flips it. Spend charts the fleet's last 30 days and ranks the picked day's sessions: `,` and `.`
@@ -10,9 +11,10 @@
 //! The sections sit in inner tabs (`hub_core::layout`, Limits, Spend, Models) under the pinned
 //! fleet figure: Left/Right switch them, and a key for a section on another one switches to it.
 
-use hub_core::burn::{self, Account, Burn, Keys};
+use hub_core::burn::{self, Account, Burn};
 use hub_core::costs::{self, Board, Costs};
 use hub_core::fleet_cost::{dollars, FleetCost};
+use hub_core::gateway::Consumers;
 use hub_core::layout;
 use hub_core::sections::{self, Block};
 use hub_core::spend_history::{self, Bar, DayView, History};
@@ -52,8 +54,8 @@ pub struct CostsView {
     pub tokens: TokensView,
     /// The Langfuse fold (`l`); None while it follows its amber state.
     pub langfuse: Option<bool>,
-    /// The keys fold under the pool (`K`); None while it follows its amber state.
-    pub keys: Option<bool>,
+    /// The Consumers fold (`K`); None while it follows its amber state.
+    pub consumers: Option<bool>,
     /// The inner tab shown (a `layout::Inner` id of Costs).
     pub inner: &'static str,
 }
@@ -86,7 +88,7 @@ impl Default for CostsView {
             sasc: false,
             tokens: TokensView::default(),
             langfuse: None,
-            keys: None,
+            consumers: None,
             inner: layout::inner_tab(tab(), None).map_or("", |i| i.id),
         }
     }
@@ -158,6 +160,7 @@ impl CostsView {
                 _ if word == "spend" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
                 _ if word == "langfuse" => self.langfuse = Some(true),
+                _ if word == "consumers" => self.consumers = Some(true),
                 _ if named.is_some() || tab().pinned.contains(&v) => {}
                 _ if costs::CUTS.contains(&v) => self.by = costs::cut(v),
                 _ if costs::WINDOWS.iter().any(|w| w.0 == v) => self.window = costs::window(v).0,
@@ -254,14 +257,14 @@ impl CostsView {
         true
     }
 
-    /// The folds' keys: `K` opens or folds the keys under the pool, `u` where the tokens go, `U`
+    /// The folds' keys: `K` folds or opens Consumers (None when there is no Consumers data), `u` where the tokens go, `U`
     /// switches its window, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
     /// Some carries the section to scroll to (a fold that opened), or None for one that shut.
     pub fn fold(
         &mut self,
         code: KeyCode,
         t: Option<&hub_core::tokens::Tokens>,
-        keys: Option<&Keys>,
+        consumers: Option<&str>,
     ) -> Option<Option<&'static str>> {
         if self.typing.is_some() {
             return None;
@@ -294,10 +297,11 @@ impl CostsView {
             return Some(self.history_open.then_some("spend"));
         }
         if code == KeyCode::Char('K') {
-            keys?;
-            let moved = self.reveal("burn");
-            self.keys = Some(moved || !keys_open(self.keys));
-            return Some(None);
+            consumers?;
+            let moved = self.reveal("consumers");
+            let open = moved || !consumers_open(self.consumers);
+            self.consumers = Some(open);
+            return Some(open.then_some("consumers"));
         }
         let t = t?;
         match code {
@@ -381,7 +385,11 @@ impl CostsView {
         for sec in shown {
             at.push((sec, out.len()));
             match *sec {
-                "burn" => out.extend(burn(&b.burn, self.keys, p, w)),
+                "burn" => out.extend(burn(&b.burn, p, w)),
+                "consumers" => {
+                    let open = consumers_open(self.consumers);
+                    out.extend(consumers(&b.consumers, open, p, w))
+                }
                 "spend" => {
                     out.extend(history(&b.history, self.history_open, p, w));
                     if b.history.why.is_none() {
@@ -483,17 +491,18 @@ impl CostsView {
     }
 }
 
-/// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
-/// badge, when each account is back on pace, and one row per source claude-acct reads.
-/// The keys start open (dashboards rule 4); the reader's `K` wins after that.
-fn keys_open(set: Option<bool>) -> bool {
+/// Consumers starts open like every section (dashboards rule 4); the reader's `K` wins after that.
+fn consumers_open(set: Option<bool>) -> bool {
     set.unwrap_or(true)
 }
 
 /// Cells of the usage bar, brackets apart.
 const BAR_CELLS: usize = 10;
 
-fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'static>> {
+/// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
+/// badge, when each account is back on pace, and one row per source claude-acct reads. The keys
+/// under a pool are Consumers rows, so Burn only points there.
+fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
         return vec![clip_line(
@@ -565,7 +574,7 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
         Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
         None => cell("-", p.dim()),
     };
-    let (top, nested): (Vec<&Account>, Vec<&Account>) = b.accounts.iter().partition(|a| !a.nested);
+    let top: Vec<&Account> = b.accounts.iter().filter(|a| !a.nested).collect();
     let rows = top
         .iter()
         .filter(has_figures)
@@ -632,51 +641,122 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
     );
     out.extend(top.iter().filter_map(note));
     if let Some(k) = &b.keys {
-        let open = keys_open(keys_set);
         let head = if k.level == "ok" { p.dim() } else { p.warn() };
         out.push(clip_line(
             Line::from(vec![
-                dim(if open { "- KEYS  " } else { "+ KEYS  " }),
+                dim("KEYS  "),
                 Span::styled(k.head.clone(), head),
-                dim("   K folds"),
+                dim("   rows in Consumers (K)"),
             ]),
             w,
         ));
-        if open {
-            let rows = nested
-                .iter()
-                .filter(has_figures)
-                .map(|a| {
-                    vec![
-                        name(a),
-                        a.live.to_string().into(),
-                        usage(a),
-                        a.used_text.clone().into(),
-                        pc(a.reserve).into(),
-                        room(a),
-                        a.resets.map_or("-".into(), time).into(),
-                        costs::usd(a.cost_24h).into(),
-                    ]
-                })
-                .collect::<Vec<_>>();
-            out.extend(
-                Table {
-                    header: vec![
-                        "SOURCE", "LIVE", "BAR", "USED", "RESERVE", "ROOM", "RESETS", "$24H",
-                    ],
-                    rows,
-                    keep: vec![0, 5, 3, 1, 6, 4, 7, 2],
-                    right: vec![1, 3, 4, 7],
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
-            out.extend(nested.iter().filter_map(note));
-        }
     }
     let terms: Vec<String> = b.legend.iter().map(|(t, d)| format!("{t}: {d}.")).collect();
     for l in crate::fit::wrap(&terms, " ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
+/// The Consumers section: its headline always, and when open one row per LLM consumer under
+/// `gateway::build`'s order (a MISMATCH first), then each pool's budget, the gateway's aliases and
+/// fallbacks, and what each column means.
+fn consumers(c: &Consumers, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mark = if open { "-" } else { "+" };
+    let level = match c.level {
+        "bad" => p.bad(),
+        "warn" => p.warn(),
+        _ => Style::new(),
+    };
+    // The headline wraps between its clauses, never inside one, so a narrow pane keeps all of it.
+    let parts: Vec<&str> = c.head.split(" | ").collect();
+    let title = format!("{mark} CONSUMERS  ");
+    let mut out: Vec<Line<'static>> = wrap(&parts, " | ", w.saturating_sub(title.len()))
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 {
+                Span::styled(title.clone(), p.head())
+            } else {
+                Span::raw(" ".repeat(title.len()))
+            };
+            clip_line(Line::from(vec![lead, Span::styled(l, level)]), w)
+        })
+        .collect();
+    if !open {
+        if let Some(l) = out.last_mut() {
+            l.spans.push(Span::styled("   K opens", p.dim()));
+            *l = clip_line(l.clone(), w);
+        }
+        out.push(Line::raw(""));
+        return out;
+    }
+    for e in c.stale.iter().chain(&c.errors) {
+        out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
+    }
+    let rows = c
+        .rows
+        .iter()
+        .map(|r| {
+            let style = match r.level {
+                "bad" => p.bad(),
+                _ => Style::new(),
+            };
+            c.columns
+                .iter()
+                .map(|k| {
+                    let s = if *k == "consumer" && r.level != "bad" {
+                        p.head()
+                    } else {
+                        style
+                    };
+                    cell(r.show(k).to_string(), s)
+                })
+                .collect()
+        })
+        .collect::<Vec<Vec<Cell>>>();
+    let at = |k: &str| c.columns.iter().position(|x| *x == k);
+    // The consumer and its status never drop; how it routes goes first on a narrow screen.
+    let keep = [
+        "consumer", "status", "priority", "spent", "budget", "runs_on", "fallback",
+    ]
+    .iter()
+    .filter_map(|k| at(k))
+    .collect();
+    let cap = [
+        ("consumer", 24),
+        ("runs_on", 32),
+        ("budget", 26),
+        ("fallback", 24),
+    ]
+    .iter()
+    .filter_map(|(k, n)| at(k).map(|i| (i, *n)))
+    .collect();
+    out.extend(
+        Table {
+            header: c.headers.clone(),
+            rows,
+            keep,
+            cap,
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    for l in &c.pools {
+        out.push(clip_line(Line::styled(l.clone(), p.dim()), w));
+    }
+    // The routes and the legend wrap between words: either is longer than a narrow pane.
+    let terms: String = c
+        .legend
+        .iter()
+        .map(|(t, d)| format!("{t}: {d}. "))
+        .collect();
+    for text in [c.routes.as_str(), terms.as_str()] {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        for l in wrap(&words, " ", w) {
+            out.push(clip_line(Line::styled(l, p.dim()), w));
+        }
     }
     out.push(Line::raw(""));
     out
@@ -1519,7 +1599,9 @@ mod tests {
         assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(None));
         let shut = page(&v);
         assert!(
-            shut.contains("+ SPEND  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"),
+            shut.contains(
+                "+ SPEND  Nov $1,579/day vs Oct $1,102/day (+43%)   y: by period\n  11-01 $1,579"
+            ),
             "{shut}"
         );
         assert!(shut.lines().all(|l| l.chars().count() <= 80), "{shut}");
@@ -1933,7 +2015,7 @@ mod tests {
         let direct = s.lines().find(|l| l.starts_with("DIRECT")).unwrap();
         assert!(direct.contains("$0.00 +1 unpriced"), "{s}");
         assert!(direct.ends_with(hub_core::costs::DIRECT_NOTE), "{s}");
-        // the pool and its keys are Burn rows now, never a line of their own
+        // the pool is a Burn row and its keys Consumers rows, never a line of their own
         assert!(
             !s.lines()
                 .any(|l| l.starts_with("LAZER") || l.starts_with("GLM") || l.contains("RESERVE $")),
@@ -1944,7 +2026,7 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_fold_under_their_pool_and_k_opens_them_in_80_columns() {
+    fn burn_points_at_consumers_for_the_keys_under_a_pool() {
         let mut all = vec![];
         for (n, kind, used) in [
             ("lazer", "litellm-team", 90.0),
@@ -1967,24 +2049,8 @@ mod tests {
             burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
-        let screen = |v: &CostsView, w: usize| {
-            v.lines(&c, Palette::default(), 1_000_000, w)
-                .0
-                .iter()
-                .map(crate::fit::plain)
-                .collect::<Vec<_>>()
-        };
-        let mut v = CostsView::default();
-        assert!(
-            screen(&v, 200).iter().any(|l| l.starts_with("glm")),
-            "the keys start open"
-        );
-        assert_eq!(
-            v.fold(KeyCode::Char('K'), None, c.burn.keys.as_ref()),
-            Some(None),
-            "K folds them"
-        );
-        let shut = screen(&v, 200);
+        let shut = screen_of(&c, &CostsView::default(), 200);
+        let shut: Vec<&str> = shut.lines().collect();
         assert!(
             shut.iter().any(|l| l.starts_with("lazer")),
             "the pool is a row: {shut:?}"
@@ -1994,32 +2060,127 @@ mod tests {
             "the key is not: {shut:?}"
         );
         assert!(
-            shut.iter()
-                .any(|l| l.starts_with("+ KEYS  1 in lazer, 0 live, tightest glm 96%")),
+            shut.iter().any(
+                |l| l.starts_with("KEYS  1 in lazer, 0 live, tightest glm 96%")
+                    && l.ends_with("rows in Consumers (K)")
+            ),
             "{shut:?}"
-        );
-        assert_eq!(
-            v.fold(KeyCode::Char('K'), None, c.burn.keys.as_ref()),
-            Some(None),
-            "K works with no tokens snapshot"
-        );
-        let open = screen(&v, 200);
-        let row = open.iter().find(|l| l.starts_with("glm")).unwrap();
-        assert!(
-            row.contains("[##########]") && !row.contains('|'),
-            "a dollar budget has no tick: {row}"
-        );
-        assert!(open.iter().any(|l| l.starts_with("- KEYS")), "{open:?}");
-        assert!(
-            screen(&v, 80).iter().all(|l| l.chars().count() <= 80),
-            "the open fold fits"
         );
     }
 
     #[test]
-    fn the_keys_fold_starts_open_and_k_folds_it() {
-        assert!(keys_open(None));
-        assert!(!keys_open(Some(false)), "the reader's fold is kept");
+    fn consumers_starts_open_and_k_still_folds_it() {
+        assert!(consumers_open(None));
+        assert!(
+            !consumers_open(Some(false)),
+            "negative control: the reader's fold wins"
+        );
+    }
+
+    /// The gateway as `claude-acct gateway` writes it: a capped low pool and a must core team.
+    fn gateway_read(confs: serde_json::Value) -> hub_core::gateway::Read {
+        let snapshot = serde_json::from_value(serde_json::json!({
+            "at": 1_000_000 - 600,
+            "teams": [
+                {"alias": "lazer-core", "spend": 0.5, "max_budget": 200.0, "priority": "must", "budget_duration": "1mo"},
+                {"alias": "lazer-pool", "spend": 228.0, "max_budget": 50.0, "priority": "low", "budget_duration": "1mo"}
+            ],
+            "keys": [
+                {"alias": "comms-triage", "team": "lazer-core", "spend": 0.02, "max_budget": 25.0, "budget_duration": "30d", "models": ["fast"], "priority": "must"},
+                {"alias": "claude-reserve", "team": "lazer-pool", "spend": 92.0, "max_budget": 100.0, "budget_duration": "30d", "models": ["claude-sonnet-5"], "priority": "low"}
+            ],
+            "sources": [{"name": "codex", "kind": "codex", "reserve": 30, "priority": "low"}],
+            "aliases": {"fast": "fast (gpt-oss-120b)"},
+            "fallbacks": {"fast (gpt-oss-120b)": ["assist (gemini-flash)"]}
+        }))
+        .unwrap();
+        hub_core::gateway::Read {
+            snapshot: Some(snapshot),
+            confs: serde_json::from_value(confs).unwrap(),
+            errors: vec![],
+        }
+    }
+
+    fn gateway_conf(name: &str, key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name, "enabled": true, "priority": "must", "harness": "raw", "model": "fast",
+            "route": "gateway-fast", "route_transport": "openai-compatible", "route_model": "fast",
+            "route_key": key
+        })
+    }
+
+    #[test]
+    fn green_consumers_start_open_and_k_folds_them_to_their_headline() {
+        let c = Costs {
+            consumers: gateway_read(serde_json::json!([gateway_conf(
+                "version-summary",
+                "rbw:litellm_comms_triage_key"
+            )])),
+            ..costs()
+        };
+        let mut v = CostsView::default();
+        let open = screen_of(&c, &v, 80);
+        assert_eq!(v.fold(KeyCode::Char('K'), None, Some("ok")), Some(None));
+        let shut = screen_of(&c, &v, 80);
+        let head = shut
+            .lines()
+            .find(|l| l.starts_with("+ CONSUMERS  "))
+            .unwrap_or_else(|| panic!("{shut}"));
+        assert!(head.contains("2 consumers: must 1, low 1"), "{shut}");
+        assert!(!shut.contains("CONSUMER "), "folded, no table: {shut}");
+        let mut linked = CostsView::default();
+        linked.open("consumers");
+        assert_eq!(
+            screen_of(&c, &linked, 80),
+            open,
+            "`hub --tab 'costs consumers'` opens it"
+        );
+        assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
+        assert!(open.contains("- CONSUMERS  "), "{open}");
+        let row = open
+            .lines()
+            .find(|l| l.starts_with("version-summary"))
+            .unwrap_or_else(|| panic!("{open}"));
+        assert!(row.contains("must") && row.contains("ok"), "{row}");
+        assert!(open.contains("aliases: fast -> gpt-oss-120b"), "{open}");
+        let legend: Vec<&str> = open
+            .lines()
+            .skip_while(|l| !l.starts_with("PRI: "))
+            .collect();
+        assert!(
+            legend
+                .join(" ")
+                .contains("or the plan's week used. FALLBACK:"),
+            "the legend wraps, never clips: {open}"
+        );
+    }
+
+    #[test]
+    fn a_must_runner_on_the_low_pool_is_a_red_mismatch_that_starts_open_in_80_columns() {
+        let c = Costs {
+            consumers: gateway_read(serde_json::json!([
+                gateway_conf("version-summary", "rbw:litellm_comms_triage_key"),
+                gateway_conf("nightly-thing", "rbw:litellm_claude_reserve_key"),
+            ])),
+            ..costs()
+        };
+        let s = screen_of(&c, &CostsView::default(), 80);
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        assert!(s.contains("- CONSUMERS  1 MISMATCH | "), "{s}");
+        let lines: Vec<&str> = s.lines().collect();
+        let header = lines
+            .iter()
+            .position(|l| l.starts_with("CONSUMER "))
+            .unwrap_or_else(|| panic!("{s}"));
+        assert!(
+            lines[header + 1].starts_with("nightly-thing")
+                && lines[header + 1].contains("MISMATCH: lazer-pool"),
+            "a MISMATCH leads: {s}"
+        );
+        assert!(
+            c.burn.keys.is_none() && !s.contains("KEYS  "),
+            "no keys, no pointer"
+        );
     }
 
     #[test]

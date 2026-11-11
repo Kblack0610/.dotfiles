@@ -42,7 +42,11 @@ pub fn load_all() -> (HashMap<u32, Session>, Vec<u32>) {
 /// A file that will not parse is read once more before it counts: Claude rewrites it on each
 /// status change, so a read that met the write half done gets the whole file the next time.
 fn load_dir(dir: &Path) -> (HashMap<u32, Session>, Vec<u32>) {
-    let read = |p: &Path| fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Session>(&t).ok());
+    let read = |p: &Path| {
+        fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Session>(&t).ok())
+    };
     let (mut out, mut unreadable) = (HashMap::new(), Vec::new());
     let Ok(rd) = fs::read_dir(dir) else {
         return (out, unreadable);
@@ -56,7 +60,10 @@ fn load_dir(dir: &Path) -> (HashMap<u32, Session>, Vec<u32>) {
             Some(sess) => {
                 out.insert(sess.pid, sess);
             }
-            None => unreadable.extend(path.file_stem().and_then(|s| s.to_str()?.parse::<u32>().ok())),
+            None => unreadable.extend(
+                path.file_stem()
+                    .and_then(|s| s.to_str()?.parse::<u32>().ok()),
+            ),
         }
     }
     (out, unreadable)
@@ -96,7 +103,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-panel-sessions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("10.json"), r#"{"pid":10,"sessionId":"s10","cwd":"/w"}"#).unwrap();
+        fs::write(
+            dir.join("10.json"),
+            r#"{"pid":10,"sessionId":"s10","cwd":"/w"}"#,
+        )
+        .unwrap();
         fs::write(dir.join("11.json"), r#"{"pid":11,"sess"#).unwrap(); // met mid-write
         fs::write(dir.join("notes.json"), "{").unwrap(); // no pid in the name: not a session
         let (sessions, unreadable) = load_dir(&dir);
@@ -117,9 +128,9 @@ mod tests {
     #[test]
     fn encodes_jsonl_path() {
         let p = jsonl_path("abc-123", "/home/k/dev/bnb/platform-agent-2");
-        assert!(p.to_string_lossy().ends_with(
-            ".claude/projects/-home-k-dev-bnb-platform-agent-2/abc-123.jsonl"
-        ));
+        assert!(p
+            .to_string_lossy()
+            .ends_with(".claude/projects/-home-k-dev-bnb-platform-agent-2/abc-123.jsonl"));
     }
 
     #[test]

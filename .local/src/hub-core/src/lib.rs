@@ -17,6 +17,7 @@ pub mod fleet;
 pub mod fleet_cost;
 pub mod flow;
 pub mod focus;
+pub mod gateway;
 pub mod home;
 pub mod infra;
 pub mod jobs;

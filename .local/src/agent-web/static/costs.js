@@ -4,15 +4,16 @@
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir, and Spend's day, dq,
 // dsort, ddir, sid) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
-// tiles: the whole fleet's 24h cost, who pays (Burn, one row per source claude-acct reads), where the tokens
-// go and what Langfuse sees.
+// tiles: the whole fleet's 24h cost, who pays (Burn, one row per source claude-acct reads), who
+// spends (Consumers, one row per runner or gateway key with a priority), where the tokens go and
+// what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
   tab: "costs", id: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
   state: { open: {}, tokWin: "week" }, open: () => cost.open,
   // The view keys past the table's: the cut, the window and the sessions sort.
-  params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir", "day", "dq", "dsort", "ddir", "sid"]) if (v.get(k)) p.set(k, v.get(k)); },
+  params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir", "day", "dq", "dsort", "ddir", "sid", "csort", "cdir"]) if (v.get(k)) p.set(k, v.get(k)); },
   head: (t) => costsHead(t.data), lead: () => innerStrip("costs"),
   // The table (its bar and rows) belongs to the Spend inner tab, with the switches above it.
   wrap: (html) => innerWrap("costs", "table", html),
@@ -176,7 +177,6 @@ const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != nu
 const BURN_COLS = [["source", false, ' data-role="lead"'], ["kind"], ["live", true], ["bar"], ["used", true, ' data-role="glance" data-named'], ["gone", true, ' data-role="glance" data-named'], ["reserve", true], ["room", false, ' data-role="glance"'], ["burn/h", true], ["keeps/h", true],
   ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
-const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "$24h"].includes(t));
 
 function burnRow(a, at, note, cols) {
   // a row with no figures: its name, then one cell across the rest
@@ -203,12 +203,26 @@ function burnRow(a, at, note, cols) {
 const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n, phone]) => `<th${n ? ' class="n"' : ""}${phone || ""}>${t}</th>`).join("")}</tr>` +
   rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + `</table>`;
 
-// The keys inside a pool, a fold under its row that starts open (dashboards rule 4).
-function burnKeys(b) {
-  if (!b.keys) return "";
-  const warn = b.keys.level !== "ok";
-  const head = `KEYS <span class="${warn ? "warn" : "muted"}">${esc(b.keys.head)}</span>`;
-  return `<div class="panel scroll">${cfold("burn-keys", head, burnTable(b, KEY_COLS, b.accounts.filter((a) => a.nested)), cost.open, true)}</div>`;
+// The keys inside a pool are Consumers rows, so Burn only points there.
+const burnKeys = (b) => (b.keys ? `<div class="panel"><span class="muted">KEYS</span> <span class="${b.keys.level !== "ok" ? "warn" : "muted"}">${esc(b.keys.head)}</span> <a href="#costs/consumers">rows in Consumers</a></div>` : "");
+
+// Every LLM consumer (hub_core::gateway, the TUI's coststab.rs `consumers`): a runner with a
+// priority, or a gateway key no runner names, with what it runs on, its budget, spend and fallback.
+// Open like every section (rule 4), its hue on the headline; its headers sort apart from the
+// table's (csort/cdir).
+function costsConsumers(d) {
+  const c = d.consumers;
+  if (!c || !c.table) return "";
+  const cls = c.level === "ok" ? "muted" : `burn ${c.level === "bad" ? "bad" : "warn"}`;
+  const open = secOpen(cost.open, "consumers");
+  const labels = Object.fromEntries(c.columns.map((k, i) => [k, [c.headers[i].toLowerCase()]]));
+  const row = (r) => `<tr>${c.columns.map((k) => `<td${r.level === "bad" ? ' class="bad"' : ""}>${esc(r[k])}</td>`).join("")}</tr>`;
+  const notes = [c.stale, ...c.errors].filter(Boolean).map((e) => `<div class="warn">${esc(e)}</div>`).join("");
+  return `<details class="csec" data-k="consumers" id="sec-consumers"${open ? " open" : ""}><summary><h2 class="sec">Consumers <span class="${cls}">${esc(c.head)}</span></h2></summary>` +
+    (notes ? `<div class="panel">${notes}</div>` : "") +
+    (c.rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(c.table, labels, "c")}${c.rows.map(row).join("")}</table></div>` : "") +
+    `<div class="panel muted">${c.pools.map((l) => `<div>${esc(l)}</div>`).join("")}<div>${esc(c.routes)}</div></div>` +
+    `<div class="muted fold">${c.legend.map(([t, x]) => `${esc(t.toLowerCase())}: ${esc(x)}`).join("; ")}</div></details>`;
 }
 
 function costsBurn(d) {
@@ -296,15 +310,15 @@ function costsSections(d) {
 }
 
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first,
-// the fleet figure pinned under it on every inner tab, then each section inside its inner tab's group in the layout's order
-// (Limits: burn; Spend: history, totals, the table; Models: tokens, langfuse, sections).
+// the fleet figure pinned under it, then each section inside its inner tab's group in the layout's order
+// (Limits: burn, consumers; Spend: history, totals, the table; Models: tokens, langfuse, sections).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
   let html = innerStrip("costs", d.amber) + fleetCostSection(d) + innerWrap("costs", "burn", costsBurn(d)) +
-    innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
+    innerWrap("costs", "consumers", costsConsumers(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -336,6 +350,8 @@ $("costs").addEventListener("click", (e) => {
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
   const ss = t.closest && t.closest("[data-ssort]");
   if (ss) { costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" }); return; }
+  const cs = t.closest && t.closest("[data-csort]");
+  if (cs) { costsView({ csort: cs.dataset.csort, cdir: cs.dataset.csort && cs.dataset.cdir === "asc" ? "asc" : "" }); return; }
   // Spend: a day column picks the day, a session row opens (or closes) its own days.
   const ds = t.closest && t.closest("[data-dsort]");
   if (ds) { costsView({ dsort: ds.dataset.dsort, ddir: ds.dataset.dsort && ds.dataset.ddir === "asc" ? "asc" : "" }); return; }
