@@ -42,6 +42,10 @@ REWRITE=0
 
 die() { echo "notes-version-summary: $*" >&2; exit 1; }
 
+# shellcheck source=/dev/null
+. "${NVS_HOOKS:-$HOME/.config/shared-hooks/project-name.sh}" 2>/dev/null && project_release_lib \
+  || die "cannot load project-name.sh and git-release.sh"
+
 # ── config resolution ───────────────────────────────────────────────
 # repo_of <project> -> sets REPO + PATHFILTER from the repos map (case-insensitive key).
 repo_of() {
@@ -73,18 +77,18 @@ note_body() {
   ' "$1"
 }
 
-# git_subjects <repo> <pathfilter> <prevtag> <tag> -> commit subjects for the version range.
-# Uses <prevtag>..<tag> when both tags resolve, else recent commits touching the pathfilter.
+# git_subjects <repo> <project> <pathfilter> <prevver> <ver> -> commit subjects for the version
+# range. Each version resolves to its tag through git_tag_for_version (the registry's tagGlob,
+# else the product ladder), so `portfolio-v1.6.4` answers v1.6.4. Uses <prev>..<tag> when both
+# resolve, else recent commits touching the pathfilter.
 git_subjects() {
-  local repo="$1" pf="$2" prev="$3" tag="$4"
+  local repo="$1" proj="$2" pf="$3" glob tag prev="" range=""
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
-  local range=""
-  if git -C "$repo" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
-    if [ -n "$prev" ] && git -C "$repo" rev-parse -q --verify "refs/tags/$prev" >/dev/null 2>&1; then
-      range="$prev..$tag"
-    else
-      range="$tag"  # only the end tag known — cap the window below
-    fi
+  glob="$(project_field "$proj" tagGlob 2>/dev/null)"
+  tag="$(git_tag_for_version "$repo" "$proj" "$5" "$glob")"
+  if [ -n "$tag" ]; then
+    [ -n "$4" ] && prev="$(git_tag_for_version "$repo" "$proj" "$4" "$glob")"
+    range="${prev:+$prev..}$tag"  # only the end tag known: cap the window below
   fi
   if [ -n "$range" ]; then
     if [ -n "$pf" ]; then
@@ -236,7 +240,7 @@ process_file() { # $1=profile $2=project $3=file $4=versions-list
   prev="$(prev_of "$ver" "$vlist")"
   body="$(note_body "$file")"
   repo_of "$project"
-  subjects="$(git_subjects "$REPO" "$PATHFILTER" "$prev" "$ver")"
+  subjects="$(git_subjects "$REPO" "$project" "$PATHFILTER" "$prev" "$ver")"
   tickets="$(extract_tickets "$body"$'\n'"$subjects")"
 
   # rewrite the body first (if asked), then summarize from the CLEAN version

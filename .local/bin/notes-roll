@@ -101,7 +101,7 @@ roll_tag_guard() { # $1=profile $2=project
     printf '  to override: ROLL_TAG_CHECK=off\n' >&2
     return 1
   fi
-  tag="$(git_tag_for_version "$repo" "$name" "$target" 2>/dev/null)"
+  tag="$(git_tag_for_version "$repo" "$name" "$target" "$(project_field "$name" tagGlob 2>/dev/null)" 2>/dev/null)"
   [ -n "$tag" ] && return 0
   # A newer release already shipped past the sheet: the open version will never get a tag of
   # its own, and refusing would pin the sheet behind the app forever.

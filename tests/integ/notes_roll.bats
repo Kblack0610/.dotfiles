@@ -167,6 +167,7 @@ with_shipping_project() {
   cat > "$SANDBOX/pn-lib.sh" <<LIB
 project_release_version() { printf 'v1.0.0'; }
 project_repo_path() { printf '%s' '$repo'; }
+project_field() { [ "\$2" = tagGlob ] && printf '%s' '${TAG_GLOB:-}'; return 0; }
 LIB
   export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
 }
@@ -204,6 +205,23 @@ LIB
   with_frozen
   with_shipping_project demoapp v1.13.0 demoapp-v1.13.0-rc1
   run "$NOTES_ROLL" personal demoapp minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+}
+
+@test "a declared tagGlob finds the tag whose prefix is not the project name" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --release kenneth-black-portfolio'
+}
+
+@test "a declared tagGlob is authoritative: its prerelease, or another family's tag, does not ship the version" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4-rc1 v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
   assert_failure
   assert_output --partial 'no git tag ships it'
 }
