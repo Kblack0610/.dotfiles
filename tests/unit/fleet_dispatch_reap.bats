@@ -784,6 +784,9 @@ OUT
   run cmd_reap
   assert_success
   assert_equal "$(agent-queue show p --json | jq -r '[.state, .tags] | join(" ")')" "queued ask:$id=yes+no"
+  # no PR, so the brief names none: it once said "already opened null" (ar-1583)
+  run item_brief "$(agent-queue show p --json)"
+  refute_output --partial 'already opened'
 }
 
 @test "reap: an answered ask holds nothing, so the unclosed run still fails (negative control)" {

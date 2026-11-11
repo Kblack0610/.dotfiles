@@ -2910,6 +2910,10 @@ LIB
   item fin3 done high board:game:g-4 '{"title":"","task":"ga-3: the fix\nthe rest","merged":"def456"}' >> "$DONE"
   run "$SUBJECT" chain
   assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
+  # negative control: a row an active item works is that item's to move, no orphan (apo-119, 2026-11-11)
+  item ga3 waiting high human '{"row":"game:ga-3","session":"s1"}' >> "$SANDBOX/items.jsonl"
+  run "$SUBJECT" chain --check
+  assert_success
   restore
   # a parent is looked up in the row's own project: t-1 is open on tools, not on game
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-8", parent: "t-1", tags: ["of/t-1"]}]' "$BJSON.ok" > "$BJSON"

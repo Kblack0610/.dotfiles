@@ -16,6 +16,7 @@
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
 #   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
@@ -1298,7 +1299,7 @@ close_on() {
 cmd_cancel() {
   local slug="${1:?usage: agent-queue cancel <slug>}" f session server window host dest
   lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug"; return; }
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
@@ -1323,6 +1324,24 @@ cmd_cancel() {
   dest="$(move_to "$f" "done")" || die "could not move $f"
   item_event item-cancelled "$dest" --to done
   echo "cancelled $slug -> $dest"
+}
+
+# cancel_record_only <slug>: an item whose file was deleted outside agent-queue still sits at its
+# last step in the chain record (notes log --steps), which fleet-bench counts as chain_drift for
+# good. Cancel closes it there, with the project and title of its add; no row is named.
+cancel_record_only() {
+  local slug=$1 added
+  record_active "$slug" || die "nothing active with slug $slug"
+  added=$(notes log --days 3650 --item "$slug" --json 2>/dev/null | jq -sc 'map(select(.action == "item-added")) | last // {}')
+  chain_event queue item-cancelled "$(jq -r '.from // "-"' <<<"$added")" "$(jq -r '.text // "-"' <<<"$added")" \
+    --item "$slug" --to done
+  # chain_event swallows a failed write, and here the write is the whole cancel
+  ! record_active "$slug" || die "$slug is still active in the record: notes ingest record did not close it"
+  echo "cancelled $slug in the record: its file was already gone"
+}
+record_active() {
+  notes log --steps --json 2>/dev/null |
+    jq -e --arg s "$1" 'any(.steps[]? | select(.step != "done"); (.items // []) | index($s))' >/dev/null
 }
 
 cmd_bump() {
