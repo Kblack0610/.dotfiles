@@ -131,14 +131,12 @@ cmd_add() {
     die "\"$name\" is already registered (trackers.$name); edit the registry to change it"
   fi
   # A key `paths` already registers (a repo with no tracker entry yet) may gain its
-  # type and lab; a name known only as an alias target, or as an alias, may not.
-  local in_paths=0
+  # type and lab; a name the index already spells for a project (one of its `names`, a forge
+  # slug, a checkout basename) may not.
+  local in_paths=0 owner
   jq -e --arg n "$name" '[.paths // {} | .[]] | index($n) != null' "$map" >/dev/null && in_paths=1
-  if [ "$in_paths" = 0 ] && project_known "$name"; then
-    die "\"$name\" is already a registry name (an alias); pick another"
-  fi
-  if jq -e --arg n "$name" '.aliases // {} | has($n)' "$map" >/dev/null; then
-    die "\"$name\" is an alias in the registry; pick another"
+  if [ "$in_paths" = 0 ] && owner="$(project_lookup "$name")"; then
+    die "\"$name\" already names $owner in the registry; pick another"
   fi
 
   [ -z "$path" ] || [ -n "$repo" ] || die "--path needs --repo"

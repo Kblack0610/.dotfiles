@@ -82,6 +82,23 @@ The collector writes raw facts only, and every link between two of them is compu
 
 An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, and where each reached (`not recorded` when no channel says so); a release opens its changelog. The RELEASED column is the newest tag and its date.
 
+## Project identity
+
+Every fact above is filed under a project key, and each source spells the project its own way: a checkout basename (`.dotfiles`), a forge slug (`Kblack0610/.dotfiles`), a name the project had before a rename. One name index in the registry maps every spelling to its key, and every reader joins through it, so no reader keeps its own alias table.
+
+| Registry field | What it adds to the index |
+|---|---|
+| `trackers.<key>` and each `paths` value | the key itself |
+| `trackers.<key>.names` | other spellings: retired names, the repo's name where it differs from the key |
+| `trackers.<key>.github`, `.forgejo` | the `owner/repo` slug, and each `/`-suffix of it (`.dotfiles`, `dotfiles`) |
+| each `paths` key (a checkout) | its basename |
+
+The index is lowercased and built in that order, trackers sorted by key and paths by path, and the first entry for a spelling wins; `default` and the `_comment` strings are not projects. A lookup tries the spelling's `/`-suffixes, longest first, each also without a leading dot. A spelling the index does not hold keeps its last path segment, leading dot stripped, case kept.
+
+The shell lookup is `project_canonical` (and `project_lookup`, `project_of_repos_json`, `project_index_json`) in `.config/shared-hooks/project-name.sh`; the Rust one is the `project-map` crate (`project_map::canonical`, `Registry`), which notes-cli, hub-core and through it hub-tui and agent-web use. `tests/fixtures/project-names.tsv` is read by `tests/unit/project_names.bats` and by the crate's cargo test, so the two cannot drift.
+
+`project-map-doctor` check 4 fails on a `names` that is not a list of names, a slug that is not `owner/repo`, and a spelling two keys claim (the loser would silently lose its rows). Check 4d reads the spellings the runtime has already written (the queue's `project:`, CI's `runs.jsonl` `repo`, each outcome's PR `repo`) and names each one the index does not resolve, with where it was seen: add it to its project's `names`, or its forge slug to the tracker.
+
 ## Store channels
 
 | Store | Live value | Compared with the pin |

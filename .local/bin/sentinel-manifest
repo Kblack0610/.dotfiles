@@ -112,15 +112,15 @@ def project_map_path():
 
 
 def canonical_projects():
-    """The canonical project names in project-map.json: what `paths` maps to and what an alias
-    resolves to, plus the lab projects `trackers` keys (a `_comment_*` key is not one). None
-    when the machine has no map, so a host without the private overlay checks nothing."""
+    """The canonical project names in project-map.json: what `paths` maps to, plus the `trackers`
+    keys (a `_comment_*` key is not one). None when the machine has no map, so a host without the
+    private overlay checks nothing."""
     try:
         with open(project_map_path(), "r", encoding="utf-8") as fh:
             reg = json.load(fh)
     except FileNotFoundError:
         return None
-    names = set(reg.get("paths", {}).values()) | set(reg.get("aliases", {}).values())
+    names = set(reg.get("paths", {}).values())
     names |= {k for k in reg.get("trackers", {}) if not k.startswith("_")}
     return names
 
@@ -310,7 +310,7 @@ def cmd_validate(path, strict=False):
 
     # `project:` files the watch under one project on the Alerts tab and the Projects card;
     # none means fleet-wide. A name the registry does not hold would file it under a project
-    # nothing else knows, so it is refused (an alias too: the facet matches canonical names).
+    # nothing else knows, so it is refused (another spelling too: the facet matches project keys).
     project = scalar(doc.get("project"))
     if "project" in doc and not project:
         errors.append("project is empty; leave it out for a fleet-wide watch")

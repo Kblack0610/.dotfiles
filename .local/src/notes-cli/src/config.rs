@@ -75,7 +75,7 @@ pub struct ProjectType {
     /// `notes doctor --projects` reports one missing).
     #[serde(default)]
     pub files: Vec<String>,
-    /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
+    /// Registry facts this type needs. Only `repo` is checked today (`project_map::Registry::has_repo`).
     #[serde(default)]
     pub requires: Vec<String>,
 }

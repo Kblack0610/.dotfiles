@@ -146,13 +146,13 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" BLOCKED
 }
 
-@test "a throughput drop holds only the items on that project's repo, an alias included" {
+@test "a throughput drop holds only the items on that project's repo, another spelling of it included" {
   two_items
   findings "$(finding throughput-drop game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started game-agent-1: app: fix-app'
   agent-queue add --project game --slug fix-game-2 --priority low "fix it again"
-  jq '.aliases = {gm: "game"}' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
+  jq '.trackers.game.names = ["gm"]' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
   findings "$(finding throughput-drop gm)" "$(finding starved pool:light '["elsewhere"]')"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'started'
