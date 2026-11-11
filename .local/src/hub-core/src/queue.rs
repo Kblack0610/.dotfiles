@@ -312,7 +312,9 @@ impl Item {
     /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
     fn plan_title(&self) -> Option<String> {
         use crate::plans::{base, legacy, named, own_label, path};
-        let title = self.title.trim();
+        // An item with no `title:` header is worded by its task, as `title()` words it.
+        let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
+        let title = head.as_deref().unwrap_or(self.title.trim());
         let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
             (Some((plan, phases)), old) => {
                 let words = old
@@ -1449,12 +1451,19 @@ mod tests {
     }
 
     #[test]
-    fn a_parsed_plan_items_title_is_capped_like_any_other() {
+    fn a_parsed_plan_items_title_is_capped_and_an_untitled_one_uses_its_task() {
         let dir = std::env::temp_dir().join(format!("queue-plan-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let plan = dir.join("snuggly-bachman.md");
         std::fs::write(&plan, "# Systems you can see, every task\n").unwrap();
-        // worklog's plan test covers the shapes; this is the cap every other title has.
+        // worklog's plan test covers the shapes; these are the cap and the untitled item.
+        let bare = serde_json::json!({"slug": "p6", "state": "queued", "phases": "6",
+            "plan": plan.to_str().unwrap(), "task": "Sixth thing. Read the plan."});
+        assert_eq!(
+            parse(&bare.to_string()).remove(0).title(),
+            "Systems you can see P6: Sixth thing",
+            "an item with no title header names its phase by its task"
+        );
         let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
             "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
         let long = parse(&long.to_string()).remove(0).title();
