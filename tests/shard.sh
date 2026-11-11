@@ -2,7 +2,7 @@
 # shard.sh - split one fast tier's test files across CI runners, balanced by time.
 #
 #   shard.sh <unit|integ> <i>/<n> [<list>]
-#                                   the files of shard i of n, one a line, relative to tests/;
+#                                   the files of shard i of n, one a line, heaviest first, relative to tests/;
 #                                   from <list> (tests/pick.sh output, `-` for stdin) when given,
 #                                   where a shard may come out empty, else the whole tier
 #   shard.sh --junit <tier> <dir>...
@@ -10,6 +10,10 @@
 #                                   report.xml files under <dir>; the tier is an argument because
 #                                   bats names a suite by basename and seven exist in both tiers
 #
+# A shard lists its files heaviest first, the order bats --jobs starts them in once its slots
+# are full: sorted by name, unit 2/3's heaviest file, fleet_bench.bats, started two minutes in
+# (PR run 42943047319, 2026-11-11 UTC). The same split ran 597s in that run and 415s in main
+# run 42944347070, so one run's shard walls are runner noise; the budget is a p90.
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by
 # the seconds in the table $SHARD_WEIGHTS names. CI builds that table once per run from the
 # newest green main run's JUnit (.github/workflows/tests.yml, job weights), so it never goes
@@ -86,7 +90,7 @@ out=$(printf '%s\n' "$weighed" |
     { best = 1; for (s = 2; s <= n; s++) if (load[s] < load[best]) best = s
       load[best] += $1; all += $1; if (best == i) { print $2; k++ } }
     END { printf "shard.sh: %s: %d files, predicted %.0f%s of %.0f%s\n", tag, k, load[i], unit, all, unit > "/dev/stderr" }
-  ' | sort)
+  ')
 
 [ -n "$out" ] || [ -n "$list" ] || die "shard $spec of $tier has no files"
 [ -n "$out" ] || exit 0
