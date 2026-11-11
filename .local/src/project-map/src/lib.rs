@@ -263,18 +263,15 @@ impl Registry {
     /// tracker has a `client` only where that client's profile is the machine's, and a client
     /// `clients` does not name nowhere, so a typo hides work instead of leaking it.
     pub fn project_visible(&self, name: &str, machine: &str) -> bool {
-        let client = self
-            .tracker(name)
-            .and_then(|t| t.get("client"))
-            .and_then(Value::as_str);
-        client.is_none_or(|c| {
-            self.raw
-                .get("clients")
-                .and_then(|m| m.get(c))
-                .and_then(|e| e.get("profile"))
-                .and_then(Value::as_str)
-                == Some(machine)
-        })
+        // A client that is not a string, or names no profile, hides the project everywhere.
+        match self.tracker(name).and_then(|t| t.get("client")) {
+            None | Some(Value::Null) => true,
+            Some(c) => {
+                c.as_str()
+                    .and_then(|c| self.raw.get("clients")?.get(c)?.get("profile")?.as_str())
+                    == Some(machine)
+            }
+        }
     }
 }
 
@@ -321,7 +318,10 @@ mod tests {
         let r = Registry::from_path(&Path::new(dir).join("project-visibility.json")).unwrap();
         let rows = std::fs::read_to_string(Path::new(dir).join("project-visibility.tsv")).unwrap();
         let mut n = 0;
-        for line in rows.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        for line in rows
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
             let f: Vec<&str> = line.split('\t').collect();
             let [machine, kind, name, want] = f[..] else {
                 panic!("machine<TAB>kind<TAB>name<TAB>yes|no: {line}")

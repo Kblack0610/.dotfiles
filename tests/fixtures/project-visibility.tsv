@@ -21,3 +21,5 @@ personal	profile	globex	no
 acmework	profile	acmework	yes
 acmework	profile	personal	yes
 acmework	profile	globex	no
+personal	project	number-client	no
+acmework	project	number-client	no

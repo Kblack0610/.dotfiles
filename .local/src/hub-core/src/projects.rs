@@ -130,13 +130,19 @@ pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
 
 /// This machine's own notes profile (`notes config --machine-profile`), which decides whether a
 /// work project is listed here; `personal` when notes cannot say, so a box without notes hides
-/// work rather than listing it (the same fallback as `project_machine_profile` in project-name.sh).
+/// work rather than listing it, and says so on stderr (the same fallback as
+/// `project_machine_profile` in project-name.sh).
 pub fn machine_profile(runner: &dyn Runner) -> String {
     let out = runner.run(&["notes".into(), "config".into(), "--machine-profile".into()]);
     out.ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "personal".into())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "hub-core: `notes config --machine-profile` failed, so work projects are hidden here; rebuild notes"
+            );
+            "personal".into()
+        })
 }
 
 /// project-map.json: `$AGENT_QUEUE_PROJECT_MAP`, else the shared-hooks copy. agent-queue checks

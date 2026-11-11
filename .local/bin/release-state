@@ -85,7 +85,8 @@ MAP="$(project_map_file)"
 targets_json() {
   local only="${1:-}"
   [ -f "$MAP" ] || die "no registry at $MAP"
-  jq -c --arg only "$only" --arg m "$(project_machine_profile)" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
+  project_machine_profile >/dev/null
+  jq -c --arg only "$only" --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
     (.trackers // {}) | to_entries[]
     | select(.value | type == "object")
     | .key as $p

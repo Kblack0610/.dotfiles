@@ -4,6 +4,8 @@
 # from the same rows, so the shell and Rust rules cannot diverge. Profile rows are Rust-only:
 # the shell reads profiles from `notes config --profiles`, which applies the Rust rule.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -42,6 +44,17 @@ setup() {
   assert_output acmework
   notes() { return 1; }
   unset PROJECT_MACHINE_PROFILE
-  run project_machine_profile
+  run --separate-stderr project_machine_profile
   assert_output personal
+  [[ "$stderr" == *"work projects are hidden here"* ]] || fail "no warning: $stderr"
+}
+
+@test "project_visible and project_keys ask notes once per shell, not once per call" {
+  unset PROJECT_MACHINE_PROFILE
+  calls="$BATS_TEST_TMPDIR/calls"
+  notes() { echo x >> "$calls"; echo acmework; }
+  project_visible acme_kiosk
+  project_visible dotfiles
+  project_keys >/dev/null
+  [ "$(wc -l < "$calls")" -eq 1 ] || fail "notes ran $(wc -l < "$calls") times"
 }

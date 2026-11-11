@@ -268,9 +268,14 @@ pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult
 /// The projects a task may be queued for: the names in project-map.json, which is also what
 /// agent-queue checks `--project` against, less the work projects this machine does not list.
 pub async fn projects() -> Json<Vec<String>> {
+    // The machine's profile does not change while the server runs, so notes is asked once.
+    static MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     let names = tokio::task::spawn_blocking(|| {
         let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
-        project_names(&text, &hub_core::projects::machine_profile(&System))
+        project_names(
+            &text,
+            MACHINE.get_or_init(|| hub_core::projects::machine_profile(&System)),
+        )
     });
     Json(names.await.unwrap_or_default())
 }

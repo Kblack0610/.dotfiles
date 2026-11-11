@@ -15,6 +15,7 @@
     "acme_kiosk": { "client": "acme", "lab": "acmework" },
     "globex_bot": { "client": "globex", "lab": "globex" },
     "typo-client": { "client": "acmee" },
+    "number-client": { "client": 5 },
     "finance": { "lab": "personal" }
   }
 }
