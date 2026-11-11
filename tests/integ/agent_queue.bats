@@ -1998,6 +1998,53 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_output 0
 }
 
+# tr-71 and tr-129 (2026-11-11): added by hand with --from board:, their rows were never marked, so
+# the merge left them open and merged_open_rows past its bound.
+@test "an item promoted from a board row (from: board:, no row:) marks that row run like a row: item" {
+  story_notes
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  [ -z "$(field "$(item queued promoted)" row)" ] || fail "the fixture needs an item with no row: line"
+  "$AQ" set promoted profile=bnb lane=agent >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" move promoted running >/dev/null
+  "$AQ" move promoted queued >/dev/null
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent run lv-4
+notes --profile bnb ptask level --agent start lv-4'
+}
+
+# ar-1597 (2026-11-11): ar-1566-recheck-2 filed and started its story row, then `set row=` pointed it
+# at ar-1588, and ar-1597 sat started with no item: board_orphan_started past its bound.
+@test "set row= on an active item un-starts the row it leaves, unless another active item names it" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug repoint "feat(menu): repoint" >/dev/null
+  [ "$(field "$(item queued repoint)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" set repoint row=level:lv-2
+  assert_success; assert_output --partial "board row lv-9 on level un-started"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent unstart lv-9'
+  # The same row again leaves nothing.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-2 >/dev/null
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A row another active item works stays started.
+  "$AQ" add --project game --from board:level:lv-5 --slug holder "fix(menu): holder" >/dev/null
+  "$AQ" set repoint row=level:lv-5 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-6 >/dev/null
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A done item's row is its close's business.
+  "$AQ" move holder done --status cancelled >/dev/null
+  "$AQ" move repoint done --status failed >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-7 >/dev/null
+  run grep -c ' unstart ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "an item closed ok with no PR closes its row on the item; one with a PR leaves it to agent-land" {
   story_notes
   "$AQ" add --project game --epic lv-3 --slug menus "feat(menu): live main menus" >/dev/null
@@ -2325,9 +2372,12 @@ OUT
   assert_success
   assert_output --partial "notes row parse failed, so sturdy is untyped"
   [ -z "$(field "$(item queued sturdy)" type)" ]
+  # Its row (from: board:) is marked too; that write failing warns and the move stands (mark_row).
   run "$AQ" move sturdy running
   assert_success
-  assert_output "sturdy: queued -> running"
+  assert_line --index 0 "sturdy: queued -> running"
+  assert_output --partial "board row lv-2 on level not marked run"
+  [ -n "$(item running sturdy)" ]
 }
 
 # --- admission (ar-697) ------------------------------------------------------------------
