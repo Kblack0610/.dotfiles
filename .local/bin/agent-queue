@@ -1384,6 +1384,7 @@ cmd_set() {
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
+    [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
@@ -1605,7 +1606,7 @@ word_list() {
 }
 
 # check_after <slugs> [<own slug>] -- die on an `after:` slug no item has, or one naming the item
-# itself, since neither ever releases: add and add --plan both check.
+# itself, since neither ever releases: add, add --plan and `set after=` check.
 check_after() {
   local s
   for s in $1; do
@@ -1821,11 +1822,18 @@ waits_on() {
   return 1
 }
 
-# dependents <slug> -> the slugs of the queued items `after:` it, oldest first.
+# dependents <slug> -> the slugs of the queued items its ok close releases, oldest first: `after:`
+# it, with every other slug they name already done ok.
 dependents() {
-  local f
+  local f s AST free
   while IFS= read -r f; do
-    [ -n "$f" ] && waits_on "$f" "$1" && fm_get "$f" slug
+    [ -n "$f" ] && waits_on "$f" "$1" || continue
+    free=1
+    for s in $(fm_get "$f" after); do
+      [ "$s" != "$1" ] || continue
+      after_status "$s"; [ "$AST" = ok ] || { free=""; break; }
+    done
+    [ -z "$free" ] || fm_get "$f" slug
   done < <(items_in "$AQ_DIR/queued")
 }
 
@@ -1847,12 +1855,15 @@ phases_ticked() {
 # plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it. One
 # whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
 start_next() {
-  local f s next=() landed=() self
+  local f s h next=() landed=() self
   self="$(realpath "${BASH_SOURCE[0]}")"
   while IFS= read -r f; do
     [ -n "$f" ] && waits_on "$f" "$1" || continue
+    # Another slug in its after: still holds it: neither started nor closed as landed.
+    h="$(hold_reason "$f")"
+    case "$h" in "after "*) continue ;; esac
     if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
-    elif [ -z "$(hold_reason "$f")" ]; then next+=("$(fm_get "$f" slug)")
+    elif [ -z "$h" ]; then next+=("$(fm_get "$f" slug)")
     fi
   done < <(items_in "$AQ_DIR/queued")
   [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0

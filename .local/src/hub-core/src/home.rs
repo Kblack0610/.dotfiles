@@ -523,7 +523,8 @@ pub fn needs(
                 && i.session.as_deref().is_some_and(|s| tmux_name(s) == name)
         })
     };
-    // The Rust twin of `agent-queue dependents`: queued items whose `after:` names this one.
+    // Queued items whose `after:` names this one, whether or not another slug there holds them too:
+    // what this item holds up (`agent-queue dependents` lists only the ones its close releases).
     let dependents = |slug: Option<&str>| {
         slug.map_or(0, |slug| {
             items

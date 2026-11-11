@@ -398,6 +398,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
   assert_output --partial "--after e: an item cannot wait on itself"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-e.md 2>/dev/null)" ]
+  # set after= is checked the same way.
+  run "$AQ" set d after=a,nope
+  assert_failure
+  assert_output --partial "--after nope: no item has that slug"
+  run "$AQ" set d after=d
+  assert_failure
+  [ "$(field "$(item queued d)" after)" = "c b" ]
 }
 
 @test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
@@ -410,14 +417,21 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output "after a b"
   run "$AQ" bump both urgent
   assert_output --partial "both is held after a b: it starts when those land"
+  # tk's plan phases are already ticked: it closes as landed, but only once both its parents have.
+  printf '## Phases\n\n- [x] one\n' > "$SANDBOX/tk-plan.md"
+  "$AQ" add --project game --slug tk --after a,b "tk" >/dev/null
+  sed -i "/^from: /i plan: $SANDBOX/tk-plan.md\nphases: 1" "$(item queued tk)"
   run "$AQ" move a done --status ok
-  assert_output --partial "a releases: both"
-  # One of two closed ok: it still holds on the other, and nothing starts it.
+  refute_output --partial "releases"
+  # One of two closed ok: it still holds on the other, and nothing starts or closes it.
   assert_not_called 'start --item both'
+  [ -n "$(item queued tk)" ]
   run bash -c "'$AQ' show both --json | jq -r '.hold, .ready // \"none\"'"
   assert_output $'after b\nnone'
   run "$AQ" move b done --status ok
+  assert_line "b releases: both tk"
   assert_called 'fleet-dispatch start --item both'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-tk.md)" status)" = ok ]
   "$AQ" set a finished=2026-11-03T12:00:00Z >/dev/null
   "$AQ" set b finished=2026-11-03T13:00:00Z >/dev/null
   # ready is the latest finish of the list, through list and show alike.

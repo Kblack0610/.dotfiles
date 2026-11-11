@@ -4370,7 +4370,7 @@ forecast_json() {
           | ($it | map(
               (($map[0].trackers // {})[.project].repo // .project) as $repo
               | ($prp[$repo] // $flp) as $pp
-              | (.hold // "") as $h | ($h | sub("^after "; "")) as $par | ($par | split(" ")) as $pars
+              | (.hold // "") as $h | ($h | sub("^after "; "") | sub(" closed .*$"; "") | split(" ")) as $pars
               | {slug, project, state, mode,
                  phases: ((.phases // "" | [splits(" +")] | map(select(. != "")) | length | select(. > 0)) // $ip[.slug] // (if .mode == "plan" then ($ppp // 1) else 1 end)),
                  P: $pp.P, S: $pp.S, basis: $pp.basis,
@@ -4379,7 +4379,7 @@ forecast_json() {
                  after: (if ($h | startswith("after ")) and all($pars[]; $active[.] != null) then $pars else null end),
                  why: (if .state == "waiting" then "waiting on you"
                        elif .state == "review" then "on a PR"
-                       elif ($h | startswith("after ")) and any($pars[]; $active[.] == null) then "after \($par), which did not finish ok"
+                       elif ($h | startswith("after ")) and any($pars[]; $active[.] == null) then "after \($pars | join(" ")), which did not finish ok"
                        elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
                        else null end)})) as $e
           | ($e | qplace($t; $K; "P")) as $a | ($e | qplace($t; $K; "S")) as $b
