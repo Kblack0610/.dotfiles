@@ -64,12 +64,14 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   assert_output '[523,979,1390,[]]'
 }
 
-@test "a subscription carries its account's list-price work from the month's snapshots, a dot dir included" {
+@test "a subscription carries its account's list-price work from the month's finished days, a dot dir included, a bad snapshot skipped" {
   rm "$TOKENS_DIR/2026-11-04.json"
   echo 'not json' > "$TOKENS_DIR/2026-11-05.json"
+  echo '[1]' > "$TOKENS_DIR/2026-11-06.json"
+  echo '{"fleet_cost":{"by_account":{"claude":{"usd":99}}}}' > "$TOKENS_DIR/2026-11-11.json"   # today: not done yet
   run b '[(.lines[] | select(.kind == "subscription") | .list_usd), .list_days, .total.list_usd]'
   assert_success
-  assert_output '[80,240,16,{"covered":8,"due":10},336]'
+  assert_output '[70,210,14,{"covered":7,"due":10},294]'
 }
 
 @test "an unread bill is named and left out of the total, never \$0 (negative control)" {
@@ -84,10 +86,12 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
 
 @test "a bill with no known price is unpriced, and a pool past its cap is over and ends the month at its spend" {
   sed -i 's/^codex  subscription 20 /codex  subscription ? /' "$BUDGET_LEDGER"
-  echo '{"spend": 228, "max_budget": 50}' > "$FIX/lazer"
+  echo '{"spend": 228, "max_budget": 50, "budget_reset_at": "2026-11-20T00:00:00Z"}' > "$FIX/lazer"
   run b '[(.lines[] | select(.name == "codex" or .name == "lazer") | [.status, .spent, .projected]), .partial]'
   assert_success
   assert_output '[["unpriced",null,null],["over",228,228],["codex"]]'
+  run b '.lines[] | select(.name == "lazer") | .note'
+  assert_output '"past its $50 cap; its budget window resets 2026-11-20, not on the 1st"'
 }
 
 @test "a ledger line of an unknown kind, a bad price or a copied cap is refused with its line number" {
@@ -99,8 +103,10 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   run "$AU" budget
   assert_failure
   assert_output --partial "usd_month 'five' is not a number"
-  sed -i '$d' "$BUDGET_LEDGER"; echo 'x digitalocean 40' >> "$BUDGET_LEDGER"
-  run "$AU" budget
-  assert_failure
-  assert_output --partial "a digitalocean bill's cap comes from its system"
+  for v in 40 '?'; do
+    sed -i '$d' "$BUDGET_LEDGER"; echo "x digitalocean $v" >> "$BUDGET_LEDGER"
+    run "$AU" budget
+    assert_failure
+    assert_output --partial "a digitalocean bill's cap comes from its system"
+  done
 }

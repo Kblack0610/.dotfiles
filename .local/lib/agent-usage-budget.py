@@ -6,8 +6,10 @@ The ledger ($BUDGET_LEDGER, default ~/.config/agentctl/budget, private) lists ev
 the system that bills it wherever that system says it:
   subscription  a flat monthly fee, the only number the ledger holds. ref is a claude-acct account
                 (its list-price work is the sum of the daily token-usage snapshots) or `codex`.
-  litellm       the Lazer pool as the gateway meters it (`lazer-spend --json`), cap included.
-  github        org billing (ref = the org): every product with a budget, net month-to-date spend.
+  litellm       the Lazer pool as the gateway meters it (`lazer-spend --json`), cap included; a budget
+                window that does not reset on the 1st is named on the line.
+  github        org billing (ref = the org): net month-to-date spend on every product; the cap is the
+                sum of the product budgets.
   aws           the ci-burst budget the CI governor exports to Prometheus (actual, limit, AWS's forecast).
   digitalocean  month-to-date usage from doctl; there is no cap.
 usd_month is `-` on a metered line (its system holds the cap) and `?` on a bill whose price is not known.
@@ -17,6 +19,7 @@ total partial and are never counted as $0. Subscription fees count whole in the 
 import argparse
 import calendar
 import datetime as dt
+import functools
 import glob
 import importlib.util
 import json
@@ -51,12 +54,18 @@ def run_json(cmd):
         raise Unread(f"{cmd[0]} returned no JSON") from e
 
 
-def prom(query):
-    """One instant query through agent-usage-burn.py's prom(), the one owner of the Prometheus call."""
+@functools.cache
+def burn_module():
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agent-usage-burn.py")
     spec = importlib.util.spec_from_file_location("agent_usage_burn", path)
     burn = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(burn)
+    return burn
+
+
+def prom(query):
+    """One instant query through agent-usage-burn.py's prom(), the one owner of the Prometheus call."""
+    burn = burn_module()
     try:
         return burn.prom(query, dt.datetime.now().timestamp())
     except burn.PromError as e:
@@ -79,8 +88,8 @@ def parse_ledger(path):
                     usd = float(usd)
                 except ValueError:
                     sys.exit(f"agent-usage budget: {path}:{n}: usd_month {usd!r} is not a number, - or ?")
-                if line[1] != "subscription":
-                    sys.exit(f"agent-usage budget: {path}:{n}: a {line[1]} bill's cap comes from its system; write -")
+            if line[1] != "subscription" and usd != "-":
+                sys.exit(f"agent-usage budget: {path}:{n}: a {line[1]} bill's cap comes from its system; write -")
             bills.append({"name": line[0], "kind": line[1], "usd_month": usd, "ref": opts.get("ref", line[0])})
     return bills
 
@@ -104,11 +113,15 @@ def list_work(month, today):
     days_due = today.day - 1 if (today.year, today.month) == month else calendar.monthrange(*month)[1]
     by, covered = {}, 0
     for p in sorted(glob.glob(os.path.join(TOKENS_DIR, f"{month[0]:04d}-{month[1]:02d}-*.json"))):
+        if os.path.basename(p)[8:10] > f"{days_due:02d}":
+            continue  # a day the month has not finished yet
         try:
-            fc = json.load(open(p)).get("fleet_cost") or {}
+            with open(p) as f:
+                d = json.load(f)
         except (OSError, ValueError):
             continue
-        if not fc.get("by_account"):
+        fc = (d.get("fleet_cost") if isinstance(d, dict) else None) or {}
+        if not isinstance(fc, dict) or not isinstance(fc.get("by_account"), dict):
             continue
         covered += 1
         for k, v in fc["by_account"].items():
@@ -141,6 +154,10 @@ def read_bill(b, frac, work, month):
             p = pace(spent, frac)
             # The gateway refuses a call once the team is at its cap, so the month ends at the higher of the two.
             line.update(cap=cap, spent=spent, projected=min(p, max(cap, spent)) if cap is not None else p)
+            reset = str(t.get("budget_reset_at") or "")[:10]
+            nxt = f"{month[0] + month[1] // 12:04d}-{month[1] % 12 + 1:02d}-01"
+            if reset and reset != nxt:
+                line["note"] = f"its budget window resets {reset}, not on the 1st"
         elif b["kind"] == "github":
             org = b["ref"]
             budgets = run_json(["gh", "api", f"/organizations/{org}/settings/billing/budgets"]).get("budgets") or []
@@ -177,6 +194,7 @@ def budget(now):
     month = (now.year, now.month)
     days = calendar.monthrange(*month)[1]
     start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Pace from at least one day: a few hours of a new month would multiply any carried-over usage by hundreds.
     frac = max((now - start).total_seconds() / 86400, 1) / days
     work, covered, due = list_work(month, now.date())
     lines = [read_bill(b, frac, work, month) for b in parse_ledger(LEDGER)]
