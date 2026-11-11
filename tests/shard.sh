@@ -10,6 +10,9 @@
 #                                   report.xml files under <dir>; the tier is an argument because
 #                                   bats names a suite by basename and seven exist in both tiers
 #
+# A shard lists its files heaviest first, the order bats --jobs starts them in: in alphabetical
+# order the three heavy fleet_* files started two minutes in and ran together, and their shard
+# took 597s against 372-419s for the others (PR run 42943047319, 2026-11-11).
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by
 # the seconds in the table $SHARD_WEIGHTS names. CI builds that table once per run from the
 # newest green main run's JUnit (.github/workflows/tests.yml, job weights), so it never goes
@@ -86,7 +89,7 @@ out=$(printf '%s\n' "$weighed" |
     { best = 1; for (s = 2; s <= n; s++) if (load[s] < load[best]) best = s
       load[best] += $1; all += $1; if (best == i) { print $2; k++ } }
     END { printf "shard.sh: %s: %d files, predicted %.0f%s of %.0f%s\n", tag, k, load[i], unit, all, unit > "/dev/stderr" }
-  ' | sort)
+  ')
 
 [ -n "$out" ] || [ -n "$list" ] || die "shard $spec of $tier has no files"
 [ -n "$out" ] || exit 0

@@ -48,13 +48,21 @@ fixture() {
   assert_output "$(printf '%s\n' unit/b.bats unit/c.bats unit/d.bats)"
 }
 
+@test "a shard lists its heaviest file first, so bats --jobs starts it first" {
+  for f in a b c d; do fixture "unit/$f.bats" "t$f"; done
+  printf '1\tunit/a.bats\n5\tunit/b.bats\n9\tunit/c.bats\n5\tunit/d.bats\n' > "$SHARD_WEIGHTS"
+  run --separate-stderr "$SUBJECT" unit 1/1
+  assert_success
+  assert_output "$(printf '%s\n' unit/c.bats unit/b.bats unit/d.bats unit/a.bats)"
+}
+
 @test "a file the table does not list weighs the tier's median, said on stderr; no table weighs @test counts" {
   for f in a b c d; do fixture "unit/$f.bats" "t$f"; done
   printf '8\tunit/a.bats\n2\tunit/b.bats\n1\tunit/c.bats\n100\tinteg/x.bats\n' > "$SHARD_WEIGHTS"
   # d weighs 2, the median of 8, 2 and 1 (the integ row is another tier's): a | b+c+d
   run --separate-stderr "$SUBJECT" unit 2/2
   assert_success
-  assert_output "$(printf '%s\n' unit/b.bats unit/c.bats unit/d.bats)"
+  assert_output "$(printf '%s\n' unit/b.bats unit/d.bats unit/c.bats)"
   [[ $stderr == *'unit/d.bats is not in the table; it weighs the median, 2s'* ]]
   [[ $stderr == *'unit 2/2: 3 files, predicted 5s of 13s'* ]]
   # no table: a has three tests, the rest one each, so a alone balances b+c+d
