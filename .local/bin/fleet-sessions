@@ -59,6 +59,7 @@ set -uo pipefail
 . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
 
 # --- thresholds (env overrides) --------------------------------------------------------
+: "${FLEET_PR_WINDOW:=100}"  # newest PRs of any state read per repo; a full window adds every open PR (prs_for)
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -127,7 +128,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
 #                 requeued or running in another session, here:<slug> waiting here,
-#                 review:<slug> parked here in review (its PR is the item's now), or ->
+#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -291,7 +292,15 @@ bucket_facts() {
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item"; fi ;;
     OPEN)
-      [[ "$item" == review:* ]] && { echo "DONE PR #$pr parked for review, its item ${item#review:} owns it"; return; }
+      if handed_off "$item" "$pr" "$dirty" "$inpr"; then
+        local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        case "$phases" in
+          -|none) echo "DONE $why" ;;
+          *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then echo "DONE $why"
+             else echo "LANDED $why, next phase: $next"; fi ;;
+        esac
+        return
+      fi
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
@@ -307,6 +316,14 @@ bucket_facts() {
       elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1 "$item"
       else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item"; fi ;;
   esac
+}
+
+# handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
+# item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
+# dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
+# (fix_red_pr gives a red one a fix-ci session), so it is no longer the session's to finish.
+handed_off() {
+  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
 
 # session_finished: session_bucket's arguments -> exit 0 when the work half of DONE holds
@@ -339,7 +356,8 @@ work_blockers() {
       [ "$red" != - ] && b+=("nightly red after PR #$pr: $red")
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
-    OPEN) [[ "${20:--}" == review:* ]] || b+=("PR #$pr open, CI ${ci:--}") ;;
+    OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr"; then merged=1
+          else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
     *)
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
@@ -347,8 +365,7 @@ work_blockers() {
   esac
   case "$phases" in
     # An item that moved on took the work with it: nothing here is left to finish.
-    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* || ( "${20:--}" == review:* && "$state" = OPEN ) ]] \
-         || b+=("no plan file and nothing merged") ;;
+    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and nothing merged") ;;
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
     *) [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]] || b+=("next phase: $next") ;;
   esac
@@ -605,26 +622,33 @@ blind_row() { : > "$CACHE/blind_row"; }
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
 # A clone on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) has no gh PRs,
 # never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
-# The newest 100 of any state, then every open PR not among them: an open PR is unlanded work
-# however old. 2026-11-11 the playground's newest 100 began at #2215, so four sessions with open
-# PRs #1536..#2102 read "files not on the default branch, no PR" and were told to open one.
+# The newest FLEET_PR_WINDOW of any state; when that window is full, every open PR not in it
+# follows, since an open PR is unlanded work however old. 2026-11-11 the playground's newest 100
+# began at #2215, so sessions with open PRs #1536..#2102 read "no PR" and were told to open one.
 # The PR store (queue item release-data-pr-store) replaces both calls.
 prs_for() {
-  local dir="$1" key host
+  local dir="$1" key host rows
   key="$CACHE/$(repo_slug "$dir")" || return 0
   if [ -f "$key" ]; then :
   elif host="$(origin_host "$dir")" && [ -n "$host" ] && [[ " $(so_forgejo_hosts) " == *" $host "* ]]; then : > "$key"
-  elif ! rows="$(cd "$dir" && for st in "all --limit 100" "open --limit 1000"; do
-        # shellcheck disable=SC2086 # st is two words on purpose: the state and its window
-        gh pr list --state $st --json number,state,headRefName,headRefOid,statusCheckRollup \
-          -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' || exit 1
-      done 2>/dev/null)"; then
-    : > "$key"; : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"
+  elif ! rows="$(pr_rows "$dir" all "$FLEET_PR_WINDOW")"; then
+    : > "$key.failed"; printf '%s\n' "$rows" | grep . > "$key" || :; unreadable "gh pr list ($(basename "$dir"))"
   else
-    awk -F'\t' '!seen[$2]++' <<<"$rows" | grep . > "$key" || :
+    printf '%s\n' "$rows" | grep . > "$key" || :
+    if [ "$(wc -l < "$key")" -ge "$FLEET_PR_WINDOW" ]; then
+      if rows="$(pr_rows "$dir" open 1000)"; then
+        printf '%s\n' "$rows" | grep . | awk -F'\t' 'NR == FNR { seen[$2] = 1; next } !($2 in seen)' "$key" - >> "$key"
+      else : > "$key.failed"; unreadable "gh pr list --state open ($(basename "$dir"))"; fi
+    fi
   fi
   [ ! -f "$key.failed" ] || blind_row
   cat "$key"
+}
+
+# pr_rows <dir> <state> <limit> -> prs_for's rows from one gh pr list, newest first.
+pr_rows() {
+  (cd "$1" && gh pr list --state "$2" --limit "$3" --json number,state,headRefName,headRefOid,statusCheckRollup \
+    -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null)
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
@@ -1158,7 +1182,7 @@ item_of() {
       if (!bysid && !bysess) next
       if (($1 == "running" || $1 == "waiting" || $1 == "review") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
-        else if ($1 == "review") { if (rev == "") rev = $4; next }
+        else if ($1 == "review") { if (rev == "") rev = $4 " pr " ($6 == "" ? "-" : $6); next }
         if (hereslug == "") hereslug = $4
         here = 1; next
       }
@@ -1236,7 +1260,8 @@ collect() {
   # "<state>\t<session>\t<sessions>\t<slug>\t<finished epoch>" per item, for item_of.
   qitems="$(jq -r '[.state, (.session // "" | if . == "" then "-" else . end),
       (.sessions // "" | if . == "" then "-" else . end), .slug,
-      (.finished // "" | fromdateiso8601? // 0)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
+      (.finished // "" | fromdateiso8601? // 0),
+      (.pr // "" | tostring | sub(".*#"; "") | if . == "" then "-" else . end)] | map(tostring) | @tsv' <<<"$qall" 2>/dev/null)"
   # "<server>/<tmux session>\t<project>: <slug>" for each started queue item.
   items="$(jq -r <<<"$qjson" '
     select(.state != "queued" and ((.session // "") | contains(":")))
