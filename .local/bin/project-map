@@ -3,11 +3,15 @@
 #
 #   project-map add <name> --type game|app|infra [--lab <profile>]
 #                   [--repo <key> [--path <rel>] | --repo-dir <abs>] [--branch <b>]
+#   project-map forges
 #
 # --repo: part of a registered repo; --repo-dir: the project IS that checkout; neither: a
 # key `paths` already holds gains its type and lab, or a project with no code. With --lab it
 # scaffolds the lab project; then it regenerates the anchor and runs project-map-doctor.
 # The edit is left uncommitted in the private checkout; a failed scaffold reverts it.
+#
+# forges: one row per checkout in `paths`: the forge its PRs land on (so_forge_remote, the rule
+# agent-land uses), that repo, whether it commits the GitHub mirror workflow, and every remote.
 # Usage: notes-cli README, "Projects".
 set -euo pipefail
 
@@ -16,7 +20,7 @@ TYPES="game app infra"
 die() { echo "project-map: $*" >&2; exit 2; }
 
 usage() {
-  sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -225,8 +229,47 @@ cmd_add() {
   fi
 }
 
+# cmd_forges -- which forge each registered checkout lands on. Read from each checkout (its
+# remotes and committed mirror marker), never stored in the registry, so it cannot drift.
+cmd_forges() {
+  [ $# -eq 0 ] || die "forges takes no arguments"
+  local map dir name r rc forge repo mirror remotes rn
+  map="$(project_map_file)"
+  [ -r "$map" ] || die "no registry at $map"
+  # shellcheck source=../lib/session-outcomes.sh
+  . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
+  {
+    printf 'PROJECT\tFORGE\tREPO\tMIRROR\tREMOTES\n'
+    while IFS=$'\t' read -r name dir; do
+      mirror=- remotes=-
+      if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        printf '%s\tabsent\t%s\t-\t-\n' "$name" "$dir"
+        continue
+      fi
+      rc=0 r="$(so_forge_remote "$dir")" || rc=$?
+      case $rc in
+        0) forge=forgejo repo=${r#* } ;;
+        2) forge=broken repo="mirror marker but no remote on $(so_forgejo_hosts)" ;;
+        *) if repo="$(origin_repo "$dir")"; then
+             forge="$(origin_host "$dir")" repo="$forge/$repo"
+             [ "$forge" != github.com ] || forge=github
+           else
+             forge=none repo=-
+           fi ;;
+      esac
+      forge_canonical "$(git -C "$dir" rev-parse --show-toplevel)" && mirror=github
+      remotes=''
+      for rn in $(git -C "$dir" remote); do
+        remotes+="${remotes:+ }$rn=$(url_host "$(git -C "$dir" remote get-url "$rn")")"
+      done
+      printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$forge" "$repo" "$mirror" "${remotes:--}"
+    done < <(jq -r '.paths | to_entries | sort_by(.value)[] | "\(.value)\t\(.key)"' "$map")
+  } | column -t -s $'\t'
+}
+
 case "${1:-}" in
   add) shift; cmd_add "$@" ;;
+  forges) shift; cmd_forges "$@" ;;
   -h|--help) usage 0 ;;
   *) usage ;;
 esac
