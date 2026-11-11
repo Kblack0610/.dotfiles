@@ -1,11 +1,11 @@
 ---
 name: fix-red
 description: >-
-  Take one red to a fix: read its evidence, reproduce it, fix the cause, re-run the probe, review and merge it. Use for "fix this red", "why did this watch trip", "investigate this fault", or a `red` queue item. Why CI keeps failing: ci-failures.
+  Take one red to a fix: evidence, reproduce, fix the cause, re-run the probe, merge. Coordinate every red at once with an ETA per owner. Use for "fix this red", "why did this watch trip", "why is everything red", a `red` item. Why CI keeps failing: ci-failures.
 metadata:
   category: monitoring
   tags: [fleet, triage, watches, runners, reds]
-  reviewed: "2026-11-06"
+  reviewed: "2026-11-10"
 ---
 
 # fix-red
@@ -14,7 +14,7 @@ A red is a watch tripped, a runner failed, a unit failed, or an error signature 
 
 ## Scope and triggers
 
-Use it for one red, from evidence to a merged fix or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped.
+Use it for one red, from evidence to a merged fix or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped. When the human asks about reds in general, or several are tripped, coordinate them all (section 7).
 
 Out of scope: why CI keeps failing across runs (`ci-failures`), the red checks on one PR (`/my:fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
 
@@ -73,3 +73,17 @@ A failed fix is not retried: triage skips a cause closed in the last 7 days, so 
 - The fix is a decision or needs hands: file an ask or a human-sheet row (`fleet-asks`).
 - The fix is larger than this session: a board row with its size, and leave the red open.
 - The route is wrong: the fix is a line in `~/.config/agentctl/triage-routes`, whose header lists the routes. Every standing watch and runner must keep a line: `fleet-bench triage --coverage` lists any that lost one.
+
+## 7. Coordinate every red
+
+The coordinator owns the whole set until every watch's own probe reads OK, and stays open until then. It fixes nothing itself; each red has its own owner working sections 1 to 6.
+
+1. **List every red.** It is every watch whose `~/.local/state/watch-companion/<name>.state` is not `OK`, read from the files. `watch-companion-loop tripped` showed 5 of 12 on 2026-11-10. Add failed runners and units from `fleet-bench triage --dry-run`.
+2. **One owner each, running now.** For each red, find its item in `~/.agent/queue/{queued,running,waiting,review}`. If there is none, queue `red-<watch>` with `--tags red` and the evidence from its `.out` in the brief. A queued item that has not started gets `fleet-dispatch start --item <slug>`. The playground nightly is one row, owned by `playground-nightly-fix`.
+3. **An ETA per owner, written down.** Write a plan, `~/.claude/plans/red-coordinator-<date>.md`, with one row per red: owner session, ETA, the basis for it, and a Scored column. Base the ETA on measured times: the item's start, plus the work, plus one probe interval, plus the CI run time where a run proves it. Do not use `fleet-bench eta`'s project median, which is sized for plan phases, not red fixes. A red that waits on something outside the fleet (a quota reset, an upstream release, the human's choice) says what it waits for and when, not a fake time.
+4. **Hear each landing, never poll.** Run one `Monitor` with `inotifywait` on the watch-companion state dir and on `~/.agent/queue/{review,done,waiting}`. It emits a line when a `.state` changes or one of the set's items moves.
+5. **Check each closed item against its probe.** Run `watch-companion-loop recheck <watch>`. If the watch is still red, queue `red-<watch>-2` with the merged PR, the fresh evidence and "done = the recheck exits OK", then start it. On 2026-11-10, 3 of 5 red items closed ok with their watch still red.
+6. **Score and report.** At each landing, fill the Scored column (cleared at, or late by how long) and tell the human which reds cleared, which slipped and why, and the new ETA. A slip is reported when it happens, not at the end.
+7. **Stop the cause, too.** If reds sat with no owner, the defect is in the routing (`triage-routes`, `fleet-bench triage`). Queue that fix as its own item; do not keep coordinating by hand.
+
+Starting many owners at once raises load and spend, and can trip `source-pace` itself. Say that when you do it.
