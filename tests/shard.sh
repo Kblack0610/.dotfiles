@@ -11,7 +11,7 @@
 #                                   bats names a suite by basename and seven exist in both tiers
 #
 # A shard lists its files heaviest first, the order bats --jobs starts them in once its slots
-# are full: sorted by name, unit 2/3's heaviest file, fleet_bench.bats, started two minutes in
+# are full: sorted by name, a unit shard's heaviest file, fleet_bench.bats, started two minutes in
 # (PR run 42943047319, 2026-11-11 UTC). The same split ran 597s in that run and 415s in main
 # run 42944347070, so one run's shard walls are runner noise; the budget is a p90.
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by

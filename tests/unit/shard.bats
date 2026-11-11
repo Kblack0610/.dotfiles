@@ -49,11 +49,18 @@ matrix_shards() {
   # Two tiers, each listing exactly 1..n of its one n.
   ok() { matrix_shards "$1" | awk '{ for (i = 3; i <= NF; i++) if ($i != i - 2) bad = 1; if (NF - 2 != $2) bad = 1; c++ } END { exit bad || c != 2 }'; }
   ok "$wf"
-  # Negative controls: a dropped last shard, a dropped middle one and a stale count all fail.
-  sed '/tier: unit, shard: 4\/4/d' "$wf" >"$BATS_TEST_TMPDIR/a.yml"
-  sed '/tier: integ, shard: 2\/3/d' "$wf" >"$BATS_TEST_TMPDIR/b.yml"
-  sed 's#tier: unit, shard: 1/4#tier: unit, shard: 1/3#' "$wf" >"$BATS_TEST_TMPDIR/c.yml"
-  for f in a b c; do ! ok "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml passed"; done
+  # Negative controls, read from the matrix so a reshard keeps them: unit's last shard dropped,
+  # integ's first dropped, and unit's first given a count one short.
+  local un ni
+  un=$(matrix_shards "$wf" | awk '$1 == "unit" { print $2 }')
+  ni=$(matrix_shards "$wf" | awk '$1 == "integ" { print $2 }')
+  sed "/tier: unit, shard: $un\/$un}/d" "$wf" >"$BATS_TEST_TMPDIR/a.yml"
+  sed "/tier: integ, shard: 1\/$ni}/d" "$wf" >"$BATS_TEST_TMPDIR/b.yml"
+  sed "s#tier: unit, shard: 1/$un}#tier: unit, shard: 1/$((un - 1))}#" "$wf" >"$BATS_TEST_TMPDIR/c.yml"
+  for f in a b c; do
+    ! cmp -s "$wf" "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml: the control changed nothing"
+    ! ok "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml passed"
+  done
 }
 
 @test "the heaviest file gets a shard of its own and the rest balance behind it" {

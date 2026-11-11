@@ -45,11 +45,9 @@ jobs:
   # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
   # them across runners, balanced by the seconds the weights job reads from the newest green
   # main run's JUnit. A shard is bounded below by its heaviest file; unit/fleet_dispatch.bats,
-  # 40% of unit, is six files for that. The shard counts are what fits the budget on a 4-core
-  # runner: the files are CPU-bound (fleet_bench.bats ran 177 s of wall on 198 s of CPU, measured locally), so
-  # balance alone cannot help, and a full run on 3 unit and 2 integ shards took 6.3 min
-  # (run 43009173032: unit 818 s, integ 514 s of test-step wall). unit/shard.bats checks
-  # that the matrix lists every shard of each tier.
+  # 40% of unit, is six files for that. The shard counts are sized so a full run fits the budget
+  # on a 4-core runner: the files are CPU-bound, so past an even split only more shards cut the
+  # wall (measured in #1811). unit/shard.bats checks that the matrix lists every shard of each tier.
   #
   # The table is computed once, here, because two shards splitting by two tables can each leave
   # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
