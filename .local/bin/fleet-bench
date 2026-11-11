@@ -3661,16 +3661,17 @@ hold_test() {
 }
 
 # hold_streak <owner/repo> <streak> <runs> <merges> -> the record for main's red streak, if it counts
-# against a merge: one landed at or before the first red and within HOLD_HOURS of it. A merge's time
+# against a merge: one landed at or before the first red and within HOLD_HOURS of it. The runs go in
+# by file, since main's push runs pass the 128 KB one-argument limit (ar-1619). A merge's time
 # is its own run's, since the item finishes after the push. The failed bats files narrow that to the
 # merges whose area they are, the ones the Stop hook would pick for what each changed; a red that names none (lint, rust, a timeout) leaves only the merges
 # in last green..first red.
 hold_streak() {
   local repo=$1 streak=$2 near id failed sha msha m f paths hits unread=0
   local -A body
-  near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+  near=$(jq -c --arg repo "$repo" --argjson s "$streak" --slurpfile runs <(printf '%s\n' "$3") --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
-    | . as $m | .at = (([$runs[] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
+    | . as $m | .at = (([$runs[0][] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
     | select(.at <= $red and $red - .at <= $h)' <<<"$4")
   [ -n "$near" ] || return 0
   id=$(jq -r .red.id <<<"$streak")
