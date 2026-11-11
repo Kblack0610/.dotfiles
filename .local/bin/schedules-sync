@@ -74,8 +74,9 @@ quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
 first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
-page. A store's last sync and error per repo are in that sync.json. No reader stores a PR fact of
-its own: run -> PR is a join against this store, so the ledger's runs carry no PR list.
+page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
+error per repo are in that sync.json. No reader stores a PR fact of its own:
+run -> PR is a join against this store, so the ledger's runs carry no PR list.
 
 Job detail goes to the job archive SCHEDULES_JOBS_LEDGER (~/.local/state/ci/jobs.jsonl),
 kept 90 days, deduped and pruned like the run ledger. For the repos the github-runner-exporter
@@ -651,6 +652,16 @@ def fj_pr_row(name, p, had):
     return pr_row("forgejo", name, p, branch, bool(p.get("merged")))
 
 
+def fj_pulls_off(host, repo):
+    """Whether the Forgejo repo has its PR unit off (a pull mirror, most often), which makes its
+    pulls list a 404: such a repo has no PRs."""
+    try:
+        got = fj(host, f"repos/{repo}")
+    except GhError:
+        return False
+    return isinstance(got, dict) and got.get("has_pull_requests") is False
+
+
 def fetch_prs(forge, repo, host, entry):
     """Every PR updated since the last sync less OVERLAP, newest update first; a repo never synced
     reads its whole history (PR_PAGES pages). GitHub's first page is conditional on the ETag.
@@ -659,7 +670,12 @@ def fetch_prs(forge, repo, host, entry):
     out, etag = [], None
     for page in range(1, PR_PAGES + 1):
         if forge == "forgejo":
-            got = fj(host, f"repos/{repo}/pulls?state=all&sort=recentupdate&limit={FJ_PAGE}&page={page}")
+            try:
+                got = fj(host, f"repos/{repo}/pulls?state=all&sort=recentupdate&limit={FJ_PAGE}&page={page}")
+            except GhError as e:
+                if page == 1 and "error: 404" in e.detail and fj_pulls_off(host, repo):
+                    return [], None  # PRs off: a pull mirror's PRs are on the forge it mirrors
+                raise
             size = FJ_PAGE
         else:
             path = f"repos/{repo}/pulls?state=all&sort=updated&direction=desc&per_page={PER_PAGE}&page={page}"
