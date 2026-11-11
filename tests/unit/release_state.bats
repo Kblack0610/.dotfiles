@@ -419,6 +419,16 @@ MD
   assert_output ''
 }
 
+@test "history: several build families read newest first by date, not by name" {
+  # By version sort shapecity3 > barrage9 at the same base; by date barrage9 is the newest.
+  GIT_COMMITTER_DATE=@1700000000 ship "game build (#1)" v0.5.0-shapecity3
+  GIT_COMMITTER_DATE=@1700000100 ship "barrage build (#2)" v0.5.0-barrage9
+  jq '.trackers.web.buildTags = ["v*-shapecity*", "v*-barrage*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -c '.releases.web.tags | map(.tag)' "$RELEASE_STATE_DIR/state.json")" = '["v0.5.0-barrage9","v0.5.0-shapecity3"]' ]
+}
+
 @test "pinned: a gitops pin says when the file took its value and the value before it" {
   run "$RS" refresh web
   # The first pin has no value before it.
@@ -429,6 +439,16 @@ MD
   assert_success
   [ "$(field web-prod '.pinned | [.value, .prev] | @json')" = '["v1.1.0","v1.0.0"]' ]
   [ "$(field web-prod .pinned.at)" = "$(git -C "$SANDBOX/pusher" log -1 --format=%ct)" ]
+  # A later commit that only moves another line holding the same string is not when the pin moved.
+  set_at="$(git -C "$SANDBOX/pusher" log -1 --format=%ct)"
+  printf 'spec:\n  values:\n    image:\n      tag: v1.1.0\n    sidecar: v1.1.0\n' > "$SANDBOX/pusher/apps/web/helmrelease.yaml"
+  GIT_COMMITTER_DATE=@2000000000 git -C "$SANDBOX/pusher" commit -qam sidecar
+  sed -i 's/sidecar: v1.1.0/sidecar: v1.2.0/' "$SANDBOX/pusher/apps/web/helmrelease.yaml"
+  GIT_COMMITTER_DATE=@2000000100 git -C "$SANDBOX/pusher" commit -qam 'sidecar bump'
+  git -C "$SANDBOX/pusher" push -q origin main 2>/dev/null
+  run "$RS" refresh web
+  assert_success
+  [ "$(field web-prod '.pinned | [.value, .prev, .at] | @json')" = "[\"v1.1.0\",\"v1.0.0\",$set_at]" ]
   # The kustomize pin reads its own history the same way.
   [ "$(field web-preview '.pinned | [.value, .prev] | @json')" = '["pre-abc",null]' ]
 }

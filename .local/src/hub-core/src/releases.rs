@@ -605,11 +605,13 @@ fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
         others_text: others.join("; "),
         lead,
         line: line.map_or("none".into(), |l| l.line.clone()),
+        // A release tag reads as its version (`v1.19.0`); a build tag is its own name.
         released_text: history.first().map_or("-".into(), |h| {
-            let tag = h
-                .tag
-                .rsplit_once("-v")
-                .map_or(h.tag.clone(), |(_, v)| format!("v{v}"));
+            let tag = if line.is_some_and(|l| l.line == "release") && !h.version.is_empty() {
+                format!("v{}", h.version)
+            } else {
+                h.tag.clone()
+            };
             format!("{tag} {}", h.at_text)
         }),
         history,

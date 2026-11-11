@@ -218,7 +218,7 @@ impl ReleasesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|a| row(a, p)).collect(),
-            // RELEASED, then LAST DEPLOY, go first when it is narrow: a wide terminal has the room.
+            // Columns drop from the end of `keep` when narrow: LAST DEPLOY (blank until a recorder writes), then RELEASED.
             keep: vec![0, 2, 1, 3, 4, 5],
             right: vec![],
             cap: vec![

@@ -165,13 +165,17 @@ pinned() {
   # When the pin took this value: the newest commit on the branch that changed how often the
   # value appears in the file, and the value the file held just before it. That is the date the
   # gitops PR merged, not the moment the cluster applied it.
+  # -S also hits a commit that moved another pin holding the same string (two images in one
+  # file), so the newest hit whose parent pinned something else for THIS key is the one.
   local hit at="" was=""
-  hit="$(git -C "$dir" log -1 --format='%H %ct' -S"$v" "origin/$branch" -- "$path" 2>/dev/null)"
-  if [ -n "$hit" ]; then
+  while read -r hit; do
+    blob="$(git -C "$dir" show "${hit%% *}^:$path" 2>/dev/null)" || blob=""
+    was="$(pin_value "$blob" "$image" "${key:-tag}")"
+    [ "$was" = "$v" ] && continue
     at="${hit#* }"
-    blob="$(git -C "$dir" show "${hit%% *}^:$path" 2>/dev/null)" && was="$(pin_value "$blob" "$image" "${key:-tag}")"
-    [ "$was" = "$v" ] && was=""
-  fi
+    break
+  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "origin/$branch" -- "$path" 2>/dev/null)
+  [ -n "$at" ] || was=""
   jq -nc --arg v "$v" --arg s "$src" --arg at "$at" --arg was "$was" \
     '{value: $v, source: $s, at: ($at | tonumber? // null), prev: (if $was == "" then null else $was end)}'
 }
@@ -405,6 +409,9 @@ history() {
   if [ -z "$tags" ] && [ -n "$_PTS_BUILDS" ]; then
     line=build glob="$_PTS_BUILDS"
     tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
+    # Several build families (barrage, shapecity) have no common version order: newest by date, then version.
+    [ -n "$tags" ] && tags="$(git -C "$repo" for-each-ref --sort=-v:refname --sort=-creatordate --format='%(refname:short)' refs/tags |
+      grep -Fxf <(printf '%s\n' "$tags"))"
   fi
   if [ -z "$tags" ]; then
     jq -nc --arg g "$glob" '{line: "none", glob: (if $g == "" then null else $g end), error: null, tags: []}'
