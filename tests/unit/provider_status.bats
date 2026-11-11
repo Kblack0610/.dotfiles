@@ -57,7 +57,7 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   assert_line 'UNREACHABLE Cloudflare: www.cloudflarestatus.com'
 
   feed www.githubstatus.com "[$(inc 'Git down' critical '{"name":"Git Operations"}')]"
-  run "$REPO_ROOT/.local/bin/provider-status" --quiet
+  run "$REPO_ROOT/.local/bin/provider-status"
   assert_failure 1
-  assert_output ''
+  assert_line 'GitHub: Git down (critical)'
 }
