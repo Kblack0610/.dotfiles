@@ -519,7 +519,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut drip = vec![dim("DRIP  "), Span::raw(b.drip_line.clone())];
     if b.drip.held.is_some() {
         drip.push(Span::styled(
-            format!("   dispatch held -> {}", burn::HOLD_BADGE),
+            format!("   dispatch held -> {}", burn::hold_badge()),
             p.warn(),
         ));
     }
