@@ -2964,7 +2964,7 @@ impl App {
                 let last = self
                     .builds
                     .as_ref()
-                    .map_or(0, |b| b.times.len().saturating_sub(1));
+                    .map_or(0, |b| bv::times_rows(b).saturating_sub(1));
                 bv.times = Some(match c {
                     KeyCode::PageDown | KeyCode::Char('J') => (top + step).min(last),
                     _ => top.saturating_sub(step),
@@ -3252,16 +3252,16 @@ impl App {
                 "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
             }
             Tab::Releases if self.rv.on() == "builds" => format!(
-                "<-/-> view  Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  Enter log  t run times, quarantine  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.on() == "tests" => format!(
-                "<-/-> view  t run times  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  t run times, quarantine  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
                 "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  <-/-> view  q quit".into()
             },
             Tab::Releases => format!(
-                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  t run times  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  t run times, quarantine  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
