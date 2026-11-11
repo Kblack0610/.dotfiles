@@ -11,7 +11,7 @@ pub const DAY_ROWS: usize = 14;
 /// The days the newest day is set against in the headline.
 const MEDIAN_DAYS: usize = 7;
 
-pub const NOTE: &str = "$ is the whole fleet's day from the nightly token snapshot; vs prev compares $/day with the period before; est. is the share priced from tokens, not billed (100% before billing records, 2026-10-29).";
+pub const NOTE: &str = "$ is the whole fleet's day from the nightly token snapshot; vs prev compares $/day with the period before; est. is the share priced from tokens, not billed, and it is 100% on a day priced after Prometheus aged out its bills, and that day's $ is a floor, since helper calls never reach a transcript.";
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
