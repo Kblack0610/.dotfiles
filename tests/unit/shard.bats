@@ -22,11 +22,13 @@ fixture() {
   for t in "$@"; do printf '@test "%s" {\n  true\n}\n' "$t" >> "$SHARD_DIR/$f"; done
 }
 
-@test "every real file of each tier is in exactly one shard, for 1 to 4 shards" {
+@test "every real file of each tier is in exactly one shard, for 1 to the CI matrix's shard count" {
   unset SHARD_DIR SHARD_WEIGHTS
-  local tests="$BATS_TEST_DIRNAME/.."
+  local tests="$BATS_TEST_DIRNAME/.." top
+  top=$(matrix_shards "$tests/../.github/workflows/tests.yml" | awk '$2 > m { m = $2 } END { print m }')
+  [ "$top" -ge 2 ]
   for tier in unit integ; do
-    for n in 1 2 3 4; do
+    for ((n = 1; n <= top; n++)); do
       local all=()
       for ((i = 1; i <= n; i++)); do
         run --separate-stderr "$SUBJECT" "$tier" "$i/$n"
