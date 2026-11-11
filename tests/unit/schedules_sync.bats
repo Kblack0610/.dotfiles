@@ -916,6 +916,20 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
 }
 
+@test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {
+  printf 'forgejo:fj.test/o/fj develop\nforgejo:fj.test/o/gone develop\n' > "$SANDBOX/repos"
+  fj_page | fj_serve 1
+  rm "$FJD/$(key "$(fj_pulls o/fj 1)")"  # a mirror's pulls list is a 404
+  echo '{"name":"fj","mirror":true,"has_pull_requests":false}' > "$FJD/$(key repos/o/fj)"
+  echo '{"name":"gone","mirror":false,"has_pull_requests":true}' > "$FJD/$(key repos/o/gone)"
+  run "$SUBJECT"
+  run "$SUBJECT" prs fj.test/o/fj
+  assert_success
+  assert_output '[]'
+  run "$SUBJECT" prs fj.test/o/gone
+  assert_failure 1
+}
+
 @test "prs: newest first, filtered by state, since and branch; fails closed: 3 unlisted, 1 stale, 2 bad usage" {
   prs_page o/game "$(gh_pr 9 open null feat-z)" "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)" "$(gh_pr 4 closed 2025-11-06T09:00:00Z feat-x)"
   "$SUBJECT"
