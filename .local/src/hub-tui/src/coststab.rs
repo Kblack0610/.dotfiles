@@ -1646,7 +1646,7 @@ mod tests {
         assert!(s.contains("estimated\" is priced from tokens"), "{s}");
         let burn = s.lines().find(|l| l.starts_with("BURN")).unwrap();
         assert!(
-            burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
+            burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live"),
             "{s}"
         );
         assert!(s.contains("DRIP  15 started in 1h, 349 in 24h"), "{s}");
@@ -1672,7 +1672,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            narrow.contains("\n      39 live, carries ~11\n"),
+            narrow.contains("3.3x, 39 live\n      carries ~11\n"),
             "{narrow}"
         );
         // every term on the section is defined under it, wrapped to the width

@@ -88,7 +88,7 @@ creds() {
   usage alt 10 70 "$r2"
   run "$ACCT" pick
   assert_line "$ALT"
-  usage main 94 75 "$r1"
+  usage main 89 75 "$r1"
   run --separate-stderr "$ACCT" pick
   assert_output ''
 }
@@ -734,7 +734,7 @@ STUB
   week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 10% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: with none, an account refused while within its weekly pace is named too, not only the closest" {
@@ -796,16 +796,16 @@ STUB
   week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'94% of its week used, inside the last 7% kept for the human'* ]] || fail "$stderr"
+  [[ "$stderr" == *'94% of its week used, inside the last 13% kept for the human'* ]] || fail "$stderr"
 }
 
 @test "room: the reserve holds late in the week, even under pace" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 95 2
+  week main 90 2
   week alt 97 2
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  week main 94 2
+  week main 89 2
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -978,7 +978,7 @@ seen_claude() {
   [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 6048))" ]
 }
 
-@test "status: the fleet line sums live, burn and what the weeks carry, and names the first back on pace" {
+@test "status: the fleet line sums live, burn and what the pool carries, says when it runs into the reserve, and names the first back on pace" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 80 84
   week alt 80 84
@@ -987,7 +987,9 @@ seen_claude() {
   run "$ACCT" status
   assert_success
   assert_line --partial 'after-reset'
-  assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.5/h sustainable \(4\.2x, carries ~4\), back on pace: not at this burn; if idle (main|alt) '
+  # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
+  # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
+  assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1050,7 +1052,7 @@ seen_claude() {
   week main 97 141
   run --separate-stderr "$ACCT" room --json
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == reserve,pace ]]
-  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 5% kept for the human' ]]
+  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 10% kept for the human' ]]
   week main 10 84
   run --separate-stderr "$ACCT" room --json
   assert_success
@@ -1065,7 +1067,7 @@ seen_claude() {
   CLAUDE_ACCT_PACE_SLACK_PCT=100 CLAUDE_ACCT_RESERVE_PCT=0 run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
-  [[ "$(field main .room.reserve <<< "$output")" == 5 ]]
+  [[ "$(field main .room.reserve <<< "$output")" == 10 ]]
   run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
   assert_failure
 }
@@ -1276,19 +1278,19 @@ budget() {
 @test "sources: the fleet line sums Claude accounts only, a codex point is another budget" {
   # 2026-11-09: codex in the sum read 1.6/h vs 1.7/h, carries ~52; Claude alone was 1.3 vs 1.15.
   src_setup
-  week main 80 84   # 20 left over 84h: 0.24 an hour
+  week main 80 84   # 10 above the reserve over 84h: 0.12 an hour
   rollout 1 0 84    # codex: 99 left, 1.18 an hour, which the old sum added
   run --separate-stderr "$ACCT" status
   assert_success
   assert_line --regexp '^codex '
-  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.2/h sustainable'
+  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.1/h sustainable .*, lasts to the resets, '
 }
 
 @test "sources: the textfile publishes the fleet line's own sum, and no burn when no Claude row is read" {
   # ar-1149: hub-core burn.rs re-summed the rows with its own copy of this filter; it reads these now.
   src_setup
   export CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 80 84   # 20 left over 84h: 0.24 an hour
+  week main 80 84   # 10 above the reserve over 84h: 0.12 an hour
   rollout 1 0 84    # codex: 99 left, 1.18 an hour, another budget
   live "" 3
   live "$ALT" 2     # alt has no usage read: its sessions are live, its burn is not summed
@@ -1300,9 +1302,11 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
-  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.238'
+  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
+  # 10 points at 0.3 an hour: 33.3h, before main's reset in 84h
+  assert_line 'claude_fleet_run_out_timestamp_seconds 1800120000'
   run --separate-stderr "$ACCT" status
-  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.2/h sustainable'
+  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.1/h sustainable'
   # negative control: with no Claude account read, live stays and burn and sustain are not written
   rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
   "$ACCT" textfile "$SANDBOX/prom"
@@ -1311,6 +1315,7 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   refute_line --partial 'claude_fleet_burn'
   refute_line --partial 'claude_fleet_sustain'
+  refute_line --partial 'claude_fleet_run_out'
 }
 
 @test "sources: a week whose reset has passed reads as unused" {
@@ -1774,6 +1779,60 @@ pro_rollout() {
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
   [[ "$stderr" == *"res: unknown option 'alert=maybe'"* ]] || fail "$stderr"
+}
+
+@test "check pace: the Claude accounts are one pool, so one past its own line trips nothing while the pool lasts to the resets" {
+  # 2026-11-10 (ar-1529): main, alt and bnb past their own lines kept the watch red for days while
+  # the four weeks, each refilled at its reset, carried the fleet's burn.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 81 50   # 70% of its week gone: past its line
+  week alt 93 27    # inside its reserve
+  live "" 1
+  live "$ALT" 1
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  assert_output 'every source on pace (2 sources)'
+  # dispatch still keeps to each account's own room
+  run --separate-stderr "$ACCT" room --json
+  [[ "$(field main .room.reason <<< "$output") $(field alt .room.reason <<< "$output")" == "pace reserve" ]] || fail "$output"
+  # 9 points above the reserve at 1 an hour last 9h, before alt's reset in 27h: that trips
+  live "" 4
+  live "$ALT" 4
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}, before the resets$'
+}
+
+@test "check pace: a cached read from before its reset counts a fresh week once, not its old left as well" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 81 50    # 9 above the reserve, resets in 50h
+  week alt 40 -1     # read before its reset an hour ago: fresh now, 90 above the reserve
+  live "" 13
+  live "$ALT" 12     # 2.5 an hour: 99 points last 39.6h, short of main's reset in 50h
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve '
+  # negative control: at 1 an hour the 99 points last past main's reset, and the 189 after it past alt's
+  rm -rf "$CLAUDE_ACCT_PROC"/*
+  live "" 5
+  live "$ALT" 5
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+}
+
+@test "check pace: the pool keeps the machine-mode level's reserve, as each room does" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 85 20    # 5 above the mid reserve, 2 above the reserved level's 13
+  week alt 90 100
+  live "" 3          # 0.3 an hour: 5 points last 16.7h, 2 last 6.7h; main resets in 20h
+  live "$ALT" 0
+  echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"   # high: 7 kept back, 11 points last 36.7h
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output --regexp '^the Claude accounts run into the reserve '
 }
 
 @test "check pace: no source at all is nothing read, never a quiet green" {
