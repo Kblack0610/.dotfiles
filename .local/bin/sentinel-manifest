@@ -106,7 +106,7 @@ LEGIBILITY_FIELDS = ("what", "why", "where", "action")
 
 def project_map_path():
     """The registry agent-queue checks `--project` against."""
-    return os.environ.get("AGENT_QUEUE_PROJECT_MAP") or os.path.join(
+    return os.environ.get("AGENT_QUEUE_PROJECT_MAP") or os.environ.get("PROJECT_MAP_FILE") or os.path.join(
         os.path.expanduser("~"), ".config/shared-hooks/project-map.json"
     )
 
@@ -317,7 +317,7 @@ def cmd_validate(path, strict=False):
     elif project:
         try:
             known = canonical_projects()
-        except (ValueError, AttributeError) as exc:
+        except (OSError, ValueError, AttributeError) as exc:
             errors.append(f"cannot check project: {project_map_path()} is unreadable ({exc})")
             known = None
         if known is not None and project not in known:

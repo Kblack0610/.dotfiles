@@ -278,3 +278,12 @@ projmap() {
   run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s' \"\$W_project\""
   assert_output "dotfiles"
 }
+
+@test "project says so when the registry is a directory, not a traceback" {
+  projmap; rm -f "$AGENT_QUEUE_PROJECT_MAP"; mkdir "$AGENT_QUEUE_PROJECT_MAP"
+  base; echo 'project: dotfiles' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'cannot check project'
+  refute_output --partial Traceback
+}

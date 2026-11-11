@@ -2284,6 +2284,11 @@ red_item() {
   run "$SUBJECT" reds --json
   assert_success
   assert_equal "$(jq -r '.project' <<<"$output")" home-config
+  # an item naming no project reads as "", never null: hub-core's Red.project is a String
+  jq -c 'del(.project)' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.project' <<<"$output")" '""'
 }
 
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
