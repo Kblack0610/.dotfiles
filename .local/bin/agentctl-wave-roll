@@ -136,16 +136,24 @@ record() {
 # RELEASE_NOTES_SINCE plus the newest, lowest first, so a version's rows freeze under the first
 # tag that reached it. A failed roll ends the project's pass: later tags wait for the next one.
 by_tag() {
-  local profile="$1" name="$2" shipped="$3" dir="$4" tag next
+  local profile="$1" name="$2" shipped="$3" dir="$4" tag next rolled_on=""
   local -A since=()
   while IFS= read -r tag; do [ -z "$tag" ] || since[$tag]=1; done < <(project_release_tags_since "$name" 2>/dev/null)
   while IFS= read -r tag; do
+    # After a roll, the open version it left, read back so this tag compares against it.
+    if [ -n "$rolled_on" ]; then
+      ver="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+      if ! is_ver "$ver"; then
+        failed=$((failed + 1))
+        log "FAILED $name: rolled on $rolled_on but cannot read its open version back ('$ver'); $tag and later wait"
+        return 0
+      fi
+      rolled_on=""
+    fi
     if git_version_ge "$tag" "$ver"; then
       next="$(next_after "$profile" "$name" "$tag")"
       roll "$profile" "$name" "$next" "$next" "tag $tag" "$tag" || return 0
-      # The open version the roll left, read back so the next tag compares against it.
-      if [ "$DRY" = 1 ]; then ver="$next"
-      else ver="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"; is_ver "$ver" || return 0; fi
+      if [ "$DRY" = 1 ]; then ver="$next"; else rolled_on="$tag"; fi
     elif [ -n "${since[$tag]:-}" ] && [ ! -e "$dir/versions/$tag.md" ]; then
       record "$profile" "$name" "$tag" || return 0
     fi

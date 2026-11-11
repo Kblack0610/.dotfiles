@@ -206,7 +206,7 @@ roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
 
 case "${1:-}" in
   -h | --help) echo "$USAGE"; exit 0 ;;
-  --tag) TAG="${2:-}"; shift 2 || { echo "$USAGE" >&2; exit 2; } ;;
+  --tag) TAG="${2:-}"; [ -n "$TAG" ] && shift 2 || { echo "notes-roll: --tag needs a vX.Y.Z" >&2; echo "$USAGE" >&2; exit 2; } ;;
 esac
 roll_now "${1:-}" "${2:-}" "${3:-auto}" "${4:-}"
 exit $?

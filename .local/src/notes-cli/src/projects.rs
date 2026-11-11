@@ -2135,6 +2135,15 @@ pub fn release(
         ),
     };
     if let Some(t) = tag.filter(|t| *t < cur) {
+        // Nothing rolls, so a bump, a --next or a carry would be silently dropped: refuse them.
+        if level.is_some() || next_at.is_some() || carry {
+            bail!(
+                "--tag {} is below the open version {}: it records a note and rolls nothing, \
+                 so it takes no bump, --next or carry",
+                fmt_version(t),
+                fmt_version(cur)
+            );
+        }
         return record_unplanned_tag(log, &dir, name, &content, t, cur);
     }
     let ix = crate::epics::Index::of(&dir, Some(cur));
@@ -2203,15 +2212,7 @@ pub fn release(
     let frozen_body = if shipped == cur {
         frozen_body
     } else {
-        frozen_body.replacen(
-            &format!("\nVersion: {}\n", fmt_version(cur)),
-            &format!(
-                "\nVersion: {}\nPlanned as: {}\n",
-                fmt_version(shipped),
-                fmt_version(cur)
-            ),
-            1,
-        )
+        named_from_tag(&frozen_body, shipped, cur)
     };
     // The sheet's rows that already rolled off its Done window wait in the agent note; the
     // version they belong to is this one, so they freeze with the sheet's own.
@@ -2310,6 +2311,44 @@ pub fn release(
 /// below the open version. Its note holds no rows, and `notes-roll` skips it when it looks for
 /// the previous version's `rolled:` boundary.
 pub(crate) const NO_PLANNED_ROWS: &str = "<!-- no-planned-rows -->";
+
+/// A frozen body renamed for the tag that shipped it: its first `Version:` line (stage tag and
+/// all) becomes `Version: <tag>` plus `Planned as: <planned>`, the line [`frozen_note`] finds it
+/// by. A body with no `Version:` line gets both under its title.
+fn named_from_tag(body: &str, tag: V, planned: V) -> String {
+    let head = format!(
+        "Version: {}\n{PLANNED_AS} {}",
+        fmt_version(tag),
+        fmt_version(planned)
+    );
+    let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
+    match lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("Version:"))
+    {
+        Some(i) => lines[i] = head,
+        None => lines.insert(1.min(lines.len()), head),
+    }
+    lines.join("\n") + "\n"
+}
+
+const PLANNED_AS: &str = "Planned as:";
+
+/// The frozen note of `ver` in `dir/versions`: `<ver>.md`, else the note a tag froze it under
+/// (its `Planned as: <ver>` line, [`named_from_tag`]). The plain path when neither exists, so
+/// a reader of a version nothing froze reads nothing.
+pub(crate) fn frozen_note(dir: &Path, ver: &str) -> PathBuf {
+    let plain = dir.join("versions").join(format!("{ver}.md"));
+    if plain.exists() {
+        return plain;
+    }
+    let want = format!("{PLANNED_AS} {ver}");
+    version_notes(&dir.join("versions"))
+        .into_iter()
+        .map(|(_, p)| p)
+        .find(|p| fs::read_to_string(p).is_ok_and(|c| c.lines().take(5).any(|l| l.trim() == want)))
+        .unwrap_or(plain)
+}
 
 /// `--release --tag` for a tag below the open version: write `versions/<tag>.md` marked
 /// [`NO_PLANNED_ROWS`] when the tag has no note yet, and leave the sheet alone, since its open
@@ -4899,14 +4938,23 @@ Some prose left on the board.
         assert!(!dir.join("versions/v1.18.1.md").exists());
         let after = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(after.contains("Version: v1.19.1 #beta"), "{after}");
+        // A reader of the planned version finds the note the tag froze it under.
+        assert_eq!(
+            frozen_note(&dir, "v1.18.1"),
+            dir.join("versions/v1.19.0.md")
+        );
+        assert_eq!(
+            frozen_note(&dir, "v1.17.0"),
+            dir.join("versions/v1.17.0.md")
+        );
+        let rec = |tag: &str| release(&p, &log, "demo", None, false, false, None, false, Some(tag));
 
         // A hotfix below the open version: a note with no planned rows, the sheet untouched.
-        fs::write(
-            dir.join("README.md"),
-            after.replace("v1.19.1", "v1.20.0"),
-        )
-        .unwrap();
-        rel("v1.19.1", "v1.20.1").unwrap();
+        fs::write(dir.join("README.md"), after.replace("v1.19.1", "v1.20.0")).unwrap();
+        // NEGATIVE CONTROL: below the open version nothing rolls, so a carry or --next is refused.
+        assert!(rel("v1.19.1", "v1.20.1").is_err());
+        assert!(!dir.join("versions/v1.19.1.md").exists());
+        rec("v1.19.1").unwrap();
         let stub = fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap();
         assert!(stub.contains(NO_PLANNED_ROWS), "{stub}");
         assert!(stub.contains("Version: v1.19.1\n"), "{stub}");
@@ -4915,7 +4963,7 @@ Some prose left on the board.
         assert!(still.contains("feat(b): open"), "{still}");
         // Recording it again keeps the note it has.
         fs::write(dir.join("versions/v1.19.1.md"), "kept\n").unwrap();
-        rel("v1.19.1", "v1.20.1").unwrap();
+        rec("v1.19.1").unwrap();
         assert_eq!(
             fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap(),
             "kept\n"

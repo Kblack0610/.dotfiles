@@ -247,3 +247,14 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   assert_line --index 0 --partial 'would roll personal/demoapp: v1.19.0 -> v1.19.1 (tag v1.19.0'
   assert_line --index 1 --partial 'would roll personal/demoapp: v1.19.1 -> v1.19.2 (tag v1.19.1'
 }
+
+@test "a roll whose open version cannot be read back stops the project's pass, loudly" {
+  # The stub answers no --version-of, so after v1.19.0 rolls, v1.19.1 cannot be compared.
+  tags_since v1.19.0 v1.19.1 v1.19.0 v1.19.1
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  assert_output --partial "FAILED demoapp: rolled on v1.19.0 but cannot read its open version back (''); v1.19.1 and later wait"
+  run grep -c 'projects --release demoapp' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run cat "$OUTCOME"
+  assert_output STALLED
+}

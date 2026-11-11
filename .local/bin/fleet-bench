@@ -1903,7 +1903,6 @@ chain_notes() {
 # tag counts in neither, and so does a profile with `automation = false`.
 release_kpis() {
   local today prof name ver due_on shipped
-  project_release_lib || return 1   # git_version_next_ok in this shell; no library reads ?, never 0
   today=$(date -d "@$1" +%F)
   jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end)] | join("|")' <<<"$2" |
   while IFS='|' read -r prof name ver due_on; do
@@ -1911,7 +1910,8 @@ release_kpis() {
     case "$(project_version_owner "$name" "$shipped")" in
       sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
                jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
-      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] && ! git_version_next_ok "$shipped" "$ver" &&
+      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
+             project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
              jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
     esac
     :   # a project that counts in neither is no failed pass, under pipefail

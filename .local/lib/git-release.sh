@@ -93,8 +93,6 @@ git_version_ge() {
   [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
 }
 
-# git_version_max < versions -> the highest, as given (`v1.10.0` beats `v1.9.3`). Bare versions
-# with or without a leading `v`, one a line; blank lines skipped, nothing in, nothing out.
 # git_version_next_ok <shipped> <v> - true when <v> is above <shipped> and a version the
 # project could ship next: the same major at most one minor up, or the next major at minor 0.
 # The sheet's `Version:` is the next open version, so this is what it may hold beside its
@@ -109,6 +107,8 @@ git_version_next_ok() {
   { [ "$va" = "$sa" ] && [ "$vb" -le $((sb + 1)) ]; } || { [ "$va" = $((sa + 1)) ] && [ "$vb" = 0 ]; }
 }
 
+# git_version_max < versions -> the highest, as given (`v1.10.0` beats `v1.9.3`). Bare versions
+# with or without a leading `v`, one a line; blank lines skipped, nothing in, nothing out.
 git_version_max() {
   local l
   while IFS= read -r l; do
@@ -371,10 +371,6 @@ git_first_tag() {
   printf '%s' "${out%%$'\n'*}"
 }
 
-# git_tag_at <repo> <tag> -> "<sha> <epoch>": the commit the tag names (peeled through an
-# annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
-# of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
-# tag does not exist.
 # git_tags_since <repo> <name> <scoped> <glob> <YYYY-MM-DD> - every tag in the family whose
 # creatordate (the one tag date, as git_tag_date) is on or after the day, lowest version first:
 # the tags a release note must exist for (agentctl-wave-roll, project-map-doctor 7b). One
@@ -390,6 +386,10 @@ git_tags_since() {
   return 0
 }
 
+# git_tag_at <repo> <tag> -> "<sha> <epoch>": the commit the tag names (peeled through an
+# annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
+# of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
+# tag does not exist.
 git_tag_at() {
   [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
   git -C "$1" for-each-ref --count=1 \

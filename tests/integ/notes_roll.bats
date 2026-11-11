@@ -322,6 +322,10 @@ LIB
   assert_failure 2
   run "$NOTES_ROLL" --tag v1.2.0 personal demoapp v1.1.0 renumber
   assert_failure 2
+  # An empty tag (a caller's unset variable) is refused, never read as an untagged roll.
+  run "$NOTES_ROLL" --tag "" personal demoapp
+  assert_failure 2
+  assert_output --partial '--tag needs a vX.Y.Z'
   run notes_calls
   refute_output --partial '--release demoapp'
 }

@@ -507,10 +507,12 @@ fi
 # `agentctl-wave-roll` rolls the sheet (and its agent board) once a tag reaches it, every
 # 30 minutes: equal is that window (WARN), below means the roll is not happening (FAIL).
 # The same roll writes `versions/<tag>.md` for every tag, so a tag since the day that began
-# (project_release_tags_since) with no note is a roll that did not happen; the tag the sheet
-# still sits on is the WARN above, not a second finding.
+# (project_release_tags_since) with no note is a roll that did not happen. A tag at or above
+# the sheet is the sheet's WARN or FAIL above, not a second finding, and a profile with
+# `automation = false` has no roll to write notes (agentctl-wave-roll skips it).
 if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1 && project_release_lib; then
   n=0; bad=0; behind_warns=0
+  manual="$(notes projects --stats --json 2>/dev/null | jq -r '.[]? | select(.automation == false) | .name' 2>/dev/null || true)"
   while IFS=$'\037' read -r name lab; do
     [ -n "$name" ] || continue
     root="$(notes --profile "$lab" path projects 2>/dev/null || true)"
@@ -529,8 +531,9 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1 && p
       fail "lab project \"$name\" sheet $sheet is behind its shipped tag $shipped (run: agentctl-wave-roll $name)"
       bad=$((bad + 1))
     fi
+    [ -n "$sheet" ] && ! grep -qxF "$name" <<<"$manual" || continue
     while IFS= read -r tag; do
-      [ "$tag" != "$sheet" ] && [ ! -e "$root/$name/versions/$tag.md" ] || continue
+      ! git_version_ge "$tag" "$sheet" && [ ! -e "$root/$name/versions/$tag.md" ] || continue
       fail "lab project \"$name\" tag $tag has no versions/$tag.md (run: agentctl-wave-roll $name)"
       bad=$((bad + 1))
     done < <(project_release_tags_since "$name" 2>/dev/null)

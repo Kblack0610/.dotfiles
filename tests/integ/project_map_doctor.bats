@@ -508,6 +508,30 @@ tag_since() { # $1=tag version, on a commit dated after RELEASE_NOTES_SINCE
   refute_output --partial 'has no versions/'
 }
 
+@test "release: a sheet behind its tags is one finding, not one per tag" {
+  tagged_app v1.2.0 v1.1.0
+  tag_since v1.2.0
+  tag_since v1.2.1
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'sheet v1.2.0 is behind its shipped tag v1.2.1'
+  refute_output --partial 'has no versions/'
+}
+
+@test "release: a profile with automation off is not asked for tag notes" {
+  tagged_app v1.3.0 v1.2.0
+  tag_since v1.2.1
+  printf '[{"profile":"personal","name":"alpha","automation":false}]\n' > "$NOTES_FIXTURE/stats.json"
+  run "$DOCTOR" "$MAP"
+  assert_success
+  refute_output --partial 'has no versions/'
+  # NEGATIVE CONTROL: automation on, the same missing note fails.
+  printf '[{"profile":"personal","name":"alpha"}]\n' > "$NOTES_FIXTURE/stats.json"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'tag v1.2.1 has no versions/v1.2.1.md'
+}
+
 @test "release: a shipping app with no Version line fails" {
   tagged_app "" v1.2.0
   run "$DOCTOR" "$MAP"
