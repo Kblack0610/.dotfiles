@@ -63,12 +63,12 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
   assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
   assert.match(h, /<button class="" data-ts="failed">failed <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source">/, "the filter row sits under the headers, a cell per column");
-  assert.match(h, /<details class="tfacet on" data-fkey="source"><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source" data-fq="source:ci">/, "the filter row sits under the headers, a cell per column");
+  assert.match(h, /<details class="tfacet on" data-fkey="source"[^>]*><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
   assert.match(h, /<button type="button" class="tfclear" data-tqc="">clear source<\/button>/, "a filtering column can be cleared");
   assert.match(h, /<input type="checkbox" data-tq data-fv="ci" value="" checked> <span>ci<\/span> <span class="n">2<\/span>/, "the picked value is ticked and unticking it is the query without it");
   assert.match(h, /<input type="checkbox" data-tq data-fv="agentctl" value="source:ci source:agentctl"> /, "ticking another adds it to the column's picks");
-  assert.match(h, /<details class="tfacet" data-fkey="result"><summary[^>]*>result<\/summary><div class="tfmenu"><label>/, "a column not filtering has no clear item");
+  assert.match(h, /<details class="tfacet" data-fkey="result" data-fq="source:ci"><summary[^>]*>result<\/summary><div class="tfmenu"><label>/, "a column not filtering has no clear item");
   assert.doesNotMatch(parts["jobs-facets"]?.innerHTML ?? "", /tfacet/);
   assert.equal((h.match(/data-fkey="source"/g) || []).length, 1, "a facet whose column is drawn is not also in the bar");
   assert.match(h, /id="jobs-q" data-tsearch placeholder="[^"]*" value="source:ci"/);
