@@ -309,10 +309,13 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
     if a.error() {
         return;
     }
+    // A fix row whose fix did not hold (came back, still red, no fix) has an owner to ask, so
+    // it is "unfixed"; "no owner" is only a red with no fix row at all.
     a.state = match fix.map(|r| r.outcome.as_str()) {
         Some("fixing" | "needs merge") => "fixing",
         Some("queued") => "queued",
-        _ => "no owner",
+        Some(_) => "unfixed",
+        None => "no owner",
     }
     .into();
 }
@@ -377,7 +380,11 @@ pub fn join(
             evidence: w.evidence.clone(),
             ..Default::default()
         };
-        owner(&mut a, Some(&format!("watch {}", w.name)), open);
+        owner(
+            &mut a,
+            Some(&format!("watch {}", w.name.replace('_', "-"))),
+            open,
+        );
         firing.push(a);
     }
     if infra_ok {
@@ -390,7 +397,7 @@ pub fn join(
                 .filter(|n| {
                     firing
                         .iter()
-                        .any(|a| a.source == "sentinel" && a.what == *n)
+                        .any(|a| a.source == "sentinel" && a.what.replace('_', "-") == *n)
                 });
             if watch.is_some() {
                 continue;
@@ -666,6 +673,26 @@ mod tests {
             NOW,
         );
         assert_eq!((a.counts.firing, a.level), (1, Level::Warn));
+    }
+
+    #[test]
+    fn a_fix_that_did_not_hold_is_unfixed_and_an_underscore_watch_is_one_row() {
+        let ws = vec![watch("dot_drift", "TRIP", "normal", Some(NOW - 60))];
+        let fixes = reds::split(vec![red("ar-5", "watch dot-drift", "came back")]);
+        let a = join(
+            &infra(&["watch dot_drift"]),
+            Ok(ws),
+            Ok(fixes),
+            Ok(String::new()),
+            NOW,
+        );
+        let got: Vec<(&str, &str, &str)> = a
+            .firing
+            .iter()
+            .map(|r| (r.what.as_str(), r.owner.as_str(), r.state.as_str()))
+            .collect();
+        assert_eq!(got, [("dot_drift", "ar-5 came back", "unfixed")]);
+        assert_eq!(a.counts.no_owner, 0);
     }
 
     #[test]

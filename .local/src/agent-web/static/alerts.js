@@ -29,7 +29,7 @@ const ALERT_HUE = { red: "bad", warn: "warn", ok: "ok", nodata: "" };
 const ALERT_LEVEL = { red: "FIRING", warn: "ERRORS ONLY", ok: "ALL CLEAR", nodata: "NO DATA" };
 // A health chip's level as Home's strip words it.
 const HEALTH_WORD = { red: "RED", warn: "WARN", ok: "OK", nodata: "NO DATA" };
-const alertState = (s) => (s === "error" || s === "no owner" ? "bad" : s === "fixing" || s === "queued" ? "running" : "");
+const alertState = (s) => (s === "error" || s === "no owner" || s === "unfixed" ? "bad" : s === "fixing" || s === "queued" ? "running" : "");
 const alertKey = (a) => `${a.source}|${a.what}`;
 
 function alertsFiringTitle(d) {

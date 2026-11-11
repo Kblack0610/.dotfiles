@@ -130,3 +130,8 @@ test("watches fold to their count when none is tripped, and a fold the reader se
   run("alertsOpen.watches = true; alst.render()");
   assert.match(box.innerHTML, /id="sec-watches" data-k="watches" open>/);
 });
+
+test("an error body with no counts shows its error, not a blank tab", () => {
+  const h = show({ rows: [], errors: ["join panicked"] });
+  assert.match(h, /<div class="card err">join panicked<\/div>/);
+});

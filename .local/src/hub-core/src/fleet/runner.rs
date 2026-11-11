@@ -532,10 +532,15 @@ pub(crate) fn field(yaml: &str, key: &str) -> String {
         ""
     } else {
         first
+            .strip_prefix('"')
+            .and_then(|f| f.strip_suffix('"'))
+            .or_else(|| first.strip_prefix('\'').and_then(|f| f.strip_suffix('\'')))
+            .unwrap_or(first)
     };
     let rest = lines
         .take_while(|l| l.starts_with(' ') || l.is_empty())
-        .map(str::trim);
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'));
     std::iter::once(first)
         .chain(rest)
         .filter(|s| !s.is_empty())
@@ -594,6 +599,15 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_strips_quotes_and_skips_comment_lines() {
+        let yaml = "what: \"the nightly\"\naction: 'rerun it'\nwhere: >-\n  GitHub,\n  # not this\n  unity\nsev: high\n";
+        assert_eq!(field(yaml, "what"), "the nightly");
+        assert_eq!(field(yaml, "action"), "rerun it");
+        assert_eq!(field(yaml, "where"), "GitHub, unity");
+        assert_eq!(field(yaml, "missing"), "");
+    }
 
     const T: i64 = 1_762_200_000; // 2025-11-03T12:00:00-08:00
 

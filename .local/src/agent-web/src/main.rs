@@ -360,8 +360,9 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     }
     // Sentinel's state files: a watch tripping, clearing or failing pushes the Alerts tab.
     let sentinel = hub_core::alerts::watch_dirs().1;
-    std::fs::create_dir_all(&sentinel)?;
-    targets.push((sentinel, flat));
+    if sentinel.is_dir() {
+        targets.push((sentinel, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here

@@ -262,7 +262,7 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
         p.dim()
     };
     let state = match r.state.as_str() {
-        "error" | "no owner" => p.bad(),
+        "error" | "no owner" | "unfixed" => p.bad(),
         "fixing" | "queued" => p.warn(),
         _ => Style::default(),
     };
