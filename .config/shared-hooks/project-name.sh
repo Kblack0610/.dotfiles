@@ -56,7 +56,7 @@ project_map_file() {
   printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 }
 
-# ── the name index: any spelling of a project -> its key ─────────────────────
+# --- the name index: any spelling of a project -> its key ---
 #
 # A key names itself; then, per tracker sorted by key, each of its `names` and each `/`-suffix of
 # its `github` and `forgejo` slugs; then each `paths` checkout's basename. First entry wins, every
@@ -131,7 +131,7 @@ resolve_project() {
   resolve_project_name "${1:-$PWD}"
 }
 
-# ── the registry's OTHER relation: project -> repo ────────────────────────────
+# --- the registry's OTHER relation: project -> repo ---
 #
 # resolve_project_name answers "what project is this PATH", which is the question
 # the hooks ask. The three functions below answer the inverse, which is the
@@ -210,7 +210,7 @@ project_slug() {
   printf '%s\n' "${name:0:8}"
 }
 
-# ── the registry's THIRD relation: project -> the version it has SHIPPED ──────
+# --- the registry's THIRD relation: project -> the version it has SHIPPED ---
 #
 # project_field <project> <key> -> one scalar from `trackers.<project>`, or "".
 #
