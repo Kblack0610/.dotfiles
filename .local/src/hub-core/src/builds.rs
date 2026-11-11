@@ -12,6 +12,7 @@
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
+//! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{self, LogRef};
+use crate::quarantine;
 use crate::releases::Level;
 use crate::run_detail::{self, Rates, RunDetail};
 use crate::table::{Row, Val};
@@ -40,6 +42,8 @@ pub struct Paths {
     pub fleet: PathBuf,
     /// The job archive: every job of each run, keyed as the ledger is.
     pub jobs: PathBuf,
+    /// Each repo's test quarantine and its last nightly's counts.
+    pub quarantine: PathBuf,
 }
 
 impl Paths {
@@ -54,16 +58,18 @@ impl Paths {
         let ledger = env("SCHEDULES_RUNS_LEDGER").unwrap_or_else(|| state.join("ci/runs.jsonl"));
         Paths {
             sync: ledger.with_file_name("sync.json"),
+            quarantine: env("SCHEDULES_QUARANTINE")
+                .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
             ledger,
             fleet: crate::boards::fleet_state(),
             jobs: env("SCHEDULES_JOBS_LEDGER").unwrap_or_else(|| state.join("ci/jobs.jsonl")),
         }
     }
 
-    /// Whether a changed file is the ledger, its sync record or the job archive: what wakes the
-    /// section.
+    /// Whether a changed file is the ledger, its sync record, the job archive or the quarantine:
+    /// what wakes the section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync || p == self.jobs
+        p == self.ledger || p == self.sync || p == self.jobs || p == self.quarantine
     }
 }
 
@@ -304,6 +310,8 @@ pub struct Builds {
     /// Each archived run's finished jobs, for the Run times fold's money (`run_detail::costs`).
     #[serde(skip)]
     pub job_times: HashMap<RunKey, Vec<run_detail::JobTime>>,
+    /// Each repo's test quarantine: the Quarantine fold, none when no repo has one.
+    pub quarantine: Vec<quarantine::Lane>,
 }
 
 impl Builds {
@@ -499,6 +507,13 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
                 .push(format!("jobs.jsonl: {bad} unreadable line(s) skipped"));
         }
         out.job_times = run_detail::job_times(&records, now - (KEEP_DAYS + 1) * 86400);
+    }
+    // The quarantine is absent until a repo has one: no file is no fold, not an error.
+    if let Ok(text) = read_text(&paths.quarantine) {
+        match quarantine::parse(&text) {
+            Ok(lanes) => out.quarantine = lanes,
+            Err(e) => out.errors.push(e),
+        }
     }
     out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
@@ -863,6 +878,7 @@ mod tests {
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let b = read(&p, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -885,6 +901,7 @@ mod tests {
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -913,6 +930,7 @@ mod tests {
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -929,6 +947,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_quarantine_rides_the_read_silent_when_absent_and_red_when_unreadable() {
+        let (d, p) = opened("quar", &[], "");
+        assert!(
+            p.is_ledger_file(&p.quarantine),
+            "a new quarantine wakes the section"
+        );
+        let none = read(&p, NOW);
+        assert!(none.quarantine.is_empty());
+        assert!(
+            !none.errors.iter().any(|e| e.contains("quarantine")),
+            "{:?}",
+            none.errors
+        );
+        std::fs::write(
+            &p.quarantine,
+            r#"{"repos":[{"repo":"Org/app","base":"main","report":{"entries":3,"rows":[]}}]}"#,
+        )
+        .unwrap();
+        let some = read(&p, NOW);
+        std::fs::write(&p.quarantine, "{").unwrap();
+        let bad = read(&p, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(some.quarantine[0].repo, "Org/app");
+        assert_eq!(some.quarantine[0].report.as_ref().unwrap().entries, 3);
+        assert!(bad.quarantine.is_empty());
+        assert!(
+            bad.errors.iter().any(|e| e.starts_with("quarantine.json:")),
+            "{:?}",
+            bad.errors
+        );
+    }
+
     /// A run ledger and job archive in a fresh directory, and the paths that read them.
     fn opened(name: &str, runs: &[String], jobs: &str) -> (PathBuf, Paths) {
         let d = std::env::temp_dir().join(format!("hub-builds-{name}-{}", std::process::id()));
@@ -940,6 +991,7 @@ mod tests {
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
         };
         (d, p)
     }

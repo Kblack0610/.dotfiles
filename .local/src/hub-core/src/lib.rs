@@ -34,6 +34,7 @@ pub mod plans;
 pub mod projects;
 pub mod prom;
 pub mod proposals;
+pub mod quarantine;
 pub mod queue;
 pub mod reds;
 pub mod releases;

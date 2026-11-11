@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # tests/Makefile UNIT_JOBS: bats --jobs is the cores free now (nproc minus the 1-minute load,
-# floor 2), so concurrent local gates share the box instead of each forking nproc ways (ar-885).
+# floor 2), so concurrent local gates share the box instead of each forking nproc ways (ar-885);
+# on CI, every core.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -9,8 +10,8 @@ setup() {
   CORES=$(nproc)
 }
 
-# unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes.
-unit_jobs() { make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
+# unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes off CI (this file runs on CI too).
+unit_jobs() { env -u CI make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
 
 # with_load <1-min load> [running now] -> UNIT_JOBS with that load in a /proc/loadavg-shaped file.
 with_load() {
@@ -60,4 +61,10 @@ with_load() {
 @test "an explicit UNIT_JOBS still wins" {
   run unit_jobs UNIT_JOBS=7
   assert_output "7"
+}
+
+@test "a CI runner gets every core whatever its load (its load is its own setup)" {
+  printf '%s 1.00 1.00 %s/100 1\n' "$((CORES + 10)).00" "$CORES" > "$BATS_TEST_TMPDIR/loadavg"
+  run unit_jobs CI=true UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  assert_output "$CORES"
 }
