@@ -2,10 +2,11 @@
 //! `hub_core::alerts`, the reader the hub TUI's Alerts tab uses. The firing rows are filtered
 //! and sorted here by `hub_core::table`, so the page only draws.
 //!
-//! Prometheus and Alertmanager come from the Infra tab's cache (`infra::CACHE_SECS`). `fleet-bench reds` takes about 2s and a fix
-//! moves in minutes, so its answer is kept for `REDS_SECS` or until a queue write (a fix item
-//! filed or moved). The watches and the pages ledger are files, read on every request, so the
-//! push that a watch changed state is answered with that state.
+//! Prometheus and Alertmanager come from the Infra tab's cache (`infra::CACHE_SECS`).
+//! `fleet-bench reds` takes about 2s and a fix moves in minutes, so its answer is kept for
+//! `REDS_SECS` or until a queue write (a fix item filed or moved). The watches and the pages
+//! ledger are files, read on every request, so the push that a watch changed state is answered
+//! with that state.
 
 use hub_core::alerts::{self, Alert, Alerts};
 use hub_core::reds::{self, Reds};

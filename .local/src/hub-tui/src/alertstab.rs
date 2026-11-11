@@ -35,10 +35,11 @@ pub struct AlertsView {
 }
 
 /// The row a selection stands for, so a re-read keeps the same alert selected.
-pub type RowId = (String, String);
+pub type RowId = (String, String, String);
 
+/// Source, what and where: one Alertmanager rule fires once per place, under one summary.
 pub fn row_id(a: &Alert) -> RowId {
-    (a.source.clone(), a.what.clone())
+    (a.source.clone(), a.what.clone(), a.place.clone())
 }
 
 fn status(l: Level) -> Option<f64> {
@@ -634,10 +635,11 @@ pub(crate) mod tests {
     fn a_reselect_follows_the_row_after_a_reread() {
         let a = sample();
         let mut v = AlertsView::default();
-        v.reselect(&a, Some(("sentinel".into(), "dream".into())));
+        let dream = a.firing.iter().find(|r| r.what == "dream").map(row_id);
+        v.reselect(&a, dream);
         assert_eq!(v.selected(&a).map(|r| r.what.as_str()), Some("dream"));
         v.table.sel = 99;
-        v.reselect(&a, Some(("sentinel".into(), "gone".into())));
+        v.reselect(&a, Some(("sentinel".into(), "gone".into(), String::new())));
         assert_eq!(v.table.sel, v.shown(&a).len() - 1);
     }
 

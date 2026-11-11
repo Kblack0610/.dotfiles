@@ -90,7 +90,7 @@ impl Alert {
 
 impl Row for Alert {
     const COLUMNS: &'static [&'static str] = &["sev", "what", "source", "since", "owner", "state"];
-    const STATES: &'static [&'static str] = &["all", "trip", "error", "no owner"];
+    const STATES: &'static [&'static str] = &["all", "trip", "error", "no owner", ALERTMANAGER];
     const FACETS: &'static [&'static str] = &["sev", "source", "state"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["sev", "since", "state"];
@@ -113,9 +113,10 @@ impl Row for Alert {
 
     fn in_state(&self, state: &str) -> bool {
         match state {
-            "trip" => !self.error(),
+            "trip" => !self.error() && self.source != ALERTMANAGER,
             "error" => self.error(),
             "no owner" => self.state == "no owner",
+            ALERTMANAGER => self.source == ALERTMANAGER,
             _ => true,
         }
     }
@@ -368,13 +369,13 @@ fn order(a: &Alert) -> (usize, usize, i64, String) {
 }
 
 /// An Alertmanager rule's `severity` in the watches' words: `critical` pages (ntfy-critical)
-/// as a high watch does.
-fn am_sev(sev: &str) -> &str {
+/// as a high watch does. Any other or no severity is a warning, so a rule nobody labelled still
+/// raises the tab.
+fn am_sev(sev: &str) -> &'static str {
     match sev {
         "critical" => "high",
-        "warning" => "normal",
         "info" => "low",
-        s => label(s),
+        _ => "normal",
     }
 }
 
@@ -392,11 +393,14 @@ fn am_row(f: &Firing) -> Alert {
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let runbook = if f.runbook.is_empty() {
-        String::new()
-    } else {
-        format!("runbook {}; ", f.runbook)
-    };
+    let mut action: Vec<String> = Vec::new();
+    if !f.runbook.is_empty() {
+        action.push(format!("runbook {}", f.runbook));
+    }
+    if !f.receivers.is_empty() {
+        action.push(format!("routed to {}", f.receivers.join(", ")));
+    }
+    action.push("silence it in Alertmanager once someone owns it".into());
     Alert {
         sev: am_sev(&f.severity).into(),
         what: if f.summary.is_empty() {
@@ -408,10 +412,7 @@ fn am_row(f: &Firing) -> Alert {
         since: f.since,
         about,
         place,
-        action: format!(
-            "{runbook}routed to {}; a silence in Alertmanager says known, leave it",
-            label(&f.receivers.join(", "))
-        ),
+        action: action.join("; "),
         owner: "-".into(),
         state: "firing".into(),
         ..Default::default()
@@ -542,7 +543,7 @@ pub fn join(
         watches_error: n("ERROR"),
         watches_ok: n("OK"),
         watches_new: n("new"),
-        alertmanager: firing.iter().filter(|a| a.source == ALERTMANAGER).count(),
+        alertmanager: firing.iter().filter(|a| a.in_state(ALERTMANAGER)).count(),
     };
     let hue = |l: Level| firing.iter().any(|a| a.hue() == l);
     let level = if hue(Level::Red) {
@@ -1029,8 +1030,8 @@ mod tests {
         assert!(r.action.contains("routed to ntfy"), "{}", r.action);
         assert_eq!(
             (a.counts.tripped, a.counts.no_owner),
-            (3, 1),
-            "no fix is filed under a rule, so it is not a red with no owner"
+            (1, 1),
+            "a rule is neither a tripped watch nor a red with no owner"
         );
     }
 
