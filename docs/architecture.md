@@ -81,7 +81,7 @@ How agent work is run, recorded and read. The fleet-wide picture with its diagra
 
 ## Tests
 
-The same tiers as the cockpit (`tests/Makefile`, `.github/workflows/tests.yml`), plus `make -C tests test-rust` for the crates. The runtime's own contract tests are `tests/unit/runner_contract.bats`, `tests/integ/agent_run_*.bats`, `tests/integ/agent_queue.bats`, `tests/integ/agentctl_*.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch.bats`, `tests/unit/fleet_sessions.bats`, `tests/unit/pipelines_doc.bats` and `tests/unit/standards_doc.bats`.
+The same tiers as the cockpit (`tests/Makefile`, `.github/workflows/tests.yml`), plus `make -C tests test-rust` for the crates. The runtime's own contract tests are `tests/unit/runner_contract.bats`, `tests/integ/agent_run_*.bats`, `tests/integ/agent_queue.bats`, `tests/integ/agentctl_*.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch*.bats`, `tests/unit/fleet_sessions.bats`, `tests/unit/pipelines_doc.bats` and `tests/unit/standards_doc.bats`.
 
 ## Standards
 

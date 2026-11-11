@@ -246,6 +246,17 @@ pub fn releases_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".agent/releases"))
 }
 
+/// `claude-acct gateway`'s snapshot (the Costs tab's Consumers): CLAUDE_ACCT_GATEWAY, else the
+/// file in claude-acct's cache dir, resolved as claude-acct resolves it.
+pub fn gateway_snapshot() -> PathBuf {
+    env("CLAUDE_ACCT_GATEWAY").unwrap_or_else(|| {
+        env("CLAUDE_ACCT_CACHE")
+            .or_else(|| env("XDG_CACHE_HOME").map(|c| c.join("claude-acct")))
+            .unwrap_or_else(|| home().join(".cache/claude-acct"))
+            .join("gateway.json")
+    })
+}
+
 /// `agent-usage tokens snapshot`'s records, one `<YYYY-MM-DD>.json` per day (its `TOKENS_DIR`).
 pub fn token_usage_dir() -> PathBuf {
     std::env::var_os("TOKENS_DIR")

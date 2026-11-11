@@ -43,6 +43,6 @@ The agent runtime itself: the machinery that takes a piece of agent work from in
 ### Status
 
 - In daily use. The confs, queue, dispatch, shepherd and evals run unattended on the human's workstation.
-- Held by tests: `tests/unit/runner_contract.bats` (no direct `claude -p`), `tests/integ/agent_run_budget.bats`, `tests/integ/agent_queue.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch.bats`, `tests/unit/pipelines_doc.bats`.
+- Held by tests: `tests/unit/runner_contract.bats` (no direct `claude -p`), `tests/integ/agent_run_budget.bats`, `tests/integ/agent_queue.bats`, `tests/unit/agent_land.bats`, `tests/unit/fleet_dispatch*.bats`, `tests/unit/pipelines_doc.bats`.
 - Invariants, each with the test that fails when it breaks: `.local/src/docs/standards.md`.
 - Stage and its gaps: `project-stage-check agent-runtime`. Not yet in place: a deploy workflow that runs on merge and a perf baseline on the target (`operations/deploy.md`).

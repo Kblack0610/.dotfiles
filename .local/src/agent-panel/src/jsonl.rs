@@ -80,9 +80,14 @@ pub fn asks_human_at(path: &Path) -> bool {
 /// its last call is a dialog tool left open (AskUserQuestion, ExitPlanMode), or its closing text
 /// asks a question (`text_asks`) or asks the human to do something (`text_requests_action`).
 fn asks_human(text: &str) -> bool {
-    let Some(block) = last_turn_block(text) else { return false };
+    let Some(block) = last_turn_block(text) else {
+        return false;
+    };
     match block.get("type").and_then(Value::as_str) {
-        Some("tool_use") => block.get("name").and_then(Value::as_str).is_some_and(|n| HUMAN_TOOLS.contains(&n)),
+        Some("tool_use") => block
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| HUMAN_TOOLS.contains(&n)),
         Some("text") => {
             let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
             text_asks(msg) || text_requests_action(msg)
@@ -99,8 +104,14 @@ pub fn open_dialog_at(path: &Path) -> Option<(String, Value)> {
 
 fn open_dialog(text: &str) -> Option<(String, Value)> {
     let block = last_turn_block(text)?;
-    let name = block.get("name").and_then(Value::as_str).filter(|n| HUMAN_TOOLS.contains(n))?;
-    Some((name.to_string(), block.get("input").cloned().unwrap_or(Value::Null)))
+    let name = block
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| HUMAN_TOOLS.contains(n))?;
+    Some((
+        name.to_string(),
+        block.get("input").cloned().unwrap_or(Value::Null),
+    ))
 }
 
 /// The last content block of the last main-thread entry, when that entry is the assistant's
@@ -119,7 +130,10 @@ fn last_turn_block(text: &str) -> Option<Value> {
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|v| own_turn(v) || answer(v))
         .filter(own_turn)?;
-    last.pointer("/message/content")?.as_array()?.last().cloned()
+    last.pointer("/message/content")?
+        .as_array()?
+        .last()
+        .cloned()
 }
 
 /// An entry the session wrote itself: a main-thread assistant turn, not a subagent's.
@@ -130,7 +144,13 @@ fn own_turn(v: &Value) -> bool {
 
 /// Closing questions that are manners, not asks: a session that ends every turn this way is not
 /// waiting on anything. Matched against the start of the lowercased sentence.
-const GENERIC_CLOSERS: [&str; 5] = ["anything else", "is there anything else", "any questions", "any other questions", "what's next"];
+const GENERIC_CLOSERS: [&str; 5] = [
+    "anything else",
+    "is there anything else",
+    "any questions",
+    "any other questions",
+    "what's next",
+];
 
 /// The message's closing paragraph asks a question, code fences dropped. A one-line paragraph
 /// with no question after it (a "the screenshot is at X" postscript) does not hide the one before.
@@ -147,7 +167,11 @@ fn text_asks(msg: &str) -> bool {
         }
     }
     paras.retain(|p| !p.is_empty());
-    let asks = |found: Vec<String>| found.iter().any(|s| !GENERIC_CLOSERS.iter().any(|g| s.starts_with(g)));
+    let asks = |found: Vec<String>| {
+        found
+            .iter()
+            .any(|s| !GENERIC_CLOSERS.iter().any(|g| s.starts_with(g)))
+    };
     let Some((last, before)) = paras.split_last() else {
         return false;
     };
@@ -160,7 +184,14 @@ fn text_asks(msg: &str) -> bool {
 
 /// Phrases that hand the next step to the human ("when that's done, I'll re-run it"), matched in
 /// the lowercased closing paragraph with curly apostrophes folded.
-const ACTION_CUES: [&str; 6] = ["when that's done", "once that's done", "when you've", "once you've", "let me know when", "once you have"];
+const ACTION_CUES: [&str; 6] = [
+    "when that's done",
+    "once that's done",
+    "when you've",
+    "once you've",
+    "let me know when",
+    "once you have",
+];
 
 /// The message ends by asking the human to act rather than asking a question: one of its last
 /// two blocks is a fenced `! <command>` line (only the human's prompt runs those), or its closing
@@ -182,7 +213,9 @@ fn text_requests_action(msg: &str) -> bool {
     }
     blocks.retain(|(_, b)| !b.is_empty());
     let tail = &blocks[blocks.len().saturating_sub(2)..];
-    let command = tail.iter().any(|(f, b)| *f && b.iter().any(|l| l.trim_start().starts_with("! ")));
+    let command = tail
+        .iter()
+        .any(|(f, b)| *f && b.iter().any(|l| l.trim_start().starts_with("! ")));
     let cue = tail.last().is_some_and(|(f, b)| {
         let p = b.join(" ").to_lowercase().replace('\u{2019}', "'");
         !*f && ACTION_CUES.iter().any(|c| p.contains(c))
@@ -202,15 +235,34 @@ fn question_sentences(lines: &[&str]) -> Vec<String> {
             continue;
         }
         let numbered = t.trim_start_matches(|c: char| c.is_ascii_digit());
-        let item = ["- ", "* ", "+ "].iter().find_map(|m| t.strip_prefix(m)).or_else(|| {
-            (numbered.len() < t.len()).then(|| numbered.strip_prefix(". ").or_else(|| numbered.strip_prefix(") "))).flatten()
-        });
+        let item = ["- ", "* ", "+ "]
+            .iter()
+            .find_map(|m| t.strip_prefix(m))
+            .or_else(|| {
+                (numbered.len() < t.len())
+                    .then(|| {
+                        numbered
+                            .strip_prefix(". ")
+                            .or_else(|| numbered.strip_prefix(") "))
+                    })
+                    .flatten()
+            });
         let chars: Vec<char> = item.unwrap_or(t).chars().collect();
         let (mut code, mut quote, mut start) = (false, false, 0);
         // Punctuation ends a sentence when only closing markdown sits between it and a space.
         let closing = |c: &&char| !matches!(c, '*' | '_' | ')');
-        let ends = |i: usize| chars[i + 1..].iter().find(closing).is_none_or(|n| n.is_whitespace());
-        let ends_line = |i: usize| chars[i + 1..].iter().filter(closing).all(|c| c.is_whitespace());
+        let ends = |i: usize| {
+            chars[i + 1..]
+                .iter()
+                .find(closing)
+                .is_none_or(|n| n.is_whitespace())
+        };
+        let ends_line = |i: usize| {
+            chars[i + 1..]
+                .iter()
+                .filter(closing)
+                .all(|c| c.is_whitespace())
+        };
         for (i, &c) in chars.iter().enumerate() {
             match c {
                 '`' => code = !code,
@@ -220,7 +272,10 @@ fn question_sentences(lines: &[&str]) -> Vec<String> {
                 '.' | '!' | ':' | '?' if !code && !quote && ends(i) => {
                     let from = std::mem::replace(&mut start, i + 1);
                     if c == '?' && (item.is_none() || ends_line(i)) {
-                        let s: String = chars[from..i].iter().filter(|c| !matches!(c, '*' | '_' | '#')).collect();
+                        let s: String = chars[from..i]
+                            .iter()
+                            .filter(|c| !matches!(c, '*' | '_' | '#'))
+                            .collect();
                         out.push(s.trim().to_lowercase());
                     }
                 }
@@ -289,7 +344,12 @@ const JOB_MAX_SECS: u64 = 12 * 3600;
 /// In the notification a resumed session gets for each job that died with the old process.
 const SESSION_ENDED: &str = "before the previous session ended";
 /// `toolUseResult` fields that mean the call went on in the background under that id.
-const BACKGROUND_IDS: [&str; 4] = ["backgroundTaskId", "taskId", "resumedAgentId", "revivedAgentId"];
+const BACKGROUND_IDS: [&str; 4] = [
+    "backgroundTaskId",
+    "taskId",
+    "resumedAgentId",
+    "revivedAgentId",
+];
 /// Which commands are a merge gate or a test run. Content, so it lives in dotfiles config.
 const TIME_USE_CONF: &str = ".config/agent-panel/time-use.conf";
 const SAID_CHARS: usize = 120;
@@ -375,7 +435,11 @@ fn walk(text: &str, patterns: &[(Wait, &str)]) -> (TimeUse, &'static str) {
         if let (Some(at), Some(prev)) = (at, last) {
             if at > prev {
                 let gap = at - prev;
-                let wait = if gap < WORK_GAP_SECS { Wait::Work } else { gap_wait(&lines[i..], prev, at, &mut jobs) };
+                let wait = if gap < WORK_GAP_SECS {
+                    Wait::Work
+                } else {
+                    gap_wait(&lines[i..], prev, at, &mut jobs)
+                };
                 secs[wait as usize] += gap;
             }
         }
@@ -384,12 +448,25 @@ fn walk(text: &str, patterns: &[(Wait, &str)]) -> (TimeUse, &'static str) {
     }
     let open = open_class(&jobs, last.unwrap_or(0));
     let [work, gate, test, jobs, human, parked] = secs.map(|s| s / 60);
-    (TimeUse { work_min: work, gate_min: gate, test_min: test, jobs_min: jobs, human_min: human, parked_min: parked }, open)
+    (
+        TimeUse {
+            work_min: work,
+            gate_min: gate,
+            test_min: test,
+            jobs_min: jobs,
+            human_min: human,
+            parked_min: parked,
+        },
+        open,
+    )
 }
 
 /// The strongest wait among the jobs open at `last`, skipping any older than JOB_MAX_SECS.
 fn open_class(jobs: &[Job], last: u64) -> &'static str {
-    let live: Vec<&Job> = jobs.iter().filter(|j| last.saturating_sub(j.since) < JOB_MAX_SECS).collect();
+    let live: Vec<&Job> = jobs
+        .iter()
+        .filter(|j| last.saturating_sub(j.since) < JOB_MAX_SECS)
+        .collect();
     let has = |w: Wait| live.iter().any(|j| j.wait == w);
     if has(Wait::Human) {
         "human"
@@ -421,10 +498,15 @@ fn entry_epoch(line: &str) -> Option<u64> {
 
 /// Keep the open jobs current with one entry.
 fn track_jobs(line: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
-    if !["\"tool_use\"", "\"tool_result\"", "<task-notification>"].iter().any(|k| line.contains(k)) {
+    if !["\"tool_use\"", "\"tool_result\"", "<task-notification>"]
+        .iter()
+        .any(|k| line.contains(k))
+    {
         return;
     }
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
     match v.get("type").and_then(Value::as_str) {
         Some("assistant") => {
             for c in content_blocks(&v) {
@@ -440,18 +522,24 @@ fn track_jobs(line: &str, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
             for c in content_blocks(&v) {
                 match c.get("type").and_then(Value::as_str) {
                     Some("tool_result") => tool_returned(&v, c, jobs),
-                    Some("text") => close_notified(c.get("text").and_then(Value::as_str).unwrap_or(""), jobs),
+                    Some("text") => {
+                        close_notified(c.get("text").and_then(Value::as_str).unwrap_or(""), jobs)
+                    }
                     _ => {}
                 }
             }
         }
-        Some("queue-operation") => close_notified(v.get("content").and_then(Value::as_str).unwrap_or(""), jobs),
+        Some("queue-operation") => {
+            close_notified(v.get("content").and_then(Value::as_str).unwrap_or(""), jobs)
+        }
         _ => {}
     }
 }
 
 fn content_blocks(v: &Value) -> &[Value] {
-    v.pointer("/message/content").and_then(Value::as_array).map_or(&[], Vec::as_slice)
+    v.pointer("/message/content")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
 }
 
 fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job>) {
@@ -461,21 +549,36 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
         let id = input.and_then(|i| i.get("task_id")).and_then(Value::as_str);
         jobs.retain(|j| j.task_id.is_none() || j.task_id.as_deref() != id);
     }
-    let command = input.and_then(|i| i.get("command")).and_then(Value::as_str).unwrap_or("");
+    let command = input
+        .and_then(|i| i.get("command"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let wait = if HUMAN_TOOLS.contains(&name) {
         Wait::Human
     } else {
-        patterns.iter().find(|(_, text)| command.contains(text)).map_or(Wait::Jobs, |(wait, _)| *wait)
+        patterns
+            .iter()
+            .find(|(_, text)| command.contains(text))
+            .map_or(Wait::Jobs, |(wait, _)| *wait)
     };
     if let Some(id) = call.get("id").and_then(Value::as_str) {
         let agent = name == "Agent" || name == "Task";
-        jobs.push(Job { tool_id: id.to_string(), task_id: None, wait, agent, since: at });
+        jobs.push(Job {
+            tool_id: id.to_string(),
+            task_id: None,
+            wait,
+            agent,
+            since: at,
+        });
     }
 }
 
 /// A call's result ends it, unless the result says it went on in the background.
 fn tool_returned(entry: &Value, block: &Value, jobs: &mut Vec<Job>) {
-    let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+    let id = block
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     match background_id(entry) {
         Some(task) => {
             if let Some(job) = jobs.iter_mut().find(|j| j.tool_id == id) {
@@ -489,20 +592,31 @@ fn tool_returned(entry: &Value, block: &Value, jobs: &mut Vec<Job>) {
 /// An Agent call reports its id whether or not it waits, so only `isAsync` counts there.
 fn background_id(entry: &Value) -> Option<&str> {
     let result = entry.get("toolUseResult")?;
-    let id = |key: &str| result.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let id = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
     BACKGROUND_IDS.iter().find_map(|k| id(k)).or_else(|| {
-        (result.get("isAsync").and_then(Value::as_bool) == Some(true)).then(|| id("agentId")).flatten()
+        (result.get("isAsync").and_then(Value::as_bool) == Some(true))
+            .then(|| id("agentId"))
+            .flatten()
     })
 }
 
 /// A job's notification ends it. A Monitor's event only reports, and its watch stays open: a
 /// status or the watch expiring is what ends one.
 fn close_notified(s: &str, jobs: &mut Vec<Job>) {
-    if !s.starts_with("<task-notification>") || !(s.contains("<status>") || s.contains("Monitor expired")) {
+    if !s.starts_with("<task-notification>")
+        || !(s.contains("<status>") || s.contains("Monitor expired"))
+    {
         return;
     }
     let (tool, task) = (tag_text(s, "tool-use-id"), tag_text(s, "task-id"));
-    jobs.retain(|j| Some(j.tool_id.as_str()) != tool && (task.is_none() || j.task_id.as_deref() != task));
+    jobs.retain(|j| {
+        Some(j.tool_id.as_str()) != tool && (task.is_none() || j.task_id.as_deref() != task)
+    });
 }
 
 fn tag_text<'a>(s: &'a str, tag: &str) -> Option<&'a str> {
@@ -531,7 +645,9 @@ fn gap_wait(lines: &[&str], start: u64, end: u64, jobs: &mut Vec<Job>) -> Wait {
 }
 
 fn wake_window<'a>(lines: &'a [&'a str], end: u64) -> impl Iterator<Item = &'a &'a str> {
-    lines.iter().take_while(move |l| entry_epoch(l).is_none_or(|at| at <= end + WAKE_SECS))
+    lines
+        .iter()
+        .take_while(move |l| entry_epoch(l).is_none_or(|at| at <= end + WAKE_SECS))
 }
 
 /// Who ended a long gap: the first entry at the gap's end that says who woke the session.
@@ -540,7 +656,9 @@ fn wake_window<'a>(lines: &'a [&'a str], end: u64) -> impl Iterator<Item = &'a &
 /// nothing the session was running ended the gap.
 fn gap_end(lines: &[&str], end: u64) -> Wait {
     for line in wake_window(lines, end) {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if let Some(wait) = entry_wait(&v) {
             return wait;
         }
@@ -554,12 +672,19 @@ fn entry_wait(v: &Value) -> Option<Wait> {
         // A slow model turn is the session working: nothing arrived to end the gap.
         "assistant" => Some(Wait::Work),
         // An enqueue carries the prompt; its dequeue and remove carry nothing.
-        "queue-operation" => v.get("content").and_then(Value::as_str).filter(|s| !s.is_empty()).map(prompt_wait),
+        "queue-operation" => v
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(prompt_wait),
         "user" if v.get("isMeta").and_then(Value::as_bool) == Some(true) => Some(Wait::Parked),
         "user" => match v.pointer("/message/content")? {
             Value::String(s) => Some(prompt_wait(s)),
             Value::Array(blocks) => {
-                if blocks.iter().any(|c| c.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                if blocks
+                    .iter()
+                    .any(|c| c.get("type").and_then(Value::as_str) == Some("tool_result"))
+                {
                     return Some(Wait::Jobs);
                 }
                 blocks
@@ -595,17 +720,29 @@ fn doing_said(text: &str) -> (String, String) {
         if !line.contains("\"type\":\"assistant\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if !own_turn(&v) {
             continue;
         }
-        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
         for c in blocks.iter().rev() {
             match c.get("type").and_then(Value::as_str) {
                 Some("tool_use") if doing.is_none() => {
                     let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
-                    let desc = c.pointer("/input/description").and_then(Value::as_str).map(collapse).unwrap_or_default();
-                    doing = Some(if desc.is_empty() { name.to_string() } else { format!("{name}: {}", truncate(&desc, SAID_CHARS)) });
+                    let desc = c
+                        .pointer("/input/description")
+                        .and_then(Value::as_str)
+                        .map(collapse)
+                        .unwrap_or_default();
+                    doing = Some(if desc.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{name}: {}", truncate(&desc, SAID_CHARS))
+                    });
                 }
                 Some("text") if said.is_none() => {
                     let t = collapse(c.get("text").and_then(Value::as_str).unwrap_or(""));
@@ -621,7 +758,11 @@ fn doing_said(text: &str) -> (String, String) {
 }
 
 fn compactions(text: &str) -> u64 {
-    text.lines().filter(|l| l.contains("\"subtype\":\"compact_boundary\"") && !l.contains("\"isSidechain\":true")).count() as u64
+    text.lines()
+        .filter(|l| {
+            l.contains("\"subtype\":\"compact_boundary\"") && !l.contains("\"isSidechain\":true")
+        })
+        .count() as u64
 }
 
 /// The newest top-level `timestamp` among the last 200 lines. Entries written in one
@@ -631,14 +772,25 @@ fn last_entry(text: &str) -> Option<u64> {
         .iter()
         .filter(|l| l.contains("\"timestamp\":\""))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter_map(|v| v.get("timestamp").and_then(Value::as_str).and_then(iso_epoch))
+        .filter_map(|v| {
+            v.get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(iso_epoch)
+        })
         .max()
 }
 
 /// `2026-10-27T22:31:45.360Z` (UTC, optional fraction) -> epoch seconds. Anything else is None.
 fn iso_epoch(s: &str) -> Option<u64> {
     let b = s.as_bytes();
-    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || !s.ends_with('Z') {
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || !s.ends_with('Z')
+    {
         return None;
     }
     let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
@@ -665,11 +817,18 @@ fn edited_files(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for v in text
         .lines()
-        .filter(|l| l.contains("\"tool_use\"") && TOOLS.iter().any(|t| l.contains(&format!("\"name\":\"{t}\""))))
+        .filter(|l| {
+            l.contains("\"tool_use\"")
+                && TOOLS
+                    .iter()
+                    .any(|t| l.contains(&format!("\"name\":\"{t}\"")))
+        })
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| v.get("type").and_then(Value::as_str) == Some("assistant"))
     {
-        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
         for c in blocks {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
             if c.get("type").and_then(Value::as_str) != Some("tool_use") || !TOOLS.contains(&name) {
@@ -702,8 +861,15 @@ fn last_usage(text: &str) -> (u64, String) {
                 && v.pointer("/message/model").and_then(Value::as_str) != Some("<synthetic>")
         })
         .map(|v| {
-            let n = |k: &str| v.pointer(&format!("/message/usage/{k}")).and_then(Value::as_u64).unwrap_or(0);
-            let model = v.pointer("/message/model").and_then(Value::as_str).unwrap_or("");
+            let n = |k: &str| {
+                v.pointer(&format!("/message/usage/{k}"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            };
+            let model = v
+                .pointer("/message/model")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             (
                 n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"),
                 model.to_string(),
@@ -737,11 +903,15 @@ fn plan_file(text: &str) -> String {
         if !line.contains(DIR) && !line.contains(ASSISTANT) {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if own_turn(&v) {
             return String::new();
         }
-        if v.get("type").and_then(Value::as_str) == Some("user") && v.get("isMeta").and_then(Value::as_bool) != Some(true) {
+        if v.get("type").and_then(Value::as_str) == Some("user")
+            && v.get("isMeta").and_then(Value::as_bool) != Some(true)
+        {
             // A typed prompt is a string; a tool result is an array, and is not the prompt.
             if let Some(s) = v.pointer("/message/content").and_then(Value::as_str) {
                 count_plans(s, &mut prompt);
@@ -765,11 +935,22 @@ fn plans_written(text: &str) -> Vec<String> {
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(own_turn)
     {
-        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
-        for c in blocks.iter().filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use")) {
-            let input = |k: &str| c.pointer(&format!("/input/{k}")).and_then(Value::as_str).unwrap_or("");
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
+        for c in blocks
+            .iter()
+            .filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use"))
+        {
+            let input = |k: &str| {
+                c.pointer(&format!("/input/{k}"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                "Edit" | "Write" | "MultiEdit" => out.extend(plan_name(input("file_path")).map(str::to_string)),
+                "Edit" | "Write" | "MultiEdit" => {
+                    out.extend(plan_name(input("file_path")).map(str::to_string))
+                }
                 "Bash" => out.extend(bash_plan_writes(input("command"))),
                 _ => {}
             }
@@ -787,18 +968,32 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
     for (i, _) in cmd.match_indices("/plans/") {
         let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
         let end = cmd[i..]
-            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '~' | '$' | '{' | '}')))
+            .find(|c: char| {
+                !(c.is_ascii_alphanumeric()
+                    || matches!(c, '-' | '_' | '.' | '/' | '~' | '$' | '{' | '}'))
+            })
             .map_or(cmd.len(), |e| i + e);
-        let Some(name) = plan_name(&cmd[start..end]) else { continue };
+        let Some(name) = plan_name(&cmd[start..end]) else {
+            continue;
+        };
         // Only the path's own opening quote goes, so a quoted `'->'` pattern before it is no redirect.
-        let before = cmd[..start].strip_suffix(['\'', '"']).unwrap_or(&cmd[..start]).trim_end();
+        let before = cmd[..start]
+            .strip_suffix(['\'', '"'])
+            .unwrap_or(&cmd[..start])
+            .trim_end();
         let words: Vec<&str> = before[segment_start(before)..]
             .trim_start_matches([' ', '('])
             .split_whitespace()
             .skip_while(|w| w.contains('=') && !w.starts_with('-'))
             .collect();
-        let cmd_is = |name: &str| words.first().is_some_and(|w| w.rsplit('/').next() == Some(name));
-        let sed_in_place = |w: &&str| *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'));
+        let cmd_is = |name: &str| {
+            words
+                .first()
+                .is_some_and(|w| w.rsplit('/').next() == Some(name))
+        };
+        let sed_in_place = |w: &&str| {
+            *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'))
+        };
         if before.ends_with('>')
             || (cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan=")))
             || cmd_is("tee")
@@ -831,8 +1026,14 @@ fn plan_name(path: &str) -> Option<&str> {
     let (dir, name) = path.rsplit_once('/')?;
     let (config, plans) = dir.rsplit_once('/')?;
     let (home, config) = config.rsplit_once('/')?;
-    let in_home = matches!(home, "~" | "$HOME" | "${HOME}") || std::path::Path::new(home) == crate::session::home();
-    (in_home && plans == "plans" && config.starts_with(".claude") && name.len() > 3 && name.ends_with(".md")).then_some(name)
+    let in_home = matches!(home, "~" | "$HOME" | "${HOME}")
+        || std::path::Path::new(home) == crate::session::home();
+    (in_home
+        && plans == "plans"
+        && config.starts_with(".claude")
+        && name.len() > 3
+        && name.ends_with(".md"))
+    .then_some(name)
 }
 
 /// Count each `~/.claude/plans/<name>.md` that `text` names into `counts`.
@@ -925,11 +1126,17 @@ fn summarize(v: &Value) -> String {
         };
         match c.get("type").and_then(Value::as_str) {
             Some("tool_use") => {
-                format!("tool: {}", c.get("name").and_then(Value::as_str).unwrap_or("?"))
+                format!(
+                    "tool: {}",
+                    c.get("name").and_then(Value::as_str).unwrap_or("?")
+                )
             }
             Some("text") => format!(
                 "say: {}",
-                truncate(&collapse(c.get("text").and_then(Value::as_str).unwrap_or("")), 300)
+                truncate(
+                    &collapse(c.get("text").and_then(Value::as_str).unwrap_or("")),
+                    300
+                )
             ),
             other => format!("asst: {}", other.unwrap_or("?")),
         }
@@ -973,16 +1180,24 @@ fn said_around(text: &str, id: &str) -> Option<Said> {
         return None;
     }
     let lines: Vec<&str> = text.lines().collect();
-    let at = lines.iter().position(|l| l.contains("\"tool_result\"") && l.contains(id) && prints_id(l, id))?;
+    let at = lines
+        .iter()
+        .position(|l| l.contains("\"tool_result\"") && l.contains(id) && prints_id(l, id))?;
     let start = (0..at).rev().find(|&i| typed_prompt(lines[i]).is_some());
-    let end = (at + 1..lines.len()).find(|&i| typed_prompt(lines[i]).is_some()).unwrap_or(lines.len());
-    let prompt = start.and_then(|i| typed_prompt(lines[i])).unwrap_or_default();
+    let end = (at + 1..lines.len())
+        .find(|&i| typed_prompt(lines[i]).is_some())
+        .unwrap_or(lines.len());
+    let prompt = start
+        .and_then(|i| typed_prompt(lines[i]))
+        .unwrap_or_default();
     let mut said = Vec::new();
     for line in &lines[start.map_or(0, |i| i + 1)..end] {
         if !line.contains("\"type\":\"assistant\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if !own_turn(&v) {
             continue;
         }
@@ -995,14 +1210,25 @@ fn said_around(text: &str, id: &str) -> Option<Said> {
             }
         }
     }
-    let first = lines.iter().find_map(|l| typed_prompt(l)).unwrap_or_default();
-    Some(Said { first, prompt, said })
+    let first = lines
+        .iter()
+        .find_map(|l| typed_prompt(l))
+        .unwrap_or_default();
+    Some(Said {
+        first,
+        prompt,
+        said,
+    })
 }
 
 /// A tool result entry whose text has `id` alone on a line.
 fn prints_id(line: &str, id: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
-    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+        return false;
+    };
     blocks
         .iter()
         .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
@@ -1040,7 +1266,9 @@ fn typed_prompt(line: &str) -> Option<String> {
     }
     // A typed slash command is stored as tags; the human typed "/name args".
     Some(match tag(s, "command-name") {
-        Some(name) => format!("{name} {}", tag(s, "command-args").unwrap_or("")).trim().to_string(),
+        Some(name) => format!("{name} {}", tag(s, "command-args").unwrap_or(""))
+            .trim()
+            .to_string(),
         None => s.to_string(),
     })
 }
@@ -1076,7 +1304,10 @@ mod tests {
 
     fn tmpfile(tag: &str, lines: &[&str]) -> std::path::PathBuf {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("agent-panel-test-{}-{tag}.jsonl", std::process::id()));
+        let path = dir.join(format!(
+            "agent-panel-test-{}-{tag}.jsonl",
+            std::process::id()
+        ));
         let mut f = fs::File::create(&path).unwrap();
         writeln!(f, "{}", lines.join("\n")).unwrap();
         path
@@ -1085,32 +1316,64 @@ mod tests {
     /// An entry at `min` minutes past 12:00, with the rest of its JSON from `body`.
     fn at(min: u64, body: &str) -> String {
         let hour = 12 + min / 60;
-        format!(r#"{{{body},"timestamp":"2026-10-{}T{:02}:{:02}:00.000Z"}}"#, 30 + hour / 24, hour % 24, min % 60)
+        format!(
+            r#"{{{body},"timestamp":"2026-10-{}T{:02}:{:02}:00.000Z"}}"#,
+            30 + hour / 24,
+            hour % 24,
+            min % 60
+        )
     }
 
     #[test]
     fn time_use_buckets_a_gap_by_what_ended_it() {
         let lines = [
             at(0, r#""type":"user","message":{"content":"go"}"#),
-            at(2, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}}]}"#),
+            at(
+                2,
+                r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}}]}"#,
+            ),
             // A foreground tool and a task notification: jobs, 10 + 20.
-            at(12, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}"#),
-            at(32, r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> done""#),
-            at(32, r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}"#),
+            at(
+                12,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"ok"}]}"#,
+            ),
+            at(
+                32,
+                r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> done""#,
+            ),
+            at(
+                32,
+                r#""type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}"#,
+            ),
             // AskUserQuestion's answer and a typed prompt: human, 30 + 40.
-            at(62, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"a"}]}"#),
+            at(
+                62,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"a"}]}"#,
+            ),
             at(102, r#""type":"user","message":{"content":"next"}"#),
             // A peer's message and a system record: parked, 50 + 60.
-            at(152, r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> Shepherd""#),
+            at(
+                152,
+                r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> Shepherd""#,
+            ),
             at(212, r#""type":"system","subtype":"informational""#),
             // A long model turn is work, 7; a typed prompt queued while busy is human, 8.
             at(219, r#""type":"assistant","message":{"content":[]}"#),
-            at(227, r#""type":"queue-operation","operation":"enqueue","content":"also this""#),
+            at(
+                227,
+                r#""type":"queue-operation","operation":"enqueue","content":"also this""#,
+            ),
         ];
         let text = lines.join("\n");
         assert_eq!(
             time_use(&text, &[]),
-            TimeUse { work_min: 2 + 7, jobs_min: 30, human_min: 78, parked_min: 110, ..TimeUse::default() }
+            TimeUse {
+                work_min: 2 + 7,
+                jobs_min: 30,
+                human_min: 78,
+                parked_min: 110,
+                ..TimeUse::default()
+            }
         );
     }
 
@@ -1126,7 +1389,14 @@ mod tests {
             at(59, r#""type":"assistant","message":{"content":[]}"#),
             at(61, r#""type":"assistant","message":{"content":[]}"#),
         ];
-        assert_eq!(time_use(&lines.join("\n"), &[]), TimeUse { work_min: 1, jobs_min: 60, ..TimeUse::default() });
+        assert_eq!(
+            time_use(&lines.join("\n"), &[]),
+            TimeUse {
+                work_min: 1,
+                jobs_min: 60,
+                ..TimeUse::default()
+            }
+        );
         assert_eq!(time_use("", &[]), TimeUse::default());
     }
 
@@ -1138,39 +1408,72 @@ mod tests {
             at(30, r#""type":"api-request""#),
             at(30, r#""type":"user","message":{"content":"back"}"#),
             // A mistyped command's system line, then the retry: human, 40.
-            at(70, r#""type":"system","subtype":"informational","content":"Unknown command""#),
+            at(
+                70,
+                r#""type":"system","subtype":"informational","content":"Unknown command""#,
+            ),
             at(70, r#""type":"user","message":{"content":"/compact"}"#),
             // A dequeue is bookkeeping too; the notification behind it is jobs, 50.
             at(120, r#""type":"queue-operation","operation":"dequeue""#),
-            at(120, r#""type":"user","message":{"content":"<task-notification>x"}"#),
+            at(
+                120,
+                r#""type":"user","message":{"content":"<task-notification>x"}"#,
+            ),
             // Bookkeeping with nothing real inside the window: parked, 60. The prompt 20
             // minutes later is its own gap: human, 20.
             at(180, r#""type":"pr-link""#),
             at(200, r#""type":"user","message":{"content":"late"}"#),
         ];
-        assert_eq!(time_use(&lines.join("\n"), &[]), TimeUse { jobs_min: 50, human_min: 90, parked_min: 60, ..TimeUse::default() });
+        assert_eq!(
+            time_use(&lines.join("\n"), &[]),
+            TimeUse {
+                jobs_min: 50,
+                human_min: 90,
+                parked_min: 60,
+                ..TimeUse::default()
+            }
+        );
     }
 
     /// An assistant entry calling one tool, with the command already quoted for JSON.
     fn call(min: u64, id: &str, name: &str, input: &str) -> String {
-        at(min, &format!(r#""type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}"#))
+        at(
+            min,
+            &format!(
+                r#""type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}"#
+            ),
+        )
     }
 
     /// The result of a call that went on in the background under `field`.
     fn launched(min: u64, id: &str, field: &str, task: &str) -> String {
-        at(min, &format!(r#""type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"started"}}]}},"toolUseResult":{{"{field}":"{task}"}}"#))
+        at(
+            min,
+            &format!(
+                r#""type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","content":"started"}}]}},"toolUseResult":{{"{field}":"{task}"}}"#
+            ),
+        )
     }
 
     fn notified(min: u64, inner: &str) -> String {
-        at(min, &format!(r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> {inner}""#))
+        at(
+            min,
+            &format!(
+                r#""type":"queue-operation","operation":"enqueue","content":"<task-notification> {inner}""#
+            ),
+        )
     }
 
     fn peer(min: u64) -> String {
-        at(min, r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> hi""#)
+        at(
+            min,
+            r#""type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"x\"> hi""#,
+        )
     }
 
     const PATTERNS: [(Wait, &str); 2] = [(Wait::Gate, "ci-gate.sh"), (Wait::Test, "run.sh")];
-    const GATE: &str = r#"{"command":"cd x && scripts/test/ci-gate.sh --pr 1","run_in_background":true}"#;
+    const GATE: &str =
+        r#"{"command":"cd x && scripts/test/ci-gate.sh --pr 1","run_in_background":true}"#;
     const TEST: &str = r#"{"command":"scripts/test/run.sh Foo","run_in_background":true}"#;
     const OTHER: &str = r#"{"command":"sleep 1","run_in_background":true}"#;
 
@@ -1191,7 +1494,14 @@ mod tests {
             // A peer's message with nothing running: parked, 40.
             peer(100),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 60, parked_min: 40, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 60,
+                parked_min: 40,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
@@ -1208,13 +1518,30 @@ mod tests {
             call(30, "g", "Bash", GATE),
             launched(30, "g", "backgroundTaskId", "tg"),
             // Gate beside both: gate, 40.
-            notified(70, "<tool-use-id>g</tool-use-id> <status>completed</status>"),
+            notified(
+                70,
+                "<tool-use-id>g</tool-use-id> <status>completed</status>",
+            ),
             // Gate gone: test, 50.
-            notified(120, "<tool-use-id>t</tool-use-id> <status>completed</status>"),
+            notified(
+                120,
+                "<tool-use-id>t</tool-use-id> <status>completed</status>",
+            ),
             // Test gone: jobs, 60.
-            notified(180, "<tool-use-id>o</tool-use-id> <status>completed</status>"),
+            notified(
+                180,
+                "<tool-use-id>o</tool-use-id> <status>completed</status>",
+            ),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 40, test_min: 70, jobs_min: 70, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 40,
+                test_min: 70,
+                jobs_min: 70,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
@@ -1223,36 +1550,74 @@ mod tests {
             call(0, "g", "Bash", GATE),
             launched(0, "g", "backgroundTaskId", "tg"),
             call(0, "q", "AskUserQuestion", "{}"),
-            at(30, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"a"}]}"#),
+            at(
+                30,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"a"}]}"#,
+            ),
             // The dialog is answered and the gate still runs: gate, 10.
             peer(40),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 10, human_min: 30, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 10,
+                human_min: 30,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
     fn time_use_a_foreground_gate_counts_and_ends_with_its_result() {
         let got = buckets(&[
             call(0, "g", "Bash", r#"{"command":"scripts/test/ci-gate.sh"}"#),
-            at(10, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#),
+            at(
+                10,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#,
+            ),
             peer(30),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 10, parked_min: 20, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 10,
+                parked_min: 20,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
     fn time_use_a_monitor_event_does_not_end_its_watch_but_an_expiry_does() {
         let got = buckets(&[
-            call(0, "m", "Monitor", r#"{"command":"tail -f scripts/test/ci-gate.sh.log"}"#),
+            call(
+                0,
+                "m",
+                "Monitor",
+                r#"{"command":"tail -f scripts/test/ci-gate.sh.log"}"#,
+            ),
             launched(0, "m", "taskId", "tm"),
             // An event, by task id and with no status: the watch stays open, gate, 10 + 10.
-            notified(10, r#"<task-id>tm</task-id> <summary>Monitor event: x</summary>"#),
+            notified(
+                10,
+                r#"<task-id>tm</task-id> <summary>Monitor event: x</summary>"#,
+            ),
             peer(20),
             // The expiry ends the gap as gate, 10, and ends the watch: parked, 10.
-            notified(30, r#"<task-id>tm</task-id> <event>[Monitor expired after 30m]</event>"#),
+            notified(
+                30,
+                r#"<task-id>tm</task-id> <event>[Monitor expired after 30m]</event>"#,
+            ),
             peer(40),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 30, parked_min: 10, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 30,
+                parked_min: 10,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
@@ -1264,18 +1629,34 @@ mod tests {
             call(10, "t2", "Bash", TEST),
             launched(10, "t2", "backgroundTaskId", "tt"),
             call(10, "s", "TaskStop", r#"{"task_id":"tg"}"#),
-            at(10, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s","content":"ok"}]},"toolUseResult":{"task_id":"tg"}"#),
+            at(
+                10,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s","content":"ok"}]},"toolUseResult":{"task_id":"tg"}"#,
+            ),
             // The gate was stopped, the test still runs: test, 20.
             peer(30),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 10, test_min: 20, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 10,
+                test_min: 20,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
     fn open_job_names_the_strongest_wait_still_running_at_the_last_entry() {
         let open = |lines: &[String]| walk(&lines.join("\n"), &PATTERNS).1;
         // A sleep loop alone is `jobs`: fleet-sessions stops trusting it after FLEET_IDLE_MIN.
-        assert_eq!(open(&[call(0, "o", "Bash", OTHER), launched(0, "o", "backgroundTaskId", "to")]), "jobs");
+        assert_eq!(
+            open(&[
+                call(0, "o", "Bash", OTHER),
+                launched(0, "o", "backgroundTaskId", "to")
+            ]),
+            "jobs"
+        );
         // A gate beside it wins, and so does a test.
         assert_eq!(
             open(&[
@@ -1286,16 +1667,35 @@ mod tests {
             ]),
             "gate"
         );
-        assert_eq!(open(&[call(0, "t", "Bash", TEST), launched(0, "t", "backgroundTaskId", "tt")]), "test");
+        assert_eq!(
+            open(&[
+                call(0, "t", "Bash", TEST),
+                launched(0, "t", "backgroundTaskId", "tt")
+            ]),
+            "test"
+        );
         // A background subagent is work done elsewhere, not a wait loop.
         assert_eq!(
-            open(&[call(0, "a", "Agent", r#"{"prompt":"x"}"#), launched(0, "a", "resumedAgentId", "ta")]),
+            open(&[
+                call(0, "a", "Agent", r#"{"prompt":"x"}"#),
+                launched(0, "a", "resumedAgentId", "ta")
+            ]),
             "agent"
         );
         // A job whose result came back, or a job older than JOB_MAX_SECS, is not open.
-        let done = at(1, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#);
+        let done = at(
+            1,
+            r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g","content":"ok"}]}"#,
+        );
         assert_eq!(open(&[call(0, "g", "Bash", GATE), done]), "none");
-        assert_eq!(open(&[call(0, "o", "Bash", OTHER), launched(0, "o", "backgroundTaskId", "to"), peer(13 * 60)]), "none");
+        assert_eq!(
+            open(&[
+                call(0, "o", "Bash", OTHER),
+                launched(0, "o", "backgroundTaskId", "to"),
+                peer(13 * 60)
+            ]),
+            "none"
+        );
         assert_eq!(open(&[]), "none");
     }
 
@@ -1304,7 +1704,15 @@ mod tests {
         let conf = include_str!("../../../../.config/agent-panel/time-use.conf");
         let open = |cmd: &str| {
             let input = format!(r#"{{"command":"{cmd}","run_in_background":true}}"#);
-            walk(&[call(0, "w", "Bash", &input), launched(0, "w", "backgroundTaskId", "tw")].join("\n"), &job_patterns(conf)).1
+            walk(
+                &[
+                    call(0, "w", "Bash", &input),
+                    launched(0, "w", "backgroundTaskId", "tw"),
+                ]
+                .join("\n"),
+                &job_patterns(conf),
+            )
+            .1
         };
         assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
         // A wrapper script of the session's own hides its gh run view: a plain job.
@@ -1315,16 +1723,29 @@ mod tests {
     fn time_use_agents_run_in_the_background_only_when_the_result_says_so() {
         let got = buckets(&[
             call(0, "a", "Agent", r#"{"prompt":"look"}"#),
-            at(0, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"x"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"ag"}"#),
+            at(
+                0,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"x"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"ag"}"#,
+            ),
             // By task id alone, the way a finished agent can report: jobs, 10, then parked, 10.
             notified(10, r#"<task-id>ag</task-id> <status>completed</status>"#),
             peer(20),
             call(20, "b", "Agent", r#"{"prompt":"look"}"#),
             // Waited for: the result ends it, jobs, 10, then parked, 10.
-            at(30, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","content":"x"}]},"toolUseResult":{"status":"completed","agentId":"ag2"}"#),
+            at(
+                30,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","content":"x"}]},"toolUseResult":{"status":"completed","agentId":"ag2"}"#,
+            ),
             peer(40),
         ]);
-        assert_eq!(got, TimeUse { jobs_min: 20, parked_min: 20, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                jobs_min: 20,
+                parked_min: 20,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
@@ -1337,7 +1758,14 @@ mod tests {
             peer(730),
             peer(830),
         ]);
-        assert_eq!(got, TimeUse { gate_min: 730, parked_min: 100, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                gate_min: 730,
+                parked_min: 100,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
@@ -1350,17 +1778,38 @@ mod tests {
             notified(300, ended),
             peer(310),
         ]);
-        assert_eq!(got, TimeUse { parked_min: 310, ..TimeUse::default() });
+        assert_eq!(
+            got,
+            TimeUse {
+                parked_min: 310,
+                ..TimeUse::default()
+            }
+        );
     }
 
     #[test]
     fn the_shipped_time_use_conf_names_a_gate_and_a_test_and_reads_every_line() {
-        let conf = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../.config/agent-panel/time-use.conf");
+        let conf = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../.config/agent-panel/time-use.conf"
+        );
         let conf = fs::read_to_string(conf).unwrap();
         let patterns = job_patterns(&conf);
-        let rows = conf.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).count();
-        assert_eq!(patterns.len(), rows, "a line in time-use.conf is not `gate <text>` or `test <text>`");
-        let kind = |command: &str| patterns.iter().find(|(_, t)| command.contains(t)).map(|(w, _)| *w);
+        let rows = conf
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+            .count();
+        assert_eq!(
+            patterns.len(),
+            rows,
+            "a line in time-use.conf is not `gate <text>` or `test <text>`"
+        );
+        let kind = |command: &str| {
+            patterns
+                .iter()
+                .find(|(_, t)| command.contains(t))
+                .map(|(w, _)| *w)
+        };
         assert!(kind("scripts/test/ci-gate.sh --pr 1") == Some(Wait::Gate));
         assert!(kind("gh pr checks 12 --watch") == Some(Wait::Gate));
         assert!(kind("timeout -k 60 10800 bash Logs/land3.sh 2>&1 | tail -25") == Some(Wait::Gate));
@@ -1378,7 +1827,10 @@ mod tests {
             r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"},{"type":"tool_use","name":"Read","input":{}}]}}"#,
         ]
         .join("\n");
-        assert_eq!(doing_said(&text), ("Bash: Fetch the page".to_string(), "first note".to_string()));
+        assert_eq!(
+            doing_said(&text),
+            ("Bash: Fetch the page".to_string(), "first note".to_string())
+        );
         // No description: the tool's name alone, and the command is never copied.
         let bare = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H secret"}}]}}"#;
         assert_eq!(doing_said(bare), ("Bash".to_string(), String::new()));
@@ -1397,17 +1849,25 @@ mod tests {
 
     #[test]
     fn summarizes_tool_use() {
-        let p = tmpfile("tool", &[
-            r#"{"type":"user","message":{"content":"hi"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
-        ]);
+        let p = tmpfile(
+            "tool",
+            &[
+                r#"{"type":"user","message":{"content":"hi"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            ],
+        );
         assert_eq!(last_event(&p), "tool: Bash");
         fs::remove_file(&p).ok();
     }
 
     #[test]
     fn summarizes_text_and_missing() {
-        let p = tmpfile("text", &[r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello  world"}]}}"#]);
+        let p = tmpfile(
+            "text",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello  world"}]}}"#,
+            ],
+        );
         assert_eq!(last_event(&p), "say: hello world");
         fs::remove_file(&p).ok();
         assert_eq!(last_event(Path::new("/no/such/file.jsonl")), "(no events)");
@@ -1415,32 +1875,44 @@ mod tests {
 
     #[test]
     fn plan_mode_follows_the_last_mode_line() {
-        let p = tmpfile("plan", &[
-            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
-            r#"{"type":"user","permissionMode":"plan","message":{"content":"plan it"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
-        ]);
+        let p = tmpfile(
+            "plan",
+            &[
+                r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+                r#"{"type":"user","permissionMode":"plan","message":{"content":"plan it"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
+            ],
+        );
         let info = row_info(&p);
         assert_eq!(info.mode, Mode::Plan);
         assert_eq!(info.summary, "tool: Read");
         fs::remove_file(&p).ok();
 
         // Leaving plan mode (ExitPlanMode approved) writes a newer mode line.
-        let p = tmpfile("built", &[
-            r#"{"type":"permission-mode","permissionMode":"plan"}"#,
-            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
-        ]);
+        let p = tmpfile(
+            "built",
+            &[
+                r#"{"type":"permission-mode","permissionMode":"plan"}"#,
+                r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+            ],
+        );
         assert_eq!(row_info(&p).mode, Mode::Other);
         fs::remove_file(&p).ok();
 
         // Shift+Tab back to manual (`default`) marks it manual; acceptEdits is not manual.
-        let p = tmpfile("manual", &[
-            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
-            r#"{"type":"permission-mode","permissionMode":"default"}"#,
-        ]);
+        let p = tmpfile(
+            "manual",
+            &[
+                r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+                r#"{"type":"permission-mode","permissionMode":"default"}"#,
+            ],
+        );
         assert_eq!(row_info(&p).mode, Mode::Manual);
         fs::remove_file(&p).ok();
-        let p = tmpfile("edits", &[r#"{"type":"permission-mode","permissionMode":"acceptEdits"}"#]);
+        let p = tmpfile(
+            "edits",
+            &[r#"{"type":"permission-mode","permissionMode":"acceptEdits"}"#],
+        );
         assert_eq!(row_info(&p).mode, Mode::Other);
         fs::remove_file(&p).ok();
 
@@ -1449,9 +1921,12 @@ mod tests {
 
     #[test]
     fn the_row_names_its_plan_by_slug() {
-        let p = tmpfile("slug", &[
-            r#"{"type":"assistant","planFilePath":"/h/.claude/plans/new-curious-garden.md","message":{"content":[]}}"#,
-        ]);
+        let p = tmpfile(
+            "slug",
+            &[
+                r#"{"type":"assistant","planFilePath":"/h/.claude/plans/new-curious-garden.md","message":{"content":[]}}"#,
+            ],
+        );
         assert_eq!(row_info(&p).plan_slug, "new-curious-garden");
         fs::remove_file(&p).ok();
         assert_eq!(row_info(Path::new("/no/such/file.jsonl")).plan_slug, "");
@@ -1459,14 +1934,17 @@ mod tests {
 
     #[test]
     fn fleet_info_reads_usage_and_plan() {
-        let p = tmpfile("fleet", &[
-            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":8}}}"#,
-            r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/older.md"}}"#,
-            r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/mine.md"}}"#,
-            r#"{"type":"user","message":{"content":"see /h/.claude/plans/other.md and /h/.claude/plans/other.md"}}"#,
-            r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5}}}"#,
-            r#"{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}}}"#,
-        ]);
+        let p = tmpfile(
+            "fleet",
+            &[
+                r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":8}}}"#,
+                r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/older.md"}}"#,
+                r#"{"type":"attachment","attachment":{"planFilePath":"/h/.claude/plans/mine.md"}}"#,
+                r#"{"type":"user","message":{"content":"see /h/.claude/plans/other.md and /h/.claude/plans/other.md"}}"#,
+                r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5}}}"#,
+                r#"{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}}}"#,
+            ],
+        );
         let info = fleet_info(&p);
         assert_eq!(info.context_tokens, 110);
         assert_eq!(info.model, "claude-opus-5-5");
@@ -1476,16 +1954,22 @@ mod tests {
 
     #[test]
     fn last_entry_is_the_newest_timestamp_not_the_mtime() {
-        let p = tmpfile("stamp", &[
-            r#"{"type":"user","timestamp":"2026-10-27T22:31:45.505Z","message":{"content":"x"}}"#,
-            r#"{"type":"api-request","timestamp":"2026-10-27T22:31:45.595Z"}"#,
-            r#"{"type":"system","timestamp":"2026-10-27T22:31:45.403Z","content":"{\"timestamp\":\"2030-01-01T00:00:00Z\"}"}"#,
-            r#"{"type":"last-prompt"}"#,
-        ]);
+        let p = tmpfile(
+            "stamp",
+            &[
+                r#"{"type":"user","timestamp":"2026-10-27T22:31:45.505Z","message":{"content":"x"}}"#,
+                r#"{"type":"api-request","timestamp":"2026-10-27T22:31:45.595Z"}"#,
+                r#"{"type":"system","timestamp":"2026-10-27T22:31:45.403Z","content":"{\"timestamp\":\"2030-01-01T00:00:00Z\"}"}"#,
+                r#"{"type":"last-prompt"}"#,
+            ],
+        );
         // 2026-10-27T22:31:45Z, cross-checked with `date -ud @1793140305`.
         assert_eq!(fleet_info(&p).last_entry, Some(1_793_140_305));
         fs::remove_file(&p).ok();
-        assert_eq!(fleet_info(Path::new("/no/such/file.jsonl")).last_entry, None);
+        assert_eq!(
+            fleet_info(Path::new("/no/such/file.jsonl")).last_entry,
+            None
+        );
         assert_eq!(iso_epoch("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(iso_epoch("2024-02-29T12:00:00.5Z"), Some(1_709_208_000));
         assert_eq!(iso_epoch("2026-10-27 22:31:45"), None);
@@ -1493,14 +1977,20 @@ mod tests {
 
     #[test]
     fn edited_files_come_from_edit_tool_inputs_only() {
-        let p = tmpfile("edits", &[
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/r/read-only.md"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Edit","input":{"file_path":"/r/a.rs","old_string":"","new_string":""}},{"type":"tool_use","name":"Write","input":{"file_path":"/r/b.md","content":""}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"MultiEdit","input":{"file_path":"/r/a.rs","edits":[]}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/r/n.ipynb"}}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":""name":"Edit" "tool_use" /r/fake.md"}]}}"#,
-        ]);
-        assert_eq!(fleet_info(&p).edited_files, ["/r/a.rs", "/r/b.md", "/r/n.ipynb"]);
+        let p = tmpfile(
+            "edits",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/r/read-only.md"}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Edit","input":{"file_path":"/r/a.rs","old_string":"","new_string":""}},{"type":"tool_use","name":"Write","input":{"file_path":"/r/b.md","content":""}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"MultiEdit","input":{"file_path":"/r/a.rs","edits":[]}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/r/n.ipynb"}}]}}"#,
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":""name":"Edit" "tool_use" /r/fake.md"}]}}"#,
+            ],
+        );
+        assert_eq!(
+            fleet_info(&p).edited_files,
+            ["/r/a.rs", "/r/b.md", "/r/n.ipynb"]
+        );
         fs::remove_file(&p).ok();
     }
 
@@ -1576,22 +2066,39 @@ mod tests {
         assert_eq!(name, "ExitPlanMode");
         assert_eq!(input["plan"], "# Do it\nstep one");
         // Answered, or another tool: no dialog.
-        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        let answered =
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
         assert_eq!(open_dialog(&format!("{plan}\n{answered}\n")), None);
-        assert_eq!(open_dialog(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#), None);
+        assert_eq!(
+            open_dialog(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#
+            ),
+            None
+        );
     }
 
     #[test]
     fn only_the_last_main_thread_entry_decides() {
         let asked = said("Want me to land it?");
         // A dialog tool left open asks; any other last call is mid-turn.
-        let tool = |name: &str| format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{name}"}}]}}}}"#);
+        let tool = |name: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{name}"}}]}}}}"#
+            )
+        };
         assert!(asks_human(&tool("AskUserQuestion")));
         assert!(asks_human(&tool("ExitPlanMode")));
         assert!(!asks_human(&tool("Bash")));
         // Answered: a prompt or a tool result after it.
-        assert!(!asks_human(&format!("{asked}{}\n", r#"{"type":"user","message":{"content":"yes"}}"#)));
-        assert!(!asks_human(&format!("{}\n{}\n", tool("AskUserQuestion"), r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"A"}]}}"#)));
+        assert!(!asks_human(&format!(
+            "{asked}{}\n",
+            r#"{"type":"user","message":{"content":"yes"}}"#
+        )));
+        assert!(!asks_human(&format!(
+            "{}\n{}\n",
+            tool("AskUserQuestion"),
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"A"}]}}"#
+        )));
         // Reminders, subagent turns and bookkeeping entries after it do not answer it.
         let noise = [
             r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>x</system-reminder>"}}"#,
@@ -1608,9 +2115,12 @@ mod tests {
 
     #[test]
     fn plan_file_falls_back_to_most_named() {
-        let p = tmpfile("planref", &[
-            r#"{"type":"user","message":{"content":"run ~/.claude/plans/a-b.md then /x/.claude/plans/a-b.md, not /x/.claude/plans/c.md"}}"#,
-        ]);
+        let p = tmpfile(
+            "planref",
+            &[
+                r#"{"type":"user","message":{"content":"run ~/.claude/plans/a-b.md then /x/.claude/plans/a-b.md, not /x/.claude/plans/c.md"}}"#,
+            ],
+        );
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/a-b.md"));
         fs::remove_file(&p).ok();
         let none = fleet_info(Path::new("/no/such/file.jsonl"));
@@ -1622,60 +2132,78 @@ mod tests {
         // The SessionStart preflight lists other sessions' plans in a hook attachment, a
         // reminder and a tool result echo them; the session's own Read is its plan.
         let preflight = r#"{"type":"attachment","attachment":{"type":"hook_additional_context","content":["Plans: ~/.claude/plans/theirs.md, ~/.claude/plans/theirs.md"]}}"#;
-        let p = tmpfile("preflight", &[
-            preflight,
-            r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/mine.md","content":"Phases"}}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
-            r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
-        ]);
+        let p = tmpfile(
+            "preflight",
+            &[
+                preflight,
+                r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/mine.md","content":"Phases"}}]}}"#,
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
+                r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
+            ],
+        );
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
 
         // 2026-11-03, dotfiles-c2: the human's session grepped, listed and read another
         // session's finished plan; naming it in its own tool calls and text is not writing it.
-        let p = tmpfile("grepped", &[
-            r#"{"type":"user","message":{"content":"why did the probe stall?"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -in probe ~/.claude/plans/theirs.md; ls ~/.claude/plans/theirs.md"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/theirs.md"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"/h/.claude/plans/theirs.md has 12 phases"}]}}"#,
-        ]);
+        let p = tmpfile(
+            "grepped",
+            &[
+                r#"{"type":"user","message":{"content":"why did the probe stall?"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -in probe ~/.claude/plans/theirs.md; ls ~/.claude/plans/theirs.md"}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/theirs.md"}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"/h/.claude/plans/theirs.md has 12 phases"}]}}"#,
+            ],
+        );
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
 
         // The plan it wrote last wins over one handed in by its prompt, and an account's plans
         // dir (a link to ~/.claude/plans) is the same dir.
-        let p = tmpfile("wrote", &[
-            r#"{"type":"user","message":{"content":"finish ~/.claude/plans/handed.md"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude-bnb/plans/mine.md","content":""}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/notes/plans/other.md","content":""}}]}}"#,
-        ]);
+        let p = tmpfile(
+            "wrote",
+            &[
+                r#"{"type":"user","message":{"content":"finish ~/.claude/plans/handed.md"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude-bnb/plans/mine.md","content":""}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/notes/plans/other.md","content":""}}]}}"#,
+            ],
+        );
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
 
         // A heredoc or redirect writes it, and agent-land --plan ticks it; cat and grep only read.
-        let p = tmpfile("bash-wrote", &[
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/mine.md <<'EOF'\nPhases\nEOF"}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/theirs.md; grep -n x /h/.claude/plans/theirs.md"}}]}}"#,
-        ]);
+        let p = tmpfile(
+            "bash-wrote",
+            &[
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/mine.md <<'EOF'\nPhases\nEOF"}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/theirs.md; grep -n x /h/.claude/plans/theirs.md"}}]}}"#,
+            ],
+        );
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
 
         // Named only there, the session has no plan of its own: not someone else's.
-        let p = tmpfile("preflight-only", &[
-            preflight,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#,
-        ]);
+        let p = tmpfile(
+            "preflight-only",
+            &[
+                preflight,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#,
+            ],
+        );
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
 
         // 2026-10-28, dotfiles-4c: a pasted screen quoting a shepherd nudge to another
         // session named its plan; once the session has replied without touching it, it is not its plan.
-        let p = tmpfile("pasted", &[
-            r#"{"type":"user","message":{"content":"Message from @other: every phase in /h/.claude/plans/theirs.md is ticked"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"checking the log"}]}}"#,
-        ]);
+        let p = tmpfile(
+            "pasted",
+            &[
+                r#"{"type":"user","message":{"content":"Message from @other: every phase in /h/.claude/plans/theirs.md is ticked"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"checking the log"}]}}"#,
+            ],
+        );
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
     }
@@ -1686,13 +2214,31 @@ mod tests {
             ("cat > ~/.claude/plans/a.md <<'EOF'", vec!["a.md"]),
             ("printf x >> \"$HOME/.claude/plans/a.md\"", vec!["a.md"]),
             ("echo x | tee -a ~/.claude-bnb/plans/a.md", vec!["a.md"]),
-            ("sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/a.md", vec!["a.md"]),
-            ("agent-land 12 --item x --plan ~/.claude/plans/a.md --phase y", vec!["a.md"]),
+            (
+                "sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "agent-land 12 --item x --plan ~/.claude/plans/a.md --phase y",
+                vec!["a.md"],
+            ),
             ("agent-land 12 --plan=~/.claude/plans/a.md", vec!["a.md"]),
-            ("cd ~/w && (A=1 ./.local/bin/agent-land 9 --plan ~/.claude/plans/a.md)", vec!["a.md"]),
-            ("sed -Ei 's/a/b/;s/c/&d/' ~/.claude/plans/a.md && echo ok", vec!["a.md"]),
-            ("sed --in-place -e 's/x|y/z/' ~/.claude/plans/a.md", vec!["a.md"]),
-            ("echo x | tee \"$HOME/.claude/plans/a.md\" >/dev/null", vec!["a.md"]),
+            (
+                "cd ~/w && (A=1 ./.local/bin/agent-land 9 --plan ~/.claude/plans/a.md)",
+                vec!["a.md"],
+            ),
+            (
+                "sed -Ei 's/a/b/;s/c/&d/' ~/.claude/plans/a.md && echo ok",
+                vec!["a.md"],
+            ),
+            (
+                "sed --in-place -e 's/x|y/z/' ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "echo x | tee \"$HOME/.claude/plans/a.md\" >/dev/null",
+                vec!["a.md"],
+            ),
             ("agent-queue add --plan ~/.claude/plans/a.md", vec![]),
             ("grep -n '->' ~/.claude/plans/a.md", vec![]),
             ("rg \"x>\" ~/.claude/plans/a.md 2>&1", vec![]),
@@ -1700,13 +2246,19 @@ mod tests {
             ("cat > /repo/.claude/plans/a.md", vec![]),
             ("cat ~/.claude/plans/a.md > /tmp/b.md", vec![]),
             ("grep -n x ~/.claude/plans/a.md | sed -n 1p", vec![]),
-            ("ls -la ~/.claude/plans/a.md ~/.agent/plans/dotfiles/a.md", vec![]),
+            (
+                "ls -la ~/.claude/plans/a.md ~/.agent/plans/dotfiles/a.md",
+                vec![],
+            ),
             ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
             ("cat > ~/notes/plans/a.md", vec![]),
         ] {
             assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
         }
-        let abs = format!("cat > {}/.claude/plans/a.md", crate::session::home().display());
+        let abs = format!(
+            "cat > {}/.claude/plans/a.md",
+            crate::session::home().display()
+        );
         assert_eq!(bash_plan_writes(&abs), ["a.md"]);
     }
 
@@ -1741,13 +2293,22 @@ mod tests {
 
     #[test]
     fn harness_prefixes_cover_claude_recalls() {
-        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../bin/claude-recall")).unwrap();
-        let start = src.find("HARNESS_PREFIXES = (").expect("claude-recall lost HARNESS_PREFIXES");
+        let src = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../bin/claude-recall"
+        ))
+        .unwrap();
+        let start = src
+            .find("HARNESS_PREFIXES = (")
+            .expect("claude-recall lost HARNESS_PREFIXES");
         let body = &src[start..start + src[start..].find(')').unwrap()];
         let theirs: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
         assert!(theirs.len() >= 5, "{theirs:?}");
         for p in theirs {
-            assert!(HARNESS.contains(&p), "claude-recall skips {p:?}; add it to HARNESS");
+            assert!(
+                HARNESS.contains(&p),
+                "claude-recall skips {p:?}; add it to HARNESS"
+            );
         }
     }
 }
