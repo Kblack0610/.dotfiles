@@ -121,9 +121,9 @@ default_branch() {
   printf '%s' "${b#origin/}"
 }
 
-# pinned <project> <target-json> <deploys-json> -> {value, source, error}
+# pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" d="$3" repo path key image branch dir blob v=""
+  local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v=""
   if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
     # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
     # newest successful upload said it put there. Source none is a channel nothing has recorded.
@@ -134,9 +134,8 @@ pinned() {
     return
   fi
   if [ "$(jq -r '.pinned.tag // false' <<<"$t")" = true ]; then
-    v="$(project_release_tag "$proj" 2>/dev/null || true)"
-    if [ -n "$v" ]; then
-      jq -nc --arg v "$v" '{value: $v, source: "newest release tag"}'
+    if [ -n "$tag" ]; then
+      jq -nc --arg v "$tag" '{value: $v, source: "newest release tag"}'
     else
       jq -nc '{value: null, source: "newest release tag", error: "no release tag"}'
     fi
@@ -419,8 +418,7 @@ history() {
   fi
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    sha_at="$(git -C "$repo" for-each-ref --count=1 \
-      --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(creatordate:unix)' "refs/tags/$t" 2>/dev/null)"
+    sha_at="$(git_tag_at "$repo" "$t")"
     out="$(jq -c --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sha_at" \
       --arg p "$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$t")" '
       ($sa | split(" ")) as $f
@@ -448,15 +446,15 @@ telemetry() {
   printf '%s' "$out"
 }
 
-# row <project> <target-json> <previous-state-json> -> one snapshot row
+# row <project> <target-json> <previous-state-json> <release-tag> -> one snapshot row. The tag
+# is the project's newest shipped one (project_release_tag), read once per project by the caller.
 row() {
-  local proj="$1" t="$2" prev="$3" p l d status tel id tag drift_since="" now
+  local proj="$1" t="$2" prev="$3" tag="$4" p l d status tel id drift_since="" now
   id="$(jq -r '.id' <<<"$t")"
   d="$(deploys "$proj" "$t")"
-  p="$(pinned "$proj" "$t" "$d")"
+  p="$(pinned "$proj" "$t" "$d" "$tag")"
   l="$(live "$t")"
   tel="$(telemetry "$t")"
-  tag="$(project_release_tag "$proj" 2>/dev/null || true)"
   now="$(now_epoch)"
   local pv lv lsrc psrc lver
   pv="$(jq -r '.value // empty' <<<"$p")"
@@ -501,6 +499,7 @@ row() {
 # refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
 refresh_snapshot() {
   local only="$*" prev="{}" rows releases tmp line proj t targets summary
+  local -A tag_of=()
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   exec 9>"$STATE_DIR/.lock" || die "cannot open $STATE_DIR/.lock"
   flock -w 120 9 || die "another refresh holds $STATE_DIR/.lock"
@@ -517,7 +516,8 @@ refresh_snapshot() {
     t="$(jq -c '.target' <<<"$line")"
     # A target with no id cannot be joined across refreshes or named by check.
     [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
-    row "$proj" "$t" "$prev" >>"$tmp"
+    [ -v "tag_of[$proj]" ] || tag_of[$proj]="$(project_release_tag "$proj" 2>/dev/null || true)"
+    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp"
   done <<<"$targets"
   rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
   : >"$tmp"
