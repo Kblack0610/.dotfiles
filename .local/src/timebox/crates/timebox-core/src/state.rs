@@ -77,6 +77,44 @@ impl Stopwatch {
     }
 }
 
+/// One step of a named cycle: run `op` for `len_s` seconds, then move to the next step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleStep {
+    pub op: String,
+    pub len_s: u64,
+}
+
+/// A running named cycle (e.g. work 5m -> guitar 3m -> computer 10m, repeating). The
+/// active stopwatch is always `steps[idx].op`; `catch_up` advances `idx` at each lap
+/// boundary, so the cycle walks on its own with nothing running in the background.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cycle {
+    pub name: String,
+    pub steps: Vec<CycleStep>,
+    #[serde(default)]
+    pub idx: usize,
+    #[serde(default)]
+    pub sound: bool,
+}
+
+impl Cycle {
+    pub fn current(&self) -> &CycleStep {
+        &self.steps[self.idx % self.steps.len()]
+    }
+    pub fn next(&self) -> &CycleStep {
+        &self.steps[(self.idx + 1) % self.steps.len()]
+    }
+}
+
+/// Runtime alert toggles (`timebox toggle sound|flash`). `None` = follow config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Alerts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+}
+
 /// The whole live state: which stopwatch is active, and every known stopwatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -86,6 +124,10 @@ pub struct Snapshot {
     pub active_sw: Option<String>,
     #[serde(default)]
     pub stopwatches: BTreeMap<String, Stopwatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle: Option<Cycle>,
+    #[serde(default)]
+    pub alerts: Alerts,
 }
 
 fn one() -> u32 {
@@ -98,6 +140,8 @@ impl Default for Snapshot {
             v: 1,
             active_sw: None,
             stopwatches: BTreeMap::new(),
+            cycle: None,
+            alerts: Alerts::default(),
         }
     }
 }
@@ -133,8 +177,19 @@ impl Snapshot {
         self.active_sw.clone()
     }
 
-    /// Start (create-or-resume) a stopwatch and make it active.
+    /// Start (create-or-resume) a stopwatch and make it active. Ends any running cycle.
     pub fn start(
+        &mut self,
+        now: DateTime<Local>,
+        op: &str,
+        lap_len_s: Option<u64>,
+        sound: Option<bool>,
+    ) -> Vec<Event> {
+        self.cycle = None;
+        self.start_inner(now, op, lap_len_s, sound)
+    }
+
+    fn start_inner(
         &mut self,
         now: DateTime<Local>,
         op: &str,
@@ -189,8 +244,15 @@ impl Snapshot {
         vec![Event::new(now, kind, op).with_lap_len(len)]
     }
 
-    /// Stop a stopwatch, banking its elapsed time.
+    /// Stop a stopwatch, banking its elapsed time. Stopping the active one ends a cycle.
     pub fn stop(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
+        if self.active_sw.as_deref() == Some(op) {
+            self.cycle = None;
+        }
+        self.stop_inner(now, op)
+    }
+
+    fn stop_inner(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
         let Some(sw) = self.stopwatches.get_mut(op) else {
             return vec![];
         };
@@ -232,7 +294,11 @@ impl Snapshot {
     }
 
     /// Manually close the current lap window now and restart the cadence from here.
+    /// Inside a cycle, a lap on the active op skips to the next step.
     pub fn lap(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
+        if self.cycle.is_some() && self.active_sw.as_deref() == Some(op) {
+            return self.advance_cycle(now);
+        }
         let Some(sw) = self.stopwatches.get_mut(op) else {
             return vec![];
         };
@@ -244,8 +310,19 @@ impl Snapshot {
         vec![Event::new(now, EventKind::Lap, op).with_lap(idx, len)]
     }
 
-    /// Stop/leave the active stopwatch and start `to` in one atomic step.
+    /// Stop/leave the active stopwatch and start `to` in one atomic step. Ends any cycle.
     pub fn switch(
+        &mut self,
+        now: DateTime<Local>,
+        to: &str,
+        lap_len_s: Option<u64>,
+        sound: Option<bool>,
+    ) -> Vec<Event> {
+        self.cycle = None;
+        self.switch_inner(now, to, lap_len_s, sound)
+    }
+
+    fn switch_inner(
         &mut self,
         now: DateTime<Local>,
         to: &str,
@@ -255,16 +332,66 @@ impl Snapshot {
         let mut evs = Vec::new();
         if let Some(cur) = self.active_sw.clone() {
             if cur != to {
-                evs.extend(self.stop(now, &cur));
+                evs.extend(self.stop_inner(now, &cur));
             }
         }
-        evs.extend(self.start(now, to, lap_len_s, sound));
-        evs.push(Event::new(now, EventKind::Switch, to));
+        evs.extend(self.start_inner(now, to, lap_len_s, sound));
+        evs.push(Event::new(now, EventKind::Switch, to).with_lap_len(lap_len_s));
+        evs
+    }
+
+    /// Start a named cycle at its first step (switching away from the active op).
+    pub fn start_cycle(
+        &mut self,
+        now: DateTime<Local>,
+        name: &str,
+        steps: Vec<CycleStep>,
+        sound: bool,
+    ) -> Vec<Event> {
+        let Some(first) = steps.first().cloned() else {
+            return vec![];
+        };
+        let mut evs = self.switch(now, &first.op, Some(first.len_s), Some(sound));
+        for e in &mut evs {
+            e.meta = serde_json::json!({ "cycle": name });
+        }
+        self.cycle = Some(Cycle {
+            name: name.to_string(),
+            steps,
+            idx: 0,
+            sound,
+        });
+        evs
+    }
+
+    /// Close the current cycle step at `at` (a lap on its op) and switch to the next.
+    fn advance_cycle(&mut self, at: DateTime<Local>) -> Vec<Event> {
+        let Some(c) = self.cycle.as_mut() else {
+            return vec![];
+        };
+        let name = c.name.clone();
+        let cur = c.current().op.clone();
+        c.idx = (c.idx + 1) % c.steps.len();
+        let next = c.current().clone();
+        let sound = c.sound;
+        let mut evs = Vec::new();
+        if let Some(sw) = self.stopwatches.get_mut(&cur) {
+            sw.lap_base_s = sw.elapsed_s(at);
+            sw.lap_index += 1;
+            evs.push(Event::new(at, EventKind::Lap, &cur).with_lap(sw.lap_index, sw.lap_len_s));
+        }
+        evs.extend(self.switch_inner(at, &next.op, Some(next.len_s), Some(sound)));
+        for e in &mut evs {
+            e.meta = serde_json::json!({ "cycle": name });
+        }
         evs
     }
 
     /// Remove a stopwatch from the live snapshot (its events stay in the log).
     pub fn reset(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
+        if self.active_sw.as_deref() == Some(op) {
+            self.cycle = None;
+        }
         if self.stopwatches.remove(op).is_none() {
             return vec![];
         }
@@ -279,6 +406,27 @@ impl Snapshot {
     /// each stopwatch's `lap_base_s` past the boundaries it emits.
     pub fn catch_up(&mut self, now: DateTime<Local>) -> Vec<Event> {
         let mut out = Vec::new();
+        // A cycle walks first: each due boundary of the active step switches to the next
+        // step at the boundary's own timestamp, so a late poll replays the steps exactly.
+        while self.cycle.is_some() {
+            let Some(sw) = self
+                .active_sw
+                .as_ref()
+                .and_then(|a| self.stopwatches.get(a))
+            else {
+                break;
+            };
+            if sw.state != RunState::Running {
+                break;
+            }
+            let Some(l) = sw.lap_len() else { break };
+            let boundary = sw.lap_base_s + l;
+            if sw.elapsed_s(now) < boundary {
+                break;
+            }
+            let ts = sw.boundary_ts(boundary);
+            out.extend(self.advance_cycle(ts));
+        }
         for sw in self.stopwatches.values_mut() {
             if sw.state != RunState::Running {
                 continue;
@@ -295,9 +443,7 @@ impl Snapshot {
                 let boundary_elapsed = sw.lap_base_s + k * l;
                 let ts = sw.boundary_ts(boundary_elapsed);
                 let idx = sw.lap_index + k as u32;
-                out.push(
-                    Event::new(ts, EventKind::Lap, &sw.op).with_lap(idx, sw.lap_len_s),
-                );
+                out.push(Event::new(ts, EventKind::Lap, &sw.op).with_lap(idx, sw.lap_len_s));
             }
             sw.lap_base_s += due * l;
             sw.lap_index += due as u32;
@@ -337,7 +483,7 @@ mod tests {
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.state, RunState::Paused);
         assert_eq!(sw.elapsed_s(at(t, 999)), 100); // frozen at pause
-        // resume and run 50 more -> 150 total
+                                                   // resume and run 50 more -> 150 total
         s.resume(at(t, 200), "op");
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.elapsed_s(at(t, 250)), 150);
@@ -348,7 +494,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(5), None); // 5s laps
-        // at 12s, two boundaries (5,10) are due
+                                         // at 12s, two boundaries (5,10) are due
         let laps = s.catch_up(at(t, 12));
         assert_eq!(laps.len(), 2);
         assert_eq!(laps[0].lap_index, Some(1));
@@ -417,7 +563,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(100), None); // boundary at 100
-        // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
+                                           // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
         s.start(at(t, 40), "op", Some(100), None);
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.next_lap_countdown_s(at(t, 40)), Some(100));
@@ -433,5 +579,95 @@ mod tests {
         assert_eq!(s.stopwatches["a"].state, RunState::Stopped);
         assert_eq!(s.stopwatches["b"].state, RunState::Running);
         assert!(evs.iter().any(|e| e.kind == EventKind::Switch));
+    }
+
+    fn steps() -> Vec<CycleStep> {
+        vec![
+            CycleStep {
+                op: "work".into(),
+                len_s: 300,
+            },
+            CycleStep {
+                op: "guitar".into(),
+                len_s: 180,
+            },
+            CycleStep {
+                op: "computer".into(),
+                len_s: 600,
+            },
+        ]
+    }
+
+    #[test]
+    fn cycle_walks_steps_at_their_boundaries() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.start_cycle(t, "practice", steps(), false);
+        assert_eq!(s.active_sw.as_deref(), Some("work"));
+        assert!(s.catch_up(at(t, 299)).is_empty());
+        let evs = s.catch_up(at(t, 300));
+        assert!(evs
+            .iter()
+            .any(|e| e.kind == EventKind::Switch && e.op == "guitar"));
+        assert_eq!(s.active_sw.as_deref(), Some("guitar"));
+        assert_eq!(s.stopwatches["work"].state, RunState::Stopped);
+        assert_eq!(
+            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 300)),
+            Some(180)
+        );
+    }
+
+    #[test]
+    fn late_poll_replays_every_missed_step_and_wraps() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.start_cycle(t, "practice", steps(), false);
+        // 300 + 180 + 600 = 1080 is one full loop; 1100 is 20s into work again.
+        let evs = s.catch_up(at(t, 1100));
+        let switches: Vec<_> = evs
+            .iter()
+            .filter(|e| e.kind == EventKind::Switch)
+            .map(|e| e.op.as_str())
+            .collect();
+        assert_eq!(switches, ["guitar", "computer", "work"]);
+        assert_eq!(s.active_sw.as_deref(), Some("work"));
+        assert_eq!(s.cycle.as_ref().unwrap().idx, 0);
+        assert_eq!(s.stopwatches["work"].elapsed_s(at(t, 1100)), 320);
+        assert_eq!(s.stopwatches["guitar"].elapsed_s(at(t, 1100)), 180);
+        assert_eq!(s.stopwatches["computer"].elapsed_s(at(t, 1100)), 600);
+        assert_eq!(
+            s.stopwatches["work"].next_lap_countdown_s(at(t, 1100)),
+            Some(280)
+        );
+    }
+
+    #[test]
+    fn lap_skips_to_next_step_and_pause_holds_the_cycle() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.start_cycle(t, "practice", steps(), false);
+        s.lap(at(t, 10), "work");
+        assert_eq!(s.active_sw.as_deref(), Some("guitar"));
+        s.pause(at(t, 20), "guitar");
+        assert!(s.catch_up(at(t, 5000)).is_empty());
+        s.resume(at(t, 5000), "guitar");
+        assert_eq!(
+            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 5000)),
+            Some(170)
+        );
+        assert!(s.cycle.is_some());
+    }
+
+    #[test]
+    fn manual_switch_or_stop_ends_the_cycle() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.start_cycle(t, "practice", steps(), false);
+        s.switch(at(t, 10), "email", None, None);
+        assert!(s.cycle.is_none());
+        s.start_cycle(at(t, 20), "practice", steps(), false);
+        s.stop(at(t, 30), "work");
+        assert!(s.cycle.is_none());
+        assert!(s.catch_up(at(t, 9999)).is_empty());
     }
 }

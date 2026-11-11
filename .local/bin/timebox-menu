@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # timebox control menu for the Waybar module (bound to left-click). Uses wofi, falling
-# back to rofi. Lets you start/switch/pause/resume/lap/stop and peek at stats from the bar
-# without touching a terminal.
+# back to rofi. Lets you start/switch/run a cycle/pause/resume/lap/stop, flip the sound and
+# flash alerts, and peek at stats from the bar without touching a terminal.
+# `timebox-menu <action>` skips the first menu (e.g. `timebox-menu cycle`).
 set -u
 
 menu() {
@@ -14,7 +15,12 @@ menu() {
     fi
 }
 
-action=$(printf '%s\n' start switch pause resume lap stop "stop all" stats | menu "timebox") || exit 0
+alerts=$(timebox status | sed -n 's/^alerts: //p')
+action="${1:-}"
+if [ -z "$action" ]; then
+    action=$(printf '%s\n' start switch cycle pause resume "lap / next step" stop "stop all" \
+        "toggle sound" "toggle flash" stats | menu "timebox (${alerts:-alerts})") || exit 0
+fi
 [ -n "$action" ] || exit 0
 
 # For start/switch, offer a few common ops but allow typing any name.
@@ -37,7 +43,14 @@ case "$action" in
     switch) op=$(printf "$ops" | menu "switch to"); [ -n "$op" ] && timebox switch "$op" $(pick_lap "$op") ;;
     pause)  timebox pause ;;
     resume) timebox resume ;;
-    lap)    timebox lap ;;
+    cycle)
+        pick=$(timebox cycle | menu "cycle") || exit 0
+        name="${pick%%:*}"
+        [ -n "$name" ] && timebox cycle "$name"
+        ;;
+    lap | "lap / next step") timebox lap ;;
+    "toggle sound") agent-notify -t "timebox" "$(timebox toggle sound)" ;;
+    "toggle flash") agent-notify -t "timebox" "$(timebox toggle flash)" ;;
     stop)   timebox stop ;;
     "stop all") timebox stop --all ;;
     stats)  agent-notify -t "timebox stats" "$(timebox stats)" ;;
