@@ -48,7 +48,7 @@ const firing = [
   alert("playground-nightly", { owner: "ar-9 fixing", state: "fixing", slug: "ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
   alert("dream", { state: "error", sev: "normal" }),
 ];
-const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0 };
+const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0 };
 const data = (o = {}) => ({
   at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
   firing, rows: firing, table, fixes, history: [{ at: NOW - 600, actor: "sentinel", verb: "tripped", text: "Sentinel: playground-nightly", source: "agent-notify" }],
@@ -63,7 +63,7 @@ test("the sections come in the layout's order: health, firing, fixes, history, w
   assert.ok(order.every((i) => i >= 0), order.join(","));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(h, /cchip bad">FIRING<\/span>/);
-  assert.match(h, /Firing <span class="muted">2: 1 trip, 1 error, 0 no owner<\/span>/);
+  assert.match(h, /Firing <span class="muted">2: 1 trip, 1 error, 0 no owner, 0 alertmanager<\/span>/);
 });
 
 test("health names every domain, the red first, then each component that is not green", () => {
@@ -79,7 +79,7 @@ test("a firing row shows its owner as a link to its queue item, and opens what t
   assert.match(box.innerHTML, /<a href="#queue\?q=ar-9">ar-9 fixing<\/a>/);
   assert.match(box.innerHTML, /<span class="cchip bad">error<\/span>/);
   assert.ok(!box.innerHTML.includes("PlayMode 2 failed"), "the detail starts closed");
-  const tr = { dataset: { key: "sentinel|playground-nightly" } };
+  const tr = { dataset: { key: "sentinel|playground-nightly|GitHub, unity" } };
   fire("click", { target: { closest: (sel) => (sel === "tr.jr" ? tr : null), dataset: {} } });
   const h = box.innerHTML;
   assert.match(h, /<b>What it checks<\/b> the nightly on main/);

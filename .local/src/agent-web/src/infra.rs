@@ -9,7 +9,8 @@ use hub_core::infra::Infra;
 use crate::cache::{off, ReadCache};
 
 /// Prometheus evaluates the rules every minute; a second tab or a reload inside this window is
-/// served the last answer instead of asking again.
+/// served the last answer instead of asking again. Alertmanager is asked in the same gather, so
+/// this is its cadence too.
 const CACHE_SECS: u64 = 30;
 
 /// The last answer, as hub-core's struct (Home joins it) and as JSON (the Infra tab serves it),

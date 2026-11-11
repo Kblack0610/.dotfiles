@@ -101,22 +101,26 @@ fn env_line(file: &str, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// `CC_PROM_URL`, or why it is missing.
-pub fn base() -> Result<String, String> {
-    config("CC_PROM_URL").ok_or_else(|| {
-        "CC_PROM_URL is not set: it comes from ~/.config/command-center/env".to_string()
-    })
+/// A board setting that must be set, or why it is not.
+pub fn required(key: &str) -> Result<String, String> {
+    config(key)
+        .ok_or_else(|| format!("{key} is not set: it comes from ~/.config/command-center/env"))
 }
 
-/// Ask `<base>/api/v1/<path>` (query or query_range) through curl.
-pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Series>, String> {
+/// `CC_PROM_URL`, or why it is missing.
+pub fn base() -> Result<String, String> {
+    required("CC_PROM_URL")
+}
+
+/// GET `<base><path>` with `params` through curl, as JSON. Prometheus and Alertmanager share it.
+pub fn get_json(base: &str, path: &str, params: &[(&str, String)]) -> Result<Value, String> {
     let mut cmd = Command::new("curl");
     cmd.args([
         "-sf",
         "-m",
         &std::env::var("PROM_TIMEOUT").unwrap_or_else(|_| QUERY_TIMEOUT_SECS.into()),
         "-G",
-        &format!("{base}/api/v1/{path}"),
+        &format!("{base}{path}"),
     ]);
     for (k, v) in params {
         cmd.arg("--data-urlencode").arg(format!("{k}={v}"));
@@ -125,8 +129,12 @@ pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Se
     if !out.status.success() {
         return Err(format!("cannot read {base}"));
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))?;
-    flatten(&v)
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))
+}
+
+/// Ask `<base>/api/v1/<path>` (query or query_range) through curl.
+pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Series>, String> {
+    flatten(&get_json(base, &format!("/api/v1/{path}"), params)?)
 }
 
 /// One instant query.
