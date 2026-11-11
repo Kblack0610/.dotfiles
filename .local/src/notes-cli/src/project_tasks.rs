@@ -3865,13 +3865,17 @@ mod inbox_tests {
         .is_err());
     }
 
-    /// nc-1: a row aimed at a later release is on the sheet like any other, so `edit` and
+    /// nc-1: a row aimed at a later release sits in `## Tasks` like any other, so `edit` and
     /// `drop` reach it by its exact line, its words or its id, and it keeps its release tag.
-    /// Seen 2026-11-04, when a planned row sat in its own `## Wave` section and an exact
-    /// `edit` said "no open task matches".
+    /// Seen 2026-11-04, before `--migrate-rows` folded the old `## Wave` sections into
+    /// `## Tasks`: an exact `edit` on a planned row said "no open task matches".
     #[test]
     fn edit_and_drop_reach_a_row_aimed_at_a_later_release() {
         let planned = "- [ ] fix(net): rotate the token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(
+            sheet::is_later(planned, Some((0, 1, 0))),
+            "the fixture's row is planned"
+        );
         let v = vault(
             "planned",
             "",
