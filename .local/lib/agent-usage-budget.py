@@ -20,7 +20,7 @@ total partial and are never counted as $0. Subscription fees count whole in the 
 
 Options after the price: ref= (above), paid_by= (someone else pays this bill: it is shown, and left out
 of our totals, the split and `check`), project= and lane= (where a metered bill's cash goes in the split;
-by default project `unattributed` and lane the kind; github splits by repo, through project-map aliases).
+by default project `unattributed` and lane the kind; github splits by repo, through the project-map name index).
 
 The split: each subscription's fee goes to projects and lanes by its account's share of this month's
 list-price work (the snapshots' fleet_cost.by_session: account, project, origin as the lane); a session
@@ -192,17 +192,25 @@ def gateway_team(ref):
     return t
 
 
-def project_aliases():
+def project_names(repos):
+    """{repo: project key} for each repo name, through `project_of_repos_json` in project-name.sh,
+    the one name index; {} with a warning when the library cannot run, and the caller falls back to
+    the repo name."""
+    lib = ENV.get("PROJECT_NAME_LIB") or f"{HOME}/.config/shared-hooks/project-name.sh"
     try:
-        with open(PROJECT_MAP) as f:
-            return json.load(f).get("aliases") or {}
-    except (OSError, ValueError, AttributeError):
+        r = subprocess.run(["bash", "-c", '. "$1" && shift && project_of_repos_json "$@"', "_", lib, *repos],
+                           env={**ENV, "PROJECT_MAP_FILE": PROJECT_MAP}, capture_output=True, text=True,
+                           timeout=30, check=True)
+        return json.loads(r.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        print(f"agent-usage-budget: no project names from {lib} ({e}); spend splits by repo name",
+              file=sys.stderr)
         return {}
 
 
 def split(lines, cells, work):
     """Each counted line's cash -> {(project, lane): usd}, unrounded."""
-    aliases = project_aliases()
+    names = project_names(sorted({r for x in lines if counted(x) for r in x.get("by_repo") or {}}))
     out = {}
 
     def add(cell, usd):
@@ -221,7 +229,7 @@ def split(lines, cells, work):
         elif x.get("by_repo"):
             lane = x.get("lane") or x["kind"]
             for repo, usd in x["by_repo"].items():
-                add((aliases.get(repo) or repo.lstrip("."), lane), usd)
+                add((names.get(repo) or repo.lstrip("."), lane), usd)
         else:
             add((x.get("project") or UNATTRIBUTED, x.get("lane") or x["kind"]), x["spent"])
     return out

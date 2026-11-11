@@ -32,14 +32,14 @@ setup() {
 # write_map <json> -- the whole map, so each test states exactly the shape it is pinning.
 write_map() { cat > "$MAP" > /dev/null; }
 
-# A registry with one repo, one app, one alias, one repo-relation. Everything resolves.
+# A registry with one repo, one app, one other spelling, one forge slug, one repo-relation.
+# Everything resolves.
 clean_map() {
   cat > "$MAP" <<'EOF'
 {
   "paths":  { "/tmp/mono": "mono-canon", "/tmp/other": "other-canon" },
-  "aliases":{ "mono": "mono-canon" },
   "trackers": {
-    "mono-canon": { "system": "board" },
+    "mono-canon": { "system": "board", "names": ["mono"], "github": "Org/mono-canon" },
     "alpha":      { "repo": "mono-canon", "path": "apps/alpha" },
     "labonly":    { "repo": "other-canon" },
     "default":    { "system": "board" }
@@ -147,22 +147,46 @@ EOF
   refute_output --partial 'code "'
 }
 
-@test "an alias pointing at nothing fails" {
+@test "a names that is not a list of names, or a slug that is not owner/repo, fails" {
   clean_map
-  jq '.aliases.mono = "vanished"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  jq '.trackers["mono-canon"].names = "mono" | .trackers.alpha.forgejo = "alpha"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'points at "vanished"'
+  assert_output --partial 'trackers.mono-canon.names is not a list of non-empty strings'
+  assert_output --partial 'trackers.alpha slug "alpha" is not owner/repo'
 }
 
-@test "an alias that shadows a real project fails" {
-  # Resolution order decides which wins and the loser is invisible, so this is banned
-  # outright rather than left to the resolver.
+@test "a spelling two projects claim fails and names both; the clean map has none" {
+  # The index order decides which wins and the loser silently loses its rows, so it is banned
+  # outright rather than left to the lookup.
   clean_map
-  jq '.aliases["other-canon"] = "mono-canon"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'spellings in the name index name one project'
+  refute_output --partial 'names more than one project'
+  jq '.trackers.alpha.names = ["mono"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'collides with a project of the same name'
+  assert_output --partial 'spelling "mono" names more than one project: alpha'
+  assert_output --partial 'mono-canon'
+}
+
+@test "every spelling the queue, runs.jsonl and outcomes wrote resolves, or the doctor names it" {
+  clean_map
+  mkdir -p "$AGENT_DIR/queue/queued" "$AGENT_DIR/outcomes/mono-canon" "$XDG_STATE_HOME/ci"
+  printf -- '---\nproject: mono\n---\nproject: not-this-line\n' > "$AGENT_DIR/queue/queued/a.md"
+  printf '%s\n' '{"repo":"Org/mono-canon"}' '{"repo":"other"}' > "$XDG_STATE_HOME/ci/runs.jsonl"
+  printf '%s\n' '{"prs":[{"repo":"Org/alpha"}]}' > "$AGENT_DIR/outcomes/mono-canon/2026-11.jsonl"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 4 spellings in the queue, runs.jsonl and outcomes resolve'
+  printf -- '---\nproject: mono-old\n---\n' > "$AGENT_DIR/queue/queued/b.md"
+  printf '%s\n' '{"repo":"mono-old"}' >> "$XDG_STATE_HOME/ci/runs.jsonl"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial '"mono-old" (2 in queue,runs.jsonl) names no project'
+  refute_output --partial '"not-this-line"'
+  jq '.trackers["mono-canon"].names += ["mono-old"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 5 spellings in the queue, runs.jsonl and outcomes resolve'
 }
 
 @test "an ~/.agent key under an unregistered name fails, and names it with its kinds" {
@@ -173,6 +197,14 @@ EOF
   run "$DOCTOR" "$MAP"
   assert_failure
   assert_output --partial 'runtime key "ghost-project" (lessons plans sessions) under ~/.agent'
+}
+
+@test "an ~/.agent key that is another spelling of a project names the key its files belong under" {
+  clean_map
+  mkdir -p "$AGENT_DIR/plans/mono"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'runtime key "mono" (plans) under ~/.agent is another spelling of mono-canon; readers look under mono-canon'
 }
 
 @test "registered keys, an anchor's decisions log and reserved _ keys pass" {
@@ -212,10 +244,11 @@ EOF
 @test "the tracker fallback 'default' is not treated as a project" {
   # Otherwise every typo would resolve to it and the whole doctor would be a no-op.
   clean_map
-  jq '.aliases.bad = "default"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  mkdir -p "$AGENT_DIR/queue/queued"
+  printf -- '---\nproject: default\n---\n' > "$AGENT_DIR/queue/queued/a.md"
   run "$DOCTOR" "$MAP"
   assert_failure
-  assert_output --partial 'points at "default"'
+  assert_output --partial '"default" (1 in queue) names no project'
 }
 
 # -- lab and type: the schema, and lab dirs match the registry both ways --
