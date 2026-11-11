@@ -73,6 +73,16 @@ const projects = {
   unlinked: [], errors: [],
 };
 
+// Deliverables: hub_core::deliverables, one row per open feature epic.
+const deliverables = {
+  table: table(5, ["project", "epic", "sys", "done", "eta", "track"], ["all", "behind", "on track", "verify"], { project: PROJECTS.slice(0, 3), sys: ["gameplay", "ui", "save"] }),
+  rows: rows(5, (i) => ({ project: pick(PROJECTS, i), profile: "personal", id: `ep-${i + 1}`, title: TEXT[i], system: pick(["gameplay", "ui", "save"], i), done: 9 - i, total: 15, percent: 60 - i * 7, done_says: `${60 - i * 7}% ${9 - i}/15`, eta: ago(-1440 * (i + 1)), eta_day: `11-${14 + i}`, track: pick(["behind", "verify", "on track"], i) })),
+  verify: 2, on_track: 1, behind: 2, coverage: { linked: 1013, open_rows: 2600, none: ["infra", "demo-web"] },
+  says: "Deliverables (5 open, 2 ready to verify, 1 on track, 2 behind)",
+  coverage_says: "Coverage: 1,013 linked / 2,600 open rows (39%); no feature epic: infra, demo-web",
+  legend: "percent is the epic's rows by size (#size/s 1, m 3, l 8), then rows done/all",
+};
+
 // Board: hub_core::tasks.
 const board = {
   table: table(8, ["priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
@@ -197,7 +207,7 @@ export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/projects": PROJECTS.slice(0, 5),
-  "/api/projects": projects, "/api/board": board,
+  "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/infra": infra, "/api/reds": reds, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,

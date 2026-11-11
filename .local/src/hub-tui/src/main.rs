@@ -604,6 +604,13 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.infra_all = section.is_none();
         a.open_query(section.clone());
     }
+    // The live app reads Deliverables off-thread (about 10s); a printed page has no next frame,
+    // so it waits for them here.
+    if matches!(tab, None | Some(Tab::Projects)) {
+        a.deliverables = Some(hub_core::deliverables::read(
+            &hub_core::session_actions::System,
+        ));
+    }
     // Home's NEEDS YOU joins the human-sheet rows.
     if matches!(tab, None | Some(Tab::Home)) {
         a.tasks = Some(hub_core::tasks::feed(&hub_core::session_actions::System));

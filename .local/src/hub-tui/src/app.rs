@@ -48,6 +48,9 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
+/// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
+/// Deliverables only this often; entering Projects and `r` still read it at once.
+pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
 /// the hour: agent-web's cache keeps one this long too.
 pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
@@ -345,6 +348,8 @@ pub enum Msg {
     Ranked(Result<Vec<Ranked>, String>),
     /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
     Reds(Result<hub_core::reds::Reds, String>),
+    /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
+    Deliverables(Result<hub_core::deliverables::Deliverables, String>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
     Fleet(Box<hub_core::fleet::Fleet>),
@@ -428,6 +433,8 @@ pub struct App {
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     /// Infra's Red fixes section; None until the first read.
     pub reds: Option<Result<hub_core::reds::Reds, String>>,
+    /// The Projects tab's Deliverables section; None until the first read.
+    pub deliverables: Option<Result<hub_core::deliverables::Deliverables, String>>,
     /// The Costs tab's read; None until the first.
     pub costs: Option<hub_core::costs::Costs>,
     /// The Costs tab's cut, window, query and sort.
@@ -533,11 +540,14 @@ pub struct App {
     forecast_read: Read,
     ranked_read: Read,
     reds_read: Read,
+    deliverables_read: Read,
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
     /// When the last Red fixes read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
+    /// When the last Deliverables read finished, for `DELIVERABLES_REFRESH`.
+    deliverables_at: Option<std::time::Instant>,
     /// When the last Schedules read finished, for `SCHEDULES_REFRESH`.
     schedules_at: Option<std::time::Instant>,
     costs_read: Read,
@@ -589,6 +599,7 @@ impl App {
             forecast: None,
             ranked: None,
             reds: None,
+            deliverables: None,
             costs: None,
             cv: crate::coststab::CostsView::default(),
             fleet: None,
@@ -647,10 +658,12 @@ impl App {
             forecast_read: Read::default(),
             ranked_read: Read::default(),
             reds_read: Read::default(),
+            deliverables_read: Read::default(),
             schedules_read: Read::default(),
             releases_read: Read::default(),
             builds_read: Read::default(),
             reds_at: None,
+            deliverables_at: None,
             schedules_at: None,
             costs_read: Read::default(),
             costs_at: None,
@@ -757,6 +770,19 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Reds(hub_core::reds::read(runner.as_ref())));
+            });
+        }
+    }
+
+    /// `fleet-bench epics` writes no file to watch, so Projects reads it on entering, on `r` and
+    /// on the tick while it is shown, at most every `DELIVERABLES_REFRESH`.
+    pub fn read_deliverables(&mut self) {
+        if self.deliverables_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Deliverables(hub_core::deliverables::read(
+                    runner.as_ref(),
+                )));
             });
         }
     }
@@ -1383,6 +1409,13 @@ impl App {
                 {
                     self.read_reds();
                 }
+                if self.tab == Tab::Projects
+                    && self
+                        .deliverables_at
+                        .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
+                {
+                    self.read_deliverables();
+                }
                 if self.tab == Tab::Costs
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
@@ -1481,6 +1514,13 @@ impl App {
                 self.reds_at = Some(std::time::Instant::now());
                 if self.reds_read.done() && self.tab == Tab::Infra {
                     self.read_reds();
+                }
+            }
+            Msg::Deliverables(r) => {
+                self.deliverables = Some(r);
+                self.deliverables_at = Some(std::time::Instant::now());
+                if self.deliverables_read.done() && self.tab == Tab::Projects {
+                    self.read_deliverables();
                 }
             }
             Msg::Schedules(s) => {
@@ -1820,6 +1860,9 @@ impl App {
                 if self.tab == Tab::Infra {
                     self.read_reds();
                 }
+                if self.tab == Tab::Projects {
+                    self.read_deliverables();
+                }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
                 }
@@ -2099,6 +2142,7 @@ impl App {
         }
         if t == Tab::Projects {
             self.read_projects();
+            self.read_deliverables();
         }
         if t == Tab::Home {
             self.read_home();
@@ -2110,7 +2154,7 @@ impl App {
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         if !self.pv.open {
             let cards = self.cards().cards;
-            if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() {
+            if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() && !self.pv.dfocus {
                 if let Some(c) = self.pv.selected(&cards) {
                     self.prio_act(
                         c.profile.clone(),
@@ -2119,6 +2163,27 @@ impl App {
                     );
                 }
                 return true;
+            }
+            // `d` takes the keys only for a table that is read: with none, it is a plain no-op.
+            if k.code == KeyCode::Char('d')
+                && self.pv.table.typing.is_none()
+                && !self.pv.dfocus
+                && !matches!(self.deliverables, Some(Ok(_)))
+            {
+                return true;
+            }
+            if self.pv.dfocus {
+                if let Some(Ok(d)) = &self.deliverables {
+                    let took = self.pv.dkey(&mut self.tv, k, &cards, d, self.page);
+                    // An epic opened from a row narrows at once when its page is already read.
+                    if let (Some(pg), true) = (&self.proj_page, self.pv.epic.is_some()) {
+                        if self.tv.project.as_ref().map(|(_, n)| n) == Some(&pg.project) {
+                            self.pv.narrow(&mut self.tv, pg);
+                        }
+                    }
+                    return took;
+                }
+                self.pv.dfocus = false;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
@@ -3210,15 +3275,22 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects if self.tv.typing() || self.pv.table.typing.is_some() => {
+            Tab::Projects
+                if self.tv.typing()
+                    || self.pv.table.typing.is_some()
+                    || self.pv.dv.typing.is_some() =>
+            {
                 "type, Enter submits, Esc cancels".into()
             }
+            Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
+                "j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Projects if self.pv.open => format!(
                 "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
                 if self.tv.project.is_some() { "z/Z/F folds  " } else { "" }
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open  a all rows  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Home => format!(
                 "/ query  f state  s/S sort  x clear  u w n e m b flow  F fix  {}{tabs}/Tab pages  j/k scroll  r refresh  o Grafana  q quit",
@@ -3313,7 +3385,14 @@ impl App {
                         Some(Ok(f)) => Some(f),
                         _ => None,
                     };
-                    let (l, at) = projtab::page(&self.cards(), feed, &self.pv, self.p, w);
+                    let (l, at) = projtab::page(
+                        &self.cards(),
+                        feed,
+                        self.deliverables.as_ref(),
+                        &self.pv,
+                        self.p,
+                        w,
+                    );
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
@@ -4938,9 +5017,11 @@ mod tests {
 
         // The card's numbers stay on top of its rows.
         let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
+        // The Deliverables section reads every project's epics; only the opened card reads its own.
         assert!(
-            !ran(&fake).contains("fleet-bench"),
-            "the list reads no page"
+            !ran(&fake).contains("--project"),
+            "the list reads no page: {}",
+            ran(&fake)
         );
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.tv.project, Some(("bnb".into(), "demo".into())));
@@ -6086,6 +6167,29 @@ mod tests {
             "Machines is another inner tab: {s}"
         );
         assert!(s.contains("reds: cannot read the queue"), "{s}");
+    }
+
+    #[test]
+    fn d_takes_the_keys_only_for_a_read_deliverables_table_and_p_leaves_its_search_alone() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Projects, tx);
+        a.deliverables_read.busy = true;
+        a.handle(Msg::Projects(Box::new(loaded())));
+        // still reading, or failed: d does nothing, the list keeps the keys
+        a.handle(key('d'));
+        assert!(!a.pv.dfocus);
+        a.deliverables = Some(Err("fleet-bench epics: exit 2".into()));
+        a.handle(key('d'));
+        assert!(!a.pv.dfocus);
+        // read: d moves the keys, / types into the table's search (a capital P is text there)
+        a.deliverables = Some(Ok(hub_core::deliverables::Deliverables::default()));
+        a.handle(key('d'));
+        assert!(a.pv.dfocus);
+        a.handle(key('/'));
+        assert!(a.hints().contains("type, Enter submits"), "{}", a.hints());
+        a.handle(key('P'));
+        assert_eq!(a.pv.dv.typing.as_deref(), Some("P"));
+        assert!(a.prv.said.is_none() && a.tv.said.is_none());
     }
 
     #[test]

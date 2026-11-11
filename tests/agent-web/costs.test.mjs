@@ -520,25 +520,56 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.doesNotMatch(none, /% of fleet/);
 });
 
-test("spend history folds to its headline under the fleet figure and lists year, month and day rows", () => {
+test("spend leads with the 30-day chart and month bars, then the picked day's sessions, and keeps the period rows", async () => {
   const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
+  const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
+  const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
   const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
     rows: [p("year", "2026", "$61,300", 54, "$1,135", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "+43%", "21%"),
       p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
-    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens" };
-  const h = show(board({ history }));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "history sits in Spend, after the pinned fleet figure");
-  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
+    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens", chart, months: [bar("2026-11", 130, 80, 50)] };
+  const srow = (sid, session, cost) => ({ sid, session, project: "dotfiles", origin: "runner", agent: null, harness: "claude", cost, share: cost, est: 0, days: 2 });
+  const day = { day: "2026-11-09", head: "2026-11-09: 2 sessions, $95 of the day's $100", why: null, rows: [srow("c", "big run", 90), srow("b", "shepherd", 5)], more: 0, shown_usd: "$95",
+    table: { q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2, states: [], columns: ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"].map((k) => col(k)), facets: [] },
+    series: { sid: "b", session: "shepherd", total: "$15", bars: [bar("2026-11-07", 10, 10, 0), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 5, 5, 0)] } };
+  const h = show(board({ history, day }));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "spend sits after the pinned fleet figure");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend <span class="muted">Nov \$1,579\/day vs Oct/, "open until the reader folds it");
+  const days = h.slice(h.indexOf('id="spend-days"'), h.indexOf("By month"));
+  assert.match(days, /class="cc sel" data-key="2026-11-09"/, "the picked day is marked");
+  assert.match(days, /data-key="2026-11-08" data-tip="2026-11-08: no figure"><div class="cs"><\/div>/, "a day with no figure is an empty column, never a $0 bar");
+  assert.match(days, /height:60%;background:var\(--c1\)"><\/i><i style="height:40%;background:var\(--c-other\)/, "billed under estimated");
+  assert.match(h, /By month<\/h3>.*data-key="2026-11"/s);
+  assert.match(h, /Sessions 2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
+  assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
+  assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
+  assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
+  assert.match(h, /<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
+  assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
+  assert.ok(h.indexOf("Sessions 2026") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
-  assert.match(h, /<tr class=""><td>11-09<\/td>/);
   assert.match(h, /\+3 older/);
   assert.match(h, /2 days in the range have no figure and are not counted/);
-  assert.match(h, /<th data-role="lead">period<\/th>/, "the table folds to a phone row");
-  assert.match(show(board({ history: { ...history, stale: true } })), /class="warn">stale: no snapshot for yesterday/);
-  // negative control: no snapshot says so, never a $0 table
+  assert.match(show(board({ history: { ...history, stale: true }, day })), /class="warn">stale: no snapshot for yesterday/);
+  // a click on a day or a row is the day or sid key in the URL and the request
+  asked = [];
+  body = board({ history, day });
+  run("st.tab = 'costs'; st.views.costs = ''");
+  const at = (sel, data) => ({ dataset: data, closest: (q) => (q === sel ? { dataset: data } : null) });
+  fire("click", { type: "click", target: at("#spend-days [data-key], #spend-series [data-key]", { key: "2026-11-07" }) });
+  await tick();
+  assert.equal(ctx.history.url, "#costs?day=2026-11-07");
+  assert.match(asked.at(-1), /day=2026-11-07/);
+  fire("click", { type: "click", target: at("tr[data-sid]", { sid: "c" }) });
+  await tick();
+  assert.equal(ctx.history.url, "#costs?day=2026-11-07&sid=c");
+  fire("click", { type: "click", target: at("tr[data-sid]", { sid: "c" }) });
+  await tick();
+  assert.doesNotMatch(ctx.history.url, /sid=c/, "the open row again closes it");
+  // negative control: no snapshot says so, never a $0 chart
   const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
-  assert.match(none, /id="sec-spend"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
-  assert.doesNotMatch(none, /vs prev/);
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend <span class="muted">no snapshot with a fleet figure yet/);
+  assert.doesNotMatch(none, /spend-days/);
 });
 
 // Inner tabs: the five behaviours of fleet-platform's device-tabs.test.ts, over hub_core::layout's groups.

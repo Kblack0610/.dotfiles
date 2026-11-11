@@ -541,3 +541,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .tundo { margin: 0 0 10px; }
 .ntag { display: inline-block; text-indent: 0; font: 600 var(--fs-xs) var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); }
 #daily details.cfold { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 0 auto 10px; }
+/* Costs > Spend: the 30-day chart beside the month bars on a wide screen, stacked on a phone. */
+.spendcharts { display: grid; gap: 8px; }
+@media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
+#sec-spend tr[data-sid] { cursor: pointer; }
+#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
