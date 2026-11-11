@@ -49,7 +49,7 @@ function channelRow(r) {
   return open ? row + releaseDetail(r) : row;
 }
 
-const CH_HEAD = '<tr><th data-role="lead">channel</th><th data-role="glance">id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th>where</th></tr>';
+const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
 // The opened app: its headline env's channels, the other envs in a fold that starts open, then what its newest tag shipped.

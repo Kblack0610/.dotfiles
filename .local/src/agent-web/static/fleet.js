@@ -59,7 +59,7 @@ function registryLine(r) {
 }
 
 // Calls newest first, each with its Langfuse trace.
-const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="lead">when</th><th class="n">took</th><th>model</th><th class="n" data-role="glance" data-named>$</th><th class="n">tokens</th><th data-role="glance">ok</th><th data-role="glance">trace</th></tr>${recent.map((x) =>
+const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="lead">when</th><th class="n">took</th><th>model</th><th class="n" data-role="glance">$</th><th class="n">tokens</th><th data-role="glance">ok</th><th data-role="glance">trace</th></tr>${recent.map((x) =>
   `<tr><td class="n">${when(x.at)}</td><td class="n">${secs(x.ms / 1000)}</td><td class="muted">${esc(x.model)}</td><td class="n">${usd(x.cost)}</td><td class="n">${kTok(x.tokens)}</td>` +
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
@@ -108,7 +108,7 @@ function dispatchList(d) {
   const rows = d.recent.slice(0, LOG_ROWS).map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
     `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
     `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th>reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
+  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
 }
 
 // The runner whose page draws a judge's tiles is the one whose conf names that extras block
@@ -141,7 +141,7 @@ function judgeList(j) {
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
   return `<div class="muted">7d: ${pct(j.week.live_pct)} answered, ${pct(j.week.coverage)} would answer, ${pct(j.week.precision)} right</div>${seg}` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th>why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
+    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
 }
 
 function renderFleet() {

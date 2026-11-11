@@ -153,11 +153,11 @@ test("a pfold is always open on a wide screen, and on a phone is a closed line u
   doc.querySelectorAll = real;
 });
 
-// A grid (a blank corner cell: days across, measures down) keeps its columns, and so does an
+// A grid (a blank corner cell: days or periods one way, measures the other) keeps its columns, and so does an
 // opened run's job list, which app.css draws a job per block (.rdjobs).
 const KEEPS_COLUMNS = (h) => h.startsWith("<tr><th></th>") || h.includes("<th>job</th><th>class</th>");
 
-test("every hand-written table header names a lead, so a phone draws its rows", () => {
+test("every literal hand-written table header names a lead, so a phone draws its rows", () => {
   const files = readdirSync(dir).filter((f) => f.endsWith(".js"));
   let seen = 0;
   for (const f of files) for (const [h] of readFileSync(new URL(f, dir), "utf8").matchAll(/<tr><th.*?<\/tr>/g)) {
@@ -165,6 +165,7 @@ test("every hand-written table header names a lead, so a phone draws its rows", 
     seen++;
     assert.match(h, /data-role="lead"/, `${f}: ${h}`);
   }
+  // About two dozen literal headers today: far fewer means the pattern stopped matching, not that they went.
   assert.ok(seen >= 20, `the scan found only ${seen} headers: the pattern no longer matches how tables are written`);
 });
 
