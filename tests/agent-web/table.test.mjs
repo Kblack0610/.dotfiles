@@ -248,7 +248,7 @@ test("the filter row draws each facet under its column, and the bar draws only t
   ctx.t = facetTable();
   assert.match(run("tblFacets(t)"), /data-fkey="a".*data-fkey="repo"/, "before any header is drawn the bar has every facet");
   const head = run(`tblHead(t, { a: ["a"], b: ["b"] })`);
-  assert.match(head, /<\/tr><tr class="tfilters" data-phone="filters"><th><details class="tfacet on" data-fkey="a"><summary[^>]*>a: x \+1<\/summary>.*<\/details><\/th><td><\/td><\/tr>$/, "a cell per drawn column, the facet under its own");
+  assert.match(head, /<\/tr><tr class="tfilters" data-phone="filters"><th><details class="tfacet on" data-fkey="a"[^>]*><summary[^>]*>a: x \+1<\/summary>.*<\/details><\/th><td><\/td><\/tr>$/, "a cell per drawn column, the facet under its own");
   assert.match(head, /data-fv="x" value="a:y" checked>/);
   assert.match(head, /data-fv="y" value="a:x" checked>/);
   assert.match(head, /data-fv="&lt;z&gt;" value="a:x a:y a:&lt;z&gt;"> <span>&lt;z&gt;<\/span> <span class="n">4<\/span>/, "an unticked value adds itself, escaped");
@@ -269,24 +269,37 @@ test("a tick patches the query and keeps focus; clear patches the column's clear
 });
 
 // A drawn facet menu: its block, its column, and its boxes, as the redraw leaves it.
-const menuOf = (key, tbl, fvs) => {
+const menuOf = (key, tbl, fvs, fq = "") => {
   const boxes = fvs.map((fv) => ({ dataset: { fv }, focus() { this.focused = true; } }));
-  const summary = { focus() { this.focused = true; } };
-  return { dataset: { fkey: key }, open: false, isConnected: true, boxes, summary,
+  const summary = { focus() { this.focused = true; } }, classes = new Set();
+  return { dataset: { fkey: key, fq }, open: false, isConnected: true, boxes, summary, classes, classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
     matches: (sel) => sel === "details.tfacet", closest: (sel) => (sel === "[data-tbl]" ? (tbl ? { dataset: { tbl } } : null) : sel.startsWith("details.tfacet") ? null : null),
     querySelector: (sel) => (sel === "summary" ? summary : null), querySelectorAll: () => boxes };
 };
 
-test("a menu ticked in stays open, on the box last ticked, across the redraw the tick causes", () => {
+test("a menu ticked in waits for the answer, then stays open on the box last ticked", () => {
   const before = menuOf("a", "n", ["x", "y"]);
   before.closest = (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "n" } } : null);
-  fireDoc("change", { target: { dataset: { fv: "y" }, closest: (sel) => (sel === "details.tfacet" ? before : null) } });
-  const mine = menuOf("a", "n", ["x", "y"]), other = menuOf("a", "", ["x", "y"]);
-  ctx.root = { querySelectorAll: () => [other, mine] };
+  fireDoc("change", { target: { value: "a:x a:y", dataset: { fv: "y" }, closest: (sel) => (sel === "details.tfacet" ? before : null) } });
+  assert.deepEqual(before.boxes.map((b) => b.disabled), [true, true], "no box built on the old view is ticked again");
+  assert.ok(before.classes.has("busy"));
+  assert.equal(before.summary.focused, true, "focus waits on the pill, where Escape still shuts it");
+  // A redraw from the old view (the hash change, a poll) lands first: its boxes still wait.
+  const stale = menuOf("a", "n", ["x", "y"], "a:x"), other = menuOf("a", "", ["x", "y"], "a:x a:y");
+  ctx.root = { querySelectorAll: () => [other, stale] };
+  run("tblMenuKeep(root)");
+  assert.equal(stale.open, true);
+  assert.deepEqual(stale.boxes.map((b) => b.disabled), [true, true]);
+  assert.equal(stale.summary.focused, true);
+  assert.equal(other.open, false, "the same column in another table block stays shut");
+  // The answer's redraw: its boxes are built on the view asked for.
+  const mine = menuOf("a", "n", ["x", "y"], " a:x  a:y");
+  ctx.root = { querySelectorAll: () => [mine] };
   run("tblMenuKeep(root)");
   assert.equal(mine.open, true);
+  assert.deepEqual(mine.boxes.map((b) => b.disabled), [undefined, undefined]);
   assert.equal(mine.boxes[1].focused, true, "focus is back on the box ticked");
-  assert.equal(other.open, false, "the same column in another table block stays shut");
+  assert.equal(run("tblMenu.want"), null);
 });
 
 test("a click outside a menu or Escape inside it shuts it, and nothing reopens on the next draw", () => {
@@ -306,6 +319,21 @@ test("a click outside a menu or Escape inside it shuts it, and nothing reopens o
   ctx.root = { querySelectorAll: () => [next] };
   run("tblMenuKeep(root)");
   assert.equal(next.open, false);
+});
+
+test("a menu opens under its pill, or over it when the window has more room there, never past the edge", () => {
+  ctx.innerWidth = 1280; ctx.innerHeight = 900;
+  const at = (top) => {
+    const m = { style: {}, scrollHeight: 300, offsetHeight: 300, offsetWidth: 150 };
+    ctx.d = { querySelector: (sel) => (sel === ".tfmenu" ? m : { getBoundingClientRect: () => ({ top, bottom: top + 24, left: 589 }) }) };
+    run("tblPlace(d)");
+    return m.style;
+  };
+  assert.deepEqual({ ...at(100) }, { maxHeight: "360px", top: "126px", left: "589px" });
+  assert.deepEqual({ ...at(839) }, { maxHeight: "360px", top: "537px", left: "589px" }, "a pill near the bottom opens its menu upward");
+  assert.equal(at(500).top, "526px", "room enough below stays below");
+  assert.equal(at(700).maxHeight, "360px");
+  assert.equal(at(700).top, "398px", "more room above, too little below, flips up");
 });
 
 test("the filter row is never stamped as a phone row", () => {
