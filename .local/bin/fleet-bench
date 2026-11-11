@@ -3496,14 +3496,14 @@ triage_human() {
 
 # cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
 # closed with a PR that is not merged (it waits on a merge, and a second session would only
-# repeat it), or closed with its ask pending (an alert watch's item ends once it files the
-# decision, which is the human's until answered). Else how many items the window queued for it.
+# repeat it), or closed with no PR and its ask pending (an alert watch's item ends once it files
+# the decision, which is the human's until answered; a merged fix that did not hold still retries). Else how many items the window queued for it.
 # Every row triage reads is red now, so an item that closed cancelled, failed, or merged with its
 # red still here did not hold.
 cause_tries() {
   jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or .ask == true
+                or (.ask == true and .state == "done" and .pr == null and .status != "cancelled")
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
       then -1 else length end' <<<"$1"
 }

@@ -1957,8 +1957,16 @@ pending_ask() { printf 'Ab12Cd\tdotfiles\t\tpending\tquestion\tq?\ta|b\t\t\t\ta\
   assert_success
   [ ! -s "$PLOG" ]
   [ ! -e "$BOARD.agent-runtime" ]
-  # Negative control: an ask some other session posted holds nothing.
+  # Negative controls: an ask some other session posted holds nothing, and neither does its own
+  # ask on a fix that merged and did not hold.
   : > "$ASKS"; pending_ask s9
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  : > "$ITEMS"; : > "$PLOG"; : > "$ASKS"; pending_ask s1
+  fix_item ar-1 done ok o/r#5 2020-01-02T00:00:00Z
+  jq -c '.sessions = "s1"' "$ITEMS" > "$ITEMS.x" && mv "$ITEMS.x" "$ITEMS"
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
