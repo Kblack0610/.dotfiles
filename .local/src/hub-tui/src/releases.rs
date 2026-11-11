@@ -413,11 +413,13 @@ pub fn detail(
         ));
         for h in a.history.iter().take(HISTORY_LINES) {
             let line = format!(
-                "    {}  {}  prev {}  reached {}",
+                "    {}  {}  prev {}  reached {}  prs {}  rows {}",
                 h.tag,
                 h.at_text,
                 h.prev.as_deref().unwrap_or("-"),
-                h.reached_text
+                h.reached_text,
+                h.prs_text,
+                h.rows_text
             );
             let style = if h.reached.is_empty() { p.dim() } else { plain };
             out.push(clip_line(Line::styled(line, style), w));
@@ -511,7 +513,7 @@ mod tests {
             "generated_epoch": AT,
             "rows": [green, steam, row("kenneth-black-portfolio", "portfolio-preview-eu-west", "drift")],
         });
-        read(&Fake(raw.to_string()))
+        read(&Fake(raw.to_string()), &[])
     }
 
     fn app<'a>(s: &'a Releases, project: &str) -> &'a App {

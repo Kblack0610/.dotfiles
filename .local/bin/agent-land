@@ -25,7 +25,7 @@
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
-# promoted from, done with proof "pr:<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
+# promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
@@ -556,8 +556,9 @@ credit() {
 }
 
 # board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
-# Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
-board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
+# Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
+# with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
+board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
 # close_plan_rows: once --plan has no open phase left, each row on its `rows:` line (plan_rows) that
 # is still open on a board closes with this PR as proof, as the item's own row does. The PR is
 # merged by now, so a row it cannot close is a line with the command, never a failed landing.
@@ -575,10 +576,10 @@ close_plan_rows() {
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
     IFS=$'\t' read -r prof proj lane <<<"$hit"
     flag=(); [ "$lane" = agent ] && flag=(--agent)
-    if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:$pr${merged:+ commit:${merged:0:12}}" 2>&1); then
+    if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}" 2>&1); then
       echo "rows: closed $id on $proj"
     else
-      echo "rows: $id not closed ($(lastline "$out")): notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:$pr"
+      echo "rows: $id not closed ($(lastline "$out")): notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:${pr_ref:-$pr}"
     fi
   done <<<"$ids"
 }

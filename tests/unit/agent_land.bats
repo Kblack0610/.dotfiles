@@ -512,7 +512,7 @@ merge: #42 MERGED at 01234567
 body: passes comms-lint --channel pr-body
 proof: evidence commit 0123456789abcdef is an ancestor of origin/main
 item: ship done with pr:o/r#42
-board: closed "ship it" with pr:42 commit:fedcba987654
+board: closed "ship it" with pr:o/r#42 commit:fedcba987654
 plan: ticked "6. agent-land"
 landed #42
 EOF
@@ -547,7 +547,7 @@ notes ingest record --stage land --action merged --from dotfiles --item ship --i
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
-notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
+notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
 
@@ -800,8 +800,8 @@ EOF
   assert_line --index -1 'landed #42'
   run grep -E 'done (ucp-134|ar-9|ar-1)' "$LOG"
   assert_output - <<'EOF2'
-notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:42 commit:fedcba987654
-notes --profile bnb ptask game done ucp-134 --proof pr:42 commit:fedcba987654
+notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:o/r#42 commit:fedcba987654
+notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba987654
 EOF2
 }
 
@@ -832,7 +832,7 @@ EOF2
   chmod +x "$SANDBOX/bin/notes"
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land"
   assert_success
-  assert_line 'rows: ucp-134 not closed (no open row ucp-134): notes --profile bnb ptask game done ucp-134 --proof pr:42'
+  assert_line 'rows: ucp-134 not closed (no open row ucp-134): notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42'
   assert_line --index -1 'landed #42'
 }
 
@@ -893,9 +893,9 @@ EOF2
   agent-queue set menus row=db:db-12
   run "$LAND" 42 --item menus
   assert_success
-  assert_line --index 7 'board: closed "db-12" with pr:42 commit:fedcba987654'
+  assert_line --index 7 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
   run board_calls
-  assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:42 commit:fedcba987654'
+  assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
 }
 
 @test "a hand-started session's own item is the record: no --item needed" {
@@ -929,9 +929,9 @@ EOF2
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 7 'board: closed "fix crash: on load" with pr:42 commit:fedcba987654'
+  assert_line --index 7 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
   run board_calls
-  assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42 commit:fedcba987654'
+  assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:o/r#42 commit:fedcba987654'
 }
 
 # repo_map -> a registry where o/r's checkout is the project `tools` and `level` is a game inside repo `game`
@@ -1004,7 +1004,7 @@ repo_map() {
   run "$LAND" 42 --item fix
   assert_success
   assert_line --index 1 'merge: #42 already MERGED, recording it'
-  assert_line --index 5 'board: closed "fix it" with pr:42 commit:fedcba987654'
+  assert_line --index 5 'board: closed "fix it" with pr:o/r#42 commit:fedcba987654'
   echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
   run "$LAND" 43 --item fix
   assert_failure 2
@@ -1396,7 +1396,7 @@ real_notes_board() {
   run agent-queue show next --json
   assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
   run board_calls
-  assert_output --partial 'done ship it --proof pr:43'
+  assert_output --partial 'done ship it --proof pr:o/p#43'
 }
 
 @test "an earlier PR recorded with no merge takes its merge commit from gh, so this PR is recorded beside it" {
@@ -1479,7 +1479,7 @@ real_notes_board() {
   cp "$SANDBOX/bin/notes-working" "$SANDBOX/bin/notes"
   run "$LAND" 43 --item ship
   assert_success
-  assert_output --partial 'board: closed "ship it" with pr:43'
+  assert_output --partial 'board: closed "ship it" with pr:o/p#43'
 }
 
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,

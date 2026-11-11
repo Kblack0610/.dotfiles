@@ -275,7 +275,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_BUDGET_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/budget.json}"
 : "${BENCH_BUDGET_EVERY_MIN:=30}"
 : "${BENCH_BUDGET_TIMEOUT:=120}"
-: "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
+: "${BENCH_RELEASES_CMD:=hub releases --json}"   # request_to_live_h: a project with a row goes live at its tag's first deploy (hub_core::release_graph), one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
@@ -1737,29 +1737,33 @@ wants_stats() {
 # BENCH_LEAD_DAYS. Request is the item's queued time. Live is the item's finished time (agent-land
 # closes it at the merge) in a project release-state has no row for, since its merge is its
 # deploy; else the first tag of the project's line holding every merged commit (release-state
-# released), as no target records deploys yet. hours and p50 cover those live in the last
+# released), live at the first deploy the release graph records for that tag (hub releases
+# --json, each history row's reached), or at the tag's own time when none is. hours and p50 cover those live in the last
 # CHAIN_DAYS; unreleased counts the merged ones no tag holds yet, unknown the ones whose commit
 # the checkout lacks (one of an item's merges in another repo makes it unknown too), both over
 # the whole BENCH_LEAD_DAYS. A failure when the queue or the
-# release snapshot cannot be read.
+# release graph cannot be read.
 lead_time_json() {
-  local t=$1 items rel p released=() shas
+  local t=$1 items graph rel deployed p released=() shas
   items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - BENCH_LEAD_DAYS * 86400))" +%F)" 2>/dev/null \
     | jq -sc 'map(select(.from == "human" and (.merged // "") != "") | {project, merged, queued, finished})') || return 1
-  rel=$($BENCH_RELEASES_CMD 2>/dev/null | jq -ce '[.rows[].project] | unique') || return 1
+  graph=$($BENCH_RELEASES_CMD 2>/dev/null)
+  rel=$(jq -ce '[.rows[].project] | unique' <<<"$graph") || return 1
+  # {project: {tag: the first deploy's epoch, null when none is recorded}}
+  deployed=$(jq -c '[.apps[]? | {key: .project, value: ([.history[]? | {key: .tag, value: ([.reached[]?.at | values] | min)}] | from_entries)}] | from_entries' <<<"$graph") || return 1
   for p in $(jq -r --argjson r "$rel" '[.[].project | select(IN($r[]))] | unique[]' <<<"$items"); do
     mapfile -t shas < <(jq -r --arg p "$p" '.[] | select(.project == $p) | .merged | splits(" +") | select(. != "")' <<<"$items")
     released+=("$($BENCH_RELEASED_CMD "$p" "${shas[@]}" 2>/dev/null | jq -sc .)")
   done
-  jq -c --argjson t "$t" --argjson days "$CHAIN_DAYS" --argjson r "$rel" \
+  jq -c --argjson t "$t" --argjson days "$CHAIN_DAYS" --argjson r "$rel" --argjson d "$deployed" \
      --slurpfile x <(printf '%s\n' "${released[@]}" '[]') "$JQ_LIB"'
     . as $a | ($x | add | map(select(.sha)) | INDEX(.sha)) as $tag
-    | [$a[] | [.merged | splits(" +") | select(. != "")] as $s
+    | [$a[] | [.merged | splits(" +") | select(. != "")] as $s | .project as $p
        | (.queued | ep) as $q
        | if (.project | IN($r[])) | not then {kind: "at_merge", at: (.finished | ep)}
          elif any($s[]; $tag[.] == null or $tag[.].error != null) then {kind: "unknown"}
          elif any($s[]; $tag[.].at == null) then {kind: "unreleased"}
-         else {kind: "in_release", at: ([$s[] | $tag[.].at] | max)} end
+         else {kind: "in_release", at: ([$s[] | $tag[.] | $d[$p][.tag] // .at] | max)} end
        | . + {q: $q}] as $rows
     | ($rows | map(select(.at != null and .q != null and .at > $t - $days * 86400 and .at <= $t))) as $live
     | ($live | map((.at - .q) / 3600 | round1)) as $h
@@ -1884,7 +1888,7 @@ chain_notes() {
       + " (\(.at_merge) on merge, \(.in_release) in a tag); of those merged in \($lead)d, \(.unreleased) in no tag yet, \(.unknown) unknown"
       + (if $held == "" then "" else "; reads ? until \($held)" end)' <<<"$lead"
   else
-    echo "request_to_live_h: the done items or the release-state snapshot unreadable"
+    echo "request_to_live_h: the done items or the release graph (hub releases --json) unreadable"
   fi
   if stats=$(wants_stats "$t") && [ -n "$stats" ]; then
     jq -r --argjson d "$CHAIN_DAYS" '"wants_unstamped: \(.unstamped) of \(.total) human-channel agent rows added in \($d)d carry no #requested, by project"

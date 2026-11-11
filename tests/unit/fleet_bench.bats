@@ -3116,7 +3116,8 @@ LIB
 
 # lead_fixture: on the clean chain, five items the human asked for and two that do not count. game
 # has no release-state row, so its merge is live: 48h and 12h. web has one, so live is the first
-# tag holding the merge: c went out in a tag 2 days ago, 192h after its request; d is in no tag
+# tag holding the merge, at that tag's first recorded deploy, else the tag's time: c went out in a
+# tag 2 days ago with no deploy recorded, 192h after its request; d is in no tag
 # yet; the checkout lacks e. Outside the count: a merge 9 days ago, a shepherd item, an unmerged one.
 lead_fixture() {
   chain_fixture
@@ -3134,7 +3135,10 @@ lead_fixture() {
     lead open game human 172800 86400 ''
   } >> "$DONE"
   export BENCH_RELEASES_CMD=releases-stub BENCH_RELEASED_CMD=released-stub
-  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":[{\"project\":\"web\"},{\"project\":\"web\"}]}'" > "$SANDBOX/bin/releases-stub"
+  # hub releases --json: web's release graph records a deploy only for another tag, so c is live at its tag
+  jq -cn --argjson t "$T0" '{rows: [{project: "web"}, {project: "web"}],
+    apps: [{project: "web", history: [{tag: "web-v1.0.0", reached: [{at: ($t - 3600)}]}, {tag: "web-v1.1.0", reached: []}]}]}' > "$SANDBOX/graph.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/graph.json" > "$SANDBOX/bin/releases-stub"
   jq -cn --argjson t "$T0" '{sha: "ccc3333", tag: "web-v1.1.0", at: ($t - 172800)}, {sha: "ddd4444", tag: null, at: null},
     {sha: "eee5555", tag: null, at: null, error: "commit not in the checkout"}' > "$SANDBOX/released.jsonl"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$SANDBOX/released" "$SANDBOX/released.jsonl" > "$SANDBOX/bin/released-stub"
@@ -3153,6 +3157,21 @@ lead_fixture() {
   assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag); of those merged in 28d, 1 in no tag yet, 1 unknown'
 }
 
+@test "chain: request_to_live_h takes a tag's first recorded deploy over the tag's own time" {
+  lead_fixture
+  # c's tag was cut 8 days ago, outside the 7d window; the graph records it reaching two channels
+  jq -cn --argjson t "$T0" '{sha: "ccc3333", tag: "web-v1.1.0", at: ($t - 691200)}, {sha: "ddd4444", tag: null, at: null},
+    {sha: "eee5555", tag: null, at: null, error: "commit not in the checkout"}' > "$SANDBOX/released.jsonl"
+  # NEGATIVE CONTROL: with no deploy recorded, c is live at its tag, outside the window
+  run "$SUBJECT" chain
+  assert_line --partial 'request_to_live_h: p50 30h over 2 live in 7d (2 on merge, 0 in a tag)'
+  jq --argjson t "$T0" '.apps[0].history[1].reached = [{at: ($t - 86400)}, {at: ($t - 172800)}]' "$SANDBOX/graph.json" > "$SANDBOX/g2"
+  mv "$SANDBOX/g2" "$SANDBOX/graph.json"
+  # live at the first of the two deploys, 2 days ago: 192h after the request
+  run "$SUBJECT" chain
+  assert_line --partial 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag)'
+}
+
 @test "chain: request_to_live_h reads ? while a trust KPI is under its bound, and its note says which" {
   # NEGATIVE CONTROL: the same fixture with the gate off reads 48, so the ? below is the gate
   lead_fixture
@@ -3169,12 +3188,12 @@ lead_fixture() {
   sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   run "$SUBJECT" chain
   assert_line --partial '; reads ? until epic_linked_share 1 (no min)'
-  # the release snapshot unreadable: ? with the gate open, and the note says so
+  # the release graph unreadable: ? with the gate open, and the note says so
   export BENCH_RELEASES_CMD=false BENCH_LEAD_TRUST=
   run "$SUBJECT" chain --json
   assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
   run "$SUBJECT" chain
-  assert_line 'request_to_live_h: the done items or the release-state snapshot unreadable'
+  assert_line 'request_to_live_h: the done items or the release graph (hub releases --json) unreadable'
 }
 
 @test "chain: dup_pairs reads the newest nightly dups.json against dup_pairs_max; no snapshot reads ?" {

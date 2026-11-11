@@ -7,8 +7,10 @@
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::quarantine::{Lane, OwnerRow};
+use hub_core::queue::Item;
 use hub_core::releases::Level;
 use hub_core::run_detail::{self, Rates, RunCosts};
+use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use std::sync::Arc;
 
@@ -121,17 +123,25 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "errors": [e] }).to_string()
 }
 
-/// The ledger's read, kept a few seconds: the Tests section picks its runs from the same one.
-pub async fn current() -> Result<Arc<Builds>, String> {
+/// The ledger's read, joined to the PR store, the queue `items` and the releases, kept a few
+/// seconds: the Tests section picks its runs from the same one.
+pub async fn current(items: Vec<Item>) -> Result<Arc<Builds>, String> {
     READ.get((), async {
-        off(|| builds::read(&Paths::from_env(), now())).await
+        off(move || {
+            let join = builds::Join {
+                runner: &System,
+                items: &items,
+            };
+            builds::read(&Paths::from_env(), Some(join), now())
+        })
+        .await
     })
     .await
 }
 
 /// The view `q` asks for.
-pub async fn get(q: Query, rates: Rates) -> String {
-    current()
+pub async fn get(q: Query, rates: Rates, items: Vec<Item>) -> String {
+    current(items)
         .await
         .map_or_else(failed, |b| render(&b, &q, &rates))
 }

@@ -5,6 +5,7 @@
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
+use hub_core::queue::Item;
 use hub_core::releases::{self, App, Releases, STALE_SECS};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
@@ -49,9 +50,9 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "errors": [e] }).to_string()
 }
 
-/// The view `q` asks for, over a read of its own.
-pub async fn get(q: Query) -> String {
-    match tokio::task::spawn_blocking(|| releases::read(&System)).await {
+/// The view `q` asks for, over a read of its own joined to the queue `items`.
+pub async fn get(q: Query, items: Vec<Item>) -> String {
+    match tokio::task::spawn_blocking(move || releases::read(&System, &items)).await {
         Ok(s) => render(&s, &q),
         Err(e) => failed(e.to_string()),
     }
