@@ -1042,10 +1042,12 @@ cmd_candidates() {
 
 # judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache. Each
 # names the policy rule that decided it (`rule`, an id judge_rules reads from the policy) and its
-# call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
-# saying why: the call failed, the reply named no rule of the policy, or it left the row out.
+# call (`judge_call`, its calls.jsonl line). Rows the reply left out are asked for once more in a
+# call of their own: on 2026-11-11 ucp-469 was left out at 07:18 and judged at 07:33, but its error
+# verdict held runner-score red for 24h. A row the calls could not judge gets an `error` verdict
+# saying why: the call failed, the reply named no rule of the policy, or both calls left it out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows schema=()
+  local cands="$1" verdicts cid rc missing rules
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -1057,12 +1059,50 @@ judge() {
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
       | sort_by(.round, (.row.cleanup // 1), .i) | .[:$max][].row' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
+  [ -z "$DISPATCH_SCHEMA" ] || jq -e '.properties.verdicts.type == "array"' "$DISPATCH_SCHEMA" >/dev/null 2>&1 ||
+    { JUDGE_WHY="no readable schema with a verdicts array at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+  mkdir -p "$DIR"
+  cid=$(judge_call_id)
+  judge_ask "$cands" "$cid" "$rules"; rc=$?
+  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
+  if [ "$rc" = "$EX_BUDGET" ]; then touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
+  # A pass that could not judge must not read as "no row qualifies".
+  if [ "$rc" != 0 ] || [ -z "$JUDGE_VERDICTS" ]; then
+    [ "$rc" != 0 ] || JUDGE_WHY="the reply had no verdicts"
+    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
+    say "judge $JUDGE_WHY for $(wc -l <<<"$cands") row(s)${JUDGE_REPLY:+: $JUDGE_REPLY}"; return 1
+  fi
+  verdicts=$JUDGE_VERDICTS
+  printf '%s\n' "$verdicts" >> "$VERDICTS"
+  missing=$(judge_missing "$cands" "$verdicts")
+  if [ -n "$missing" ]; then
+    say "judge: the reply left out $(wc -l <<<"$missing") row(s), asking again for them"
+    cid=$(judge_call_id)
+    judge_ask "$missing" "$cid" "$rules"; rc=$?
+    if [ "$rc" = "$EX_BUDGET" ]; then say "judge retry $JUDGE_WHY"
+    elif [ "$rc" != 0 ]; then verdict_errors "$missing" "the reply had no verdict for this row, and the retry $JUDGE_WHY" "$cid" >> "$VERDICTS"
+    else
+      [ -z "$JUDGE_VERDICTS" ] || { printf '%s\n' "$JUDGE_VERDICTS" >> "$VERDICTS"; verdicts+=$'\n'"$JUDGE_VERDICTS"; }
+      verdict_errors "$(judge_missing "$missing" "$JUDGE_VERDICTS")" "neither the reply nor its retry had a verdict for this row" "$cid" >> "$VERDICTS"
+    fi
+  fi
+  size_back "$cands" "$verdicts"
+}
+
+# judge_ask <rows> <call id> <policy rule ids> -- one model call for <rows>; on success sets
+# JUDGE_VERDICTS to the reply's verdict lines for <rows> (a rule the policy lacks is an `error` line;
+# a verdict on a row not asked is dropped, so a retry cannot re-record one judged already), else
+# JUDGE_WHY to why and returns the call's code (EX_BUDGET for a budget stop). JUDGE_REPLY is the
+# reply's head, for the log line of a reply with no verdicts.
+judge_ask() {
+  local rows n prompt wd out rc err schema=()
+  JUDGE_VERDICTS='' JUDGE_REPLY=''
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
-  # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
+  # each dropping one row whole (hc-122, ar-269), and a dropped row is asked for again.
   # The count is of the numbered lines themselves, so the two never disagree. Asking was not
   # enough (2026-11-11, ucp-469 dropped from 41), so the call's schema holds the reply to it too.
   rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
-    + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
+    + (if (.details // "") != "" then {details} else {} end)' <<<"$1" | awk '{ print NR ". " $0 }')
   n=$(grep -c . <<<"$rows")
   prompt="## Rows to judge
 
@@ -1075,55 +1115,41 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
-  cid=$(judge_call_id)
   # Claude Code checks the reply against this schema and hands a short one back to the model in
-  # the same call, so a dropped row is answered there instead of recorded as an error verdict.
+  # the same call, so a dropped row is usually answered there; judge asks once more for the rest.
   if [ -n "$DISPATCH_SCHEMA" ]; then
-    jq -e --argjson n "$n" 'select(.properties.verdicts.type == "array")
-        | .properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
-      { rm -rf -- "$wd"; JUDGE_WHY="no readable schema with a verdicts array at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+      { rm -rf -- "$wd"; JUDGE_WHY="could not read the schema at $DISPATCH_SCHEMA"; return 1; }
     schema=(--schema "$wd/schema.json")
   fi
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD ${schema[@]+"${schema[@]}"} -p "$prompt" 2>"$wd/err")
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$2" $DISPATCH_JUDGE_CMD ${schema[@]+"${schema[@]}"} -p "$prompt" 2>"$wd/err")
   rc=$?
   err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
-  mkdir -p "$DIR"
-  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
-  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
-  if [ "$rc" != 0 ]; then
-    JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge $JUDGE_WHY"; return 1
-  fi
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then JUDGE_WHY="call failed (exit $rc)${err:+: $err}"; return "$rc"; fi
   # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
-  verdicts=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
-    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
-      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$cands")" '
+  JUDGE_VERDICTS=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
+    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$2" --argjson rules "$3" \
+      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$1")" '
       select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
-      | ([.project, .lane, .key] | tostring) as $k
+      | ([.project, .lane, .key] | tostring) as $k | select(any($c[]; .k == $k))
       | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
          policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first),
          dsig: ([$c[] | select(.k == $k) | .dsig] | first), judge_call: $call}
       | . as $v | if any($rules[]; . == $v.rule) then $v
         else {project, lane, key, verdict: "error", reason: "rule \(.rule // "" | tojson) is not in the policy",
               at, policy, line, judge_call} end')
-  # A pass that could not judge must not read as "no row qualifies".
-  if [ -z "$verdicts" ]; then
-    JUDGE_WHY="the reply had no verdicts"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
-  fi
-  missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
-    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$cands")
-  {
-    printf '%s\n' "$verdicts"
-    verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
-  } >> "$VERDICTS"
-  size_back "$cands" "$verdicts"
+  [ -n "$JUDGE_VERDICTS" ] || { JUDGE_WHY="the reply had no verdicts"; JUDGE_REPLY=${out:0:200}; }
+}
+
+# judge_missing <rows> <verdicts> -> each of <rows> no verdict line names.
+judge_missing() {
+  jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$2")" \
+    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$1"
 }
 
 # size_back <candidates> <verdicts> -- tag each unsized row (with an id) the judge sized with that

@@ -896,22 +896,70 @@ EOF
 }
 
 @test "judge: each verdict names its policy rule and the call it came from" {
-  stub judge-stub 'echo "$AGENTCTL_CALL_ID" > "$NOTES_FIXTURE/call.id"; cat "$NOTES_FIXTURE/judge.out"'
+  stub judge-stub 'echo "$AGENTCTL_CALL_ID" >> "$NOTES_FIXTURE/call.id"; cat "$NOTES_FIXTURE/judge.out"'
   cat > "$NOTES_FIXTURE/judge.out" <<'EOF'
 {"verdicts":[{"project":"game","lane":"human","key":"a","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","rule":"fits","reason":"small"},{"project":"game","lane":"human","key":"b","verdict":"skip","rule":"vibes","reason":"x"},{"project":"game","lane":"human","key":"c","verdict":"skip","reason":"no rule"}]}
 EOF
   c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
   run judge "$(c a; c b; c c; c d)"
   assert_success
-  local id; id=$(cat "$NOTES_FIXTURE/call.id")
-  [ -n "$id" ]
+  local id retry; id=$(sed -n 1p "$NOTES_FIXTURE/call.id"); retry=$(sed -n 2p "$NOTES_FIXTURE/call.id")
+  [ -n "$id" ] && [ -n "$retry" ] && [ "$id" != "$retry" ]
   v() { jq -r --arg k "$1" --arg id "$id" 'select(.key == $k) | "\(.verdict) \(.rule // "-") \(.judge_call == $id) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   assert_equal "$(v a)" 'dispatch fits true small'
   assert_equal "$(v b)" 'error - true rule "vibes" is not in the policy'
   assert_equal "$(v c)" 'error - true rule "" is not in the policy'
-  assert_equal "$(v d)" 'error - true the reply had no verdict for this row'
+  # d was left out twice (the retry's reply has no d either), so its error names the retry's call
+  assert_equal "$(v d)" 'error - false neither the reply nor its retry had a verdict for this row'
+  assert_equal "$(jq -r 'select(.key == "d") | .judge_call' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" "$retry"
   # An error holds nothing: those rows are judged again; the dispatch verdict holds.
   assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
+}
+
+@test "judge: a row the reply left out is asked for again, alone, and the retry's verdict leaves no error (ar-1645)" {
+  # First call: a verdict for a only. Second call: one for b. Each call's id and prompt are kept.
+  stub judge-stub 'n=$(( $(cat "$NOTES_FIXTURE/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/n"
+    echo "$AGENTCTL_CALL_ID" >> "$NOTES_FIXTURE/call.id"; printf "%s" "$2" > "$NOTES_FIXTURE/prompt.$n"
+    cat "$NOTES_FIXTURE/judge.out.$n"'
+  r() { jq -cn --arg k "$1" '{verdicts: [{project: "game", lane: "human", key: $k, tier: 1, size: "S", clear: true, agent_only: true, verdict: "dispatch", rule: "fits", reason: "small"}]}'; }
+  r a > "$NOTES_FIXTURE/judge.out.1"; r b > "$NOTES_FIXTURE/judge.out.2"
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b)"
+  assert_success
+  assert_output --partial 'left out 1 row(s), asking again'
+  assert_equal "$(cat "$NOTES_FIXTURE/n")" 2
+  # the retry sends only the row left out, counted as such
+  grep -qF 'There are 1 rows above. Return exactly 1 verdicts' "$NOTES_FIXTURE/prompt.2" || fail "$(cat "$NOTES_FIXTURE/prompt.2")"
+  run grep -c '"key":"a"' "$NOTES_FIXTURE/prompt.2"
+  assert_output 0
+  # no error line; each verdict names the call that made it, and both rows are judged
+  assert_equal "$(jq -r 'select(.verdict == "error")' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" ''
+  assert_equal "$(jq -r 'select(.key == "b") | .judge_call' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" "$(sed -n 2p "$NOTES_FIXTURE/call.id")"
+  assert_equal "$(judged_keys | cut -f3 | sort | paste -sd' ')" 'a b'
+}
+
+@test "judge: a row the retry leaves out too is an error verdict; a retry that fails names why, one stopped at its budget leaves none (negative control)" {
+  stub judge-stub 'n=$(( $(cat "$NOTES_FIXTURE/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/n"
+    [ "$n" = 1 ] || [ -z "${RETRY_EXIT:-}" ] || { echo "rate limited" >&2; exit "$RETRY_EXIT"; }
+    echo "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"human\",\"key\":\"a\",\"verdict\":\"skip\",\"rule\":\"unclear\",\"reason\":\"x\"}]}"'
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  e() { jq -r 'select(.verdict == "error") | "\(.key) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  run judge "$(c a; c b)"
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/n")" 2
+  assert_equal "$(e)" 'b neither the reply nor its retry had a verdict for this row'
+  assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
+  # the retry call fails: b's error says so
+  rm -f "$NOTES_FIXTURE/n" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  RETRY_EXIT=7 run judge "$(c a; c b)"
+  assert_success
+  assert_equal "$(e)" 'b the reply had no verdict for this row, and the retry call failed (exit 7): rate limited '
+  # the retry stops at its budget: no verdict on b at all, so the next pass judges it
+  rm -f "$NOTES_FIXTURE/n" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  RETRY_EXIT=75 run judge "$(c a; c b)"
+  assert_success
+  assert_equal "$(e)" ''
+  assert_equal "$(jq -r .key "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'a'
 }
 
 @test "judge: the prompt numbers the rows and asks for exactly that many verdicts" {
@@ -1620,7 +1668,8 @@ J
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+  # the first call's prompt: the rows it leaves out are asked for again in a second one
+  stub judge-stub '[ -e "$NOTES_FIXTURE/prompt" ] || printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
   DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1}
 {"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1}
@@ -1632,7 +1681,8 @@ J
 }
 
 @test "judge: a cleanup row goes first within a round, never ahead of it; a project with no cleanup row still gets its slot" {
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+  # the first call's prompt: the rows it leaves out are asked for again in a second one
+  stub judge-stub '[ -e "$NOTES_FIXTURE/prompt" ] || printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
   DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1,"cleanup":0}
 {"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1,"cleanup":0}
