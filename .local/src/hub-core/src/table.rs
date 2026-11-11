@@ -310,20 +310,22 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     rows.into_iter().chain(cuts).collect()
 }
 
-/// One dropdown value: how many rows it would show and the whole query that picks it.
+/// One dropdown value: how many rows it adds, whether it is ticked, and the whole query a
+/// tick on it gives (it joins the column's picks, or leaves them).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct FacetValue {
     pub value: String,
     pub n: usize,
+    pub on: bool,
     pub q: String,
 }
 
-/// A dropdown over one column: the value picked (when the query names exactly one), the query
-/// with that column's terms taken out, and every value in the rows.
+/// A dropdown over one column: the values picked (the query's terms on it, which OR), the
+/// query with that column's terms taken out, and every value in the rows.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Facet {
     pub key: &'static str,
-    pub on: Option<String>,
+    pub on: Vec<String>,
     pub clear: String,
     pub values: Vec<FacetValue>,
 }
@@ -427,18 +429,22 @@ impl View {
             .join(" ")
     }
 
-    /// Each of `R::FACETS` as a dropdown. A value's count is what picking it would show:
-    /// the rest of the query and the chip still apply, the column's own terms do not.
+    /// Each of `R::FACETS` as a multi-pick dropdown. A value's count is what it adds: the rest
+    /// of the query and the chip still apply, the column's own terms do not, so the counts hold
+    /// still while values are ticked. A value's `q` toggles it among the column's picks, which
+    /// OR (a repeated key); the dropdown owns its column's terms, so a tick drops an exclusion
+    /// typed on that column.
     pub fn facets<R: Row>(&self, rows: &[R]) -> Vec<Facet> {
         let ts = terms::<R>(&self.q);
         R::FACETS
             .iter()
             .map(|key| {
-                let mine: Vec<&Term> = ts.iter().filter(|t| t.key == Some(*key)).collect();
-                let on = match mine.as_slice() {
-                    [t] if !t.neg => Some(t.value.clone()),
-                    _ => None,
-                };
+                let mut on: Vec<String> = vec![];
+                for t in ts.iter().filter(|t| t.key == Some(*key) && !t.neg) {
+                    if !on.contains(&t.value) {
+                        on.push(t.value.clone());
+                    }
+                }
                 let clear = self.without::<R>(key);
                 let base = View {
                     q: clear.clone(),
@@ -451,7 +457,9 @@ impl View {
                     }
                 }
                 // A prefix term (`source:ag`) is its own option, so the dropdown shows what is on.
-                if let Some(v) = on.as_ref().filter(|v| !counts.contains_key(*v)) {
+                let prefixes: Vec<&String> =
+                    on.iter().filter(|v| !counts.contains_key(*v)).collect();
+                for v in prefixes {
                     let n = counts
                         .iter()
                         .filter(|(k, _)| k.starts_with(v.as_str()))
@@ -461,10 +469,19 @@ impl View {
                 }
                 let values = counts
                     .into_iter()
-                    .map(|(value, n)| FacetValue {
-                        q: joined(&clear, key, &value),
-                        value,
-                        n,
+                    .map(|(value, n)| {
+                        let picked = on.contains(&value);
+                        let picks: Vec<&String> = if picked {
+                            on.iter().filter(|v| **v != value).collect()
+                        } else {
+                            on.iter().chain(std::iter::once(&value)).collect()
+                        };
+                        FacetValue {
+                            q: picks.iter().fold(clear.clone(), |q, v| joined(&q, key, v)),
+                            on: picked,
+                            value,
+                            n,
+                        }
                     })
                     .collect();
                 Facet {
@@ -749,18 +766,62 @@ mod tests {
         let v = q("kind:fix nightly");
         let fs = v.facets(&rows());
         let kind = &fs[1];
-        assert_eq!(kind.on.as_deref(), Some("fix"));
+        assert_eq!(kind.on, ["fix"]);
         assert_eq!(kind.clear, "nightly");
-        let vals: Vec<(&str, usize, &str)> = kind
+        let vals: Vec<(&str, usize, bool, &str)> = kind
             .values
             .iter()
-            .map(|f| (f.value.as_str(), f.n, f.q.as_str()))
+            .map(|f| (f.value.as_str(), f.n, f.on, f.q.as_str()))
             .collect();
-        assert_eq!(vals, [("fix", 1, "nightly kind:fix")]);
+        assert_eq!(
+            vals,
+            [("fix", 1, true, "nightly")],
+            "a tick on a pick takes it off"
+        );
         let project = &fs[0];
-        assert_eq!(project.on, None);
+        assert!(project.on.is_empty());
         assert_eq!(project.values[0].q, "kind:fix nightly project:playground");
         assert_eq!(joined("", "name", "hub sort"), "name:\"hub sort\"");
+    }
+
+    #[test]
+    fn a_facet_ticks_several_values_that_or_and_counts_hold_still() {
+        let qs = |v: &View, key: &str| -> Vec<(String, usize, bool, String)> {
+            let fs = v.facets(&rows());
+            let f = fs.iter().find(|f| f.key == key).unwrap();
+            f.values
+                .iter()
+                .map(|x| (x.value.clone(), x.n, x.on, x.q.clone()))
+                .collect()
+        };
+        let one = q("kind:fix");
+        let kinds = qs(&one, "kind");
+        let s = |a: &str, n, on, q: &str| (a.to_string(), n, on, q.to_string());
+        assert_eq!(
+            kinds,
+            [
+                s("chore", 1, false, "kind:fix kind:chore"),
+                s("feat", 1, false, "kind:fix kind:feat"),
+                s("fix", 2, true, ""),
+            ],
+            "a tick adds a value beside the pick; counts are the column's own, not narrowed by it"
+        );
+        let two = q("kind:fix kind:feat");
+        assert_eq!(names(&two), ["nightly fix", "queue table", "hub sort"]);
+        let fs = two.facets(&rows());
+        assert_eq!(fs[1].on, ["fix", "feat"]);
+        assert_eq!(qs(&two, "kind")[1], s("feat", 1, true, "kind:fix"));
+        assert_eq!(qs(&two, "kind")[0].1, 1, "counts hold still while ticking");
+        assert_eq!(
+            qs(&two, "project")[0],
+            s("dotfiles", 2, false, "kind:fix kind:feat project:dotfiles"),
+            "another column ANDs with this one's picks"
+        );
+        let pre = q("project:dot project:play");
+        let fs = pre.facets(&rows());
+        assert_eq!(fs[0].on, ["dot", "play"]);
+        let dot = fs[0].values.iter().find(|x| x.value == "dot").unwrap();
+        assert_eq!((dot.n, dot.on, dot.q.as_str()), (2, true, "project:play"));
     }
 
     #[test]
