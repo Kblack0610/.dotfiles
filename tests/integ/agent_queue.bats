@@ -2049,6 +2049,11 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_success
   assert_output --partial "no story row filed on level: error: no such project"
   [ -z "$(field "$(item queued no-sheet)" row)" ]
+  # an item whose row: line is empty has no row to a reader, not the row "" (ar-1551)
+  sed -i 's/^agent: /row: \nagent: /' "$(item queued no-sheet)"
+  [ "$(grep -c '^row: $' "$(item queued no-sheet)")" = 1 ]
+  run jq -sc '[.[] | select(.slug == "no-sheet") | has("row")]' <<<"$("$AQ" list --json --state all)"
+  assert_output '[false]'
 }
 
 @test "--row links an open board row and starts it: no second row, and from: stays the origin" {
