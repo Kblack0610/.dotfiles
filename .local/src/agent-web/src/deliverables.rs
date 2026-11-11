@@ -4,23 +4,17 @@
 //! keeps the plain ones. The view narrows `rows` here and nowhere else: the head line, the
 //! coverage line and `table`'s total stay the whole fleet's.
 //!
-//! One `fleet-bench epics --json` read over every project takes about 10s and an epic moves in
-//! hours, so every open tab and keystroke shares one answer for `DELIVERABLES_SECS`.
+//! The rows are built from the one kept `fleet-bench epics` read (`crate::epics`), which the
+//! project pages share.
 
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::deliverables::{self, Deliverable, Deliverables};
-use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{off, ReadCache};
 use crate::{bad, ApiResult};
-
-const DELIVERABLES_SECS: u64 = 120;
-
-static LAST: ReadCache<Deliverables, DELIVERABLES_SECS> = ReadCache::new();
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -67,15 +61,12 @@ fn shown(all: &Deliverables, q: &DeliverableQuery) -> serde_json::Value {
     .unwrap_or_default()
 }
 
-/// A failed read is not cached: the next refresh tries again.
+/// A failed read is not kept: the next refresh tries again.
 pub async fn get(Query(q): Query<DeliverableQuery>) -> ApiResult<Json<serde_json::Value>> {
-    let read = async {
-        off(|| deliverables::read(&System))
-            .await
-            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?
-            .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
-    };
-    let all = LAST.get((), read).await?;
+    let chains = crate::epics::chains()
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    let all = deliverables::build(&chains, *chrono::Local::now().offset());
     Ok(Json(shown(&all, &q)))
 }
 

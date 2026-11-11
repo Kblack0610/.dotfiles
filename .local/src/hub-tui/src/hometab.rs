@@ -424,7 +424,7 @@ pub fn page(
             right: vec![4],
             cap: vec![(1, 22), (3, 12), (5, 40)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
         more(
             &mut out,
             h.running.len(),
@@ -710,6 +710,10 @@ mod tests {
             narrow.contains("fail") && !narrow.contains("ar-1292"),
             "{narrow}"
         );
+        // A title wider than the page wraps under ITEM instead of pushing CI off.
+        h.running[0].title = "fix(red): ".to_string() + &"word ".repeat(30);
+        let long = viewed(&h, &DataTable::default(), 80);
+        assert!(long.contains("fail") && long.contains("#1871"), "{long}");
     }
 
     #[test]
