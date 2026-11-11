@@ -12,7 +12,7 @@ metadata:
 
 Turns "CI is slow" into a measured list of where the runner minutes go, a ranked lever, one PR that pulls it, and a before/after number recorded where the next session will read it. The method (finding shape, baseline, one lever per PR, re-measure, proposals) is `~/.local/src/docs/analysis-streams.md`; this file holds what is specific to CI time.
 
-The doctrine (tiers, budgets, the speed levers in order, red handling) is `~/.local/src/docs/ci.md`. The repo docs own the repo specifics: `docs/operations/ci-cost.md` (how to measure, open levers, the before/after log), `scripts/ci-cost.py` (the numbers), and `docs/operations/ci.md` Rules (what a CI change must carry). This file is only the procedure. When they disagree, the doc wins and this file gets fixed in the same turn.
+The doctrine (tiers, budgets, the speed levers in order, red handling) is `~/.local/src/docs/ci.md`. The repo docs own the repo specifics: `docs/operations/ci-cost.md` (how to measure, open levers, the before/after log), `docs/operations/ci-benchmark.md` (every pipeline against its target, what is left, the dated readings), `scripts/ci-cost.py` (the numbers), and `docs/operations/ci.md` Rules (what a CI change must carry). This file is only the procedure. When they disagree, the doc wins and this file gets fixed in the same turn.
 
 ## Scope and triggers
 
@@ -27,7 +27,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
 
 1. **Answer the question asked.** The cost is run time: wall minutes per run and runner-minutes summed over jobs. Do not speculate about billing or infrastructure unless the user asks.
 2. **Measure from data, never from memory.**
-   - Run `scripts/ci-cost.py` first; it prints runner-hours per workflow per day, the gate median split into EditMode and PlayMode, queue times, and the slowest classes. Extend the script rather than hand-computing a number it should own.
+   - Run `scripts/ci-cost.py` first; it prints runner-hours per workflow per day, the gate median split into EditMode and PlayMode, queue times, and the slowest classes. Extend the script rather than hand-computing a number it should own. Its PlayMode figure is summed runner-minutes per gate; a gate's own time is its slowest job's queue plus run, from the job archive until the script prints it.
    - For what the script does not give (Unity launch cost, per-class time, a gate's pick, EditMode per assembly) and how to read a window without fooling yourself, follow `docs/operations/ci-cost.md`, Measuring.
    - Raw `gh run list` / `gh run view --json jobs` calls follow `ci.md` "Analysis": cache every response in the scratchpad and reuse it, since a 502 mid-loop leaves partial data.
 3. **Attribute.** Put every minute in one bucket: which workflow and trigger (nightly, gate, branch dispatch, release), then fixed per-launch cost, per-test cost, over-picking (classes picked that the change cannot affect), repeat gates (a re-gate after only a main merge, a second gate of a gated commit, a `run_attempt` above 1), solo reruns of a batch red, a cold Library import, or a slow test. Count the workstation's local Unity hours too (the run ledger `scripts/test/slots.sh` writes); the pool numbers leave them out. Check and rule out the cheap suspects too, and write the ruled-out list down so the next pass does not redo it.
@@ -41,6 +41,7 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
    4. What makes the windows not comparable: slots, routing, gate count, load, runs still going, one night against one night.
    5. What has not been measured yet, and the next lever.
    Say which change caused a number only if that lever was measured alone.
+   The same turn writes the reading into `docs/operations/ci-benchmark.md`: a Readings row, and any section whose numbers or what-is-left it changes. A report that stays in chat is lost.
 8. **File the next lever** on the agent board (`notes ptask <project> --agent add "ci(cost): <lever> #size/s" '#tier/3'`), checking for an existing row first.
 
 ## Do NOT
