@@ -382,6 +382,72 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
 }
 
+# ar-39: after: is a list of slugs.
+@test "after: takes a list: a comma list and a repeated --after store one line, set too, and an unknown or own slug is refused" {
+  "$AQ" add --project game --slug a "a" >/dev/null
+  "$AQ" add --project game --slug b "b" >/dev/null
+  "$AQ" add --project game --slug c "c" >/dev/null
+  "$AQ" add --project game --slug d --after a,b --after "c a" "d" >/dev/null
+  [ "$(field "$(item queued d)" after)" = "a b c" ]
+  "$AQ" set d after=c,b >/dev/null
+  [ "$(field "$(item queued d)" after)" = "c b" ]
+  run "$AQ" add --project game --slug e --after a,nope "e"
+  assert_failure
+  assert_output --partial "--after nope: no item has that slug"
+  run "$AQ" add --project game --slug e --after a,e "e"
+  assert_failure
+  assert_output --partial "--after e: an item cannot wait on itself"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-e.md 2>/dev/null)" ]
+  # set after= is checked the same way.
+  run "$AQ" set d after=a,nope
+  assert_failure
+  assert_output --partial "--after nope: no item has that slug"
+  run "$AQ" set d after=d
+  assert_failure
+  [ "$(field "$(item queued d)" after)" = "c b" ]
+}
+
+@test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
+  "$AQ" add --project game --slug a --running "a" >/dev/null
+  "$AQ" add --project game --slug b --running "b" >/dev/null
+  "$AQ" add --project game --slug both --after a,b "both" >/dev/null
+  f="$(item queued both)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
+  assert_output "after a b"
+  run "$AQ" bump both urgent
+  assert_output --partial "both is held after a b: it starts when those land"
+  # tk's plan phases are already ticked: it closes as landed, but only once both its parents have.
+  printf '## Phases\n\n- [x] one\n' > "$SANDBOX/tk-plan.md"
+  "$AQ" add --project game --slug tk --after a,b "tk" >/dev/null
+  sed -i "/^from: /i plan: $SANDBOX/tk-plan.md\nphases: 1" "$(item queued tk)"
+  run "$AQ" move a done --status ok
+  refute_output --partial "releases"
+  # One of two closed ok: it still holds on the other, and nothing starts or closes it.
+  assert_not_called 'start --item both'
+  [ -n "$(item queued tk)" ]
+  run bash -c "'$AQ' show both --json | jq -r '.hold, .ready // \"none\"'"
+  assert_output $'after b\nnone'
+  run "$AQ" move b done --status ok
+  assert_line "b releases: both tk"
+  assert_called 'fleet-dispatch start --item both'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-tk.md)" status)" = ok ]
+  "$AQ" set a finished=2026-11-03T12:00:00Z >/dev/null
+  "$AQ" set b finished=2026-11-03T13:00:00Z >/dev/null
+  # ready is the latest finish of the list, through list and show alike.
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .ready'"
+  assert_output 2026-11-03T13:00:00Z
+  run bash -c "'$AQ' show both --json | jq -r '.hold // \"none\", .ready'"
+  assert_output $'none\n2026-11-03T13:00:00Z'
+  # A dead slug in the list is named even while another is live: it never releases.
+  "$AQ" add --project game --slug c "c" >/dev/null
+  "$AQ" add --project game --slug x "x" >/dev/null
+  "$AQ" add --project game --slug two --after c,x "two" >/dev/null
+  "$AQ" move x done --status failed >/dev/null
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
+  assert_output "after x closed failed, dead: cancel it or set after=<slug>"
+}
+
 @test "night and at: tags hold until their time, other tags are labels" {
   "$AQ" add --project game --slug tonight --priority urgent --tags night "a"
   "$AQ" add --project game --slug later --priority high --tags "at:18:00 ui" "b"
