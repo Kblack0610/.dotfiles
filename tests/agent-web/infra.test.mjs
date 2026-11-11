@@ -112,7 +112,7 @@ test("CI runners: a queued job some host can take names it, and is not red", () 
 const els = {};
 const page = (id) => (els[id] ||= Object.assign(el(), { id, dataset: {}, innerHTML: "" }));
 
-test("Infra's strip sits under the pinned Health and Red now; each section joins its inner tab", () => {
+test("Infra's strip leads the page, over the pinned Health and Red now; each section joins its inner tab", () => {
   doc.getElementById = page;
   Object.assign(ist, { open: {}, reds: { open: [red("ar-3", "came back")], settled: [], summary: "1 open" }, redsErr: null });
   const instant = { cc: [], governor: [{ labels: { __name__: "ci_governor_up" }, value: 1 }], power: [{ labels: { __name__: "ci_governor_power_state", host: "aws-1", state: "off" }, value: 1 }] };
@@ -120,7 +120,8 @@ test("Infra's strip sits under the pinned Health and Red now; each section joins
   run(`st.tab = "infra"; st.arg = "machines"; renderInfra()`);
   const main = els["infra-main"].innerHTML, tail = els["infra-tail"].innerHTML;
   const at = (s) => main.indexOf(s);
-  assert.ok(at('id="sec-red"') < at('role="tablist"') && at('role="tablist"') < at('id="sec-fixes"'), main);
+  assert.ok(main.startsWith('<div class="seg fseg istrip" role="tablist">'), main);
+  assert.ok(at('role="tablist"') < at('id="sec-red"') && at('id="sec-red"') < at('id="sec-fixes"'), main);
   // The counts: open red fixes on Reds, the red CI line on Machines; none on Jobs or Cloud.
   assert.match(main, /data-itab="reds" class="" [^>]*>Reds <span class="pill warn">1<\/span>/);
   assert.match(main, /data-itab="machines" class="on" [^>]*>Machines <span class="pill warn">1<\/span>/);
@@ -136,6 +137,27 @@ test("Infra's strip sits under the pinned Health and Red now; each section joins
   assert.equal(els.jobs.hidden, true);
   run(`st.arg = "jobs"; renderInfra()`);
   assert.equal(els.jobs.hidden, false);
+  // "Done today, queues by pool" starts open like every section; a fold the reader closed stays closed.
+  run(`st.arg = "machines"; renderInfra()`);
+  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open>/);
+  ist.open["ci-more"] = false;
+  run(`renderInfra()`);
+  assert.match(els["infra-main"].innerHTML, /data-k="ci-more"><summary/);
+  ist.open = {};
+});
+
+test("the strip leads Infra on the loading, failed-read and Prometheus-down paths too", () => {
+  doc.getElementById = page;
+  const lead = (st) => {
+    Object.assign(ist, { open: {}, reds: null, redsErr: null, ...st });
+    run(`st.tab = "infra"; st.arg = ""; renderInfra()`);
+    return els["infra-main"].innerHTML;
+  };
+  for (const [name, state] of [["loading", { data: null, err: null }], ["read failed", { data: null, err: "fetch failed" }], ["prometheus down", { data: { ok: false, error: "no answer" }, err: null }]]) {
+    assert.ok(lead(state).startsWith('<div class="seg fseg istrip" role="tablist">'), name);
+  }
+  assert.match(lead({ data: null, err: "fetch failed" }), /role="tablist">[\s\S]*fetch failed[\s\S]*id="sec-fixes"/, "the error, then Red fixes");
+  ist.data = null; ist.err = null;
 });
 
 test("a failed Prometheus read still draws the strip, so Jobs stays reachable", () => {
