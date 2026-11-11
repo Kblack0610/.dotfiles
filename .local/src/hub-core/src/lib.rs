@@ -33,6 +33,7 @@ pub mod pager;
 pub mod phone;
 pub mod pipeline;
 pub mod plans;
+pub mod power_history;
 pub mod projects;
 pub mod prom;
 pub mod proposals;

@@ -7,7 +7,11 @@
 //! that ConfigMap, with kubectl on the command-center context (`CC_KUBE_CONTEXT`), so the page
 //! never holds an AWS credential. A host is accepted only when the governor's own metrics name
 //! it. Every call is plain arguments, and kubectl's stderr comes back as the error.
+//!
+//! `history` reads a host's last days of power from Prometheus (`hub_core::power_history`),
+//! only when its row is opened.
 
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
@@ -65,6 +69,27 @@ fn governed_hosts() -> Result<Vec<String>, String> {
     let base = hub_core::prom::base()?;
     let series = hub_core::prom::instant(&base, "max by (host) (ci_governor_power_state)")?;
     Ok(series.iter().map(|s| s.label("host").to_string()).collect())
+}
+
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    host: String,
+}
+
+/// GET /api/cloud-runner/history?host=: the host's starts and stops and hours per UTC day over
+/// `power_history::DAYS` days.
+pub async fn history(
+    Query(q): Query<HistoryQuery>,
+) -> ApiResult<Json<hub_core::power_history::History>> {
+    if !hub_core::power_history::valid_host(&q.host) {
+        return Err(bad(StatusCode::BAD_REQUEST, "host is a plain host name"));
+    }
+    let now = hub_core::jobs::now().max(0) as u64;
+    tokio::task::spawn_blocking(move || hub_core::power_history::read(&q.host, now))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
 }
 
 pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
