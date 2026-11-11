@@ -85,11 +85,26 @@ pub async fn history(
         return Err(bad(StatusCode::BAD_REQUEST, "host is a plain host name"));
     }
     let now = hub_core::jobs::now().max(0) as u64;
-    tokio::task::spawn_blocking(move || hub_core::power_history::read(&q.host, now))
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+    tokio::task::spawn_blocking(move || {
+        if !governed_hosts()
+            .map_err(|e| {
+                bad(
+                    StatusCode::BAD_GATEWAY,
+                    format!("cannot read the governor's hosts: {e}"),
+                )
+            })?
+            .contains(&q.host)
+        {
+            return Err(bad(
+                StatusCode::BAD_REQUEST,
+                format!("{} is not a host the governor powers", q.host),
+            ));
+        }
+        hub_core::power_history::read(&q.host, now).map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
 }
 
 pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {

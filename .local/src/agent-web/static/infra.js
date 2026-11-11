@@ -13,6 +13,9 @@ const ist = { data: null, err: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
   try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
+  // An opened history re-reads with the board, so its last state and today's hours stay current
+  // and a failed read retries.
+  for (const h of Object.keys(cst.hist)) loadHist(h);
   if (st.tab === "infra") renderInfra();
 });
 
@@ -129,12 +132,12 @@ const cpuTitle = (m) => m.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}:
 
 // Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
 // the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
-// no reading is red: the AWS hosts are never scraped, so nothing alerts on their disks. A local
-// CI row with none says so plainly (cachyos-x8664-main's disk shows on its node row, workstation).
+// no reading is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
+// their disks. A local CI row with none says so plainly (cachyos-x8664-main's disk shows on its node row, workstation).
 function diskCell(free, m) {
   if (free == null) {
     if (!m) return `<td class="n">-</td>`;
-    return `<td class="n${m.cloud ? " bad" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">no reading</td>`;
+    return `<td class="n${m.cloud ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">no reading</td>`;
   }
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
 }
@@ -155,7 +158,7 @@ function machinesTable(cc, inst) {
   const hosts = [...new Set([...Object.keys(cc["cc:host_cores"] || {}), ...Object.keys(ci).filter(carries)])].sort((a, b) => carries(b) - carries(a) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
   return `<table class="tbl"><tr><th data-role="lead">machine</th><th>where</th><th class="n" data-role="glance" data-named>busy</th><th>cpu (per core)</th><th class="n" data-role="glance" data-named>now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n" data-role="glance" data-named>temp</th><th class="n" title="free on its fullest disk">disk free</th><th>pools</th></tr>${hosts.map((h) => {
     const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), m = ci[h];
-    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td>${diskCell(disk[h], carries(h) && m)}<td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
+    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td>${diskCell(disk[h], m)}<td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
   }).join("")}</table>`;
 }
 
@@ -398,7 +401,7 @@ function cloudCard(inst) {
 
 // An opened host's last days (GET /api/cloud-runner/history, hub_core::power_history): hours per
 // UTC day, counted from the governor's 2-minute power samples, then each start and stop, newest
-// first. Read when opened and on each reopen, never on the tab's refresh.
+// first. Read when opened, then on the board's refresh while it stays open.
 function histRow(host) {
   const o = cst.hist[host];
   if (!o) return "";

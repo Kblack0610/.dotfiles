@@ -92,21 +92,28 @@ pub fn fold(host: &str, series: &[Series], from: u64, to: u64) -> History {
         })
         .collect();
     samples.sort();
+    // One sample per time: two series at one step (a change on a scrape boundary) count once.
+    samples.dedup_by_key(|(t, _, _)| *t);
     let mut changes: Vec<Change> = Vec::new();
     let mut hours: BTreeMap<String, f64> = BTreeMap::new();
     let mut last_t: Option<u64> = None;
     for (t, state, reason) in samples {
-        if let Some(prev) = last_t {
-            if t > prev + STEP {
-                push(&mut changes, prev + STEP, NO_READING, "");
-            }
+        let gap_from = last_t.map_or(from, |prev| prev + STEP);
+        if t > gap_from + STEP {
+            push(&mut changes, gap_from, NO_READING, "");
         }
         push(&mut changes, t, state, reason);
+        let day = hours.entry(utc_day(t)).or_default();
         if state != "stopped" {
-            *hours.entry(utc_day(t)).or_default() += STEP as f64 / 3600.0;
+            *day += STEP as f64 / 3600.0;
         }
-        hours.entry(utc_day(t)).or_default();
         last_t = Some(t);
+    }
+    // Samples that end before `to`: the governor stopped exporting, so its last state is not now.
+    if let Some(prev) = last_t {
+        if to > prev + 2 * STEP {
+            push(&mut changes, prev + STEP, NO_READING, "");
+        }
     }
     History {
         host: host.to_string(),
@@ -171,7 +178,7 @@ mod tests {
                 series("stopped", "idle", &[T + 2 * STEP]),
                 series("stopped", "cap", &[T + 3 * STEP]),
             ],
-            0,
+            T,
             T + 3 * STEP,
         );
         let got: Vec<_> = h
@@ -198,8 +205,8 @@ mod tests {
                 "override",
                 &(0..60).map(|i| T + i * STEP).collect::<Vec<_>>(),
             )],
-            0,
-            0,
+            T,
+            T + 59 * STEP,
         );
         // 2 samples on 11-10, 58 on 11-11, 2 minutes each.
         assert_eq!(
@@ -225,8 +232,8 @@ mod tests {
                 series("stopped", "idle", &[T + 10 * STEP]),
                 series("running", "queue", &[T]),
             ],
-            0,
-            0,
+            T,
+            T + 10 * STEP,
         );
         let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
         assert_eq!(states, vec!["running", NO_READING, "stopped"]);
@@ -238,6 +245,33 @@ mod tests {
                 hours: 0.0
             }
         );
+    }
+
+    #[test]
+    fn a_duplicate_time_counts_once_and_missing_ends_read_no_reading() {
+        let h = fold(
+            "aws-burst-1",
+            &[
+                series("running", "queue", &[T + 5 * STEP]),
+                series("stopped", "idle", &[T + 5 * STEP]),
+            ],
+            T,
+            T + 20 * STEP,
+        );
+        let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
+        assert_eq!(states, vec![NO_READING, "running", NO_READING]);
+        assert_eq!(
+            h.days,
+            vec![Day {
+                day: "2026-11-11".into(),
+                hours: 0.0
+            }]
+        );
+    }
+
+    #[test]
+    fn a_history_stays_under_prometheus_point_cap() {
+        assert!(DAYS * 86_400 / STEP < 11_000);
     }
 
     #[test]
