@@ -10,11 +10,15 @@
 #
 # Typing goes only through `agent-panel send`, behind the one-pane guard in
 # .local/lib/agent-pane.sh: a dead target, a session in a dialog, or two panes for one target
-# type nothing (exit 2). Exit 3: the text sits in the pane's input box, unsent.
+# type nothing (exit 2). Exit 3: the text sits in the pane's input box, unsent. Exit 4: a new:
+# take is queued but did not start (fleet-dispatch's reason on stderr); a dispatch pass starts it.
+# Nothing is lost: gungan logs every take before it prints it and copies it to the clipboard, so a
+# take that was not sent is on the clipboard and in `gungan history`.
 set -euo pipefail
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 TAKES="${XDG_RUNTIME_DIR:-/tmp}/agent-voice"
+RECOVER="The text is on the clipboard and in gungan history."
 # How many recent pages are searched for a tmux: ref; older than that, no session is "paged".
 REF_PAGES=50
 
@@ -82,9 +86,10 @@ cmd_send() {
       out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" ||
         die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
-      fleet-dispatch start --item "$slug" ||
-        die "send: queued $slug, but it could not start now; the next dispatch pass starts it"
-      return 0 ;;
+      [ -n "$slug" ] || die "send: agent-queue add printed no item: $out"
+      fleet-dispatch start --item "$slug" >&2 && return 0
+      echo "agent-voice: queued $slug, but it did not start; a dispatch pass starts it" >&2
+      exit 4 ;;
     tmux:?*) key=target ;;
     pane:?*) key=pane ;;
     *) die "send: unknown target '$to' (tmux:, pane: or new:)" ;;
@@ -106,14 +111,15 @@ cmd_pick() {
   target="$(cmd_targets | fzf --delimiter '\t' --with-nth 2 --no-sort --header-first \
     --header "$(fold -s -w 100 <<<"$text")" --prompt 'say it to > ' | cut -f1)" || target=''
   if [ -z "$target" ]; then
-    toast "Voice: not sent" "The text is on the clipboard."
+    toast "Voice: not sent" "$RECOVER"
     return 0
   fi
   out="$(cmd_send --to "$target" "$text" 2>&1)" || rc=$?
   case "$rc" in
     0) toast "Voice: sent" "$out" ;;
     3) toast "Voice: not submitted" "$out" ;;
-    *) toast "Voice: not sent" "$out" ;;
+    4) toast "Voice: queued, not started" "$out" ;;
+    *) toast "Voice: not sent" "$RECOVER"$'\n'"$out" ;;
   esac
   return "$rc"
 }

@@ -18,7 +18,8 @@
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
-# checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
+# Rust tools and restarts agent-web on a new binary; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
@@ -494,7 +495,7 @@ if [ "$dry" -eq 1 ]; then
   echo "merge: gh pr merge $pr${repo:+ -R $repo} $method --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
-  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo; never fails the landing)"
+  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools, restarts agent-web on a new binary; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
@@ -570,7 +571,7 @@ echo "proof: $out"
 # Stow serves the main checkouts, so a merged dotfiles PR is live only once its checkout moves:
 # fast-forward it now. Prints nothing for any other repo, and never fails the landing.
 live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
-[ -z "$live" ] || echo "live: $live"
+[ -z "$live" ] || printf '%s\n' "$live" | sed 's/^/live: /'
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 
