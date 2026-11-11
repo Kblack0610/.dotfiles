@@ -2016,6 +2016,11 @@ fix_item() {
   assert_success
   run cat "$PLOG"
   assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  # ... and so is one that merged a PR before this trip
+  : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
   # an item that failed this trip did not do its job either
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 failed "$this"
   run "$SUBJECT" triage
