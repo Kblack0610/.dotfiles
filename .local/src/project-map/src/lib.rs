@@ -59,10 +59,7 @@ pub fn canonical_in(reg: Option<&Registry>, name: &str) -> String {
 /// What a name no registry entry knows reads as: its last path segment, leading dot stripped,
 /// case kept (`Kblack0610/.dotfiles` -> `dotfiles`).
 fn fallback(name: &str) -> String {
-    let last = name
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or("");
+    let last = name.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
     last.trim_start_matches('.').to_string()
 }
 
