@@ -6549,15 +6549,19 @@ mod tests {
         assert_eq!(a.tab, Tab::Infra);
         assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, its headline numbers first, and n/N step between the section
-        // headings from there.
+        // headings from there (a short screen, so the governor is a scroll away).
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
-        let s = screen(&mut a, 160, 12);
+        let s = screen(&mut a, 160, 6);
         assert!(top(&s).starts_with("nodes "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 12)).starts_with("CI RUNNERS"));
+        let s = screen(&mut a, 160, 6);
+        assert!(
+            s.contains("GOVERNOR") && !top(&s).starts_with("nodes "),
+            "{s}"
+        );
         a.handle(key('N'));
-        assert!(top(&screen(&mut a, 160, 12)).starts_with("nodes "));
+        assert!(top(&screen(&mut a, 160, 6)).starts_with("nodes "));
     }
 
     #[test]
@@ -6570,8 +6574,8 @@ mod tests {
         for w in [
             "[Machines]",
             "MACHINE ",
-            "CI RUNNERS",
             "GOVERNOR",
+            "CI RUNNERS",
             "Enter opens",
             "CLOUD RUNNERS",
         ]
@@ -6592,7 +6596,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            top(&s).starts_with("[Machines] Jobs  Cloud   <- -> switch"),
+            top(&s).starts_with("[Machines] CI  Jobs  Cloud   <- -> switch"),
             "the strip is the first line: {s}"
         );
         // What is red is Alerts' now: no health, red now or fixes here.
@@ -6600,17 +6604,22 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines, the CI runners and the governor, in that order.
+        // Machines holds the machines and the governor, in that order; CI is its own.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        for w in ["MACHINE ", "CI RUNNERS", "GOVERNOR"].windows(2) {
-            assert!(at(&s, w[0]) < at(&s, w[1]), "{} after {}: {s}", w[0], w[1]);
-        }
-        assert!(!s.contains("CLOUD RUNNERS"), "{s}");
+        assert!(at(&s, "MACHINE ") < at(&s, "GOVERNOR"), "{s}");
+        assert!(
+            !s.contains("CI RUNNERS") && !s.contains("CLOUD RUNNERS"),
+            "{s}"
+        );
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with(" Machines [Jobs]"), "{s}");
+        assert!(top(&s).starts_with(" Machines [CI]"), "{s}");
+        assert!(s.contains("CI RUNNERS") && !s.contains("GOVERNOR"), "{s}");
+        a.handle(right());
+        let s = screen(&mut a, 160, 200);
+        assert!(top(&s).starts_with(" Machines  CI [Jobs]"), "{s}");
         assert!(
             s.contains("Enter opens the table") && !s.contains("GOVERNOR"),
             "{s}"
@@ -6638,12 +6647,12 @@ mod tests {
         let mut a = app(Tab::Infra);
         a.infra = None;
         let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
-        assert!(body[0].starts_with("[Machines] Jobs"), "{body:?}");
+        assert!(body[0].starts_with("[Machines] CI  Jobs"), "{body:?}");
         assert_eq!(body[1], "Reading Prometheus...");
     }
 
     #[test]
-    fn infra_strip_counts_red_ci_lines_on_machines() {
+    fn infra_strip_counts_red_ci_lines_on_ci() {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
@@ -6654,11 +6663,19 @@ mod tests {
                 .find(|l| l.contains("<- -> switch"))
                 .unwrap()
         };
-        assert!(strip(&a).starts_with("[Machines] Jobs"), "{}", strip(&a));
+        assert!(
+            strip(&a).starts_with("[Machines] CI  Jobs"),
+            "{}",
+            strip(&a)
+        );
         if let Some(i) = a.infra.as_mut() {
             i.ci.red = vec!["queued job needs gpu".into()];
         }
-        assert!(strip(&a).starts_with("[Machines 1] Jobs"), "{}", strip(&a));
+        assert!(
+            strip(&a).starts_with("[Machines] CI 1  Jobs"),
+            "{}",
+            strip(&a)
+        );
     }
 
     #[test]

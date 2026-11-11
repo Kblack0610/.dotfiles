@@ -883,8 +883,8 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
     ci.push(b.runs_badge());
     let sections = vec![
         ("machines", machines),
-        ("ci", ci),
         ("governor", b.governor(w)),
+        ("ci", ci),
         ("cloud", b.cloud(w)),
     ];
     sections

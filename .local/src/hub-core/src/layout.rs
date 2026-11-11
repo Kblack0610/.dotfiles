@@ -154,15 +154,20 @@ pub const TABS: [Tab; 13] = [
         group: "System",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &["machines", "ci", "governor", "jobs", "cloud"],
+        sections: &["machines", "governor", "ci", "jobs", "cloud"],
         // What is red and its fixes moved to Alerts (MOVED); the governor powers machines on
-        // and off, so it sits with them.
+        // and off, so it sits with them, and the CI runners are their own inner tab.
         pinned: &[],
         inner: &[
             Inner {
                 id: "machines",
                 title: "Machines",
-                sections: &["machines", "ci", "governor"],
+                sections: &["machines", "governor"],
+            },
+            Inner {
+                id: "ci",
+                title: "CI",
+                sections: &["ci"],
             },
             Inner {
                 id: "jobs",
@@ -498,10 +503,26 @@ mod tests {
     }
 
     #[test]
+    fn alerts_sits_just_before_infra_and_leads_with_what_is_firing() {
+        let at = |id: &str| TABS.iter().position(|t| t.id == id).unwrap();
+        assert_eq!(at("alerts") + 1, at("infra"));
+        let alerts = resolve("alerts").unwrap();
+        assert_eq!(
+            alerts.sections,
+            ["health", "firing", "fixes", "history", "watches"]
+        );
+        assert_eq!(section("fixes"), None, "a new section is no retired name");
+        // The eleventh tab on the number row has no digit; the tenth is 0.
+        assert_eq!(bar_digit("schedules"), Some(0));
+        assert_eq!(bar_digit("costs"), None);
+        assert_eq!(bar_digit("alerts"), Some(8));
+    }
+
+    #[test]
     fn the_groups_are_today_agents_projects_system_one_subject_each() {
-        // One subject per group (plan can-we-fix-trader-logical-goblet P3): the agent tabs, the
-        // project tabs and the day's tabs each sit together.
-        let groups: Vec<(&str, Vec<&str>)> = TABS.iter().fold(Vec::new(), |mut g, t| {
+        // One subject per group (P3 of can-we-fix-trader-logical-goblet.md): the day's tabs, the
+        // agent tabs, the project tabs, and the system's, Alerts leading it.
+        let groups: Vec<(&str, Vec<&str>)> = TABS.iter().fold(vec![], |mut g, t| {
             match g.last_mut() {
                 Some((name, ids)) if *name == t.group => ids.push(t.id),
                 _ => g.push((t.group, vec![t.id])),
@@ -517,24 +538,38 @@ mod tests {
                 ("System", vec!["alerts", "infra", "schedules", "costs"]),
             ]
         );
-    }
-
-    #[test]
-    fn alerts_sits_just_before_infra_and_leads_with_what_is_firing() {
-        let at = |id: &str| TABS.iter().position(|t| t.id == id).unwrap();
-        assert_eq!(at("alerts") + 1, at("infra"));
-        let alerts = resolve("alerts").unwrap();
+        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Fleet 5, Projects 6, Releases 7,
+        // Alerts 8, Infra 9, Schedules 0; Costs, the eleventh, has none.
+        let ids = [
+            "home",
+            "log",
+            "queue",
+            "sessions",
+            "fleet",
+            "projects",
+            "releases",
+            "alerts",
+            "infra",
+            "schedules",
+            "costs",
+        ];
+        let digits: Vec<Option<usize>> = ids.iter().map(|id| bar_digit(id)).collect();
         assert_eq!(
-            alerts.sections,
-            ["health", "firing", "fixes", "history", "watches"]
+            digits,
+            [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(7),
+                Some(8),
+                Some(9),
+                Some(0),
+                None
+            ]
         );
-        assert_eq!(section("fixes"), None, "a new section is no retired name");
-        // The eleventh tab on the number row has no digit; the tenth is 0.
-        assert_eq!(bar_digit("schedules"), Some(0));
-        assert_eq!(bar_digit("costs"), None);
-        assert_eq!(bar_digit("alerts"), Some(8));
-        assert_eq!(bar_digit("log"), Some(2));
-        assert_eq!(bar_digit("sessions"), Some(4));
     }
 
     #[test]
@@ -568,7 +603,7 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 3);
-        assert_eq!(resolve("infra").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 4);
     }
 
     #[test]
@@ -577,11 +612,14 @@ mod tests {
         assert!(infra.pinned.is_empty());
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
         assert_eq!(at(None), Some("machines"));
-        assert_eq!(at(Some("ci")), Some("machines"));
         assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("ci")), Some("ci"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
+        let titles: Vec<&str> = infra.inner.iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Machines", "CI", "Jobs", "Cloud"]);
         // a retired tab name that became a section lands on the inner tab holding it
-        assert_eq!(at(section("ci")), Some("machines"));
+        assert_eq!(at(section("ci")), Some("ci"));
+        assert_eq!(at(section("machines")), Some("machines"));
     }
 
     #[test]

@@ -236,7 +236,10 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("{n} waiting on you"), p.warn()),
-                Span::styled("  2 Home answers them", p.dim()),
+                Span::styled(
+                    format!("  {} answers them", hub_core::layout::bar_label("home")),
+                    p.dim(),
+                ),
             ]),
             w,
         ));
@@ -447,7 +450,7 @@ pub mod tests {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("3 waiting on you  2 Home answers them") < at("SESSIONS (1)"));
+        assert!(at("3 waiting on you  1 Home answers them") < at("SESSIONS (1)"));
         assert!(!t.contains("WAITING ON YOU"), "Home lists them");
         assert!(
             !t.contains("MERGED (2)") && !t.contains("STILL OPEN"),
