@@ -42,7 +42,7 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 | Prefix+F, `wt new`, `wt pick` | the repo's world, inside tmux or out; a session already live on another server stays there; `--server` overrides |
 | `tmx ensure <world> <session>`, `tmx goto <world> <session>` | the world that declares the session, whichever was named |
 | `fleet-dispatch start` | `@agents` (lab); `--server` is for `--resume` only, to put a session back where it was |
-| `agent-queue add --running` | records its session on any world, unless a manifest declares that session (hub:dotfiles holds many conversations) |
+| `agent-queue add --running` | records its session on any world when it is a worktree session (`<repo>-agent-N`); a checkout session such as hub:dotfiles holds many conversations and records none |
 | `fleet-shepherd` | the world that declares its session |
 | Prefix+R, `sessions resume --window` | `tmux-world route` on the session's directory |
 
@@ -56,3 +56,4 @@ An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and th
 | `tmux-world: command not found` after a pull | the link in `~/.local/bin` is per file | `dotfiles-deploy --apply` |
 | A work repo opens on hub | the catch-all took it | add `@repos <dir>` to the work world's manifest |
 | A `shepherd` server or session still up | left from when passes had their own world (2026-11-04 to 2026-11-05) | `tmux -L shepherd kill-server` and `tmux -L hub kill-session -t =shepherd` once no pass there is talking to you; nothing reads them, and Prefix o goes to `hub:shepherd` |
+| A playground or platform session still up on lab after the 2026-11-11 world split | those repos are declared on hub now, so `tmx ensure` or Prefix+f makes a second one there | close the lab one (`tmux -L lab kill-session -t =<name>`) once nothing in it is live |

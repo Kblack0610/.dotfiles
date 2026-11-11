@@ -407,14 +407,17 @@ wt_tmux_all() {
 
 wt_live_sessions() { wt_tmux_all list-sessions -F '#{session_name}'; }
 
-wt_session_exists() {
+# wt_session_server <name> -- the server a live session of that name is on, rc 1 if none.
+wt_session_server() {
   local s
-  tmux has-session -t "=$1" 2>/dev/null && return 0
+  tmux has-session -t "=$1" 2>/dev/null && { printf '%s\n' "${WT_SERVER:-$(wt_current_server)}"; return 0; }
   while IFS= read -r s; do
-    tmux -L "$s" has-session -t "=$1" 2>/dev/null && return 0
+    tmux -L "$s" has-session -t "=$1" 2>/dev/null && { printf '%s\n' "$s"; return 0; }
   done < <(wt_other_servers)
   return 1
 }
+
+wt_session_exists() { wt_session_server "$1" >/dev/null; }
 
 # wt_pane_inside <path> -- true when any tmux pane, in ANY session, sits in <path> or below.
 # The session-name check alone misses a pane that cd'd in from elsewhere: a Claude started in
@@ -883,13 +886,9 @@ wt_lock() {
 # still wins. Inside tmux the client has to cross servers too, which WT_HOP tells wt_focus.
 WT_HOP=0
 wt_to_repo_world() {
-  local dir="$1" session="${2:-}" world='' s
+  local dir="$1" session="${2:-}" world=''
   [ -z "$WT_SERVER" ] || return 0
-  if [ -n "$session" ]; then
-    for s in "$(wt_current_server)" $(wt_other_servers); do
-      command tmux -L "$s" has-session -t "=$session" 2>/dev/null && { world="$s"; break; }
-    done
-  fi
+  [ -z "$session" ] || world="$(wt_session_server "$session")"
   [ -n "$world" ] || read -r world _ <<< "$(world_route "$dir")"
   [ -n "$world" ] && [ "$world" != here ] && [ "$world" != "$(wt_current_server)" ] || return 0
   WT_SERVER="$world"
