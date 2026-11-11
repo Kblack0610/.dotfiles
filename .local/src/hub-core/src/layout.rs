@@ -32,7 +32,7 @@ pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
-        group: "Now",
+        group: "Today",
         title: "Home",
         question: "What needs me, and is everything OK?",
         sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
@@ -44,7 +44,7 @@ pub const TABS: [Tab; 13] = [
     // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
-        group: "Now",
+        group: "Today",
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
@@ -52,8 +52,20 @@ pub const TABS: [Tab; 13] = [
         inner: &[],
     },
     Tab {
+        id: "log",
+        group: "Today",
+        title: "Log",
+        question: "What happened?",
+        sections: &[
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
+        ],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
         id: "queue",
-        group: "Work",
+        group: "Agents",
         title: "Queue",
         question: "What will agents do next?",
         sections: &["flow", "table", "candidates"],
@@ -61,8 +73,26 @@ pub const TABS: [Tab; 13] = [
         inner: &[],
     },
     Tab {
+        id: "sessions",
+        group: "Agents",
+        title: "Sessions",
+        question: "What is each agent doing?",
+        sections: &["shepherd", "sessions", "detail"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
+        id: "fleet",
+        group: "Agents",
+        title: "Fleet",
+        question: "Who is working, and on what?",
+        sections: &["workers"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
         id: "projects",
-        group: "Work",
+        group: "Projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
@@ -71,25 +101,46 @@ pub const TABS: [Tab; 13] = [
     },
     Tab {
         id: "board",
-        group: "Work",
+        group: "Projects",
         title: "Board",
         question: "What is on every project's board?",
         sections: &["rows"],
         pinned: &[],
         inner: &[],
     },
+    // The channels (`hub_core::releases`) and each opened row, then the Builds section (CI runs,
+    // its own reader; release-state has no CI collector), then the Tests section (per-suite
+    // results of one tests.yml run, web first; the TUI follows).
     Tab {
-        id: "sessions",
-        group: "Work",
-        title: "Sessions",
-        question: "What is each agent doing?",
-        sections: &["shepherd", "sessions", "detail"],
+        id: "releases",
+        group: "Projects",
+        title: "Releases",
+        question: "What is building, and what is live where?",
+        sections: &["table", "detail", "builds", "tests"],
+        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
+        // how the last test run went.
         pinned: &[],
-        inner: &[],
+        inner: &[
+            Inner {
+                id: "apps",
+                title: "Apps",
+                sections: &["table", "detail"],
+            },
+            Inner {
+                id: "builds",
+                title: "Builds",
+                sections: &["builds"],
+            },
+            Inner {
+                id: "tests",
+                title: "Tests",
+                sections: &["tests"],
+            },
+        ],
     },
     Tab {
         id: "alerts",
-        group: "Ops",
+        group: "System",
         title: "Alerts",
         question: "What is firing, who owns it, and what fired lately?",
         // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
@@ -100,7 +151,7 @@ pub const TABS: [Tab; 13] = [
     },
     Tab {
         id: "infra",
-        group: "Ops",
+        group: "System",
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &["machines", "ci", "governor", "jobs", "cloud"],
@@ -126,41 +177,19 @@ pub const TABS: [Tab; 13] = [
         ],
     },
     Tab {
-        id: "log",
-        group: "Ops",
-        title: "Log",
-        question: "What happened?",
-        sections: &[
-            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
-            "ranked",
-        ],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "fleet",
-        group: "Ops",
-        title: "Fleet",
-        question: "Who is working, and on what?",
-        sections: &["workers"],
-        pinned: &[],
-        inner: &[],
-    },
-    // After the older tabs, so they keep their digits.
-    Tab {
         id: "schedules",
-        group: "Ops",
+        group: "System",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
         pinned: &[],
         inner: &[],
     },
-    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
-    // here, cut seven ways; they keep a one-line badge that links in.
+    // Every dollar figure the other tabs showed is here, cut seven ways; they keep a one-line
+    // badge that links in.
     Tab {
         id: "costs",
-        group: "Spend, ship",
+        group: "System",
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
@@ -192,36 +221,6 @@ pub const TABS: [Tab; 13] = [
                 id: "models",
                 title: "Models",
                 sections: &["tokens", "langfuse", "sections"],
-            },
-        ],
-    },
-    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
-    // Builds section (CI runs, its own reader; release-state has no CI collector), then the Tests
-    // section (per-suite results of one tests.yml run, web first; the TUI follows).
-    Tab {
-        id: "releases",
-        group: "Spend, ship",
-        title: "Releases",
-        question: "What is building, and what is live where?",
-        sections: &["table", "detail", "builds", "tests"],
-        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
-        // how the last test run went.
-        pinned: &[],
-        inner: &[
-            Inner {
-                id: "apps",
-                title: "Apps",
-                sections: &["table", "detail"],
-            },
-            Inner {
-                id: "builds",
-                title: "Builds",
-                sections: &["builds"],
-            },
-            Inner {
-                id: "tests",
-                title: "Tests",
-                sections: &["tests"],
             },
         ],
     },
@@ -492,6 +491,28 @@ mod tests {
     }
 
     #[test]
+    fn the_groups_are_today_agents_projects_system_one_subject_each() {
+        // One subject per group (plan can-we-fix-trader-logical-goblet P3): the agent tabs, the
+        // project tabs and the day's tabs each sit together.
+        let groups: Vec<(&str, Vec<&str>)> = TABS.iter().fold(Vec::new(), |mut g, t| {
+            match g.last_mut() {
+                Some((name, ids)) if *name == t.group => ids.push(t.id),
+                _ => g.push((t.group, vec![t.id])),
+            }
+            g
+        });
+        assert_eq!(
+            groups,
+            [
+                ("Today", vec!["home", "daily", "log"]),
+                ("Agents", vec!["queue", "sessions", "fleet"]),
+                ("Projects", vec!["projects", "board", "releases"]),
+                ("System", vec!["alerts", "infra", "schedules", "costs"]),
+            ]
+        );
+    }
+
+    #[test]
     fn alerts_sits_just_before_infra_and_leads_with_what_is_firing() {
         let at = |id: &str| TABS.iter().position(|t| t.id == id).unwrap();
         assert_eq!(at("alerts") + 1, at("infra"));
@@ -502,9 +523,11 @@ mod tests {
         );
         assert_eq!(section("fixes"), None, "a new section is no retired name");
         // The eleventh tab on the number row has no digit; the tenth is 0.
-        assert_eq!(bar_digit("costs"), Some(0));
-        assert_eq!(bar_digit("releases"), None);
-        assert_eq!(bar_digit("alerts"), Some(5));
+        assert_eq!(bar_digit("schedules"), Some(0));
+        assert_eq!(bar_digit("costs"), None);
+        assert_eq!(bar_digit("alerts"), Some(8));
+        assert_eq!(bar_digit("log"), Some(2));
+        assert_eq!(bar_digit("sessions"), Some(4));
     }
 
     #[test]

@@ -302,7 +302,7 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "board", "sessions", "alerts", "infra", "log", "fleet", "schedules", "costs", "releases"];
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "fleet", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.

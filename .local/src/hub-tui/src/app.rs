@@ -84,32 +84,32 @@ impl Tab {
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
+        Tab::Log,
         Tab::Queue,
-        Tab::Projects,
         Tab::Sessions,
+        Tab::Fleet,
+        Tab::Projects,
+        Tab::Releases,
         Tab::Alerts,
         Tab::Infra,
-        Tab::Log,
-        Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
-        Tab::Releases,
     ];
     /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth, past
     /// which a tab has no digit and Tab reaches it (`hub_core::layout::bar_digit`). Daily is left
     /// off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
     pub const SHOWN: [Tab; 11] = [
         Tab::Home,
+        Tab::Log,
         Tab::Queue,
-        Tab::Projects,
         Tab::Sessions,
+        Tab::Fleet,
+        Tab::Projects,
+        Tab::Releases,
         Tab::Alerts,
         Tab::Infra,
-        Tab::Log,
-        Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
-        Tab::Releases,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -5031,7 +5031,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Home  2 Queue  3 Projects  4 Sessions  5 Alerts  6 Infra"),
+            lines[0].contains("1 Home  2 Log  3 Queue  4 Sessions  5 Fleet  6 Projects"),
             "{s}"
         );
         assert!(
@@ -5237,13 +5237,13 @@ mod tests {
             Some(Tab::Projects),
             "`a` opens it there"
         );
-        // Projects is the third tab on the bar, so 3 opens it.
-        a.handle(key('3'));
+        // Projects is the sixth tab on the bar, so 6 opens it.
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Projects);
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("3 Projects  4 Sessions") && bar.contains("8 Fleet"),
+            bar.contains("5 Fleet  6 Projects") && bar.contains("4 Sessions"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -5588,7 +5588,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("6 Infra") && first.contains(" RED"),
+            first.contains("1 Home") && first.contains("9 Infra") && first.contains(" RED"),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -5646,14 +5646,14 @@ mod tests {
                 "the badges name this digit"
             );
         }
-        assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('5', '6'));
+        assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('8', '9'));
         assert_eq!(
-            (Tab::Costs.digit(), Tab::by_digit('0')),
-            ('0', Some(Tab::Costs))
+            (Tab::Schedules.digit(), Tab::by_digit('0')),
+            ('0', Some(Tab::Schedules))
         );
-        assert_eq!(Tab::Releases.digit(), ' ');
+        assert_eq!(Tab::Costs.digit(), ' ');
         assert_eq!(Tab::Daily.digit(), ' ');
-        assert_eq!(Tab::by_digit('2'), Some(Tab::Queue));
+        assert_eq!(Tab::by_digit('2'), Some(Tab::Log));
     }
 
     #[test]
@@ -5827,7 +5827,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("5 Fleet"), "{s}");
         assert!(
             !s.contains("WHERE THE TOKENS GO"),
             "tokens are Costs' now\n{s}"
@@ -6584,11 +6584,11 @@ mod tests {
     #[test]
     fn infra_leads_with_its_strip_and_left_right_switch() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('9'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("5 Alerts  6 Infra") && !bar.contains("Machines"),
+            bar.contains("8 Alerts  9 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(
@@ -6786,7 +6786,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9 Schedules  0  Releases "),
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9  0 Schedules  Costs "),
             "{bar:?}"
         );
         let wide: String = a
@@ -6803,19 +6803,18 @@ mod tests {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
         (a.alerts_read.busy, a.reds_read.busy) = (true, true);
-        a.handle(key('5'));
+        a.handle(key('8'));
         assert_eq!((a.tab, a.seek), (Tab::Alerts, None));
-        a.handle(key('6'));
+        a.handle(key('9'));
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
-        a.handle(key('7'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Log);
-        a.costs_read.busy = true;
+        a.schedules_read.busy = true;
         a.handle(key('0'));
-        assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
-        a.handle(key('7'));
-        a.fleet_read.busy = true;
+        assert_eq!(a.tab, Tab::Schedules, "0 opens the tenth tab");
+        a.costs_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
-        assert_eq!(a.tab, Tab::Fleet);
+        assert_eq!(a.tab, Tab::Costs, "Tab reaches the eleventh, which has no digit");
         a.handle(key('q'));
         assert!(a.quit);
     }
