@@ -293,11 +293,19 @@ def read_bill(b, frac, work, month):
                         products={k: {"cap": v, "spent": round(by_sku.get(k, 0), 2)} for k, v in sorted(caps.items())},
                         by_repo=by_repo)
         elif b["kind"] == "aws":
-            vals = {r["metric"].get("kind"): float(r["value"][1]) for r in prom("ci_governor_budget_usd")}
+            rows = prom('{__name__=~"ci_governor_budget_(usd|ok)"}')
+            # The governor keeps serving its last figure after a failed AWS Budgets read: not a current one.
+            if any(r["metric"].get("__name__") == "ci_governor_budget_ok" and float(r["value"][1]) == 0 for r in rows):
+                raise Unread('the governor\'s last AWS Budgets read failed (runbook, "budget read")')
+            vals = {r["metric"]["kind"]: float(r["value"][1]) for r in rows if "kind" in r["metric"]}
             if "actual" not in vals:
                 raise Unread("no ci_governor_budget_usd{kind=actual} in Prometheus")
-            line.update(cap=vals.get("limit"), spent=vals["actual"], projected=vals.get("forecast", pace(vals["actual"], frac)),
-                        note="AWS's own forecast" if "forecast" in vals else "")
+            # AWS forecasts from history; on a new account it can sit below what is already spent.
+            fc = vals.get("forecast")
+            if fc is not None and fc < vals["actual"]:
+                fc = None
+            line.update(cap=vals.get("limit"), spent=vals["actual"], projected=pace(vals["actual"], frac) if fc is None else fc,
+                        note="AWS's own forecast" if fc is not None else "")
         elif b["kind"] == "digitalocean":
             spent = float(run_json(["doctl", "balance", "get", "-o", "json"])["month_to_date_usage"])
             line.update(spent=spent, projected=pace(spent, frac))
