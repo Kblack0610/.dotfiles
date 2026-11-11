@@ -31,6 +31,8 @@ struct Line {
     name: String,
     kind: String,
     paid_by: Option<String>,
+    /// Where a metered bill's cash goes (`ci`, `infra`); a subscription has none.
+    lane: Option<String>,
     cap: Option<f64>,
     spent: Option<f64>,
     projected: Option<f64>,
@@ -66,8 +68,7 @@ pub struct File {
 /// The file, or why there is none to show.
 pub fn load(path: &Path) -> Result<File, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let f: File =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let f: File = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     if f.schema != SCHEMA {
         return Err(format!(
             "{} is schema {}, not {SCHEMA}: an older agent-usage budget wrote it",
@@ -92,6 +93,27 @@ pub struct Bill {
     pub status: String,
 }
 
+/// What the bills pay for: the agents (the plans and the gateway), CI, infra. A metered bill's
+/// group is its conf's `lane=`; a subscription or the gateway pays for agent work.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Group {
+    pub id: String,
+    /// The heading both surfaces print: `Agents`, `CI`, `Infra`.
+    pub name: String,
+    /// Our cash in the group (a bill someone else pays is not counted), so far and by month end.
+    pub spent: String,
+    pub month: String,
+    /// Its bills, what needs a look first, then the metered bills by their month, then the fees.
+    pub bills: Vec<Bill>,
+}
+
+/// The groups in reading order and their headings; any other lane follows under its own name.
+const GROUPS: &[(&str, &str)] = &[("agents", "Agents"), ("ci", "CI"), ("infra", "Infra")];
+
+fn group_of(l: &Line) -> String {
+    l.lane.clone().unwrap_or_else(|| "agents".into())
+}
+
 /// One project or lane of the split.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Share {
@@ -114,9 +136,11 @@ pub struct Budget {
     pub stale: bool,
     /// What needs a look, one line each, worst first. Empty when all is well.
     pub needs: Vec<String>,
-    pub bills: Vec<Bill>,
+    pub groups: Vec<Group>,
     pub by_project: Vec<Share>,
-    pub by_lane: Vec<Share>,
+    /// The split's lanes under their group, worded once: `Agents: queue $175`, `interactive $171`,
+    /// `CI: ci $141`. A lane no group is named for is agent work.
+    pub by_lane: Vec<String>,
     pub foot: &'static str,
 }
 
@@ -177,7 +201,12 @@ pub fn build(f: &File, now: i64) -> Budget {
         let mut s = format!("{} {}", l.name, l.status);
         if l.status == "over" {
             if let (Some(cap), Some(spent)) = (l.cap, l.spent) {
-                s = format!("{} over its {} cap ({})", l.name, dollars(cap), dollars(spent));
+                s = format!(
+                    "{} over its {} cap ({})",
+                    l.name,
+                    dollars(cap),
+                    dollars(spent)
+                );
             }
         } else if !l.note.is_empty() {
             s = format!("{s}: {}", l.note);
@@ -196,20 +225,69 @@ pub fn build(f: &File, now: i64) -> Budget {
             ),
         );
     }
-    // What needs a look first, then the metered bills by their month, then the fees.
-    let rank = |l: &Line| (l.status == "ok", l.kind == "subscription");
-    let mut lines: Vec<&Line> = f.lines.iter().collect();
-    lines.sort_by(|a, b| {
-        rank(a).cmp(&rank(b)).then_with(|| {
-            b.projected
-                .unwrap_or(-1.0)
-                .total_cmp(&a.projected.unwrap_or(-1.0))
+    // GROUPS' order, then any other lane a bill names, by name.
+    let mut others: Vec<String> = f
+        .lines
+        .iter()
+        .map(group_of)
+        .filter(|g| !GROUPS.iter().any(|(id, _)| id == g))
+        .collect();
+    others.sort();
+    others.dedup();
+    let ids: Vec<String> = GROUPS
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .chain(others)
+        .collect();
+    let mut by_lane = vec![];
+    for id in &ids {
+        let in_group = |c: &&Cut| &c.name == id || (id == "agents" && !ids.contains(&c.name));
+        for (i, c) in f.by_lane.iter().filter(in_group).enumerate() {
+            let lead = if i == 0 {
+                format!("{}: ", group_name(id))
+            } else {
+                String::new()
+            };
+            by_lane.push(format!("{lead}{} {}", c.name, dollars(c.usd)));
+        }
+    }
+    let groups: Vec<Group> = ids
+        .iter()
+        .cloned()
+        .filter_map(|id| {
+            let mut lines: Vec<&Line> = f.lines.iter().filter(|l| group_of(l) == id).collect();
+            if lines.is_empty() {
+                return None;
+            }
+            lines.sort_by(|a, b| {
+                let rank = |l: &Line| (l.status == "ok", l.kind == "subscription");
+                rank(a).cmp(&rank(b)).then_with(|| {
+                    b.projected
+                        .unwrap_or(-1.0)
+                        .total_cmp(&a.projected.unwrap_or(-1.0))
+                })
+            });
+            let ours = || lines.iter().filter(|l| l.paid_by.is_none());
+            let name = group_name(&id);
+            Some(Group {
+                spent: sum(ours().filter_map(|l| l.spent)).map_or("-".into(), dollars),
+                month: sum(ours().filter_map(|l| l.projected))
+                    .map_or("-".into(), |m| format!("~{}", dollars(m))),
+                bills: lines.into_iter().map(bill).collect(),
+                id,
+                name,
+            })
         })
-    });
+        .collect();
     let t = &f.total;
     Budget {
         why: None,
-        month: format!("{}, day {} of {}", crate::spend_history::month_name(&f.month), f.day, f.days),
+        month: format!(
+            "{}, day {} of {}",
+            crate::spend_history::month_name(&f.month),
+            f.day,
+            f.days
+        ),
         spent: dollars(t.spent),
         projected: format!("~{}", dollars(t.projected)),
         caps: dollars(t.caps),
@@ -217,21 +295,35 @@ pub fn build(f: &File, now: i64) -> Budget {
         as_of: Some(f.as_of_epoch),
         stale,
         needs,
-        bills: lines
-            .into_iter()
-            .map(|l| Bill {
-                name: l.name.clone(),
-                kind: l.kind.clone(),
-                cap: money(l.cap),
-                spent: money(l.spent),
-                month: money(l.projected),
-                note: note(l),
-                status: l.status.clone(),
-            })
-            .collect(),
+        groups,
         by_project: shares(&f.by_project),
-        by_lane: shares(&f.by_lane),
+        by_lane,
         foot: FOOT,
+    }
+}
+
+/// A group's display name, its id when it is not one of [`GROUPS`].
+fn group_name(id: &str) -> String {
+    GROUPS
+        .iter()
+        .find(|(g, _)| *g == id)
+        .map_or(id.to_string(), |(_, n)| n.to_string())
+}
+
+/// The sum of the figures read, None when none was: an unread bill is unknown, never $0.
+fn sum(figures: impl Iterator<Item = f64>) -> Option<f64> {
+    figures.reduce(|a, b| a + b)
+}
+
+fn bill(l: &Line) -> Bill {
+    Bill {
+        name: l.name.clone(),
+        kind: l.kind.clone(),
+        cap: money(l.cap),
+        spent: money(l.spent),
+        month: money(l.projected),
+        note: note(l),
+        status: l.status.clone(),
     }
 }
 
@@ -255,16 +347,16 @@ mod tests {
             "total": {"spent": 838.3, "projected": 1303.52, "caps": 1445.0},
             "partial": [], "needs": needs,
             "by_project": [{"name": "unity-core-playground", "usd": 334.31}, {"name": "unattributed", "usd": 91.18}],
-            "by_lane": [{"name": "queue", "usd": 175.02}],
+            "by_lane": [{"name": "queue", "usd": 175.02}, {"name": "ci", "usd": 140.84}, {"name": "infra", "usd": 77.71}],
             "lines": [
                 {"name": "alt", "kind": "subscription", "cap": 200.0, "spent": 200.0, "projected": 200.0,
                  "list_usd": 4663.51, "status": "ok", "note": ""},
                 {"name": "lazer", "kind": "litellm", "paid_by": "lazer", "cap": 50.0, "spent": 228.12,
                  "projected": 228.12, "status": "over", "note": "past its $50 cap"},
-                {"name": "do", "kind": "digitalocean", "spent": 77.71, "projected": 224.0, "status": "ok", "note": ""},
-                {"name": "aws", "kind": "aws", "cap": 600.0, "spent": 112.95, "projected": 379.86,
+                {"name": "do", "kind": "digitalocean", "lane": "infra", "spent": 77.71, "projected": 224.0, "status": "ok", "note": ""},
+                {"name": "aws", "kind": "aws", "lane": "ci", "cap": 600.0, "spent": 112.95, "projected": 379.86,
                  "status": "ok", "note": "AWS's own forecast"},
-                {"name": "github", "kind": "github", "status": "unread", "note": "gh: no answer"}
+                {"name": "github", "kind": "github", "lane": "ci", "status": "unread", "note": "gh: no answer"}
             ]
         }))
         .unwrap()
@@ -274,20 +366,79 @@ mod tests {
     fn the_head_is_the_month_and_its_cash_and_the_bills_lead_with_what_needs_a_look() {
         let b = build(&file(&[]), NOW);
         assert_eq!(b.month, "Nov, day 11 of 30");
-        assert_eq!((b.spent.as_str(), b.projected.as_str(), b.caps.as_str()), ("$838", "~$1,304", "$1,445"));
+        assert_eq!(
+            (b.spent.as_str(), b.projected.as_str(), b.caps.as_str()),
+            ("$838", "~$1,304", "$1,445")
+        );
         assert!(!b.stale);
-        let names: Vec<&str> = b.bills.iter().map(|x| x.name.as_str()).collect();
-        // off ok first (by month), then metered by month, then the fees
-        assert_eq!(names, ["lazer", "github", "aws", "do", "alt"]);
-        assert_eq!(b.bills[1].spent, "-", "an unread bill is unknown, never $0");
-        assert_eq!(b.bills[4].note, "$4,664 list work (23x)");
-        assert_eq!(b.bills[0].note, "over, paid by lazer, not in our total, past its $50 cap");
+        let bills: Vec<&Bill> = b.groups.iter().flat_map(|g| &g.bills).collect();
+        let names: Vec<&str> = bills.iter().map(|x| x.name.as_str()).collect();
+        // by group (agents, CI, infra); inside one, off ok first, then metered by month, then the fees
+        assert_eq!(names, ["lazer", "alt", "github", "aws", "do"]);
+        assert_eq!(bills[2].spent, "-", "an unread bill is unknown, never $0");
+        assert_eq!(bills[1].note, "$4,664 list work (23x)");
+        assert_eq!(
+            bills[0].note,
+            "over, paid by lazer, not in our total, past its $50 cap"
+        );
         assert_eq!(b.by_project[1].name, "unattributed");
     }
 
     #[test]
+    fn the_bills_group_into_agents_ci_and_infra_each_with_our_cash_and_its_lanes() {
+        let b = build(&file(&[]), NOW);
+        let g: Vec<(&str, &str, &str)> = b
+            .groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.spent.as_str(), g.month.as_str()))
+            .collect();
+        // lazer is paid by lazer, so the agents' cash is alt alone; github is unread, so CI is aws
+        assert_eq!(
+            g,
+            [
+                ("Agents", "$200", "~$200"),
+                ("CI", "$113", "~$380"),
+                ("Infra", "$78", "~$224")
+            ]
+        );
+        let bills = |i: usize| {
+            b.groups[i]
+                .bills
+                .iter()
+                .map(|x| x.name.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (bills(0), bills(1), bills(2)),
+            (vec!["lazer", "alt"], vec!["github", "aws"], vec!["do"])
+        );
+        assert_eq!(
+            b.by_lane,
+            ["Agents: queue $175", "CI: ci $141", "Infra: infra $78"]
+        );
+        // with no CI bill read, the CI lane still shows, and an all-unread group is unknown
+        let mut f = file(&[]);
+        f.lines.retain(|l| l.name != "aws");
+        let b = build(&f, NOW);
+        assert_eq!(
+            (b.groups[1].spent.as_str(), b.groups[1].month.as_str()),
+            ("-", "-")
+        );
+        f.lines.retain(|l| l.name != "github");
+        let b = build(&f, NOW);
+        assert_eq!(b.groups.len(), 2);
+        assert_eq!(
+            b.by_lane,
+            ["Agents: queue $175", "CI: ci $141", "Infra: infra $78"]
+        );
+    }
+
+    #[test]
     fn needs_are_the_watchs_reasons_then_each_line_off_ok_they_do_not_name_then_the_age() {
-        let b = build(&file(&["github unread since 2026-11-10T09:00: gh: no answer"]), NOW);
+        let b = build(
+            &file(&["github unread since 2026-11-10T09:00: gh: no answer"]),
+            NOW,
+        );
         assert_eq!(
             b.needs,
             [
@@ -298,12 +449,18 @@ mod tests {
         assert!(b.flagged());
         // under a day unread: the watch is quiet, the tab says it now
         let b = build(&file(&[]), NOW);
-        assert_eq!(b.needs[0], "lazer over its $50 cap ($228), paid by lazer, not in our total");
+        assert_eq!(
+            b.needs[0],
+            "lazer over its $50 cap ($228), paid by lazer, not in our total"
+        );
         assert_eq!(b.needs[1], "github unread: gh: no answer");
         // negative control: three hours old is stale, first
         let b = build(&file(&[]), NOW + 3 * 3600);
         assert!(b.stale);
-        assert_eq!(b.needs[0], "stale: the fleet-bench budget step last wrote it 3h ago");
+        assert_eq!(
+            b.needs[0],
+            "stale: the fleet-bench budget step last wrote it 3h ago"
+        );
     }
 
     #[test]
@@ -312,7 +469,7 @@ mod tests {
         f.lines.retain(|l| l.status == "ok");
         assert!(!build(&f, NOW).flagged());
         let m = missing("no such file".into());
-        assert!(m.flagged() && m.bills.is_empty());
+        assert!(m.flagged() && m.groups.is_empty());
     }
 
     #[test]

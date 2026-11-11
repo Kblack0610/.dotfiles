@@ -304,12 +304,13 @@ def enrich(a):
 def ci_repos():
     """[(owner/name, base branch, clone or None)] of the GitHub repos in DAYLOG_CI. A
     `forgejo:` repo is left out: ci-failures reads a red run's jobs and logs from GitHub, and
-    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same."""
+    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same. A `prs-only:`
+    repo is left out too: only the PR store reads it."""
     out = []
     with open(ENV["DAYLOG_CI"]) as f:
         for line in f:
             cols = line.split("#")[0].strip().split(None, 2)  # a clone's path may hold a space
-            if cols and not cols[0].startswith("forgejo:"):
+            if cols and not cols[0].startswith(("forgejo:", "prs-only:")):
                 out.append((cols[0].removeprefix("github:"), cols[1],
                             os.path.expanduser(cols[2]) if len(cols) > 2 else None))
     return out

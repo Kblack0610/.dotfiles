@@ -30,15 +30,20 @@ const refreshNight = async () => {
 const PROP_KEYS = ["proposals", "proposals_head", "proposals_table"];
 let homeSeq = 0;
 
-// Two tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
-// URL and in /api/home; Proposals came first and keeps the plain ones, so links to it stay valid.
-const NEED_PRE = "n";
+// Three tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
+// URL and in /api/home, and Running's `r` (rq, rs, rsort, rdir); Proposals came first and keeps the
+// plain ones, so links to it stay valid.
+const NEED_PRE = "n", RUN_PRE = "r";
 
-// Both tables are drawn by drawHome from the one Home read; these keep their views and their
+// The tables are drawn by drawHome from the one Home read; these keep their views and their
 // repaints around a search or dropdown in use. A search in Proposals reads only that section.
 const needT = tblTab({
   tab: "home", id: "home-need", el: "home", pre: NEED_PRE, refresh: () => refreshHome(), table: () => hst.data?.table,
   head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), render: () => renderHome(),
+});
+const runT = tblTab({
+  tab: "home", id: "home-run", el: "home", pre: RUN_PRE, refresh: () => refreshHome(), table: () => hst.data?.running_table,
+  head: () => runHead(hst.data), body: () => runBody(hst.data), render: () => renderHome(),
 });
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
@@ -46,7 +51,7 @@ const propT = tblTab({
 });
 
 const refreshHome = coalesce(async () => {
-  const view = new URLSearchParams([...tblParams(st.views.home), ...tblParams(st.views.home, NEED_PRE)]).toString();
+  const view = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)])).toString();
   const seq = ++homeSeq;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
@@ -184,11 +189,34 @@ function needsBody(h) {
     tblMore(more, "more") + `</div>`;
 }
 
-function runningCard(r) {
-  const p = r.phases;
-  const chips = [cchip("running", `running${r.started ? ` ${ago(r.started)}` : ""}`)];
-  const line = cardLine([esc(r.project), p ? `phase ${p.done}/${p.total}` : "", p && p.next ? `next: ${esc(p.next)}` : "", etaText(p)]);
-  return `<div class="card">${cardHead(r.title, chips, r.slug)}${line}</div>`;
+// One running item: its row opens its session page, or its queue item when no session runs it,
+// and each cell that names a record links to that record's home.
+const runCellLink = (href, text, cls = "") => href ? `<a${cls ? ` class="${cls}"` : ""} href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : (text ? `<span class="${cls}">${esc(text)}</span>` : "-");
+function runRow(r) {
+  const p = r.phases, row = r.row && `#board?q=id:=${encodeURIComponent(r.row)}`, epic = r.epic && `#board?q=id:=${encodeURIComponent(r.epic)}`;
+  const pr = r.pr ? runCellLink(r.pr_url, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
+  return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
+    `<td class="wrap">${esc(r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
+    `<td>${runCellLink(`#projects/${encodeURIComponent(r.project)}`, r.project)}</td><td>${runCellLink(row, r.row)}</td><td>${runCellLink(epic, r.epic)}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
+    `<td>${r.ci ? runCellLink(r.ci_url, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
+}
+const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
+
+// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab.
+function runBody(h) {
+  const t = h.running_table, rows = h.running;
+  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>`;
+  const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map(runRow).join("")}</table>` +
+    tblMore(more, "more") + `</div>`;
+}
+
+// The session counts head the list they count, linking to the tab that lists the sessions.
+function runHead(h) {
+  const t = h.running_table;
+  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
+  return sec("Running", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "", counts + ` <a class="muted" href="#sessions?s=running">all in Sessions -&gt;</a>`);
 }
 
 // Green collapses to one chip; only what is not green is named.
@@ -241,13 +269,9 @@ function drawHome() {
   const el = $("home"), h = hst.data;
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
   const errs = [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
-  // A long list shows its first `shown` rows; the rest fold under "+N more" (dashboards: capped lists).
-  const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
-    rows.slice(0, h.shown).map(card).join("") +
-    (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  // The session counts head the list they count, linking to the tab that lists the sessions.
-  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
-  const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
+  const rt = h.running_table;
+  const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
+  const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
   const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
   const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
     `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
@@ -266,9 +290,10 @@ function drawHome() {
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
 // The table without focus repaints whole, so a search in one never leaves the other stale.
+const HOME_TABLES = { "home-prop": propT, "home-need": needT, "home-run": runT };
 const renderHome = () => {
-  if (propT.repaint()) { if ($("home-need-body")) needT.redraw(); return; }
-  if (needT.repaint()) { if ($("home-prop-body")) propT.redraw(); return; }
+  const busy = Object.values(HOME_TABLES).find((t) => t.repaint());
+  if (busy) { for (const [id, t] of Object.entries(HOME_TABLES)) if (t !== busy && $(id + "-body")) t.redraw(); return; }
   keepTyping("#home .card", drawHome);
 };
 
@@ -294,9 +319,15 @@ $("home").addEventListener("click", (e) => {
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e).then(refreshHome); return; }
   const row = e.target.closest("tr.jr[data-need]");
-  if (!row) return;
-  if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
-  renderHome();
+  if (row) {
+    if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
+    renderHome();
+    return;
+  }
+  // A Running row opens its session page, or its queue item when no session runs it.
+  const run = e.target.closest("tr.jr[data-slug]");
+  if (!run || t.closest("a")) return;
+  if (run.dataset.target) setTab("sessions", run.dataset.target); else setTab("queue", run.dataset.slug);
 });
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {

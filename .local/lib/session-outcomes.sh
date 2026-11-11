@@ -299,31 +299,10 @@ so_lesson_sigs() {
     | group_by(.sig) | map(min_by(.since))'
 }
 
-# so_forgejo_pr_list HOST/OWNER/REPO WORKDIR LIMIT - the repo's newest LIMIT PRs from its Forgejo API,
-# in the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape, so a reader of
-# gh's list takes them unchanged. The token is rbw entry SO_FORGEJO_ENTRY (one with repo scope),
-# read once per process, and goes in on stdin (-K -), never argv, and only to a host so_forgejo_hosts
-# lists. SO_FORGEJO_ERR says why on a failure: rc 1 = no token or a page failed (worth a retry),
+# SO_FORGEJO_ERR says why a Forgejo read failed: rc 1 = no token or the read failed (worth a retry),
 # rc 2 = the host is not listed (never called). Seams: SO_CURL SO_RBW.
 SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
-so_forgejo_pr_list() {
-  local repo="$1" work="$2" limit="$3" page=1 got
-  so_forgejo_auth "$repo" || return
-  rm -f "$work"/fj.page.*
-  while :; do
-    so_forgejo_get "$repo" "pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" \
-        -o "$work/fj.page.$(printf %04d "$page")" 2>"$work/fj.err" &&
-      got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
-      { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
-    [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
-    page=$((page + 1))
-  done
-  jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
-                     state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
-                     mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
-}
-
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
 # state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
 # branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
@@ -374,7 +353,7 @@ so_forgejo_repo() {
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
-# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR: rc as so_forgejo_pr_list.
+# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
 so_forgejo_auth() {
   local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
   case " $(so_forgejo_hosts) " in
@@ -404,36 +383,24 @@ so_forgejo_hosts() {
     printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
 }
 
-# so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
-# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are
-# the claude.ai/code session ids the body names, the link Claude Code's attribution puts in every PR
-# it opens (so_session_links reads the same id from the session's side).
+# so_pr_index FINAL_DAYS - stdin: the PR store's rows for ONE repo (`schedules-sync prs`). stdout:
+# {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are the claude.ai/code session
+# ids the body names, the link Claude Code's attribution puts in every PR it opens (so_session_links
+# reads the same id from the session's side); the store parses them, and what a PR reverts, once.
 # reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
-# this PR's merge commit. `#N\b` so #5 never matches #50; "revert-safe" is not a revert
-# word, and "reverted in #N" names the reverter (a re-apply PR says it). A revert pushed
-# without a PR is not seen.
+# this PR's merge commit (schedules-sync revert_of). A revert pushed without a PR is not seen.
 so_pr_index() {
-  # Each revert is parsed once into what it names, so matching a PR is comparisons only:
-  # regexes per (PR, revert) pair took 85 s over 561 PRs.
   jq -c --argjson days "$1" '
-    def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])(?!\\s+(in|by)\\b)";
-    [ .[] | select(.state == "MERGED")
-      | ((.title // "") + "\n" + (.body // "")) as $t
-      | select($t | test(revert_re))
-      | { number, at: (.mergedAt | fromdateiso8601),
-          title: ((.title // "") | capture("^Revert \"(?<t>.*)\"$").t // null),
-          refs: [ $t | split("\n")[] | capture(revert_re + "(?<rest>.*)").rest
-                  | scan("#([0-9]+)\\b")[0] | tonumber ],
-          shas: [ $t | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0] ] } ] as $rev
+    [ .[] | select(.state == "MERGED" and .revert != null and .merged_at != null)
+      | {number, at: (.merged_at | fromdateiso8601), title: .revert.title, refs: .revert.prs, shas: .revert.shas} ] as $rev
     | map(. as $p
         | { key: ($p.number | tostring),
-            value: { state: $p.state, merged_at: $p.mergedAt, merge_oid: ($p.mergeCommit.oid // null),
-                     links: ([($p.body // "") | scan("claude\\.ai/code/(session_[A-Za-z0-9]+)")[0]] | unique),
-                     reverted: ( $p.state == "MERGED" and $p.mergedAt != null
-                       and (($p.mergedAt | fromdateiso8601) as $at
-                            | ($p.mergeCommit.oid // "") as $oid
+            value: { state: $p.state, merged_at: $p.merged_at, merge_oid: $p.merge_sha, links: ($p.links // []),
+                     reverted: ( $p.state == "MERGED" and $p.merged_at != null
+                       and (($p.merged_at | fromdateiso8601) as $at
+                            | ($p.merge_sha // "") as $oid
                             | any($rev[];
                                 .number != $p.number
                                 and (.at - $at) >= 0 and (.at - $at) <= $days * 86400

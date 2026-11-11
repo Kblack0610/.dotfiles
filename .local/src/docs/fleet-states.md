@@ -64,7 +64,7 @@ Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default
 schema            1; bumped when a field changes meaning or is removed
 generated_epoch   when the pass that wrote this started (epoch seconds)
 generated_at      the same, ISO 8601 UTC
-unreadable[]      sources this pass could not read ("agent-panel", "gh pr list (<repo>)", "agent-ask",
+unreadable[]      sources this pass could not read ("agent-panel", "PR store (<repo>)", "agent-ask",
                   "run ledger (<repo>)": `schedules-sync runs` failed or its sync is stale);
                   facts from them are missing, not false
 sessions[]        one object per live Claude session: the `fleet-sessions --json` row
