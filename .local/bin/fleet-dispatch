@@ -2386,11 +2386,12 @@ settle_item() {
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
     # when it exited, and the next start resumes its thread there (resume_thread). A run started before
-    # its `after:` item finished (a hand start does not check holds) waits for that item the same way.
+    # its `after:` items finished (a hand start does not check holds) waits for them the same way.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
-    after=$(jq -r '.after // ""' <<<"$it")
-    [ -z "$after" ] || case "$(item_state "$after")" in queued | running | waiting | review)
-      requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    for after in $(jq -r '.after // ""' <<<"$it"); do
+      case "$(item_state "$after")" in queued | running | waiting | review)
+        requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    done
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
