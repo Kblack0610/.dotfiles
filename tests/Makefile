@@ -12,7 +12,8 @@
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
 #
 # tmux tests are NOT parallel-safe: upstream tmux sets `.NOTPARALLEL: all` on its own
-# regress suite for the same reason. Only the unit tier may use `bats --jobs` (UNIT_PAR below).
+# regress suite for the same reason. Only the two host-safe tiers, which start none, may use
+# `bats --jobs` (FAST_PAR below).
 .NOTPARALLEL:
 
 SHELL     := /bin/bash
@@ -78,8 +79,13 @@ test: test-fast test-ui
 
 test-fast: test-unit test-integ
 
-# The unit tier runs its files in parallel when GNU parallel is there (bats needs it for
-# --jobs): serial it is about half the fast job, which has a 10-minute cap.
+# The unit and integ tiers run their files in parallel when GNU parallel is there (bats needs
+# it for --jobs). Integ serial was the full tier's critical path on CI: 308 s and 405 s for two
+# shards of 296 s predicted each (run 42983385857), against 5 minutes for the whole gate. Its
+# files are as isolated as unit's: helpers/sandbox gives each test its own HOME and TMPDIR under
+# BATS_TEST_TMPDIR, and the files that skip the sandbox are stdin-to-stdout hook checks or set
+# HOME to that dir themselves. A test that shares a fixed path, a port or setup_file state
+# with another breaks that, and goes red here first.
 # Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
 # each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
 # every other session (ar-885). Busy is the larger of the 1-minute load and the processes
@@ -90,25 +96,20 @@ test-fast: test-unit test-integ
 # own machine and its load is its own setup, which gave a 4-core runner 2 jobs: it gets nproc.
 UNIT_LOADAVG ?= /proc/loadavg
 UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),$(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2))
-UNIT_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
+FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
-	@$(if $(UNIT_PAR),echo "==> unit tier: bats $(UNIT_PAR)",echo "==> unit tier: serial (no GNU parallel)")
-	@$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(call junit,unit) $(HERE)unit
+	@$(if $(FAST_PAR),echo "==> unit tier: bats $(FAST_PAR)",echo "==> unit tier: serial (no GNU parallel)")
+	@$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,unit) $(HERE)unit
 
 test-integ: $(BATS)
-	@$(call junit_mk,integ) $(BATS) $(BATS_FLAGS) $(call junit,integ) $(HERE)integ
+	@$(call junit_mk,integ) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,integ) $(HERE)integ
 
 # The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
-# Unit files run in parallel like test-unit, integ files serially like test-integ; both run
-# even when the first fails, so one report names every red.
-UNIT_FILES  = $(strip $(foreach f,$(FILES),$(if $(filter unit/%,$(f))$(findstring /unit/,$(f)),$(f))))
-OTHER_FILES = $(filter-out $(UNIT_FILES),$(FILES))
+# One bats run over every file, in parallel like test-unit and test-integ, so one report names
+# every red.
 test-files: $(BATS)
-	@rc=0; \
-	$(if $(UNIT_FILES),$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(call junit,unit) $(UNIT_FILES) || rc=1;) \
-	$(if $(OTHER_FILES),$(call junit_mk,other) $(BATS) $(BATS_FLAGS) $(call junit,other) $(OTHER_FILES) || rc=1;) \
-	exit $$rc
+	@$(call junit_mk,files) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,files) $(FILES)
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.

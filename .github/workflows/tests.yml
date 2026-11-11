@@ -122,7 +122,7 @@ jobs:
         with:
           path: ~/apt-debs
           key: apt-debs-${{ steps.image.outputs.version }}-${{ env.APT_PKGS }}
-      # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
+      # GNU parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
       # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
       # sqlite3: session_outcomes.bats builds a fixture opencode DB.
       # stow: dotfiles_deploy.bats checks its links against stow itself.
