@@ -34,7 +34,7 @@
 # A board item starts while the human is away, or within DISPATCH_PRESENT_PER_HOUR while they are here.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
-# row's text changes or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
+# row's judged text changes (row_sig) or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
 # to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
 # running its kind's entry skill (kinds.json; /one-shot for code), tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
@@ -430,6 +430,19 @@ nobody_why() {
 
 sig() { sha256sum | cut -c1-12; }
 
+# row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
+# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
+# left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
+# to hundreds of rows at once. The type(area) prefix stays: area is judged. Pure bash: it runs per row.
+row_sig() {
+  local w o="" t=()
+  read -ra t <<<"${1%%<!--*}"
+  for w in "${t[@]+"${t[@]}"}"; do
+    case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
+  done
+  printf '%s' "$o" | sig
+}
+
 # policy_sig -> changes whenever the policy does. It dates a verdict (fresh or stale), it does not void
 # one: an old verdict stays in force while the rule it names is in the policy (usable) and the row's
 # line and details are unchanged, so it is not judged again. Re-judging every row after an edit spent
@@ -509,6 +522,37 @@ row_off() {
 held() {
   local k="$2"$'\t'"$3"$'\t'"$4"
   grep -qxF -e "$k"$'\t'"$5"$'\t'"$6" -e "$k"$'\t'"$5"$'\t*' -e "$k"$'\t*\t*' <<<"$1"
+}
+
+# held_row <judged> <project> <lane> <key> <line> <dsig> <text> -- held, where <line> is row_sig. A
+# verdict still keyed on the raw line's sig (the old key, until ar-1714 drops this) holds too, and the
+# row goes to REKEY_OUT when the caller names it, for rekey to record it again.
+held_row() {
+  local raw
+  held "$1" "$2" "$3" "$4" "$5" "$6" && return 0
+  raw=$(printf '%s' "$7" | sig)
+  held "$1" "$2" "$3" "$4" "$raw" "$6" || return 1
+  [ -z "${REKEY_OUT:-}" ] || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$raw" "$5" "$6" >> "$REKEY_OUT"
+  return 0
+}
+
+# rekey <file> -- for each "<project>\t<lane>\t<key>\t<raw sig>\t<row_sig>\t<dsig>" line held_row wrote,
+# append the latest verdict that held the row (judged_keys' test: usable under this policy, its dsig
+# the row's or none) again under its row_sig, as size_back records a verdict for a row's new text, so
+# the switch of key judges nothing twice.
+rekey() {
+  local out
+  [ -s "$1" ] && [ -f "$VERDICTS" ] || return 0
+  out=$(jq -c --rawfile r "$1" --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
+    ($r | split("\n") | map(select(length > 0) | split("\t") | {key: (.[0:4] | join("\t")), value: {line: .[4], dsig: .[5]}})
+      | from_entries) as $to
+    | select(.verdict == "dispatch" or .verdict == "skip") | select(.policy == $sig or usable($rules))
+    | $to["\(.project)\t\(.lane)\t\(.key)\t\(.line // "")"] as $n | select($n != null)
+    | select((.dsig // "") == "" or .dsig == $n.dsig) | . + {line: $n.line}' "$VERDICTS" 2>/dev/null |
+    jq -sc 'group_by([.project, .lane, .key]) | map(last)[]')
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" >> "$VERDICTS"
+  say "rekey: $(grep -c . <<<"$out") verdicts recorded again under row_sig"
 }
 
 # np <profile> <args...> -> notes, under that profile, or notes' own default when it is empty
@@ -1014,11 +1058,11 @@ cmd_candidates() {
             rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
             nobody=$(nobody_why "$table" "$name" "$lane" "$text")
           fi
-          line=$(printf '%s' "$text" | sig)
+          line=$(row_sig "$text")
           x=${DET["$name"$'\t'"$lane"$'\t'"$key"]:-$'0\t""'}
           planned=${x%%$'\t'*} dj=${x#*$'\t'}
           dsig=$(detail_sig "$dj")
-          held "$judged" "$name" "$lane" "$key" "$line" "$dsig" && continue
+          held_row "$judged" "$name" "$lane" "$key" "$line" "$dsig" "$text" && continue
           jq -cn --arg profile "$prof" --arg project "$name" --arg stage "$stage" \
             --arg lane "$lane" --arg key "$key" --arg text "$text" --arg repo "$repo" \
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
@@ -1164,7 +1208,7 @@ size_back() {
     np "$prof" ptask "$p" "${flag[@]}" tag --add "size/$s" "$key" >/dev/null 2>&1 || { say "size_back: could not tag $p $key size/$s"; continue; }
     raw=$(row_line "$prof" "$p" "$lane" "$key")
     [ -n "$raw" ] || continue
-    jq -c --arg p "$p" --arg l "$lane" --arg k "$key" --arg line "$(printf '%s' "$raw" | sig)" \
+    jq -c --arg p "$p" --arg l "$lane" --arg k "$key" --arg line "$(row_sig "$raw")" \
       'select(.project == $p and .lane == $l and .key == $k) | . + {line: $line}' <<<"$2" >> "$VERDICTS"
   done < <(jq -r --slurpfile c <(printf '%s\n' "$1") '
     ($c | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
@@ -1221,7 +1265,7 @@ plan_skips() {
       [ "$why" = unclear ] || [ "$size" = L ] || [ "$size" = XL ] || continue
     fi
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
-    [ "$(printf '%s' "$raw" | sig)" = "$line" ] || continue
+    [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     add=(--add plan); [ "$req" = true ] && add+=(--add go)
     if np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1; then
@@ -3966,7 +4010,13 @@ fill_now() {
 judge_once() {
   if [ -z "${JUDGE_RC:-}" ]; then
     JUDGE_RC=0
-    [ "$DRY" = 1 ] || { judge "$(unjudged_rows)"; JUDGE_RC=$?; }
+    if [ "$DRY" != 1 ]; then
+      local rk cands
+      rk=$(mktemp)
+      cands=$(REKEY_OUT="$rk" unjudged_rows)
+      rekey "$rk"; rm -f "$rk"
+      judge "$cands"; JUDGE_RC=$?
+    fi
   fi
   [ "$JUDGE_RC" = "$EX_BUDGET" ] || return "$JUDGE_RC"
 }
@@ -4179,11 +4229,11 @@ night_rows() {
       [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
-      line=$(printf '%s' "$text" | sig)
+      line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}
       dsig=$(detail_sig "$dj")
-      held "$judged" "$name" agent "$key" "$line" "$dsig" && continue
+      held_row "$judged" "$name" agent "$key" "$line" "$dsig" "$text" && continue
       jq -cn --arg project "$name" --arg stage "$stage" --arg key "$key" --arg text "$text" \
         --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" \
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
