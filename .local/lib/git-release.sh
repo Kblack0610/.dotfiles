@@ -41,6 +41,10 @@
 #   git_tags          <repo> <name> <scoped> [glob]                  -> every tag, newest first
 #   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
 #   git_tag_changes   <repo> <prev> <tag> [pathfilter] [limit]       -> N subject lines
+#   git_tag_at        <repo> <tag>                                   -> "<sha> <epoch>"
+#   git_tag_date      <repo> <tag>                                   -> YYYY-MM-DD
+#   git_version_ge    <a> <b>                                        -> 0 when a >= b
+#   git_version_max   < versions                                     -> the highest line
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
 #
 # EVERY function is best-effort and degrades to EMPTY + SUCCESS. A missing repo,
@@ -77,6 +81,26 @@ git_tag_version() {
 # _gr_pats <glob> -> _GR_PATS, the glob split on spaces: a registry glob may name several tag
 # families (`buildTags`), each its own pattern to `git tag --list`. `read -a` never expands a
 # pattern against the working directory, where an unquoted word would.
+# git_version_ge <a> <b> - true when version <a> is at or above <b>. Either may be a tag
+# (`shipper-v1.11.0`) or a bare version (`v1.11.0`, `1.11.0`); both go through git_tag_version
+# first. The one version compare for shell: every `sort -V | tail -1` comparison was a copy.
+git_version_ge() {
+  local a b
+  a="$(git_tag_version "$1")" b="$(git_tag_version "$2")"
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ]
+}
+
+# git_version_max < lines -> the line with the highest version, as given (`v1.10.0` beats
+# `v1.9.3`). Blank lines are skipped; nothing in, nothing out.
+git_version_max() {
+  local l best=""
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    if [ -z "$best" ] || git_version_ge "$l" "$best"; then best="$l"; fi
+  done
+  printf '%s' "$best"
+}
+
 _gr_pats() { read -ra _GR_PATS <<<"$1"; }
 
 _gr_highest() {
@@ -288,6 +312,25 @@ git_first_tag() {
   out=$(git -C "$repo" tag --list "${_GR_PATS[@]}" --contains "$sha" --sort=creatordate \
     --format='%(refname:short) %(creatordate:unix)' 2>/dev/null) || return 1
   printf '%s' "${out%%$'\n'*}"
+}
+
+# git_tag_at <repo> <tag> -> "<sha> <epoch>": the commit the tag names (peeled through an
+# annotated tag) and git's creatordate, the tagger date of an annotated tag or the commit date
+# of a lightweight one (a lower bound). The one reader of when a tag was cut. Empty when the
+# tag does not exist.
+git_tag_at() {
+  [ -n "$1" ] && [ -d "$1/.git" ] && [ -n "$2" ] && command -v git >/dev/null 2>&1 || return 0
+  git -C "$1" for-each-ref --count=1 \
+    --format='%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(creatordate:unix)' \
+    "refs/tags/$2" 2>/dev/null || true
+}
+
+# git_tag_date <repo> <tag> -> the local day git_tag_at dates the tag, YYYY-MM-DD, or "".
+git_tag_date() {
+  local at
+  at="$(git_tag_at "$1" "$2")"
+  [ -n "${at#* }" ] && [ "$at" != "${at#* }" ] || return 0
+  date -d "@${at#* }" +%F 2>/dev/null || true
 }
 
 # git_tag_changes <repo> <prev> <tag> [pathfilter] [limit] - what <tag> shipped: the merged

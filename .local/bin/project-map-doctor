@@ -497,7 +497,7 @@ fi
 # so a sheet at or below its newest tag is working on a release that already went out.
 # `agentctl-wave-roll` rolls the sheet (and its agent board) once a tag reaches it, every
 # 30 minutes: equal is that window (WARN), below means the roll is not happening (FAIL).
-if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; then
+if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1 && project_release_lib; then
   n=0; bad=0; behind_warns=0
   while IFS=$'\037' read -r name lab; do
     [ -n "$name" ] || continue
@@ -513,7 +513,7 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; the
     elif [ "$sheet" = "$shipped" ]; then
       warn "lab project \"$name\" sheet $sheet is the shipped tag; agentctl-wave-roll rolls it on its next pass"
       behind_warns=$((behind_warns + 1))
-    elif [ "$(printf '%s\n%s\n' "${sheet#v}" "${shipped#v}" | sort -V | tail -1)" = "${shipped#v}" ]; then
+    elif git_version_ge "$shipped" "$sheet"; then
       fail "lab project \"$name\" sheet $sheet is behind its shipped tag $shipped (run: agentctl-wave-roll $name)"
       bad=$((bad + 1))
     fi
@@ -526,7 +526,7 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; the
     pass "all $n shipping apps and games have a sheet ahead of their newest tag"
   fi
 else
-  skip "notes CLI or project-name.sh unavailable; cannot compare sheets to release tags"
+  skip "notes CLI, project-name.sh or git-release.sh unavailable; cannot compare sheets to release tags"
 fi
 
 printf '\n'
