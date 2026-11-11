@@ -84,7 +84,10 @@ fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
         // agent-panel's own.
         let windows = argv.iter().filter(|a| a.contains("preview-window")).count();
         assert_eq!(windows, 1, "{saved:?}: {argv:?}");
-        let scrolls = argv.iter().filter(|a| a.contains(":preview-half-page-down")).count();
+        let scrolls = argv
+            .iter()
+            .filter(|a| a.contains(":preview-half-page-down"))
+            .count();
         assert_eq!(scrolls, 1, "{saved:?}: {argv:?}");
         assert!(want[2].contains("page-down:preview-page-down"), "{want:?}");
         assert!(
