@@ -386,3 +386,31 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_success
   assert_output ''
 }
+
+@test "git_tags_since: the family's tags created on or after the day, lowest version first" {
+  at() { GIT_COMMITTER_DATE="$1T12:00:00 +0000" git -C "$REPO" tag -a -m "$2" "$2"; }
+  commit a; at 2026-11-10 v1.9.0
+  commit b; at 2026-11-12 v1.10.0
+  at 2026-11-11 v1.9.1
+  at 2026-11-12 v1.10.0-shapecity1
+  run git_tags_since "$REPO" app 0 'v* !v*-shapecity*' 2026-11-11
+  assert_output $'v1.9.1\nv1.10.0'
+  # NEGATIVE CONTROL: an earlier day takes in the older tag too
+  run git_tags_since "$REPO" app 0 'v* !v*-shapecity*' 2026-11-01
+  assert_output $'v1.9.0\nv1.9.1\nv1.10.0'
+}
+
+@test "git_version_next_ok: above the tag and at most its next release" {
+  for v in v1.2.4 v1.3.0 v2.0.0 v1.3.7; do
+    run git_version_next_ok v1.2.3 "$v"
+    assert_success
+  done
+  # NEGATIVE CONTROLS: at or below the tag, two minors up, or a major that skips minor 0
+  for v in v1.2.3 v1.2.2 v1.1.9 v1.4.0 v2.1.0 v3.0.0; do
+    run git_version_next_ok v1.2.3 "$v"
+    assert_failure
+  done
+  # a product tag compares by its version
+  run git_version_next_ok shipper-v1.11.0 v1.11.1
+  assert_success
+}
