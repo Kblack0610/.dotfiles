@@ -8,8 +8,19 @@ const $ = (id) => document.getElementById(id);
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 
+// The answer to one request. A fetch that got none (agent-web restarting or down, the network
+// gone) says that, never the browser's bare "NetworkError"; an abort stays an abort.
+async function reach(path, opts) {
+  try {
+    return await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    throw new Error(`agent-web did not answer ${path.split("?")[0]}. It may be restarting: retry in a few seconds.`);
+  }
+}
+
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
     // What failed first, then the server's own words, then what to do (comms-standard, UI text).
@@ -24,7 +35,7 @@ const post = (path, body) => api(path, { method: "POST", headers: { "content-typ
 // One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
 // or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
 async function putBase(path, body, what, then = "") {
-  const r = await fetch(path, { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const r = await reach(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
   const said = ((await r.text()) || r.statusText).trim().slice(0, 300);

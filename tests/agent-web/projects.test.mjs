@@ -24,13 +24,15 @@ const ctx = vm.createContext({
   URLSearchParams,
   document: doc,
   window: { addEventListener() {} },
-  // A path in `answers` gets that body (a string is a 502 with it as the text); /api/board
+  // A path in `answers` gets that body (a string is a 502 with it as the text, an Error is a
+  // fetch that got no answer, as the browser rejects one); /api/board
   // answers from `board` as the server would, and the rest get []. `sent` is every request.
   answers: {},
   sent: [],
   fetch: async (u, opts) => {
     ctx.sent.push({ u, body: opts && opts.body });
     const a = u.startsWith("/api/board") ? board(u) : ctx.answers[u];
+    if (a instanceof Error) throw a;
     if (typeof a === "string") return { ok: false, status: 502, statusText: "Bad Gateway", text: async () => a, headers: { get: () => "text/plain" } };
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
@@ -410,4 +412,14 @@ test("a failed Deliverables read says so and never shows an empty table", async 
   const html = box("p-deliv").innerHTML;
   assert.match(html, /class="card err".*fleet-bench: not found/);
   assert.doesNotMatch(html, /<table/);
+});
+
+test("a page read that gets no answer says agent-web did not answer, never a bare network error", async () => {
+  ctx.answers["/api/projects/game/page?x=1"] = new TypeError("NetworkError when attempting to fetch resource.");
+  await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx),
+    { message: "agent-web did not answer /api/projects/game/page. It may be restarting: retry in a few seconds." });
+  const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+  ctx.answers["/api/projects/game/page?x=1"] = abort;
+  await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx), (e) => e === abort);
+  delete ctx.answers["/api/projects/game/page?x=1"];
 });

@@ -1334,7 +1334,7 @@ impl App {
     }
 
     /// Read the open card's page here and now, for `--once`.
-    pub fn read_proj_page_now(&mut self, runner: &dyn Runner) {
+    pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
         if let Some((name, stage)) = self.open_card() {
             self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
         }
