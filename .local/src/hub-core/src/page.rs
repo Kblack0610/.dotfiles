@@ -251,12 +251,12 @@ pub fn needs(c: &Chain) -> Vec<String> {
         })
         .collect();
     let plans = &c.unlinked.plans;
-    out.extend(
-        plans
-            .iter()
-            .take(PLANS_SHOWN)
-            .map(|p| format!("plan with no epic: {}", crate::plans::base(p))),
-    );
+    out.extend(plans.iter().take(PLANS_SHOWN).map(|p| {
+        format!(
+            "plan with no epic: {}",
+            crate::plans::named(&crate::plans::path(p))
+        )
+    }));
     if plans.len() > PLANS_SHOWN {
         out.push(format!(
             "+{} more plans with no epic",
