@@ -33,7 +33,7 @@ DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
 SKILL_DEPLOY="${DOTFILES_SKILL_DEPLOY:-${REPOS[0]}/.local/bin/skill-deploy}"
 DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
-BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # a release build of agent-web from clean takes minutes
+BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agent-web from clean takes minutes
 BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 
 command -v git >/dev/null 2>&1 || exit 0
@@ -125,11 +125,14 @@ restart_stale() {
 # in ~/.local/bin into <public checkout>/.local/src/<crate>/target/release/<bin> is a Rust tool
 # installed here (build_local_rust_tools writes them). cargo follows path dependencies (hub-core),
 # so it rebuilds a tool whatever crate the move touched, and is a no-op of about 0.1s per tool when
-# nothing changed; so this runs every pass, moved or not, and a hand pull heals too. A failed build
-# leaves the old binary in place, and its report goes to the log.
+# nothing changed; so this runs every pass, moved or not, and a hand pull heals too. All builds share
+# one BUILD_SECS budget, since agent-land waits on them. A failed build leaves the binary on disk in
+# place, and its report goes to the log; a unit older than that binary is restarted either way.
 attach_rust() {
-  local link target crate bin before out rc
-  command -v cargo >/dev/null 2>&1 || return 0
+  local link target crate bin before out rc left deadline
+  deadline=$(($(date +%s) + BUILD_SECS))
+  # A runner's or a unit's PATH often lacks rustup's bin dir.
+  command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
   for link in "$BIN_DIR"/*; do
     [ -L "$link" ] || continue
     target=$(readlink "$link")
@@ -137,15 +140,22 @@ attach_rust() {
     crate=${target%/target/release/*}
     bin=${target##*/}
     [ -f "$crate/Cargo.toml" ] || continue
-    before=$(mtime "$target")
-    out=$(cd "$crate" && capped "$BUILD_SECS" cargo build --release --quiet 2>&1)
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-      log_report "cargo build --release ($bin)" "$rc" "$out"
-      say "~: cargo build of $bin failed (exit $rc), the old binary stays; report in ${LOG/#"$HOME"/\~}"
-      continue
+    left=$((deadline - $(date +%s)))
+    if ! command -v cargo >/dev/null 2>&1; then
+      say "~: cargo not found, $bin not rebuilt"
+    elif [ "$left" -le 0 ]; then
+      say "~: build budget of ${BUILD_SECS}s spent, $bin not rebuilt"
+    else
+      before=$(mtime "$target")
+      out=$(cd "$crate" && capped "$left" cargo build --release --quiet 2>&1)
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        log_report "cargo build --release ($bin)" "$rc" "$out"
+        say "~: cargo build of $bin failed (exit $rc), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
+      elif [ "$(mtime "$target")" != "$before" ]; then
+        say "~: rebuilt $bin (cargo build --release)"
+      fi
     fi
-    [ "$(mtime "$target")" = "$before" ] || say "~: rebuilt $bin (cargo build --release)"
     restart_stale "$bin" "$target"
   done
 }

@@ -571,7 +571,7 @@ echo "proof: $out"
 # Stow serves the main checkouts, so a merged dotfiles PR is live only once its checkout moves:
 # fast-forward it now. Prints nothing for any other repo, and never fails the landing.
 live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
-[ -z "$live" ] || echo "live: $live"
+[ -z "$live" ] || printf '%s\n' "$live" | sed 's/^/live: /'
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 

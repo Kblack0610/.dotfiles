@@ -388,7 +388,7 @@ unit() {
   run "$PULL" --now "$PUB"
   assert_success
   assert_line --index 0 --partial 'fast-forwarded main'
-  assert_line --partial '~: cargo build of agent-web failed (exit 101), the old binary stays; report in'
+  assert_line --partial '~: cargo build of agent-web failed (exit 101), the binary on disk stays; report in'
   assert_not_called 'systemctl --user restart'
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output --partial 'error[E0425]: stub'
@@ -404,4 +404,20 @@ unit() {
   assert_success
   assert_called "in $PUB/.local/src/agent-web"
   assert_not_called "in $SANDBOX/elsewhere"
+}
+
+@test "a failed build still restarts a unit older than the binary on disk, and an empty budget builds nothing" {
+  rust_tool agent-web agent-web 2000
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.fail"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --partial '~: cargo build of agent-web failed (exit 101)'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+  rm "$SANDBOX/cargo.fail"
+  : >"$NOTES_FIXTURE/calls.log"
+  DOTFILES_AUTOPULL_BUILD_SECS=0 run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: build budget of 0s spent, agent-web not rebuilt'
+  assert_not_called 'cargo build'
 }

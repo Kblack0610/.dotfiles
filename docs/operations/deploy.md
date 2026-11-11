@@ -14,7 +14,7 @@ The human's own machines (Linux workstation and a Mac). Stow links each tracked 
 
 1. Land it on `main` through a PR. CI (`.github/workflows/tests.yml`) runs the unit and integ tiers, the ui tier in a container, the Rust gate, skill lint and shellcheck.
 2. `agent-land` does the rest of the deploy as its live step, `dotfiles-autopull --now`: it fast-forwards the main checkout, links any file the move added (`dotfiles-deploy --apply --missing`, `skill-deploy`), runs `cargo build --release` for every Rust tool linked into `~/.local/bin` (cargo follows path dependencies such as `hub-core`, and is a no-op when nothing changed), and restarts a running user unit named after a tool whose binary is newer than the unit (`agent-web.service`). Each step prints one `live:` line. A PR merged by hand gets the same at the next shell start (at most every 6h), or now with `dotfiles-autopull --now ~/.dotfiles`.
-3. A failed build leaves the old binary running and says so on the `live:` line; its report is in `~/.cache/dotfiles-autopull/autopull.log`. `hub` and `agent-panel` pick up the new binary on their next start.
+3. A failed build leaves the binary on disk in place and says so on a `live:` line; its report is in `~/.cache/dotfiles-autopull/autopull.log`. All builds of one pass share a 900s budget (`DOTFILES_AUTOPULL_BUILD_SECS`). `hub`, `agent-panel` and `timebox` pick up the new binary on their next start; `agent-web.service` (its unit is in the private overlay) is the only unit restarted today.
 4. Re-read the config on every live world: `Prefix+r`, or `tmx reload`. Scripts run fresh on each key, so they need nothing more.
 5. Add a new world or repair a missing session with `tmx ensure <world>`. It only creates what is missing.
 
@@ -43,7 +43,7 @@ The human's Linux workstation, where the runners, queue and dispatch run unatten
 1. Land it on `main` through a PR (`agent-land <pr>` for a queue item). CI runs the fast tiers, the Rust gate and skill lint. A change to the private overlay is its own PR in that repo.
 2. `agent-land`'s live step pulls the checkout that stow points at, links new files, rebuilds the Rust views and restarts `agent-web` (the cockpit's step 2 above). A PR merged by hand: `dotfiles-autopull --now ~/.dotfiles` (or `~/.dotfiles-private`).
 3. After a conf, role or timer change: `agentctl reload`. It validates confs, skips an invalid one (shown by `agentctl list` under "invalid"), regenerates timers and runs `daemon-reload`.
-4. A Rust crate change needs no step: the live step's `cargo build --release` covers `agent-web`, `hub` and `agent-panel`, and the `hub` TUI picks up its new binary on its next start.
+4. A Rust crate change needs no step: the live step rebuilds every Rust tool linked into `~/.local/bin` (`agent-web`, `hub`, `agent-panel`, `timebox`) and restarts `agent-web.service` on a new binary.
 5. Check: `agentctl list` for each runner's verdict and next run, `agentctl status <name>` for one, `fleet-sessions --json` for the sessions.
 
 A worktree is not the deployed copy: links point at the main checkout, so run a script from a worktree by its path. Do not start a live model call or a daemon from a test on the host.
