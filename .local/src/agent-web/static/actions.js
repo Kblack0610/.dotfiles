@@ -17,7 +17,7 @@ const ast = tblTab({
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
 });
 
-// The URL's window, when it is one of the buttons: the head says what the server was asked for.
+// The URL's window, when it is one of the buttons: what the server is asked for.
 function actionHours() {
   const h = new URLSearchParams(st.views.log || "").get("hours");
   return h && ACTION_WINDOWS.some(([w]) => w === h) ? Number(h) : ACTION_HOURS;
@@ -43,12 +43,10 @@ const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).to
   `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
   `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
 
+// Log's Actions fold carries the title (index.html); the window buttons and the state chips count
+// the rows, so the head is only what could not be read.
 function actionsHead(d) {
-  const inWindow = sumOf(Object.values(d.counts).map(sumOf));
-  const hours = actionHours();
-  const newest = d.table.total < inWindow ? `, newest ${d.table.total}` : "";
-  const errs = [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
-  return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>${errs}`;
+  return [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
 }
 
 function actionsBody(d) {

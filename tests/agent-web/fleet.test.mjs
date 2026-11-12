@@ -192,7 +192,7 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   const h = box.innerHTML;
   assert.equal((h.match(/data-tsort=/g) || []).length, COLS.length);
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
-  assert.match(h, /who spent what on <a href="#costs">Costs<\/a>/);
+  assert.doesNotMatch(h, /class="bhead"/, "no prose head: the bar and the table count the rows");
   assert.match(h, /id="fleet-q" data-tsearch/);
   assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind"[^>]*>/, "kind's dropdown sits under its header");
   assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
@@ -319,22 +319,35 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /status: 3 filed; retry 14:20/);
   assert.match(h, /<td class="bad">FAILED<\/td>/);
   assert.match(h, /<td>7d<\/td><td class="n">30\+<\/td>/, "a partial week is a floor");
+  assert.match(h, /Calls<\/h2><div class="cline warn">7d is a floor: the week starts past the tail read<\/div>/, "the floor is said once, under the head");
   assert.match(h, /<span class="tl">FILED<\/span><span class="tv">5<\/span>/);
   assert.match(h, /<td>filed <span class="muted">ar-9<\/span><\/td><td class="muted">inbox -&gt; board<\/td><td class="muted">inbox-triage<\/td>/, "an intake step names its id, route and writer");
   assert.match(h, /fix the thing<div class="muted">=&gt; fix the thing on the hub<\/div><\/td><td class="wrap muted">model: names the hub<\/td>/, "and the row it became and why");
   assert.match(h, /<td>API_TOKEN<\/td><td class="wrap muted">\(set\)<\/td>/);
   assert.match(h, /href="#fleet">All runners<\/a>/);
+  // Each head is its title and a count; a failed run or call tones it, and what fed the
+  // section (runs.jsonl, calls.jsonl, the conf's path) is no longer said.
+  assert.match(h, /<h2 class="sec warn">Runs <span class="n">2<\/span><\/h2>/);
+  assert.match(h, /<h2 class="sec">Status and activity<\/h2>/);
+  assert.match(h, /<h2 class="sec warn">Calls<\/h2>/);
+  assert.match(h, /<h2 class="sec">Intake<\/h2>/);
+  assert.match(h, /<h2 class="sec">Conf<\/h2>/);
+  assert.doesNotMatch(h, /runs\.jsonl|calls\.jsonl|agentctl\/agents\//);
+  assert.match(h, /<h2 class="sec">Registry<\/h2><div class="panel"><div><b>[^<]*<\/b>.* trigger always on<\/div>/, "the trigger is a fact in the registry's box");
   click({ target: { closest: (sel) => (sel === "tr.rr" ? { dataset: { i: "0" } } : null) } });
   await flush();
   assert.match(box.innerHTML, /<pre class="panel joblog">run log text<\/pre>/);
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
 });
 
-test("the sentinel page is one count line linking to Alerts' Watches, never the watch table", async () => {
+test("the sentinel page counts its watches, a tripped one a warn line linking to Alerts' Watches, never the watch table", async () => {
   const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
   const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });
-  assert.match(h, /<h2 class="sec">Watches <span class="muted"><a href="#alerts\/watches">3 watches, 1 tripped<\/a><\/span><\/h2>/);
+  assert.match(h, /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><div class="cline warn"><a href="#alerts\/watches">1 tripped<\/a><\/div>/);
   assert.doesNotMatch(h, /<th>watch<\/th>/);
+  const quiet = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("b", "OK")] } }) });
+  assert.match(quiet, /<h2 class="sec">Watches <span class="n">1<\/span><\/h2>/);
+  assert.doesNotMatch(quiet, /Watches <span class="n">1<\/span><\/h2><div class="cline warn">/, "no warn line while nothing is tripped");
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {
@@ -350,11 +363,11 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   const disp = { counts_24h: { dispatch: 2, skip: 5 }, counts_7d: { dispatch: 9, skip: 30 }, log_24h: { started: 2, reaped: 1 }, partial: false,
     recent: [{ ts: 1793942000, project: "dotfiles", key: "fix the thing", verdict: "dispatch", tier: 2, clear: true, reason: "clear and small" }] };
   const h = await openPage("dispatch-judge", { "dispatch-judge": runnerPage("dispatch-judge", { extras: { kind: "dispatch-verdicts", dispatch: disp } }) });
-  assert.match(h, /<h2 class="sec">Dispatch judge /);
+  assert.match(h, /<h2 class="sec">Dispatch judge<\/h2>/);
   assert.match(h, /<span class="tl">STARTED<\/span><span class="tv">2<\/span>/);
   assert.match(h, /clear and small/);
   const j = await openPage("ask-judge", { "ask-judge": runnerPage("ask-judge", { extras: { kind: "ask-judge", judge } }) });
-  assert.match(j, /<h2 class="sec">Answer judge /);
+  assert.match(j, /<h2 class="sec">Answer judge<\/h2>/);
   assert.match(j, /<span class="tl">AGREE<\/span>/);
   assert.match(j, /land it\?/);
   // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
