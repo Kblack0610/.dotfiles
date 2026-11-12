@@ -70,18 +70,36 @@ struct Buckets {
 fn rebuild(body: &[&str]) -> Vec<String> {
     let mut b = bucket(body, Layout::Focus, true);
     let mut out: Vec<String> = Vec::new();
-    out.extend(b.open[LANES].drain(..));
+    out.extend(spaced(std::mem::take(&mut b.open[LANES])));
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
         if !out.is_empty() {
             out.push(String::new());
         }
         out.push((*heading).to_string());
-        out.extend(b.open[i].drain(..));
+        out.extend(spaced(std::mem::take(&mut b.open[i])));
     }
     out.push(String::new());
     out.push("---".to_string());
     out.push("### Done".to_string());
-    out.extend(b.done);
+    out.extend(spaced(b.done));
+    out
+}
+
+/// A Focus bucket with the blank lines the human put between its rows kept as group breaks:
+/// a run of blanks becomes one, and none opens or closes the bucket, where the sweep places
+/// its own (human, 2026-11-12: "sometimes I need to still organize a group").
+fn spaced(lines: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in lines {
+        let blank = l.trim().is_empty();
+        if blank && out.last().is_none_or(|p| p.is_empty()) {
+            continue;
+        }
+        out.push(if blank { String::new() } else { l });
+    }
+    if out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
     out
 }
 
@@ -149,6 +167,16 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
 
     for l in body {
         let t = l.trim();
+        // A blank in Focus is a group break the human put there: it stays after the row above
+        // it, in that row's bucket. A blank right under a heading has no row above it and goes.
+        if t.is_empty() && layout == Layout::Focus {
+            match last {
+                Some(Bucket::Open(i)) => open[i].push(String::new()),
+                Some(Bucket::Done) => done.push(String::new()),
+                None => {}
+            }
+            continue;
+        }
         if is_scaffold(l, layout) {
             cur_lane = scaffold_lane(l);
             last = None;
@@ -319,6 +347,19 @@ mod tests {
             out.find("done child").unwrap() < done,
             "child stays put:\n{out}"
         );
+    }
+
+    // A blank between rows is a group break the human made, kept inside its lane: a run of
+    // blanks collapses to one, none opens or closes a lane, and a re-sweep changes nothing.
+    // tests/integ/notes_save_sweep.bats ("a save keeps the blank lines that group a lane")
+    // runs the same input through markdown.lua.
+    #[test]
+    fn golden_blank_lines_group_rows_inside_a_lane() {
+        let note = "## Focus\n### Low\n- [ ] a #low\n- [ ] b #low\n\n\n- [ ] c #low\n- [ ] d #high\n\n- [ ] e #high\n### Urgent\n\n- [ ] f #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] f #urgent\n\n### High\n- [ ] d #high\n\n- [ ] e #high\n\n### Low\n- [ ] a #low\n- [ ] b #low\n\n- [ ] c #low\n\n---\n### Done\n- [x] g\n\n- [x] h\n\n## Notes\n";
+        let out = focus(note);
+        assert_eq!(out, expected);
+        assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
     }
 
     // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input

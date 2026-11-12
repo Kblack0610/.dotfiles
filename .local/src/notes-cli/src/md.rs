@@ -135,7 +135,7 @@ pub fn is_footer_rule(lines: &[&str], i: usize) -> bool {
 /// Capture the raw lines of the authored region under `## heading`. Returns `None` if the
 /// heading is absent, `Some(vec)` (possibly empty) otherwise. Thin wrapper over
 /// [`section_span`]; see it for the boundary rule.
-fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
+pub(crate) fn capture<'a>(content: &'a str, heading: &str) -> Option<Vec<&'a str>> {
     let lines: Vec<&str> = content.lines().collect();
     let span = section_span(&lines, heading)?;
     Some(lines[span].to_vec())

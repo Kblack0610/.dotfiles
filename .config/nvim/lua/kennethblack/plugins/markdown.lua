@@ -367,7 +367,15 @@ return {
         -- `last` is a LANES index, or 0 meaning the done bucket.
         local last = nil
         for _, l in ipairs(body) do
-          if is_scaffold(l) then
+          if daily and not l:match "%S" then
+            -- A blank is a group break the human put there: it stays after the row above it,
+            -- in that row's bucket. One right under a heading has no row above it and goes.
+            if last == 0 then
+              done[#done + 1] = ""
+            elseif last then
+              table.insert(open[last], "")
+            end
+          elseif is_scaffold(l) then
             had_scaffold = true
             cur_lane = scaffold_lane(l)
             last = nil
@@ -419,24 +427,32 @@ return {
           return nil
         end
         local out = {}
-        for _, l in ipairs(open[#LANES + 1]) do -- what is no task, above the lanes
-          out[#out + 1] = l
+        -- One bucket onto `out`, its group breaks kept: a run of blanks becomes one, and none
+        -- opens or closes the bucket, where the layout places its own. Mirrors sweep::spaced.
+        local function spaced(lines)
+          local first = #out + 1
+          for _, l in ipairs(lines) do
+            local blank = not l:match "%S"
+            if not (blank and (#out < first or out[#out] == "")) then
+              out[#out + 1] = blank and "" or l
+            end
+          end
+          if #out >= first and out[#out] == "" then
+            out[#out] = nil
+          end
         end
+        spaced(open[#LANES + 1]) -- what is no task, above the lanes
         for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
           if #out > 0 then
             out[#out + 1] = ""
           end
           out[#out + 1] = lane[2]
-          for _, l in ipairs(open[i]) do
-            out[#out + 1] = l
-          end
+          spaced(open[i])
         end
         out[#out + 1] = "" -- Done placeholder is always present too
         out[#out + 1] = "---"
         out[#out + 1] = "### Done"
-        for _, l in ipairs(done) do
-          out[#out + 1] = l
-        end
+        spaced(done)
         return out, placeholder
       end
 

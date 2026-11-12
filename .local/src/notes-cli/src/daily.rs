@@ -146,7 +146,10 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         // window is pushed out to the scheduled backlog instead of cluttering today.
         // Swept first, so a line the day's last sweep never saw is a task like the rest.
         let swept = crate::focus_sweep::sweep_content(&content);
-        if let Some(lines) = md::section_lines(swept.as_ref().unwrap_or(&content), "Focus") {
+        // Raw, blanks kept: a blank between rows is a group break the human made, and it
+        // carries with the rows (the sweep after creation trims it where it no longer splits).
+        if let Some(lines) = md::capture(swept.as_ref().unwrap_or(&content), "Focus") {
+            let lines: Vec<String> = lines.into_iter().map(String::from).collect();
             let carried = carry_focus(&lines, today, prev_date);
             (focus_keep, focus_defer) = route_by_due(&carried, today);
         }
@@ -304,12 +307,17 @@ fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> V
         .collect()
 }
 
-/// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it.
+/// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it, and
+/// one blank wherever the human left a group break.
 fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     let mut under_open = false;
     for l in lines {
-        if md::is_open_task(l) {
+        if l.trim().is_empty() {
+            if out.last().is_some_and(|p| !p.is_empty()) {
+                out.push(String::new());
+            }
+        } else if md::is_open_task(l) {
             out.push(md::stamp_line(l, today, prev_date));
             under_open = true;
         } else if under_open && is_note(l) {
@@ -329,6 +337,10 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     let mut defer = Vec::new();
     let mut deferring = false;
     for l in lines {
+        if l.is_empty() {
+            keep.push(l.clone()); // a group break stays in the note, never in the schedule
+            continue;
+        }
         if !is_note(l) {
             deferring = md::find_due(l, today).is_some_and(|due| due > horizon);
         }
@@ -2028,6 +2040,29 @@ mod tests {
 
     fn v(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn carry_focus_keeps_one_blank_per_group_break() {
+        // the lane headers and the done row go; the break between groups carries, once
+        let lines = v(&[
+            "### Low",
+            "- [ ] a #low",
+            "",
+            "",
+            "- [x] gone",
+            "- [ ] b #low",
+            "",
+        ]);
+        let out = carry_focus(&lines, d("2026-06-30"), d("2026-06-29"));
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert!(
+            out[0].contains("a ") && out[1].is_empty() && out[2].contains("b "),
+            "{out:?}"
+        );
+        // a break never lands in the schedule, even after a deferred task
+        let (keep, defer) = route_by_due(&v(&["- [ ] far [2026-07-15]", ""]), d("2026-06-30"));
+        assert_eq!((keep, defer), (v(&[""]), v(&["- [ ] far [2026-07-15]"])));
     }
 
     #[test]
