@@ -74,6 +74,7 @@ unset _k _v
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats), when reap made one of them twice in a row
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
@@ -1827,6 +1828,16 @@ cmd_start() {
 
 PANES="$DIR/panes"   # <server>.json the live record, <server>.lost.json a dead server's last one
 
+# planned_reboot -- session-snapshot down's marker predates this boot, and the boot is under
+# PLANNED_REBOOT_WINDOW_S old. Bounded both ways, so a down with no reboot yet, or a marker an `up`
+# never cleared, still lets a real server death page.
+planned_reboot() {
+  local m="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}" boot
+  [ -e "$m" ] || return 1
+  boot=${FLEET_BOOT_TIME:-$(awk '/^btime/ {print $2}' /proc/stat)}
+  [ "$(stat -c %Y "$m")" -lt "$boot" ] && [ $(( $(date +%s) - boot )) -lt "$PLANNED_REBOOT_WINDOW_S" ]
+}
+
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
 # A record with no conversations has nothing to restore, so it never replaces one that does.
 world_lost() {
@@ -1836,7 +1847,7 @@ world_lost() {
   if [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
   logline "tmux server $srv died with $n conversation(s) on it"
   # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
-  [ ! -e "${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}" ] || return 0
+  ! planned_reboot || return 0
   agent-notify -p high -t "tmux $srv server died" "$n conversation(s) were on it. Reopen them: fleet-dispatch restore" ||
     say "could not page: tmux server $srv died"
 }

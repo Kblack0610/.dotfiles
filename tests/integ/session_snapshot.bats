@@ -11,7 +11,7 @@ setup() {
   SNAP="$REPO_ROOT/.local/bin/session-snapshot"
   export AGENT_HOLD_DIR="$HOME/.agent/holds" AGENT_MAINTENANCE="$HOME/.agent/maintenance"
   CALLS="$SANDBOX/calls.log"
-  ln -sf "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
+  stub agent-hold "exec \"$REPO_ROOT/.local/bin/agent-hold\" \"\$@\""
   stub agentctl 'case $1 in
   pause) echo x > "$AGENTCTL_STATE_DIR/PAUSED" ;;
   resume) rm -f "$AGENTCTL_STATE_DIR/PAUSED" ;;
@@ -46,6 +46,7 @@ stub() {
   run grep -nE '^(fleet-dispatch restore|agentctl resume|agent-hold release)' "$CALLS"
   assert_line --index 0 --partial 'fleet-dispatch restore'
   assert_line --index 1 --partial 'agentctl resume'
+  assert_line --index 2 --partial 'agent-hold release dispatch'
   ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "dispatch still held"
   [ ! -e "$AGENTCTL_STATE_DIR/PAUSED" ] || fail "agentctl still paused"
   [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker left behind"
@@ -78,9 +79,43 @@ stub() {
   run "$SNAP" up
   assert_success
   assert_output --partial 'no planned reboot in progress'
-  run grep -vE '^agent-notify -p low -t hold' "$CALLS"
+  run grep -E '^(fleet-dispatch|agentctl|agent-hold release|agent-notify)' "$CALLS"
   assert_output ''
   "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "up lifted a hold with no marker"
+}
+
+@test "a lever that refuses on up stays on the marker and pages high" {
+  "$SNAP" down
+  stub agentctl 'exit 1'
+  run "$SNAP" up
+  assert_failure 1
+  run cat "$AGENT_MAINTENANCE"
+  assert_line 'set: agentctl-pause'
+  grep -q '^agent-notify -p high .*Still set: agentctl-pause' "$CALLS" || fail "no high page naming what is still set"
+}
+
+@test "a failed pause on down lifts the hold it took and writes no marker" {
+  stub agentctl '[ "$1" != pause ]'
+  run "$SNAP" down
+  assert_failure 1
+  [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker written after a failed pause"
+  ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "the hold was left up"
+}
+
+@test "flags parse in any order: a reason then --dry-run is still a dry run" {
+  run "$SNAP" down "kernel upgrade" --dry-run
+  assert_success
+  [ ! -e "$AGENT_MAINTENANCE" ] || fail "a trailing --dry-run ran a real down"
+  run "$SNAP" up -n
+  assert_failure 2
+}
+
+@test "the count reads only live pane records, not lost or restored ones" {
+  mkdir -p "$HOME/.agent/dispatch/panes"
+  echo '{"panes":[{"claude":"a"},{"claude":""}]}' > "$HOME/.agent/dispatch/panes/hub.json"
+  echo '{"panes":[{"claude":"b"}]}' > "$HOME/.agent/dispatch/panes/lab.restored.json"
+  run "$SNAP" down --dry-run
+  assert_output --partial 'would reopen 1 conversation(s)'
 }
 
 @test "down --dry-run changes nothing, and status reads down only after a real down" {

@@ -31,8 +31,8 @@ session-snapshot status                  # after boot: "up: no planned reboot in
 ```
 
 - `down` holds dispatch (`agent-hold set dispatch`), pauses the agentctl runners (`agentctl pause`), takes a final pane record (`fleet-dispatch record`), and writes the marker `~/.agent/maintenance` with what it set. It sets only what is not already set, so a hold or pause someone else put up is never lifted by `up`. It parks and kills nothing: the reboot stops the sessions.
-- At boot, `session-snapshot-up.service` runs `session-snapshot up` only while the marker exists: `fleet-dispatch restore` reopens every recorded conversation, then it resumes agentctl, releases dispatch, clears the marker, and pages one "back up after" line (normal priority when a reopen failed; rerun `fleet-dispatch restore`).
-- While the marker exists, `fleet-dispatch record` does not page "tmux server died": the `up` page replaces it.
+- At boot, `session-snapshot-up.service` runs `session-snapshot up` only while the marker exists: `fleet-dispatch restore` reopens every recorded conversation, then it resumes agentctl, releases dispatch, clears the marker, and pages one "back up after" line: normal when a reopen failed (rerun `fleet-dispatch restore`), high when a lever refused (it stays on the marker; rerun `session-snapshot up`).
+- In the first 30 minutes after the boot that follows `down`, `fleet-dispatch record` does not page "tmux server died": the `up` page replaces it. Before the reboot, or once that window passes, a server death pages as usual.
 - Not rebooting after all: `session-snapshot up` by hand undoes it the same way.
 - Run `down` last, right before the reboot, after `snapshot` below if the user wants the checklist. Commit or push the dirty repos first; the reboot does not wait for them.
 - Unit failed at boot (Sentinel's `systemd-user-failed` pages it): `systemctl --user status session-snapshot-up`, then `session-snapshot up`.
