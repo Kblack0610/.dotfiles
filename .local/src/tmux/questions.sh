@@ -357,7 +357,7 @@ cmd_key() {
   read -r mode opt sid seen <<<"$(st_read)"
   busy="$(busy_read)"
   if [ -n "$busy" ] && [ "$k" != enter ]; then
-    case "$k" in focus | fit) ;; *) footer "$busy . wait for it" ;; esac
+    case "$k" in focus | fit) ;; *) footer "$busy . wait for it . ctrl-c closes" ;; esac
     return 0
   fi
   case "$k" in

@@ -322,7 +322,7 @@ plan_dialog() {
   local k
   for k in submit 1 d esc; do
     run "$Q" key "$k" "$id"
-    assert_output 'change-footer~sending "later" to demo:1 ... . wait for it~'
+    assert_output 'change-footer~sending "later" to demo:1 ... . wait for it . ctrl-c closes~'
   done
   run "$Q" key focus "$id"
   assert_output ''
