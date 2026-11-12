@@ -491,7 +491,7 @@ def queue_items(root):
         if not fm.get("slug"):
             continue
         size = re.search(r"#size/([sml])\b", body + " " + fm.get("title", ""))
-        items.append({"slug": fm["slug"], "mode": fm.get("mode"), "origin": fm.get("origin"),
+        items.append({"slug": fm["slug"], "mode": fm.get("mode"), "origin": fm.get("origin"), "project": fm.get("project"),
                       "sessions": fm.get("sessions", "").split(), "tmux": fm.get("session", "").split(":")[-1],
                       "started": ts(fm.get("started", "")), "finished": ts(fm.get("finished", "")),
                       "size": size.group(1) if size else None})
@@ -539,9 +539,10 @@ FIT_HOURS = 24            # the priced sessions the rates come from
 FIT_MIN_SESSIONS = 6      # half are held out to score the fit
 FIT_MIN_MTOK = 5.0
 FIT_MAX_ERROR_PCT = 5.0   # a fit that misses its held-out sessions by more prices nothing
-GATEWAY_PROVIDERS = ("litellm", "gateway")
+GATEWAY_PROVIDERS = ("litellm", "go", "gateway")  # opencode providers that reach the gateway
 HELPER_MIN_BILLED = 5.0   # an origin billed less than this says nothing about its helper share
 PROM_LOOKBACK = "7d"      # how far back a session's pre-window total is looked for
+CARRY_SNAPSHOTS = 14      # newest token snapshots read for carried rates; each one keeps the rows it carried
 
 
 class PromError(Exception):
@@ -595,6 +596,9 @@ def price(rates, x):
     return sum(r * v for r, v in zip(rates, x))
 
 
+CARRY_UNFIT = "too few priced tokens"   # the one unfit reason a carried rate may fill in for
+
+
 def fit_rates(samples):
     """{model: [(session, [Mtok by type], usd)]} -> ({model: rate row}, {model: why it has none})."""
     rates, unfit = {}, {}
@@ -602,7 +606,7 @@ def fit_rates(samples):
         rows = sorted(rows)
         pairs = [(x, y) for _, x, y in rows]
         if len(pairs) < FIT_MIN_SESSIONS or sum(map(sum, (x for x, _ in pairs))) < FIT_MIN_MTOK:
-            unfit[model] = "too few priced tokens"
+            unfit[model] = CARRY_UNFIT
             continue
         train, held = pairs[::2], pairs[1::2]
         trial = solve(train)
@@ -619,6 +623,24 @@ def fit_rates(samples):
         rates[model] = {**{t: round(v, 4) for t, v in zip(TOKEN_TYPES, final)},
                         "sessions": len(pairs), "fit_error_pct": round(err, 2)}
     return rates, unfit
+
+
+def carried_rates(tokens_dir):
+    """{model: rate row plus `from`, the day it was fitted} from the newest token snapshot that fitted each model.
+    A per-token price belongs to the model, not the day, so a window Prometheus no longer covers (it keeps
+    7 days) is priced at the last fitted rate instead of not at all."""
+    out = {}
+    for f in sorted(glob.glob(os.path.join(tokens_dir, "????-??-??.json")), reverse=True)[:CARRY_SNAPSHOTS]:
+        try:
+            with open(f) as fh:
+                rates = json.load(fh)["fleet_cost"]["rates"]
+            rows = {m: r for m, r in rates.items() if isinstance(r, dict) and all(
+                isinstance(r.get(t), (int, float)) for t in TOKEN_TYPES)}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        for model, row in rows.items():   # a row carried into that snapshot keeps the day it was fitted
+            out.setdefault(model, {**row, "from": row.get("from") or os.path.basename(f)[:10]})
+    return out
 
 
 def price_samples(at):
@@ -671,6 +693,13 @@ def runner_calls(state_dir):
     return out
 
 
+def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item):
+    """One by_session row: what one session cost in the window, and who it was."""
+    return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
+            "origin": origin, "harness": harness, "agent": agent, "account": account,
+            "project": project, "title": title, "item": item}
+
+
 def other_harnesses(start, end, root):
     """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
     Sessions that went through the gateway are left out: its metered line already has their dollars."""
@@ -691,22 +720,30 @@ def other_harnesses(start, end, root):
                     and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
                 newest[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
-    for r in newest.values():
+    rows = []
+    for sid, r in newest.items():
         b = out[r["harness"]]
         b["sessions"] += 1
         if r.get("cost_usd") is not None:
             b["usd"] += r["cost_usd"]
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-    return out
+            if sid and r["cost_usd"] > 0:   # priced from a table or the harness's own sum: estimated, as in total
+                rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
+                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None))
+    return out, rows
 
 
 def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     """The one estimate of what the whole fleet spent: billed sessions keep their billed cost, the rest are
     priced from their tokens, every figure says which it is."""
     rates, unfit = fit_rates(price_samples(end))
-    measured = measured_in_window(start, end)
     state = env.get("XDG_STATE_HOME", f"{home}/.local/state")
+    # only a model the window had too little to fit is carried; a fit tried and rejected stays unpriced
+    carried = {m: r for m, r in carried_rates(env.get("TOKENS_DIR", f"{home}/.agent/token-usage")).items()
+               if m not in rates and unfit.get(m, CARRY_UNFIT) == CARRY_UNFIT}
+    fitted, rates = set(rates), {**rates, **carried}
+    measured = measured_in_window(start, end)
     calls = runner_calls(env.get("AGENTCTL_STATE_DIR", f"{state}/agentctl"))
 
     def bucket():
@@ -714,7 +751,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     by = {k: defaultdict(bucket) for k in ("origin", "runner", "account", "model")}
     sess = defaultdict(lambda: {"measured": 0.0, "estimated": 0.0, "priced": 0.0, "whole": True, "runner": None})
     # a name the direct bills also fit is direct traffic, whatever the gateway calls its own routes
-    gateway_models = {r["metric"].get("model") for r in prom("sum by (model)(litellm_spend_metric_total)", end)} - set(rates)
+    gateway_models = {r["metric"].get("model") for r in prom("sum by (model)(litellm_spend_metric_total)", end)} - fitted
     for (sid, model), (usd, runner) in measured.items():
         if usd > 0 and model not in gateway_models:
             sess[sid]["measured"] += usd
@@ -748,9 +785,10 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     # than their transcript tokens price to. Unbilled sessions get that share as its own line, with
     # the range the origins' mix allows.
     billed, priced = defaultdict(float), defaultdict(float)
+    by_session = []
     for sid, s in sess.items():
-        origin = origin_of(sid, acc["meta"], by_sid, by_tmux, passes)[0] if sid in acc["meta"] or sid in by_sid else (
-            "runner" if s["runner"] else "interactive")
+        origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux, passes) if sid in acc["meta"] or sid in by_sid else (
+            "runner" if s["runner"] else "interactive", None)
         name = "shepherd" if sid in passes else ((calls.get(sid) or (None, None))[0] or s["runner"] or "unattributed")
         account = re.search(r"/\.(claude[^/]*)/projects/", (reg_last.get(sid) or {}).get("transcript") or "")
         account = account.group(1) if account else ((calls.get(sid) or (None, None))[1] or "unknown")
@@ -761,6 +799,13 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
             b["estimated"] += s["estimated"]
             b["sessions"] += 1
             b["sessions_measured"] += s["measured"] > 0
+        if s["measured"] + s["estimated"] > 0:   # a session that cost nothing has no row, never a $0 one
+            reg = reg_last.get(sid) or {}
+            cwd = acc["meta"].get(sid, ("", "", None))[1]
+            agent = name if origin in ("runner", "shepherd") else ((it or {}).get("tmux") or os.path.basename(cwd.rstrip("/")) or None)
+            by_session.append(session_row(sid, s["measured"], s["estimated"], origin, reg.get("harness") or "claude",
+                                          agent, account, (it or {}).get("project") or reg.get("project"),
+                                          reg.get("title"), (it or {}).get("slug")))
         if s["measured"] > 0 and s["priced"] > 0 and s["whole"]:
             billed[origin] += s["measured"]
             priced[origin] += s["priced"]
@@ -770,8 +815,10 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     top = max([billed[o] / priced[o] - 1 for o in billed if billed[o] >= HELPER_MIN_BILLED] + [0.0])
 
     gateway = sum(float(r["value"][1]) for r in prom(f"sum(increase(litellm_spend_metric_total[{int(end - start)}s]))", end))
+    other, other_rows = other_harnesses(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     other = {k: {"usd": round(v["usd"], 2), "sessions": v["sessions"], "priced": v["priced"], "source": ",".join(sorted(v["sources"])) or None}
-             for k, v in other_harnesses(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes")).items()}
+             for k, v in other.items()}
+    by_session += other_rows
     priced_other = sum(v["usd"] for v in other.values())   # a price table or the harness's own sum, never a bill
     other["gateway"] = {"usd": round(gateway, 2), "sessions": len(gateway_sessions), "priced": len(gateway_sessions), "source": "metered"}
     helper_usd = estimated_usd * share
@@ -788,6 +835,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         "as_of": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "as_of_epoch": int(dt.datetime.now().timestamp()),
         "rates": rates,
+        "rates_from": {m: r["from"] for m, r in carried.items() if by["model"][m]["estimated"] > 0},
         "unpriced": {m: {"tokens": v["tokens"], "sessions": len(v["sessions"]), "why": unfit.get(m, "no billed sessions")}
                      for m, v in unpriced.items()},
         "coverage": {"tokens": tokens_all, "tokens_estimated": tokens_est,
@@ -800,6 +848,11 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         "by_origin": rows(by["origin"]), "by_runner": rows(by["runner"]),
         "by_account": rows(by["account"]), "by_model": rows(by["model"]),
         "other_harness": other,
+        # Every session the window priced, dearest first, to the tenth of a cent so short calls keep a row.
+        # Their sum is the total less the gateway's metered line and the helper estimate, which no session
+        # can be charged with.
+        "by_session": [{**r, **{k: round(r[k], 3) for k in ("usd", "measured", "estimated")}}
+                       for r in sorted(by_session, key=lambda r: (-r["usd"], r["sid"]))],
     }
 
 
@@ -814,6 +867,8 @@ def print_fleet_cost(d):
     for k, v in d["other_harness"].items():
         print(f"  {k:<14} ${v['usd']:>9,.2f}  {v['source'] or 'unpriced'}")
     print(f"  {'helper calls':<14} ${t['helper_usd']:>9,.2f}  estimated, range $0 to ${t['helper_range'][1]:,.2f}")
+    for m, day in d.get("rates_from", {}).items():
+        print(f"  {m} priced at the rate fitted on {day} (none fitted in this window)")
     for m, u in d["unpriced"].items():
         print(f"  unpriced {m}: {u['tokens']:,} tokens in {u['sessions']} sessions ({u['why']})")
 

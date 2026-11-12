@@ -2107,7 +2107,7 @@ mod tests {
 - [ ] far future [2027-01-01]
 
 ## Done
-- [x] old (done:2026-01-01)
+- [x] old #d260101
 ";
         // 2026-07-10 is a Friday, not the 1st, not a Monday.
         let (out, remaining) = promote_schedule(content, d("2026-07-10"));
@@ -2135,7 +2135,7 @@ mod tests {
         assert!(remaining.contains("rent (every:1st)"));
         assert!(remaining.contains("- [x] paused habit"));
         assert!(remaining.contains("far future [2027-01-01]"));
-        assert!(remaining.contains("- [x] old (done:2026-01-01)"));
+        assert!(remaining.contains("- [x] old #d260101"));
     }
 
     /// The footer marker must survive its own labels becoming config-driven, and must not

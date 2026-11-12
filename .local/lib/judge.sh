@@ -36,27 +36,60 @@ JUDGE_HARD_STOPS="$JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA gate grounded oth
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 
+# The impact levels, narrowest first. The judge picks one of the first three per decision;
+# judge_derive alone gives `critical`.
+JUDGE_LEVELS='self repo fleet critical'
+
+# judge_floor <policy> <heading>: the names its `### <heading>` lists as `- \`name\``, one per line.
+judge_floor() {
+  awk -v h="### $2" '$0 == h { on = 1; next } /^#/ { on = 0 }
+    on && /^- `[^`]+`$/ { s = $0; sub(/^- `/, "", s); sub(/`$/, "", s); print s }' "$1" 2>/dev/null
+}
+
+# judge_floor_hit <policy> <text> <heading>...: the first name those headings list that <text>
+# contains, any case; fails when none does.
+judge_floor_hit() {
+  local policy="$1" text="${2,,}" h t; shift 2
+  for h in "$@"; do
+    while IFS= read -r t; do
+      [[ -n "$t" && "$text" == *"${t,,}"* ]] && { printf '%s\n' "$t"; return 0; }
+    done < <(judge_floor "$policy" "$h")
+  done
+  return 1
+}
+
 # judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON: `rule`,
 # what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
 # type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
 # quote behind `rule` (for an answerable verdict, what grounded it), and `reason` and `answer`.
 # `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
-# counts its worst item: a human criterion on any decision, a needed one missing on any decision.
+# counts its worst item: a human criterion on any decision, a needed one missing on any decision,
+# and the widest impact. `level` is that, or `critical` when external holds or reversible fails
+# on any decision, both hard stops already; `level_evidence` the quote behind it.
 judge_derive() {
-  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" '
+  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
     ($human | split(" ")) as $human
     | ($needed | split(" ")) as $needed
     | ($human + $needed + ["grounded"]) as $all
+    | ($levels | split(" ")) as $levels
     | select(type == "object" and (.type | type) == "string" and .type != ""
         and (.decisions | type) == "array" and (.decisions | length) > 0
-        and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")))
+        and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")
+              and ((.impact.level | type) == "string") and ($levels[0:3] | index($d.impact.level)) != null))
     | .decisions as $d
     | def holds($c): if ($human | index($c)) then any($d[]; .[$c].met) else all($d[]; .[$c].met) end;
       first(($human[] | select(holds(.))), ($needed[] | select(holds(.) | not)), null) as $by
+    | ($d | max_by(.impact.level as $l | $levels | index($l))) as $top
+    | (holds("external") or (holds("reversible") | not)) as $critical
     | {rule: ($by // .type), answerable: ($by == null), type, met: ([$all[] | select(holds(.))] | join(" ")),
        evidence: ([$d[] | select($by == null or (.[$by].met == (($human | index($by)) != null)))
                    | .[$by // "grounded"].evidence | select(. != "")] | first // ""),
+       level: (if $critical then "critical" else $top.impact.level end),
+       level_evidence: (if $critical then
+           ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
+             | select(. != "")] | first // "")
+         else ($top.impact.evidence // "") end),
        reason: (.reason // ""), answer: (.answer // "")}' 2>/dev/null | head -1
 }
 
@@ -75,25 +108,27 @@ judge_ask_docs() {
 }
 
 # judge_verdicts <asks root> <verdicts.jsonl>: every verdict that names its call, one JSON line
-# each: {agent, subject, project, value, rule, reason, judge_call, at}. A gate the ask judge
-# never sent to the model has no call and is left out; so is every verdict written before
-# judge_call existed.
+# each: {agent, subject, project, value, rule, reason, level, judge_call, at}. The level is
+# the ask's judge_level, or the dispatch verdict's tier ("tier 2"), empty when none was
+# recorded. A gate the ask judge never sent to the model has no call and is left out; so is
+# every verdict written before judge_call existed.
 judge_verdicts() {
   local asks="$1" verdicts="$2"
   judge_ask_docs "$asks" | jq -c 'select(.judge_call // "" | length > 0)
     | {agent: "ask-judge", subject: .id, project, value: (.judge | sub(":.*"; "")),
-       rule: (.judge_rule // ""), reason: (.judge_reason // ""), judge_call, at: .judged_at}'
+       rule: (.judge_rule // ""), reason: (.judge_reason // ""), level: (.judge_level // ""), judge_call, at: .judged_at}'
   [ -f "$verdicts" ] && jq -c 'select(.judge_call // "" | length > 0)
     | {agent: "dispatch-judge", subject: "\(.project)/\(.lane)/\(.key)", project, value: .verdict,
-       rule: (.rule // ""), reason: (.reason // ""), judge_call, at}' "$verdicts" 2>/dev/null
+       rule: (.rule // ""), reason: (.reason // ""), level: (if (.tier // "") == "" then "" else "tier \(.tier)" end), judge_call, at}' "$verdicts" 2>/dev/null
   return 0
 }
 
 # judge_langfuse_events <calls.jsonl> <since epoch> <mark epoch>: stdin judge_verdicts lines.
 # stdout: one Langfuse score-create event per verdict judged after <mark> and since <since>
 # whose call has a session id: a CATEGORICAL score named for the agent, valued with its call,
-# its comment the rule and reason, on the session its call ran as (the trace key). The score id
-# is the verdict's, so a resend overwrites it. Each event carries `epoch` at the top level for
+# its comment the rule and reason, its level in metadata when it has one (a Langfuse score
+# takes no tags, so metadata.level is the tag), on the session its call ran as (the trace key).
+# The score id is the verdict's, so a resend overwrites it. Each event carries `epoch` at the top level for
 # the caller's mark; strip it before sending.
 judge_langfuse_events() {
   jq -cn --slurpfile calls <(jq -c 'select(.session_id) | {(.id): .session_id}' "$1" 2>/dev/null) \
@@ -108,5 +143,6 @@ judge_langfuse_events() {
        body: {id: "jv:\($v.judge_call):\($v.subject)", sessionId: $sid[$v.judge_call],
               name: $v.agent, value: $v.value, dataType: "CATEGORICAL",
               comment: "\($v.rule): \($v.reason)",
-              metadata: {subject: $v.subject, project: $v.project, rule: $v.rule, judge_call: $v.judge_call}}}'
+              metadata: ({subject: $v.subject, project: $v.project, rule: $v.rule, judge_call: $v.judge_call}
+                + (if ($v.level // "") == "" then {} else {level: $v.level} end))}}'
 }

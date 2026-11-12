@@ -30,6 +30,7 @@ A delta needs as many days with the metric in both weeks: fewer would read as a 
 """
 import argparse
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -38,6 +39,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -174,7 +176,7 @@ def outcomes(start, end):
         for key, minutes in (row.get("time_use") or {}).items():
             time_use[key] = round(time_use.get(key, 0) + (minutes or 0), 1)
     total = lambda rs, key: sum(r.get(key) or 0 for r in rs)
-    faults = lambda r: sum((r.get("hard_errors") or {}).values())
+    faults = lambda r: sum(n or 0 for n in (r.get("hard_errors") or {}).values())
     return {"sessions": len(rows), "no_pr": len(no_pr), "no_pr_with_edits": sum(1 for r in no_pr if r.get("edits")),
             "no_pr_cost_usd": round(total(no_pr, "cost_usd"), 2), "prs_merged": total(rows, "prs_merged"),
             "reverted_7d": total(rows, "reverted_7d"),
@@ -302,12 +304,13 @@ def enrich(a):
 def ci_repos():
     """[(owner/name, base branch, clone or None)] of the GitHub repos in DAYLOG_CI. A
     `forgejo:` repo is left out: ci-failures reads a red run's jobs and logs from GitHub, and
-    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same."""
+    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same. A `prs-only:`
+    repo is left out too: only the PR store reads it."""
     out = []
     with open(ENV["DAYLOG_CI"]) as f:
         for line in f:
             cols = line.split("#")[0].strip().split(None, 2)  # a clone's path may hold a space
-            if cols and not cols[0].startswith("forgejo:"):
+            if cols and not cols[0].startswith(("forgejo:", "prs-only:")):
                 out.append((cols[0].removeprefix("github:"), cols[1],
                             os.path.expanduser(cols[2]) if len(cols) > 2 else None))
     return out
@@ -326,26 +329,36 @@ def ci_failures(repo, base, start, end):
     got, err = run_json(shlex.split(reader) + ["--repo", repo, "--base", base] + window_args(start, end), ok=(0, 3))  # 3: partial
     if got is None:
         return None, err
-    runs, red = got.get("runs"), got.get("red_runs")
-    return {"runs": runs, "red": red, "red_rate": share(red, runs), "pending": got.get("pending_runs"),
+    return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
             "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets"),
-            "main": dict(zip(("runs", "red"), got.get("base") or (None, None))),
-            "workflows": {wf: {"runs": n, "red": r, "pass_rate": share(n - r, n)}
-                          for wf, (n, r) in (got.get("by_workflow") or {}).items()}}, None
+            "main": dict(zip(("runs", "red"), got.get("base") or (None, None)))}, None
+
+
+def ci_pass(start, end):
+    """({forge:repo: {runs, green, pass, workflows}}, error) from `hub ci pass`: the one pass rate
+    (hub_core::builds::verdict) of the run ledger's runs created in the day."""
+    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)])
 
 
 def ci_cost(clone, base, day, start, end):
-    """scripts/ci-cost.py as the base branch has it, so a stale checkout never measures. The cache only
-    serves a retry of the same day, so a finished read removes it."""
+    """scripts/ci-cost.py as the base branch has it, so a stale checkout never measures. It runs from that
+    branch's whole scripts/ tree, because it loads files beside it (test/train.py). The cache only serves a
+    retry of the same day, so a finished read removes it."""
     subprocess.run(["git", "-C", clone, "fetch", "-q", "origin", base], capture_output=True)
-    script = subprocess.run(["git", "-C", clone, "show", f"origin/{base}:scripts/ci-cost.py"], capture_output=True, text=True)
-    if script.returncode:
-        return None, script.stderr.strip() or f"no scripts/ci-cost.py on origin/{base}"
+    tree = subprocess.run(["git", "-C", clone, "archive", f"origin/{base}", "scripts"], capture_output=True)
+    if tree.returncode:
+        return None, tree.stderr.decode(errors="replace").strip() or f"no scripts/ on origin/{base}"
     cache = Path(ENV.get("DAYLOG_CI_CACHE", Path.home() / ".cache" / "day-log" / "ci-cost")) / day
-    with tempfile.NamedTemporaryFile("w", suffix=".py") as f:
-        f.write(script.stdout)
-        f.flush()
-        got, err = run_json([sys.executable, f.name, *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with tarfile.open(fileobj=io.BytesIO(tree.stdout)) as t:
+                t.extractall(tmp, filter="data")
+        except (tarfile.TarError, OSError) as e:
+            return None, f"scripts/ on origin/{base}: {e}"
+        script = Path(tmp) / "scripts" / "ci-cost.py"
+        if not script.is_file():
+            return None, f"no scripts/ci-cost.py on origin/{base}"
+        got, err = run_json([sys.executable, str(script), *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
     if got is not None:
         shutil.rmtree(cache, ignore_errors=True)
     return got, err
@@ -359,6 +372,11 @@ def ci(a):
         out["unreadable"].append(f"{ENV.get('DAYLOG_CI')}: {e.strerror}")
         repos = []
     start, end = day_bounds(a.day)
+    passes, err = ci_pass(start, end) if repos else ({}, None)
+    if passes is None:
+        out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
+    else:  # the ledger may spell a repo in another case; a repo with no run that day is absent, 0 runs
+        passes = {k.lower(): v for k, v in passes.items()}
     for repo, base, clone in repos:
         row, err = ci_failures(repo, base, start, end)
         if row is None:
@@ -366,6 +384,10 @@ def ci(a):
             row = {}
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
+        if passes is not None:
+            got = passes.get(f"github:{repo}".lower(), {"runs": 0, "green": 0, "pass": None})
+            row["pass"] = {k: got[k] for k in ("runs", "green", "pass")}
+            row["workflows"] = got.get("workflows", {})
         if clone:
             row["cost"], err = ci_cost(clone, base, a.day, start, end)
             if row["cost"] is None:
@@ -373,6 +395,9 @@ def ci(a):
         out["repos"][repo] = row
     json.dump(out, sys.stdout)
     print()
+    # stdout is the record; stderr is the runner's log, so a failed nightly says why there too.
+    for reason in out["unreadable"]:
+        print("day-log-snapshots: ci:", " ".join(reason.split()), file=sys.stderr)
     return 1 if out["unreadable"] else 0
 
 
@@ -425,12 +450,16 @@ def rollup(records):
         short = repo.split("/")[-1].lstrip(".")
         rows = [(get(r, "ci.repos") or {}).get(repo) or {} for r in records]
         fold_tables(CI_TABLES, rows, f"ci.{short}.")
-        if f"ci.{short}.runs" in out:
-            days = out[f"ci.{short}.runs"][1]
-            out[f"ci.{short}.red_rate"] = (share(out[f"ci.{short}.red"][0], out[f"ci.{short}.runs"][0]), days)
+        # The pass rate over the week is green over runs summed, never a mean of daily rates. A day
+        # gathered before hub ci pass has no green, so it is left out.
+        def fold_pass(name, cells):
+            cells = [c for c in cells if c and "green" in c]
+            if cells:
+                out[name] = (share(sum(c["green"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+
+        fold_pass(f"ci.{short}.pass", [row.get("pass") for row in rows])
         for wf in sorted({w for row in rows for w in row.get("workflows") or {}}):
-            cells = [c for c in ((row.get("workflows") or {}).get(wf) for row in rows) if c]
-            out[f"ci.{short}.pass.{wf}"] = (share(sum(c["runs"] - c["red"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+            fold_pass(f"ci.{short}.pass.{wf}", [(row.get("workflows") or {}).get(wf) for row in rows])
     return out
 
 
@@ -497,9 +526,9 @@ def line_of(week):
         parts.append(f"board +{cell('board.opened')['value']:g}/-{cell('board.closed')['value']:g}")
     if cell("cost_usd")["value"] is not None:
         parts.append(f"{usd(cell('cost_usd')['value'])}{signed(cell('cost_usd')['delta'], usd)}")
-    for name in sorted(k for k in m if k.endswith(".red_rate")):
+    for name in sorted(k for k in m if re.fullmatch(r"ci\.[^.]+\.pass", k) and m[k]["value"] is not None):
         pts = lambda v: f"{100 * v:.0f} pts"
-        parts.append(f"{name.split('.')[1]} red {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
+        parts.append(f"{name.split('.')[1]} pass {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
     return f"week to {week['end']} ({week['days_present']} of {WINDOW} days): " + ", ".join(parts)
 
 

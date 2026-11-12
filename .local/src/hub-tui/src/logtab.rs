@@ -16,7 +16,9 @@ use crate::fmt::{clock, older, Palette};
 /// What `d` steps Work's window through, the values `worklog::Window::parse` takes.
 pub const WORK_WINDOWS: [&str; 4] = ["", "today", "30d", "all"];
 /// `Work::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WORK_HEADER: [&str; 7] = ["STATE", "WHEN", "PROJECT", "WHAT", "KIND", "PR", "COST"];
+const WORK_HEADER: [&str; 9] = [
+    "STATE", "WHEN", "PROJECT", "WHAT", "PLAN", "KIND", "CI", "PR", "COST",
+];
 
 /// A time today reads as its clock; an older one keeps its month and day.
 fn work_when(when: &str, today: &str) -> String {
@@ -44,7 +46,9 @@ fn work_row(r: &Work, today: &str, p: Palette) -> Vec<Cell> {
         cell(work_when(r.when.as_deref().unwrap_or(""), today), p.dim()),
         r.project.as_str().into(),
         r.what.replace(['\t', '\n'], " ").into(),
+        cell(r.plan.as_deref().unwrap_or(""), p.dim()),
         cell(r.kind.as_deref().unwrap_or(""), p.dim()),
+        cell(r.ci.as_deref().unwrap_or(""), p.dim()),
         pr,
         r.cost
             .map_or(String::new(), |c| crate::day::money(Some(c)))
@@ -93,12 +97,13 @@ pub fn work(
                 .take(cap)
                 .map(|r| work_row(r, today, p))
                 .collect(),
-            keep: vec![0, 2, 1, 5, 6, 4],
+            // PLAN gives way first, then KIND, then CI; STATE, PROJECT, WHEN, PR and COST stay.
+            keep: vec![0, 2, 1, 7, 8, 6, 5, 4],
             flex: Some(3),
             flexmin: 20,
             flexkeep: true,
             mark: t.mark::<Work>(),
-            cap: vec![(2, 22), (5, 24)],
+            cap: vec![(2, 22), (4, 20), (7, 24)],
             ..Default::default()
         }
         .fit(w, p.head()),
@@ -249,6 +254,8 @@ mod tests {
             when: Some(when.into()),
             project: "notes".into(),
             what: what.into(),
+            plan: None,
+            ci: None,
             kind: Some("fix".into()),
             pr: Some("notes#7".into()),
             url: None,
@@ -305,6 +312,23 @@ mod tests {
         );
         assert!(week.contains("queue items from 2026-11-04"), "{week}");
         assert!(text("", 1).contains("+1 older"));
+    }
+
+    #[test]
+    fn a_narrow_work_table_drops_plan_first_and_keeps_pr_and_cost() {
+        let mut r = work_row_of("done", "2026-11-09T08:05", "shipped");
+        (r.plan, r.ci) = (Some("clean-titles P1".into()), Some("CI failure".into()));
+        let g = worklog::Gathered { rows: vec![r], ..Default::default() };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let head = |w| {
+            let lines = work(&g, &Window::parse("", today), &DataTable::default(), 10, "2026-11-09", Palette { no_color: true }, w);
+            let all: Vec<String> = lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+            all.into_iter().find(|l| l.contains("STATE")).unwrap_or_default()
+        };
+        let wide = head(160);
+        assert!(["PLAN", "KIND", "CI", "PR", "COST"].iter().all(|h| wide.contains(h)), "{wide}");
+        let narrow = head(70);
+        assert!(narrow.contains("PR") && narrow.contains("COST") && !narrow.contains("PLAN"), "{narrow}");
     }
 
     #[test]

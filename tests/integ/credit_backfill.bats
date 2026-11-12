@@ -2,7 +2,8 @@
 # credit-backfill: propose writes one reviewable TSV per repo from the queue, the plans and the
 # FAIL criteria; apply writes the reviewed lines through notes ptask and agent-queue set.
 #
-# gh is a stub serving PR file lists; agent-queue is the repo's own; apply runs the real notes
+# schedules-sync is a stub serving the PR store from per-PR fixtures, each PR a real commit in the
+# sandbox checkout (its diff gives the files and size); agent-queue is the repo's own; apply runs the real notes
 # against a sandbox vault (NOTES_BIN, as inbox_plan.bats), so those cases skip without it.
 
 setup() {
@@ -13,7 +14,7 @@ setup() {
   CB="$REPO_ROOT/.local/bin/credit-backfill"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   export PROJECT_MAP_FILE="$AGENT_QUEUE_PROJECT_MAP"
-  export CREDIT_BACKFILL_DIR="$SANDBOX/bf" CREDIT_BACKFILL_CACHE="$SANDBOX/cache"
+  export CREDIT_BACKFILL_DIR="$SANDBOX/bf" SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
   export CREDIT_BACKFILL_PLANS="$SANDBOX/plans" CREDIT_BACKFILL_LIVE_PLANS="$SANDBOX/live"
   export CREDIT_BACKFILL_SYSTEM_CHECK="$SANDBOX/bin/system-check" GH_PRS="$SANDBOX/prs"
   unset CLAUDE_CODE_SESSION_ID
@@ -25,28 +26,32 @@ setup() {
       "arena": {repo: "game", path: "Assets/Arena", code: "ar", lab: "personal", type: "game"},
       "level": {repo: "game", path: "Assets/Level", code: "lv", lab: "personal", type: "game"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
   printf '#!/bin/sh\nexec "%s/.local/bin/agent-queue" "$@"\n' "$REPO_ROOT" >"$SANDBOX/bin/agent-queue"
-  # gh api repos/<r>/pulls/N[/files]: served from $GH_PRS/N.json; N.err is a failure with that
-  # message, and no fixture a 404, as gh gives. The stub answers the --jq the script asks for.
-  cat >"$SANDBOX/bin/gh" <<'SH'
+  git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  # schedules-sync prs <r> ...: the rows in $GH_PRS/N.json, newest first; $GH_PRS/store.err fails
+  # the read with that message, as a stale store does.
+  cat >"$SANDBOX/bin/schedules-sync" <<'SH'
 #!/usr/bin/env bash
-echo "gh $*" >>"$NOTES_FIXTURE/gh.log"
-p="${2#repos/*/pulls/}" f="$GH_PRS/${p%/files}.json"
-[ ! -f "${f%.json}.err" ] || { cat "${f%.json}.err" >&2; exit 1; }
-[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-case "$p:$4" in
-  */files:*) jq -r '.files[]?.path' "$f" ;;
-  *:*merged_at*) jq -r '.merged_at // empty' "$f" ;;
-  *) jq -r '.additions + .deletions' "$f" ;;
-esac
+echo "schedules-sync $*" >>"$NOTES_FIXTURE/ss.log"
+[ ! -f "$GH_PRS/store.err" ] || { cat "$GH_PRS/store.err" >&2; exit 1; }
+cat "$GH_PRS"/*.json 2>/dev/null | jq -s 'sort_by(-.number)'
 SH
   printf '#!/bin/sh\ncat "$NOTES_FIXTURE/criteria-$1.json" 2>/dev/null\n' >"$SANDBOX/bin/system-check"
   printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/fleet-dispatch"
-  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/gh" "$SANDBOX/bin/system-check" "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/schedules-sync" "$SANDBOX/bin/system-check" "$SANDBOX/bin/fleet-dispatch"
   mkdir -p "$GH_PRS" "$CREDIT_BACKFILL_PLANS/game" "$CREDIT_BACKFILL_LIVE_PLANS"
 }
 
-# pr <N> <added+deleted> <path>... -- a PR fixture.
-pr() { local n="$1" size="$2"; shift 2; jq -n --argjson s "$size" '{additions: $s, deletions: 0, files: [$ARGS.positional[] | {path: .}]}' --args "$@" >"$GH_PRS/$n.json"; }
+# pr <N> <lines> <path>... -- PR N's merge commit in the checkout, adding <lines> lines split over
+# the paths (the remainder on the first), and its store row with that merge sha.
+pr() { local n="$1" size="$2" p i k; shift 2
+  for p in "$@"; do
+    k=$((size / $#)); [ "$p" != "$1" ] || k=$((k + size % $#))
+    mkdir -p "$REPO/$(dirname "$p")"
+    for ((i = 0; i < k; i++)); do echo "pr $n line $i"; done >>"$REPO/$p"
+    git -C "$REPO" add "$p"
+  done
+  git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "pr $n"
+  jq -n --argjson n "$n" --arg sha "$(git -C "$REPO" rev-parse HEAD)" '{number: $n, state: "MERGED", merge_sha: $sha, merged_at: null}' >"$GH_PRS/$n.json"; }
 # merged <N> <day> -- PR N merged at noon UTC on <day>.
 merged() { local f="$GH_PRS/$1.json"; jq --arg t "$2T12:00:00Z" '.merged_at = $t' "$f" >"$f.new" && mv "$f.new" "$f"; }
 # done_item <slug> <pr> [<plan> <phase>] -- a landed item on the repo's own project with no merged:,
@@ -97,23 +102,36 @@ lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'
   assert_line 'story|act-two|level|-|m|open|-|-|P4 the rest (plan act-two, phase 4)'
 }
 
-@test "propose survives a PR gh cannot read: the story is filed at size m with no credit move; a 404 is asked once, a rate limit again" {
-  printf '{"additions": 0, "deletions": 0, "files": []}\n' >"$GH_PRS/31.json"
-  echo "gh: API rate limit exceeded (HTTP 403)" >"$GH_PRS/33.err"
+@test "propose files at size m with no credit move a PR that changed no file, is not in the store, or whose commit the checkout lacks; the store is read once" {
+  pr 31 0
+  jq -n '{number: 33, state: "MERGED", merge_sha: "0123456789abcdef0123456789abcdef01234567", merged_at: null}' >"$GH_PRS/33.json"
   done_item empty 31
   done_item gone 32
-  done_item limited 33
+  done_item unfetched 33
   run "$CB" propose game
   assert_success
+  assert_output --partial "lacks #33's merge commit 0123456789ab, so it is sized m: fetch it"
   run lines
   assert_line 'story|-|game|-|m|done|pr:31|empty|empty'
   assert_line 'story|-|game|-|m|done|pr:32|gone|gone'
-  assert_line 'story|-|game|-|m|done|pr:33|limited|limited'
+  assert_line 'story|-|game|-|m|done|pr:33|unfetched|unfetched'
   refute_line --partial 'attr|'
-  : >"$NOTES_FIXTURE/gh.log"
-  "$CB" propose game
-  run cat "$NOTES_FIXTURE/gh.log"
-  assert_output 'gh api repos/acme/game/pulls/33 --jq .additions + .deletions'
+  run cat "$NOTES_FIXTURE/ss.log"
+  assert_output 'schedules-sync prs acme/game --state merged'
+  # a checkout whose origin is on Forgejo reads the store under its host
+  git -C "$REPO" remote set-url origin https://git.example.test/acme/game.git; : >"$NOTES_FIXTURE/ss.log"
+  run "$CB" propose game
+  run cat "$NOTES_FIXTURE/ss.log"
+  assert_output 'schedules-sync prs git.example.test/acme/game --state merged'
+}
+
+@test "propose stops with the store's reason when the PR store cannot answer, so no size reads as unknown" {
+  pr 11 40 Assets/Arena/A.cs
+  done_item arena-fix 11
+  echo "acme/game: PR store last synced 2h ago" >"$GH_PRS/store.err"
+  run "$CB" propose game
+  assert_failure; assert_output --partial "PR store: acme/game: PR store last synced 2h ago"
+  [ ! -e "$CREDIT_BACKFILL_DIR/game.tsv" ]
 }
 
 @test "propose files a typed project's FAIL criteria as stories under one epic per system" {
@@ -192,7 +210,7 @@ notes_vault() {
   refute_output --partial "done:$today"
 }
 
-@test "apply closes a story today when gh cannot give its merge day, and redate then moves it, one project at a time" {
+@test "apply closes a story today when the PR store has no merge day for it, and redate then moves it, one project at a time" {
   pr 11 40 Assets/Arena/A.cs
   pr 21 40 Assets/Level/L.cs
   pr 22 40 Assets/Level/M.cs
@@ -201,7 +219,7 @@ notes_vault() {
   printf '%s\n' '# Level: done' '' '## Phases' '' '- [x] P1 one (#21)' '- [x] P2 two (#22)' >"$CREDIT_BACKFILL_PLANS/game/lv-done.md"
   "$CB" propose game
   run "$CB" apply game
-  assert_output --partial "pr:21): no merge day from gh, closed today"
+  assert_output --partial "pr:21): no merge day in the PR store, closed today"
   today="$(date +%F)"
   run rows level
   assert_line --regexp "^- \[x\] feat\(gameplay\): P1 one .*done:$today pr:21"

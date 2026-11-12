@@ -71,8 +71,13 @@ EOF
   assert_output --partial "too-long"
 }
 
+# The overview page: every section the briefing channel requires, under a headline.
+overview() { # NEEDS_ITEMS_FILE_CONTENT -> $SANDBOX/b.md
+  printf -- '---\ngenerated: true\n---\n\n# Briefing\n\nAs of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes.\n\n## Needs you\n\n%s\n## Landed yesterday\n\n- fix(orb): the login loop (orbit, urgent)\n- Fleet tooling: 144 changes, 4 urgent (see the agents briefing).\n\n## Builds and releases\n\n- orbit prod: v1.19.0 deployed at 06:12.\n\n## Overnight\n\n- Nothing broke overnight.\n\n## Money\n\n- Spent yesterday $846 (7-day avg $1170).\n\n## Agents\n\nAgent systems: all 6 areas ok. Detail: [[agents]].\n' "$1" > "$SANDBOX/b.md"
+}
+
 @test "a briefing is linted whole, and caps only its Needs you items" {
-  printf -- '---\ngenerated: true\n---\n# Morning briefing\n\n3 things need you.\n\n## Needs you\n\n1. Answer 18 open asks.\n2. Merge the dispatch fix.\n3. Check the AWS alarm.\n\n## Still open\n\n- One.\n- Two.\n- Three.\n- Four.\n- Five.\n- Six.\n' > "$SANDBOX/b.md"
+  overview $'- Answer 18 open asks.\n- Merge the dispatch fix.\n- Check the AWS alarm.\n'
   run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
   assert_success
   # Negative control: a runbook hint below Needs you fails now that the whole page is read.
@@ -80,22 +85,41 @@ EOF
   run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
   assert_failure 1
   assert_output --partial "a runbook hint"
-  for i in 4 5 6 7; do echo "$i. Another thing." >> "$SANDBOX/c.md"; done
-  { printf '3 things need you.\n\n## Needs you\n\n1. One.\n2. Two.\n3. Three.\n'; cat "$SANDBOX/c.md"; } > "$SANDBOX/b2.md"
-  run "$SUBJECT" --channel briefing "$SANDBOX/b2.md"
+  overview $'- One.\n- Two.\n- Three.\n- Four.\n- Five.\n- Six.\n- Seven.\n'
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
   assert_failure 1
   assert_output --partial "items: 7 items under '^## Needs you$', budget 5"
 }
 
-@test "a briefing's Areas are capped at 6 lines of 200 chars, and Details only page-wide" {
+@test "a briefing without its overview sections fails, so the old single document cannot pass" {
+  # Negative control: the briefing before the split had Needs you and Areas only.
+  printf -- '# Briefing\n\nAs of Fri 06:45: 1 thing needs you.\n\n## Needs you\n\n- Answer ask a1.\n\n## Areas\n\n- Infra: ok, 24 watches green.\n' > "$SANDBOX/old.md"
+  run "$SUBJECT" --channel briefing "$SANDBOX/old.md"
+  assert_failure 1
+  assert_output --partial "missing: a Landed yesterday section"
+  assert_output --partial "missing: a Money section"
+  overview $'- Answer ask a1.\n'
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
+  assert_success
+}
+
+@test "the overview's Landed yesterday is capped at 10 lines" {
+  overview $'- Answer ask a1.\n'
+  for k in 1 2 3 4 5 6 7 8 9 10; do sed -i "s/^## Builds and releases$/- Change $k.\n&/" "$SANDBOX/b.md"; done
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
+  assert_failure 1
+  assert_output --partial "items: 12 items under '^## Landed yesterday$', budget 10"
+}
+
+@test "the agent briefing's Areas are capped at 6 lines of 200 chars, and Details only page-wide" {
   long="$(printf 'x%.0s' $(seq 1 170))"
-  printf -- '# Briefing\n\nAs of Fri 06:45: 1 thing needs you.\n\n## Needs you\n\n- Answer ask a1.\n\n## Areas\n\n- Infra: ok, 24 watches green.\n- Sessions: ok, 14 working.\n- Workers overnight: ok, 23 of 23 ok.\n- Nightly: ok, dream ok.\n- Delivery: ok, 458 merged.\n- Costs: ok, $812.\n\n## Details\n\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n' "$long" "$long" "$long" "$long" "$long" "$long" "$long" > "$SANDBOX/a.md"
-  run "$SUBJECT" --channel briefing "$SANDBOX/a.md"
+  printf -- '# Agent briefing\n\nAs of Fri 06:45: 1 thing needs you.\n\n## Needs you\n\n- Answer ask a1.\n\n## Areas\n\n- Infra: ok, 24 watches green.\n- Sessions: ok, 14 working.\n- Workers overnight: ok, 23 of 23 ok.\n- Nightly: ok, dream ok.\n- Delivery: ok, 458 merged.\n- Costs: ok, $812.\n\n## Details\n\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n' "$long" "$long" "$long" "$long" "$long" "$long" "$long" > "$SANDBOX/a.md"
+  run "$SUBJECT" --channel briefing-agents "$SANDBOX/a.md"
   assert_success
   # Negative control: a seventh area fails, and so does a Needs item past 160.
   sed -i "s/^- Costs: ok, \$812.$/&\n- Extra: ok, one more./" "$SANDBOX/a.md"
   sed -i "s/^- Answer ask a1.$/- Answer ask a1 $long./" "$SANDBOX/a.md"
-  run "$SUBJECT" --channel briefing "$SANDBOX/a.md"
+  run "$SUBJECT" --channel briefing-agents "$SANDBOX/a.md"
   assert_failure 1
   assert_output --partial "items: 7 items under '^## Areas$', budget 6"
   assert_output --partial "item-too-long: 185 chars under '^## Needs you$', budget 160"
@@ -283,7 +307,7 @@ EOF
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
-  for c in page briefing morning rundown status pr-body client-eod client-weekly board proof ask queue fleet-log; do
+  for c in page briefing briefing-agents morning rundown status pr-body client-eod client-weekly board proof ask queue fleet-log; do
     assert_output --partial "$c"
   done
 }

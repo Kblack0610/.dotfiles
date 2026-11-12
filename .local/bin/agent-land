@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--dry-run]
+#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--admin] [--dry-run]
 #
 # Which repo <pr> is in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else gh's
 # default for this checkout. Either way the PR must be in this checkout's origin repo (git, the merge
@@ -12,18 +12,20 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
-# for a landing train whose member PRs read MERGED only while their heads stay reachable; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
-# checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
+# Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
-# PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
+# PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
+# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
-# promoted from, done with proof "pr:<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
+# promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
@@ -32,11 +34,18 @@
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
 # taken from the session, not named by --item, takes only a PR in its project's repo (own_project).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
-# (before or after the checks): resolve it and re-run. A merge of <base> keeps a green gate green; gate again
-# only when the repo's CI doc says that merge needs one.
+# (before or after the checks): resolve it and re-run. A head pushed after the checks waits on its own
+# checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
+# doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
-# --partial records a merged PR with partial: yes and leaves the item and row open. Reap waits
-# for a final agent-land without --partial, which clears the marker and closes the item.
+# --partial records a merged PR with partial: yes and leaves the item and row open, for a final
+# agent-land without --partial, which clears the marker and closes the item. If the session ends first,
+# reap requeues the item and the next run makes that final landing.
+# A PR on Forgejo (a checkout that commits the mirror marker, forge_canonical, or whose origin is on a
+# host SO_FORGEJO_HOSTS lists: home-config, bnb-game-servers) runs the same steps through that host's
+# API instead of gh (pr_view, pr_edit_body, fj_wait_checks, pr_merge pinned by head_commit_id,
+# pr_files) and its git steps through that remote, so this is its one writer too. Why: 12 Forgejo
+# merges on 2026-11-07..09 went through a raw API call and were recorded on no item (ar-1213).
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
 
@@ -71,16 +80,23 @@ lastline() { printf '%s' "$1" | tail -n 1; }
 
 # Until a CI job starts, a PR reports no checks, and GitHub has no event for the first one: that
 # one state is polled CHECKS_POLL seconds apart. While an Actions run for HEAD is still queued it
-# waits on; with none, it gives up after CHECKS_TRIES polls and lands on the local gate (a repo
-# with no PR checks), unless the base requires a check, which GitHub would refuse the merge for:
-# that stops at checks. `gh pr checks --watch` waits out the rest.
+# waits on, CHECKS_QUEUED_POLL apart: a queue on a busy runner pool lasts tens of minutes, and at
+# 10s each landing spent 360 REST calls an hour of the one budget every account shares (ar-1345).
+# With none, it gives up after CHECKS_TRIES polls and lands on the local gate (a repo with no PR
+# checks), unless the base requires a check, which GitHub would refuse the merge for: that stops
+# at checks. `gh pr checks --watch` waits out the rest, one read per CHECKS_WATCH_INTERVAL.
 CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
+CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
+CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
+had_checks=''
 wait_checks() {
+  [ -z "$fj" ] || { fj_wait_checks; return; }
   local try out failed queued
   for ((try = 1; ; try++)); do
-    out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast 2>&1) && {
+    out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       echo "checks: green"
+      had_checks=yes
       return 0
     }
     case "$out" in
@@ -91,16 +107,53 @@ wait_checks() {
       ;;
     esac
     queued=$(gh run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)
-    [ "${queued:-0}" -eq 0 ] || try=0
-    [ "$try" -lt "$CHECKS_TRIES" ] || {
-      [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
-      # A Checks run that ends with no job reports no check and has nothing left to wait on (#2141,
-      # 2026-11-09), and GitHub refuses the merge while a required check is missing on the head.
-      ! required_checks || fail checks "none reported on the head, and origin/$base requires checks, so GitHub would refuse the merge: gh run list --commit $(git rev-parse HEAD) shows whether a run exists (none yet: re-run once it does; one that ended with no job never started: gh run rerun it), then re-run"
-      echo "checks: none reported"
-      return 0
-    }
+    if [ "${queued:-0}" -ne 0 ]; then
+      try=0
+      sleep "$CHECKS_QUEUED_POLL"
+      continue
+    fi
+    [ "$try" -lt "$CHECKS_TRIES" ] || { no_checks; return 0; }
     sleep "$CHECKS_POLL"
+  done
+}
+# no_checks: none reported after CHECKS_TRIES polls, on either forge. Lands on the local gate
+# unless one of these refuses.
+no_checks() {
+  [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
+  # A head pushed by catch_up gets the runs the gate's head had; none yet means they have not
+  # started, and landing it would merge a tree no check has seen (dotfiles #1504).
+  [ -z "$had_checks" ] || fail checks "none reported on the pushed head $(git rev-parse --short HEAD), though the gate's head ran green: re-run once its checks start"
+  # A Checks run that ends with no job reports no check and has nothing left to wait on (#2141,
+  # 2026-11-09), and GitHub refuses the merge while a required check is missing on the head.
+  local runs="gh run list --commit $(git rev-parse HEAD) shows whether a run exists (none yet: re-run once it does; one that ended with no job never started: gh run rerun it)"
+  [ -z "$fj" ] || runs="the repo's Actions page shows whether a run exists for $(git rev-parse --short HEAD)"
+  ! required_checks || fail checks "none reported on the head, and $remote/$base requires checks, so $forge would refuse the merge: $runs, then re-run"
+  echo "checks: none reported"
+}
+# fj_wait_checks: Forgejo has no watch, and no event a script can await, so the head's combined
+# commit status is read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL
+# apart while none is reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes).
+fj_wait_checks() {
+  local try st head
+  head=$(git rev-parse HEAD)
+  for ((try = 1; ; try++)); do
+    st=$(so_forgejo_checks "$fj" "$head" 2>&1) || fail checks "Forgejo status read: $(lastline "$st")"
+    case "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | ci' <<<"$st")" in
+    PASS)
+      echo "checks: green"
+      had_checks=yes
+      return 0
+      ;;
+    FAIL) fail checks "$(jq -r 'map(select(.state == "FAILURE" or .state == "ERROR") | .context) | join(", ")' <<<"$st")" ;;
+    PENDING)
+      try=0
+      sleep "$CHECKS_WATCH_INTERVAL"
+      ;;
+    *)
+      [ "$try" -lt "$CHECKS_TRIES" ] || { no_checks; return 0; }
+      sleep "$CHECKS_POLL"
+      ;;
+    esac
   done
 }
 
@@ -120,10 +173,10 @@ own_head() {
   # head, not origin's. No event says when; the bound is the checks one.
   # A failed ls-remote leaves tip empty and the diagnostics below run, as before this wait existed.
   local tip seen out try
-  tip=$(git ls-remote origin "refs/heads/$head_ref" 2>/dev/null | awk -v r="refs/heads/$head_ref" '$2 == r { print $1 }') || tip=''
+  tip=$(git ls-remote "$remote" "refs/heads/$head_ref" 2>/dev/null | awk -v r="refs/heads/$head_ref" '$2 == r { print $1 }') || tip=''
   if [ -n "$tip" ] && [ "$tip" = "$here" ]; then
     for ((try = 1; ; try++)); do
-      if out=$(gh pr view "$pr" "${R[@]}" --json headRefOid -q .headRefOid 2>&1); then
+      if out=$(pr_view headRefOid .headRefOid 2>&1); then
         if [ "$out" = "$here" ]; then
           head_oid=$here
           echo "head: the PR read the pushed head ${here:0:8} after $try polls"
@@ -131,12 +184,12 @@ own_head() {
         fi
         seen=${out:0:8}
       else
-        seen="nothing (gh: $(lastline "$out"))"
+        seen="nothing ($api: $(lastline "$out"))"
       fi
       [ "$try" -lt "$CHECKS_TRIES" ] || break
       sleep "$CHECKS_POLL"
     done
-    fail head "HEAD ${here:0:8} is origin's $head_ref, but the PR still reads $seen after $try polls: re-run once GitHub catches up"
+    fail head "HEAD ${here:0:8} is $remote's $head_ref, but the PR still reads $seen after $try polls: re-run once $forge catches up"
   fi
   wt=$(git worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/$head_ref" '/^worktree /{p = substr($0, 10)} $0 == b { print p; exit }')
   top=$(git rev-parse --show-toplevel 2>/dev/null || true)
@@ -161,6 +214,14 @@ checks_policy() {
   local repo="${pr_ref%#*}" out
   strict=yes required=no
   [ "$repo" != "$pr_ref" ] || return 0
+  # Forgejo: the protection rule named <base>. enable_status_check refuses a head without passing
+  # statuses (required), block_on_outdated_branch a head that is behind (strict); none: neither.
+  if [ -n "$fj" ]; then
+    out=$(so_forgejo_get "$fj" branch_protections 2>/dev/null) || return 0
+    ! jq -e --arg b "$base" 'any(.[]; .rule_name == $b and .enable_status_check)' <<<"$out" >/dev/null 2>&1 || required=yes
+    jq -e --arg b "$base" 'any(.[]; .rule_name == $b and .block_on_outdated_branch)' <<<"$out" >/dev/null 2>&1 || strict=no
+    return 0
+  fi
   out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) || return 0
   ! jq -e 'any(.[]; .type == "required_status_checks" and (.parameters.required_status_checks // [] | length) > 0)' <<<"$out" >/dev/null 2>&1 || required=yes
   jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1 || return 0
@@ -175,55 +236,62 @@ strict_checks() { checks_policy && [ "$strict" = yes ]; }
 required_checks() { checks_policy && [ "$required" = yes ]; }
 
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
-# the base moved on during the checks; that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
-# current, or after a push to a base with no strict required checks (strict_checks), and 1 after a
-# push to a strict one: the caller then waits on the PR checks again, because that base refuses a
-# head whose checks have not run (2026-11-05: unity-core-playground #1837 was refused twice). A base
-# with no strict checks gets no second wait: one that merges faster than its checks run would loop
-# it forever (dotfiles #1059 went green 9 times in an hour). Exiting 3 there instead sent the caller
-# round its own gate again, which a busy base outruns every time (#916). A conflict is aborted and
-# exits 3.
+# the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
+# is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
+# merged a merge-up head whose checks ran only after the merge). So it returns 0 when the head is
+# current, and 1 after a push: the caller waits on the PR checks for that head, then calls it again.
+# After the gate (catch_up after <waits so far>), a base with no strict required checks (strict_checks)
+# is merged up and re-checked CATCHUP_WAITS times; if it moved on again during those waits, the green
+# head lands behind it, which such a base allows, unless merging the base would conflict (then the
+# merge below runs and exits 3, since GitHub would refuse that head anyway): a base that merges faster than its checks run would otherwise loop it forever
+# (dotfiles #1059 went green 9 times in an hour), and exiting 3 sent the caller round its own gate,
+# which a busy base outruns every time (#916). A strict base has no bound, since it refuses a head
+# that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
+# and exits 3.
+CATCHUP_WAITS=1
 catch_up() {
   local out behind
-  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
-  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
+  out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
+  behind=$(git rev-list --count "HEAD..$remote/$base" 2>&1) || fail fetch "$(lastline "$behind")"
   if [ "$behind" -eq 0 ]; then
-    [ "${1:-}" = before ] || echo "fetch: current with origin/$base"
+    [ "${1:-}" = before ] || echo "fetch: current with $remote/$base"
+    return 0
+  fi
+  if [ "${1:-}" = after ] && [ "${2:-0}" -ge "$CATCHUP_WAITS" ] && ! strict_checks &&
+    git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1; then
+    echo "fetch: $remote/$base moved on by $behind during the checks on the merged-up head; landing that green head behind it (no strict checks on $base)"
     return 0
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
   [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
-  if ! out=$(git merge -q --no-edit "origin/$base" 2>&1); then
+  if ! out=$(git merge -q --no-edit "$remote/$base" 2>&1); then
     git merge --abort >/dev/null 2>&1 || true
-    printf 'agent-land: behind origin/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$base" "$behind" >&2
-    land_failed conflict "behind origin/$base by $behind and merging it conflicts"
+    printf 'agent-land: behind %s/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$remote" "$base" "$behind" >&2
+    land_failed conflict "behind $remote/$base by $behind and merging it conflicts"
     exit 3
   fi
   # Push HEAD to the PR's own head branch: a bare `git push` under push.default=simple refuses when
   # the local branch name differs from its upstream (agent-11 -> feat/x, PR #1252), and the upstream
   # itself can be the base (a worktree cut from origin/main tracks it).
-  out=$(git push -q origin "HEAD:refs/heads/$head_ref" 2>&1) || fail push "$(lastline "$out")"
-  echo "fetch: merged origin/$base ($behind behind) into the head and pushed it"
+  out=$(git push -q "$remote" "HEAD:refs/heads/$head_ref" 2>&1) || fail push "$(lastline "$out")"
+  echo "fetch: merged $remote/$base ($behind behind) into the head and pushed it"
   # GitHub works out whether a pushed head merges after the push and refuses the merge until then
   # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
   # reads this head with a known answer; the merge step reports what it ends up refusing.
   local head try
   head=$(git rev-parse HEAD)
   for ((try = 1; try <= CHECKS_TRIES; try++)); do
-    case "$(gh pr view "$pr" "${R[@]}" --json headRefOid,mergeable -q '.headRefOid + " " + .mergeable' 2>/dev/null)" in
+    case "$(pr_view headRefOid,mergeable '.headRefOid + " " + .mergeable' 2>/dev/null)" in
     "$head UNKNOWN" | "") ;;
     "$head "*) break ;;
     esac
     sleep "$CHECKS_POLL"
   done
-  if strict_checks; then
-    echo "checks: origin/$base requires strict checks, waiting on them for the pushed head"
-    return 1
-  fi
-  return 0
+  [ "${1:-}" = before ] || echo "checks: waiting on them for the pushed head"
+  return 1
 }
 
-pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash
+pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=()
 implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -234,6 +302,7 @@ while [ $# -gt 0 ]; do
   --repo) repo="${2:?--repo needs a value}" repo_from=--repo && shift ;;
   --partial) partial=1 ;;
   --merge-commit) method=--merge ;;
+  --admin) admin=(--admin) ;;
   --dry-run) dry=1 ;;
   -h | --help) usage ;;
   -*) die "unknown flag: $1" ;;
@@ -273,6 +342,75 @@ if [ -z "$repo" ]; then
 fi
 R=()
 [ -z "$repo" ] || R=(-R "$repo")
+
+# The forge the PR is on: gh's, or Forgejo's API through so_forgejo_* (session-outcomes.sh, which
+# also brings origin-repo.sh). fj is its host/owner/repo and remote the git remote that carries it;
+# on GitHub fj is empty and remote is origin. A Forgejo-canonical checkout with no remote on a
+# listed host stops here: gh would land on its GitHub mirror, which the next mirror push erases.
+# shellcheck source=../lib/session-outcomes.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/session-outcomes.sh"
+# shellcheck source=../lib/pr-ci.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/pr-ci.sh"
+fj='' remote=origin api=gh forge=GitHub
+fj_detect() {
+  local r rc=0
+  r=$(so_forge_remote .) || rc=$?
+  case $rc in
+    0) ;;
+    1) return 0 ;;
+    2) die "$(git rev-parse --show-toplevel 2>/dev/null) is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists ($(so_forgejo_hosts)): add the Forgejo remote, or list its host in session-outcomes.conf" ;;
+    *) die "picking the forge failed (so_forge_remote rc $rc)" ;;
+  esac
+  remote=${r%% *} fj=${r#* } api=Forgejo forge=Forgejo
+}
+fj_detect
+fj_repo=${fj#*/}
+[ -z "$fj" ] || [ -z "$repo" ] || [ "${repo,,}" = "${fj_repo,,}" ] ||
+  die "#$pr is in $repo ($repo_from), but this checkout's Forgejo repo is $fj_repo: run from a checkout of $repo"
+# The token is read once, in this shell, so every $(...) below inherits it. A dry run calls nothing.
+[ -z "$fj" ] || [ "$dry" -eq 1 ] || so_forgejo_auth "$fj" || die "$SO_FORGEJO_ERR"
+# fj_send METHOD PATH JSON: one authed write to the PR's Forgejo repo. A refusal ends stderr with
+# Forgejo's reason (a protected branch, a 409 stale head), which fail prints as its last line.
+fj_send() {
+  local out
+  out=$(so_forgejo_get "$fj" "$2" -X "$1" -H 'Content-Type: application/json' --data-binary "$3") && return 0
+  printf 'Forgejo: %s\n' "$(jq -r '.message // empty' <<<"$out" 2>/dev/null || printf '%s' "$out")" >&2
+  return 1
+}
+# pr_view FIELDS JQ: `gh pr view --json FIELDS -q JQ`; on Forgejo the API's PR in gh's field names,
+# so one query reads both. Forgejo's mergeable reads false while it is still checking a pushed head,
+# so false is UNKNOWN: catch_up polls it out, and the merge step names a real conflict.
+pr_view() {
+  [ -n "$fj" ] || { gh pr view "$pr" "${R[@]}" --json "$1" -q "$2"; return; }
+  local raw
+  raw=$(so_forgejo_get "$fj" "pulls/$pr") || return 1
+  jq -r '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+          baseRefName: .base.ref, url: .html_url, headRefOid: .head.sha, headRefName: .head.ref,
+          isCrossRepository: (.head.repo.full_name != .base.repo.full_name), body: (.body // ""),
+          mergeable: (if .mergeable then "MERGEABLE" else "UNKNOWN" end),
+          mergeCommit: {oid: (.merge_commit_sha // "")}} | '"$2" <<<"$raw"
+}
+# pr_edit_body: stdin becomes the PR body.
+pr_edit_body() {
+  [ -n "$fj" ] || { gh pr edit "$pr" "${R[@]}" --body-file -; return; }
+  fj_send PATCH "pulls/$pr" "$(jq -Rsc '{body: .}')"
+}
+# pr_merge HEAD: merge pinned to HEAD, the full sha (Forgejo answers 409 to a short one).
+pr_merge() {
+  [ -n "$fj" ] || { gh pr merge "$pr" "${R[@]}" "$method" ${admin[@]+"${admin[@]}"} --match-head-commit "$1"; return; }
+  fj_send POST "pulls/$pr/merge" "$(jq -nc --arg do "${method#--}" --arg h "$1" '{Do: $do, head_commit_id: $h}')"
+}
+# pr_files: the PR's changed paths, one a line.
+pr_files() {
+  [ -n "$fj" ] || { gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename'; return; }
+  local page=1 got
+  while got=$(so_forgejo_get "$fj" "pulls/$pr/files?limit=$SO_FORGEJO_PAGE&page=$page"); do
+    jq -r '.[].filename' <<<"$got"
+    [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || return 0
+    page=$((page + 1))
+  done
+  return 1
+}
 # once_done -> how a done item takes this PR: "rerun" when it owns row closure (the first PR
 # on older items without closing_pr, a re-run after a failed board step), "again" when it is a later one, "more" when the item carries none in this
 # repo yet. A second PR in one repo is refused: that is a second task, so it gets its own item.
@@ -310,7 +448,7 @@ row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
 score_body() {
   local body out rc=0
   command -v comms-lint >/dev/null 2>&1 || { echo "body: not scored (no comms-lint on PATH)"; return 0; }
-  body=$(gh pr view "$pr" "${R[@]}" --json body -q .body 2>&1) || { echo "body: not scored (gh pr view: $(lastline "$body"))"; return 0; }
+  body=$(pr_view body .body 2>&1) || { echo "body: not scored ($api pr view: $(lastline "$body"))"; return 0; }
   out=$(printf '%s\n' "$body" | comms-lint --channel pr-body - 2>&1) || rc=$?
   case "$rc" in
   0) echo "body: passes comms-lint --channel pr-body" ;;
@@ -319,18 +457,15 @@ score_body() {
   esac
 }
 
-# shellcheck source=../lib/origin-repo.sh
-. "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
-
 # own_repo: git, the merge proof and autopull all read this checkout, so a PR in another repo is
 # refused here, before anything is touched: from the wrong checkout its merge proof would test the
 # wrong graph, or pass on an unrelated PR that shares the number.
 own_repo() {
   local here want=${pr_ref%#*}
-  here=$(origin_repo .) || here=""
+  if [ -n "$fj" ]; then here=$fj_repo; else here=$(origin_repo .) || here=""; fi
   [ -n "$here" ] || { echo "repo: not checked, this checkout has no origin"; return 0; }
   [[ "$pr_ref" == */*#* && "${here,,}" != "${want,,}" ]] || return 0
-  fail repo "#$pr is $pr_ref (${repo_from:-the repo gh picks here}), but this checkout's origin is $here: run from a checkout of ${pr_ref%#*}${repo_from:+, or pass --repo $here for $here#$pr}"
+  fail repo "#$pr is $pr_ref (${repo_from:-the repo gh picks here}), but this checkout's $remote is $here: run from a checkout of ${pr_ref%#*}${repo_from:+, or pass --repo $here for $here#$pr}"
 }
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
@@ -365,7 +500,7 @@ own_merged() {
   for ref in "${refs[@]}"; do
     [ "$ref" != "$pr_ref" ] && { [[ "$ref" == */*#* ]] || [ "$ref" != "$pr" ]; } || return 0
   done
-  body=$(gh pr view "$pr" "${R[@]}" --json body -q .body 2>&1) || fail item-line "gh pr view: $(lastline "$body")"
+  body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
   ! tr -d '\r' <<<"$body" | grep -qxF "Item: $item" || return 0
   ! git merge-base --is-ancestor "$head_oid" HEAD 2>/dev/null || return 0
   fail match "#$pr ($pr_ref, from $head_ref) is merged, and nothing ties it to $item: its body has no \"Item: $item\" line, its head ${head_oid:0:8} is not in this checkout's HEAD, and the item records ${it_pr:-no PR}. A PR in another repo: run from a checkout of it, with --repo <owner>/<repo>"
@@ -376,7 +511,7 @@ own_merged() {
 # so a CI job that reads the body runs on the stamped one.
 stamp_item() {
   local new out
-  [ -n "$body" ] || body=$(gh pr view "$pr" "${R[@]}" --json body -q .body 2>&1) || fail item-line "gh pr view: $(lastline "$body")"
+  [ -n "$body" ] || body=$(pr_view body .body 2>&1) || fail item-line "$api pr view: $(lastline "$body")"
   if tr -d '\r' <<<"$body" | grep -qxF "Item: $item"; then
     echo "item-line: present"
     return 0
@@ -386,7 +521,7 @@ stamp_item() {
   else
     new=$(printf '%s\n\nItem: %s' "$body" "$item")
   fi
-  out=$(printf '%s\n' "$new" | gh pr edit "$pr" "${R[@]}" --body-file - 2>&1) || fail item-line "gh pr edit: $(lastline "$out")"
+  out=$(printf '%s\n' "$new" | pr_edit_body 2>&1) || fail item-line "$api pr edit: $(lastline "$out")"
   body=$new
   echo "item-line: added \"Item: $item\" to the body"
 }
@@ -417,15 +552,15 @@ review_gate() {
 credit() {
   local files out
   [[ "$pr_ref" == */*#* ]] || { echo ", not credited (no repo on #$pr)"; return 0; }
-  files=$(gh api "repos/${pr_ref%#*}/pulls/$pr/files" --paginate --jq '.[].filename' 2>&1) ||
-    { echo ", not credited (gh api: $(lastline "$files"))"; return 0; }
+  files=$(pr_files 2>&1) || { echo ", not credited ($api api: $(lastline "$files"))"; return 0; }
   out=$(printf '%s\n' "$files" | agent-queue attribute "$item" 2>&1) || { echo ", not credited ($(lastline "$out"))"; return 0; }
   [ -z "$out" ] || echo ", $out"
 }
 
 # board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
-# Its proof is the PR and, once proven, the merge commit: something checkable, not a claim.
-board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:$pr${merged:+ commit:${merged:0:12}}"; }
+# Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
+# with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
+board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
 # close_plan_rows: once --plan has no open phase left, each row on its `rows:` line (plan_rows) that
 # is still open on a board closes with this PR as proof, as the item's own row does. The PR is
 # merged by now, so a row it cannot close is a line with the command, never a failed landing.
@@ -443,10 +578,10 @@ close_plan_rows() {
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
     IFS=$'\t' read -r prof proj lane <<<"$hit"
     flag=(); [ "$lane" = agent ] && flag=(--agent)
-    if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:$pr${merged:+ commit:${merged:0:12}}" 2>&1); then
+    if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}" 2>&1); then
       echo "rows: closed $id on $proj"
     else
-      echo "rows: $id not closed ($(lastline "$out")): notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:$pr"
+      echo "rows: $id not closed ($(lastline "$out")): notes --profile $prof ptask $proj ${flag[*]:+${flag[*]} }done $id --proof pr:${pr_ref:-$pr}"
     fi
   done <<<"$ids"
 }
@@ -464,15 +599,17 @@ if [ "$partial" -eq 1 ] && [ "$(jq -r .state <<<"$it")" = done ]; then
 fi
 
 if [ "$dry" -eq 1 ]; then
+  [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo"
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
-  echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
-  echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
-  echo "merge: gh pr merge $pr${repo:+ -R $repo} $method --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
+  echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item)"
+  echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
+  echo "merge: gh pr merge $pr${repo:+ -R $repo} $method${admin[*]:+ ${admin[*]}} --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
-  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo; never fails the landing)"
+  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools, restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
+  echo "prs: schedules-sync sync-prs <owner>/<repo>  (the PR store reads the merge now, not at its next poll; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
     echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
@@ -489,8 +626,8 @@ if [ "$dry" -eq 1 ]; then
   exit 0
 fi
 
-info=$(gh pr view "$pr" "${R[@]}" --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q '.state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName' 2>&1) ||
-  fail fetch "gh pr view $pr: $(lastline "$info")"
+info=$(pr_view state,baseRefName,url,headRefOid,isCrossRepository,headRefName '.state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName' 2>&1) ||
+  fail fetch "$api pr view $pr: $(lastline "$info")"
 read -r state base url head_oid cross head_ref <<<"$info"
 # The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
 pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"$url")
@@ -505,6 +642,34 @@ elif [ -n "$it_pr" ]; then
   # Apply the same one-PR-per-repo rule while the item is still open.
   once_done >/dev/null || exit $?
 fi
+# settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
+# merge commit before this one joins them. One recorded with none (its pr= set while it was open, or
+# merged outside agent-land) takes it from gh into prior_oid; one not merged refuses here, before
+# the merge, never after it. Why: private #762 merged and was left off its item, whose public #1794
+# had no merge recorded (2026-11-11).
+declare -A prior_oid=()
+settle_prior() {
+  local refs oids i out
+  read -ra refs <<<"$it_pr"
+  read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
+  # Space-split lists lose an empty slot, so a shorter merged: cannot say which PR lacks its merge.
+  [ "${#oids[@]}" -eq 0 ] || [ "${#oids[@]}" -ge "${#refs[@]}" ] ||
+    die "queue item $item records pr:${refs[*]} with merged:${oids[*]}, out of step: set both lists (agent-queue set $item pr=... merged=...), then re-run"
+  for i in "${!refs[@]}"; do
+    [ "${refs[i]}" != "$pr_ref" ] && [ "${refs[i]}" != "$pr" ] && [ -z "${oids[i]:-}" ] || continue
+    [[ "${refs[i]}" == */*#* ]] || die "queue item $item records pr:${refs[i]} with no merge, and a bare number names no repo to look it up in"
+    out=$(gh pr view "${refs[i]##*#}" -R "${refs[i]%#*}" --json state,mergeCommit -q '.mergeCommit.oid // .state' 2>&1) ||
+      die "gh pr view ${refs[i]}: $(lastline "$out")"
+    case "$out" in
+    MERGED) die "queue item $item records ${refs[i]}, which gh reads MERGED with no merge commit: record it (agent-queue set $item merged=<sha>), then re-run" ;;
+    CLOSED) die "queue item $item records ${refs[i]}, closed unmerged: drop it from the item's pr: (agent-queue set $item pr=...), then re-run" ;;
+    esac
+    [[ "$out" =~ ^[0-9a-f]{40}$ ]] ||
+      die "queue item $item records ${refs[i]}, which is $out: land it first (agent-land ${refs[i]##*#} --repo ${refs[i]%#*} --item $item --partial), then #$pr"
+    prior_oid[${refs[i]}]=$out
+  done
+}
+[ -n "$done_as" ] || settle_prior
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 stamp_item
@@ -523,11 +688,15 @@ else
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
   catch_up before || true
   wait_checks
-  while ! catch_up; do wait_checks; done
+  waits=0
+  while ! catch_up after "$waits"; do
+    wait_checks
+    waits=$((waits + 1))
+  done
 
   head=$(git rev-parse HEAD)
-  out=$(gh pr merge "$pr" "${R[@]}" "$method" --match-head-commit "$head" 2>&1) || fail merge "$(lastline "$out")"
-  state=$(gh pr view "$pr" "${R[@]}" --json state -q .state 2>&1) || fail merge "gh pr view: $(lastline "$state")"
+  out=$(pr_merge "$head" 2>&1) || fail merge "$(lastline "$out")"
+  state=$(pr_view state .state 2>&1) || fail merge "$api pr view: $(lastline "$state")"
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
   echo "merge: #$pr MERGED at ${head:0:8}"
 fi
@@ -536,15 +705,24 @@ score_body
 
 # The record steps carry the merge commit, proven on origin/<base> from the git graph: a PR object
 # reading MERGED is not proof its content is on the branch (ticket contract, "done is a gate").
-merged=$(gh pr view "$pr" "${R[@]}" --json mergeCommit -q .mergeCommit.oid 2>&1) || fail proof "gh pr view: $(lastline "$merged")"
+merged=$(pr_view mergeCommit .mergeCommit.oid 2>&1) || fail proof "$api pr view: $(lastline "$merged")"
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/agent-merge-proof.sh"
-out=$(merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
+out=$(MERGE_PROOF_REMOTE=$remote merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
 echo "proof: $out"
 # Stow serves the main checkouts, so a merged dotfiles PR is live only once its checkout moves:
 # fast-forward it now. Prints nothing for any other repo, and never fails the landing.
 live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
-[ -z "$live" ] || echo "live: $live"
+[ -z "$live" ] || printf '%s\n' "$live" | sed 's/^/live: /'
+# The PR store reads this merge now, not at its next poll, so its readers see it at once. A repo the
+# store does not list (exit 3) is not one it serves; any other failure is said, and the next poll
+# reads the merge.
+if [[ "$pr_ref" == */*#* ]]; then
+  store=${pr_ref%#*} host=$(url_host "$url")
+  [ "$host" = github.com ] || store="$host/$store"
+  rc=0; out=$("${SCHEDULES_SYNC:-schedules-sync}" sync-prs "$store" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = 3 ] || echo "prs: $store not refreshed ($(lastline "$out")); its next poll reads the merge" >&2
+fi
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 
@@ -561,7 +739,8 @@ case "$done_as" in
     if [ "${refs[i]}" = "$pr_ref" ] || [ "${refs[i]}" = "$pr" ]; then
       refs[i]=$pr_ref oids[i]=$merged found=1
     else
-      [ -n "${oids[i]:-}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
+      [ -n "${oids[i]:-}" ] || oids[i]=${prior_oid[${refs[i]}]:-}
+      [ -n "${oids[i]}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
     fi
   done
   if [ "$found" -eq 0 ]; then refs+=("$pr_ref"); oids+=("$merged"); fi

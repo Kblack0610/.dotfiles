@@ -49,11 +49,13 @@ if ! jq -e . "$MAP_FILE" >/dev/null 2>&1; then
 fi
 pass "map is valid JSON ($MAP_FILE)"
 
-# The set of names the registry considers real comes from `project_keys`, the one
+# The set of names the registry considers real comes from `project_all_keys`, the one
 # definition (`default` is a tracker fallback, not a project, so every typo'd name does not
-# "resolve").
+# "resolve"). Every key, work projects this machine does not list included: the registry is
+# shared, so its references hold on every machine.
 export PROJECT_MAP_FILE="$MAP_FILE"
-KNOWN="$(project_keys)"
+KNOWN="$(project_all_keys)"
+LISTED="$(project_keys)"  # the keys this machine lists (project_visible)
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
 
 # --- 1. every `path` has a `repo` ----------------------------------------------------
@@ -96,20 +98,74 @@ done < <(jq -r '(.trackers // {}) as $t | $t | to_entries[] | select(.value | ty
   | @tsv' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n board relations name a sheet" || skip "no board relations to check"
 
-# --- 4. aliases point at real projects, and never shadow one ------------------------
-n=0
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  a="${line%%	*}"; target="${line#*	}"
+# --- 3c. every tracker `client` names a `clients` entry with a profile ----------------
+# A client marks a work project, listed only on the machine whose notes profile is
+# clients[client].profile (project_visible). A typo'd client hides the project everywhere,
+# the work machine included, so it fails here instead of vanishing quietly.
+n=0 bad=0
+while IFS=$'\t' read -r name client ok; do
+  [ -n "$name" ] || continue
   n=$((n + 1))
-  is_known "$target" || fail "alias \"$a\" points at \"$target\", which is not a registered project"
-  # An alias whose own name is a project name is unreachable-or-worse: resolution order
-  # decides which wins, and the loser is invisible.
-  if jq -e --arg a "$a" '[(.paths // {}) | to_entries[] | .value] | index($a)' "$MAP_FILE" >/dev/null 2>&1; then
-    fail "alias \"$a\" collides with a project of the same name"
-  fi
-done < <(jq -r '(.aliases // {}) | to_entries[] | "\(.key)\t\(.value)"' "$MAP_FILE" 2>/dev/null)
-[ "$n" -gt 0 ] && pass "all $n aliases resolve and none shadow a project" || skip "no aliases to check"
+  [ "$ok" = 1 ] || { bad=$((bad + 1)); fail "trackers.$name has client \"$client\", which clients does not define with a profile"; }
+done < <(jq -r '(.clients // {}) as $c | (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.client != null)
+  | .value.client as $k | [.key, ($k | tostring),
+    (if ($k | type) == "string" and ((($c[$k] // null) | objects | .profile) // "") != "" then 1 else 0 end)]
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+if [ "$n" -eq 0 ]; then skip "no tracker clients to check"
+elif [ "$bad" -eq 0 ]; then pass "all $n tracker clients name a clients profile"; fi
+
+# --- 4. every spelling names one project, and every spelling in use resolves ---------
+# The name index (project_lookup; rule: docs/operations/release-state.md, "Project identity")
+# maps a key, each tracker's `names`, its `github`/`forgejo` slugs and each checkout basename to
+# one key. A spelling two keys claim resolves to whichever the index order reaches first, and
+# the other project silently loses its rows.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $p | .value
+  | (select(.names != null and ((.names | type) != "array" or any(.names[]; type != "string" or . == "")))
+     | "trackers.\($p).names is not a list of non-empty strings"),
+    ((.github, .forgejo) | select(. != null) | select(type != "string" or (test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not))
+     | "trackers.\($p) slug \(tojson) is not owner/repo")' "$MAP_FILE" 2>/dev/null)
+spellings="$(project_spellings)"
+while IFS=$'\t' read -r spelling claims; do
+  [ -n "$spelling" ] || continue
+  fail "spelling \"$spelling\" names more than one project: $claims (drop it from all but one)"
+done < <(awk -F'\t' '!seen[$1 SUBSEP $2]++ { k[$1]++; c[$1] = c[$1] (c[$1] ? ", " : "") $2 " (" $3 ")" }
+  END { for (s in k) if (k[s] > 1) print s "\t" c[s] }' <<<"$spellings" | sort)
+n="$(awk -F'\t' 'NF && !s[$1]++ { n++ } END { print n + 0 }' <<<"$spellings")"
+[ "$n" -gt 0 ] && pass "all $n spellings in the name index name one project" || skip "no name index to check"
+
+# --- 4d. every spelling the runtime has written resolves ------------------------------
+# The queue's `project:`, CI's runs.jsonl `repo` and each outcome's PR `repo` are written as
+# they were spelled at the time and never rewritten; a reader joins them through the index. One
+# the index does not know reads as a project of its own: add it to its project's `names`, or
+# its forge slug to the tracker.
+RUNS_FILE="${CI_RUNS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/ci/runs.jsonl}"
+observed="$(
+  [ -d "$AGENT_DIR/queue" ] && find "$AGENT_DIR/queue" -name '*.md' -print0 \
+    | xargs -0 -r awk 'FNR == 1 { d = 0 } !d && /^project:/ { sub(/^project: */, ""); print "queue\t" $0; d = 1 }'
+  [ -f "$RUNS_FILE" ] && jq -r '.repo // empty | "runs.jsonl\t" + .' "$RUNS_FILE" 2>/dev/null
+  for f in "$AGENT_DIR"/outcomes/*/*.jsonl; do
+    [ -f "$f" ] && jq -r '.prs[]?.repo // empty | "outcomes\t" + .' "$f" 2>/dev/null
+  done
+)"
+if [ -z "$observed" ]; then
+  skip "no queue, runs.jsonl or outcomes to read spellings from"
+else
+  idx="$(project_index_json)"
+  n=0; bad=0
+  while IFS=$'\t' read -r src spelling count hit; do
+    [ -n "$spelling" ] || continue
+    n=$((n + 1))
+    if [ -z "$hit" ]; then
+      fail "\"$spelling\" ($count in $src) names no project: add it to its tracker's names, or the forge slug to the tracker"
+      bad=$((bad + 1))
+    fi
+  done < <(jq -nRr --argjson i "$idx" "$_PN_JQ_DEFS"'
+    [inputs | split("\t") | select(length == 2 and .[1] != "")] | group_by(.[1])[]
+    | [(map(.[0]) | unique | join(",")), .[0][1], length, (.[0][1] | _pn_lookup($i) // "")] | @tsv' <<<"$observed")
+  [ "$bad" -eq 0 ] && pass "all $n spellings in the queue, runs.jsonl and outcomes resolve"
+fi
 
 # --- 4b. every row-id `code` is well formed and unique -------------------------------
 # `notes ptask add` stamps `<!-- id:<code>-<n> -->` from trackers.<p>.code. Two projects
@@ -129,27 +185,39 @@ done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "obj
 
 # --- 4c. every deploy target is well formed (release-state reads them) ----------------
 # A malformed target does not error in release-state; it shows `unknown` forever, which reads
-# like a flaky probe. Schema: docs/operations/release-state.md.
+# like a flaky probe. Schema: docs/operations/release-state.md. A channel word is a key of the
+# registry's `channels`, which maps it to the stage rung it serves (alpha or above: below alpha
+# nothing deploys, ~/.local/src/docs/stages.md "The ladder").
 n=0
 while IFS= read -r msg; do
   [ -n "$msg" ] && fail "$msg"
-done < <(jq -r '
-  def chans: ["prod","beta","alpha","preview","internal"];
-  (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
+done < <(jq -r --arg ladder "$(notes projects --stages 2>/dev/null)" '
+  def chans: (.channels // {}) | keys | map(select(startswith("_") | not));
+  ($ladder | split(" ") | map(select(. != ""))) as $L
+  | (if (.channels | type) != "object" then
+       (if [(.trackers // {})[] | objects | .targets // empty] != [] then "registry has no channels map (channel word -> stage rung)" else empty end)
+     elif $L == [] then empty
+     else .channels | to_entries[] | select(.key | startswith("_") | not)
+       | select(.value as $v | $L | index($v) as $i | $i == null or $i < ($L | index("alpha")))
+       | "channels.\(.key): \"\(.value)\" is not a stage at or above alpha (\($L | join("|")))" end),
+  (. as $root | (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
   | .key as $p
   | if (.value.targets | type) != "array" then "trackers.\($p).targets is not a list"
     else .value.targets[] | (.id // "?") as $id
     | (if type != "object" then "trackers.\($p).targets has a non-object entry" else empty end),
       (select(type == "object")
        | (if ((.id // "") | test("^[a-z0-9][a-z0-9-]*$") | not) then "trackers.\($p) target \"\($id)\": id must be lowercase letters, digits and -" else empty end),
-         (if ((.channel // "") as $c | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \(chans | join("|"))" else empty end),
+         (if ($root.channels | type) == "object" and ((.channel // "") as $c | $root | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \($root | chans | join("|"))" else empty end),
          (if (.pinned.tag == true) or (.pinned.deployed == true) or ((.pinned.repo // "") != "" and (.pinned.path // "") != "") then empty
-          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true}, {deployed: true} or repo and path" end),
+          elif .pinned.deployed == "manual" then
+            (if ((.pinned.reason // "") | type) == "string" and (.pinned.reason // "") != "" then empty
+             else "trackers.\($p) target \"\($id)\": {deployed: \"manual\"} needs a reason (why nothing records its deploys)" end)
+          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true}, {deployed: true}, {deployed: \"manual\", reason} or repo and path" end),
          (if .live == null or (.live.k8s.context and .live.k8s.namespace and .live.k8s.deployment) or .live.health.url
              or (.live.steam.app and .live.steam.branch) or (.live.play.package and .live.play.track) or .live.testflight.app then empty
           else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment}, health {url}, steam {app, branch}, play {package, track} or testflight {app}" end),
          (if (.live | objects | length) > 1 then "trackers.\($p) target \"\($id)\": live names more than one kind" else empty end))
-    end' "$MAP_FILE" 2>/dev/null)
+    end)' "$MAP_FILE" 2>/dev/null)
 while IFS= read -r dup; do
   [ -n "$dup" ] && fail "deploy target id $dup"
 done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | (.value.targets // []) | arrays | .[] | objects | .id]
@@ -159,14 +227,61 @@ while IFS=$'\t' read -r name id rel ref; do
   n=$((n + 1))
   case "$rel" in
     repo|dep) is_known "$ref" || fail "trackers.$name target \"$id\": $rel \"$ref\" is not a registered project" ;;
-    watch) [ -f "$AGENT_DIR/watches/$ref.yaml" ] || warn "trackers.$name target \"$id\": telemetry watch \"$ref\" has no $AGENT_DIR/watches/$ref.yaml" ;;
   esac
 done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $p
   | (.value.targets // []) | arrays | .[] | objects | .id as $id
   | (select(.pinned.repo) | [$p, $id, "repo", .pinned.repo]),
-    ((.deps // [])[] | [$p, $id, "dep", .]),
-    ((.telemetry // [])[] | [$p, $id, "watch", .])
+    ((.deps // [])[] | [$p, $id, "dep", .])
   | @tsv' "$MAP_FILE" 2>/dev/null)
+# buildTags: the per-build tag globs a project's history and changelog read while it has no
+# release family (release-state). Each is one glob: the readers join them with spaces.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.buildTags != null)
+  | .key as $p | .value.buildTags
+  | if type != "array" or length == 0 then "trackers.\($p).buildTags is not a list of globs"
+    else .[] | select(type != "string" or . == "" or test("\\s")) | "trackers.\($p).buildTags has \(tojson): each entry is one glob, no spaces" end' "$MAP_FILE" 2>/dev/null)
+# testWorkflows: the workflow files whose junit-* artifacts are the repo's test results (Infra
+# CI Tests, hub_core::junit, which fetches them with gh). Each is a path in the repo, on a tracker
+# that names its github slug.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.testWorkflows != null)
+  | .key as $p | .value as $t | $t.testWorkflows
+  | if type != "array" or length == 0 then "trackers.\($p).testWorkflows is not a list of workflow paths"
+    elif ($t.github // "") == "" then "trackers.\($p).testWorkflows needs a github slug to match runs on"
+    else .[] | select(type != "string" or (test("^\\.github/workflows/[^/\\s]+\\.ya?ml$") | not)) | "trackers.\($p).testWorkflows has \(tojson): each entry is a .github/workflows/<file>.yml path" end' "$MAP_FILE" 2>/dev/null)
+# One owner per tag: project_tag_scope subtracts a game's buildTags from its repo's declared
+# tagGlob. A repo project with none falls back to the bare `v*` ladder rung, which lists them.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object")] as $e
+  | [$e[] | select(.value.buildTags != null and (.value.repo // .key) != .key) | .value.repo] | unique[] as $r
+  | $e[] | select(.key == $r and (.value.tagGlob // "") == "")
+  | "trackers.\($r) has no tagGlob, so its bare v* tag fallback lists the buildTags of the projects inside it: declare one"' "$MAP_FILE" 2>/dev/null)
+# One owner per tag, on the tags that exist: every tag a project's release line or buildTags
+# lists in its checkout is listed by no other project of that repo, or two apps' histories and
+# version rolls would both claim it. The globs above can only be read against real tags. A
+# repo-only key (no lab, no targets) has no version anyone reads, so only the others count.
+if declare -F project_tag_scope >/dev/null 2>&1 && project_release_lib 2>/dev/null; then
+  owned="$(
+    while IFS= read -r p; do
+      [ -n "$p" ] && project_tag_scope "$p" 2>/dev/null || continue
+      g="$(_gr_glob "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_GLOB")"
+      { [ -z "$g" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$g"
+        [ -z "$_PTS_BUILDS" ] || git_tags "$_PTS_REPO" "$p" "$_PTS_SCOPED" "$_PTS_BUILDS"; } |
+        sort -u | while IFS= read -r tag; do printf '%s\t%s\t%s\n' "$_PTS_REPO" "$tag" "$p"; done
+    done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object")] as $e
+      | [$e[] | (.value.repo // .key)] | group_by(.) | map(select(length > 1) | .[0]) as $shared
+      | $e[] | select((.value.repo // .key) as $r | $shared | index($r)) | select(.value.lab or .value.targets) | .key' "$MAP_FILE" 2>/dev/null)
+  )"
+  while IFS=$'\t' read -r repo tag who; do
+    [ -n "$tag" ] && fail "tag $tag in $repo is listed by $who: one tag, one project (tagGlob, buildTags)"
+  done < <(awk -F'\t' 'NF == 3 { k = $1 FS $2; o[k] = (k in o) ? o[k] " and " $3 : $3; n[k]++ }
+    END { for (k in n) if (n[k] > 1) print k FS o[k] }' <<<"$owned" | sort)
+else
+  skip "project-name.sh or git-release.sh unavailable; cannot check one owner per tag"
+fi
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 
@@ -194,6 +309,10 @@ if [ -d "$AGENT_DIR" ]; then
     [ -n "$name" ] || continue
     n=$((n + 1))
     if ! is_known "$name"; then
+      if key="$(project_lookup "$name")"; then
+        fail "runtime key \"$name\" ($kinds) under ~/.agent is another spelling of $key; readers look under $key, so move its files there"
+        bad=$((bad + 1)); continue
+      fi
       fail "runtime key \"$name\" ($kinds) under ~/.agent names no registered project: register its repo in paths, or move it under ~/.agent/_archive/"
       bad=$((bad + 1))
     fi
@@ -212,7 +331,8 @@ fi
 # session with no key facts, plans or lessons digest. One past the budget overflows Claude
 # Code's ~10 KB hook-output cap with the rest of the preflight, which then reaches the model
 # as a 2 KB preview. The budget counts what is injected: anchor-lib.sh swaps the decisions
-# log for a pointer line, so it is left out.
+# log for a pointer line, so it is left out. Only the projects this machine lists need one: a
+# work project's anchor lives on its work machine.
 ANCHOR_MAX=6144 FACTS_MAX=2048
 if [ -d "$AGENT_DIR/anchors" ]; then
   n=0; bad=0
@@ -442,6 +562,8 @@ while IFS=$'\037' read -r name lab type; do
     bad=$((bad + 1))
   fi
   [ -n "$profiles" ] || continue
+  # A work project this machine does not list has its profile hidden too; its own machine checks it.
+  grep -qxF -- "$name" <<<"$LISTED" || continue
   if ! printf '%s\n' "$profiles" | grep -qxF -- "$lab"; then
     fail "trackers.$name has lab \"$lab\", which is not a notes profile ($(printf '%s' "$profiles" | tr '\n' ' '))"
     bad=$((bad + 1))
@@ -484,12 +606,13 @@ elif [ "$bad" -eq 0 ]; then
   pass "all $n lab/type declarations are valid, and lab dirs match the registry both ways"
 fi
 
-# --- 7b. a shipping app or game's sheet is ahead of its newest release tag -------------
-# The sheet's `Version:` is the version in progress and the git tag is the version shipped,
+# --- 7b. a shipping app or game's sheet is ahead of its newest release tag --------------
+# The sheet's `Version:` is the next open version and the git tag is the version shipped,
 # so a sheet at or below its newest tag is working on a release that already went out.
 # `agentctl-wave-roll` rolls the sheet (and its agent board) once a tag reaches it, every
 # 30 minutes: equal is that window (WARN), below means the roll is not happening (FAIL).
-if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; then
+# A tag with no lab version note is `hub releases check` (docs/operations/release-state.md).
+if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1 && project_release_lib; then
   n=0; bad=0; behind_warns=0
   while IFS=$'\037' read -r name lab; do
     [ -n "$name" ] || continue
@@ -505,7 +628,7 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; the
     elif [ "$sheet" = "$shipped" ]; then
       warn "lab project \"$name\" sheet $sheet is the shipped tag; agentctl-wave-roll rolls it on its next pass"
       behind_warns=$((behind_warns + 1))
-    elif [ "$(printf '%s\n%s\n' "${sheet#v}" "${shipped#v}" | sort -V | tail -1)" = "${shipped#v}" ]; then
+    elif git_version_ge "$shipped" "$sheet"; then
       fail "lab project \"$name\" sheet $sheet is behind its shipped tag $shipped (run: agentctl-wave-roll $name)"
       bad=$((bad + 1))
     fi
@@ -518,7 +641,7 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1; the
     pass "all $n shipping apps and games have a sheet ahead of their newest tag"
   fi
 else
-  skip "notes CLI or project-name.sh unavailable; cannot compare sheets to release tags"
+  skip "notes CLI, project-name.sh or git-release.sh unavailable; cannot compare sheets to release tags"
 fi
 
 printf '\n'

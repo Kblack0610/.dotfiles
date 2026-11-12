@@ -1,0 +1,17 @@
+[Unit]
+Description=Bring the fleet back after a planned reboot (session-snapshot up)
+# Only after `session-snapshot down`: an unplanned boot keeps today's page and manual restore.
+ConditionPathExists=%h/.agent/maintenance
+
+[Service]
+Type=oneshot
+# The tmux servers restore starts live in this unit's cgroup (tmux 3.8 scopes its panes, not its
+# server), so the default control-group kill would end every reopened session when up exits.
+KillMode=process
+# A boot under linger has no login PATH, and up calls tmx, agent-panel and claude by name.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/session-snapshot up
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

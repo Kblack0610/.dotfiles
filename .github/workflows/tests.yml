@@ -3,15 +3,20 @@ name: shell tests
 # Five jobs, by what they can catch:
 #
 #   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
-#          it never starts a tmux server. The same files the local stop-hook gates on.
+#          it never starts a tmux server. On a pull request only the files the change can
+#          affect plus tests/broad.txt (tests/pick.sh, the picker the Stop hook uses); on main,
+#          the schedule and a manual run, every file.
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
 #   drift  weekly sweep across tmux versions. What a local hook cannot catch is the
 #          environment moving underneath the repo -- a new tmux, a new fzf, a distro bump --
 #          which surfaces precisely when nothing in the repo changed.
-#   rust   the four tracked crates (notes-cli, agent-panel, agent-web, timebox). Runs on the bare
-#          runner, NOT in the test image, which has no Rust toolchain. Added 2026-08-09:
+#   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
+#          image, which has no Rust toolchain. On a pull request only the crates the change can
+#          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
+#          path of most PRs, so the job restores main's build output (Restore cargo); the notes-cli
+#          build for the bats steps stays. Added 2026-08-09:
 #          those crates carried 188 in-tree tests that had never run anywhere, and the
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
@@ -37,47 +42,155 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Each tier is split across runners by tests/shard.sh, balanced by the seconds in
-  # tests/shard-weights.tsv. Whole, unit took 8m45 and integ 6m48 of the 10-minute cap on
-  # 2026-11-07, all CPU: more runners is the lever, never a longer timeout. A shard is
-  # bounded below by its heaviest file (unit/fleet_dispatch.bats, about 40% of unit).
+  # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); timeout-minutes is the hang
+  # guard at 2x that, never a lever. tests/pick.sh lists the files, and tests/shard.sh splits
+  # them across runners, balanced by the seconds the weights job reads from the newest green
+  # main run's JUnit. A shard is bounded below by its heaviest file; unit/fleet_dispatch.bats,
+  # 40% of unit, is six files for that. The shard counts are sized so a full run fits the budget
+  # on a 4-core runner: the files are CPU-bound, so past an even split only more shards cut the
+  # wall. Unit's shard steps add up to 870-1000 s of wall, a split leaves the heaviest shard
+  # 10-20% over the mean, and about 60 s of each run is fixed (start, weights, setup, report), so
+  # four unit shards ran a full run in 5.3-5.6 min and six fit it (#1812). Hosted minutes are free
+  # on this public repo and jobs start within seconds of their run, so a shard costs neither.
+  # unit/shard.bats checks that the matrix lists every shard of each tier.
+  #
+  # The table is computed once, here, because two shards splitting by two tables can each leave
+  # a file out. No table (no green main run within the artifacts' 14 days, an API error) means
+  # every shard weighs its files by @test count, said on the Summary page: that costs balance,
+  # never coverage.
+  weights:
+    name: shard weights
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      table: ${{ steps.junit.outputs.table }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/shard.sh
+          sparse-checkout-cone-mode: false
+      - name: Weights from the newest green main run
+        id: junit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          d=$RUNNER_TEMP/junit table=
+          id=$(gh run list -R "$GITHUB_REPOSITORY" -w tests.yml -b main -e push -s success -L 1 \
+            --json databaseId --jq '.[0].databaseId // empty') || id=
+          if [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -p 'junit-unit-*' -p 'junit-integ-*' -D "$d" &&
+            table=$(tests/shard.sh --junit unit "$d"/junit-unit-* && tests/shard.sh --junit integ "$d"/junit-integ-*); then
+            echo "Shard weights: $(grep -vc '^#' <<<"$table") files from main run $id" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            table=
+            echo "::warning::no JUnit from a green main run${id:+ (run $id)}; every shard weighs its files by @test count"
+            echo "Shard weights: none, so every shard weighs its files by @test count" >>"$GITHUB_STEP_SUMMARY"
+          fi
+          { echo 'table<<EOF_TABLE'; [ -z "$table" ] || printf '%s\n' "$table"; echo EOF_TABLE; } >>"$GITHUB_OUTPUT"
+
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
+    needs: weights
+    if: ${{ !cancelled() }}   # a broken weights job falls back to test counts, it does not skip the gate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      APT_PKGS: lua5.4 parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {tier: unit, shard: 1/3}
-          - {tier: unit, shard: 2/3}
-          - {tier: unit, shard: 3/3}
-          - {tier: integ, shard: 1/2}
-          - {tier: integ, shard: 2/2}
+          - {tier: unit, shard: 1/6}
+          - {tier: unit, shard: 2/6}
+          - {tier: unit, shard: 3/6}
+          - {tier: unit, shard: 4/6}
+          - {tier: unit, shard: 5/6}
+          - {tier: unit, shard: 6/6}
+          - {tier: integ, shard: 1/3}
+          - {tier: integ, shard: 2/3}
+          - {tier: integ, shard: 3/3}
     steps:
+      # A pull request checks out its merge commit; depth 2 brings its first parent, the base
+      # tip, so HEAD^1..HEAD is exactly the change.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - name: Bootstrap bats
         run: make -C tests bootstrap
-      # GNU parallel lets the unit tier run with bats --jobs (tests/Makefile UNIT_PAR).
+      # The .debs are cached per runner image, so a hit installs them with dpkg and no network.
+      # A miss goes to the mirror with bounded Acquire timeouts, and the step has its own cap:
+      # a hung mirror (10 min on 2026-11-10, run 42763517511) fails here by name in 3 minutes
+      # instead of eating the job's cap before any test runs. The step takes about 10 s.
+      # The save is its own step so a red test run still keeps the debs.
+      - name: Runner image
+        id: image
+        run: echo "version=${ImageOS:?}-${ImageVersion:?}" >>"$GITHUB_OUTPUT"
+      - name: Restore apt debs
+        id: apt-debs
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ steps.image.outputs.version }}-${{ env.APT_PKGS }}
+      # GNU parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
       # inotify-tools: waybar_webcam.bats drives webcam.sh on real kernel inotify events.
       # sqlite3: session_outcomes.bats builds a fixture opencode DB.
       # stow: dotfiles_deploy.bats checks its links against stow itself.
       - name: GNU parallel, inotify-tools, sqlite3, stow
+        timeout-minutes: 3
         run: |
-          { command -v parallel && command -v inotifywait && command -v sqlite3 && command -v stow; } >/dev/null ||
-            { sudo apt-get update -qq && sudo apt-get install -y -qq parallel inotify-tools sqlite3 stow; }
+          have() { dpkg -s $APT_PKGS >/dev/null 2>&1; }
+          have && exit 0
+          debs=~/apt-debs
+          if compgen -G "$debs/*.deb" >/dev/null; then
+            sudo dpkg -i "$debs"/*.deb >/dev/null && have && exit 0
+            echo "::warning::the cached apt debs did not install on this image; fetching from the mirror"
+          fi
+          net=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          mkdir -p "$debs"
+          sudo apt-get update -qq "${net[@]}"
+          sudo apt-get install -y -qq -f "${net[@]}" -o Dir::Cache::archives="$debs" $APT_PKGS
+          sudo chown -R "$USER" "$debs"   # apt wrote it as root; the save runs as the runner user
+      - name: Save apt debs
+        if: steps.apt-debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-debs
+          key: ${{ steps.apt-debs.outputs.cache-primary-key }}
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
-      # The list is taken first so a failed split stops the step (bash -e) instead of handing
-      # test-files an empty FILES, which would pass with nothing run.
+      # The lists are taken first so a failed pick or split stops the step (bash -e). An empty
+      # shard is a pick smaller than the matrix, not a failure; the first shard of each tier
+      # puts the pick line ("picked N of M" or "full: <why>") on the run's Summary page, and
+      # every shard puts its predicted seconds beside the actual ones, so a skewed split shows.
       - name: Fast tier shard
         env:
           JUNIT: 1
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          WEIGHTS_TABLE: ${{ needs.weights.outputs.table }}
+          TAG: ${{ matrix.tier }} ${{ matrix.shard }}
         run: |
-          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }})
-          echo "$(wc -l <<<"$files") files in ${{ matrix.tier }} ${{ matrix.shard }}"
-          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")"
+          if [ -n "$WEIGHTS_TABLE" ]; then
+            printf '%s\n' "$WEIGHTS_TABLE" >"$RUNNER_TEMP/weights.tsv"
+            export SHARD_WEIGHTS=$RUNNER_TEMP/weights.tsv
+          fi
+          tests/pick.sh ${{ matrix.tier }} $BASE >"$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/why"
+          cat "$RUNNER_TEMP/why"
+          case "${{ matrix.shard }}" in 1/*) cat "$RUNNER_TEMP/why" >>"$GITHUB_STEP_SUMMARY" ;; esac
+          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" 2>"$RUNNER_TEMP/split") ||
+            { cat "$RUNNER_TEMP/split"; exit 2; }
+          cat "$RUNNER_TEMP/split"
+          [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
+          start=$SECONDS rc=0
+          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
+          actual=$(tests/shard.sh --junit ${{ matrix.tier }} tests/artifacts/junit |
+            awk '!/^#/ { s += $1 } END { printf "%.0f", s }') || actual='?'
+          median=$(grep -c 'weighs the median' "$RUNNER_TEMP/split" || true) note=
+          [ "$median" = 0 ] || note=" ($median files not in the table, weighed at the median)"
+          echo "- $(sed -n 's/^shard.sh: //p' "$RUNNER_TEMP/split" | tail -1); actual ${actual}s of test time in $((SECONDS - start))s wall$note" >>"$GITHUB_STEP_SUMMARY"
+          exit $rc
       - name: Upload JUnit
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -196,33 +309,88 @@ jobs:
     name: rust crates (test + clippy + fmt)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       # The ubuntu-24.04 image ships a stable Rust toolchain, so no third-party setup
       # action is needed -- consistent with this repo running zero tmux plugins by policy.
       # `rustup component add` is idempotent and only guards against an image that ships
       # cargo without clippy/rustfmt; rust.sh degrades to advisory on those two anyway.
       - name: Toolchain
+        id: toolchain
         run: |
           rustup component add clippy rustfmt || true
           cargo --version && cargo clippy --version && cargo fmt --version
-      # Keyed on the lockfiles, which ARE tracked here (and rust.sh passes --locked, so a
-      # stale lockfile fails rather than silently resolving a newer dependency).
-      - name: Cache cargo
-        uses: actions/cache@v4
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
+      # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
+      # crates and their dependencies from scratch: 248 s of a 292 s job, the critical path of a
+      # full-tier run (43014231625, 312 s). Keyed on the toolchain and the lockfiles, which ARE
+      # tracked here (rust.sh passes --locked): those fix every dependency build, and a fresh
+      # checkout's mtimes make cargo rebuild this repo's own crates, so a cache never serves stale
+      # code. Only main pushes, the schedule and a manual run save it; a pull request restores
+      # main's and writes none, so a PR never queues its own copy of a GB-sized cache.
+      - name: Restore cargo
+        id: cargo
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+            .local/src/*/target
+          key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
+      # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
       - name: Rust gate
-        run: make -C tests test-rust
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: |
+          crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
+          [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
+          make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
+      # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
+      # cell off screen, a pageerror, an "undefined" cell, a fixture table that no longer matches
+      # hub-core's columns, or a tab, inner tab or project inner tab taller than three screens at
+      # 1400x900 fails it. It runs when agent-web is picked (hub-core and web-kit pick it, and so
+      # does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs its
+      # own chromium; the dump reuses the target the gate just built. About 30 s, plus the download.
+      - name: Phone render harness
+        env:
+          PLAYWRIGHT_CORE: 1.62.1
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.local/src/agent-web/target
+        run: |
+          grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          node_dir=~/.cache/agent-web-phone/node
+          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
+          node "$node_dir/node_modules/playwright-core/cli.js" install chromium
+          node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
+      - name: Phone screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-web-phone
+          path: ${{ runner.temp }}/phone
+          if-no-files-found: ignore
+          retention-days: 7
+      # Right after the gate and on a red too: a red main must not leave every later run cold.
+      - name: Save cargo
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .local/src/*/target
+          key: ${{ steps.cargo.outputs.cache-primary-key }}
       # The bats cases that need a built notes: the test job has none, so they would only skip there.
       - name: Board to queue join, on the real notes
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
-          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
+          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
         run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 

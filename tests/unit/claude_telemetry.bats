@@ -45,6 +45,11 @@ telemetry_env() {
   assert_output --partial 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative'
 }
 
+@test "metrics export every 5s, or a run under the 60s SDK default never logs its cost" {
+  run telemetry_env 0
+  assert_output --partial 'OTEL_METRIC_EXPORT_INTERVAL=5000'
+}
+
 @test "off-LAN it exports NOTHING — the content-privacy gate" {
   # The paired positive is the on-LAN test above; without it a snippet that exported
   # nothing under any condition would pass this one.
@@ -137,8 +142,17 @@ attrs_in() {
 @test "queue.item is the launch's AGENT_QUEUE_ITEM, and an inherited one is dropped" {
   run attrs_in / 'queue.item=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; AGENT_QUEUE_ITEM=fix-menu claude_telemetry_launch; claude_telemetry_launch'
   assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
-  assert_line --index 1 "service.name=claude-code,host.name=$(hostname),queue.item=fix-menu"
+  assert_line --index 1 "host.name=$(hostname),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=fix-menu"
   assert_line --index 2 "service.name=claude-code,host.name=$(hostname)"
+}
+
+@test "a queue launch is fleet-dispatch's whichever runner started it, and one with no item keeps the caller's labels" {
+  # The shepherd's AGENTCTL_NAME leaked into its starts, so `agent-usage export check` found
+  # queue sessions missing from the by_runner rule's fleet-dispatch series.
+  run attrs_in / '' "CLAUDE_TELEMETRY_SERVICE=claude-agentctl AGENTCTL_NAME=shepherd; . '$SNIP' >/dev/null 2>&1
+    AGENT_QUEUE_ITEM=gm-1 claude_telemetry_launch; claude_telemetry_launch"
+  assert_line --index 0 "host.name=$(hostname),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=gm-1"
+  assert_line --index 1 "service.name=claude-agentctl,host.name=$(hostname),agentctl.runner=shepherd"
 }
 
 @test "claude-acct run labels the session with its project and queue item" {

@@ -18,7 +18,7 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "sched-head": part(), "sched-facets": part(), "sched-chips": part(), "sched-body": part() };
+const parts = { "sched-head": part(), "sched-facets": part(), "sched-tiles": part(), "sched-body": part() };
 const doc = { getElementById: (id) => (id === "schedules" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 const asked = [];
 let body = {};
@@ -34,7 +34,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const schst = run("schst");
 
@@ -42,8 +42,8 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "red", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 3 }, { name: "red", n: 2 }, { name: "ok", n: 1 }, { name: "unknown", n: 0 }, { name: "no-purpose", n: 1 }],
-  columns: ["kind", "name", "schedule", "last", "result", "streak", "triage", "repo", "next"].map(col),
-  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "ci", n: 2, q: "kind:ci" }] }],
+  columns: ["kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo"].map(col),
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, on: false, q: "kind:ci" }] }],
 };
 const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
 const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}` });
@@ -62,14 +62,24 @@ test("the table draws the summary, the mock's columns and a missing purpose", ()
   show();
   const h = box.innerHTML;
   assert.match(h, /3 scheduled, 2 red, 1 no purpose, CI read 7m ago/);
-  for (const c of ["kind", "name", "schedule", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
+  for (const c of ["kind", "name", "schedule", "next", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
   assert.doesNotMatch(h, /data-tsort="repo"/, "repo sorts and filters without a column");
   assert.match(h, /<td class="bad">red 6<\/td>/);
   assert.match(h, /<td class="">green 9<\/td>/);
   assert.match(h, /journal-sync <span class="warn"[^>]*>no purpose<\/span>/, "a missing purpose is amber");
   assert.match(h, /queued nightly-triage-1/);
-  assert.match(h, /<button class="on" data-ts="red">red <span class="n">2<\/span><\/button>/);
+  assert.match(h, /<button class="tile on" data-ts=""><span class="tl">RED<\/span><span class="tv">2<\/span><\/button>/);
   assert.match(h, /id="sched-q"/);
+});
+
+test("next shows the time of a start today, the day too for a later one, and a dash for none", () => {
+  const at = (ms) => run(`nextStart(${Math.round(ms / 1e3)})`);
+  const hm = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const soon = new Date(); soon.setHours(23, 59, 0, 0);
+  assert.equal(at(soon.getTime()), hm(soon));
+  const later = new Date(soon.getTime() + 3 * 86400e3);
+  assert.match(at(later.getTime()), /^\d\d-\d\d \d\d:\d\d$/);
+  assert.equal(run("nextStart(null)"), "-");
 });
 
 test("a row opens its detail and folds runs past the second", () => {

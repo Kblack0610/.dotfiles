@@ -16,6 +16,15 @@ pub const OPEN_DAYS: i64 = 7;
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
+
+/// A bench session's plan by its heading (`plans::named`), as the web Log's bench says it.
+fn plan_name(plan: &str) -> String {
+    if plan.is_empty() {
+        return String::new();
+    }
+    hub_core::plans::named(&hub_core::plans::path(plan))
+}
+
 fn or_dash(x: &str) -> String {
     if x.is_empty() {
         "-".into()
@@ -170,7 +179,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         "{} sessions",
         sessions(rec).map_or("-".into(), |n| n.to_string())
     ));
-    items.push(hub_core::costs::SPEND_BADGE.into());
+    items.push(hub_core::costs::spend_badge());
     if let Some(f) = rec["fleet"].as_object() {
         let mut b: Vec<(&String, i64)> = f
             .get("buckets")
@@ -227,7 +236,10 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("{n} waiting on you"), p.warn()),
-                Span::styled("  2 Home answers them", p.dim()),
+                Span::styled(
+                    format!("  {} answers them", hub_core::layout::bar_label("home")),
+                    p.dim(),
+                ),
             ]),
             w,
         ));
@@ -268,7 +280,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
                         let t = t.split_once('/').map_or(t, |(_, r)| r);
                         vec![
                             t.strip_suffix(":1").unwrap_or(t).to_string().into(),
-                            or_dash(s(x, "plan")).into(),
+                            or_dash(&plan_name(s(x, "plan"))).into(),
                             or_dash(s(x, "phase")).into(),
                             num(&x["working_h"]).into(),
                             num(&x["waiting_h"]).into(),
@@ -438,7 +450,7 @@ pub mod tests {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("3 waiting on you  2 Home answers them") < at("SESSIONS (1)"));
+        assert!(at("3 waiting on you  1 Home answers them") < at("SESSIONS (1)"));
         assert!(!t.contains("WAITING ON YOU"), "Home lists them");
         assert!(
             !t.contains("MERGED (2)") && !t.contains("STILL OPEN"),
@@ -454,7 +466,7 @@ pub mod tests {
                 .is_ascii_uppercase());
         }
         assert!(
-            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 9 Costs"),
+            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: Costs"),
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");

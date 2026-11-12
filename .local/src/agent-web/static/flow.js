@@ -1,5 +1,5 @@
 "use strict";
-// The flow strip on Home: hub-core's `flow::Strip` (inbox | board | queued | running | needs you |
+// The flow strip on Home: hub-core's `flow::Strip` (inbox | board | up next | running | needs you |
 // done 24h | drain), received ready-made (`flow` in /api/home). A chip opens the Queue on its filter, the board
 // chip opens the Board; a step past its age bound is amber, the only colour. A count the reader
 // did not return is `-`, never 0 (the strip words it so).

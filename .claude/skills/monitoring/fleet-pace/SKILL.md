@@ -5,7 +5,25 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
-  reviewed: 2026-11-07
+  reviewed: 2026-11-11
+  # The hand-typed forms that hang or kill the machine; hand_methods.py denies them. The Grep and Glob
+  # half of the root-search deny is block-root-search.sh.
+  replaces:
+    - match: |-
+        (?:^|[^A-Za-z0-9_.-])pkill(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$)
+      use: "`pkill -x <name>`, or kill a PID you hold: `$!`, a pidfile, or `pgrep -x <name>`. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
+      mode: deny
+      why: "a -f pattern also matches this command's own shell and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
+    - match: |-
+        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])pgrep(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$))
+      use: "`pgrep -x <name>`, or a PID you hold, before `kill`"
+      mode: deny
+      why: "the -f pattern is on the shell's own command line, so the pgrep matches that shell and the kill takes it down"
+    - match: |-
+        (?:^|[\s;&|(){}`])(?:\S*/)?(?:(?:find|bfs|fd|fdfind|rg|ugrep)|e?grep(?=[^;&|()`\n]{0,400}\s(?:-[A-Za-z0-9]*[rR][A-Za-z0-9]*|--(?:dereference-)?recursive)(?=\s|$)))(?=\s)(?![^;&|()`\n]{0,400}\s(?:-xdev|-mount|--one-file-system)(?=\s|$))[^;&|()`\n]{0,400}?\s(?<!-path\s)(?<!-ipath\s)(?<!-wholename\s)(?<!-iwholename\s)(?<!-newer\s)(?<!-samefile\s)(?<!-regex\s)/(?:mnt(?:/nas(?:/(?:private|public))?)?)?/*(?=\s|[;&|()`]|$)
+      use: "search the working directory (a repo's code, submodules included, is under it) or a named subdirectory; to search the share, name a subdirectory of it, or add `-xdev` / `--one-file-system`"
+      mode: deny
+      why: "a recursive walk from / or /mnt enters the CIFS mount /mnt/nas and blocks on it for tens of minutes (2026-10-29: three sessions, load 28 on 24 cores at 0% CPU); a new network mount adds its path here"
 ---
 
 # fleet-pace
@@ -20,7 +38,7 @@ Use for "the machine is melting", "stop all the agents", "is there room for more
 
 ## Tools
 
-- `fleet-assess` prints headroom (load against cores, Tctl, memory with its stall and swap used, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy; a last TREE column sums the process and all its descendants, and a runner whose children are each under the line gets a row showing its own low CPU and that sum), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
+- `fleet-assess` prints headroom (load against cores, Tctl, memory with its stall and swap used, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), a `gate:` line when the playground's slots exist (slots busy over open with the burst room, runs queued, the last 2h of results from the run ledger, and any branch with 5 or more runs in that window whose work is not yet in origin's default branch; `fleet-assess --gate` prints only it; there is no queue-wait figure because the ledger records no wait), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy; a last TREE column sums the process and all its descendants, and a runner whose children are each under the line gets a row showing its own low CPU and that sum), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
 - `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh`, `two-process.sh` and `scripts/authoring/unity-method.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - `claude-acct park <target>` exits a session's claude and keeps its pane, writing the resume to `~/.agent/parked/<key>`; `claude-acct unpark <target>` resumes it there on the account with room. A target is `[server/]session`, `[server/]session:window` or a pane id `%N`; name the window or pane when the tmux session holds more than one claude (the hub `dotfiles` session does), and the ledger key is then `session:window`. A parked session costs no tokens: no background task finishing and no message can wake it to re-read its context. A pause sent as a message costs one full-context turn, and the session keeps waking on its own waits: on 2026-11-02 those wakes were 48% of the fleet's tokens.
 - The `fleet-thermal` sentinel watch runs `fleet-assess --thermal-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`". A trip holds until load is under 1x cores, so one overload is one page, with Sentinel's 24h reminder if it lasts.
@@ -32,6 +50,8 @@ The class column tells you how each consumer can be stopped:
 | `claude` | a Claude session drove it | parked (`claude-acct park`) when idle or waiting on GitHub, a `fleet-comms` message when busy, plus the hold |
 | `shell` | a tmux pane with no Claude, usually a suite loop | the hold at the resource gate, or a kill. It has no inbox |
 | `agentctl` | an agentctl unit | `agentctl stop <name>` |
+| `unit` | another systemd user service (its name in the session column) | `systemctl --user stop <name>` |
+| `ci` | a job of this host's CI runner pool (cgroup under `ci.slice`; the runner slice is in the session column) | `machine-mode` runner slots: a busy runner finishes its job, then takes no new one. A stuck job: cancel its run (`gh run cancel`), never a kill |
 | `orphan` | reparented to init, its driver gone | nothing will reap it; a kill, with the human's OK |
 
 ## Verdicts
@@ -96,7 +116,7 @@ What a `fleet-lead pass` runs for a `pace:`, `blocked:` or `limit:` due line, or
 The fleet-wide list is in `fleet-lead`; these are this role's own.
 
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
-- Lift a `dispatch` hold set by `machine-mode`, or read the mode's lower runner and Unity slots as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it.
+- Read the machine mode's lower runner and Unity slots, or its lower level, as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it, and no mode holds dispatch.
 - Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.

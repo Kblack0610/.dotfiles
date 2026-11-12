@@ -308,3 +308,160 @@ head_of() { git -C "$1" rev-parse HEAD; }
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output --partial '~/.dotfiles-private: detached HEAD, left alone'
 }
+
+# rust_tool <crate> <bin> <mtime> -> $PUB/.local/src/<crate> holds a built <bin> dated @<mtime>, linked
+# from ~/.local/bin as build_local_rust_tools links it; `cargo` is a stub that logs its directory and
+# exits 101 when $SANDBOX/cargo.fail exists, or dates every built binary now when $SANDBOX/cargo.builds
+# exists (a crate or path dependency changed), else touches nothing (a no-op build).
+rust_tool() {
+  local crate="$PUB/.local/src/$1"
+  mkdir -p "$crate/target/release" "$HOME/.local/bin"
+  : >"$crate/Cargo.toml"
+  : >"$crate/target/release/$2" && touch -d "@$3" "$crate/target/release/$2"
+  ln -sfn "$crate/target/release/$2" "$HOME/.local/bin/$2"
+  cat >"$SANDBOX/bin/cargo" <<'STUB'
+#!/bin/sh
+printf 'cargo %s in %s\n' "$*" "$PWD" >>"$NOTES_FIXTURE/calls.log"
+[ -e "$SANDBOX/cargo.fail" ] && { echo 'error[E0425]: stub'; exit 101; }
+[ -e "$SANDBOX/cargo.builds" ] && touch target/release/*
+exit 0
+STUB
+  chmod +x "$SANDBOX/bin/cargo"
+  export SANDBOX
+}
+
+# unit <bin> <state> <started> -> the systemctl stub serves <bin>.service as <state> since @<started>
+unit() {
+  printf '%s\n' "$2" >"$NOTES_FIXTURE/systemctl.show.$1.service.ActiveState"
+  printf '@%s\n' "$3" >"$NOTES_FIXTURE/systemctl.show.$1.service.ActiveEnterTimestamp"
+}
+
+@test "a fast-forward that changes a crate rebuilds its tool and restarts the unit running the old binary" {
+  rust_tool agent-web agent-web 500
+  rust_tool hub-tui hub 500
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.builds"
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line '~: rebuilt agent-web (cargo build --release)'
+  assert_line '~: rebuilt hub (cargo build --release)'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/agent-web"
+  assert_called "cargo build --release --quiet in $PUB/.local/src/hub-tui"
+  assert_called 'systemctl --user restart agent-web.service'
+  assert_not_called 'systemctl --user restart hub.service'
+}
+
+@test "a current tool is not restarted, and one built by hand after its unit started is, though the checkout did not move" {
+  rust_tool agent-web agent-web 500
+  unit agent-web active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'rebuilt'
+  refute_line --partial 'restarted'
+  assert_called "cargo build --release --quiet in $PUB/.local/src/agent-web"
+  assert_not_called 'systemctl --user restart'
+  touch -d @2000 "$PUB/.local/src/agent-web/target/release/agent-web"
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'rebuilt'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+}
+
+@test "a unit that is not running is never started" {
+  rust_tool agent-web agent-web 500
+  unit agent-web inactive 1000
+  touch "$SANDBOX/cargo.builds"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: rebuilt agent-web (cargo build --release)'
+  assert_not_called 'systemctl --user restart'
+}
+
+@test "a failed build is named on the line and logged, the old binary and its unit stay, and the pull still succeeds" {
+  rust_tool agent-web agent-web 500
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.fail"
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --partial '~: cargo build of agent-web failed (exit 101), the binary on disk stays; report in'
+  assert_not_called 'systemctl --user restart'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'error[E0425]: stub'
+}
+
+@test "negative control: a link into another tree's target/release is not built" {
+  rust_tool agent-web agent-web 500
+  mkdir -p "$SANDBOX/elsewhere/.local/src/x/target/release"
+  : >"$SANDBOX/elsewhere/.local/src/x/Cargo.toml"
+  : >"$SANDBOX/elsewhere/.local/src/x/target/release/x"
+  ln -sfn "$SANDBOX/elsewhere/.local/src/x/target/release/x" "$HOME/.local/bin/x"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called "in $PUB/.local/src/agent-web"
+  assert_not_called "in $SANDBOX/elsewhere"
+}
+
+@test "a failed build still restarts a unit older than the binary on disk, and an empty budget builds nothing" {
+  rust_tool agent-web agent-web 2000
+  unit agent-web active 1000
+  touch "$SANDBOX/cargo.fail"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --partial '~: cargo build of agent-web failed (exit 101)'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+  rm "$SANDBOX/cargo.fail"
+  : >"$NOTES_FIXTURE/calls.log"
+  DOTFILES_AUTOPULL_BUILD_SECS=0 run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: build budget of 0s spent, agent-web not rebuilt'
+  assert_not_called 'cargo build'
+}
+
+# runner <name> <kind> <mtime> -> an agentctl conf for <name> whose COMMAND runs ~/.local/bin/<name>,
+# a link to a script in the public checkout dated @<mtime>, as stow links one
+runner() {
+  mkdir -p "$PUB/.local/bin" "$HOME/.local/bin" "$AGENTCTL_CONF_DIR"
+  : >"$PUB/.local/bin/$1" && touch -d "@$3" "$PUB/.local/bin/$1"
+  ln -sfn "$PUB/.local/bin/$1" "$HOME/.local/bin/$1"
+  printf 'NAME=%s\nKIND=%s\nCOMMAND="$HOME/.local/bin/%s --watch"\n' "$1" "$2" "$1" >"$AGENTCTL_CONF_DIR/$1.conf"
+}
+
+@test "a persistent runner whose script changed after its unit started is restarted, a current one is not (ar-1633)" {
+  runner triage persistent 2000
+  runner watcher persistent 500
+  unit agentctl@triage active 1000
+  unit agentctl@watcher active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: restarted agentctl@triage.service on the new triage'
+  assert_called 'systemctl --user restart agentctl@triage.service'
+  assert_not_called 'systemctl --user restart agentctl@watcher.service'
+}
+
+@test "negative control: a oneshot runner, or a persistent one that is not running, is never restarted" {
+  runner nightly oneshot 2000
+  runner triage persistent 2000
+  unit agentctl@nightly active 1000
+  unit agentctl@triage inactive 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'restarted'
+  assert_not_called 'systemctl --user restart'
+}
+
+@test "a quoted KIND, \${HOME} in a single-quoted COMMAND and a later COMMAND line read as agentctl's source would" {
+  runner triage persistent 2000
+  runner old persistent 2000
+  printf '%s\n' "NAME=triage" "KIND='persistent'" 'COMMAND="$HOME/.local/bin/old"' "COMMAND='\${HOME}/.local/bin/triage --watch'" >"$AGENTCTL_CONF_DIR/triage.conf"
+  rm "$AGENTCTL_CONF_DIR/old.conf"
+  unit agentctl@triage active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: restarted agentctl@triage.service on the new triage'
+  refute_line --partial 'on the new old'
+}

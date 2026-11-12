@@ -42,6 +42,8 @@ pub struct Row {
     pub game: Option<String>,
     /// The row's `type(area):` type (`feat`, `run`, ...), when its title has a well-formed one.
     pub r#type: Option<String>,
+    /// That prefix's area (`ci`, `gameplay`, ...).
+    pub area: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,
@@ -71,6 +73,12 @@ pub struct Row {
     pub due: Option<String>,
     /// The id its `#of/<id>` names.
     pub parent: Option<String>,
+    /// What a board leads the row with, a few words ([`crate::text::title`]); set by [`feed`].
+    pub title: String,
+    /// What the title leaves out of the text ([`crate::text::title`]); set by [`feed`].
+    pub summary: String,
+    /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
+    pub epic: Option<String>,
     /// The `#size/` weight, 1 unsized.
     pub weight: u32,
     /// The day a closed row closed.
@@ -181,14 +189,15 @@ impl Row {
 /// are query keys, not drawn; `tag:` takes any of a row's tags.
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
-        "section", "priority", "project", "lane", "state", "id", "version", "size", "tier",
-        "since", "when", "text", "profile", "tag",
+        "section", "title", "epic", "priority", "state", "when", "project", "lane", "id",
+        "version", "size", "tier", "since", "text", "profile", "tag",
     ];
     const STATES: &'static [&'static str] =
         &["all", "in progress", "filed today", "urgent", "requested"];
-    const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority"];
-    const LEAD: &'static str = "text";
-    const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
+    const FACETS: &'static [&'static str] =
+        &["section", "epic", "project", "lane", "priority", "state"];
+    const LEAD: &'static str = "title";
+    const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());
@@ -209,6 +218,8 @@ impl crate::table::Row for Row {
                 w => Val::Text(w),
             },
             "text" => text(&self.text),
+            "title" => text(&self.title),
+            "epic" => some(self.epic.as_deref()),
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,
             "tag" => Val::Text(self.tags.join(" ")),
@@ -231,6 +242,15 @@ impl crate::table::Row for Row {
     fn text(&self) -> String {
         let project = self.project.as_deref().unwrap_or_default();
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
+    }
+
+    /// The epic cell opens the epic's row.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        match col {
+            "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Row, e)),
+            _ => None,
+        }
     }
 
     fn vals(&self, col: &str) -> Vec<Val> {
@@ -323,6 +343,16 @@ impl Feed {
     /// The open rows of one project as (profile, project), or of every project: the rows table
     /// before any view, in the sheet's order: by section, then the feed's rank. Neither is
     /// derived here; notes-cli's sweep and rank own both.
+    /// The row `project`'s `id` names, open or closed; the project matches without case.
+    pub fn row(&self, project: &str, id: &str) -> Option<&Row> {
+        self.rows.iter().chain(&self.done).find(|r| {
+            r.id.as_deref() == Some(id)
+                && r.project
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case(project))
+        })
+    }
+
     pub fn open_rows(&self, scope: Option<(&str, &str)>) -> Vec<&Row> {
         let mut rows: Vec<&Row> = self
             .rows
@@ -345,6 +375,34 @@ impl Feed {
         let mut rows = self.open_rows(scope);
         rows.extend(done);
         rows
+    }
+
+    /// Give every row its [`crate::text::title`], and each row under an epic that epic's title.
+    pub fn titles(&mut self) {
+        for r in self.rows.iter_mut().chain(&mut self.done) {
+            let t = crate::text::title(&r.text);
+            (r.title, r.summary) = (t.title, t.summary);
+            if r.title.is_empty() {
+                r.title = r.text.trim().to_string();
+            }
+        }
+        let by: std::collections::HashMap<(String, String), String> = self
+            .rows
+            .iter()
+            .chain(&self.done)
+            .filter_map(|r| {
+                Some((
+                    (r.project.clone()?.to_lowercase(), r.id.clone()?),
+                    r.title.clone(),
+                ))
+            })
+            .collect();
+        for r in self.rows.iter_mut().chain(&mut self.done) {
+            r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
+                (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
+                _ => None,
+            };
+        }
     }
 
     /// Put each active queue item's state on the rows its `row:` (`<project>:<id>`) names.
@@ -379,6 +437,7 @@ pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
     for r in &mut f.rows {
         r.filed_today = r.filed.as_deref() == Some(f.today.as_str());
     }
+    f.titles();
     for r in focus {
         match f.focus.iter_mut().find(|c| c.profile == r.profile) {
             Some(c) => c.open += 1,
@@ -842,6 +901,116 @@ mod tests {
         };
         let f = feed(&fake).unwrap();
         assert!(f.rows[0].filed_today && !f.rows[1].filed_today);
+    }
+
+    #[test]
+    fn a_title_is_the_few_words_before_the_first_clause() {
+        // notes sets `type` on exactly these `type(area): ` rows.
+        let title = |t: &str| {
+            let t = crate::text::title(t);
+            (t.title, t.summary)
+        };
+        // The board rows as they stand on unity-core-playground (2026-11-12).
+        for (text, want) in [
+            (
+                "epic(gameplay): Apociseum coliseum mode: rounds with a red end #new",
+                "Apociseum coliseum mode",
+            ),
+            (
+                "epic(ci): Golden CI for tests: one owner, one checklist",
+                "Golden CI for tests",
+            ),
+            ("epic(gameplay): Space Raiders (v0.3.2)", "Space Raiders"),
+            (
+                "epic(save): Home: the player room, plus saves for every game",
+                "Home: the player room",
+            ),
+            (
+                "BrainMush: press X: the squad holds, and X frees it",
+                "BrainMush: press X",
+            ),
+            (
+                "feat(net): bot mode for testing networking, bots plus a real client",
+                "bot mode for testing networking",
+            ),
+            ("epic(ui): ui to standard", "ui to standard"),
+            (
+                "perf(perf): run scenes with 1000s of objects on pools and one tick for all",
+                "run scenes with 1000s of objects on pools...",
+            ),
+            // No prefix: a sentence keeps its own head, a colon in prose is not a prefix.
+            (
+                "Ship the trailer for DodginBalls",
+                "Ship the trailer for DodginBalls",
+            ),
+            ("the two sheets: merge them", "the two sheets"),
+            (
+                "bump the slot #urgent past #1980",
+                "bump the slot past #1980",
+            ),
+            // A playtest check's head is its own word, not a type.
+            (
+                "headset: menu text readable at 1.5 m, quests list Active",
+                "headset: menu text readable at 1.5 m",
+            ),
+            ("", ""),
+        ] {
+            assert_eq!(title(text).0, want, "{text}");
+        }
+        // The summary is what the title leaves out, never the title again.
+        for (text, rest) in [
+            (
+                "epic(ci): Golden CI for tests: one owner, one checklist",
+                "one owner, one checklist",
+            ),
+            ("epic(gameplay): Space Raiders (v0.3.2)", "v0.3.2"),
+            (
+                "feat(net): bot mode for testing networking, bots plus a client #low",
+                "bots plus a client",
+            ),
+            ("epic(ui): ui to standard", ""),
+            (
+                "feat(ui): end-of-run victory/defeat panel (UITK) now that round text is debug-only",
+                "(UITK) now that round text is debug-only",
+            ),
+            (
+                "perf(perf): run scenes with 1000s of objects on pools and one tick for all",
+                "...and one tick for all",
+            ),
+        ] {
+            assert_eq!(title(text).1, rest, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_row_under_an_epic_carries_its_title_and_links_it() {
+        let fake = Fake {
+            out: Ok(r#"{"today":"2026-11-12","rows":[
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
+                {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
+                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
+            calls: RefCell::default(),
+        };
+        let f = feed(&fake).unwrap();
+        assert_eq!(f.rows[1].title, "bot mode");
+        assert_eq!(f.rows[1].epic.as_deref(), Some("netcode to standard"));
+        assert_eq!(f.rows[0].epic, None, "an epic is under nothing");
+        assert_eq!(f.rows[2].epic, None, "an id is the project's own");
+        assert_eq!(
+            f.rows[3].epic, None,
+            "a parent not on the board names nothing"
+        );
+        use crate::table::Row as _;
+        assert_eq!(
+            f.rows[1].val("epic"),
+            Val::Text("netcode to standard".into())
+        );
+        assert_eq!(
+            f.rows[1].link("epic").map(|l| l.href()),
+            Some("#board?q=id:=ucp-1".to_string())
+        );
+        assert!(f.rows[0].link("epic").is_none());
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {

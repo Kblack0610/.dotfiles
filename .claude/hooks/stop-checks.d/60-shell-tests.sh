@@ -38,8 +38,8 @@ TESTS_DIR="$PROJECT_ROOT/tests"
   exit 1                                            # warn, do not block a fresh checkout
 }
 
-# Pick the fast-tier files this change can affect; CI's fast job runs all of them on every
-# PR. The whole tier outgrew the 300s Stop budget (5m24s in CI) and timed out on every Stop
+# Pick the fast-tier files this change can affect; CI's fast job picks the same way on a PR
+# (tests/pick.sh) and runs every file on main. The whole tier outgrew the 300s Stop budget (5m24s in CI) and timed out on every Stop
 # of a checkout carrying someone else's theme churn, so the gate reported nothing at all.
 # .local/lib/test-pick.sh says what is picked.
 # Seam: SHELL_TESTS_CHANGED (newline list of repo-relative paths) replaces the git read.
@@ -61,7 +61,7 @@ for t in "${ALL[@]}"; do
   test_picked "$CHANGED" "tests/${t#"$TESTS_DIR"/}" < "$t" && PICKED+=("$t")
 done
 if [ "${#PICKED[@]}" -eq 0 ]; then
-  echo "shell-tests: no fast-tier test names a changed file ($(grep -c . <<<"$CHANGED") changed); CI runs the full tier"
+  echo "shell-tests: no fast-tier test names a changed file ($(grep -c . <<<"$CHANGED") changed); main runs the full tier"
   exit 0
 fi
 echo "shell-tests: ${#PICKED[@]} of ${#ALL[@]} fast-tier files picked"
