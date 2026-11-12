@@ -548,6 +548,23 @@ MD
   [ "$(cl web web-v1.1.0 | jq -r .text)" = "- the web product" ]
 }
 
+@test "changelog: a product in a monorepo lists its own PRs, then the repo's others counted" {
+  jq '.trackers.web.path = "apps/web"' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  ship "first (#1)" web-v1.0.0
+  # Only engine work between two tags: none under the folder, so it says so and lists the rest.
+  ship "engine fix (#2)" wip-a; git -C "$CLONE" tag -d wip-a >/dev/null
+  ship "ci change (#3)" web-v1.1.0
+  [ "$(cl web web-v1.1.0 | jq -r .text)" = "$(printf -- 'No merged PR touches apps/web. 2 merged PRs elsewhere in the repo, touching nothing under apps/web:\n\n- ci change (#3)\n- engine fix (#2)')" ]
+  # Its own PR first, then the one elsewhere, counted once.
+  mkdir -p "$CLONE/apps/web"; echo x > "$CLONE/apps/web/f"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm "web feature (#4)"
+  ship "engine again (#5)" web-v1.2.0
+  [ "$(cl web web-v1.2.0 | jq -r .text)" = "$(printf -- '- web feature (#4)\n\n1 merged PR elsewhere in the repo, touching nothing under apps/web:\n\n- engine again (#5)')" ]
+  # Negative control: a project that is its whole repo has no elsewhere.
+  jq 'del(.trackers.web.path)' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  [ "$(cl web web-v1.2.0 | jq -r .text)" = "$(printf -- '- engine again (#5)\n- web feature (#4)')" ]
+}
+
 # node <version> <state> <at> [build] - one Deployment as the GraphQL answer carries it; a build
 # goes in the payload, which GraphQL returns as a JSON string.
 node() {

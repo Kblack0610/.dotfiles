@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::stamp;
+use crate::builds::{self, Run};
+use crate::pipeline::{dated, stamp};
 
 use crate::layout;
 use crate::queue::Item;
@@ -346,9 +347,15 @@ pub struct App {
     /// Every tag the collector kept, newest first, each joined to the channels it reached
     /// (`hub_core::release_graph`).
     pub history: Vec<Shipment>,
-    /// The RELEASED cell: the newest tag and when it was made, `v1.19.0 10-27`; `none declared`
-    /// with no tag glob, `not read` when git failed, `not recorded` when the glob matched none.
+    /// The RELEASED cell: the newest tag and when it was made, `v1.19.0 11-10 14:02`; with
+    /// none, `none declared` with no tag glob, `not read` when git failed, `not recorded` when
+    /// the glob matched none. While a build runs it adds `; building <tag> (<workflow> <elapsed>)`.
     pub released_text: String,
+    /// The RELEASED cell's word with no tag, kept for [`Releases::with_builds`].
+    #[serde(skip)]
+    pub no_release: &'static str,
+    /// The build runs the release graph joins to this app's tags, newest first.
+    pub builds: Vec<AppBuild>,
     /// How full each history column is ([`Coverage`]).
     pub coverage: Coverage,
     /// `prev 6/6, deployed 4/6 (1 manual, 1 not recorded), reached 2/6, rows 2/6 (4 before
@@ -361,6 +368,108 @@ pub struct App {
     /// (`docs/stages.md`, The ladder; facts from `release-state`).
     pub stage_text: String,
     pub stage_level: Level,
+}
+
+/// One build run of an app: a CI run the release graph joins to one of its tags (its run name, its
+/// log's `TAG:` line, its Deployment or its tag ref), so a queued, running, failed or cancelled
+/// run lists as well as one that shipped.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct AppBuild {
+    pub tag: String,
+    /// The workflow with its tag or run id folded out (`Release builds`, `Steam (dodginballs)`).
+    pub workflow: String,
+    /// `queued 2m`, `in progress 14m`, `success`, `failed`, `cancelled`.
+    pub state_text: String,
+    pub level: Level,
+    /// Queued or in progress.
+    pub live: bool,
+    /// When it started (queued: when it was created), with the date.
+    pub started_text: String,
+    /// When it finished, with the date; `-` while it runs.
+    pub ended_text: String,
+    pub url: String,
+}
+
+/// The RELEASED cell: the newest tag with when it was made, a release line's tag as its version
+/// (`v1.19.0`), a build tag as its own name; and the build running now, if one is.
+fn released_text(
+    line: Option<&str>,
+    history: &[Shipment],
+    builds: &[AppBuild],
+    none: &str,
+) -> String {
+    let made = history.first().map(|h| {
+        let tag = if line == Some("release") && !h.version.is_empty() {
+            format!("v{}", h.version)
+        } else {
+            h.tag.clone()
+        };
+        format!("{tag} {}", h.at_text)
+    });
+    let building = builds.iter().find(|b| b.live).map(|b| {
+        let took = b
+            .state_text
+            .strip_prefix("in progress ")
+            .unwrap_or(&b.state_text);
+        format!("building {} ({} {took})", b.tag, b.workflow)
+    });
+    match (made, building) {
+        (Some(m), Some(b)) => format!("{m}; {b}"),
+        (m, b) => m.or(b).unwrap_or_else(|| none.into()),
+    }
+}
+
+impl Releases {
+    /// Each app's build runs: the builds read's `runs` the release graph tied to one of its tags
+    /// (the rows Release runs lists), the newest attempt of each, newest first. The RELEASED cell
+    /// then says when one is running. Safe to call again on a newer read.
+    pub fn with_builds(&mut self, runs: &[Run]) {
+        let mut newest: HashMap<(&str, &str, u64), (&Run, &release_graph::RunRelease)> =
+            HashMap::new();
+        for (r, rel) in runs.iter().filter_map(|r| Some((r, r.release.as_ref()?))) {
+            let e = newest.entry((&r.forge, &r.repo, r.id)).or_insert((r, rel));
+            if r.attempt > e.0.attempt {
+                *e = (r, rel);
+            }
+        }
+        let mut picked: Vec<_> = newest.into_values().collect();
+        picked.sort_by_key(|(r, _)| (std::cmp::Reverse(r.started), std::cmp::Reverse(r.id)));
+        for a in &mut self.apps {
+            a.builds = picked
+                .iter()
+                .filter(|(_, rel)| rel.project == a.project)
+                .map(|(r, rel)| app_build(r, &rel.tag))
+                .collect();
+            let line = Some(a.line.as_str());
+            a.released_text = released_text(line, &a.history, &a.builds, a.no_release);
+        }
+    }
+}
+
+fn app_build(r: &Run, tag: &str) -> AppBuild {
+    let took = crate::run_detail::took_text(r.took);
+    let state_text = match (r.state.as_str(), r.conclusion.as_deref()) {
+        ("queued", _) => format!("queued {took}"),
+        ("running", _) => format!("in progress {took}"),
+        (_, Some("failure" | "startup_failure")) => "failed".into(),
+        (_, Some("timed_out")) => "timed out".into(),
+        (_, Some(c)) if !c.is_empty() => c.replace('_', " "),
+        (s, _) => s.to_string(),
+    };
+    let live = matches!(r.state.as_str(), "queued" | "running");
+    let ended = (!live)
+        .then(|| r.ended_at.as_deref().and_then(crate::fleet::ts))
+        .flatten();
+    AppBuild {
+        tag: tag.to_string(),
+        workflow: builds::timed_as(&r.workflow, &r.path),
+        state_text,
+        level: r.level,
+        live,
+        started_text: dated(r.started),
+        ended_text: ended.map_or("-".into(), dated),
+        url: r.url.clone(),
+    }
 }
 
 impl App {
@@ -783,10 +892,9 @@ fn app(
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
-    let now = chrono::Local::now().timestamp();
     let history = match (graph, line) {
-        (Some(g), _) => g.history(project, &channels, now),
-        (None, Some(l)) => release_graph::history(l, &channels, now),
+        (Some(g), _) => g.history(project, &channels),
+        (None, Some(l)) => release_graph::history(l, &channels),
         (None, None) => vec![],
     };
     let others: Vec<String> = channels[lead..]
@@ -845,16 +953,10 @@ fn app(
         deploy_level: last.map_or(Level::Ok, |r| r.deploy_level),
         others_text: others.join("; "),
         lead,
+        released_text: released_text(line.map(|l| l.line.as_str()), &history, &[], no_release),
         line: line.map_or("none".into(), |l| l.line.clone()),
-        // A release tag reads as its version (`v1.19.0`); a build tag is its own name.
-        released_text: history.first().map_or(no_release.into(), |h| {
-            let tag = if line.is_some_and(|l| l.line == "release") && !h.version.is_empty() {
-                format!("v{}", h.version)
-            } else {
-                h.tag.clone()
-            };
-            format!("{tag} {}", h.at_text)
-        }),
+        no_release,
+        builds: vec![],
         coverage_text: coverage.text(since, &undeployed),
         coverage,
         history,
@@ -959,7 +1061,8 @@ fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> 
 
 /// The tab: every app, or what stopped the read. Nothing is carried over from an earlier read, so
 /// a failed probe is never shown as the last good value. `items` are the queue's, which join a
-/// release's PRs to their rows; none leaves the ROWS cell `-`.
+/// release's PRs to their rows; none leaves the ROWS cell `-`. Each app's build runs are the
+/// builds read's rows, put on with [`Releases::with_builds`].
 pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
     let question = layout::resolve("releases")
         .map(|t| t.question.to_string())
@@ -977,6 +1080,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 live: &none,
                 registry: registry.as_deref(),
                 since: s.links.since,
+                run_tags: &[],
             });
             let apps = apps(&rows, &s.releases, &s.stages, Some(&graph), s.links.since);
             let mut total = Coverage::default();
@@ -1250,16 +1354,25 @@ mod tests {
             serde_json::from_value::<Side>(v).unwrap().text(none)
         };
         assert_eq!(
-            side(serde_json::json!({"value": "v1", "source": "x"}), "none declared"),
+            side(
+                serde_json::json!({"value": "v1", "source": "x"}),
+                "none declared"
+            ),
             "v1"
         );
         // A pin nothing recorded yet, and a live side nothing probes.
         assert_eq!(
-            side(serde_json::json!({"value": null, "source": "none"}), "not recorded"),
+            side(
+                serde_json::json!({"value": null, "source": "none"}),
+                "not recorded"
+            ),
             "not recorded"
         );
         assert_eq!(
-            side(serde_json::json!({"value": null, "source": "none"}), "none declared"),
+            side(
+                serde_json::json!({"value": null, "source": "none"}),
+                "none declared"
+            ),
             "none declared"
         );
         assert_eq!(
@@ -1270,7 +1383,10 @@ mod tests {
             "not recorded"
         );
         assert_eq!(
-            side(serde_json::json!({"source": "k8s", "error": "timeout"}), "none declared"),
+            side(
+                serde_json::json!({"source": "k8s", "error": "timeout"}),
+                "none declared"
+            ),
             "not read"
         );
         // A channel moved by hand says so instead of a blank.
@@ -1641,6 +1757,146 @@ mod tests {
         );
         assert_eq!(r.coverage, "coverage: prev 2/2, deployed 0/1, reached 1/2");
         assert_eq!(a.history[1].prs_text, "none merged");
+    }
+
+    #[test]
+    fn an_app_lists_its_build_runs_newest_first_and_its_row_says_one_is_running() {
+        let dir = std::env::temp_dir().join(format!("hub-rel-builds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = builds::Paths {
+            ledger: dir.join("runs.jsonl"),
+            sync: dir.join("sync.json"),
+            fleet: dir.join("state.json"),
+            prs: dir.join("prs"),
+            jobs: dir.join("jobs.jsonl"),
+            quarantine: dir.join("quarantine.json"),
+            run_tags: dir.join("run-tags.jsonl"),
+        };
+        let now = chrono::Utc::now();
+        let iso = |ago: i64| (now - chrono::Duration::seconds(ago)).to_rfc3339();
+        let run = |id: u64,
+                   attempt: u32,
+                   name: &str,
+                   status: &str,
+                   concl: Option<&str>,
+                   ago: i64,
+                   end: Option<i64>| {
+            serde_json::json!({"forge": "github", "repo": "Acme/game", "id": id, "attempt": attempt,
+                "workflow": name, "path": ".github/workflows/release.yml", "title": name,
+                "branch": "main", "event": "workflow_dispatch", "status": status,
+                "conclusion": concl, "created_at": iso(ago), "started_at": iso(ago),
+                "ended_at": end.map(iso), "url": format!("https://github.com/Acme/game/actions/runs/{id}")})
+            .to_string()
+        };
+        let ledger = [
+            run(
+                10,
+                1,
+                "Release builds",
+                "completed",
+                Some("success"),
+                9000,
+                Some(8000),
+            ),
+            run(
+                11,
+                1,
+                "Steam",
+                "completed",
+                Some("cancelled"),
+                7000,
+                Some(6900),
+            ),
+            run(
+                11,
+                2,
+                "Steam",
+                "completed",
+                Some("success"),
+                6000,
+                Some(5000),
+            ),
+            run(
+                12,
+                1,
+                "Release builds of v0.5.0-game8",
+                "in_progress",
+                None,
+                600,
+                None,
+            ),
+            run(13, 1, "Tests", "completed", Some("failure"), 500, Some(400)),
+        ];
+        std::fs::write(&paths.ledger, ledger.join("\n")).unwrap();
+        std::fs::write(
+            &paths.run_tags,
+            "{\"repo\":\"Acme/game\",\"id\":10,\"tag\":\"v0.5.0-game7\"}\n{\"repo\":\"Acme/game\",\"id\":11,\"of\":10}\n",
+        )
+        .unwrap();
+        let raw = r#"{"generated_epoch": 7, "rows": [{"project": "game", "id": "game-steam",
+          "channel": "prod", "status": "ok", "live": {"value": "v0.5.0-game7"}}],
+          "releases": {"game": {"line": "build", "repo": "Acme/game", "tags": [
+            {"tag": "v0.5.0-game8", "version": "0.5.0-game8", "at": 1794000000},
+            {"tag": "v0.5.0-game7", "version": "0.5.0-game7", "at": 1793990000}]}}}"#;
+        let fake = Fake(Ok(raw.into()));
+        let join = || builds::Join {
+            runner: &fake,
+            items: &[],
+        };
+        let b = builds::read(&paths, Some(join()), now.timestamp());
+        let mut r = read(&fake);
+        r.with_builds(&b.rows);
+        assert_eq!(r.errors, Vec::<String>::new());
+        let a = &r.apps[0];
+        let got: Vec<(&str, &str, &str)> = a
+            .builds
+            .iter()
+            .map(|b| (b.tag.as_str(), b.workflow.as_str(), b.state_text.as_str()))
+            .collect();
+        // The running one's elapsed time is read against the clock: 10m, or 10m01 a second on.
+        assert!(got[0].2.starts_with("in progress 10m"), "{}", got[0].2);
+        let got: Vec<_> = got
+            .into_iter()
+            .map(|(t, w, s)| {
+                (
+                    t,
+                    w,
+                    if s.starts_with("in progress") {
+                        "in progress"
+                    } else {
+                        s
+                    },
+                )
+            })
+            .collect();
+        // The newest attempt of each run; the Tests run names no tag and lists nowhere.
+        assert_eq!(
+            got,
+            vec![
+                ("v0.5.0-game8", "Release builds", "in progress"),
+                ("v0.5.0-game7", "Steam", "success"),
+                ("v0.5.0-game7", "Release builds", "success"),
+            ]
+        );
+        assert_eq!(a.builds[0].ended_text, "-");
+        assert_eq!(a.builds[2].started_text.len(), "11-11 00:16".len());
+        assert!(a.builds[2].url.ends_with("/runs/10"));
+        assert!(
+            a.released_text
+                .contains("; building v0.5.0-game8 (Release builds 10m"),
+            "{}",
+            a.released_text
+        );
+        // A newer builds read replaces the runs rather than adding to them.
+        r.with_builds(&b.rows);
+        assert_eq!(r.apps[0].builds.len(), 3);
+        assert_eq!(r.apps[0].released_text.matches("building").count(), 1);
+        // negative control: no ledger is no builds, and the cell names no build.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let b = builds::read(&paths, Some(join()), now.timestamp());
+        r.with_builds(&b.rows);
+        assert_eq!(r.apps[0].builds.len(), 0);
+        assert!(!r.apps[0].released_text.contains("building"));
     }
 
     #[test]

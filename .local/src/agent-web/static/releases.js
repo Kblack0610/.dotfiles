@@ -61,7 +61,7 @@ function appDetail(a) {
     : "";
   const stage = `<div class="cline"><b>Stage</b> <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>` +
     (a.coverage_text ? `<div class="cline"><b>Coverage</b> <span class="muted">${esc(a.coverage_text)}</span></div>` : "");
-  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}` +
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}${appBuilds(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 
@@ -80,6 +80,19 @@ function releaseHistory(a) {
     `<td class="wrap${s.prs.length ? "" : " muted"}">${esc(s.prs_text)}</td><td class="wrap${s.rows.length ? "" : " muted"}">${esc(s.rows_text)}</td></tr>`).join("");
   const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
   return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
+}
+
+// The opened app's build runs, newest first (hub_core::releases::AppBuild): each run the release
+// graph joins to one of its tags, whether it is queued, running, failed or shipped.
+function appBuilds(a) {
+  const b = a.builds || [];
+  if (!b.length) return `<div class="cline"><b>Builds</b> <span class="muted">no build run joined to a tag in the last 30 days</span></div>`;
+  const rows = b.map((x) => `<tr><td>${esc(x.tag)}</td><td>${esc(x.workflow)}</td><td class="${levelClass(x.level)}">${esc(x.state_text)}</td>` +
+    `<td class="n">${esc(x.started_text)}</td><td class="n${x.live ? " muted" : ""}">${esc(x.ended_text)}</td>` +
+    `<td>${/^https:/.test(x.url || "") ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">run</a>` : ""}</td></tr>`).join("");
+  const live = b.filter((x) => x.live).length;
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">tag</th><th>workflow</th><th data-role="glance">state</th><th data-role="glance">started</th><th>finished</th><th>link</th></tr>${rows}</table></div>`;
+  return cfold(`rel-builds:${a.project}`, `<b>Builds</b> <span class="muted">${b.length} run${b.length === 1 ? "" : "s"}${live ? `, ${live} in progress` : ""}</span>`, body, REL_OPEN, true);
 }
 
 function releaseSide(s, text) {
@@ -192,7 +205,8 @@ $("releases").addEventListener("change", (e) => {
   if (pick) loadChangelog(pick.dataset.project, pick.value);
 });
 
-const relFeed = pushed("releases", ["releases"], relst.refresh);
+// A ledger write also refreshes the apps: their Builds and the RELEASED cell's `building`.
+const relFeed = pushed("releases", ["releases", "builds"], relst.refresh);
 const relRunsFeed = pushed("releases", ["builds"], relRuns.refresh);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {

@@ -1,6 +1,7 @@
 //! The Releases tab: every app with what is live where, its channels on open, from hub-core's
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
-//! No read cache: the read is one small file, and a new snapshot pushes the `releases` event.
+//! No read cache of its own: the read is one small file, and a new snapshot pushes the `releases`
+//! event. The apps' build runs come from the builds read and its cache.
 
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
@@ -53,11 +54,17 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "errors": [e] }).to_string()
 }
 
-/// The view `q` asks for, over a read of its own joined to the queue `items`.
+/// The view `q` asks for, over a read of its own joined to the queue `items`, each app with its
+/// build runs from the builds read Release runs lists (`builds::current`, kept a few seconds).
 pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) -> String {
+    let runs = crate::builds::current((items.clone(), None)).await;
     let read = move || {
         let mut r = releases::read(&System, &items);
         r.errors.extend(queue_error);
+        match runs {
+            Ok(b) => r.with_builds(&b.rows),
+            Err(e) => r.errors.push(format!("build runs: {e}")),
+        }
         r
     };
     match tokio::task::spawn_blocking(read).await {

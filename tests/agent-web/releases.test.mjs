@@ -73,6 +73,10 @@ const binks = {
   project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
   stage: "draft", stage_text: "draft: live above it: binks-prod", stage_level: "warn", coverage_text: "prev 1/1, deployed 1/2 (1 none declared)",
+  builds: [
+    { tag: "binks-v3", workflow: "Release builds", state_text: "in progress 12m", level: "ok", live: true, started_text: "11-11 16:20", ended_text: "-", url: "https://github.com/o/binks/actions/runs/30" },
+    { tag: "binks-v2", workflow: "Steam (binks)", state_text: "cancelled", level: "ok", live: false, started_text: "11-05 10:00", ended_text: "11-05 10:01", url: "javascript:alert(1)" },
+  ],
   line: "release", released_text: "v2 11-05", history: [
     { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
     { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
@@ -231,6 +235,23 @@ test("an opened app lists its releases newest first with when, the one before an
   assert.equal(relst.sel, "binks");
 });
 
+test("an opened app lists its build runs newest first, below its releases, and counts the one in progress", async () => {
+  await open();
+  const b = box.innerHTML;
+  assert.match(b, /<details class="cfold" data-k="rel-builds:binks" open><summary><b>Builds<\/b> <span class="muted">2 runs, 1 in progress<\/span><\/summary>/);
+  assert.match(b, /<tr><td>binks-v3<\/td><td>Release builds<\/td><td class="">in progress 12m<\/td><td class="n">11-11 16:20<\/td><td class="n muted">-<\/td><td><a href="https:\/\/github.com\/o\/binks\/actions\/runs\/30" target="_blank" rel="noopener">run<\/a><\/td><\/tr>/);
+  assert.match(b, /<tr><td>binks-v2<\/td><td>Steam \(binks\)<\/td><td class="">cancelled<\/td><td class="n">11-05 10:00<\/td><td class="n">11-05 10:01<\/td><td><\/td><\/tr>/, "a link that is not https is dropped");
+  assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("rel-builds:binks") && b.indexOf("rel-builds:binks") < b.indexOf("<b>Changelog</b>"));
+});
+
+test("an app no build run joined says so where its builds would be", async () => {
+  show(data({ rows: [{ ...binks, builds: [] }] }));
+  body = changelog();
+  clickApp();
+  await settled();
+  assert.match(box.innerHTML, /<b>Builds<\/b> <span class="muted">no build run joined to a tag in the last 30 days<\/span>/);
+});
+
 test("an app with no tags read says so where its history would be", async () => {
   show(data({ rows: [{ ...binks, history: [], line: "none" }] }));
   body = changelog();
@@ -309,14 +330,14 @@ test("Release runs lists the runs tied to a release with the tag each ran on, an
   assert.match(box.innerHTML, /No run tied to a release in 30 days\./);
 });
 
-test("Release runs reads with scope=release under its own view keys, on a builds event while the tab is open", async () => {
+test("a builds event re-reads Release runs (scope=release, its own view keys) and the apps, whose build runs it changes, only while the tab is open", async () => {
   builds = bdata();
   body = data();
   run("st.tab = 'releases'; st.views.releases = 'q=project%3Abinks&bq=repo%3Ao%2Fbinks'");
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
   await settled();
-  assert.deepEqual(asked, ["/api/builds?bq=repo%3Ao%2Fbinks&scope=release"]);
+  assert.deepEqual(asked, ["/api/releases?q=project%3Abinks", "/api/builds?bq=repo%3Ao%2Fbinks&scope=release"]);
   run("st.tab = 'home'; st.views.releases = ''");
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
