@@ -108,7 +108,14 @@ const people = [
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
-const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table(), hidden: 0 };
+// What hub_core::links sends beside those rows (`Who::link`); the page builds no `#...` itself.
+const links = [
+  { who: "#fleet/fleet-dispatch", project: "#projects/dotfiles" },
+  { who: "#fleet/ask-judge" },
+  { who: "#sessions/lab%2Fdotfiles-agent-11%3A1", project: "#projects/dotfiles" },
+  { who: "#sessions/lab%2Fdotfiles-agent-12%3A1", project: "#projects/dotfiles" },
+];
+const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table({ links }), hidden: 0 };
 
 test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
   vm.runInContext("st", ctx).tab = "fleet";
@@ -123,6 +130,11 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   assert.match(h, /<td class="warn">needs you<\/td>/);
   assert.doesNotMatch(h, /data-fold="ask-judge"/, "only a row with children folds");
   assert.match(h, /2 sessions/);
+  assert.match(h, /<td class="muted"><a href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
+  // A row the server sent no link for draws its text and opens nothing.
+  f.data = { ...fleetData, table: table() };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<tr class="wr" data-href=""><td class="muted"><button[^>]*>v<\/button> lead<\/td><td>fleet-dispatch<\/td>/);
 });
 
 test("a held runner reads red and the held chip counts it", () => {

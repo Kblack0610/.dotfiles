@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::Worker;
+use crate::links::{Kind, Link};
 use crate::table::{Row, Val, View};
 
 /// What a row opens: a runner's page or a session's record.
@@ -118,6 +119,21 @@ impl Row for Who {
 
     fn in_state(&self, state: &str) -> bool {
         self.state == state || self.kind == state
+    }
+
+    /// The name opens the runner's page or the session's record; a session's project its card.
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "who" => Some(Link::to(
+                match self.opens {
+                    Opens::Runner => Kind::Runner,
+                    Opens::Session => Kind::Session,
+                },
+                &self.key,
+            )),
+            "project" if !self.project.is_empty() => Some(Link::to(Kind::Project, &self.project)),
+            _ => None,
+        }
     }
 }
 
@@ -442,6 +458,24 @@ mod tests {
             &state(),
             1000,
         )
+    }
+
+    #[test]
+    fn a_runner_links_its_page_and_a_session_its_record_and_project() {
+        let r = rows();
+        let (_, t) = View::default().summary(&r);
+        let at = |who: &str, c: &str| {
+            let i = r.iter().position(|x| x.who == who).unwrap();
+            t.links[i].get(c).cloned()
+        };
+        assert_eq!(at("shepherd", "who").as_deref(), Some("#fleet/shepherd"));
+        assert_eq!(at("shepherd", "project"), None, "a runner has no project");
+        let s = r.iter().find(|x| x.opens == Opens::Session).unwrap();
+        assert_eq!(
+            at(&s.who, "who"),
+            Some(crate::links::Link::to(Kind::Session, &s.key).href())
+        );
+        assert_eq!(at(&s.who, "state"), None);
     }
 
     #[test]

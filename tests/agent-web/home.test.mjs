@@ -255,7 +255,12 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
         pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
       { slug: "q-2", title: "No session yet", project: "trader" },
     ],
-    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }] },
+    // hub_core::links beside the rows (`Running::link`): the page draws these, it builds none.
+    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }], links: [
+      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#board?q=id:=ar-1494", epic: "#board?q=id:=ar-1292",
+        pr: "https://github.com/o/r/pull/1871", ci: "https://github.com/o/r/pull/1871/checks" },
+      { item: "#queue/q-2", project: "#projects/trader" },
+    ] },
   }));
   assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
   assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
@@ -265,7 +270,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
   assert.ok(row, html);
   const cells = row[1];
-  assert.match(cells, /Queue cards<div class="muted">next: docs<\/div>/);
+  assert.match(cells, /<a href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
   assert.match(cells, /<a href="#projects\/agent-runtime">agent-runtime<\/a>/);
   assert.match(cells, /<a href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
   assert.match(cells, /<a href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
@@ -273,7 +278,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(cells, /<a href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
   assert.match(cells, /<a class="ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
   // No session: the row has no target to open and empty cells say so.
-  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap">No session yet<\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
+  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a href="#queue\/q-2">No session yet<\/a><\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
   // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did

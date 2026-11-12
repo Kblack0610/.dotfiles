@@ -1158,6 +1158,7 @@ pub fn board(
             .into_iter()
             .filter(|f| !f.values.is_empty())
             .collect(),
+        links: vec![],
     };
     let consumers = consumers(c, "", "");
     Board {
