@@ -253,7 +253,8 @@ where
         project: i.project.trim().to_string(),
         what: i.title(),
         plan: i.plan_label.clone(),
-        kind: i.kind.clone().filter(|k| !k.is_empty()),
+        // The item's own type, else the one its task led with (`fix(hub): ...`).
+        kind: i.kind.clone().filter(|k| !k.is_empty()).or_else(|| crate::text::clean(&i.task).kind),
         ci: first.and_then(|p| p.check.clone()),
         pr: label.map(|l| if more > 0 { format!("{l} +{more}") } else { l }),
         url: first
@@ -267,14 +268,16 @@ where
 
 fn pr_row(p: &Pr) -> Work {
     let title = crate::text::clean(&p.title);
+    let kind = title.kind.clone();
+    let what = title.shown();
     Work {
         state: if p.open { "open" } else { "done" },
         when: p.at.clone(),
         project: p.project.clone(),
-        what: title.text,
+        what: if what.is_empty() { p.title.trim().to_string() } else { what },
         plan: None,
         // The conventional-commit type its title led with, so `kind:fix` finds items and PRs.
-        kind: title.kind,
+        kind,
         ci: p.check.clone(),
         pr: Some(format!("{}#{}", p.repo, p.number)),
         url: Some(p.url.clone()),
@@ -767,6 +770,22 @@ mod tests {
         };
         assert_eq!(row(true), ("a".into(), "CI failure".into(), None));
         assert_eq!(row(false), ("pr 8".into(), "draft".into(), Some("fix".into())));
+    }
+
+    #[test]
+    fn a_rows_type_is_never_lost_and_an_id_only_pr_title_is_never_blank() {
+        let typed = item("fix(hub): mend the table", "running", json!({}));
+        let own = item("b", "running", json!({"type": "chore"}));
+        let mut ids = pr(".dotfiles", 9, AT);
+        ids["title"] = json!("fix(x): ar-186");
+        let mut deps = pr(".dotfiles", 10, AT);
+        deps["title"] = json!("deps: bump serde");
+        let rows = work(&[typed, own], vec![("2026-11-08", json!({"open": [ids, deps]}))]);
+        let at = |what: &str| rows.iter().find(|r| r.what == what).unwrap_or_else(|| panic!("{what}: {rows:?}"));
+        assert_eq!(at("mend the table").kind.as_deref(), Some("fix"));
+        assert_eq!(at("b").kind.as_deref(), Some("chore"));
+        assert_eq!(at("ar-186").kind.as_deref(), Some("fix"));
+        assert_eq!(at("bump serde").kind.as_deref(), Some("deps"));
     }
 
     #[test]

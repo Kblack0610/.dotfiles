@@ -1002,13 +1002,13 @@ impl QueueRow<'_> {
 
 impl crate::table::Row for QueueRow<'_> {
     const COLUMNS: &'static [&'static str] = &[
-        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title",
+        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title",
     ];
     /// `all` first, because the first chip keeps every row; then the states in the order the
     /// Queue sections list them.
     const STATES: &'static [&'static str] =
         &["all", "needs you", "running", "on a PR", "up next", "done"];
-    const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct", "plan"];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
     const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
@@ -1038,6 +1038,7 @@ impl crate::table::Row for QueueRow<'_> {
             "size" => text(said(&i.size)),
             "acct" => text(said(&i.account)),
             "pr" => text(said(&i.pr)),
+            "plan" => text(i.plan_label.as_deref()),
             "title" => Val::Text(i.title()),
             _ => Val::None,
         }
@@ -1113,7 +1114,7 @@ pub struct Candidate {
 impl Candidate {
     /// The row's words, [`crate::text::clean`] and capped.
     pub fn title(&self) -> String {
-        cap(&crate::text::clean(&self.text).text, TITLE_MAX)
+        cap(&crate::text::clean(&self.text).shown(), TITLE_MAX)
     }
 
     /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip

@@ -16,7 +16,8 @@ const TITLE_SLACK: usize = 3;
 /// `word(area): ` prefix is a type whatever its word.
 const KINDS: &[&str] = &[
     "feat", "fix", "chore", "check", "run", "decide", "epic", "refactor", "docs", "perf",
-    "research", "test", "ci", "verify", "spike", "build", "style", "revert",
+    "research", "test", "ci", "verify", "spike", "build", "style", "revert", "deps", "release",
+    "hotfix", "wip",
 ];
 
 /// A text with everything that is not its words taken out, and what came out.
@@ -29,6 +30,23 @@ pub struct Clean {
     pub area: Option<String>,
     /// The ids it led with or named in brackets, in order: `apo-104 P2`, `ar-1928`.
     pub ids: Vec<String>,
+}
+
+impl Clean {
+    /// The words, or the ids when the text was nothing but ids (`fix(x): ar-186`), so a cell is
+    /// never blank.
+    pub fn shown(self) -> String {
+        if self.text.is_empty() { self.ids.join(", ") } else { self.text }
+    }
+}
+
+/// A `#` word that is a tag (`#size/s`, `#urgent`), not a PR (`#1980`) or a colour (`#fff`).
+fn is_tag(w: &str) -> bool {
+    w.strip_prefix('#').is_some_and(|t| {
+        let t = t.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '/');
+        let hex = matches!(t.len(), 3 | 4 | 6 | 8) && t.bytes().all(|b| b.is_ascii_hexdigit());
+        t.starts_with(|c: char| c.is_alphabetic()) && !hex
+    })
 }
 
 /// A board row or queue id: lowercase letters, a dash and digits, then any slug words
@@ -130,10 +148,7 @@ pub fn clean(text: &str) -> Clean {
         .lines()
         .map(|l| {
             l.split_whitespace()
-                .filter(|w| {
-                    !w.strip_prefix('#')
-                        .is_some_and(|t| t.starts_with(|c: char| c.is_alphabetic()))
-                })
+                .filter(|w| !is_tag(w))
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -162,8 +177,15 @@ pub struct Title {
 pub fn title(text: &str) -> Title {
     let c = clean(text);
     let line = c.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (title, summary) = clause(&line);
-    let title = if title.is_empty() { c.ids.join(", ") } else { title };
+    let (title, mut summary) = clause(&line);
+    if title.is_empty() {
+        return Title { title: c.ids.join(", "), summary, kind: c.kind, area: c.area, ids: c.ids };
+    }
+    // The ids the title lost stay readable in the summary, never in the title.
+    if !c.ids.is_empty() {
+        let refs = c.ids.join(", ");
+        summary = if summary.is_empty() { refs } else { format!("{summary} ({refs})") };
+    }
     Title { title, summary, kind: c.kind, area: c.area, ids: c.ids }
 }
 
@@ -199,13 +221,24 @@ fn clause(line: &str) -> (String, String) {
 }
 
 /// A text's title and the rest of it, for prose (an ask, a session's topic, a task): the
-/// [`clean`] text's first non-empty line up to its first
-/// sentence end, each file path as its name (`/a/b/plan.md` as `plan`), capped at `TITLE_MAX`.
-/// The rest is what follows that sentence; when the title had to be cut it is the whole text,
-/// so nothing is only in the cut-off part.
+/// [`clean`] text's first line up to its first sentence end, each file path as its name
+/// (`/a/b/plan.md` as `plan`), capped at `TITLE_MAX`. The rest is the text as written (its
+/// tags, refs and indentation kept) after that sentence; when the title had to be cut it is the
+/// whole text, so nothing is only in the cut-off part.
 pub fn headline(text: &str) -> (String, String) {
     let cleaned = clean(text);
-    let text = cleaned.text.as_str();
+    let (line, _) = sentence(&cleaned.text);
+    let words: Vec<String> = line.split_whitespace().map(short_path).collect();
+    let full = words.join(" ");
+    let full = full.trim_end_matches('.');
+    let title = cap(full, TITLE_MAX);
+    let raw = text.trim();
+    let rest = if title != full { raw.to_string() } else { sentence(raw).1 };
+    (title, rest)
+}
+
+/// `text`'s first line up to its first sentence end, and everything after it.
+fn sentence(text: &str) -> (&str, String) {
     let (line, after) = text.split_once('\n').unwrap_or((text, ""));
     let line = line.trim();
     let end = [". ", "? ", "! "]
@@ -214,21 +247,13 @@ pub fn headline(text: &str) -> (String, String) {
         .map(|i| i + 1)
         .min()
         .unwrap_or(line.len());
-    let words: Vec<String> = line[..end].split_whitespace().map(short_path).collect();
-    let full = words.join(" ");
-    let full = full.trim_end_matches('.');
-    let title = cap(full, TITLE_MAX);
-    let rest = if title != full {
-        text.to_string()
-    } else {
-        [line[end..].trim(), after.trim()]
-            .iter()
-            .filter(|s| !s.is_empty())
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    (title, rest)
+    let rest = [line[end..].trim(), after.trim_end()]
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    (&line[..end], rest)
 }
 
 /// A word that is a file path, as the file's name without its extension; the punctuation after
@@ -367,6 +392,25 @@ mod tests {
         for old in ["apo-120: base UI", "apo-104 P2: town gate", "ucp-486, ucp-526: x", "fix(hub): x", "a row #size/s"] {
             assert!(dirty(old), "{old}");
         }
+    }
+
+    #[test]
+    fn the_ids_a_title_loses_stay_in_its_summary_and_a_colour_is_not_a_tag() {
+        let t = title("ucp-486, ucp-526: land both");
+        assert_eq!((t.title.as_str(), t.summary.as_str()), ("land both", "ucp-486, ucp-526"));
+        let t = title("fix(ui): set accent to #fff, then #a1b2c3 #size/s (ar-9)");
+        assert_eq!((t.title.as_str(), t.summary.as_str()), ("set accent to #fff", "then #a1b2c3 (ar-9)"));
+        assert!(is_tag("#size/s") && is_tag("#urgent") && !is_tag("#fff") && !is_tag("#1980"));
+    }
+
+    #[test]
+    fn a_headlines_rest_is_the_text_as_written() {
+        let ask = "Merge the #fff theme? (ar-1928)\n  - option a\n    code";
+        let (t, rest) = headline(ask);
+        assert_eq!(t, "Merge the #fff theme?");
+        assert_eq!(rest, "(ar-1928)\n  - option a\n    code");
+        // A one-sentence ask has no rest, so agent-web keeps it whole as the title.
+        assert_eq!(headline("fix(x): one line #low").1, "");
     }
 
     #[test]
