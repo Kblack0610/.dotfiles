@@ -1,18 +1,23 @@
 "use strict";
 // The answer cards for what waits on you: a live session's open dialog or permission prompt
 // (read from its transcript by the server) and a pending ask, the one record of a question to
-// the human. Home (home.js) draws them on its Needs you rows, the one place they are answered;
-// a Queue row counts its own and links there. Answering a session's card types the answer into
-// its pane.
+// the human. Home (home.js) draws them on its Needs you rows, an opened Queue row draws its own
+// session's, and a session's conversation pins its dialog; each answers in place. Answering a
+// session's card types the answer into its pane.
 
-// Which folds are open, by data-k: a section (`sec:<name>`) or a card's details.
-const askst = { open: {} };
+// Which folds are open, by data-k: a section (`sec:<name>`) or a card's details. `sending` holds
+// the answer in flight per card key (`ask:<id>`, `ses:<target>`), so a redraw mid-send keeps the
+// card locked and saying what it sent.
+const askst = { open: {}, sending: {} };
 
-const refreshAsks = coalesce(async () => {
-  st.asks = await api("/api/asks");
+function drawAsks() {
   renderBadge();
   if (st.tab === "home") renderHome();
   if (st.tab === "queue") qst.render();
+}
+const refreshAsks = coalesce(async () => {
+  [st.asks, st.parked] = await Promise.all([api("/api/asks"), api("/api/asks/parked").catch(() => st.parked)]);
+  drawAsks();
 });
 
 const asking = () => st.agents.filter((a) => a.question);
@@ -42,10 +47,14 @@ const NEED_KINDS = {
 const needBand = (k, meta) =>
   `<div class="nband"><span class="nkind">${NEED_KINDS[k]}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
 
+// The Needs you kind of a session's open dialog, as hub-core's home::NeedKind::of_dialog gives it.
+const dialogKind = (q) => ({ choice: "ask", tool: "perm", plan: "plan" })[q.kind] || "turn";
+
 // A live session's open dialog: what the session is, what it wants and for how long, then the
 // question and its answers. `k` is its row's kind. The tmux target is the title's tooltip and sits
 // in Details. A plan shows whole, its buttons above it, so a long plan never hides how to approve
-// it. `here` is the card pinned in the session's own conversation, which needs no Open button.
+// it. `here` is a card drawn where an Open button already is (the session's own conversation, a
+// Queue row's detail), so it draws none.
 function sessionCard(a, k, here = false) {
   const q = a.question;
   let opts = "";
@@ -62,7 +71,7 @@ function sessionCard(a, k, here = false) {
   const open = here ? "" : `<button class="btn sm" data-open>Open session</button>`;
   const lead = q.kind === "plan" ? `<div class="opts">${opts}${open}</div>${body}<div class="opts">${reply}</div>`
     : `${body}<div class="opts">${opts}${open}${reply}</div>`;
-  return `<div class="card need k-${k}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}<div class="err"></div></div>`;
+  return `<div class="card need k-${k}${sendingCls(`ses:${a.target}`)}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}${statusLine(`ses:${a.target}`)}</div>`;
 }
 
 // The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card: what
@@ -121,7 +130,9 @@ function askOptions(a) {
     const why = rec ? `<span class="aow">recommended${a.why ? ": " + esc(a.why) : ""}</span>` : "";
     return `<button class="aopt${rec ? " rec" : ""}" data-a="${esc(o)}"><span class="aok">${esc(o)}</span>${note}${why}</button>`;
   }).join("");
-  return `<div class="aopts">${rows}</div><div class="opts"><input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button></div>`;
+  // Park takes it off Needs you until its revisit date (agent-ask park, by its item's priority).
+  return `<div class="aopts">${rows}</div><div class="opts"><input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>` +
+    `<button class="btn" data-park title="off Needs you until its revisit date, set by its item's priority">Park</button></div>`;
 }
 
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
@@ -139,8 +150,8 @@ function askCard(a, held = "") {
   const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
   const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],
     ["judge", a.judge], ["rule", a.rule], ["reason", a.reason], ["answered by", a.answered_by], ["answer note", a.answer_note]]) + log, askst.open);
-  return `<div class="card need k-ask" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
-    `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}<div class="err"></div></div>`;
+  return `<div class="card need k-ask${sendingCls(`ask:${a.id}`)}" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
+    `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}${statusLine(`ask:${a.id}`)}</div>`;
 }
 
 // A session card answers through the session's own pane, so the answer lands in that
@@ -164,19 +175,92 @@ async function answerSession(card, e) {
   card.querySelector("[data-free]").value = "";
 }
 
-// A click inside a session card or an ask card, on Home or a queue row.
+// A card from the click to the server's reply: locked (app.css .card.sending), its status line
+// saying what went out, so a slow answer never reads as a dead click. A failure unlocks it and
+// says why; a sent ask leaves the list at once, as the server has already closed it.
+const sendingCls = (key) => (askst.sending[key] ? " sending" : "");
+const statusLine = (key) => askst.sending[key]
+  ? `<div class="cstat" role="status"><span class="spin"></span>Sending ${esc(askst.sending[key])}...</div><div class="err"></div>`
+  : `<div class="cstat" role="status"></div><div class="err"></div>`;
+// Every drawn card for `key` (a session's card can show on Home and pinned in its conversation),
+// found afresh, since a redraw mid-send replaces the clicked one.
+const cardKey = (c) => (c.dataset.t ? `ses:${c.dataset.t}` : `ask:${c.dataset.id}`);
+const cardsFor = (key) => [...document.querySelectorAll(".card[data-t], .card[data-id]")].filter((c) => cardKey(c) === key);
+function markSending(key, what, error = "") {
+  if (what) askst.sending[key] = what; else delete askst.sending[key];
+  for (const card of cardsFor(key)) {
+    card.classList.toggle("sending", !!what);
+    card.setAttribute("aria-busy", what ? "true" : "false");
+    const s = card.querySelector(".cstat"), x = card.querySelector(".err");
+    if (s) s.innerHTML = what ? `<span class="spin"></span>Sending ${esc(what)}...` : "";
+    if (x) x.textContent = error;
+    // Typing stays out too: a reply input is cleared once its send returns.
+    for (const i of card.querySelectorAll("input")) i.readOnly = !!what;
+  }
+}
+const quoted = (t) => `"${t.length > 40 ? `${t.slice(0, 40)}...` : t}"`;
+
+// What a click inside a session card sends, as its status line names it; empty sends nothing.
+function sessionSend(card, e) {
+  if (e.target.dataset.k) return `option ${e.target.dataset.k}`;
+  if (e.target.dataset.reply === undefined) return "";
+  const text = card.querySelector("[data-free]").value.trim();
+  return text ? quoted(text) : "";
+}
+
+// A click inside a session card or an ask card, on Home or a queue row. A card already sending
+// takes no second answer.
 async function answerCard(card, e) {
+  const key = cardKey(card);
+  if (askst.sending[key]) return;
   if (card.dataset.t) {
-    try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
-    catch (err) { card.querySelector(".err").textContent = err.message; }
+    const what = e.target.dataset.open !== undefined ? "" : sessionSend(card, e);
+    if (what) markSending(key, what);
+    try { await answerSession(card, e); if (what) markSending(key, ""); }
+    catch (x) { markSending(key, "", x.message); }
     return;
   }
+  if (e.target.dataset.park !== undefined) { await parkAsk(card.dataset.id, false); return; }
   const opt = e.target.closest("[data-a]");
   let answer = opt && opt.dataset.a;
   if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
   if (!answer || !answer.trim()) return;
-  try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
-  catch (err) { card.querySelector(".err").textContent = err.message; }
+  const id = card.dataset.id;
+  markSending(key, quoted(answer.trim()));
+  try { await post("/api/asks/answer", { id, answer }); }
+  catch (x) { markSending(key, "", x.message); return; }
+  // Answered: drop it here rather than wait on a refetch that may be queued behind another.
+  delete askst.sending[key];
+  st.asks = st.asks.filter((a) => a.id !== id);
+  drawAsks();
+  refreshAsks();
+}
+
+// Park an ask off Needs you, or put a parked one back; either way it moves between the lists.
+async function parkAsk(id, unpark) {
+  const key = `ask:${id}`;
+  if (askst.sending[key]) return;
+  markSending(key, unpark ? "unpark" : "park");
+  askst.parkErr = "";
+  try { await post("/api/asks/park", { id, unpark }); }
+  catch (x) { markSending(key, "", x.message); if (unpark) { askst.parkErr = x.message; drawAsks(); } return; }
+  delete askst.sending[key];
+  st.asks = st.asks.filter((a) => a.id !== id);
+  st.parked = st.parked.filter((a) => a.id !== id);
+  drawAsks();
+  refreshAsks();
+  if (typeof refreshHome === "function") refreshHome();
+}
+
+// Home's Parked fold: the asks parked until a date, soonest back first, shut until opened.
+function parkedSection() {
+  const rows = [...(st.parked || [])].sort((a, b) => (a.parked_until < b.parked_until ? -1 : 1));
+  if (!rows.length) return "";
+  const row = (a) => `<tr><td>${esc(a.project) || "-"}</td><td class="n" title="${esc(a.parked_until)}">${stamp(a.parked_until)}</td>` +
+    `<td class="wrap">${esc(a.title || a.question)}</td><td><button class="btn sm" data-unpark="${esc(a.id)}">Unpark</button></td></tr>`;
+  const table = `<div class="panel scroll"><table class="tbl"><tr><th>project</th><th class="n" data-role="glance">back</th><th data-role="lead">question</th><th></th></tr>${rows.map(row).join("")}</table></div>`;
+  const err = askst.parkErr ? `<div class="err">${esc(askst.parkErr)}</div>` : "";
+  return cfold("parked", `Parked <span class="muted">${rows.length}</span>`, err + table, askst.open);
 }
 
 function answerOnEnter(e) {

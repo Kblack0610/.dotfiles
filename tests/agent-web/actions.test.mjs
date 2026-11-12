@@ -17,7 +17,7 @@ const el = () => new Proxy({}, {
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
-const parts = { "actions-head": part(), "actions-facets": part(), "actions-chips": part(), "actions-body": part(), "sec-actions": part() };
+const parts = { "actions-head": part(), "actions-facets": part(), "actions-tiles": part(), "actions-body": part(), "sec-actions": part() };
 const doc = { getElementById: (id) => (id === "actions" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -42,7 +42,7 @@ const table = {
   q: "actor:shepherd", state: "", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 2 }, { name: "loud", n: 0 }, { name: "failed", n: 1 }],
   columns: ["when", "actor", "verb", "prio", "source", "text"].map((k) => col(k)),
-  facets: [{ key: "actor", on: "shepherd", clear: "", values: [{ value: "shepherd", n: 2, q: "actor:shepherd" }, { value: "notify", n: 1, q: "actor:notify" }] }],
+  facets: [{ key: "actor", on: ["shepherd"], clear: "", values: [{ value: "shepherd", n: 2, on: true, q: "" }, { value: "notify", n: 1, on: false, q: "actor:shepherd actor:notify" }] }],
 };
 const act = (i, o = {}) => ({ at: 1793942659 - i, actor: "shepherd", verb: "nudge", text: `agent-${i} <stalled>`, priority: null, reference: null, source: "shepherd", ...o });
 const data = { actions: [act(1), act(2, { verb: "failed", priority: "high" })], counts: { shepherd: { nudge: 1, failed: 1 }, notify: { page: 1 } }, errors: [], table };
@@ -59,8 +59,8 @@ test("the table draws the server's rows, chips and dropdowns with no day heading
   assert.match(h, /2 of 3 in 24h/);
   assert.match(h, /data-tsort="when"/, "every column header sorts");
   assert.match(h, /value="actor:shepherd"/, "the query sits in the search box");
-  assert.match(h, /<option value="actor:notify">notify \(1\)<\/option>/, "the actors are a dropdown");
-  assert.match(h, /data-ts="failed">failed <span class="n">1/, "the state chips carry the server's counts");
+  assert.match(h, /data-fv="notify" value="actor:shepherd actor:notify"> <span>notify<\/span> <span class="n">1<\/span>/, "the actors are a checklist, a tick adding to the pick");
+  assert.match(h, /data-ts="failed"><span class="tl">FAILED<\/span><span class="tv">1</, "the state tiles carry the server's counts");
   assert.match(h, /<b>failed<\/b><\/td><td>high<\/td>/);
   assert.match(h, /title="2026-[^"]*Z"/, "the exact time is on the cell");
   assert.match(h, /agent-1 &lt;stalled&gt;/, "a row's text is escaped");
@@ -149,7 +149,7 @@ test("a refresh keeps the search box the human is typing in", () => {
   doc.activeElement = null;
   assert.equal(box.innerHTML, painted, "the bar stays");
   assert.match(parts["actions-body"].innerHTML, /agent-1/, "the rows around it repaint");
-  assert.match(parts["actions-chips"].innerHTML, /data-ts="failed"/);
+  assert.match(parts["actions-tiles"].innerHTML, /data-ts="failed"/);
 });
 
 test("an empty answer says which kind of empty it is", () => {

@@ -67,7 +67,7 @@ impl Row for Work {
         "failed",
         "cancelled",
     ];
-    const FACETS: &'static [&'static str] = &["project", "kind"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["state", "project", "when"];
 
@@ -146,28 +146,6 @@ fn title_kind(title: &str) -> Option<String> {
     (!kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase())).then(|| kind.to_string())
 }
 
-/// The canonical project a day-log row means, through project-map.json's basenames and aliases.
-fn canonical(names: &HashMap<String, String>, project: String) -> String {
-    names.get(&project).cloned().unwrap_or(project)
-}
-
-/// Basename and alias to project name, from project-map.json's text. Unreadable maps to nothing.
-pub fn names_from(map: &str) -> HashMap<String, String> {
-    let v: Value = serde_json::from_str(map).unwrap_or_default();
-    let mut names = HashMap::new();
-    for (path, name) in v["paths"].as_object().into_iter().flatten() {
-        if let (Some(base), Some(name)) = (path.rsplit('/').next(), name.as_str()) {
-            names.insert(base.trim_start_matches('.').to_string(), name.to_string());
-        }
-    }
-    for (alias, name) in v["aliases"].as_object().into_iter().flatten() {
-        if let Some(name) = name.as_str() {
-            names.insert(alias.clone(), name.to_string());
-        }
-    }
-    names
-}
-
 /// What an open PR's row says before its title: that it is a draft, else its CI state.
 fn check_of(v: &Value) -> Option<String> {
     if v["draft"].as_bool() == Some(true) {
@@ -186,12 +164,7 @@ fn tagged(what: String, pr: Option<&Pr>) -> String {
     }
 }
 
-fn pr_of<Tz: TimeZone>(
-    v: &Value,
-    open: bool,
-    names: &HashMap<String, String>,
-    tz: &Tz,
-) -> Option<Pr>
+fn pr_of<Tz: TimeZone>(v: &Value, open: bool, tz: &Tz) -> Option<Pr>
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -202,7 +175,7 @@ where
     Some(Pr {
         repo: v["repo"].as_str().unwrap_or("").to_string(),
         number: number.to_string(),
-        project: canonical(names, boards::pr_project(v)),
+        project: boards::pr_project(v),
         title: v["title"].as_str().unwrap_or("").to_string(),
         url: url.to_string(),
         at: v[stamp].as_str().and_then(|t| local(t, tz)),
@@ -250,15 +223,6 @@ fn claimed(word: &str, project: &str, by_number: &HashMap<&str, Vec<&Pr>>) -> Op
     .or_else(|| only(found.iter().collect()))
 }
 
-fn pr_words(item: &Item) -> Vec<&str> {
-    item.pr
-        .as_deref()
-        .unwrap_or("")
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|w| !w.is_empty())
-        .collect()
-}
-
 fn item_row<Tz: TimeZone>(i: &Item, keys: &[String], prs: &HashMap<&str, &Pr>, tz: &Tz) -> Work
 where
     Tz::Offset: std::fmt::Display,
@@ -283,7 +247,7 @@ where
         State::Running => ("active", at(&i.started)),
         State::Queued => ("queued", at(&i.queued)),
     };
-    let words = pr_words(i);
+    let words: Vec<&str> = i.pr_refs().collect();
     let first = keys.iter().find_map(|k| prs.get(k.as_str())).copied();
     let link = words.first().and_then(|w| queue::pr_link_of(w));
     let label = first
@@ -326,7 +290,6 @@ fn pr_row(p: &Pr) -> Work {
 pub fn gather<Tz: TimeZone>(
     items: &[Item],
     days: &[(String, Value)],
-    names: &HashMap<String, String>,
     tz: &Tz,
 ) -> Gathered
 where
@@ -337,7 +300,7 @@ where
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|p| pr_of(p, open, names, tz))
+            .filter_map(|p| pr_of(p, open, tz))
             .collect()
     };
     let merged = days.iter().flat_map(|(_, r)| list(r, "merged", false));
@@ -361,8 +324,8 @@ where
     let mut rows: Vec<Work> = items
         .iter()
         .map(|i| {
-            let keys: Vec<String> = pr_words(i)
-                .into_iter()
+            let keys: Vec<String> = i
+                .pr_refs()
                 .filter_map(|w| claimed(w, i.project.trim(), &by_number))
                 .collect();
             let row = item_row(i, &keys, &by_key, tz);
@@ -418,10 +381,7 @@ pub fn read(runner: &dyn Runner) -> Gathered {
             }
         })
         .collect();
-    let names = std::fs::read_to_string(crate::projects::map_path())
-        .map(|m| names_from(&m))
-        .unwrap_or_default();
-    let mut g = gather(&items, &days, &names, &chrono::Local);
+    let mut g = gather(&items, &days, &chrono::Local);
     g.errors = errors;
     g
 }
@@ -471,13 +431,14 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
+    /// An item as every view reads one: through `queue::parse`, which names a plan item.
     fn item(slug: &str, state: &str, extra: Value) -> Item {
         let mut v = json!({"slug": slug, "project": "dotfiles", "state": state, "task": slug,
             "queued": "2026-11-01T10:00:00Z"});
         v.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        serde_json::from_value(v).unwrap()
+        queue::parse(&v.to_string()).remove(0)
     }
 
     fn pr(repo: &str, n: u32, at: &str) -> Value {
@@ -489,7 +450,7 @@ mod tests {
     fn work(items: &[Item], days: Vec<(&str, Value)>) -> Vec<Work> {
         let days: Vec<(String, Value)> =
             days.into_iter().map(|(d, r)| (d.to_string(), r)).collect();
-        gather(items, &days, &HashMap::new(), &Utc).rows
+        gather(items, &days, &Utc).rows
     }
 
     const AT: &str = "2026-11-08T09:30:00Z";
@@ -663,17 +624,76 @@ mod tests {
     }
 
     #[test]
-    fn a_day_log_project_goes_through_the_map() {
-        let names = names_from(
-            r#"{"paths": {"/x/.dotfiles": "dotfiles", "/x/platform": "bnb-platform"},
-                "aliases": {"freqtrade_trading_attempt": "trader"}}"#,
-        );
-        assert_eq!(canonical(&names, "platform".into()), "bnb-platform");
+    fn a_plan_item_reads_as_its_plans_name_its_phase_and_the_phases_words() {
+        let dir = std::env::temp_dir().join(format!("worklog-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("can-we-backfill-snuggly-bachman.md");
+        std::fs::write(
+            &plan,
+            "# Systems you can see, every task under a feature\n\n## Phases\n",
+        )
+        .unwrap();
+        let p = plan.to_str().unwrap();
+        let items = [
+            // Queued before the title was the phase's words: the file-name prefix goes.
+            item(
+                "old-p5",
+                "done",
+                json!({"plan": p, "phases": "5",
+                "title": "can-we-backfill-snuggly-bachman P5: Versions going forward"}),
+            ),
+            item(
+                "new-p4",
+                "queued",
+                json!({"plan": p, "phases": "4 5", "title": "Fourth thing"}),
+            ),
+            // The plan's own label wins over the item's place in the checklist.
+            item(
+                "own-p10",
+                "queued",
+                json!({"plan": p, "phases": "10", "title": "P9 live stage, gated"}),
+            ),
+            // An old-shape title with no plan field is renamed only when its plan file exists.
+            item(
+                "hand",
+                "queued",
+                json!({"title": "other-plan P2: kept as written"}),
+            ),
+            item(
+                "multi",
+                "queued",
+                json!({"plan": p, "phases": "4 5", "title": "P4 Fourth; P5 Fifth"}),
+            ),
+            item(
+                "legacy-row",
+                "queued",
+                json!({"title": "ghost-plan-file P10: P9 live stage"}),
+            ),
+        ];
+        let g = gather(&items, &[], &Utc);
+        let row = |s: &str| {
+            g.rows
+                .iter()
+                .find(|r| r.slug.as_deref() == Some(s))
+                .unwrap()
+        };
         assert_eq!(
-            canonical(&names, "freqtrade_trading_attempt".into()),
-            "trader"
+            row("old-p5").what,
+            "Systems you can see P5: Versions going forward"
         );
-        assert_eq!(canonical(&names, "else".into()), "else");
+        assert_eq!(row("new-p4").what, "Systems you can see P4+5: Fourth thing");
+        assert_eq!(
+            row("own-p10").what,
+            "Systems you can see P9: live stage, gated"
+        );
+        assert_eq!(
+            row("multi").what,
+            "Systems you can see P4+5: P4 Fourth; P5 Fifth",
+            "a leading label names one of an item's two phases, so the place stands"
+        );
+        assert_eq!(row("hand").what, "other-plan P2: kept as written");
+        assert_eq!(row("legacy-row").what, "ghost-plan-file P10: P9 live stage");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

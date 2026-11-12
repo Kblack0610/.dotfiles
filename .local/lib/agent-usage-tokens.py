@@ -37,7 +37,10 @@ TOKENS_GATEWAY_TRIP (default BadRequestError, comma separated) has at least TOKE
 errors, 0 otherwise. Only the listed classes count: auth probes (HTTPException, KeyNotFoundError)
 and budget or rate limits (BudgetExceededError, ProxyRateLimitError) are the gateway doing its job,
 and a BadRequestError is a caller sending something the model API refuses. A null langfuse section
-is quiet here, since check --langfuse owns an unreadable reader. 2 as above.
+is quiet here, since check --langfuse owns an unreadable reader. 2 as above. When SENTINEL_SINCE
+(the fix watermark watch-companion-loop passes) falls after the snapshot's day began, the same
+rule runs on a live Langfuse read from that moment to now instead, so a resolved watch clears at
+once and trips again only on errors after the fix; 2 when that read fails.
 """
 import argparse
 import datetime as dt
@@ -100,7 +103,7 @@ def snapshot(day):
     start, end = day_window(day)
     s, e = start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
     # Three cuts of one tool-output scan; the command cut is trimmed below, as --top is per scan.
-    cuts = ("project", "command", "session,tool")
+    cuts = ("project", "command", "session,tool", "session,skill")
     recall = RECALL + ["--since", s, "--until", e, "--json", "--top", "0"]
     for cut in cuts:
         recall += ["--by", cut]
@@ -114,7 +117,7 @@ def snapshot(day):
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
     whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
     rows = whole.get("rows") or {}
-    proj, cmd, tool = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
+    proj, cmd, tool, skill = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
     cmd["rows"] = cmd["rows"][:TOP_COMMANDS]
 
     t = proj.get("totals") or {}
@@ -162,6 +165,7 @@ def snapshot(day):
         "hook_turns": proj.get("hook_turns"),
         "by_project": dict(sorted(by_project.items(), key=lambda kv: -(kv[1].get("context") or 0))),
         **by_tool(tool, (burn.get("registry") or {}).get("cost_by_session")),
+        **by_skill(skill, (burn.get("registry") or {}).get("cost_by_session")),
         "by_command": split(cmd, "head"),
         "by_model": burn.get("by_model"),
         "by_account": burn.get("by_account"),
@@ -191,6 +195,21 @@ def split(recall, name):
             for r in recall.get("rows") or []]
 
 
+def split_cost(costs, per):
+    """Each session's registry cost split over its keys by their weight in per[session]: the
+    allocation per key, and the cost of sessions with no weight. by_tool and by_skill share it."""
+    alloc, unallocated = {}, 0.0
+    for sess, cost in costs.items():
+        weight = per.get(sess) or {}
+        whole = sum(weight.values())
+        if not whole:
+            unallocated += cost or 0
+            continue
+        for name, n in weight.items():
+            alloc[name] = alloc.get(name, 0.0) + (cost or 0) * n / whole
+    return alloc, round(unallocated, 4)
+
+
 def by_tool(recall, costs):
     """by_tool from a recall --by session,tool result, and each session's registry cost split over
     its tools by their share of its carried tokens: an allocation, never a metered figure. A session
@@ -210,22 +229,50 @@ def by_tool(recall, costs):
     for t in tools.values():
         t["allocated_cost_usd"] = None
     if costs is not None:
-        alloc, unallocated = dict.fromkeys(tools, 0.0), 0.0
-        for sess, cost in costs.items():
-            carried = per.get(sess) or {}
-            whole = sum(carried.values())
-            if not whole:
-                unallocated += cost or 0
-                continue
-            for name, n in carried.items():
-                alloc[name] += (cost or 0) * n / whole
+        alloc, unallocated = split_cost(costs, per)
         for name, t in tools.items():
-            t["allocated_cost_usd"] = round(alloc[name], 4)
-        unallocated = round(unallocated, 4)
+            t["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
     for t in tools.values():
         t["carried_tokens"] //= 4
     rows = sorted(tools.values(), key=lambda t: -t["chars"])
     return {"by_tool": rows, "by_tool_unallocated_usd": unallocated}
+
+
+# How a response's tokens weigh against each other when one session's reported cost is split over
+# its skill spans: input 1, cache write 1.25, cache read 0.1, output 5, the ratios Anthropic's
+# list prices share across models. A split weight only, never a price: the dollars are the
+# registry's reported cost (agent-usage keeps no price table, see its header).
+SPLIT_WEIGHT = {"input_tokens": 1, "cache_creation_input_tokens": 1.25, "cache_read_input_tokens": 0.1,
+                "output_tokens": 5}
+
+
+def by_skill(recall, costs):
+    """by_skill from a recall --by session,skill result: per skill its spans, sessions, responses,
+    context and output, and each session's registry cost split over its skills (the "(no skill)" row
+    included) by SPLIT_WEIGHT. Like by_tool, an allocation: a session with no response in the day
+    allocates nothing and its cost is by_skill_unallocated_usd, so the rows and it sum to
+    totals.cost_usd. No cost per session leaves the cost fields null."""
+    skills, per = {}, {}
+    for r in recall.get("rows") or []:
+        sess, name = r["key"]
+        u = usage(r)
+        k = skills.setdefault(name, {"skill": name, "spans": 0, "sessions": 0, "responses": 0,
+                                     "context": 0, "output": 0})
+        k["spans"] += r.get("spans", 0)
+        k["sessions"] += 1
+        k["responses"] += u["responses"]
+        k["context"] += u["context"]
+        k["output"] += u["output"]
+        per.setdefault(sess, {})[name] = sum(w * r.get(f, 0) for f, w in SPLIT_WEIGHT.items())
+    unallocated = None
+    for k in skills.values():
+        k["allocated_cost_usd"] = None
+    if costs is not None:
+        alloc, unallocated = split_cost(costs, per)
+        for name, k in skills.items():
+            k["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
+    rows = sorted(skills.values(), key=lambda k: (-(k["allocated_cost_usd"] or 0), -k["context"]))
+    return {"by_skill": rows, "by_skill_unallocated_usd": unallocated}
 
 
 def human(n):
@@ -283,20 +330,44 @@ def langfuse_check(files, newest):
     return 1
 
 
+def gateway_verdict(label, gw):
+    by_error = gw.get("by_error") or {}
+    hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
+    if not hit:
+        print(f"{label}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
+        return 0
+    others = gw.get("errors", 0) - sum(hit.values())
+    print(f"{label}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
+    return 1
+
+
 def gateway_errors_check(newest):
-    """check --gateway-errors: a trip-listed error class in the newest snapshot's gateway errors."""
+    raw = (ENV.get("SENTINEL_SINCE") or "0").strip()
+    since = int(raw) if raw.isdigit() else 0   # watch-companion-loop passes an epoch or 0
+    if since > day_window(dt.date.fromisoformat(newest["date"]))[0].timestamp():
+        # A fix landed after this snapshot's day began, so its errors may predate the fix:
+        # count only the gateway calls since the fix, read live from Langfuse.
+        start = dt.datetime.fromtimestamp(since).astimezone()
+        until = dt.datetime.now().astimezone()
+        label = f"since the fix at {start:%Y-%m-%d %H:%M}"
+        if until <= start:
+            print(f"{label}: no window yet")
+            return 0
+        out, why = run_json(LANGFUSE + ["--since", start.isoformat(timespec="seconds"),
+                                        "--until", until.isoformat(timespec="seconds")], timeout=600)
+        gw = out.get("gateway") if isinstance(out, dict) else None
+        if not gw:
+            print(f"{label}: no gateway figures ({why or 'langfuse returned none'})")
+            return 2
+        if gw.get("truncated"):
+            print(f"{label}: the gateway error classes are truncated, so a BadRequestError could be missing")
+            return 2
+        return gateway_verdict(label, gw)
     gw = (newest.get("langfuse") or {}).get("gateway")
     if not gw:
         print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
         return 0
-    by_error = gw.get("by_error") or {}
-    hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
-    if not hit:
-        print(f"{newest['date']}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
-        return 0
-    others = gw.get("errors", 0) - sum(hit.values())
-    print(f"{newest['date']}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
-    return 1
+    return gateway_verdict(newest["date"], gw)
 
 
 def check(langfuse=False, gateway_errors=False):

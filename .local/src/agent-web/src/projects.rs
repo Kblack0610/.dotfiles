@@ -5,7 +5,7 @@
 //! (`impl table::Row for projects::Card`) and answers the cards the view keeps with `table`.
 //! `/api/projects/{name}/page` is one project's page (`hub_core::page`: its flow, what needs the
 //! human, epics by system, next stage and shipped versions), for a card to read when it is
-//! opened, never for every card.
+//! opened, never for every card. Its chain is the Deliverables' kept read (`crate::epics`).
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
@@ -39,12 +39,21 @@ pub async fn get(Query(q): Query<TableQuery>) -> ApiResult<Json<Value>> {
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// The page's chain comes from the one kept `fleet-bench epics` read (`crate::epics`), started
+/// before the page's own reads so the two run side by side; a page opened again inside its
+/// keep reads only its own few CLIs.
 pub async fn page(Path(name): Path<String>) -> ApiResult<Json<Value>> {
+    let chains = tokio::spawn(crate::epics::chains());
+    let rt = tokio::runtime::Handle::current();
     let p = tokio::task::spawn_blocking(move || {
-        page::named(
+        page::named_with(
             &hub_core::session_actions::System,
             &name,
             hub_core::jobs::now(),
+            || {
+                let all = rt.block_on(chains).map_err(|e| e.to_string())??;
+                hub_core::epics::pick(&all, &name)
+            },
         )
     })
     .await

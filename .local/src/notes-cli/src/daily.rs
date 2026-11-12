@@ -1020,6 +1020,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     let acked = crate::inbox_ack::acked(p);
     let mut reviewed: Vec<String> = Vec::new();
     let (mut filed, mut joined, mut planned, mut left, mut refused, mut added) = (0, 0, 0, 0, 0, 0);
+    let mut asked = 0;
     for (i, ev) in events.iter().enumerate() {
         let at = ev.ts.get(11..16).unwrap_or("--:--");
         let id = ev.id.as_deref().unwrap_or_default();
@@ -1086,17 +1087,23 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                     format!("{at} planned {}: {}", link(id, &ev.from, ""), few(&ev.text)),
                 )
             }
-            action @ ("left" | "refused") => {
-                if action == "refused" {
-                    refused += 1;
-                } else {
-                    left += 1;
+            action @ ("left" | "asked" | "refused") => {
+                match action {
+                    "refused" => refused += 1,
+                    "asked" => asked += 1,
+                    _ => left += 1,
                 }
                 let why = ev.why.as_deref().unwrap_or("no reason given");
-                detail.push(("why".into(), why.to_string()));
+                if action == "asked" {
+                    // `why` is the ask's id: answer it there and the line files itself.
+                    detail.push(("answer".into(), format!("agent-ask card {why}")));
+                } else {
+                    detail.push(("why".into(), why.to_string()));
+                }
+                let said = if action == "asked" { "asked you" } else { action };
                 (
                     true,
-                    format!("{at} {action} ({}): {}", name(&ev.from, ""), ev.text),
+                    format!("{at} {said} ({}): {}", name(&ev.from, ""), ev.text),
                 )
             }
             _ => continue,
@@ -1124,7 +1131,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         events.iter().any(|e| {
             e.from == "outbox"
                 && e.text == l.text
-                && matches!(e.action.as_str(), "left" | "refused")
+                && matches!(e.action.as_str(), "left" | "asked" | "refused")
         })
     };
     for (i, l) in waiting.iter().filter(|l| !shown(l)).enumerate() {
@@ -1174,7 +1181,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     status::Page {
         feed: status::Feed::Inbox,
         stat: Some(format!(
-            "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {refused} refused, {} in the outbox, {captured} captured{}",
+            "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {asked} asked you, {refused} refused, {} in the outbox, {captured} captured{}",
             waiting.len(),
             if scored > 0 {
                 format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
@@ -1282,9 +1289,9 @@ fn few(text: &str) -> String {
     out
 }
 
-/// A session's new row on a human sheet: intake that did not come through the sweep, so the
-/// page tells it under Handled today. The human's own adds and the agent lane's follow-ups
-/// stay under Sheet actions.
+/// A session's or a runner's new row on a human sheet: intake that did not come through the
+/// sweep, so the page tells it under Handled today. The human's own adds and the agent lane's
+/// follow-ups stay under Sheet actions.
 fn session_intake(e: &crate::ingest::Event) -> bool {
     e.action == "added" && e.lane == "human" && e.id.is_some() && e.by != "human"
 }
@@ -1297,16 +1304,19 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
-    // A stopped sweep wrote no sheet, and the pipeline line is where it is read.
-    const INTAKE: [&str; 9] = [
+    // A sweep wrote no sheet itself: its summary is on Log, a stopped one on the pipeline line.
+    const INTAKE: [&str; 12] = [
         "split",
         "moved",
         "filed",
         "dup",
         "planned",
         "left",
+        "asked",
+        "dropped",
         "refused",
         "answered",
+        "sweep",
         "sweep-stopped",
     ];
     let told_above = |i: usize, e: &crate::ingest::Event| {
@@ -2097,7 +2107,7 @@ mod tests {
 - [ ] far future [2027-01-01]
 
 ## Done
-- [x] old (done:2026-01-01)
+- [x] old #d260101
 ";
         // 2026-07-10 is a Friday, not the 1st, not a Monday.
         let (out, remaining) = promote_schedule(content, d("2026-07-10"));
@@ -2125,7 +2135,7 @@ mod tests {
         assert!(remaining.contains("rent (every:1st)"));
         assert!(remaining.contains("- [x] paused habit"));
         assert!(remaining.contains("far future [2027-01-01]"));
-        assert!(remaining.contains("- [x] old (done:2026-01-01)"));
+        assert!(remaining.contains("- [x] old #d260101"));
     }
 
     /// The footer marker must survive its own labels becoming config-driven, and must not
@@ -2778,6 +2788,7 @@ mod tests {
             row("added", "", "- [ ] filed later"),
             Event::new("filed", "demo", "demo", "filed later"),
             row("added", "", "- [ ] stays put"),
+            Event::new("sweep", "outbox", "outbox", "inbox sweep"),
         ];
         for n in 1..=5 {
             let line = format!("- [ ] a row <!-- id:dm-{n} -->");
@@ -2977,7 +2988,7 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),

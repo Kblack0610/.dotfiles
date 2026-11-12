@@ -7,6 +7,7 @@
 
 mod agent_sheet;
 mod archive;
+mod backfill;
 mod backlog;
 mod board;
 mod clickup;
@@ -35,7 +36,6 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
-mod registry;
 mod sheet;
 mod show;
 mod standing;
@@ -157,7 +157,7 @@ enum Cmd {
         #[arg(long)]
         agent: bool,
         /// Act on the project's `playtest.md`: one row is one thing to play and check off.
-        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `drop` only
+        /// Takes `list`, `add` (with `--game`, `--pr`), `done`, `drop` and `pass` only
         #[arg(long, conflicts_with = "agent")]
         playtest: bool,
         /// The query is one whole open task line, byte for byte (the `raw` field of
@@ -272,9 +272,22 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a project below beta
+        /// `Version:` moves to the next one, at any stage. With no level the bump is derived:
+        /// minor when a feature epic closed on proof in the version, else patch
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
+        /// Split the open version's closed record (its agent note) into one version per ISO
+        /// week before this one, numbered by the release rule, and open the next patch. A
+        /// project with no frozen version starts at a v0.1.0 baseline. Needs --weekly
+        #[arg(long, value_name = "NAME", requires = "weekly")]
+        backfill: Option<String>,
+        /// With --backfill: one version per week (the only split there is)
+        #[arg(long, requires = "backfill")]
+        weekly: bool,
+        /// With --backfill: a repo whose commits before the first week the baseline counts by
+        /// system. Repeatable
+        #[arg(long, value_name = "PATH", requires = "backfill")]
+        repo: Vec<std::path::PathBuf>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
         /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
         /// Works on archived projects too. Never overwrites; idempotent.
@@ -302,11 +315,15 @@ enum Cmd {
         /// Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
         #[arg(long)]
         sweep: bool,
-        /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
+        /// With --retire-ai-tag, --migrate-rows, --sweep or --backfill: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
+        /// With --release: step the patch (v0.1.2 -> v0.1.3). With no level the bump is
+        /// derived: minor when a feature epic closed on proof in the version, else patch
+        #[arg(long, conflicts_with_all = ["minor", "major"])]
+        patch: bool,
         /// With --release: step the minor (v0.1.2 -> v0.2.0)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "major")]
         minor: bool,
         /// With --release: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
@@ -329,6 +346,11 @@ enum Cmd {
         /// would never close it). `notes-roll` checks the target is above the newest tag
         #[arg(long)]
         renumber: bool,
+        /// With --release: the release tag closing the version (vX.Y.Z). The frozen note is
+        /// named from it; a tag below the open version gets a note with no planned rows and
+        /// leaves the sheet open (`agentctl-wave-roll`)
+        #[arg(long, value_name = "VERSION")]
+        tag: Option<String>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -449,15 +471,23 @@ enum Cmd {
         /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
+        /// One line's whole path, from the record's 30 days: the events whose words hold WORDS
+        /// (or whose row is the id WORDS), then every event of the rows it was filed as and of
+        /// the queue items they became, to the merge. For "where did my line go?"
+        #[arg(long, value_name = "WORDS", conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item", "steps"])]
+        trace: Option<String>,
         /// One JSON event per line (one object per step with --steps)
         #[arg(long)]
         json: bool,
     },
     /// Print the resolved profile + paths
     Config {
-        /// List every configured profile name instead
+        /// List every profile this machine lists instead (a work profile only on its own machine)
         #[arg(long)]
         profiles: bool,
+        /// Print this machine's own profile: the one picked with no --profile flag
+        #[arg(long, conflicts_with = "profiles")]
+        machine_profile: bool,
     },
 }
 
@@ -674,6 +704,16 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// With --playtest: a build is cut, so file one `check(playtest): play build <build>, N
+    /// checks` row on the human sheet, N the open checks. The same build again is exit 3
+    Pass {
+        /// The build to play: a Steam build id, a branch, a tag
+        #[arg(long)]
+        build: String,
+        /// Count only this `## <game>`'s checks, and name it in the row
+        #[arg(long)]
+        game: Option<String>,
+    },
     /// Change the first matching open task's text in place: its place on the sheet,
     /// its checkbox state and its tags stay as they were
     Edit {
@@ -762,6 +802,9 @@ enum PtaskCmd {
         /// The channel the line came in by (as `add --want`): each row gets `#requested`
         #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
         want: Option<String>,
+        /// How the filing was decided, kept on its ingest event (`notes log` shows it)
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -804,6 +847,9 @@ enum OutboxCmd {
     Move {
         #[arg(long, value_name = "PROJECT")]
         project: String,
+        /// How the project was picked, kept on the `moved` event (`notes log` shows it)
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -813,12 +859,18 @@ enum OutboxCmd {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
+    /// Take the line that is RAW byte for byte out of the outbox, filing nothing, because the
+    /// person said it needs no row (the sweep's write path for a "drop" answer)
+    Drop {
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum IngestCmd {
     /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
-    /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
+    /// it `asked` the human about (`--why` is the ask's id), one whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
     /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
@@ -830,9 +882,9 @@ enum IngestCmd {
 #[derive(clap::Args)]
 struct RecordArgs {
     #[arg(long, value_parser = [
-        "left", "refused", "planned", "item-added", "item-moved", "item-set",
+        "left", "asked", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
-        "parked", "unparked", "land-failed", "sweep-stopped",
+        "parked", "unparked", "land-failed", "sweep", "sweep-stopped",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
@@ -858,6 +910,9 @@ struct RecordArgs {
     pr: Option<String>,
     #[arg(long)]
     sha: Option<String>,
+    /// For `left`: the projects the lines written beside it were filed to, comma-separated
+    #[arg(long)]
+    near: Option<String>,
     #[arg(required = true, num_args = 1..)]
     text: Vec<String>,
 }
@@ -951,7 +1006,7 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// The four verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
+/// The five verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     Ok(match sub {
@@ -989,8 +1044,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
+        Some(PtaskCmd::Pass { build, game }) => playtest::Op::Pass { build, game },
         _ => bail!(
-            "--playtest takes list, add, done and drop only (no releases or details: no --to, --version, --all or --detail)"
+            "--playtest takes list, add, done, drop and pass only (no releases or details: no --to, --version, --all or --detail)"
         ),
     })
 }
@@ -1141,7 +1197,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let op = playtest_op(sub, exact)?;
             let _lock = match op {
                 playtest::Op::List => None,
@@ -1159,7 +1215,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -1274,6 +1330,7 @@ fn main() -> Result<()> {
                     to,
                     detail,
                     want,
+                    why,
                     query,
                 }) => {
                     let to_lane = match to_lane.as_str() {
@@ -1285,6 +1342,7 @@ fn main() -> Result<()> {
                         project,
                         lane: to_lane,
                         want: want.as_deref().map(projects::want_channel).transpose()?,
+                        why,
                         how: match dup {
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {
@@ -1314,6 +1372,7 @@ fn main() -> Result<()> {
                     dup.as_deref(),
                     lane,
                 )?,
+                Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {
                     text,
                     append,
@@ -1375,18 +1434,24 @@ fn main() -> Result<()> {
                 outbox::put(&prof, &log, &base, &text)?
             }
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
-            Some(OutboxCmd::Move { project, raw }) => {
-                outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            Some(OutboxCmd::Move { project, why, raw }) => {
+                outbox::move_line(&prof, &log, &project, why.as_deref(), &raw.join(" "))?
             }
             Some(OutboxCmd::Answer { raw }) => {
                 let mut text = String::new();
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
                 outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
+            Some(OutboxCmd::Drop { raw }) => outbox::drop_line(&prof, &log, &raw.join(" "))?,
         },
         Cmd::Log {
             steps: true, json, ..
         } => steps::print(&prof, json)?,
+        Cmd::Log {
+            trace: Some(words),
+            json,
+            ..
+        } => ingest::trace(&prof, &words, json)?,
         Cmd::Log {
             day,
             days,
@@ -1399,7 +1464,7 @@ fn main() -> Result<()> {
             ..
         } => {
             let filter = ingest::Filter {
-                project: project.map(|n| registry::canonical(&n)),
+                project: project.map(|n| project_map::canonical(&n)),
                 id,
                 action,
                 by,
@@ -1420,6 +1485,7 @@ fn main() -> Result<()> {
                     by,
                     pr,
                     sha,
+                    near,
                     text,
                 } = *r;
                 let set = |v: Option<String>| ingest::set(v.as_deref());
@@ -1438,6 +1504,7 @@ fn main() -> Result<()> {
                 }
                 ev.pr = set(pr);
                 ev.sha = set(sha);
+                ev.near = set(near);
                 ingest::record(&prof, &ev);
                 0
             }
@@ -1509,6 +1576,9 @@ fn main() -> Result<()> {
             restore,
             archived,
             release,
+            backfill,
+            weekly: _,
+            repo,
             migrate,
             move_project,
             to_profile,
@@ -1516,12 +1586,14 @@ fn main() -> Result<()> {
             migrate_rows,
             sweep,
             dry_run,
+            patch,
             minor,
             major,
             force,
             carry,
             next,
             renumber,
+            tag,
             version_of,
             roadmap,
             stats,
@@ -1536,17 +1608,25 @@ fn main() -> Result<()> {
             set,
         } => {
             let level = if major {
-                projects::Bump::Major
+                Some(projects::Bump::Major)
             } else if minor {
-                projects::Bump::Minor
+                Some(projects::Bump::Minor)
+            } else if patch {
+                Some(projects::Bump::Patch)
             } else {
-                projects::Bump::Patch
+                None
             };
             // A whole-vault sweep, so it is handled before the name-keyed match below:
             // an empty NAME means "every project" and must not fall through as a lookup.
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            if let Some(n) = backfill {
+                if backfill::backfill(&prof, &log, &n, &repo, dry_run)? {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             if sweep {
@@ -1635,6 +1715,7 @@ fn main() -> Result<()> {
                         carry,
                         next.as_deref(),
                         renumber,
+                        tag.as_deref(),
                     )?;
                     lab_refresh::kick();
                 }
@@ -1683,8 +1764,13 @@ fn main() -> Result<()> {
         Cmd::Doctor {
             projects: false, ..
         } => doctor::run(&prof, &log)?,
-        Cmd::Config { profiles } => {
-            if profiles {
+        Cmd::Config {
+            profiles,
+            machine_profile,
+        } => {
+            if machine_profile {
+                println!("{}", config::machine_profile()?);
+            } else if profiles {
                 for name in config::all_profile_names()? {
                     println!("{name}");
                 }
@@ -1716,7 +1802,7 @@ mod tests {
     }
 
     #[test]
-    fn playtest_takes_four_verbs_and_refuses_the_rest() {
+    fn playtest_takes_five_verbs_and_refuses_the_rest() {
         assert!(matches!(ptask(&[]), Ok(playtest::Op::List)));
         assert!(matches!(ptask(&["list"]), Ok(playtest::Op::List)));
         assert!(matches!(
@@ -1731,6 +1817,10 @@ mod tests {
             ptask(&["drop", "--why", "cut", "arena"]),
             Ok(playtest::Op::Drop { .. })
         ));
+        assert!(matches!(
+            ptask(&["pass", "--build", "b7", "--game", "Dodgeball"]),
+            Ok(playtest::Op::Pass { game: Some(_), .. })
+        ));
         for bad in [
             &["start", "arena"][..],
             &["sweep"],
@@ -1742,7 +1832,7 @@ mod tests {
         ] {
             let e = ptask(bad).err().expect("refused").to_string();
             assert!(
-                e.contains("--playtest takes list, add, done and drop"),
+                e.contains("--playtest takes list, add, done, drop and pass only"),
                 "{bad:?}: {e}"
             );
         }

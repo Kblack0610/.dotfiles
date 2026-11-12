@@ -11,6 +11,8 @@ use agent_panel::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::links::{Kind, Link};
+use crate::release_graph::pr_ref;
 use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
@@ -289,6 +291,28 @@ impl Item {
         Some((now - from).num_minutes().max(0))
     }
 
+    /// The words of its `pr:` field, each a PR ref (`owner/repo#N`, `#N` or `N`), split on
+    /// spaces or commas.
+    pub fn pr_refs(&self) -> impl Iterator<Item = &str> {
+        self.pr
+            .as_deref()
+            .unwrap_or("")
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|w| !w.is_empty())
+    }
+
+    /// The board row the item works as (project, id): its `row:`, else the row it was promoted
+    /// from (`from: board:<project>:<id>`), the same order as agent-queue's `item_row`.
+    pub fn board_row(&self) -> Option<(&str, &str)> {
+        let row = self
+            .row
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .or_else(|| self.from.as_deref()?.strip_prefix("board:"))?;
+        row.split_once(':')
+            .filter(|(p, id)| !p.is_empty() && !id.is_empty())
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
     /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
@@ -297,6 +321,46 @@ impl Item {
         } else {
             cap(self.title.trim(), TITLE_MAX)
         }
+    }
+
+    /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
+    pub fn plan(&self) -> Option<(&str, &str)> {
+        Some((self.extra_str("plan")?, self.extra_str("phases")?))
+    }
+
+    /// `<plan name> P5: <phase words>`, a plan item's title as every view says it (`parse`
+    /// sets it): the plan by its heading (`plans::named`) in place of the file name
+    /// `agent-queue add --plan` titles it with. A one-phase item takes the label its words lead
+    /// with (`P9 live stage`) over its checklist place. An item with no `plan:` whose title has
+    /// that shape (one promoted from a board row) is named the same way when its plan file
+    /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
+    fn plan_title(&self) -> Option<String> {
+        use crate::plans::{base, legacy, named, own_label, path};
+        // An item with no `title:` header is worded by its task, as `title()` words it.
+        let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
+        let title = head.as_deref().unwrap_or(self.title.trim());
+        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
+            (Some((plan, phases)), old) => {
+                let words = old
+                    .filter(|(b, ..)| *b == base(plan))
+                    .map_or(title, |(.., w)| w);
+                let phases: Vec<&str> = phases.split_whitespace().collect();
+                let tag = format!("P{}", phases.join("+"));
+                (plan.to_string(), tag, words, phases.len() == 1)
+            }
+            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
+                (path(b), tag.to_string(), words, !tag.contains('+'))
+            }
+            _ => return None,
+        };
+        let (label, words) = one
+            .then(|| own_label(words))
+            .flatten()
+            .unwrap_or((tag, words));
+        Some(cap(
+            &format!("{} {label}: {words}", named(&plan)),
+            TITLE_MAX,
+        ))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
@@ -366,6 +430,46 @@ impl Item {
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
         pr_link_of(self.pr.as_deref()?)
+    }
+
+    /// What the item names, each to its one page (`links`), which both surfaces list on the
+    /// opened item: its session, project and board row, then each PR and that PR's CI runs.
+    pub fn links(&self) -> Vec<ItemLink> {
+        let mut out = vec![];
+        let mut add = |what, text: &str, link| {
+            out.push(ItemLink {
+                what,
+                text: text.to_string(),
+                link,
+            })
+        };
+        // A session page is found by the item it worked (`session_page::find`), live or ended.
+        if let Some(s) = self.session.as_deref().filter(|s| !s.is_empty()) {
+            add("session", s, Link::to(Kind::Session, self.slug.clone()));
+        }
+        if !self.project.trim().is_empty() {
+            add(
+                "project",
+                self.project.trim(),
+                Link::to(Kind::Project, self.project.trim()),
+            );
+        }
+        if let Some((_, id)) = self.board_row() {
+            add("row", id, Link::to(Kind::Row, id));
+        }
+        for pr in self.pr_refs() {
+            if let Some((label, Some(url))) = pr_link_of(pr) {
+                add("pr", &label, Link::Url(url));
+            }
+            // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
+            if let Some((Some(repo), n)) =
+                pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
+            {
+                let r = format!("{repo}#{n}");
+                add("ci", &format!("CI runs of {r}"), Link::to(Kind::PrRuns, r));
+            }
+        }
+        out
     }
 
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
@@ -677,6 +781,16 @@ fn argv(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ItemLink {
+    /// session, project, row, pr or ci.
+    pub what: &'static str,
+    pub text: String,
+    #[serde(rename = "href")]
+    pub link: Link,
+}
+
 /// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
 pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     let pr = pr.trim();
@@ -702,12 +816,14 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
+/// Each item's `title` becomes the one every view shows: `plan_title` for a plan item, else
+/// `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            i.title = i.title();
+            i.title = i.plan_title().unwrap_or_else(|| i.title());
             i
         })
         .collect()
@@ -770,12 +886,18 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
+        Queue::from_reads(list(runner, "all"), stats(runner))
+    }
+
+    /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
+    /// failure named as `read` names it.
+    pub fn from_reads(items: Result<Vec<Item>, String>, stats: Result<Stats, String>) -> Queue {
         let mut q = Queue::default();
-        match list(runner, "all") {
+        match items {
             Ok(items) => q.items = items,
             Err(e) => q.errors.push(format!("{LIST_FAILED}: {e}")),
         }
-        match stats(runner) {
+        match stats {
             Ok(s) => q.stats = Some(s),
             Err(e) => q.errors.push(e),
         }
@@ -790,13 +912,18 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 1 ready, 1 held`: the phone widget's queue line. Ready is queued with no hold.
-    pub fn counts_line(&self) -> String {
+    /// The items not started, as `(ready, held)`: ready is queued with no hold.
+    pub fn up_next(&self) -> (usize, usize) {
         let held = self
             .in_state(State::Queued)
             .filter(|i| i.hold.is_some())
             .count();
-        let ready = self.count(State::Queued) - held;
+        (self.count(State::Queued) - held, held)
+    }
+
+    /// `1 running, 1 ready, 1 held`: the phone widget's queue line.
+    pub fn counts_line(&self) -> String {
+        let (ready, held) = self.up_next();
         let mut s = format!("{} running, {ready} ready", self.count(State::Running));
         if held > 0 {
             s += &format!(", {held} held");
@@ -874,9 +1001,10 @@ impl crate::table::Row for QueueRow<'_> {
     /// Queue sections list them.
     const STATES: &'static [&'static str] =
         &["all", "needs you", "running", "on a PR", "up next", "done"];
-    const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
+    const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -889,7 +1017,8 @@ impl crate::table::Row for QueueRow<'_> {
                     State::Waiting => "needs",
                     State::Running => "running",
                     State::Review => "on a PR",
-                    State::Queued => "queued",
+                    State::Queued if i.hold.is_some() => "held",
+                    State::Queued => "ready",
                     State::Done => "done",
                 }
                 .into(),
@@ -904,6 +1033,16 @@ impl crate::table::Row for QueueRow<'_> {
             "pr" => text(said(&i.pr)),
             "title" => Val::Text(i.title()),
             _ => Val::None,
+        }
+    }
+
+    /// The project opens its page (queue.js draws the PR cell from the item's own link).
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "project" => Some(self.item.project.trim())
+                .filter(|p| !p.is_empty())
+                .map(|p| Link::to(Kind::Project, p)),
+            _ => None,
         }
     }
 
@@ -1343,6 +1482,64 @@ mod tests {
     }
 
     #[test]
+    fn an_item_links_its_session_project_row_and_each_prs_page_and_ci_runs() {
+        let i = Item {
+            slug: "ops-center-p6".into(),
+            project: "dotfiles".into(),
+            row: Some("agent-runtime:ar-1726".into()),
+            session: Some("lab:dotfiles-agent-21".into()),
+            pr: Some("Kblack0610/.dotfiles#1930 https://github.com/o/r/pull/7 812".into()),
+            ..Item::default()
+        };
+        let got: Vec<(&str, String, String)> = i
+            .links()
+            .into_iter()
+            .map(|l| (l.what, l.text, l.link.href()))
+            .collect();
+        let want = |w, t: &str, h: &str| (w, t.to_string(), h.to_string());
+        assert_eq!(
+            got,
+            [
+                want(
+                    "session",
+                    "lab:dotfiles-agent-21",
+                    "#sessions/ops-center-p6"
+                ),
+                want("project", "dotfiles", "#projects/dotfiles"),
+                want("row", "ar-1726", "#board?q=id:=ar-1726"),
+                want(
+                    "pr",
+                    ".dotfiles#1930",
+                    "https://github.com/Kblack0610/.dotfiles/pull/1930"
+                ),
+                want(
+                    "ci",
+                    "CI runs of kblack0610/.dotfiles#1930",
+                    "#infra/runs?bq=pr:=kblack0610%2F.dotfiles%231930"
+                ),
+                want("pr", "#7", "https://github.com/o/r/pull/7"),
+                want("ci", "CI runs of o/r#7", "#infra/runs?bq=pr:=o%2Fr%237"),
+            ],
+            "a bare 812 names no repo: no page, no runs"
+        );
+        let row = QueueRow {
+            item: &i,
+            timing: Timing::default(),
+        };
+        use crate::table::Row;
+        assert_eq!(
+            row.link("project"),
+            Some(Link::to(Kind::Project, "dotfiles"))
+        );
+        assert_eq!(
+            row.link("pr"),
+            None,
+            "queue.js draws the PR cell from the item"
+        );
+        assert!(Item::default().links().is_empty());
+    }
+
+    #[test]
     fn the_harness_is_the_items_agent_else_claude_with_its_model_alias() {
         let item = |kv: &[(&str, &str)]| Item {
             model: kv
@@ -1406,6 +1603,31 @@ mod tests {
         );
         let parsed = parse(r#"{"slug":"s","state":"queued","title":"From the header","task":"x"}"#);
         assert_eq!(parsed[0].title, "From the header");
+    }
+
+    #[test]
+    fn a_parsed_plan_items_title_is_capped_and_an_untitled_one_uses_its_task() {
+        let dir = std::env::temp_dir().join(format!("queue-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("snuggly-bachman.md");
+        std::fs::write(&plan, "# Systems you can see, every task\n").unwrap();
+        // worklog's plan test covers the shapes; these are the cap and the untitled item.
+        let bare = serde_json::json!({"slug": "p6", "state": "queued", "phases": "6",
+            "plan": plan.to_str().unwrap(), "task": "Sixth thing. Read the plan."});
+        assert_eq!(
+            parse(&bare.to_string()).remove(0).title(),
+            "Systems you can see P6: Sixth thing",
+            "an item with no title header names its phase by its task"
+        );
+        let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
+            "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
+        let long = parse(&long.to_string()).remove(0).title();
+        assert!(
+            long.starts_with("Systems you can see P5: word")
+                && long.chars().count() <= TITLE_MAX + 3,
+            "a plan title is capped like any other: {long}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1717,6 +1939,23 @@ mod tests {
         assert!(!canary.unproven());
         assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
+    }
+
+    #[test]
+    fn the_board_row_is_the_items_row_else_the_row_it_was_promoted_from() {
+        let mut i = Item {
+            from: Some("board:trader:tr-9".into()),
+            ..Default::default()
+        };
+        assert_eq!(i.board_row(), Some(("trader", "tr-9")));
+        i.row = Some("agent-runtime:ar-1".into());
+        assert_eq!(i.board_row(), Some(("agent-runtime", "ar-1")));
+        // An empty row falls back; a promotion from anything but a board row is no row.
+        i.row = Some(String::new());
+        i.from = Some("ask:abc".into());
+        assert_eq!(i.board_row(), None);
+        i.from = Some("board:tr-9".into());
+        assert_eq!(i.board_row(), None, "a row names its project");
     }
 
     #[test]

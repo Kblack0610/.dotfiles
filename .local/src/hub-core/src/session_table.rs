@@ -101,6 +101,8 @@ pub struct SessionRow {
     /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
     /// account and claude on any other.
     pub harness: String,
+    /// A live row's close verdict word (`fleet-sessions` `.close.verdict`: now, after or keep).
+    pub close: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
@@ -115,14 +117,17 @@ pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
         "bucket", "activity", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness",
-        "item", "source", "session",
+        "close", "item", "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["project", "harness"];
+    const FACETS: &'static [&'static str] = &["bucket", "project", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
+    /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("needs you", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -143,6 +148,7 @@ impl Row for SessionRow {
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
             "acct" => text(&self.account),
             "harness" => text(&self.harness),
+            "close" => text(&self.close),
             "item" if self.unlinked => Val::Text("none".into()),
             "item" => text(&self.item),
             "source" => Val::Text(self.source.name().into()),
@@ -316,6 +322,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         }),
         account: str_of(s, "account").to_string(),
         harness: item.map_or_else(String::new, |i| i.harness().to_string()),
+        close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
     }
@@ -626,6 +633,22 @@ mod tests {
     }
 
     #[test]
+    fn a_live_row_carries_its_close_verdict_and_the_close_facet_filters() {
+        let mut s = state();
+        s[0]["close"] = json!({"verdict": "now", "why": "plan finished, PR merged"});
+        s[1]["close"] = json!({"verdict": "keep", "why": "hand-active"});
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let c = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("close");
+        assert_eq!(c("lab/d:1"), Val::Text("now".into()));
+        assert_eq!(c("lab/d:2"), Val::Text("keep".into()));
+        assert_eq!(c("lab/d:3"), Val::None, "no close object reads as blank");
+        assert_eq!(c("ucp-394"), Val::None, "a queue row has no verdict");
+        let v = View::new::<SessionRow>("close:now", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
+    }
+
+    #[test]
     fn every_row_names_its_harness_and_the_harness_facet_filters() {
         let mut s = state();
         s[1]["account"] = json!(GATEWAY);
@@ -785,6 +808,12 @@ mod tests {
                 ("stalled", 0),
                 ("done today", 3)
             ]
+        );
+        let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
+        assert_eq!(
+            tone("needs you"),
+            Some(Some(crate::vocab::Level::Bad)),
+            "red like its NEEDS badge"
         );
         let v = View::new::<SessionRow>("", "Needs You", "", "");
         assert_eq!(v.apply(&r).len(), 1);

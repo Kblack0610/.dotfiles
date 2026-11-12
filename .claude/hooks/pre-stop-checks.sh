@@ -8,6 +8,10 @@
 #           (incl. no-changes), so anything that must fire on a Q&A turn goes here
 #
 # Per-check exit codes (checks + post): 0 pass, 1 warn, 2 block, * block.
+#
+# --checks-only skips the post phase, for a harness with no Claude session for post-d to register,
+# ask about or wind down: Codex runs it from ~/.codex/hooks.json beside codex-item-stop.sh, under
+# the same exit-2 contract.
 # Pre-checks: 0 ok, anything else = warn (non-blocking).
 #
 # Contract with stop-post.d/ (95-wind-down.sh):
@@ -87,6 +91,7 @@ SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
 HOOK_DIR="$(dirname "$SELF")"
 CHECKS_DIR="$HOOK_DIR/stop-checks.d"
 POST_DIR="$HOOK_DIR/stop-post.d"
+[ "${1:-}" != --checks-only ] || POST_DIR=""   # run_post finds no dir and runs nothing
 
 # --- run_post: sequential, stdout/stderr passed through. Returns max exit code. ---
 run_post() {

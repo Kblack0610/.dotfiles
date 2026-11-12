@@ -17,7 +17,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
 | `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). `ctrl-n` starts a new Claude in a fresh worktree of the selected agent's repo (`wt new --claude`); `--query` opens it already filtered. Cross-platform binary; see `../agent-panel/`. |
-| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them, and favourite a session (`Prefix+t f`); also on PATH as `tmux-tags` |
 | `muxpoon` (submodule, `../muxpoon/`) | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Window slots, its own public repo: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. `.tmux.conf` keeps the list in `~/.local/state/tmx/harpoon`, and it survives a kill-server. Also on PATH as `muxpoon`. |
 | `projects.sh` | `Prefix+p` | Full screen, like `Prefix+g`. Every profile's projects, main ones first (drafts behind `d`), each with its stage, open count and urgent count. The selected project's card and open rows show on the right (`hub --once --tab 'projects <profile>/<name>'`); `ctrl-/` moves the preview below, hides it, brings it back. `1`-`9`, Enter or `o` opens that project's rows under its card on the hub Projects tab (`hub tab projects <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`). `a`, `g` and `c` reach the repo the project lives in (`project_repo_path`, project-map.json): its agents (`agent-panel --query`), its session (`sessionizer.sh <repo>`), or a new Claude in a fresh worktree (`wt new --claude`); a notes-only project says it has no repo. `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
@@ -61,6 +61,21 @@ tmux-tags gather --tag group:work --into work   # a tag is a group
 Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare
 them in the session manager's config and have the window tag itself on startup.
+
+### Favourite sessions
+
+`Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, server-lifetime like a tag. It is a mark only: wind-down protects `pinned` and `important` windows, not favourites. It is marked in four places:
+
+- the status bar: a yellow star before the agent counts
+- `Prefix+H` (`tmx pick`): a star in front of the session's row
+- `Prefix+w`: `[fav]` after the session's window count
+- `Prefix+g` (agent-panel): `fav` in the tag column of every agent in the session
+
+```sh
+tmux-tags fav                 # toggle the current session
+tmux-tags fav on -t dotfiles  # or on / off for a named session
+tmux-tags fav ls              # favourite sessions, one per line
+```
 
 ## Servers (`Prefix+H`, `tmx`)
 
@@ -131,8 +146,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles and home-config (on demand) | today's daily note |
-| `lab` - building | every agent worktree, platform and unity-core-playground (on demand) | no landing page: root resumes the last agent session |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand): main checkouts only | today's daily note |
+| `lab` - agents | every worktree session, `<repo>-agent-N`, started by hand or by `fleet-dispatch` | no landing page: root resumes the last worktree session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -170,10 +185,9 @@ The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-
 | Picked | Goes to | Because |
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
-| `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
-| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
+| `~/dev/bnb/games/engine/unity-core-playground` | `hub`, session `unity-core-playground` | hub.conf declares it (`?`, on demand) |
+| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | a linked worktree goes to the `@agents` world, under its own name, whoever started it |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
 | `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
 Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
@@ -181,7 +195,7 @@ session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
 
-`wt new` (`Prefix+F`) creates its session on the `@agents` world, inside tmux or out, and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
+`wt new` (`Prefix+F`) creates its session on the agent world (lab), inside tmux or out, and you hop there: every worktree session is on lab and only main checkouts are in hub. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on lab first, or on the server where its session already lives; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
@@ -301,9 +315,10 @@ session with seven windows all named `main` actually was.
 the current pane is in, and the slot is the lowest one that is free or idle. Idle means the
 same thing `reap` means by eligible - clean, landed, no session and no pane inside it - so a
 worktree whose session was killed without `wt done` is reset onto the trunk in place (its
-ignored build caches kept) instead of pushing the next agent one number higher. A leftover
-`agent-N` branch with no directory frees its slot too, once it is merged and checked out
-nowhere.
+ignored build caches kept) instead of pushing the next agent one number higher. The slot
+number is reused but the branch name never is: each cut starts on `agent-N-<UTC stamp>`, so a
+push never meets a stale `origin/agent-N` that GitHub kept after its PR merged or closed
+(ar-1121), and a leftover branch never pins a slot.
 
 `Prefix+f` **does** list worktrees, which reverses the original call that "a worktree is
 somewhere you are sent, not somewhere you go looking". Being sent covers the first minute of
@@ -332,6 +347,7 @@ breaking all three at once.
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
+| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
@@ -347,7 +363,7 @@ breaking all three at once.
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
-`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
@@ -386,7 +402,7 @@ Measured on unity-core-playground (5k files in the main tree; `External/asset-li
 | 3 | `wt_next_slot`: walk agent-1, 2, ... and take the first idle one | background | 0.7s (was 4.5 to 9s, #463) |
 | 4 | `wt: recycle\|fresh <name>, opening it`, create the session, switch to it | status line, then the new session | instant |
 | 5 | `git fetch origin` on the main checkout | the new session's first pane | 2.8s, network |
-| 6 | `git switch -C agent-N origin/<trunk>` in the worktree | pane | 0.2s |
+| 6 | `git switch -c agent-N-<stamp> origin/<trunk>` in the worktree | pane | 0.2s |
 | 7 | copy each moved submodule's new commit from the main checkout into `refs/wt/main` | pane | 8 to 54ms (unity-core over the network was 1079ms, #474) |
 | 8 | `GIT_LFS_SKIP_SMUDGE=1 git submodule update --recursive` | pane | no network when step 7 found the commit |
 | 9 | `git lfs checkout -- <changed files>` in submodules that moved | pane | 0.07s for a real LFS file (a bare `lfs checkout` scanned the whole tree: 20s+, #456 #460) |
@@ -456,7 +472,7 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 ## Status Line Integration
 
 `claude-status.sh` runs every 3 seconds to display agent status:
-- `!n` = needs attention (n agents)
+- `!n` = n questions waiting on you: the Prefix y panel's count (pending asks plus open dialogs, fleet-wide), so the bar and the panel header agree
 - `~n` = working (n agents)
 - `✓n` = idle between turns (n agents). This is the live `activity`, not the delivery `bucket`: a session that is idle here can still be NEEDS or STALLED in `fleet-sessions` (vocabulary: `.local/src/docs/fleet-states.md`)
 - `·n` = Claude panes found but none classified

@@ -11,7 +11,7 @@ setup() {
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME/.config/shared-hooks" "$HOME/work/agame" "$HOME/plans"
   ln -s "$(cd "$ROOT" && pwd)/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
-  echo '{"paths": {}, "aliases": {}, "trackers": {"agame": {"type": "game"}}}' > "$HOME/.config/shared-hooks/project-map.json"
+  echo '{"paths": {}, "trackers": {"agame": {"type": "game"}}}' > "$HOME/.config/shared-hooks/project-map.json"
   unset PROJECT_MAP_FILE PLAN_LEDGER
   LEDGER="$HOME/.agent/plans/approved.jsonl"
   : > "$HOME/plans/p.md"

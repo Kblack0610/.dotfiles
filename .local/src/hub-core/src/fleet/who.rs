@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::Worker;
+use crate::links::{Kind, Link};
 use crate::table::{Row, Val, View};
 
 /// What a row opens: a runner's page or a session's record.
@@ -92,6 +93,9 @@ impl Row for Who {
     const FACETS: &'static [&'static str] = &["kind", "state", "project"];
     const LEAD: &'static str = "doing";
     const GLANCE: &'static [&'static str] = &["who", "state", "for"];
+    /// A held runner is stopped until its budget or hold lifts, so it reads red like its cell.
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("held", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
         let text = |t: &str| {
@@ -118,6 +122,21 @@ impl Row for Who {
 
     fn in_state(&self, state: &str) -> bool {
         self.state == state || self.kind == state
+    }
+
+    /// The name opens the runner's page or the session's record; a session's project its card.
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "who" => Some(Link::to(
+                match self.opens {
+                    Opens::Runner => Kind::Runner,
+                    Opens::Session => Kind::Session,
+                },
+                &self.key,
+            )),
+            "project" if !self.project.is_empty() => Some(Link::to(Kind::Project, &self.project)),
+            _ => None,
+        }
     }
 }
 
@@ -235,14 +254,15 @@ pub(crate) fn name_of(target: &str) -> String {
 
 /// The project a session works in: the dispatcher's `project: item` when it has one, else the
 /// `project` its row carries, which `fleet-sessions` resolves from the cwd through
-/// `project-map.json` (a `freqtrade_trading_attempt-agent-3` worktree is `trader`). Never the tmux
+/// `project-map.json` (a `freqtrade_trading_attempt-agent-3` worktree is `trader`), read through
+/// the name index so an item filed under an old spelling counts under today's key. Never the tmux
 /// session name: that is a worktree, not a project.
 fn project_of(sess: &Value) -> String {
-    match s(sess, "dispatch").split_once(": ") {
+    let p = match s(sess, "dispatch").split_once(": ") {
         Some((p, _)) => p,
         None => s(sess, "project"),
-    }
-    .to_string()
+    };
+    project_map::canonical(p)
 }
 
 fn session(sess: &Value, at: i64) -> Option<Who> {
@@ -444,6 +464,24 @@ mod tests {
     }
 
     #[test]
+    fn a_runner_links_its_page_and_a_session_its_record_and_project() {
+        let r = rows();
+        let (_, t) = View::default().summary(&r);
+        let at = |who: &str, c: &str| {
+            let i = r.iter().position(|x| x.who == who).unwrap();
+            t.links[i].get(c).cloned()
+        };
+        assert_eq!(at("shepherd", "who").as_deref(), Some("#fleet/shepherd"));
+        assert_eq!(at("shepherd", "project"), None, "a runner has no project");
+        let s = r.iter().find(|x| x.opens == Opens::Session).unwrap();
+        assert_eq!(
+            at(&s.who, "who"),
+            Some(crate::links::Link::to(Kind::Session, &s.key).href())
+        );
+        assert_eq!(at(&s.who, "state"), None);
+    }
+
+    #[test]
     fn tiers_come_first_and_the_states_that_need_a_look_lead_each_tier() {
         let r = rows();
         let order: Vec<(u8, &str)> = r.iter().map(|r| (r.tier, r.who.as_str())).collect();
@@ -591,6 +629,13 @@ mod tests {
         let chips = View::default().states(&r);
         let n = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.n);
         assert_eq!((n("held"), n("failed")), (Some(1), Some(1)));
+        let tone = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.tone);
+        // Fleet's held runner is stopped, so its tile is red where Queue's held item is amber.
+        assert_eq!(tone("held"), Some(Some(crate::vocab::Level::Bad)));
+        assert_eq!(
+            crate::vocab::tone(&[], "held"),
+            Some(crate::vocab::Level::Warn)
+        );
     }
 
     #[test]

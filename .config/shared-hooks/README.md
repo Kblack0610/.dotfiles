@@ -41,11 +41,9 @@ An empty or truncated result means a partial deploy, not an empty project.
 
 `## Focus` is the human's list, so turn 1 does not carry it (it cost about 850 chars in nearly every session). An agent's own task goes on its agent-queue item.
 
-- **End of turn** - `.claude/hooks/stop-post.d/86-focus-reconcile.sh` blocks **once per session** when a turn did real work (dirty tree, or HEAD moved) while nothing is marked `[/]` in progress and no `notes focus` write landed since the last run.
+- **End of turn** - `.claude/hooks/stop-post.d/86-focus-reconcile.sh` blocks **once per session** when a turn did real work and no queue item or board write tracks it (the hook header has the exact checks). A `[/]` Focus item does not silence it: Focus is the human's list. Escape hatch: `CLAUDE_SKIP_FOCUS_GATE=1`.
 
-Keep one item marked in progress and the gate never fires. That is the intended pressure: declare what you are on, and it disappears. Escape hatch: `CLAUDE_SKIP_FOCUS_GATE=1`.
-
-The gate parses `## Focus` through `focus-lib.sh`, the one parser; a second parser drifted once and dropped every in-progress `- [/]` item (#109).
+The gate reads `## Focus` only to list its open items in the block message, through `focus-lib.sh`, the one parser.
 
 Writes are never done from a hook. `notes focus add|start|done` owns the vault; the hooks only read.
 
@@ -53,4 +51,4 @@ Writes are never done from a hook. `notes focus add|start|done` owns the vault; 
 
 `tests/unit/focus_lib.bats` covers every checkbox state through the shared parser. `tests/integ/focus_gate.bats` covers the gate's quiet paths as well as its loud one - a gate that fires on idle turns gets trained away within a day. `tests/integ/preflight_focus.bats` covers what turn 1 carries: the agent board, the byte budget, and that the Focus list and an unscoped commit list stay out.
 
-Run them with `make -C tests test-fast`. See the `shell-test-harness` skill before adding more.
+Run them with `make -C tests test-files FILES="unit/focus_lib.bats integ/focus_gate.bats integ/preflight_focus.bats"`. See the `shell-test-harness` skill before adding more.

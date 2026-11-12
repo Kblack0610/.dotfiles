@@ -1,5 +1,5 @@
-//! The Infra tab's Cloud runners card: hold a powered standby host on or off for some hours, or
-//! hand it back to the governor.
+//! A machine page's Governor buttons (`#infra/machines/<host>`): hold a powered standby host on or
+//! off for some hours, or hand it back to the governor.
 //!
 //! home-config's ci-runner-governor owns the power; it reads ConfigMap
 //! `ci-runner-governor-override` (namespace monitoring), one key per host holding

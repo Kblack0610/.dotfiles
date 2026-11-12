@@ -33,6 +33,7 @@ Client work adds the rows in `~/.config/agentctl/PLANNING-CLIENT.md`, kept priva
 | --- | --- |
 | Agent runtime | `~/.local/src/docs/standards.md`, `~/.local/src/docs/fleet-states.md`, `~/.config/agentctl/ARCHITECTURE.md`, `~/.config/agentctl/QUEUE.md` |
 | Monitoring | `~/.config/agentctl/SENTINEL.md`, skill `sentinel` |
+| CI | `~/.local/src/docs/ci.md`, skills `ci-cost`, `ci-failures`, `ci-cleanup` |
 | Dashboards | `~/.local/src/docs/dashboards.md` |
 | Claude hooks | `~/.dotfiles/.claude/hooks/README.md` |
 | Tickets | `~/.dotfiles-private/.local/src/ticket/docs/contract.md` |

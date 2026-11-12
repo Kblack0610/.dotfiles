@@ -11,7 +11,7 @@
 //!
 //! A pasted list is split first (`sheet::split_lists`, run by `notes outbox split` at the start of
 //! each sweep): a line with two or more checkboxes directly under it becomes one line per item, so
-//! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan` and priority go on each.
+//! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan`, `#go` and priority go on each.
 //!
 //! A `#ask` word marks a question: the sweep answers it with one read-only model call and
 //! `notes outbox answer` takes the line out of the outbox and writes the question and answer to
@@ -36,7 +36,7 @@ pub(crate) const EXIT_NO_PROJECT: i32 = 3;
 
 fn skeleton() -> String {
     format!(
-        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a planning pass, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
+        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a plan first (held for your review when you asked for it), `#go` no review, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
     )
 }
 
@@ -264,7 +264,13 @@ pub fn list(p: &Profile, json: bool) -> Result<i32> {
 /// first, so a failed second write leaves the line in both places (seen twice, and
 /// `inbox_put` does not write it twice) and never in neither. A name that is no project leaves
 /// the line where it is and exits 3 (`EXIT_NO_PROJECT`), so a caller can tell it from a failure.
-pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<i32> {
+pub fn move_line(
+    p: &Profile,
+    log: &Logger,
+    project: &str,
+    why: Option<&str>,
+    raw: &str,
+) -> Result<i32> {
     let _lock = lock(p)?;
     // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
     // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
@@ -286,7 +292,13 @@ pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<
     let sheet = project_tasks::inbox_put(p, &dir, project, &block)?;
     md::write_atomic(&p.outbox, &rest)?;
     let text = md::without_project_tag(&line.text);
-    ingest::record(p, &Event::new("moved", "outbox", project, &text));
+    ingest::record(
+        p,
+        &Event {
+            why: ingest::set(why),
+            ..Event::new("moved", "outbox", project, &text)
+        },
+    );
     log.info("outbox", &format!("moved to {}", sheet.display()));
     // The last line is the line as the inbox now holds it (its `#p:` word is gone), which the
     // sweep needs to file it from there.
@@ -329,6 +341,24 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
     ingest::record(p, &Event::new("answered", "outbox", "inbox", &question));
     log.info("outbox", &format!("answered in {}", file.display()));
     println!("answered {question}\n  -> {}", file.display());
+    Ok(0)
+}
+
+/// `notes outbox drop -- <raw>`: take the outbox line that is `raw` byte for byte out of the
+/// outbox and file nothing, recorded as `dropped`. The person's own answer to "which project is
+/// this about?" is the only caller: a line nobody asked about is never dropped.
+pub fn drop_line(p: &Profile, log: &Logger, raw: &str) -> Result<i32> {
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
+        eprintln!("no outbox line is '{raw}'");
+        return Ok(1);
+    };
+    md::write_atomic(&p.outbox, &rest)?;
+    let text = md::without_project_tag(&line.text);
+    ingest::record(p, &Event::new("dropped", "outbox", "", &text));
+    log.info("outbox", "dropped a line");
+    println!("dropped {text}");
     Ok(0)
 }
 
@@ -454,7 +484,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            move_line(&p, &log, "demo", "- [ ] loading screen options #p:demo").unwrap(),
+            move_line(
+                &p,
+                &log,
+                "demo",
+                Some("#p: tag"),
+                "- [ ] loading screen options #p:demo"
+            )
+            .unwrap(),
             0
         );
         let sheet = fs::read_to_string(root.join("lab/projects/current/demo/README.md")).unwrap();
@@ -474,6 +511,7 @@ mod tests {
             ),
             ("moved", "outbox", "demo", "loading screen options")
         );
+        assert_eq!(ev[0].why.as_deref(), Some("#p: tag"));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -483,11 +521,11 @@ mod tests {
         add(&p, &log, "a thing").unwrap();
         let before = fs::read_to_string(&p.outbox).unwrap();
         assert_eq!(
-            move_line(&p, &log, "no-such-project", "- [ ] a thing").unwrap(),
+            move_line(&p, &log, "no-such-project", None, "- [ ] a thing").unwrap(),
             EXIT_NO_PROJECT
         );
         assert_eq!(fs::read_to_string(&p.outbox).unwrap(), before);
-        assert_eq!(move_line(&p, &log, "demo", "- [ ] other").unwrap(), 1);
+        assert_eq!(move_line(&p, &log, "demo", None, "- [ ] other").unwrap(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -536,7 +574,7 @@ mod tests {
         add(&p, &log, "one").unwrap();
         let read_by_page = base(&p);
         // The sweep moves the line while the page is typing.
-        assert_eq!(move_line(&p, &log, "demo", "- [ ] one").unwrap(), 0);
+        assert_eq!(move_line(&p, &log, "demo", None, "- [ ] one").unwrap(), 0);
         let before = fs::read(&p.outbox).unwrap();
         let got = put_items(&p, &read_by_page, "- [ ] one\ntwo").unwrap();
         let Put::Stale(v) = got else {
@@ -569,6 +607,22 @@ mod tests {
             fs::read_to_string(&p.outbox).unwrap(),
             "# Outbox\n\n## Outbox\n- b\n\n## Notes\nkeep me\n"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drop_takes_only_the_named_line_out_and_records_it() {
+        let (root, p, log) = vault("drop");
+        add(&p, &log, "keep me").unwrap();
+        add(&p, &log, "drop me #p:demo").unwrap();
+        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 0);
+        let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
+        assert_eq!(left, vec!["keep me".to_string()]);
+        let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
+        assert!(rec.contains("\"dropped\"") && rec.contains("drop me"), "{rec}");
+        // A line that is not there drops nothing (negative control).
+        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 1);
+        assert_eq!(lines(&p).unwrap().len(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 }

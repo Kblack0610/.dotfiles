@@ -406,7 +406,7 @@ pub fn add(
 /// [`add`] with the systems command named (a test points it at a stub), or None once the row
 /// has its link, so the second pass never looks it up again.
 #[allow(clippy::too_many_arguments)]
-fn add_via(
+pub(crate) fn add_via(
     p: &Profile,
     log: &Logger,
     name: &str,
@@ -619,7 +619,7 @@ fn new_rows(
     details: &[String],
 ) -> Result<Vec<String>> {
     let today = chrono::Local::now().date_naive();
-    let code = crate::registry::Registry::load().and_then(|r| r.code(name));
+    let code = project_map::Registry::load().and_then(|r| r.code(name));
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
@@ -715,6 +715,8 @@ pub(crate) struct Filing {
     pub lane: Lane,
     /// The channel the line came in by: its agent-lane rows get `#requested`.
     pub want: Option<&'static str>,
+    /// How the sweep decided it (`--why`), on the ingest event.
+    pub why: Option<String>,
     pub how: How,
 }
 
@@ -916,6 +918,7 @@ fn file_via(
     );
     ev.lane = dest_lane.name().into();
     ev.want = how.want.map(str::to_string);
+    ev.why = crate::ingest::set(how.why.as_deref());
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
         How::Rows { .. } => written
@@ -956,7 +959,7 @@ fn link_standing(
         .map(|t| crate::standing::wants_link(t))
         .collect();
     if areas.iter().all(Option::is_none)
-        || crate::registry::Registry::load()
+        || project_map::Registry::load()
             .and_then(|r| r.code(name))
             .is_none()
     {
@@ -1398,48 +1401,11 @@ pub fn done(
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
     let on = done_token(day);
-    let (code, row) = edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&closed(l), &on);
         Some(md::add_marker(&ticked, &stamp))
-    })?;
-    if let (0, Some(row)) = (code, row) {
-        ask_verify(p, log, name, &row);
-    }
-    Ok(code)
-}
-
-/// After a close: when it was the last open leaf of an epic, file one
-/// `check(<system>): verify <epic> ...` row on the human sheet. Nothing closes an epic on its
-/// own (lifecycle.md): the human checks the outcome, and this row is how they hear it is
-/// theirs. It names the epic in words, never `#of/`, so it is no leaf of it, and ticking it
-/// cannot finish the epic again. An open twin is not filed twice. A profile with
-/// `automation = false` gets none. It never fails the close that triggered it.
-fn ask_verify(p: &Profile, log: &Logger, name: &str, closed_row: &str) {
-    let Some(id) = md::row_id(closed_row) else {
-        return;
-    };
-    if !crate::config::automation(&p.name) {
-        return;
-    }
-    let Ok(dir) = projects::project_dir(p, name) else {
-        return;
-    };
-    let ix = crate::epics::Index::of(&dir, open_version_for(&dir));
-    let Some(e) = ix.landed_epic_above(&id) else {
-        return;
-    };
-    let area = if e.system.is_empty() {
-        "epic"
-    } else {
-        e.system.as_str()
-    };
-    let text = format!("check({area}): verify {} {} #high", e.id, e.title);
-    if let Err(err) = add_via(p, log, name, &text, &[], None, None, Lane::Human, None) {
-        eprintln!(
-            "{} has every leaf done; its verify row was not filed: {err}",
-            e.id
-        );
-    }
+    })?
+    .0)
 }
 
 /// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
@@ -1899,7 +1865,12 @@ pub fn retext(
             // The row is found first: filing a standing epic for an edit that then matches
             // nothing would leave the epic behind with no row under it.
             let found = sheet_and_content(p, name, lane)?.and_then(|(_, content)| {
-                md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |l| Some(l.into()))
+                md::edit_first_in_section(
+                    &content,
+                    sheet::TASKS,
+                    |l| pick.hits(l),
+                    |l| Some(l.into()),
+                )
             });
             if found.is_none() {
                 eprintln!("no open task matches '{pick}' in {name}");
@@ -1996,7 +1967,7 @@ fn start_as(
     running: bool,
 ) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
-    let id = crate::registry::Registry::load()
+    let id = project_map::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
     let today = chrono::Local::now().format("%m%d").to_string();
@@ -2101,6 +2072,9 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
     } else {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
     };
+    if is_playtest_path(path) {
+        return crate::playtest::sheet_sweep(path, &content, stdin, layout_only, dry_run);
+    }
     if !is_sheet_path(path) || !crate::config::managed_path(path) {
         if stdin {
             print!("{content}");
@@ -2147,6 +2121,21 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
+            match sweep_playtest(dir, dry_run) {
+                Ok(None) => {}
+                Ok(Some((file, report, n))) => {
+                    println!("{}", file.display());
+                    for r in &report {
+                        println!("  {r}");
+                    }
+                    changed += 1;
+                    archived += n;
+                }
+                Err(e) => {
+                    eprintln!("{}: {e:#}", crate::playtest::path(dir).display());
+                    failed += 1;
+                }
+            }
             let sheets = [task_sheet(dir), task_sheet(&dir.join("agent"))];
             for sheet in sheets.into_iter().flatten() {
                 match sweep_one(&sheet, dry_run) {
@@ -2183,6 +2172,27 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// Sweep `dir`'s playtest.md in place (unless `dry_run`): the file, its report and how many
+/// ticked checks rolled off; `None` when it has none or nothing changed.
+fn sweep_playtest(dir: &Path, dry_run: bool) -> Result<Option<(PathBuf, Vec<String>, usize)>> {
+    let file = crate::playtest::path(dir);
+    let Ok(content) = fs::read_to_string(&file) else {
+        return Ok(None);
+    };
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(laid) = crate::playtest::tidy(dir, &name, &content, dry_run)? else {
+        return Ok(None);
+    };
+    if !dry_run {
+        md::write_atomic(&file, &laid.content)?;
+    }
+    let n = laid.old.iter().map(|(_, r)| r.len()).sum();
+    Ok(Some((file, crate::playtest::report(dir, &laid), n)))
+}
+
 /// Sweep the sheet at `sheet` in place (unless `dry_run`): what it did, `None` for nothing.
 fn sweep_one(sheet: &Path, dry_run: bool) -> Result<Option<Tidied>> {
     let content = fs::read_to_string(sheet).with_context(|| format!("read {}", sheet.display()))?;
@@ -2200,12 +2210,21 @@ fn is_sheet_path(path: &Path) -> bool {
     let named = path
         .file_name()
         .is_some_and(|n| n == "README.md" || n == "tasks.md");
-    named
-        && !path
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+    named && outside_frozen_dirs(path)
+}
+
+/// No `versions/` or `docs/` above `path`: a note there is history or prose, never swept.
+fn outside_frozen_dirs(path: &Path) -> bool {
+    !path
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+}
+
+/// A project's `playtest.md`.
+fn is_playtest_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == "playtest.md") && outside_frozen_dirs(path)
 }
 
 /// What one [`tidy`] did to a sheet.
@@ -2504,8 +2523,29 @@ fn archive_rows(
     ranges: &[std::ops::Range<usize>],
     section: &str,
 ) -> Result<String> {
-    let ver = projects::version_or_default(cur);
     let lines: Vec<&str> = content.lines().collect();
+    let blocks: Vec<Vec<String>> = ranges
+        .iter()
+        .map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()).collect())
+        .collect();
+    archive_blocks(dir, name, cur, section, &blocks)?;
+    Ok(cut_rows(content, ranges))
+}
+
+/// Append closed row `blocks` (each a row and the lines indented under it) to `## <section>` of
+/// the version note for `cur`, creating the note as needed. The one writer of rolled-off rows,
+/// for the sheets and `playtest.md` alike.
+pub(crate) fn archive_blocks(
+    dir: &Path,
+    name: &str,
+    cur: Option<V>,
+    section: &str,
+    blocks: &[Vec<String>],
+) -> Result<()> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    let ver = projects::version_or_default(cur);
     let note = projects::ensure_agent_note(dir, name, &ver)?;
     let prior = fs::read_to_string(&note)?;
     // A row already in the note is not written twice: an editor buffer undone past its save,
@@ -2520,15 +2560,16 @@ fn archive_rows(
                 .collect()
         })
         .unwrap_or_default();
-    let rows: Vec<String> = ranges
+    let rows: Vec<String> = blocks
         .iter()
-        .filter(|r| md::row_id(lines[r.start]).is_none_or(|id| !have.contains(&id)))
-        .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
+        .filter(|b| md::row_id(&b[0]).is_none_or(|id| !have.contains(&id)))
+        .flatten()
+        .cloned()
         .collect();
     if !rows.is_empty() {
         md::write_atomic(&note, &append_done_rows(&prior, section, &rows))?;
     }
-    Ok(cut_rows(content, ranges))
+    Ok(())
 }
 
 /// `content` without the lines at `ranges`.
@@ -3529,7 +3570,6 @@ mod inbox_tests {
         }
     }
 
-    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     #[test]
     fn row_writes_leave_a_record_with_id_words_and_lane() {
         let v = vault(
@@ -3788,6 +3828,90 @@ mod inbox_tests {
         .is_err());
     }
 
+    /// nc-1: a row aimed at a later release sits in `## Tasks` like any other, so `edit` and
+    /// `drop` reach it by its exact line, its words or its id, and it keeps its release tag.
+    /// Seen 2026-11-04, before `--migrate-rows` folded the old `## Wave` sections into
+    /// `## Tasks`: an exact `edit` on a planned row said "no open task matches".
+    #[test]
+    fn edit_and_drop_reach_a_row_aimed_at_a_later_release() {
+        let planned = "- [ ] fix(net): rotate the token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(
+            sheet::is_later(planned, Some((0, 1, 0))),
+            "the fixture's row is planned"
+        );
+        let v = vault(
+            "planned",
+            "",
+            &format!("- [ ] fix(ui): the menu flickers #high <!-- id:sc-1 -->\n{planned}\n"),
+        );
+        let edited = |pick: Pick, text: Option<&str>, details: &[String]| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &pick,
+                text,
+                None,
+                details,
+                false,
+                None,
+                Lane::Human,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            edited(
+                Pick::new(planned, true).unwrap(),
+                Some("fix(net): rotate the host token"),
+                &[]
+            ),
+            0
+        );
+        let row = "- [ ] fix(net): rotate the host token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(v.read().contains(row), "{}", v.read());
+        assert_eq!(
+            edited(
+                Pick::new("host token", false).unwrap(),
+                None,
+                &["out of git".into()]
+            ),
+            0
+        );
+        assert!(
+            v.read().contains(&format!("{row}\n  out of git\n")),
+            "{}",
+            v.read()
+        );
+        assert_eq!(
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id("sc-2".into()),
+                Some("moot"),
+                None,
+                Lane::Human
+            )
+            .unwrap(),
+            0
+        );
+        let sheet = v.read();
+        let closed = sheet.lines().find(|l| l.contains("id:sc-2")).unwrap();
+        assert!(
+            closed.starts_with("- [x] fix(net): rotate the host token"),
+            "{sheet}"
+        );
+        assert!(
+            closed.contains("#v0.2.0") && closed.contains("dropped: moot"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("- [ ] fix(ui): the menu flickers"),
+            "{sheet}"
+        );
+    }
+
+    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3810,6 +3934,7 @@ mod inbox_tests {
             project: None,
             lane: Lane::Human,
             want: None,
+            why: None,
             how: How::Rows {
                 texts: texts.iter().map(|t| t.to_string()).collect(),
                 to: None,
@@ -3946,6 +4071,7 @@ mod inbox_tests {
             project: None,
             lane: Lane::Human,
             want: None,
+            why: None,
             how: How::Dup(id.into()),
         };
         assert!(file(&v.p, &v.log, "scratch", &pick, &dup("sc-9"), Lane::Human).is_err());

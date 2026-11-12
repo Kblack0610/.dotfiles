@@ -12,7 +12,6 @@ set -u
 # --- fleet: alias  short  long ------------------------------------------------
 # alias must exist in ~/.ssh/config; short/long are display labels.
 FLEET=(
-    "mac-studio|st|studio"
     "mac-mini|mn|mini"
     "pi3|p3|pi3"
     "hp-game|hp|hp"

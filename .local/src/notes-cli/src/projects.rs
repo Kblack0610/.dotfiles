@@ -12,9 +12,9 @@ use crate::daily;
 use crate::logging::Logger;
 use crate::md;
 use crate::project_tasks;
-use crate::registry::Registry;
 use crate::sheet::{self, V};
 use anyhow::{bail, Result};
+use project_map::Registry;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1081,7 +1081,8 @@ pub(crate) fn row_parse_tsv(line: &str) -> String {
 }
 
 /// The types a filer (a script, a prompt, `propose`) may give a row: every [`ROW_TYPES`]
-/// entry but `epic`, which is the human's to file. `notes row types` prints them.
+/// entry but `epic`: an epic is filed only through its own path (the triager's `epic_new`, the
+/// standing epic `notes ptask` files, or the human), never as a plain row. `notes row types` prints them.
 pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
     ROW_TYPES.iter().copied().filter(|t| *t != "epic")
 }
@@ -1489,7 +1490,7 @@ fn files_linking(root: &Path, prefixes: &[String]) -> usize {
 // projects hub ("a vX.Y.Z.md file — deep detail for one release").
 
 /// How far to bump: `v0.1.2` -> patch `v0.1.3`, minor `v0.2.0`, major `v1.0.0`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Bump {
     Patch,
     Minor,
@@ -1613,7 +1614,7 @@ pub(crate) fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
 }
 
 /// The next version after `cur` (or the v0.0.1 seed when the project has none).
-fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
+pub(crate) fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
     match cur {
         None => (0, 0, 1), // every lab project starts here
         Some((a, b, c)) => match level {
@@ -1622,6 +1623,17 @@ fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
             Bump::Major => (a + 1, 0, 0),
         },
     }
+}
+
+/// The bump a release of `cur` takes when nobody names one (`stages.md`, "Versions"): minor
+/// when a feature epic closed on proof in it, else patch, with the feature that made it a minor.
+/// A standing epic (`<system> to standard`) is upkeep and an epic closed on landed work alone
+/// is not proven, so neither counts. Major is the human's call, so it is never derived.
+pub(crate) fn derived_bump(ix: &crate::epics::Index, cur: V) -> (Bump, Option<String>) {
+    ix.closed_epics_in(cur, cur)
+        .into_iter()
+        .find(|e| e.verified && !crate::standing::is_standing(&e.system, &e.title))
+        .map_or((Bump::Patch, None), |e| (Bump::Minor, Some(e.title)))
 }
 
 /// Whether `--next` may open `next` after the open version `cur`.
@@ -1674,7 +1686,7 @@ fn project_dir_in(p: &Profile, want: &str) -> Option<PathBuf> {
 /// naming the orgs, because guessing which of two live sheets you meant is how edits land in the
 /// copy nothing reads.
 pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
-    let want = crate::registry::canonical(name.trim()).to_lowercase();
+    let want = project_map::canonical(name.trim()).to_lowercase();
 
     // Fast path: the active org has it AND it is the real sheet. No other org is consulted, so
     // the common case costs exactly what it did before.
@@ -1933,13 +1945,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         frozen.push('\n');
     }
 
-    // The stage tag (`#alpha`, `#prod`) rides on the `Version:` line and is a fact about the
-    // project, not the version, so it survives the release. Dropping it demoted a `#prod` app
-    // to untagged on every release.
-    let stage = head_lines(content)
-        .find_map(|l| l.trim_start().strip_prefix("Version:"))
-        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
-        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    let version = version_line(content, next);
     let head_len = head_lines(content).count();
     let mut sheet: Vec<String> = Vec::with_capacity(lines.len());
     for (i, l) in lines.iter().enumerate() {
@@ -1948,7 +1954,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         }
         let head = l.trim_start();
         if i < head_len && head.starts_with("Version:") {
-            sheet.push(format!("Version: {next_s}{stage}"));
+            sheet.push(version.clone());
         } else {
             sheet.push(l.trim_end().to_string());
         }
@@ -1956,10 +1962,21 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
+/// The head `Version:` line naming `v`, with the sheet's stage tag (`#alpha`, `#prod`) kept:
+/// the tag is a fact about the project, not the version, and dropping it demoted a `#prod`
+/// app to untagged on every release.
+pub(crate) fn version_line(content: &str, v: V) -> String {
+    let stage = head_lines(content)
+        .find_map(|l| l.trim_start().strip_prefix("Version:"))
+        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
+        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    format!("Version: {}{stage}", fmt_version(v))
+}
+
 /// The `## PRs` section a frozen note ends in: every PR named on the version's closed rows of
 /// both lanes, in row order and without repeats. A dropped row shipped nothing, so its PRs are
 /// left out. Empty when no row names one.
-fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
+pub(crate) fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     let mut prs: Vec<String> = Vec::new();
     for r in rows.into_iter().filter(|r| !md::is_dropped(r)) {
         for pr in md::pr_refs(r) {
@@ -2068,23 +2085,9 @@ fn align_agent_board(dir: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Why a project's stage keeps it from a release, or `None` when it may release.
-///
-/// A project below beta has no released versions to close, so it keeps one working
-/// list. Versions start at beta. `--force` does not override this: it is about the open
-/// work of one version, and this is about whether the project has versions at all.
-fn stage_blocks_release(dir: &Path, name: &str) -> Option<String> {
-    let stage = stage_of(dir)?;
-    (stage_rank(&stage) < stage_rank("beta")).then(|| {
-        format!(
-            "{name} is #{stage}: a project below beta keeps one working list and has no \
-releases. Declare it beta first: notes projects --stage {name} --set beta"
-        )
-    })
-}
-
-/// `notes projects --release <name> [--minor|--major] [--force]` - close the current version
-/// and open the next on the working sheet.
+/// `notes projects --release <name> [--patch|--minor|--major] [--force]` - close the current
+/// version and open the next on the working sheet. With no level the bump is derived from what
+/// the version holds ([`derived_bump`]); a level given overrides it.
 ///
 /// 1. **Gate.** A version with open rows does not close: closing one means its work is
 ///    finished, or a human aimed it elsewhere with `notes ptask <name> move "<q>" --to <ver>`.
@@ -2096,20 +2099,25 @@ releases. Declare it beta first: notes projects --stage {name} --set beta"
 ///    with nothing to move, because a release is a filter over the one list.
 ///
 /// No sheet means no release: the `Version:` line is the only thing naming the open version.
+///
+/// `--tag vX.Y.Z` is a release tag closing the version (`agentctl-wave-roll`, for a project
+/// its tag owns): the note is named from the tag, never from the sheet, so the lab has one
+/// note per tag. A tag at or above the open version freezes the open version's rows as that
+/// tag; a tag below it (a hotfix the sheet never planned) gets a note marked
+/// [`NO_PLANNED_ROWS`] and the sheet stays open where it is.
+#[allow(clippy::too_many_arguments)]
 pub fn release(
     p: &Profile,
     log: &Logger,
     name: &str,
-    level: Bump,
+    level: Option<Bump>,
     force: bool,
     carry: bool,
     next_at: Option<&str>,
     renumber: bool,
+    tag: Option<&str>,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
-    if let Some(why) = stage_blocks_release(&dir, name) {
-        bail!(why);
-    }
     let Some(sheet) = sheet_to_release(&dir, log)? else {
         bail!(
             "{name} has no working sheet to release (no README.md with a `Version: vX.Y.Z` line)"
@@ -2118,9 +2126,39 @@ pub fn release(
     let content = fs::read_to_string(&sheet)?;
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("no `Version: vX.Y.Z` line on {}", sheet.display()))?;
+    let tag = match tag {
+        None => None,
+        Some(_) if renumber => bail!("--tag and --renumber do not go together"),
+        Some(t) => Some(
+            parse_version(t.trim())
+                .ok_or_else(|| anyhow::anyhow!("--tag wants vX.Y.Z, got '{t}'"))?,
+        ),
+    };
+    if let Some(t) = tag.filter(|t| *t < cur) {
+        // Nothing rolls, so a bump, a --next or a carry would be silently dropped: refuse them.
+        if level.is_some() || next_at.is_some() || carry {
+            bail!(
+                "--tag {} is below the open version {}: it records a note and rolls nothing, \
+                 so it takes no bump, --next or carry",
+                fmt_version(t),
+                fmt_version(cur)
+            );
+        }
+        return record_unplanned_tag(log, &dir, name, &content, t, cur);
+    }
+    let ix = crate::epics::Index::of(&dir, Some(cur));
     let next = match next_at {
         None if renumber => bail!("--renumber needs --next vX.Y.Z"),
-        None => next_version(Some(cur), level),
+        None => {
+            let (bump, feature) = match level {
+                Some(l) => (l, None),
+                None => derived_bump(&ix, cur),
+            };
+            if let Some(f) = feature {
+                println!("bump: minor, a feature closed in {}: {f}", fmt_version(cur));
+            }
+            next_version(Some(cur), bump)
+        }
         Some(v) => {
             let v = parse_version(v.trim())
                 .ok_or_else(|| anyhow::anyhow!("--next wants vX.Y.Z, got '{v}'"))?;
@@ -2128,10 +2166,19 @@ pub fn release(
             v
         }
     };
+    if let Some(t) = tag.filter(|t| next <= *t) {
+        bail!(
+            "the next version {} is not above the tag {} that closes {}",
+            fmt_version(next),
+            fmt_version(t),
+            fmt_version(cur)
+        );
+    }
+    // The note's name: the tag that shipped the version, else the version itself.
+    let shipped = tag.unwrap_or(cur);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
-    let ix = crate::epics::Index::of(&dir, Some(cur));
     let (content, carried) = if carry {
         carry_open(&content, cur, next, &ix)
     } else {
@@ -2148,7 +2195,7 @@ pub fn release(
     // 2. the freeze
     let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
-    let frozen = versions.join(format!("{}.md", fmt_version(cur)));
+    let frozen = versions.join(format!("{}.md", fmt_version(shipped)));
     // A plain release never touches an existing note. A carry is the release tag closing
     // the version, and a note already there (a migrated changelog) must not block that
     // forever, so it appends the close-out below what is there instead of overwriting it.
@@ -2160,6 +2207,13 @@ pub fn release(
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    // A note named from its tag says so in its head too: anything scanning a frozen note for
+    // its `Version:` reads the tag, and the version the rows were planned as stays on record.
+    let frozen_body = if shipped == cur {
+        frozen_body
+    } else {
+        named_from_tag(&frozen_body, shipped, cur)
+    };
     // The sheet's rows that already rolled off its Done window wait in the agent note; the
     // version they belong to is this one, so they freeze with the sheet's own.
     let agent_note = agent_note_path(&dir, &fmt_version(cur));
@@ -2251,6 +2305,88 @@ pub fn release(
         }
     }
     Ok(())
+}
+
+/// The marker on a version note written for a tag no sheet version was planned as: a hotfix
+/// below the open version. Its note holds no rows, and `notes-roll` skips it when it looks for
+/// the previous version's `rolled:` boundary.
+pub(crate) const NO_PLANNED_ROWS: &str = "<!-- no-planned-rows -->";
+
+/// A frozen body renamed for the tag that shipped it: its first `Version:` line (stage tag and
+/// all) becomes `Version: <tag>` plus `Planned as: <planned>`, the line [`frozen_note`] finds it
+/// by. A body with no `Version:` line gets both under its title.
+fn named_from_tag(body: &str, tag: V, planned: V) -> String {
+    let head = format!(
+        "Version: {}\n{PLANNED_AS} {}",
+        fmt_version(tag),
+        fmt_version(planned)
+    );
+    let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
+    match lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("Version:"))
+    {
+        Some(i) => lines[i] = head,
+        None => lines.insert(1.min(lines.len()), head),
+    }
+    lines.join("\n") + "\n"
+}
+
+const PLANNED_AS: &str = "Planned as:";
+
+/// The frozen note of `ver` in `dir/versions`: `<ver>.md`, else the note a tag froze it under
+/// (its `Planned as: <ver>` line, [`named_from_tag`]). The plain path when neither exists, so
+/// a reader of a version nothing froze reads nothing.
+pub(crate) fn frozen_note(dir: &Path, ver: &str) -> PathBuf {
+    let plain = dir.join("versions").join(format!("{ver}.md"));
+    if plain.exists() {
+        return plain;
+    }
+    let want = format!("{PLANNED_AS} {ver}");
+    version_notes(&dir.join("versions"))
+        .into_iter()
+        .map(|(_, p)| p)
+        .find(|p| fs::read_to_string(p).is_ok_and(|c| c.lines().take(5).any(|l| l.trim() == want)))
+        .unwrap_or(plain)
+}
+
+/// `--release --tag` for a tag below the open version: write `versions/<tag>.md` marked
+/// [`NO_PLANNED_ROWS`] when the tag has no note yet, and leave the sheet alone, since its open
+/// version has not shipped. A note already there is the tag's record, so it is kept.
+fn record_unplanned_tag(
+    log: &Logger,
+    dir: &Path,
+    name: &str,
+    sheet: &str,
+    tag: V,
+    cur: V,
+) -> Result<()> {
+    let (tag_s, cur_s) = (fmt_version(tag), fmt_version(cur));
+    let versions = dir.join("versions");
+    let note = versions.join(format!("{tag_s}.md"));
+    if note.exists() {
+        println!("{name} {tag_s} already has its note ({})", note.display());
+        return Ok(());
+    }
+    fs::create_dir_all(&versions)?;
+    let title = sheet.lines().next().unwrap_or("# project");
+    fs::write(&note, unplanned_note(title, tag_s.as_str(), cur_s.as_str()))?;
+    log.info(
+        "projects",
+        &format!("{name} {tag_s} recorded, no planned rows (open {cur_s})"),
+    );
+    println!(
+        "recorded {name} {tag_s}: no planned rows, the sheet stays open at {cur_s} (unplanned {})",
+        note.display()
+    );
+    Ok(())
+}
+
+/// The body of a tag's note when no rows were planned for it.
+fn unplanned_note(title: &str, tag: &str, open: &str) -> String {
+    format!(
+        "{title}\nVersion: {tag}\n\n{NO_PLANNED_ROWS}\nNo planned rows: {tag} was tagged while the sheet was open at {open}.\n"
+    )
 }
 
 /// `notes projects --migrate <name>` - consolidate a project onto the one version layout.
@@ -2913,8 +3049,90 @@ struct ProjectStats {
     status: String,
     /// That date; empty when the line carries none.
     status_date: String,
+    /// When the open version is due to be cut, and at what bump. JSON only.
+    release: ReleaseDue,
     sheet: PathBuf,
     summary: PathBuf,
+}
+
+/// When a project's open version is due to be cut (`stages.md`, "Versions"): its stage's
+/// cadence after the last cut, and only with closed rows in it. Read by `agentctl-wave-roll`,
+/// which cuts it, and by `fleet-bench chain` (`release_overdue`), which flags one left uncut.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub(crate) struct ReleaseDue {
+    pub cadence_days: i64,
+    /// The day of the last cut, `YYYY-MM-DD`. `None` for a project never cut: its history is
+    /// rebuilt first (`projects --backfill`), so a cadence cut never folds it into one version.
+    pub last_cut: Option<String>,
+    /// `last_cut` plus the cadence; `None` when never cut.
+    pub due_on: Option<String>,
+    /// Past `due_on` with at least one closed row in the open version.
+    pub due: bool,
+    /// Due and a whole cadence past `due_on`: the open version holds more than one window of
+    /// work, which a cadence cut would fold into one version. `agentctl-wave-roll` leaves it
+    /// to `projects --backfill`, which splits it by week, or a hand `notes-roll`.
+    pub backlog: bool,
+    /// The bump the cut takes, `minor` or `patch` ([`derived_bump`]).
+    pub bump: &'static str,
+}
+
+/// The day of `dir`'s last cut: the newest `rolled:` stamp across its `versions/` notes. Only
+/// when no note carries one (all frozen before stamps) is the newest note's mtime the date: a
+/// rewrite drags an mtime forward, so it never outranks a stamp.
+fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
+    let notes = version_notes(&dir.join("versions"));
+    let stamped = notes
+        .iter()
+        .filter_map(|(_, path)| {
+            let text = fs::read_to_string(path).ok()?;
+            text.match_indices("<!-- rolled:")
+                .filter_map(|(i, m)| {
+                    let rest = text[i + m.len()..].trim_start();
+                    let end = rest
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(rest.len());
+                    rest[..end].parse::<i64>().ok()
+                })
+                .max()
+        })
+        .max();
+    let epoch = stamped.or_else(|| {
+        notes
+            .iter()
+            .filter_map(|(_, path)| {
+                let m = fs::metadata(path).ok()?.modified().ok()?;
+                let d = m.duration_since(std::time::UNIX_EPOCH).ok()?;
+                i64::try_from(d.as_secs()).ok()
+            })
+            .max()
+    })?;
+    chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.with_timezone(&chrono::Local).date_naive())
+}
+
+fn release_due(
+    dir: &Path,
+    cadence_days: i64,
+    closed: usize,
+    ix: &crate::epics::Index,
+    cur: Option<V>,
+    today: chrono::NaiveDate,
+) -> ReleaseDue {
+    let last = last_cut(dir);
+    let due_on = last.map(|d| d + chrono::Duration::days(cadence_days));
+    let bump = match cur.map(|c| derived_bump(ix, c).0) {
+        Some(Bump::Minor) => "minor",
+        _ => "patch",
+    };
+    let due = closed > 0 && due_on.is_some_and(|d| d <= today);
+    let backlog = due && due_on.is_some_and(|d| d + chrono::Duration::days(cadence_days) <= today);
+    ReleaseDue {
+        cadence_days,
+        last_cut: last.map(|d| d.to_string()),
+        due_on: due_on.map(|d| d.to_string()),
+        due,
+        backlog,
+        bump,
+    }
 }
 
 /// Split a STATUS line into its leading `_YYYY-MM-DD_` date and the rest. A line with no
@@ -3283,12 +3501,17 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let (status_date, status) = status_line(&read_or_empty(Some(summary.clone())))
         .map(|l| split_status_date(&l))
         .unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let stage = stage_of(dir).unwrap_or_default();
+    let progress = progress_of(dir, cur, cur, &ix, today);
+    let cadence = config::release_shape().cadence(&stage);
+    let release = release_due(dir, cadence, progress.done, &ix, cur, today);
     ProjectStats {
         profile: profile.to_string(),
         name: name.to_string(),
         automation: config::automation(profile),
         dir: dir.to_path_buf(),
-        stage: stage_of(dir).unwrap_or_default(),
+        stage,
         prio: prio_of(dir),
         version: version_str(dir),
         open: c.open,
@@ -3303,11 +3526,12 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         )
         .open,
         goal: goal_line(&content),
-        progress: progress_of(dir, cur, cur, &ix, chrono::Local::now().date_naive()),
+        progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
         status,
         status_date,
+        release,
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
         summary,
     }
@@ -4661,6 +4885,104 @@ Some prose left on the board.
         dir
     }
 
+    /// One note per tag, named from the tag (`--release --tag`, what wave-roll passes for a
+    /// project its tag owns): the open version's rows freeze under the tag that shipped them,
+    /// and a tag below the open version gets a note with no planned rows.
+    #[test]
+    fn a_tag_names_the_note_it_freezes_and_a_skipped_tag_gets_an_empty_one() {
+        let root = board_scratch("release-tag");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(&dir).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        let sheet = "# demo\nVersion: v1.18.1 #beta\n\n## Tasks\n\
+                     - [x] feat(a): shipped <!-- pr:11 -->\n\
+                     - [ ] feat(b): open\n";
+        fs::write(dir.join("README.md"), sheet).unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+        let rel = |tag: &str, next: &str| {
+            release(
+                &p,
+                &log,
+                "demo",
+                None,
+                false,
+                true,
+                Some(next),
+                false,
+                Some(tag),
+            )
+        };
+
+        // NEGATIVE CONTROL: a next version not above the tag would reopen what shipped.
+        assert!(rel("v1.19.0", "v1.19.0").is_err());
+        assert!(!dir.join("versions/v1.19.0.md").exists());
+
+        // The app skipped v1.18.1 and tagged v1.19.0: the rows freeze as v1.19.0.
+        rel("v1.19.0", "v1.19.1").unwrap();
+        let note = fs::read_to_string(dir.join("versions/v1.19.0.md")).unwrap();
+        assert!(
+            note.starts_with("# demo\nVersion: v1.19.0\nPlanned as: v1.18.1\n"),
+            "{note}"
+        );
+        assert!(note.contains("feat(a): shipped"), "{note}");
+        assert!(!dir.join("versions/v1.18.1.md").exists());
+        let after = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(after.contains("Version: v1.19.1 #beta"), "{after}");
+        // A reader of the planned version finds the note the tag froze it under.
+        assert_eq!(
+            frozen_note(&dir, "v1.18.1"),
+            dir.join("versions/v1.19.0.md")
+        );
+        assert_eq!(
+            frozen_note(&dir, "v1.17.0"),
+            dir.join("versions/v1.17.0.md")
+        );
+        let rec = |tag: &str| release(&p, &log, "demo", None, false, false, None, false, Some(tag));
+
+        // A hotfix below the open version: a note with no planned rows, the sheet untouched.
+        fs::write(dir.join("README.md"), after.replace("v1.19.1", "v1.20.0")).unwrap();
+        // NEGATIVE CONTROL: below the open version nothing rolls, so a carry or --next is refused.
+        assert!(rel("v1.19.1", "v1.20.1").is_err());
+        assert!(!dir.join("versions/v1.19.1.md").exists());
+        rec("v1.19.1").unwrap();
+        let stub = fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap();
+        assert!(stub.contains(NO_PLANNED_ROWS), "{stub}");
+        assert!(stub.contains("Version: v1.19.1\n"), "{stub}");
+        let still = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(still.contains("Version: v1.20.0 #beta"), "{still}");
+        assert!(still.contains("feat(b): open"), "{still}");
+        // Recording it again keeps the note it has.
+        fs::write(dir.join("versions/v1.19.1.md"), "kept\n").unwrap();
+        rec("v1.19.1").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("versions/v1.19.1.md")).unwrap(),
+            "kept\n"
+        );
+        // NEGATIVE CONTROL: --tag never goes with --renumber.
+        assert!(release(
+            &p,
+            &log,
+            "demo",
+            None,
+            false,
+            true,
+            Some("v1.19.5"),
+            true,
+            Some("v1.19.2")
+        )
+        .is_err());
+    }
+
     #[test]
     fn a_release_note_lists_the_prs_of_both_lanes_closed_rows() {
         let root = board_scratch("release-prs");
@@ -4694,7 +5016,18 @@ Some prose left on the board.
         p.project_index = Some(index);
         let log = Logger::new(root.join(".state/log"), false);
 
-        release(&p, &log, "demo", Bump::Patch, false, false, None, false).unwrap();
+        release(
+            &p,
+            &log,
+            "demo",
+            Some(Bump::Patch),
+            false,
+            false,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
 
         let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
         assert!(
@@ -4746,7 +5079,18 @@ Some prose left on the board.
         p.project_index = Some(index);
         let log = Logger::new(root.join(".state/log"), false);
 
-        release(&p, &log, "demo", Bump::Patch, false, false, None, false).unwrap();
+        release(
+            &p,
+            &log,
+            "demo",
+            Some(Bump::Patch),
+            false,
+            false,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
 
         let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
         assert!(
@@ -6008,10 +6352,9 @@ mod shape_tests {
             &map,
             r#"{
               "paths": {"/src/alpha": "alpha"},
-              "aliases": {"alpha-old": "alpha"},
               "trackers": {
                 "_comment": "a string, not a tracker",
-                "alpha": {"type": "game"},
+                "alpha": {"type": "game", "names": ["alpha-old"]},
                 "beta": {"type": "game", "repo": "alpha"},
                 "gamma": {"type": "app", "repo": "alpha"},
                 "delta": {"type": "game"},
@@ -6051,7 +6394,7 @@ mod shape_tests {
         let o = overlays(&s);
         let index = s.p.project_index.as_ref().unwrap();
         let before = fs::read_to_string(index).unwrap();
-        // an alias is a name for a project, not a project
+        // another spelling of a project is not a project
         for name in ["zeta", "alpha-old"] {
             let err = new_project(&s.p, &s.log, name, &o).unwrap_err().to_string();
             assert!(err.contains("not a registered project"), "{err}");
@@ -6141,30 +6484,125 @@ mod shape_tests {
         assert!(shape_findings(&root.join("gamma"), "gamma", &o).contains(&loose));
     }
 
+    /// A feature epic closed on proof makes the release a minor; a standing epic, an epic
+    /// closed on its PRs alone, or plain fixes make it a patch (`stages.md`, "Versions").
     #[test]
-    fn draft_and_alpha_do_not_roll_and_beta_does() {
-        let dir = std::env::temp_dir().join(format!("notes-stage-roll-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let sheet = |stage: &str| format!("# d\nVersion: v0.1.0 #{stage}\n\n## Tasks\n- [ ] x\n");
-        for (stage, blocked) in [
-            ("draft", true),
-            ("dev", true),
-            ("alpha", true),
-            ("beta", false),
-            ("prod", false),
-        ] {
-            fs::write(dir.join("README.md"), sheet(stage)).unwrap();
-            let why = stage_blocks_release(&dir, "d");
-            assert_eq!(why.is_some(), blocked, "{stage}: {why:?}");
-            if let Some(w) = why {
-                assert!(w.contains("notes projects --stage d --set beta"), "{w}");
-            }
+    fn an_alpha_project_releases_at_the_bump_its_closed_rows_derive() {
+        let s = sandbox("bump");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = |rows: &str| format!("# demo\nVersion: v0.3.0 #alpha\n\n## Tasks\n{rows}");
+        let feature = "- [x] epic(gameplay): school days <!-- id:db-1 playtest:ok -->\n\
+                       - [x] feat(gameplay): one room #of/db-1 <!-- id:db-2 pr:5 -->\n";
+        let cases = [
+            (feature, Bump::Minor),
+            (
+                "- [x] epic(ui): ui to standard <!-- id:db-1 playtest:ok -->\n",
+                Bump::Patch,
+            ),
+            (
+                "- [x] epic(gameplay): school days <!-- id:db-1 pr:5 -->\n",
+                Bump::Patch,
+            ),
+            ("- [x] fix(ui): a bug <!-- id:db-3 pr:6 -->\n", Bump::Patch),
+        ];
+        for (rows, want) in cases {
+            fs::write(dir.join("README.md"), sheet(rows)).unwrap();
+            let ix = crate::epics::Index::of(&dir, Some((0, 3, 0)));
+            assert_eq!(derived_bump(&ix, (0, 3, 0)).0, want, "{rows}");
         }
-        // no declared stage: the project predates stages, and rolls as it always did
-        fs::write(dir.join("README.md"), "# d\nVersion: v0.1.0\n\n## Tasks\n").unwrap();
-        assert!(stage_blocks_release(&dir, "d").is_none());
-        let _ = fs::remove_dir_all(&dir);
+        // The release itself: #alpha is not refused, and no level takes the derived minor.
+        fs::write(dir.join("README.md"), sheet(feature)).unwrap();
+        release(&s.p, &s.log, "demo", None, false, false, None, false, None).unwrap();
+        let after = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(after.contains("Version: v0.4.0 #alpha"), "{after}");
+        // NEGATIVE CONTROL: a level given overrides the derived one.
+        fs::write(
+            dir.join("README.md"),
+            sheet(feature).replace("v0.3.0", "v0.4.0"),
+        )
+        .unwrap();
+        release(
+            &s.p,
+            &s.log,
+            "demo",
+            Some(Bump::Patch),
+            false,
+            false,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        let after = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(after.contains("Version: v0.4.1 #alpha"), "{after}");
+        let _ = fs::remove_dir_all(&s.root);
+    }
+
+    /// A version is due its stage's cadence after the last cut, and only with closed rows; a
+    /// project never cut is never due, so its history is rebuilt before any cadence cut.
+    #[test]
+    fn a_release_is_due_a_cadence_after_the_last_cut_with_closed_rows() {
+        let s = sandbox("due");
+        let dir = s.root.join("demo");
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        let ix = crate::epics::Index::default();
+        let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap();
+        let never = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), day("2026-11-09"));
+        assert_eq!((never.last_cut, never.due), (None, false));
+        use chrono::TimeZone;
+        let cut = chrono::Local
+            .from_local_datetime(&day("2026-11-01").and_hms_opt(12, 0, 0).unwrap())
+            .unwrap()
+            .timestamp();
+        fs::write(
+            dir.join("versions/v0.2.0.md"),
+            format!("## Tasks\n- [x] a\n<!-- rolled: 1 -->\n<!-- rolled: {cut} -->\n"),
+        )
+        .unwrap();
+        let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), day("2026-11-08"));
+        assert_eq!(
+            r.last_cut.as_deref(),
+            Some("2026-11-01"),
+            "the newest stamp wins"
+        );
+        assert_eq!(
+            (r.due_on.as_deref(), r.due, r.bump),
+            (Some("2026-11-08"), true, "patch")
+        );
+        assert!(!r.backlog, "one window behind is a cut");
+        // an older note frozen before stamps, rewritten today: its mtime never outranks a stamp
+        fs::write(dir.join("versions/v0.1.0.md"), "## Tasks\n- [x] old\n").unwrap();
+        let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), day("2026-11-08"));
+        assert_eq!(r.last_cut.as_deref(), Some("2026-11-01"), "a rewrite moves no cut");
+        // NEGATIVE CONTROL: with no stamp anywhere, the newest mtime is the date
+        fs::remove_file(dir.join("versions/v0.2.0.md")).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), today);
+        assert_eq!(r.last_cut, Some(today.format("%Y-%m-%d").to_string()));
+        fs::write(
+            dir.join("versions/v0.2.0.md"),
+            format!("## Tasks\n- [x] a\n<!-- rolled: {cut} -->\n"),
+        )
+        .unwrap();
+        let late = release_due(&dir, 7, 4, &ix, None, day("2026-11-15"));
+        assert!(
+            late.due && late.backlog,
+            "two windows behind waits for the backfill"
+        );
+        assert!(
+            !release_due(&dir, 7, 4, &ix, None, day("2026-11-07")).due,
+            "before the cadence"
+        );
+        assert!(
+            !release_due(&dir, 7, 0, &ix, None, day("2026-11-20")).due,
+            "nothing closed"
+        );
+        assert!(
+            !release_due(&dir, 14, 4, &ix, None, day("2026-11-14")).due,
+            "prod is 14 days"
+        );
+        let _ = fs::remove_dir_all(&s.root);
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.

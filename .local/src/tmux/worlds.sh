@@ -4,7 +4,7 @@
 #
 #   tmux-world route <dir>     "<world> <session>" for that directory; world `here` when no
 #                              manifest claims it
-#   tmux-world agents          the world every agent worktree session lives on; empty if none
+#   tmux-world agents          the world every worktree session lives on (`@agents`); empty if none
 #   tmux-world session <name>  the world that declares that session; rc 1 if none does
 #
 # The manifests (.config/tmux-servers/*.conf) are the only routing table, and this file is the
@@ -149,7 +149,7 @@ world_is_linked() {
 
 # world_route <dir> -- "<world> <session>". The one rule:
 #   a directory a manifest names  -> that world, under the manifest's session name
-#   any linked worktree           -> the agent world, whichever repo it was cut from
+#   a linked worktree             -> the `@agents` world, whichever repo it was cut from, under its own name
 #   any other directory           -> the `@repos` world
 #   none of those                 -> `here`, the caller's own world
 world_route() {

@@ -17,8 +17,8 @@ target=$(hyprctl clients -j | jq -r '
   [ .[] | select(.class != "rustdesk") ] | sort_by(.focusHistoryID) | .[0].address // empty')
 
 if [ -n "$target" ]; then
-  hyprctl dispatch focuswindow "address:$target"
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$target\" })"
 else
   # No other window anywhere — fall back to a known-empty home workspace.
-  hyprctl dispatch workspace 1
+  hyprctl dispatch 'hl.dsp.focus({ workspace = 1 })'
 fi

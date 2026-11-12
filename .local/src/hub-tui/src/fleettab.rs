@@ -57,7 +57,7 @@ pub fn page(
                 "  {} of {} rows, {}",
                 rows.len(),
                 f.who.len(),
-                hub_core::costs::SPEND_BADGE
+                hub_core::costs::spend_badge()
             ),
             p,
         ),
@@ -415,8 +415,8 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
         heading(
             "ANSWER JUDGE",
             format!(
-                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  false-defer {}  pending {}  unscored {}",
-                j.agree, j.disagree, j.deferred, j.false_defer, j.pending, j.unscored
+                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  pending {}  unscored {}",
+                j.agree, j.disagree, j.deferred, j.pending, j.unscored
             ),
             p,
         ),
@@ -424,9 +424,100 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
+/// judge-eval's percent as it gives it, or "-" with none.
+fn share(x: Option<f64>) -> String {
+    x.map_or("-".to_string(), |x| format!("{x}%"))
+}
+
+/// The answer judge per type and impact level, judge-eval's cells under its current prompt. A
+/// live cell's scored count is the answers the human reviewed (AUDITED); silence scores nothing.
+fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::styled(
+            "  By type and level (self, repo, fleet, critical), under the current prompt:",
+            p.dim(),
+        ),
+        w,
+    )];
+    if j.cells.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!(
+                    "{PAD}no verdicts under prompt {}",
+                    if j.prompt.is_empty() {
+                        "none"
+                    } else {
+                        &j.prompt
+                    }
+                ),
+                p.dim(),
+            ),
+            w,
+        ));
+        return out;
+    }
+    let or_dash = |s: &str, none: &str| {
+        if s.is_empty() {
+            none.to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    let rows = j
+        .cells
+        .iter()
+        .map(|c| {
+            let prec = match (c.precision, c.precision_lo, c.precision_hi) {
+                (Some(x), Some(lo), Some(hi)) => format!("{x}% [{lo}-{hi}]"),
+                (x, _, _) => share(x),
+            };
+            vec![
+                or_dash(&c.kind, "(no type)").into(),
+                or_dash(&c.level, "-").into(),
+                c.verdicts.to_string().into(),
+                c.scored.to_string().into(),
+                prec.into(),
+                c.pending.to_string().into(),
+                cell(
+                    if c.live { "yes" } else { "no" }.to_string(),
+                    if c.live { p.good() } else { p.dim() },
+                ),
+                c.audited.to_string().into(),
+                share(c.level_raised_pct).into(),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec![
+                "TYPE",
+                "LEVEL",
+                "VERD",
+                "SCORED",
+                "PREC [95%]",
+                "PEND",
+                "LIVE",
+                "AUDITED",
+                "RAISED",
+            ],
+            rows,
+            keep: vec![0, 1, 4, 3, 6, 7, 2, 5, 8],
+            right: vec![2, 3, 4, 5, 7, 8],
+            ..Default::default()
+        }
+        .fit(w.saturating_sub(PAD.len()), p.dim())
+        .into_iter()
+        .map(|l| {
+            let mut spans = vec![Span::raw(PAD)];
+            spans.extend(l.spans);
+            Line::from(spans)
+        }),
+    );
+    out
+}
+
 /// The week's line, the filters, then what the judge said on each ask and why.
 fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
     let filters = ASK_FILTERS
         .map(|f| {
             if f == filter {
@@ -588,7 +679,8 @@ pub fn runner_page(
         heading(
             "RUNS",
             format!(
-                "  14 days of runs.jsonl; a run's log: 6 Infra, h on {}",
+                "  14 days of runs.jsonl; a run's log: {}, h on {}",
+                hub_core::layout::bar_label("infra"),
                 r.name
             ),
             p,
@@ -631,7 +723,7 @@ pub fn runner_page(
                 let result = if j.result.is_empty() {
                     match j.state {
                         hub_core::jobs::State::Running => "running",
-                        hub_core::jobs::State::Queued => "queued",
+                        hub_core::jobs::State::Queued => "waiting",
                         hub_core::jobs::State::Done => "done",
                     }
                     .to_string()
@@ -758,6 +850,7 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
         Extras::AskJudge { judge } => {
             out.push(judge_head(judge, p, w));
+            out.extend(judge_cells(judge, p, w));
             out.extend(judge_list(judge, ASK_FILTERS[0], p, now, w));
         }
         Extras::Ingest {
@@ -794,43 +887,22 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                 ));
             }
         }
+        // Every watch with what it checks, where and what to do is Alerts' Watches; here only
+        // the count and the way there.
         Extras::SentinelWatches { watches } => {
             let trip = watches.iter().filter(|x| x.state == "TRIP").count();
+            let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
                     "WATCHES",
-                    format!("  {} watches, {trip} tripped", watches.len()),
+                    format!(
+                        "  {} watches, {trip} tripped: {alerts}, Watches",
+                        watches.len()
+                    ),
                     p,
                 ),
                 w,
             ));
-            let at = |t: Option<i64>| t.map_or("-".into(), |t| clock(t, now));
-            let rows = watches
-                .iter()
-                .map(|x| {
-                    let style = match x.state.as_str() {
-                        "TRIP" | "ERROR" => p.bad(),
-                        "OK" => p.good(),
-                        _ => p.dim(),
-                    };
-                    vec![
-                        x.name.clone().into(),
-                        cell(x.state.clone(), style),
-                        cell(x.severity.clone(), p.dim()),
-                        at(x.since).into(),
-                        at(x.lastrun).into(),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["WATCH", "STATE", "SEVERITY", "SINCE", "LAST RUN"],
-                    rows,
-                    keep: vec![0, 1, 3, 4, 2],
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
         }
     }
     out
@@ -1023,7 +1095,6 @@ pub mod tests {
                 deferred: 2,
                 pending: 1,
                 unscored: 5,
-                false_defer: 1,
                 precision: Some(75.0),
                 kappa: Some(0.2),
                 prompt: "60c840b".into(),
@@ -1060,6 +1131,26 @@ pub mod tests {
                         ..Default::default()
                     },
                 ],
+                cells: vec![
+                    hub_core::fleet::Cell {
+                        kind: "ship_deploy".into(),
+                        level: "repo".into(),
+                        verdicts: 4,
+                        scored: 3,
+                        pending: 1,
+                        precision: Some(66.7),
+                        precision_lo: Some(20.8),
+                        precision_hi: Some(93.9),
+                        live: true,
+                        audited: 3,
+                        level_raised_pct: Some(25.0),
+                    },
+                    hub_core::fleet::Cell {
+                        verdicts: 2,
+                        pending: 2,
+                        ..Default::default()
+                    },
+                ],
             },
         }
     }
@@ -1086,7 +1177,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 9 Costs",
+            "FLEET  3 of 3 rows, spend: Costs",
             "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
             "KIND",
             "FOR",
@@ -1430,6 +1521,75 @@ pub mod tests {
         let lines = page_text(Some(&Err("no runner named dream".into())), 80);
         assert_eq!(lines[0], "no runner named dream");
         assert!(lines[1].contains("Esc all runners"));
+    }
+
+    #[test]
+    fn sentinels_page_counts_its_watches_and_sends_them_to_alerts() {
+        let mut r = runner_fixture();
+        let watch = |state: &str| hub_core::fleet::runner::Watch {
+            name: "dream".into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        r.extras = Extras::SentinelWatches {
+            watches: vec![watch("TRIP"), watch("OK")],
+        };
+        let lines = page_text(Some(&Ok(r)), 120);
+        assert!(
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 8 Alerts, Watches".to_string()),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");
+    }
+
+    #[test]
+    fn the_answer_judges_page_tables_each_type_at_each_level_as_judge_eval_scores_it() {
+        let mut r = runner_fixture();
+        r.extras = Extras::AskJudge {
+            judge: fixture().judge,
+        };
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        let s = lines.join("\n");
+        let head = lines
+            .iter()
+            .position(|l| l.contains("TYPE") && l.contains("AUDITED"));
+        let head = head.unwrap_or_else(|| panic!("{s}"));
+        assert!(lines[head].contains("PREC [95%]"), "{s}");
+        let row = &lines[head + 1];
+        for want in ["ship_deploy", "repo", "66.7% [20.8-93.9]", "yes", "25%"] {
+            assert!(row.contains(want), "{want}: {row}");
+        }
+        // A verdict with no type or level is its own cell, never folded into another.
+        assert!(lines[head + 2].contains("(no type)"), "{s}");
+        // It sits between the judge's counts and its verdict list.
+        let judge = lines
+            .iter()
+            .position(|l| l.starts_with("ANSWER JUDGE"))
+            .unwrap();
+        let list = lines.iter().position(|l| l.contains("7d:")).unwrap();
+        assert!(judge < head && head < list, "{s}");
+
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.cells.clear();
+        }
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("no verdicts under prompt 60c840b")),
+            "{lines:?}"
+        );
+        // No prompt reads "none", as the counts line above it does.
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.prompt.clear();
+        }
+        let lines = page_text(Some(&Ok(r)), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_end().ends_with("no verdicts under prompt none")),
+            "{lines:?}"
+        );
     }
 
     #[test]
