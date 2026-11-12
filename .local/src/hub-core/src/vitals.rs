@@ -29,7 +29,7 @@ const WORDS: [(&str, &str, Unit); 7] = [
     ("first_pass_share", "first pass {}", Unit::Share),
     ("human_answered_per_day", "{} answers a day", Unit::Plain),
     ("buzzes_per_day", "{} buzzes a day", Unit::Plain),
-    ("cost_per_merged_item", "{} per merged PR", Unit::Usd),
+    ("cost_per_merged_item", "{} per merged item", Unit::Usd),
     ("requested_unstarted_h", "Oldest request {}", Unit::Hours),
     ("landed_unverified", "{} unverified", Unit::Plain),
 ];
@@ -282,7 +282,9 @@ mod tests {
         ]
         .into_iter()
         .enumerate()
+        .rev()
         {
+            // Inserted last row first, so the order shown is the gauge's, not the read order.
             rows.extend(vital(i as f64, q, k, v, l));
         }
         infra(rows)
@@ -302,7 +304,7 @@ mod tests {
                 "You ! 35.9 answers a day, limit 5; 61.3 buzzes a day, limit 15",
                 "Outcome ! Oldest request 340h, limit 72h; 12 unverified, limit 0",
                 "Quality ! Rework 25.4%; first pass 43.8%, limit 70%",
-                "Cost   $12.54 per merged PR",
+                "Cost   $12.54 per merged item",
             ]
         );
         assert_eq!(v.head, "3 of 4 off target");
@@ -336,7 +338,7 @@ mod tests {
             None,
         )))
         .unwrap();
-        assert_eq!(v.rows[0].text(), "? per merged PR");
+        assert_eq!(v.rows[0].text(), "? per merged item");
         assert_eq!(v.rows[0].level, Level::Nodata);
         assert_eq!(v.head, "0 of 1 on target, 1 unread");
         assert_eq!(v.line, "0 of 1 on target, 1 unread: Cost");
