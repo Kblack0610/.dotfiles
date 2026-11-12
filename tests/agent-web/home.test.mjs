@@ -27,8 +27,14 @@ const ctx = vm.createContext({
   URLSearchParams,
   history: { replaceState() {} },
   location: { hash: "", pathname: "/", search: "" },
-  fetch: async (path) => { reads.push(path); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path.startsWith("/api/home") ? home() : path === "/api/briefing" ? { error: "off" } : []) }; },
+  fetch: async (path) => { reads.push(path); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path === "/api/home/cards" ? cards() : path.startsWith("/api/home") ? home() : path === "/api/briefing" ? { error: "off" } : []) }; },
 });
+// Every Home refresh also reads the cards (refreshCards), so a test's own fetch stub answers that
+// read with the fixture cards and only has to stub the reads it is about.
+let fetchNow = ctx.fetch;
+Object.defineProperty(ctx, "fetch", { get: () => fetchNow, set: (f) => {
+  fetchNow = f.cards ? f : Object.assign((path, o) => (path === "/api/home/cards" ? Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => cards() }) : f(path, o)), { cards: true });
+} });
 // In the page's own order: a script that calls another at load needs it loaded first.
 const page = readFileSync(new URL("../src/index.html", dir), "utf8");
 const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "flow.js", "waiting.js", "home.js", "queue.js"]);
@@ -53,7 +59,7 @@ const rtable = (rows, o) => ({ q: "", state: "", sort: "", dir: "desc", total: r
 const ranked = (needs) => needs.map((n, i) => ({ rank: i + 1, ...n }));
 const home = (o = {}) => {
   const needs = ranked(o.needs || []);
-  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, sessions: "", spend: null, health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table), running_table: rtable(o.running || [], o.running_table) };
+  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], sessions: "", health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table), running_table: rtable(o.running || [], o.running_table) };
 };
 const live = (target, kind) => ({ target, short: target, session: target, project: "p", summary: target, items: [], actions: [], question: { kind, text: "Run it?" } });
 const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 };
@@ -312,29 +318,17 @@ test("Running reads its own r-prefixed keys beside Needs you's and Proposals'", 
   vm.runInContext(`st.views.home = ""`, ctx);
 });
 
-test("health shows only what is not green, and all green as one chip", () => {
-  const chips = [{ name: "k3s", level: "ok" }, { name: "ci", level: "warn" }, { name: "prod", level: "nodata" }];
-  const mixed = draw(home({ health: chips }));
-  assert.match(mixed, /cchip warn">ci WARN<\/span> <span class="cchip ">prod NO DATA<\/span> <span class="muted">1 green<\/span>/);
-  assert.doesNotMatch(mixed, /k3s/);
-  assert.match(draw(home({ health: [chips[0]] })), /cchip ok">all green \(1\)<\/span>/);
-  assert.match(mixed, /green<\/span> <a href="#alerts">Alerts<\/a><\/div>/, "the chips open Alerts, which has every domain");
-});
-
 test("what could not be read is drawn as hub-core worded it", () => {
   const html = draw(home({ errors: ["Prometheus: down"] }));
   assert.match(html, /^<div class="cline warn">Prometheus: down<\/div>/);
 });
 
-test("Home has no Numbers heading: the session counts close Running and the spend is one line linking Costs", () => {
-  const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled", spend: "claude $573 in 24h" }));
+test("Home has no Numbers heading: the session counts close Running", () => {
+  const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled" }));
   assert.doesNotMatch(html, /Numbers/);
   assert.match(html, />Running <span class="n">0<\/span><\/h2>/);
   assert.match(html, /<div class="empty">Nothing running from the queue.<\/div><div class="cline muted"><b>Sessions<\/b> 3 working, 1 need you, 0 stalled <a href="#sessions\?s=running">all running in Sessions<\/a><\/div>/);
-  assert.match(html, /Spend<\/h2><div class="cline">claude \$573 in 24h <a href="#costs">Costs<\/a><\/div>/);
-  assert.ok(html.indexOf("Health") < html.indexOf("Spend") && html.indexOf("Spend") < html.indexOf("Needs you"), html);
-  const none = draw(home());
-  assert.doesNotMatch(none, /Spend|<b>Sessions/, "the control: no spend and no counts, no lines for them");
+  assert.doesNotMatch(draw(home()), /<b>Sessions/, "the control: no counts, no line for them");
 });
 
 const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
@@ -342,12 +336,12 @@ const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off targe
   { question: "Outcome", level: "warn", parts: ["Oldest request 340h, limit 72h", "12 unverified, limit 0"] },
 ], ...o });
 
-test("Vitals sits under Spend and above Needs you, a row per question, the off ones marked", () => {
-  const html = draw(home({ spend: "claude $573 in 24h", vitals: vitals() }));
+test("Vitals sits under the cards and above Needs you, a row per question, the off ones marked", () => {
+  const html = draw(home({ vitals: vitals() }));
   assert.match(html, /<h2 class="sec warn" id="sec-vitals">Vitals<\/h2><div class="cline warn">1 of 2 off target<\/div>/);
   assert.match(html, /<div class="cline vital"><b>Cost<\/b> \$12.54 per merged item<\/div>/);
   assert.match(html, /<div class="cline vital warn"><b>Outcome<\/b> Oldest request 340h, limit 72h; 12 unverified, limit 0<\/div>/);
-  assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
+  assert.ok(html.indexOf("kgrid") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
 });
 
 test("an unread vital is dim, so it never looks like a healthy row", () => {
@@ -363,18 +357,68 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
   assert.match(draw(home({ vitals: vitals(), grafana: "https://g" })), /Vitals<\/h2><div class="cline warn">1 of 2 off target <a class="glink" href="https:\/\/g\/d\/kb-agents-overview"/, "the trend is one click away");
 });
 
-test("the flow strip leads Home, and the queue and done-today numbers are gone", () => {
+// Cards as hub_core::cards serializes them: a link is its href.
+const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
+  parts: [{ label: "Working", value: "2", level: "ok" }], first_head: "Where to look first", first: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
+const TABS = ["sessions", "queue", "alerts", "infra", "costs", "releases", "schedules", "projects"];
+const cards = () => TABS.map((t) => card(t));
+function drawCards(list, o = {}) {
+  ctx.list = list;
+  vm.runInContext("hst.cards = list; hst.cardsErr = null", ctx);
+  return draw(home(o));
+}
+
+test("the cards lead Home, one per tab, each title opening its tab with what it counted", () => {
+  const html = drawCards(cards());
+  for (const t of TABS) assert.match(html, new RegExp(`<section class="kcard" data-card="${t}"><a class="kt" href="#${t}" title="counted on ${t}">`));
+  assert.ok(html.indexOf("kgrid") < html.indexOf("Needs you"), html);
+  assert.doesNotMatch(html, /Flow|Spend|cchip warn">ci/, "the cards replace the Flow, Health and Spend lines");
+  assert.match(html, /<div class="kbig ok">3<span class="ku">live<\/span><\/div>/);
+  assert.match(html, /<div class="kbar"[^>]*><i class="ok" style="flex:2"><\/i><i class="bad" style="flex:1"><\/i><\/div>/);
+  assert.match(html, /<a class="kp" href="#sessions"><span>Working<\/span><b class="ok">2<\/b><\/a>/);
+});
+
+test("a look-first row opens its record, and is pilled only when it is not ok", () => {
+  const first = [{ text: "trader-x", sub: "stalled 3h", level: "red", link: "#sessions/trader-x" }, { text: "binks", sub: "", level: "ok", link: null }];
+  const html = drawCards([card("sessions", { first })]);
+  assert.match(html, /<div class="kfh">Where to look first<\/div><a class="kf" href="#sessions\/trader-x"><span><b>trader-x<\/b><small>stalled 3h<\/small><\/span><em class="bad">broken<\/em><\/a>/);
+  assert.match(html, /<a class="kf" href="#sessions"><span><b>binks<\/b><\/span><\/a>/, "no record: the row opens the tab, and an ok row has no pill");
+});
+
+test("a card whose read failed says NO DATA and why, never an all-clear", () => {
+  const html = drawCards([card("alerts", { big: "-", unit: "no data", level: "nodata", bar: [], parts: [], error: "Prometheus: down" })]);
+  assert.match(html, /<div class="kbig ">-<span class="ku">no data<\/span><\/div><div class="kbar" title="no data"><i><\/i><\/div><div class="cline warn">Prometheus: down<\/div>/);
+  assert.doesNotMatch(html, /kbig ok/);
+});
+
+test("the phone line names only what is not green, all green is one chip, and unread says so", () => {
+  const line = (list) => { ctx.list = list; return vm.runInContext("cardsLine(list)", ctx); };
+  assert.equal(line(cards()), '<span class="cchip ok">all green (8)</span>');
+  assert.equal(line([card("alerts", { level: "red" }), card("infra"), card("costs", { level: "nodata" })]), '<span class="cchip bad">Alerts broken</span> <span class="cchip ">Costs no data</span>');
+  vm.runInContext("hst.cardsErr = null", ctx);
+  assert.match(line(null), /<span class="muted">reading<\/span>/);
+});
+
+test("cards held after a failed refresh say they are stale, on the grid and the phone line", () => {
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = 'HTTP 502'", ctx);
   const html = draw(home());
-  assert.ok(html.indexOf("Flow") < html.indexOf("Health"), html);
-  assert.match(html, /href="#queue\?s=running" data-flow="running">running 1</);
-  assert.match(html, />inbox -</);
-  assert.doesNotMatch(html, /<b>queue<\/b>|done today/);
+  assert.match(html, /<div class="cline warn">cards not refreshed: HTTP 502<\/div><div class="kgrid">/);
+  assert.match(vm.runInContext("cardsLine(list)", ctx), /all green \(8\)<\/span> <span class="warn">cards not refreshed: HTTP 502<\/span>/);
+  vm.runInContext("hst.cardsErr = null", ctx);
+  assert.doesNotMatch(draw(home()), /not refreshed/, "a good refresh clears it");
+});
+
+test("Home asks for the cards as their own read, beside /api/home", async () => {
+  reads.length = 0;
+  await vm.runInContext("refreshHome()", ctx);
+  assert.ok(reads.includes("/api/home/cards"), reads.join(" "));
+  assert.equal(vm.runInContext("hst.cards.length", ctx), 8);
 });
 
 test("the summary leads, and a long list shows the cap with a button for the rest", () => {
   const needs = Array.from({ length: 11 }, (_, i) => ({ kind: "nightly", need: "red", project: "p", text: `red ${i}`, id: `r${i}` }));
-  const html = draw(home({ needs, health: [{ name: "ci", level: "red" }] }));
-  assert.ok(html.indexOf("Flow") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
+  const html = draw(home({ needs }));
   assert.match(html, /red 7/);
   assert.doesNotMatch(html, /red 8/);
   assert.match(html, /<button class="btn sm" data-all="1">\+3 more<\/button>/);
