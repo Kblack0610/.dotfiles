@@ -349,6 +349,9 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::schedules::Schedule>(),
         phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
+        phone_table::<crate::pipelines::Pipeline>(),
+        phone_table::<crate::junit::Suite>(),
+        phone_table::<crate::quarantine::Entry>(),
         phone_table::<crate::sections::Section>(),
         phone_table::<crate::spend_history::SessRow>(),
         phone_table::<crate::worklog::Work>(),
@@ -356,7 +359,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::machines::Pool>(),
         phone_table::<crate::ci::Slot>(),
         phone_table::<crate::ci::Queued>(),
-        phone_table::<crate::ci::Finished>(),
+        phone_table::<crate::ci::LocalFail>(),
     ];
     rows.into_iter().chain(cuts).collect()
 }
