@@ -74,6 +74,7 @@ const unread = {
 const binks = {
   project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
+  stage: "draft", stage_text: "draft: live above it: binks-prod", stage_level: "warn",
   line: "release", released_text: "v2 11-05", history: [
     { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
     { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
@@ -123,9 +124,21 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: what is live, its word, its channels amber when one was not read, its last deploy", () => {
   show();
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="muted">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td>binks <span class="warn">draft<\/span><\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="muted">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app to open");
+});
+
+test("an app names its stage, amber when its deploys do not match it, and the open app says what the stage asks", () => {
+  show();
+  clickApp();
+  assert.match(box.innerHTML, /<div class="cline"><b>Stage<\/b> <span class="warn">draft: live above it: binks-prod<\/span><\/div>/);
+  clickApp();
+  show(data({ rows: [{ ...binks, stage: "", stage_text: "none on the lab sheet", stage_level: "ok" }] }));
+  assert.match(box.innerHTML, /<td>binks<\/td>/, "no stage, no word");
+  clickApp();
+  assert.match(box.innerHTML, /<b>Stage<\/b> <span class="muted">none on the lab sheet<\/span>/);
+  clickApp();
 });
 
 test("opening an app lists its headline env's channels, the other envs in a fold that starts open, and clicking again closes it", () => {

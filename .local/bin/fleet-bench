@@ -279,7 +279,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
-: "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
+: "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
@@ -4341,12 +4341,13 @@ cmd_throughput() {
 }
 
 # queue_slots -> how many sessions fleet-dispatch keeps live: BENCH_QUEUE_SLOTS, else its conf's
-# DISPATCH_MAX_LIVE, else the default in fleet-dispatch itself. One source, read, never restated.
+# DISPATCH_TARGET_PRESENT (the pace target while the human is here, the steady state), else the
+# default in fleet-dispatch itself. One source, read, never restated.
 queue_slots() {
   local n="${BENCH_QUEUE_SLOTS:-}" fd
-  [ -n "$n" ] || n=$(sed -n 's/^DISPATCH_MAX_LIVE=\([0-9][0-9]*\).*/\1/p' "$BENCH_DISPATCH_CONF" 2>/dev/null | tail -1)
+  [ -n "$n" ] || n=$(sed -n 's/^DISPATCH_TARGET_PRESENT=\([0-9][0-9]*\).*/\1/p' "$BENCH_DISPATCH_CONF" 2>/dev/null | tail -1)
   if [ -z "$n" ] && fd=$(command -v fleet-dispatch); then
-    n=$(sed -n 's/^: "\${DISPATCH_MAX_LIVE:=\([0-9][0-9]*\)}".*/\1/p' "$fd" | head -1)
+    n=$(sed -n 's/^: "\${DISPATCH_TARGET_PRESENT:=\([0-9][0-9]*\)}".*/\1/p' "$fd" | head -1)
   fi
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] && printf '%s' "$n"
 }

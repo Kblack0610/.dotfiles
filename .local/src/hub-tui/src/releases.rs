@@ -362,6 +362,16 @@ pub fn detail(
             Line::styled(format!("  channels {}", a.channels_text), p.dim()),
             w,
         ),
+        clip_line(
+            Line::styled(
+                format!("  stage {}", a.stage_text),
+                match a.stage_level {
+                    Level::Ok => p.dim(),
+                    l => level(l, p),
+                },
+            ),
+            w,
+        ),
     ];
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
@@ -670,6 +680,7 @@ mod tests {
         let shut = pane(binks, false, None, 80);
         assert_eq!(shut[0], "> binks  v1.2.3 prod, ok");
         assert_eq!(shut[1], "  channels 2: 1 not read, 1 ok");
+        assert_eq!(shut[2], "  stage not read");
         assert!(
             shut.iter().any(|l| l.starts_with("  prod binks-prod")),
             "{shut:?}"

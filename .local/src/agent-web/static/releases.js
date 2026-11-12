@@ -34,7 +34,7 @@ const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channel
 function releaseRow(a) {
   const open = relKey(a) === relst.sel;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
-    `<td>${esc(a.project)}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td>${esc(a.project)}${a.stage ? ` <span class="${relClass(a.stage_level) || "muted"}">${esc(a.stage)}</span>` : ""}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
     `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="muted">${esc(a.released_text)}</td>` +
     `<td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
   return open ? row + appDetail(a) : row;
@@ -60,7 +60,8 @@ function appDetail(a) {
   const others = rest.length
     ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
-  return `<tr class="wdet"><td colspan="6"><div class="sdet">${chTable(lead)}${others}${releaseHistory(a)}` +
+  const stage = `<div class="cline"><b>Stage</b> <span class="${relClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>`;
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 

@@ -59,7 +59,10 @@ unset _k _v
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
-: "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
+: "${DISPATCH_TARGET_PRESENT:=25}"   # live Claude sessions, hand starts included, a pass fills the fleet to while the human is here; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). Human, 2026-11-11: 20-30 normally, a floor of 15 (DISPATCH_RUN_FLOOR)
+: "${DISPATCH_TARGET_BURST:=50}"   # the same while the human is away (fleet-presence): the burst when there is work
+: "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
+: "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
 : "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
@@ -743,8 +746,23 @@ units_on() {
   echo "$u"
 }
 
-# live_units -> the run units the runner's live sessions hold on this machine, out of DISPATCH_MAX_LIVE.
+# live_units -> the run units the runner's live sessions hold on this machine, out of TARGET.
 live_units() { live_runs | units_on ''; }
+
+# pace_target -- TARGET is the live sessions the fleet fills to now, TARGET_WHEN which one:
+# DISPATCH_TARGET_BURST while the human is away, else DISPATCH_TARGET_PRESENT. TOTAL_LIVE is every
+# Claude session in the fleet state document, hand starts included (they count toward the target
+# and are never refused), but parked ones, finished ones (its vocab.finished, which the close
+# verdict winds down) and the shepherd pass, which its own .counts leaves out too. It is empty when
+# the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
+pace_target() {
+  if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
+  else TARGET=$DISPATCH_TARGET_BURST TARGET_WHEN=away; fi
+  TOTAL_LIVE=$(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
+    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
+    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
+    | length' "$FLEET_STATE_FILE" 2>/dev/null)
+}
 
 # floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
 # weekly pace and real idle do not hold this start. Load, fleet-assess, the reserve and holds still do.
@@ -2631,7 +2649,7 @@ start_items() {
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   why=$(gate)
   [ -z "$why" ] || return 0
-  local limit=DISPATCH_MAX_LIVE; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && limit=DISPATCH_PER_PASS
+  local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && limit=DISPATCH_PER_PASS
   settle WORKED "under-used: started $n, $limit is the limit while $(grep -c . <<<"$items") runnable wait and the gates are open (fleet-dispatch headroom)"
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
@@ -2675,7 +2693,7 @@ pick_item() {
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
-  free=${UNITS_FREE:-$DISPATCH_MAX_LIVE}
+  free=${UNITS_FREE:-$TARGET}
   while IFS= read -r it; do
     [ -n "$it" ] || continue
     need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
@@ -2690,7 +2708,7 @@ pick_item() {
     # later item that would use them waits too, or a stream of light items starves a heavy one.
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
       why="the $free free run units wait for urgent $reserved"
-    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$DISPATCH_MAX_LIVE" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
+    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
     fi
     if [ -z "$why" ]; then PICKED=$it PLACE_HOST=$host; return 0; fi
@@ -2756,11 +2774,11 @@ preempt_for() {
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
   [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
-  UNITS_FREE=$(( DISPATCH_MAX_LIVE - $(live_units) ))
+  UNITS_FREE=$(( TARGET - $(live_units) ))
   pick_item "$PICK_RESERVED"
 }
 
-# preempt_items -> with preempt on, the runnable urgent items no finding holds and DISPATCH_MAX_LIVE
+# preempt_items -> with preempt on, the runnable urgent items no finding holds and TARGET run units
 # can fit, in queue order: what a pass at full run units goes on to pick (preempt_pick) instead of
 # stopping there. Rc 1 when the findings cannot be read: it cannot tell.
 preempt_items() {
@@ -2769,7 +2787,7 @@ preempt_items() {
   local it
   while IFS= read -r it; do
     [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && printf '%s\n' "$it"
-  done < <(next_items | jq -c --argjson max "$DISPATCH_MAX_LIVE" '
+  done < <(next_items | jq -c --argjson max "$TARGET" '
     select(.priority == "urgent" and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
   return 0
 }
@@ -2788,7 +2806,7 @@ unpark_preempted() {
   [ -n "$ledgers" ] || return 0
   agent-hold check dispatch >/dev/null 2>&1 || return 0
   urgent=$(preempt_items) && [ -z "$urgent" ] || return 0
-  free=$(( DISPATCH_MAX_LIVE - $(live_units) ))
+  free=$(( TARGET - $(live_units) ))
   items=$(item_sessions)
   while IFS=$'\t' read -r _ f; do
     key=${f##*/}
@@ -3375,15 +3393,18 @@ board_starved() {
 
 # headroom [--json] -- the window over the limits: how many more queue items a start could take now
 # (free run units while every gate is open, else 0 and the gate that holds), and the margin under
-# load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
+# load and idle. The human reads it before raising DISPATCH_PER_PASS or a pace target; nothing
 # here raises a limit.
 cmd_headroom() {
   local live hand slots load cores idle runnable why could=0 floor_live red_live red_watch starts pend
+  pace_target
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
   red_live=$(live_reds | grep -c . || true) red_watch=$(watch_reds)
   hand=$(live_hand | grep -c . || true)
-  slots=$(( DISPATCH_MAX_LIVE - live ))
+  slots=$(( TARGET - live ))
+  # The fleet's room under the target bounds the units a pass may fill; unknown, it is none.
+  [ "$slots" -le $(( TARGET - ${TOTAL_LIVE:-$TARGET} )) ] || slots=$(( TARGET - ${TOTAL_LIVE:-$TARGET} ))
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   idle=$(real_idle)
@@ -3395,7 +3416,8 @@ cmd_headroom() {
   local focus_held=0; load_focus
   [ -z "$FOCUS_ONLY" ] || focus_held=$(agent-queue list --json --state queued 2>/dev/null |
     jq -s '[.[] | select((.hold // "") | startswith("focus:"))] | length')
-  jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
+  jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
+    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_burst "$DISPATCH_TARGET_BURST" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
@@ -3404,22 +3426,27 @@ cmd_headroom() {
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
+     target: $max_live, target_when: $target_when, target_present: $target_present, target_burst: $target_burst, total_live: ($total_live | num),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
      project_floor: $project_floor, idle_projects: $idle_projects,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_held: $focus_held,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
-     held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
+     held: (if $held != "" then $held
+            elif $total_live == "" then "live sessions unreadable: the fleet state document is missing or stale"
+            elif ($total_live | tonumber) >= $max_live then "pace target: \($total_live) live sessions, the \($target_when) target is \($max_live)"
+            elif $live >= $max_live then "run units: every one of the \($max_live) is used"
             elif $runnable == 0 then "nothing runnable" else null end)}
     # The held reason as one word, so the feed (numbers only) can carry it as a 0/1 per kind.
     | .held_kind = (.held // "" | if . == "" or . == "nothing runnable" then null
-        elif startswith("DISPATCH_MAX_LIVE") then "slots" elif startswith("load ") then "load"
+        elif startswith("pace target") or startswith("run units") then "slots" elif startswith("load ") then "load"
         elif startswith("real idle") then "idle" elif test("account") then "account"
         elif startswith("fleet-assess") then "assess" else "other" end)' |
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
+        "  pace:      \(.total_live // "?") of \(.target) live sessions, the \(.target_when) target (present \(.target_present), away \(.target_burst)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
@@ -3537,7 +3564,7 @@ cmd_stats() {
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
            room_load: $hr.load, room_load_cap: $hr.load_cap, room_idle: $hr.idle, room_min_idle: $hr.min_idle,
-           room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null)}
+           room_run_floor: ($hr.run_floor // null), room_floor_live: ($hr.floor_live // null), room_total_live: ($hr.total_live // null)}
           + (["slots", "load", "idle", "account", "assess", "other"]
              | map({key: "room_held_\(.)", value: (if $hr.held_kind == . then 1 else 0 end)}) | from_entries) end)'
 }
@@ -3909,6 +3936,9 @@ cmd_run() {
   agent-hold check dispatch >/dev/null 2>&1 && fill_night
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
+  pace_target
+  [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
+  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_BURST)"
   unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")
@@ -3916,19 +3946,27 @@ cmd_run() {
   probe_hosts "$runs"
   RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
   BUSY_PROJECTS=$(busy_projects)
-  UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
+  UNITS_FREE=$(( TARGET - live ))
   demand_pass "$runs"
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
+  # The target counts every live session, hand starts too. At it no unit is free, so only an urgent
+  # item that parks a runner session for itself starts (preempt_pick): the total stays where it is.
+  local gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
+  [ "$room" -le "$gap" ] || room=$gap
   [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
   if [ -n "$urgent" ] && [ -z "$(gate)" ]; then start_items "$urgent" 1; return; fi
-  if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units${HOST_FREE[*]:+, every fleet worker full}, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then
+    local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
+    [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
+    PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
+  fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held

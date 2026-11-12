@@ -533,9 +533,48 @@ row() {
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
 
+# stage_facts <rows-json> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
+# registered project's lab stage asks of its deploys (~/.local/src/docs/stages.md, "The ladder").
+# A live target serves the rung the registry's `channels` maps its channel to; `rungs` are the
+# rungs served, low to high (the stage gate's rows read them against the stage being checked, so
+# a project with no stage yet has them too), `needs` the rungs from alpha up to the stage nothing
+# serves (game and app only: infra deploys by stow or Flux), `ahead` the targets live above the
+# stage. `stage` is null when the lab sheet names none on the ladder, and then nothing is needed or
+# ahead. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
+# `stages_error` says why.
+stage_facts() {
+  local rows="$1" ladder labs
+  ladder="$(notes projects --stages 2>/dev/null)"
+  [ -n "$ladder" ] || { jq -n '{stages: {}, stages_error: "notes projects --stages printed nothing"}'; return; }
+  labs="$(notes projects --stats --json 2>/dev/null)"
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$labs" \
+    || { jq -n '{stages: {}, stages_error: "notes projects --stats --json did not answer"}'; return; }
+  project_machine_profile >/dev/null
+  jq -n --argjson rows "$rows" --argjson labs "$labs" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
+    --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
+    ($ladder | split(" ") | map(select(. != ""))) as $L
+    | ($L | to_entries | map({key: .value, value: .key}) | from_entries) as $rank
+    | ($reg[0].channels // {}) as $ch
+    | ($labs | map({key: .name, value: (.stage // "")}) | from_entries) as $at
+    | {stages: ([($reg[0].trackers // {}) | to_entries[] | select(.value | type == "object")
+        | .key as $p | select($p | visible($m))
+        | (if $rank[$at[$p] // ""] != null then $at[$p] else null end) as $s
+        | (.value.type // null) as $t
+        | [$rows[] | select(.project == $p and (.implicit | not) and .live.value != null)
+           | {id, rung: ($ch[.channel] // "")} | select($rank[.rung] != null)] as $live
+        | {key: $p, value: {stage: $s,
+            rungs: ([$live[].rung] | unique | sort_by($rank[.])),
+            needs: (if $s != null and ($t == "game" or $t == "app")
+                    then [$L[] | select($rank[.] >= ($rank["alpha"] // 0) and $rank[.] <= $rank[$s])
+                          | . as $r | select([$live[] | select(.rung == $r)] | length == 0)]
+                    else [] end),
+            ahead: (if $s != null then [$live[] | select($rank[.rung] > $rank[$s]) | .id] else [] end)}}]
+        | from_entries)}'
+}
+
 # refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
 refresh_snapshot() {
-  local only="$*" prev="{}" rows releases tmp line proj t targets summary
+  local only="$*" prev="{}" rows releases tmp line proj t targets summary facts
   local -A tag_of=()
   mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
   exec 9>"$STATE_DIR/.lock" || die "cannot open $STATE_DIR/.lock"
@@ -572,6 +611,9 @@ refresh_snapshot() {
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
                 else [] end) + $rows),
         releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+  # From the merged rows, so a subset refresh still judges every project on all its channels.
+  facts="$(stage_facts "$(jq -c .rows "$out")")" && jq --argjson f "$facts" '. + $f' "$out" >"$out.f" && mv -f "$out.f" "$out" \
+    || { rm -f "$out" "$out.f"; die "cannot write the stage facts"; }
   summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
     || { rm -f "$out"; die "cannot summarize $out"; }
   mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }

@@ -28,7 +28,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | Field | Meaning |
 |---|---|
 | `id` | Unique across the registry, lowercase and `-`. Also the GitHub Deployments environment its deploy workflow records under |
-| `channel` | `prod`, `beta`, `alpha`, `preview` or `internal` |
+| `channel` | A key of the registry's top-level `channels` map (`alpha`, `preview`, `internal`, `beta`, `prod`), which names the stage rung each serves (`alpha` and above; `~/.local/src/docs/stages.md`, The ladder). `project-map-doctor` 4c checks both |
 | `where` | Free text for the UI: the cluster or store |
 | `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store, with that Deployment's `build` when it recorded one), `{"deployed": "manual", "reason": "..."}` (a channel moved by hand, such as Steam `default` set live in Steamworks: nothing records its deploys, so the pin reads `manual`, the row is `released` with live alone, and the doctor wants the reason), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
 | `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
@@ -63,6 +63,19 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `error` | Why the read failed: `no checkout`. History reads the local tags and never fetches, so a tag the checkout has not fetched is simply absent |
 
 `buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog: `project_version_owner` and the version roll never read them, so a build tag never becomes the game's version (see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
+
+## Stage facts
+
+`refresh` also writes a top-level `stages` map: for each registry project visible on this machine, what its lab stage (`notes projects --stats --json`) asks of its deploys. It is computed from the merged rows, so a refresh of one project still judges every project on all its channels:
+
+| Field | Meaning |
+|---|---|
+| `stage` | The lab stage, `null` when the sheet names none on the ladder (then `needs` and `ahead` are empty) |
+| `rungs` | The rungs its live (read, non-implicit) targets serve, low to high, through the `channels` map; a channel the map does not name serves none |
+| `needs` | The rungs from `alpha` up to the stage that no live target serves; empty for `infra`, which deploys by stow or Flux |
+| `ahead` | The target ids live on a rung above the stage: at `draft` and `dev`, every live target |
+
+When `notes` cannot answer, `stages` is `{}` and `stages_error` says why; the Releases tab shows that as an error, never as every app having no stage. The stage gate's deploy rows in `stages.md` read `rungs` against the stage being checked, so a project setting its first stage is judged too, and the Releases tab shows each app's stage with `needs` and `ahead` (`draft: CI only, no deploy expected`, `draft: live above it: bnb-studios-prod`).
 
 ## Relationships
 
@@ -166,3 +179,5 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A version shows the merged PRs list | The tag has no `CHANGELOG.md` section for it. Add one under a heading holding the version and it is used from the next tag on (the file is read at the tag, then at the branch tip) |
 | A release's ROWS says `-` while PRS lists PRs | No queue item names those PRs: the work predates the queue, or its item recorded a bare `pr:N` in a project with several repos. `hub releases check` names the second |
 | A run's OWNER is `-` | No session sits on its branch and no item names its PR, or the PR store does not hold the PR yet (`schedules-sync` polls every 10 minutes; `hub releases check` names an item PR the store lacks) |
+| An app's stage says `live above it: <target>` | A target is live on a rung its lab stage has not reached (a draft site live in prod). Either raise the stage through its gate (`notes projects --stage <p> --set <s>`, which runs `project-stage-check`) or remove the target and its deploy pipeline. Stage moves are the human's |
+| An app's stage says `no alpha target live` | Its stage needs a rung nothing serves: no target on that channel, or the target's probe failed (`unknown` serves no rung). Declare the target, or fix the probe |
