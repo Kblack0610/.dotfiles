@@ -20,6 +20,12 @@ async function reach(path, opts) {
   }
 }
 
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the Board's form and Home's sheet
+// cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
+const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
+const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
+
 async function api(path, opts) {
   const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
@@ -157,10 +163,10 @@ function etaText(p, overdue) {
 // card is found again by its session target or ask id, and the text and focus go back.
 function keepTyping(sel, draw) {
   const f = document.activeElement, card = f && f.closest && f.closest(sel);
-  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id || card.dataset.close, v: f.value } : null;
   draw();
   if (!keep) return;
-  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id || c.dataset.close) === keep.k);
   const input = again && again.querySelector("[data-free]");
   if (input) { input.value = keep.v; input.focus(); }
 }

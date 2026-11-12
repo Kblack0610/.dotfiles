@@ -106,7 +106,7 @@ function bRow(r, i) {
       // Every close says how: done with a proof or why it has none, or dropped with why or the
       // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
       const done = kind === "done";
-      const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
+      const kinds = CLOSE_HOW[kind];
       acts = `<div class="opts">` +
         `<select data-formkind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
         `<input data-forminput="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
@@ -237,10 +237,6 @@ async function bAdd() {
   renderBoard();
 }
 
-function bTarget(r) {
-  return { profile: r.profile, project: r.project, lane: r.lane, raw: r.raw };
-}
-
 $("b-root").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
@@ -257,10 +253,10 @@ $("b-root").addEventListener("click", (e) => {
     return;
   }
   const k = bKey(r);
-  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, rowTarget(r)), "Queued: it starts when you are away."); return; }
   if (d.promote || d.demote) {
     const verb = d.promote ? "promote" : "demote";
-    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
+    bWrite(Object.assign({ verb }, rowTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
   const opened = d.done || d.drop || d.move || d.edit || d.tag;
@@ -278,8 +274,7 @@ $("b-root").addEventListener("click", (e) => {
     let body, ok;
     if (kind === "done" || kind === "drop") {
       const how = q("formkind").value;
-      const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
-      if (!v) { bst.msg = need[how]; renderBoard(); return; }
+      if (!v) { bst.msg = CLOSE_NEED[how]; renderBoard(); return; }
       body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
     } else if (kind === "move") {
       const dest = q("movedest").value;
@@ -294,7 +289,7 @@ $("b-root").addEventListener("click", (e) => {
       body = { verb: "edit", text: v }; ok = "Edited.";
     }
     bst.form = null;
-    bWrite(Object.assign(body, bTarget(r)), ok);
+    bWrite(Object.assign(body, rowTarget(r)), ok);
   }
 });
 for (const ev of ["input", "change"]) $("b-root").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
