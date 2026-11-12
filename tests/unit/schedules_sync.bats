@@ -694,6 +694,63 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output 0
 }
 
+# feedruns <cursor> <epoch> <next> <more> <run json>...: one feed page of run records for O/Game
+feedruns() {
+  local c=$1 e=$2 n=$3 m=$4; shift 4
+  local IFS=, recs=() r
+  for r in "$@"; do recs+=("{\"forge\":\"github\",\"repo\":\"O/Game\",\"run\":$r}"); done
+  printf '{"epoch":"%s","next":%s,"more":%s,"repos":["O/Game"],"window_secs":86400,"records":[],"runs":[%s]}' "$e" "$n" "$m" "${recs[*]}" > "$KD/feed-$c"
+}
+
+@test "feed runs: the exporter's runs reach the shadow ledger as the run ledger's own rows, and compare-feed agrees" {
+  game_files
+  R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)"
+  feedruns 0 e1 1 false "$R30"
+  runs "$R30" | page1
+  run "$SUBJECT"
+  assert_success
+  FEEDL="$XDG_STATE_HOME/ci/runs-feed.jsonl"
+  run diff <(jq -c 'del(.repo)' "$LEDGER") <(jq -c 'del(.repo)' "$FEEDL")
+  assert_success
+  run jq -r '.exporter.runs_since' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output 2025-11-06T12:00:00Z
+  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
+  assert_success
+  run jq -c '[.ok, .repos["o/game"]]' <<<"$output"
+  assert_output '[true,{"agree":1,"open":0,"differ":[]}]'
+  # by default it counts from runs_since, after this run
+  run "$SUBJECT" compare-feed
+  assert_success
+  run jq -c '.repos["o/game"].agree' <<<"$output"
+  assert_output 0
+  # warm, unchanged: the shadow gains no row
+  feed 1 e1 1 false ''
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  run wc -l < "$FEEDL"
+  assert_output 1
+}
+
+@test "negative control: compare-feed names a run whose conclusion differs or that one side lacks, and skips runs still settling" {
+  game_files
+  run "$SUBJECT" compare-feed
+  assert_failure 3
+  feedruns 0 e1 1 false "$(gh_run 31 .github/workflows/test.yml 2025-11-06T10:00:00Z completed failure)" \
+    "$(gh_run 32 .github/workflows/test.yml 2025-11-06T10:10:00Z completed success)" \
+    "$(gh_run 33 .github/workflows/test.yml 2025-11-06T10:20:00Z in_progress null)" \
+    "$(gh_run 34 .github/workflows/test.yml 2025-11-06T11:50:00Z completed success)"
+  runs "$(gh_run 31 .github/workflows/test.yml 2025-11-06T10:00:00Z completed success)" \
+       "$(gh_run 33 .github/workflows/test.yml 2025-11-06T10:20:00Z in_progress null)" \
+       "$(gh_run 34 .github/workflows/test.yml 2025-11-06T11:50:00Z in_progress null)" | page1
+  run "$SUBJECT"
+  assert_success
+  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
+  assert_failure 1
+  run jq -c '[.ok, .settled_before, .repos["o/game"]]' <<<"$output"
+  assert_output '[false,"2025-11-06T11:30:00Z",{"agree":0,"open":2,"differ":[{"id":31,"fields":{"conclusion":["success","failure"]}},{"id":32,"missing":"ledger"}]}]'
+  run "$SUBJECT" compare-feed --since yesterday
+  assert_failure 2
+}
+
 @test "direct: a run of 130 jobs pages through; a page that fails after the first keeps the read jobs as partial" {
   game_files
   runs "$(gh_run 40 .github/workflows/checks.yml 2025-11-06T11:00:00Z completed success 1 push)" \

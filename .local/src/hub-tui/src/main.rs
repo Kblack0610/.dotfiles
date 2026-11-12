@@ -48,6 +48,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub vitals [--json]
        hub needs --json | --page
        hub ci [--json | --pool-match SECS]
+       hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -69,6 +70,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
           whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
           or longer, as metric<TAB>label<TAB>value rows. Exits 1 when Prometheus failed
+  ci pass the one CI pass rate (hub_core::builds::verdict) of the run ledger's runs created in
+          [WHEN, WHEN) (epoch seconds or RFC 3339; default the last 24h), on one branch with
+          --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
+          workflow. day-log reads it. Exits 1 when the ledger cannot be read
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -283,8 +288,39 @@ fn needs(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub ci pass`: the pass rate of the ledger's runs over a window, by repo and workflow.
+fn ci_pass(args: &[String]) -> i32 {
+    let now = chrono::Utc::now().timestamp();
+    let (mut since, mut until, mut branch) = (now - 86400, now, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let v = it.next().unwrap_or_else(|| die(USAGE));
+        match a.as_str() {
+            "--since" => since = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--branch" => branch = Some(v.as_str()),
+            _ => die(USAGE),
+        }
+    }
+    let paths = hub_core::builds::Paths::from_env();
+    let text = match std::fs::read_to_string(&paths.ledger) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hub ci pass: {}: {e}", paths.ledger.display());
+            return 1;
+        }
+    };
+    let (rows, _) = hub_core::builds::parse(&text, now);
+    let report = hub_core::builds::pass_by_repo(&rows, since, until, branch);
+    println!("{}", serde_json::to_string(&report).unwrap_or_default());
+    0
+}
+
 /// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
 fn ci(args: Vec<String>) -> i32 {
+    if args.first().map(String::as_str) == Some("pass") {
+        return ci_pass(&args[1..]);
+    }
     enum Mode {
         Text,
         Json,

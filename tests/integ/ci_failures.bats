@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # ci-failures.py: the counting script behind the ci-failures skill. It lists runs from the run
-# ledger (runs.jsonl and sync.json, read by this tree's schedules-sync) and reads a cache of gh
-# responses (jobs-<run>-<attempt>.json, ann-<job>.json, log-<job>.txt), so the fixture in
-# tests/fixtures/ci-failures/ is a ledger plus a cache and --offline runs it with no network.
+# ledger (runs.jsonl and sync.json) and their jobs from the job archive (jobs.jsonl), both read by
+# this tree's schedules-sync, and reads a cache of gh responses (ann-<job>.json, log-<job>.txt, and
+# jobs-<run>-<attempt>.json for an attempt the archive lacks), so the fixture in
+# tests/fixtures/ci-failures/ is a ledger, an archive and a cache and --offline runs it with no network.
 # The fixture holds one case per bucket and flag; each test names the run it pins.
 
 setup() {
@@ -14,7 +15,7 @@ setup() {
   SCRIPT="$REPO_ROOT/.claude/skills/ops/ci-failures/ci-failures.py"
   CACHE="$SANDBOX/cache"
   cp -r "$REPO_ROOT/tests/fixtures/ci-failures" "$CACHE"
-  export SCHEDULES_SYNC="$REPO_ROOT/.local/bin/schedules-sync" SCHEDULES_RUNS_LEDGER="$CACHE/runs.jsonl"
+  export SCHEDULES_SYNC="$REPO_ROOT/.local/bin/schedules-sync" SCHEDULES_RUNS_LEDGER="$CACHE/runs.jsonl" SCHEDULES_JOBS_LEDGER="$CACHE/jobs.jsonl"
   export SCHEDULES_NOW=1793750700 # 2026-11-04T00:05Z, the fixture's sync.json synced_at
   export GH_FIXTURE="$SANDBOX/gh"
   mkdir -p "$GH_FIXTURE"
@@ -95,7 +96,7 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 }
 
 @test "negative control: the same red on any other step is a check red (109)" {
-  sed -i 's/Merge gate line/Docs gate line/' "$CACHE/jobs-109-1.json"
+  sed -i 's/Merge gate line/Docs gate line/' "$CACHE/jobs.jsonl"
   assert_equal "$(field "d['red_runs'], d['pending_runs']")" "6 0"
   assert_equal "$(sig 'Docs gate line' bucket)" "check"
 }
@@ -117,4 +118,24 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   # a fix after the window's end leaves an empty window ending there, never one that ends before it starts
   SENTINEL_SINCE=$(date -d 2026-11-05T00:00:00Z +%s) run field "d['since'], d['until'], d['runs']"
   assert_output "2026-11-04T00:00:00Z 2026-11-04T00:00:00Z 0"
+}
+
+@test "jobs come from the job archive; an attempt it lacks is read from gh's cache and counted in jobs_from_gh (104)" {
+  assert_equal "$(field "d['jobs_from_gh'], d['partial']")" "0 False"
+  jq -c 'select(.run_id == 104) | {jobs: [.jobs[] | .html_url = .url | del(.url)]}' "$CACHE/jobs.jsonl" > "$CACHE/jobs-104-1.json"
+  jq -c 'select(.run_id != 104)' "$CACHE/jobs.jsonl" > "$CACHE/j" && mv "$CACHE/j" "$CACHE/jobs.jsonl"
+  assert_equal "$(field "d['jobs_from_gh'], d['red_runs']")" "1 5"
+  assert_equal "$(sig 'words N > N' bucket)" "check"
+}
+
+@test "negative control: an attempt in neither the archive nor the cache has no jobs, so its red is not read (104)" {
+  jq -c 'select(.run_id != 104)' "$CACHE/jobs.jsonl" > "$CACHE/j" && mv "$CACHE/j" "$CACHE/jobs.jsonl"
+  assert_equal "$(field "d['red_runs']")" "4"
+}
+
+@test "negative control: a job archive that cannot be read is PARTIAL, exit 3" {
+  rm "$CACHE/jobs.jsonl"
+  run count
+  assert_failure 3
+  assert_output --partial PARTIAL
 }
