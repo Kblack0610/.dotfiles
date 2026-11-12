@@ -20,9 +20,11 @@ by an atomic rewrite, which also drops superseded rows once they outnumber the l
 Forgejo has no attempt (always 1) and lists jobs, not runs: a run is its jobs grouped by run
 number, failed when one failed. A finished run's end is the run's own `stopped`, read once per
 run: a job's updated_at is no end, since Forgejo's midnight transfer_lingering_logs cron rewrites
-it a day or more after the job stopped. Its API is https://<host>/api/v1, the host named in the
-private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`,
-sent in curl's stdin config, never argv; with neither, a public repo still reads.
+it a day or more after the job stopped. A run whose waiting job Forgejo cancelled unrun (its
+abandoned-job cron, a day on) has the conclusion `abandoned`, which no run time counts. Its
+API is https://<host>/api/v1, the host named in the private list (never here), with the token
+FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`, sent in curl's stdin config, never argv; with
+neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
   schedules-sync prs <repo|all> [--state open|merged|closed|all] [--since T] [--branch B] [--checks]
@@ -552,19 +554,36 @@ def gh_row(repo, r):
             "url": r.get("html_url")}
 
 
-def fj_stopped(host, repo, n):
-    """When Forgejo run <n> stopped, from the run itself, or None."""
+def fj_run(host, repo, n):
+    """Forgejo run <n> itself (its status and stopped), or {} when the API has none."""
     got = fj(host, f"repos/{repo}/actions/runs?run_number={n}")
     runs = got.get("workflow_runs") or [] if isinstance(got, dict) else []
-    return next((r.get("stopped") for r in runs if when(r.get("stopped"))), None)
+    return next((r for r in runs if r.get("index_in_repo") == n), {})
+
+
+def fj_close(host, repo, n, st, had):
+    """-> (done, conclusion, end) of Forgejo run <n>, whose tasks all finished with statuses st:
+    the ledger's (had) once it recorded an end, else the run's own. A run not finished by its own
+    status still has a job waiting for a runner; one it cancelled with no task cancelled is
+    `abandoned`, a job cancelled before any runner took it."""
+    conclusion = next((c for c in ("failure", "cancelled", "success") if c in st), "skipped")
+    if had.get("status") == "completed" and had.get("ended_at"):
+        return True, had.get("conclusion") or conclusion, had["ended_at"]
+    run = fj_run(host, repo, n)
+    if run and run.get("status") not in FJ_DONE:
+        return False, None, None
+    if run.get("status") == "cancelled" and "cancelled" not in st:
+        conclusion = "abandoned"
+    return True, conclusion, run.get("stopped") if when(run.get("stopped")) else None
 
 
 def forgejo_rows(host, repo, entry, open_since, t, last):
     """Every Forgejo run back to window(), one row per run from its jobs (actions/tasks lists
     jobs, newest first). When paging stops before the list ends, the oldest run seen may be
     cut by the page edge, so it is left out; a pass that saw it whole wrote its row. A finished
-    run's end is the one `last` (the ledger) holds, else fj_stopped(): a job's updated_at moves
-    when Forgejo's midnight log transfer rewrites the job, a day or more after it stopped."""
+    run's end and conclusion are fj_close()'s: a job's updated_at moves when Forgejo's midnight
+    log transfer rewrites the job, a day or more after it stopped, and a job no runner took never
+    becomes a task, so only the run itself says whether it finished."""
     stop, tasks, whole = window(entry, open_since, t), [], False
     for page in range(1, MAX_PAGES + 1):
         got = fj(host, f"repos/{repo}/actions/tasks?limit={FJ_PAGE}&page={page}")
@@ -584,16 +603,11 @@ def forgejo_rows(host, repo, entry, open_since, t, last):
     rows = []
     for n, jobs in runs.items():
         st = [j.get("status") for j in jobs]
-        done = all(x in FJ_DONE for x in st)
-        conclusion = None
+        done, conclusion, ended = all(x in FJ_DONE for x in st), None, None
         if done:
-            conclusion = next((c for c in ("failure", "cancelled", "success") if c in st), "skipped")
+            done, conclusion, ended = fj_close(host, repo, n, st, last.get(("forgejo", repo, n, 1)) or {})
         created = min((j.get("created_at") for j in jobs if when(j.get("created_at"))), default=None)
         started = min((j.get("run_started_at") for j in jobs if when(j.get("run_started_at"))), default=None)
-        ended = None
-        if done:
-            had = last.get(("forgejo", repo, n, 1)) or {}
-            ended = (had.get("status") == "completed" and had.get("ended_at")) or fj_stopped(host, repo, n)
         j = jobs[0]
         rows.append({"forge": "forgejo", "repo": repo, "id": n, "attempt": 1,
                      "workflow": j.get("workflow_id"), "path": j.get("workflow_id"), "title": j.get("display_title"),
