@@ -414,15 +414,15 @@ load 'fleet_dispatch/common'
   assert_equal "$(claude_pin '{"agent": "codex", "model": "sol"}')" ''
 }
 
-@test "start --resume of a claude item that carries an effort resumes at that effort" {
+@test "start --resume of a claude item resumes on the model its start ran, at the item's effort" {
   project game beta "$SANDBOX/repos/game"
   started_item fix-crash lab:game-agent-9 run
-  agent-queue set fix-crash effort=high >/dev/null
+  agent-queue set fix-crash model=haiku effort=high >/dev/null
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session fix-crash \
     --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
   assert_success
-  assert_called 'claude --effort high'
+  assert_called 'claude --model haiku --effort high'
   assert_called '--resume abc-123'
 }
 

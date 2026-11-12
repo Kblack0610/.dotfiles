@@ -1751,6 +1751,7 @@ cmd_start() {
     else
       launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
       eff=$(claude_effort "$it") || return 2
+      [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"${it:-null}")   # a resume keeps the model its start ran
       lane_sandbox "$cwd" || return 1
       cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     fi
