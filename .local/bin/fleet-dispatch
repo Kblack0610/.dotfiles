@@ -3781,9 +3781,9 @@ reconcile_plans() {
 # the queue ever held is never queued again: a verify that failed or found gaps waits for a human or
 # for the gap rows to land, which raises the count and queues the next check. A profile with board
 # automation off gets none. Admission never holds its add (`from: auto:epics`, agent-queue admit),
-# however deep the queue: one item per landed epic. Its title's area, `epics`, names no
-# system, so the story row agent-queue files for it links under no standing epic: one that did would
-# be a leaf there, and its close would queue a verify of that epic in turn.
+# however deep the queue: one item per landed epic. Its story row carries `#of/<epic>` (--epic), so
+# the item links the epic it checks; notes reads a `check(epics)` row as no leaf (epics::is_epic_check),
+# so it neither holds the epic open nor raises the done count that would key a second verify.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
   local landed prof project id done_ title slug out rc
@@ -3795,7 +3795,7 @@ reconcile_epics() {
     slug="verify-$id-$done_"
     # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
     [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
-    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" \
+    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued $slug: every leaf of epic $id on $project has landed"
