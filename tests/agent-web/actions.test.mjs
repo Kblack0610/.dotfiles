@@ -17,7 +17,7 @@ const el = () => new Proxy({}, {
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
-const parts = { "actions-head": part(), "actions-facets": part(), "actions-chips": part(), "actions-body": part(), "sec-actions": part() };
+const parts = { "actions-head": part(), "actions-facets": part(), "actions-tiles": part(), "actions-body": part(), "sec-actions": part() };
 const doc = { getElementById: (id) => (id === "actions" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -50,7 +50,7 @@ const data = { actions: [act(1), act(2, { verb: "failed", priority: "high" })], 
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
 const click = (attrs) => on.click.forEach((f) => f({ target: target(attrs), type: "click" }));
 const settle = () => new Promise((r) => setImmediate(r));
-const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.views.log = ''; lst.hist = []"); };
+const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.arg = 'actions'; st.views.log = ''; lst.hist = []"); };
 
 test("the table draws the server's rows, chips and dropdowns with no day headings", () => {
   fresh();
@@ -60,7 +60,7 @@ test("the table draws the server's rows, chips and dropdowns with no day heading
   assert.match(h, /data-tsort="when"/, "every column header sorts");
   assert.match(h, /value="actor:shepherd"/, "the query sits in the search box");
   assert.match(h, /data-fv="notify" value="actor:shepherd actor:notify"> <span>notify<\/span> <span class="n">1<\/span>/, "the actors are a checklist, a tick adding to the pick");
-  assert.match(h, /data-ts="failed">failed <span class="n">1/, "the state chips carry the server's counts");
+  assert.match(h, /data-ts="failed"><span class="tl">FAILED<\/span><span class="tv">1</, "the state tiles carry the server's counts");
   assert.match(h, /<b>failed<\/b><\/td><td>high<\/td>/);
   assert.match(h, /title="2026-[^"]*Z"/, "the exact time is on the cell");
   assert.match(h, /agent-1 &lt;stalled&gt;/, "a row's text is escaped");
@@ -91,6 +91,7 @@ test("another tab's link lands on the filtered view and opens its section", asyn
   run("st.tab = 'sessions'; showActions('shepherd', 'skip')");
   await settle();
   assert.equal(run("st.tab"), "log");
+  assert.equal(run("st.arg"), "actions", "it opens the Actions inner tab, not the last one shown");
   assert.equal(run("st.views.log"), "q=actor%3Ashepherd+verb%3Askip");
   assert.equal(parts["sec-actions"].open, true);
   assert.match(asked.at(-1), /q=actor%3Ashepherd\+verb%3Askip&hours=24$/);
@@ -149,7 +150,7 @@ test("a refresh keeps the search box the human is typing in", () => {
   doc.activeElement = null;
   assert.equal(box.innerHTML, painted, "the bar stays");
   assert.match(parts["actions-body"].innerHTML, /agent-1/, "the rows around it repaint");
-  assert.match(parts["actions-chips"].innerHTML, /data-ts="failed"/);
+  assert.match(parts["actions-tiles"].innerHTML, /data-ts="failed"/);
 });
 
 test("an empty answer says which kind of empty it is", () => {

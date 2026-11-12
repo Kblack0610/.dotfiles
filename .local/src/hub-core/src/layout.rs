@@ -54,10 +54,49 @@ pub const TABS: [Tab; 13] = [
         title: "Log",
         question: "What happened?",
         sections: &[
-            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
-            "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "ranked",
+            "forecast",
         ],
-        inner: &[],
+        // One inner tab per record. The day's history is its day picker, so it rides with Day.
+        // The forecast sits with Ranked: both say how the week's sessions ran, and both are
+        // heavy reads (every transcript, fleet-bench) that run only when that tab is opened.
+        inner: &[
+            Inner {
+                id: "work",
+                title: "Work",
+                sections: &["work"],
+            },
+            Inner {
+                id: "day",
+                title: "Day",
+                sections: &["day", "history"],
+            },
+            Inner {
+                id: "actions",
+                title: "Actions",
+                sections: &["actions"],
+            },
+            Inner {
+                id: "changes",
+                title: "Changes",
+                sections: &["changes"],
+            },
+            Inner {
+                id: "rundowns",
+                title: "Rundowns",
+                sections: &["rundowns"],
+            },
+            Inner {
+                id: "judges",
+                title: "Judges",
+                sections: &["verdicts"],
+            },
+            Inner {
+                id: "ranked",
+                title: "Ranked",
+                sections: &["ranked", "forecast"],
+            },
+        ],
     },
     Tab {
         id: "queue",
@@ -151,10 +190,31 @@ pub const TABS: [Tab; 13] = [
         group: "System",
         title: "Alerts",
         question: "What is firing, who owns it, and what fired lately?",
-        // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
-        // alert pages of the week, then every watch (folded while none is red).
-        sections: &["health", "firing", "fixes", "history", "watches"],
-        inner: &[],
+        // hub_core::alerts: one inner tab a question: the health chips and what fires with its
+        // fix's owner, the fixes, every watch, the week's pages.
+        sections: &["health", "firing", "fixes", "watches", "history"],
+        inner: &[
+            Inner {
+                id: "firing",
+                title: "Firing",
+                sections: &["health", "firing"],
+            },
+            Inner {
+                id: "fixes",
+                title: "Fixes",
+                sections: &["fixes"],
+            },
+            Inner {
+                id: "watches",
+                title: "Watches",
+                sections: &["watches"],
+            },
+            Inner {
+                id: "history",
+                title: "History",
+                sections: &["history"],
+            },
+        ],
     },
     Tab {
         id: "infra",
@@ -631,8 +691,14 @@ mod tests {
         let alerts = resolve("alerts").unwrap();
         assert_eq!(
             alerts.sections,
-            ["health", "firing", "fixes", "history", "watches"]
+            ["health", "firing", "fixes", "watches", "history"]
         );
+        // Health opens with Firing; every old `#alerts/<section>` opens its inner tab.
+        let at = |w: Option<&str>| inner_tab(alerts, w).map(|i| i.id);
+        assert_eq!(at(None), Some("firing"));
+        assert_eq!(at(Some("health")), Some("firing"));
+        assert_eq!(at(Some("watches")), Some("watches"));
+        assert_eq!(at(Some("history")), Some("history"));
         assert_eq!(section("fixes"), None, "a new section is no retired name");
         // The eleventh tab on the number row has no digit; the tenth is 0.
         assert_eq!(bar_digit("schedules"), Some(0));
@@ -727,6 +793,25 @@ mod tests {
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 6);
         assert_eq!(resolve("queue").unwrap().inner.len(), 4);
+    }
+
+    #[test]
+    fn log_is_one_inner_tab_per_record_and_old_links_open_theirs() {
+        let log = resolve("log").unwrap();
+        let titles: Vec<&str> = log.inner.iter().map(|i| i.title).collect();
+        assert_eq!(
+            titles,
+            ["Work", "Day", "Actions", "Changes", "Rundowns", "Judges", "Ranked"]
+        );
+        let at = |w: Option<&str>| inner_tab(log, w).map(|i| i.id);
+        assert_eq!(at(None), Some("work"));
+        assert_eq!(at(Some("history")), Some("day"));
+        assert_eq!(at(Some("verdicts")), Some("judges"));
+        assert_eq!(at(Some("judges")), Some("judges"));
+        assert_eq!(at(Some("forecast")), Some("ranked"));
+        assert_eq!(at(Some("actions")), Some("actions"));
+        // a retired name that is a Log section (`#actions`) lands on the inner tab holding it
+        assert_eq!(at(section("actions")), Some("actions"));
     }
 
     #[test]
@@ -843,7 +928,7 @@ mod tests {
         let (tab, sec) = moved("fleet", "tokens").unwrap();
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
-        assert_eq!(inner_tab(resolve("log").unwrap(), Some("day")), None);
+        assert_eq!(inner_tab(resolve("home").unwrap(), Some("needs")), None);
         // Queue opens on Active, its pipeline line first; the old table link opens Active
         let queue = resolve("queue").unwrap();
         assert_eq!(inner_tab(queue, None).map(|i| i.id), Some("active"));

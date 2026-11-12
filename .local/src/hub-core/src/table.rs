@@ -69,9 +69,12 @@ pub trait Row {
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
     const GLANCE: &'static [&'static str] = &[];
-    /// What a state word the rows show means, one `(word, meaning)` per state, drawn under the
-    /// chips on both surfaces (`hub_core::vocab`). Empty draws none.
+    /// What a state word the rows show means, one `(word, meaning)` per state (`hub_core::vocab`):
+    /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
+    /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
+    /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -112,6 +115,7 @@ impl<T: Row> Row for &T {
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = T::TONES;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -268,11 +272,17 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
     })
 }
 
-/// A state chip and how many rows the query leaves under it.
+/// A state chip and how many rows the query leaves under it, with its hue while it holds any
+/// row (`vocab::tone`; a chip at zero is plain) and what its word means when the table's
+/// legend defines it (`Row::LEGEND`).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Chip {
     pub name: &'static str,
     pub n: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<crate::vocab::Level>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub means: Option<&'static str>,
 }
 
 /// A column header: whether it is the sort, and the sort a click on it gives.
@@ -396,7 +406,7 @@ pub struct Summary {
     pub legend: Option<String>,
 }
 
-/// `ready: starts when ...; held: waits on ...`, the line both surfaces draw under the chips.
+/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))
@@ -481,13 +491,22 @@ impl View {
         R::STATES
             .iter()
             .enumerate()
-            .map(|(i, s)| Chip {
-                name: s,
-                n: if i == 0 {
+            .map(|(i, s)| {
+                let n = if i == 0 {
                     kept.len()
                 } else {
                     kept.iter().filter(|r| r.in_state(s)).count()
-                },
+                };
+                Chip {
+                    name: s,
+                    n,
+                    tone: if n > 0 {
+                        crate::vocab::tone(R::TONES, s)
+                    } else {
+                        None
+                    },
+                    means: R::LEGEND.iter().find(|(w, _)| w == s).map(|(_, m)| *m),
+                }
             })
             .enumerate()
             .filter(|(i, c)| !R::HIDE_EMPTY || *i == 0 || c.n > 0 || c.name == self.state)

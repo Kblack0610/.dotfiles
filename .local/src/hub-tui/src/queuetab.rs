@@ -324,8 +324,8 @@ fn state(i: &Item, p: Palette) -> Cell {
     }
 }
 
-const HEADER: [&str; 10] = [
-    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+const HEADER: [&str; 11] = [
+    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE",
 ];
 
 fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
@@ -353,6 +353,7 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
         or_dash(&i.size).into(),
         or_dash(&i.account).into(),
         pr,
+        or_dash(&i.plan_label).into(),
         title.into(),
     ]
 }
@@ -491,12 +492,12 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
     Table {
         header: HEADER.to_vec(),
         rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7],
-        flex: Some(9),
+        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7, 9],
+        flex: Some(10),
         flexmin: 20,
         flexkeep: true,
         right: vec![1, 2, 3],
-        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14)],
+        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14), (9, 20)],
         mark: v.table.mark::<QueueRow>(),
     }
     .fit(w, p.head())
@@ -820,7 +821,7 @@ pub(crate) mod tests {
         let s = text(&q, &QueueView::default(), 160);
         let header = line(&s, "STATE");
         let cols = [
-            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE",
         ];
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
@@ -882,9 +883,9 @@ pub(crate) mod tests {
         };
         assert_eq!(
             heads(160),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE"]
+            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE"]
         );
-        // ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
+        // PLAN, ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
         assert_eq!(
             heads(80),
             ["STATE", "IN", "WAIT", "RUN", "PROJECT", "PR", "TITLE"],

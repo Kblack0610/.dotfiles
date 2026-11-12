@@ -744,7 +744,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.reds = Some(reds);
         // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
         failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
+        // `--tab 'alerts fixes'` prints that inner tab; with none named, every one prints.
         a.tab = Tab::Alerts;
+        a.av.all = section.is_none();
         a.open_query(section.clone());
     }
     if matches!(tab, None | Some(Tab::Infra)) {

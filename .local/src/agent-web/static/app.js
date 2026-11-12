@@ -9,9 +9,12 @@ const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],[
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", linked: false, asks: [], parked: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
-// Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
-// file that owns each one's data adds {show, onEvent} here and paints its own container.
+// Log's sections past the day (Work, Actions, Changes, Rundowns, the judges' verdicts, Ranked): the
+// file that owns each one's data adds {sec, show, onEvent} here and paints its own container.
 const LOG_PARTS = [];
+// Whether Log shows the inner tab holding section `sec`: a Log part reads only then (dashboards
+// rule 10), and an event for a hidden one marks it stale for when its inner tab opens.
+const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", sec));
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
@@ -324,7 +327,7 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "queue/table": ["queue", "active"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"queue":{"tabs":[["active","Active",["flow","active"]],["next","Up next",["next"]],["today","Done 24h",["today"]],["candidates","Candidates",["candidates"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"queue":{"tabs":[["active","Active",["flow","active"]],["next","Up next",["next"]],["today","Done 24h",["today"]],["candidates","Candidates",["candidates"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -422,11 +425,15 @@ function route(hash) {
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);
   if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
+  // A bare `#log` link carrying Actions' view (`#log?q=actor:shepherd&hours=72`, from before the
+  // strip) opens Actions: its keys are the table's plain ones and `hours`, Work's are w-prefixed.
+  if (tab === "log" && !arg && query && [...TBL_KEYS, "hours"].some((k) => new URLSearchParams(query).get(k))) return innerRoute({ name, tab, arg: "actions", query });
   return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
 // the groups' visibility and the strip's marks flip without a repaint. A tab whose inner tabs
-// are reads of their own (`TABS[tab].inner`: Queue's scopes, its Candidates) is told which.
+// are reads of their own (`TABS[tab].inner`: Log's, Queue's scopes and its Candidates) is told
+// which, while it is the tab shown.
 function innerGo(tab, id) {
   const page = st.page;
   st.arg = lastInner[tab] = id;
@@ -438,11 +445,11 @@ function innerGo(tab, id) {
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
   stripMark(board, "itab", id);
-  if (TABS[tab]?.inner) TABS[tab].inner(id);
+  if (st.tab === tab && TABS[tab] && TABS[tab].inner) TABS[tab].inner(id);
 }
 // The strip: one button per inner tab, the open one marked, a count pill beside one whose
-// sections need a look (`flagged`: section ids) and only above zero.
-const innerStrip = (tab, flagged) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged);
+// sections need a look (`flagged`: section ids, or `counts` by inner id) and only above zero.
+const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
 // A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
 // open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
 // comes from `flagged` (section ids) or from `counts` by id, and shows only above zero.
