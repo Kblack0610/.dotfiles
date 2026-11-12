@@ -32,6 +32,9 @@ pub fn map_path() -> PathBuf {
 /// this); a hand edit to the registry is seen within this long.
 const RECHECK_EVERY: Duration = Duration::from_secs(1);
 
+/// The artifacts a repo's test results are in when its tracker names no `testArtifacts`.
+pub const DEFAULT_TEST_ARTIFACTS: &str = "junit-*";
+
 /// The registry at `map_path()`, read again when the file's mtime changes (checked at most once
 /// per `RECHECK_EVERY`), so a long-running server follows an edit without a restart. None when
 /// there is no registry.
@@ -273,10 +276,9 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// The workflow files whose `junit-*` artifacts are a repo's test results:
-    /// `testWorkflows` on the tracker whose `github` slug is `slug`, compared without case as
-    /// GitHub does. Empty for a repo that declares none, so its runs list no Tests.
-    pub fn test_workflows(&self, slug: &str) -> Vec<String> {
+    /// The string list `key` on each tracker whose `github` slug is `slug`, compared without
+    /// case as GitHub does.
+    fn github_list(&self, slug: &str, key: &str) -> Vec<String> {
         let Some(trackers) = self.raw.get("trackers").and_then(Value::as_object) else {
             return vec![];
         };
@@ -288,11 +290,50 @@ impl Registry {
                     .and_then(Value::as_str)
                     .is_some_and(|s| !s.is_empty() && s.eq_ignore_ascii_case(slug))
             })
-            .filter_map(|t| t.get("testWorkflows")?.as_array())
+            .filter_map(|t| t.get(key)?.as_array())
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect()
+    }
+
+    /// The workflow files whose artifacts (`test_artifacts`) are a repo's test results:
+    /// `testWorkflows` on the tracker whose `github` slug is `slug`. Empty for a repo that
+    /// declares none, so its runs list no Tests.
+    pub fn test_workflows(&self, slug: &str) -> Vec<String> {
+        self.github_list(slug, "testWorkflows")
+    }
+
+    /// The artifact name globs a repo's test workflows upload their results in: `testArtifacts`
+    /// on its tracker, else `junit-*`, what the bats tiers upload.
+    pub fn test_artifacts(&self, slug: &str) -> Vec<String> {
+        let globs: Vec<String> = self
+            .github_list(slug, "testArtifacts")
+            .into_iter()
+            .filter(|g| !g.is_empty())
+            .collect();
+        if globs.is_empty() {
+            vec![DEFAULT_TEST_ARTIFACTS.to_string()]
+        } else {
+            globs
+        }
+    }
+
+    /// `nightRunner` on the tracker whose `github` slug is `slug`: the agentctl runner that
+    /// starts the repo's night set (`scripts/night.json`), so a night member's next start is
+    /// that runner's. None when the tracker names none.
+    pub fn night_runner(&self, slug: &str) -> Option<String> {
+        let trackers = self.raw.get("trackers")?.as_object()?;
+        trackers
+            .values()
+            .filter_map(Value::as_object)
+            .filter(|t| {
+                t.get("github")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty() && s.eq_ignore_ascii_case(slug))
+            })
+            .find_map(|t| t.get("nightRunner")?.as_str().filter(|r| !r.is_empty()))
+            .map(str::to_string)
     }
 
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
@@ -365,6 +406,35 @@ mod tests {
         // negative control: a repo the registry knows that declares none, and one it does not know.
         assert!(r.test_workflows("Studio/platform").is_empty());
         assert!(r.test_workflows("Org/nobody").is_empty());
+    }
+
+    #[test]
+    fn a_repo_declares_the_artifacts_its_results_are_in_else_junit() {
+        let r = Registry::parse(
+            r#"{"trackers": {"ucp": {"github": "Org/Unity", "testWorkflows": [".github/workflows/test.yml"],
+                "testArtifacts": ["test-runs-*"]}, "bats": {"github": "Org/bats"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.test_artifacts("org/unity"), ["test-runs-*"]);
+        // negative control: a repo that names none, and one the registry does not know.
+        assert_eq!(r.test_artifacts("Org/bats"), [DEFAULT_TEST_ARTIFACTS]);
+        assert_eq!(r.test_artifacts("Org/nobody"), ["junit-*"]);
+    }
+
+    #[test]
+    fn a_repo_names_the_runner_that_starts_its_night_set() {
+        let r = Registry::parse(
+            r#"{"trackers": {"ucp": {"github": "Org/Unity", "nightRunner": "playground-night"},
+                "bats": {"github": "Org/bats", "nightRunner": ""}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.night_runner("org/unity").as_deref(),
+            Some("playground-night")
+        );
+        // negative control: an empty name, and a repo the registry does not know.
+        assert_eq!(r.night_runner("Org/bats"), None);
+        assert_eq!(r.night_runner("Org/nobody"), None);
     }
 
     #[test]

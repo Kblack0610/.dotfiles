@@ -108,10 +108,8 @@ pub struct Ci {
     pub oldest: i64,
     pub rows: Vec<Slot>,
     pub queue: Vec<Queued>,
-    /// The last day's finished runs per workflow, worst main pass rate first.
-    pub finished: Vec<Finished>,
-    /// Those runs added up, for the section's head.
-    pub done: Tally,
+    /// The last day's local Unity gate failures, one row per branch and platform, newest first.
+    pub local: Vec<LocalFail>,
     /// One red line per kind of job no online runner can take (`Queued::problem`), oldest first,
     /// with the count of waiting jobs when more than one. Both surfaces draw these as they are.
     pub red: Vec<String>,
@@ -413,11 +411,7 @@ pub fn build(infra: &Infra) -> Ci {
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
     ci.red = ci.red_lines();
-    ci.finished = finished(infra);
-    ci.done = ci
-        .finished
-        .iter()
-        .fold(Tally::default(), |t, f| t.add(&f.all));
+    ci.local = local(infra);
     ci
 }
 
@@ -605,100 +599,42 @@ pub fn pool_match_rows(infra: &Infra, min_wait: i64) -> String {
         .collect()
 }
 
-/// Runs that passed, failed (or timed out) and were cancelled; a skipped or neutral run counts
-/// in none, so `runs` can be more than their sum.
-#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq)]
-pub struct Tally {
-    pub runs: u32,
-    pub ok: u32,
-    pub bad: u32,
-    pub can: u32,
-}
-
-impl Tally {
-    fn add(self, o: &Tally) -> Tally {
-        Tally {
-            runs: self.runs + o.runs,
-            ok: self.ok + o.ok,
-            bad: self.bad + o.bad,
-            can: self.can + o.can,
-        }
-    }
-
-    /// Passed of passed and failed; a cancel is neither.
-    pub fn pass(&self) -> Option<f64> {
-        (self.ok + self.bad > 0).then(|| self.ok as f64 / (self.ok + self.bad) as f64)
-    }
-}
-
-/// One workflow's last day of finished runs (`github_runs_finished`), split by where they ran:
-/// a red on main is everyone's problem, a red gate on a work branch is usually the gate working.
+/// A local Unity gate's failures (`fleet_local_gate_failed`) over the ledger's last day: GitHub's
+/// runs are the Runs tab's, but a gate run on a workstation never reaches GitHub, so this is the
+/// one place a red one shows.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
-pub struct Finished {
+pub struct LocalFail {
     pub repo: String,
-    pub workflow: String,
-    pub all: Tally,
-    pub main: Tally,
-    pub branch: Tally,
+    pub branch: String,
+    pub platform: String,
+    pub result: String,
+    pub n: u32,
+    /// The start (unix seconds) of the last hour one failed in.
+    pub last: i64,
 }
 
-/// Main's pass rate leads: worst first, then the overall rate, then the most failures; the
-/// workflows with nothing failed or cancelled after them, the busiest first.
-fn finished(infra: &Infra) -> Vec<Finished> {
-    let mut by: BTreeMap<(String, String), Finished> = BTreeMap::new();
-    for s in infra.get("finished") {
-        let f = by
-            .entry((s.label("repo").into(), s.label("workflow").into()))
-            .or_insert_with(|| Finished {
-                repo: s.label("repo").into(),
-                workflow: s.label("workflow").into(),
+/// The ledger counts per hour, so a day folds one branch's runs into one row: the newest first,
+/// then the most.
+fn local(infra: &Infra) -> Vec<LocalFail> {
+    let mut by: BTreeMap<[String; 4], LocalFail> = BTreeMap::new();
+    for s in infra.get("local_failed") {
+        let key = ["repo", "branch", "platform", "result"].map(|k| s.label(k).to_string());
+        let f = by.entry(key.clone()).or_insert_with(|| {
+            let [repo, branch, platform, result] = key;
+            LocalFail {
+                repo,
+                branch,
+                platform,
+                result,
                 ..Default::default()
-            });
-        let n = s.value.unwrap_or(0.0).round().max(0.0) as u32;
-        let scope = match s.label("scope") {
-            "main" => Some(&mut f.main),
-            "branch" => Some(&mut f.branch),
-            _ => None,
-        };
-        let add = |t: &mut Tally| {
-            t.runs += n;
-            match s.label("conclusion") {
-                "success" => t.ok += n,
-                "failure" | "timed_out" => t.bad += n,
-                "cancelled" => t.can += n,
-                _ => {}
             }
-        };
-        if let Some(t) = scope {
-            add(t);
-        }
-        add(&mut f.all);
+        });
+        f.n += s.value.unwrap_or(0.0).round().max(0.0) as u32;
+        f.last = f.last.max(s.label("hour").parse().unwrap_or(0));
     }
-    let mut out: Vec<Finished> = by.into_values().collect();
-    let worst = |p: Option<f64>| p.unwrap_or(2.0);
-    out.sort_by(|a, b| {
-        b.red()
-            .cmp(&a.red())
-            .then_with(|| {
-                if a.red() {
-                    worst(a.main.pass())
-                        .total_cmp(&worst(b.main.pass()))
-                        .then_with(|| worst(a.all.pass()).total_cmp(&worst(b.all.pass())))
-                        .then_with(|| b.all.bad.cmp(&a.all.bad))
-                } else {
-                    b.all.runs.cmp(&a.all.runs)
-                }
-            })
-            .then_with(|| (&a.repo, &a.workflow).cmp(&(&b.repo, &b.workflow)))
-    });
+    let mut out: Vec<LocalFail> = by.into_values().filter(|f| f.n > 0).collect();
+    out.sort_by(|a, b| b.last.cmp(&a.last).then_with(|| b.n.cmp(&a.n)));
     out
-}
-
-impl Finished {
-    /// Something failed or was cancelled.
-    pub fn red(&self) -> bool {
-        self.all.bad + self.all.can > 0
-    }
 }
 
 fn opt(v: Option<i64>) -> Val {
@@ -841,40 +777,28 @@ impl Row for Queued {
     }
 }
 
-/// The finished-runs table on both surfaces: one row per workflow over the last day.
-impl Row for Finished {
-    const COLUMNS: &'static [&'static str] = &[
-        "repo",
-        "workflow",
-        "main",
-        "branches",
-        "runs",
-        "failed",
-        "cancelled",
-    ];
-    const STATES: &'static [&'static str] = &["all", "red", "green"];
-    const FACETS: &'static [&'static str] = &["repo"];
-    const LEAD: &'static str = "workflow";
-    const GLANCE: &'static [&'static str] = &["repo", "main", "failed"];
+/// The local Unity failures on both surfaces, under Runners.
+impl Row for LocalFail {
+    const COLUMNS: &'static [&'static str] =
+        &["last", "repo", "branch", "platform", "result", "failed"];
+    const STATES: &'static [&'static str] = &["all"];
+    const FACETS: &'static [&'static str] = &["repo", "platform", "result"];
+    const LEAD: &'static str = "branch";
+    const GLANCE: &'static [&'static str] = &["last", "failed"];
 
     fn val(&self, col: &str) -> Val {
         match col {
+            "last" => Val::Num(self.last as f64),
             "repo" => Val::Text(self.repo.clone()),
-            "workflow" => Val::Text(self.workflow.clone()),
-            "main" => self.main.pass().into(),
-            "branches" => self.branch.pass().into(),
-            "runs" => Val::Num(self.all.runs as f64),
-            "failed" => Val::Num(self.all.bad as f64),
-            "cancelled" => Val::Num(self.all.can as f64),
+            "branch" => Val::Text(self.branch.clone()),
+            "platform" => Val::Text(self.platform.clone()),
+            "result" => Val::Text(self.result.clone()),
+            "failed" => Val::Num(self.n as f64),
             _ => Val::None,
         }
     }
-    fn in_state(&self, s: &str) -> bool {
-        match s {
-            "red" => self.red(),
-            "green" => !self.red(),
-            _ => false,
-        }
+    fn in_state(&self, _: &str) -> bool {
+        false
     }
 }
 
@@ -1169,20 +1093,32 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_count_rounds_and_a_negative_one_counts_nothing() {
+    fn local_failures_fold_by_branch_and_platform_newest_first() {
         let mut i = board();
-        let run = |c: &str, v: &'static str| {
+        let fail = |branch: &str, platform: &str, hour: &str, v: &'static str| {
             (
-                json!({"repo": "game", "workflow": "Tests", "scope": "main", "conclusion": c}),
+                json!({"repo": "game", "branch": branch, "platform": platform,
+                    "result": "fail", "hour": hour}),
                 v,
             )
         };
         i.instant.insert(
-            "finished",
-            series(vec![run("success", "2.9999"), run("failure", "-1")]),
+            "local_failed",
+            series(vec![
+                fail("feat/a", "linux", "7200", "2"),
+                fail("feat/a", "linux", "3600", "1"),
+                fail("feat/b", "android", "3600", "4"),
+                fail("feat/c", "linux", "10800", "-1"),
+            ]),
         );
         let ci = build(&i);
-        assert_eq!((ci.done.runs, ci.done.ok, ci.done.bad), (3, 3, 0));
+        let got: Vec<(&str, u32, i64)> = ci
+            .local
+            .iter()
+            .map(|f| (f.branch.as_str(), f.n, f.last))
+            .collect();
+        // feat/c counted nothing, so it is no row.
+        assert_eq!(got, [("feat/a", 3, 7200), ("feat/b", 4, 3600)]);
     }
 
     #[test]
@@ -1267,39 +1203,6 @@ mod tests {
             pool_match(&i, 3600).is_empty(),
             "no runner read, so no match"
         );
-    }
-
-    #[test]
-    fn finished_runs_fold_by_workflow_with_a_red_on_main_first() {
-        let mut i = board();
-        let run = |wf: &str, scope: &str, c: &str, v: &'static str| {
-            (
-                json!({"repo": "game", "workflow": wf, "scope": scope, "conclusion": c}),
-                v,
-            )
-        };
-        i.instant.insert(
-            "finished",
-            series(vec![
-                run("Tests", "main", "success", "9"),
-                run("Tests", "branch", "success", "30"),
-                run("Multi", "main", "failure", "1"),
-                run("Multi", "main", "success", "1"),
-                run("Multi", "branch", "cancelled", "2"),
-                run("Lint", "branch", "failure", "3"),
-                run("Lint", "branch", "success", "1"),
-            ]),
-        );
-        let ci = build(&i);
-        let names: Vec<&str> = ci.finished.iter().map(|f| f.workflow.as_str()).collect();
-        // Multi failed on main; Lint only on branches, so it follows; Tests is green.
-        assert_eq!(names, ["Multi", "Lint", "Tests"]);
-        let multi = &ci.finished[0];
-        assert_eq!((multi.main.pass(), multi.all.can), (Some(0.5), 2));
-        assert_eq!(multi.branch.pass(), None);
-        assert_eq!((ci.done.runs, ci.done.ok, ci.done.bad), (47, 41, 4));
-        let (red, _) = crate::table::View::new::<Finished>("", "red", "", "").summary(&ci.finished);
-        assert_eq!(red.len(), 2);
     }
 
     #[test]
