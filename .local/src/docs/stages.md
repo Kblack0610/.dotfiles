@@ -9,7 +9,7 @@ How mature a project is, what it must have at each stage, and which check proves
 
 ## The ladder
 
-The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel. A project deploys no higher than its stage: a draft or dev project has no deploy target, and an alpha one nothing on a beta or prod channel. Each registry target's `channel` maps to the rung it serves in the `project-map.json` `channels` map (the Registry channels column); `release-state` turns that into each project's served rungs, and the Requirements rows below read them.
+The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel. The stage says what a project must have, never where it may deploy: a deploy is not the app being live, so a draft or dev project with a prod target is fine (the human, 2026-11-12). Each registry target's `channel` maps to the rung it serves in the `project-map.json` `channels` map (the Registry channels column); `release-state` turns that into each project's served rungs, and the Requirements rows below read them.
 
 | Stage | Means | Who uses it | Where it runs | Registry channels | What the tooling does |
 | --- | --- | --- | --- | --- | --- |
@@ -39,7 +39,6 @@ The `Check` cell is one of three things:
 | Stage | Applies | Requirement | Check |
 | --- | --- | --- | --- |
 | draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
-| draft | base | Deploys no higher than its stage: no target live on a channel above it | `r="$(release-state show --json \| jq -er --arg n "$NAME" '.stages[$n] \| objects \| .rungs[-1] // "none"')" && { [ "$r" = none ] \|\| lab_stage_at_least "$STAGE" "$r"; }` |
 | draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
 | draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
