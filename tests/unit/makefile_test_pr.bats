@@ -8,7 +8,7 @@ setup() {
   SRC="$BATS_TEST_DIRNAME/../.."
   FIX="$BATS_TEST_TMPDIR/repo"
   mkdir -p "$FIX/tests/unit" "$FIX/tests/integ" "$FIX/tests/vendor/bats-core/bin" "$FIX/.local/lib" "$FIX/bin"
-  cp "$SRC/tests/Makefile" "$SRC/tests/pick.sh" "$FIX/tests/"
+  cp "$SRC/tests/Makefile" "$SRC/tests/pick.sh" "$SRC/tests/run-bats.sh" "$FIX/tests/"
   cp "$SRC/.local/lib/test-pick.sh" "$FIX/.local/lib/"
   : > "$FIX/tests/broad.txt"
   # A stub bats: prints the files it was handed, one a line.
