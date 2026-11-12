@@ -105,9 +105,10 @@ const clickApp = () => fire("click", { type: "click", target: target({}, APP) })
 // whose changelog is read once it lands.
 const PAGE = { app: binks, app_links: { project: "#projects/binks" } };
 const page = async (d = data(PAGE), name = "binks", log = changelog()) => {
-  run(`st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/${name}'; relCh = null`);
+  run(`st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/${name}'; relCh = null; relOpened = null`);
   Object.assign(run("relcl"), { project: null, data: null, err: null });
-  [body, cl] = [d, log];
+  // The server echoes the app it was asked for (releases::Shown::asked).
+  [body, cl] = [{ asked: name, ...d }, log];
   asked.length = 0;
   await relst.refresh();
   await settled();
@@ -190,6 +191,29 @@ test("an app the snapshot does not have says so, with its read errors, not a bla
   assert.match(b, /release-state show: no snapshot yet/);
   assert.match(b, /No such app: nope\./);
   assert.ok(!asked.some((u) => u.includes("changelog")), "no changelog read for an app that is not there");
+});
+
+test("a page whose read is still on its way says reading, never another app's page or no such app", async () => {
+  await page();
+  run("st.page = 'apps/other'; relst.render()");
+  const b = box.innerHTML;
+  assert.match(b, /Releases \/ other<\/span>.*reading\.\.\./s);
+  assert.doesNotMatch(b, /No such app|binks-prod/, "neither a false 'no such app' nor binks' body under other's URL");
+  run("st.page = 'apps/binks'; relst.render()");
+});
+
+test("reopening an app's page reads its changelog again, so a tag that landed meanwhile shows", async () => {
+  await page();
+  run("st.page = ''");
+  [body] = [data()];
+  await relst.refresh();
+  await settled();
+  run("st.page = 'apps/binks'");
+  [body] = [{ asked: "binks", ...data(PAGE) }];
+  asked.length = 0;
+  await relst.refresh();
+  await settled();
+  assert.deepEqual(asked, ["/api/releases?app=binks", "/api/releases/changelog?project=binks"]);
 });
 
 test("an app's page lists its headline env's channels, the other envs in a fold that starts open", async () => {
@@ -318,7 +342,7 @@ test("picking another tag reads that tag, and a tag with nothing in it says so",
 test("a changelog the collector refused is said on the page, not left reading", async () => {
   run("st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/binks'; relCh = null");
   Object.assign(run("relcl"), { project: null, data: null, err: null });
-  Object.assign(relst, { data: data(PAGE), err: null });
+  Object.assign(relst, { data: { asked: "binks", ...data(PAGE) }, err: null });
   const real = ctx.fetch;
   ctx.fetch = async () => ({ ok: false, status: 400, statusText: "Bad Request", text: async () => "release-state: binks has no release tags", headers: { get: () => "text/plain" } });
   run("loadChangelog('binks')");

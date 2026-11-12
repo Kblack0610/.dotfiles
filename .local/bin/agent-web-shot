@@ -35,13 +35,15 @@ mo.observe(document.body, { childList: true, subtree: true, characterData: true 
 DRAW_TIMEOUT_MS = 20000
 # Marionette has no readiness event: the port is tried at this cadence until Firefox listens.
 CONNECT_EVERY_S, CONNECT_TRIES = 0.25, 240
+# A guard on one Marionette reply, past the draw timeout a page is given.
+REPLY_TIMEOUT_S = DRAW_TIMEOUT_MS / 1000 + 30
 
 
 class Marionette:
     def __init__(self, port):
         for _ in range(CONNECT_TRIES):
             try:
-                self.s = socket.create_connection(("127.0.0.1", port))
+                self.s = socket.create_connection(("127.0.0.1", port), timeout=REPLY_TIMEOUT_S)
                 break
             except OSError:
                 time.sleep(CONNECT_EVERY_S)
@@ -50,12 +52,18 @@ class Marionette:
         self.buf, self.id = b"", 0
         self._read()
 
+    def _recv(self):
+        chunk = self.s.recv(65536)
+        if not chunk:
+            raise SystemExit("agent-web-shot: Firefox closed its Marionette connection")
+        return chunk
+
     def _read(self):
         while b":" not in self.buf:
-            self.buf += self.s.recv(65536)
+            self.buf += self._recv()
         n, rest = self.buf.split(b":", 1)
         while len(rest) < int(n):
-            rest += self.s.recv(65536)
+            rest += self._recv()
         self.buf = rest[int(n):]
         return json.loads(rest[: int(n)])
 
@@ -88,15 +96,16 @@ def main():
     root = os.path.expanduser("~/.cache/agent-web-shot")
     os.makedirs(root, exist_ok=True)
     prof = tempfile.mkdtemp(prefix="profile-", dir=root)
-    port = free_port()
-    with open(f"{prof}/user.js", "w") as f:
-        for k, v in {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
-                     "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}.items():
-            f.write(f'user_pref("{k}", {json.dumps(v)});\n')
-    log = open(f"{prof}/firefox.log", "w")
-    ff = subprocess.Popen(["firefox", "--headless", "--no-remote", "--marionette", "--profile", prof],
-                          stdout=log, stderr=log, start_new_session=True)
+    ff = None
     try:
+        port = free_port()
+        with open(f"{prof}/user.js", "w") as f:
+            for k, v in {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
+                         "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}.items():
+                f.write(f'user_pref("{k}", {json.dumps(v)});\n')
+        with open(f"{prof}/firefox.log", "w") as log:
+            ff = subprocess.Popen(["firefox", "--headless", "--no-remote", "--marionette", "--profile", prof],
+                                  stdout=log, stderr=log, start_new_session=True)
         m = Marionette(port)
         m.cmd("WebDriver:NewSession", capabilities={})
         m.cmd("WebDriver:SetTimeouts", script=DRAW_TIMEOUT_MS)
@@ -119,12 +128,23 @@ def main():
                 f.write(base64.b64decode(png))
             print(path)
     finally:
-        try:
-            os.killpg(ff.pid, signal.SIGTERM)
-            ff.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            os.killpg(ff.pid, signal.SIGKILL)
+        if ff:
+            stop(ff)
         shutil.rmtree(prof, ignore_errors=True)
+
+
+def stop(ff):
+    """Stop the Firefox this started and every process in its group; one already gone is fine."""
+    try:
+        os.killpg(ff.pid, signal.SIGTERM)
+        ff.wait(timeout=10)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(ff.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 if __name__ == "__main__":

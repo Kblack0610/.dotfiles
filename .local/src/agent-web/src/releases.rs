@@ -42,6 +42,10 @@ struct Shown<'a> {
     table: Summary,
     /// The words a cell says when the fact is absent (`releases::BLANKS`), which the page dims.
     blanks: &'static [&'static str],
+    /// The app this read was asked for (`Query::app`), so a page can tell a read still on its way
+    /// from an app the snapshot does not have.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    asked: &'a str,
     /// The app `Query::app` names, absent when none is asked or no app has that name, and the
     /// records its cells link to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,10 +57,9 @@ struct Shown<'a> {
 fn render(s: &Releases, q: &Query) -> String {
     let view = View::new::<App>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&s.apps);
-    let app = s
-        .apps
-        .iter()
-        .find(|a| !q.app.is_empty() && a.project == q.app);
+    let app = (!q.app.is_empty())
+        .then(|| s.apps.iter().find(|a| a.project == q.app))
+        .flatten();
     let out = Shown {
         at: s.at,
         question: &s.question,
@@ -69,6 +72,7 @@ fn render(s: &Releases, q: &Query) -> String {
         look: s.needs_look(),
         table,
         blanks: &releases::BLANKS,
+        asked: &q.app,
         app,
         app_links: app.map(|a| hub_core::table::links(&[a]).pop().unwrap_or_default()),
     };
@@ -249,6 +253,8 @@ mod tests {
             ..Default::default()
         });
         assert!(none.get("app").is_none() && body(Query::default()).get("app").is_none());
+        assert_eq!(none["asked"], "nope", "an unknown app's read says what it was asked");
+        assert!(body(Query::default()).get("asked").is_none());
     }
 
     #[test]

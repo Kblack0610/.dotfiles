@@ -38,14 +38,15 @@ const HEADER: [&str; 7] = [
 ];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 9;
-/// APP and LIVE at 80 columns and at their widest: each takes half of whatever a wider terminal
-/// adds. CHANNELS holds `7: 2 not read, 4 ok, 1 released`.
+/// APP and DEPLOYED at 80 columns and at their widest: each takes half of whatever a wider
+/// terminal adds.
 const APP_FIT: (usize, usize) = (16, 26);
 const LIVE_FIT: (usize, usize) = (16, 28);
 /// `draft`, `alpha`: the ladder's longest word.
 const STAGE_CAP: usize = 5;
 const STATUS_CAP: usize = 10;
-const CHANNELS_CAP: usize = 31;
+/// `2 not read, 4 ok, 1 released`.
+const CHANNELS_CAP: usize = 28;
 /// `v1.19.0 10-27 15:02`; a longer build tag clips.
 const RELEASED_CAP: usize = 24;
 /// `10-26 15:02 fail`.
@@ -285,7 +286,11 @@ fn row(a: &App, p: Palette) -> Vec<Cell> {
     };
     vec![
         a.project.clone().into(),
-        tinted(&a.stage, a.stage_level),
+        if a.stage.is_empty() {
+            cell("-".to_string(), p.dim())
+        } else {
+            tinted(&a.stage, a.stage_level)
+        },
         a.live_text.clone().into(),
         cell(a.status_text.clone(), level(a.level, p)),
         channels,
@@ -704,6 +709,15 @@ mod tests {
         let drift = row(app(&s, "kenneth-black-portfolio"), p);
         assert_eq!(drift[3].style, p.bad());
         assert_eq!(drift[4].style, Style::default());
+    }
+
+    #[test]
+    fn an_app_with_no_lab_stage_says_a_dim_dash_as_the_web_does() {
+        let (s, p) = (sample(), Palette::default());
+        let mut a = app(&s, "binks").clone();
+        a.stage = String::new();
+        let cells = row(&a, p);
+        assert_eq!((cells[1].text.as_str(), cells[1].style), ("-", p.dim()));
     }
 
     #[test]

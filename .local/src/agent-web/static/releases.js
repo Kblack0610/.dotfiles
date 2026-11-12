@@ -16,9 +16,10 @@ const relPage = () => pageId("releases", "apps");
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or stage:alpha channel:prod status:drift",
   open: () => REL_OPEN,
-  // The open page's app is read whatever the view hides; its changelog is read once it is.
+  // The open page's app is read whatever the view hides; its changelog is read each time its
+  // page opens (a read with no app closes it), so a reopened app shows its newest tags.
   params: (p) => { if (relPage()) p.set("app", relPage()); },
-  got: (t) => { const a = t.data?.app; if (a && relcl.project !== a.project) loadChangelog(a.project); },
+  got: (t) => { const a = t.data?.app; if (!a) relOpened = null; else if (relOpened !== a.project) { relOpened = a.project; loadChangelog(a.project); } },
   draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
@@ -33,6 +34,8 @@ const relFlagged = () => [relst.data?.look && "table", relRuns.data?.look && "ru
 const relKey = (a) => a.project;
 // A cell whose words say the fact is absent (releases::BLANKS, sent as `blanks`) is dimmed.
 const relDim = (text, cls = "") => [cls, (relst.data?.blanks || []).includes(text) ? "muted" : ""].filter(Boolean).join(" ");
+// The app whose page last opened, so its changelog is read once per opening.
+let relOpened = null;
 // The channel whose detail is open inside an opened app, `project|id`.
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
@@ -70,7 +73,9 @@ function appPage(d) {
   const back = `<a class="btn sm" href="#releases/${ENTITY_PAGES.releases.apps}${view ? "?" + view : ""}">All apps</a>`;
   const errs = [relst.err, ...(d?.errors || [])].filter(Boolean);
   const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
-  const a = d?.app;
+  // A read asked for another app (or none) is still the old page's: wait for this one's.
+  if (d?.asked !== name) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">reading...</div>`;
+  const a = d.app;
   if (!a) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">No such app: ${esc(name)}.</div>`;
   const project = d.app_links?.project ? ` <a class="btn sm" href="${esc(d.app_links.project)}">Project page</a>` : "";
   return `<div class="bhead"><span>Releases / <b>${esc(a.project)}</b> <span class="${levelClass(a.level)}">${esc(a.status_text)}</span></span><span>${back}${project}</span></div>` +

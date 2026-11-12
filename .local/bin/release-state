@@ -555,8 +555,8 @@ row() {
 # a project with no stage yet has them too), `needs` the rungs from alpha up to the stage nothing
 # serves (game and app only: infra deploys by stow or Flux). A target above the stage is fine: a
 # deploy is not the app being live, so the stage never caps where it deploys. `stage` is null when
-# the lab sheet names none on the ladder, and then nothing is needed. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
-# `stages_error` says why.
+# the lab sheet names none on the ladder, and then nothing is needed. The rung order is
+# `notes projects --stages`. When notes cannot say, `stages` is empty and `stages_error` says why.
 stage_facts() {
   local state="$1" labs="$2" ladder
   ladder="$(notes projects --stages 2>/dev/null)"
