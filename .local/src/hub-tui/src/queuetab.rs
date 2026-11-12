@@ -838,7 +838,10 @@ pub(crate) mod tests {
         };
         assert_eq!(
             heads(160),
-            ["STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR", "PLAN"]
+            [
+                "STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR",
+                "PLAN"
+            ]
         );
         // PLAN, ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
         assert_eq!(
