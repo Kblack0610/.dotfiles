@@ -842,7 +842,7 @@ install_all() {
     step avd         setup_freerdp_avd
 
     step keyd        setup_keyd
-    step base        setup_power_key
+    step powerkey    setup_power_key
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 
