@@ -1041,10 +1041,13 @@ FORKED = re.compile(r'\ASkill "[^"]+" launched \(forked')
 
 
 def human_prompt(rec, text):
-    """A prompt a person typed: interactive, one that opens with a letter or digit (tags such as a
-    task notification, a slash command or a system reminder do not), and none of our harness text."""
+    """A prompt a person typed, which closes a skill span: interactive, not meta, none of our harness
+    text, and either plain text or a slash command (a typed skill's body follows it and opens the next
+    span). A task notification or a system reminder opens with a tag and is not typed."""
     s = text.lstrip()
-    return user_origin(rec) == "interactive" and s[:1].isalnum() and not s.startswith(HARNESS_PREFIXES)
+    return (user_origin(rec) == "interactive" and not rec.get("isMeta")
+            and (not s.startswith("<") or CMD_RE.match(text) is not None)
+            and not s.startswith(HARNESS_PREFIXES))
 
 
 def tool_output_file(path, since, until, emit, skills=False):
@@ -1075,8 +1078,10 @@ def tool_output_file(path, since, until, emit, skills=False):
     calls = {}  # Agent/Skill tool_use id -> the span its subagent, if it starts one, inherits
 
     def open_span(name, ts):
+        """A skill's span opens, unless it is the one already open: a Skill call names "plug:x" and
+        the body it loads names "x"."""
         nonlocal cur
-        if name != cur:
+        if not (isinstance(cur, str) and cur.rsplit(":", 1)[-1] == name.rsplit(":", 1)[-1]):
             cur = name
             if since <= ts < until:
                 emit("span", {"session": session, "skill": name, "project": project or "?"})
@@ -1170,8 +1175,12 @@ def tool_output_file(path, since, until, emit, skills=False):
             agent = res.get("agentId") if isinstance(res, dict) else None
             if isinstance(agent, str):
                 emit("spawn", {"session": session, "id": agent, "skill": calls[tid], "project": project or "?"})
-            if tid in before and FORKED.match(text):
-                cur = before.pop(tid)
+            # A forked skill hands back to its caller; a failed call never ran, so its span is undone.
+            if tid in before and (b.get("is_error") or FORKED.match(text)):
+                prev = before.pop(tid)
+                if b.get("is_error") and prev != cur and since <= ts < until:
+                    emit("span", {"session": session, "skill": cur, "project": project or "?", "n": -1})
+                cur = prev
             if not win:
                 continue
             if b.get("is_error") and text.startswith("PreToolUse:") and "hook error" in text[:200]:
@@ -1285,7 +1294,7 @@ def cmd_tool_output(a):
             spawns[(r["session"], r["id"])] = r["skill"]
             return
         if kind == "span":
-            spans[(r["session"], r["skill"])] = spans.get((r["session"], r["skill"]), 0) + 1
+            spans[(r["session"], r["skill"])] = spans.get((r["session"], r["skill"]), 0) + r.get("n", 1)
             return
         if kind == "turn":
             if skills:
@@ -1359,7 +1368,7 @@ def cmd_tool_output(a):
             for f in USAGE_FIELDS:
                 x[f] += u[f]
     for (sess, skill), n in spans.items():
-        for cut in cuts:
+        for cut in cuts if n else ():
             if cut["by"] in SKILL_BY:
                 x = row(cut, skill if cut["by"] == "skill" else (sess, skill))
                 x["spans"] = x.get("spans", 0) + n

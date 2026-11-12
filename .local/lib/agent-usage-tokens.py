@@ -192,6 +192,21 @@ def split(recall, name):
             for r in recall.get("rows") or []]
 
 
+def split_cost(costs, per):
+    """Each session's registry cost split over its keys by their weight in per[session]: the
+    allocation per key, and the cost of sessions with no weight. by_tool and by_skill share it."""
+    alloc, unallocated = {}, 0.0
+    for sess, cost in costs.items():
+        weight = per.get(sess) or {}
+        whole = sum(weight.values())
+        if not whole:
+            unallocated += cost or 0
+            continue
+        for name, n in weight.items():
+            alloc[name] = alloc.get(name, 0.0) + (cost or 0) * n / whole
+    return alloc, round(unallocated, 4)
+
+
 def by_tool(recall, costs):
     """by_tool from a recall --by session,tool result, and each session's registry cost split over
     its tools by their share of its carried tokens: an allocation, never a metered figure. A session
@@ -211,18 +226,9 @@ def by_tool(recall, costs):
     for t in tools.values():
         t["allocated_cost_usd"] = None
     if costs is not None:
-        alloc, unallocated = dict.fromkeys(tools, 0.0), 0.0
-        for sess, cost in costs.items():
-            carried = per.get(sess) or {}
-            whole = sum(carried.values())
-            if not whole:
-                unallocated += cost or 0
-                continue
-            for name, n in carried.items():
-                alloc[name] += (cost or 0) * n / whole
+        alloc, unallocated = split_cost(costs, per)
         for name, t in tools.items():
-            t["allocated_cost_usd"] = round(alloc[name], 4)
-        unallocated = round(unallocated, 4)
+            t["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
     for t in tools.values():
         t["carried_tokens"] //= 4
     rows = sorted(tools.values(), key=lambda t: -t["chars"])
@@ -259,18 +265,9 @@ def by_skill(recall, costs):
     for k in skills.values():
         k["allocated_cost_usd"] = None
     if costs is not None:
-        alloc, unallocated = dict.fromkeys(skills, 0.0), 0.0
-        for sess, cost in costs.items():
-            weight = per.get(sess) or {}
-            whole = sum(weight.values())
-            if not whole:
-                unallocated += cost or 0
-                continue
-            for name, n in weight.items():
-                alloc[name] += (cost or 0) * n / whole
+        alloc, unallocated = split_cost(costs, per)
         for name, k in skills.items():
-            k["allocated_cost_usd"] = round(alloc[name], 4)
-        unallocated = round(unallocated, 4)
+            k["allocated_cost_usd"] = round(alloc.get(name, 0.0), 4)
     rows = sorted(skills.values(), key=lambda k: (-(k["allocated_cost_usd"] or 0), -k["context"]))
     return {"by_skill": rows, "by_skill_unallocated_usd": unallocated}
 

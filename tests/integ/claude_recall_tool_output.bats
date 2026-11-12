@@ -199,6 +199,25 @@ skill_fixture() {
   assert_output '[10,10]'
 }
 
+@test "by skill: a namespaced call and its body are one span, a failed call none, any typed prompt closes" {
+  skill_fixture
+  local R="$BATS_TEST_TMPDIR/skills" cwd='"cwd":"/home/u/proj"' ts='"timestamp":"2026-10-20T10:00:00Z"'
+  rm -r "$R/p/s2"
+  {
+    h human "go"
+    a m1 10 '{"type":"tool_use","id":"sk1","name":"Skill","input":{"skill":"plug:wind-down"}}'
+    res sk1 "Launching skill: plug:wind-down"
+    body wind-down
+    a m2 20
+    h human '`foo` is broken'
+    a m3 30 '{"type":"tool_use","id":"sk2","name":"Skill","input":{"skill":"nope"}}'
+    echo "{\"type\":\"user\",$cwd,$ts,\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"sk2\",\"is_error\":true,\"content\":\"Unknown skill: nope\"}]}}"
+    a m4 40
+  } > "$R/p/s2.jsonl"
+  run jq -c '[.rows[] | [.key, .spans, .turns, .cache_read_input_tokens]]' <<<"$(out --by skill)"
+  assert_output '[["(no skill)",0,3,80],["plug:wind-down",1,1,20]]'
+}
+
 @test "by skill negative control: no skill row without a skill cut, and --by skill is accepted" {
   skill_fixture
   run jq -c '[.rows[].key]' <<<"$(out --by tool)"

@@ -1,5 +1,5 @@
 "use strict";
-// The Costs tab: what the fleet spent, cut seven ways, with fleet-bench's evaluation on the model
+// The Costs tab: what the fleet spent, cut eight ways, with fleet-bench's evaluation on the model
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir, and Spend's day, dq,
 // dsort, ddir, sid) in the URL, so
