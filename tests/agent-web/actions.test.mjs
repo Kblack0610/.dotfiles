@@ -50,7 +50,7 @@ const data = { actions: [act(1), act(2, { verb: "failed", priority: "high" })], 
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
 const click = (attrs) => on.click.forEach((f) => f({ target: target(attrs), type: "click" }));
 const settle = () => new Promise((r) => setImmediate(r));
-const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.views.log = ''; lst.hist = []"); };
+const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.arg = 'actions'; st.views.log = ''; lst.hist = []"); };
 
 test("the table draws the server's rows, chips and dropdowns with no day headings", () => {
   fresh();
@@ -91,6 +91,7 @@ test("another tab's link lands on the filtered view and opens its section", asyn
   run("st.tab = 'sessions'; showActions('shepherd', 'skip')");
   await settle();
   assert.equal(run("st.tab"), "log");
+  assert.equal(run("st.arg"), "actions", "it opens the Actions inner tab, not the last one shown");
   assert.equal(run("st.views.log"), "q=actor%3Ashepherd+verb%3Askip");
   assert.equal(parts["sec-actions"].open, true);
   assert.match(asked.at(-1), /q=actor%3Ashepherd\+verb%3Askip&hours=24$/);
