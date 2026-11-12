@@ -195,7 +195,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
             host: crate::infra::host(&alias, s.label("host")),
             labels: lower(s.label("labels")),
             held: held.contains(n),
-            lent: lent.get(n).copied().filter(|_| held.contains(n)),
+            lent: lent.get(n).copied(),
         })
         .collect()
 }

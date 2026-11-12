@@ -269,11 +269,16 @@ impl Infra {
     }
 
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
-    /// `tests` (a build slot whose test slots run CI) or `build`. Any other withheld runner is
-    /// held back for load, a pin, a drain or no work.
+    /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
+    /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
+    /// never both a slot and lent. Any other withheld runner is held back for load, a pin, a
+    /// drain or no work.
     pub fn lent(&self) -> HashMap<&str, &str> {
+        let held: std::collections::HashSet<&str> =
+            self.get("withheld").iter().map(|s| s.label("name")).collect();
         self.get("lent")
             .iter()
+            .filter(|s| held.contains(s.label("name")))
             .map(|s| (s.label("name"), s.label("to")))
             .collect()
     }

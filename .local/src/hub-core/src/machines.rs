@@ -474,7 +474,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
             .entry(h.clone())
             .or_default()
             .insert((r, pool.clone()));
-        let name = if is_held && lent.contains_key(s.label("name")) {
+        let name = if lent.contains_key(s.label("name")) {
             format!("{pool} lent")
         } else if is_held {
             format!("{pool} withheld")
