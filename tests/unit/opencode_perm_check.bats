@@ -37,9 +37,10 @@ if os.environ.get("STUB_MODE") == "silent":
 url = cfg["providers"]["litellm"]["settings"]["baseURL"] + "/chat/completions"
 tool = {"type": "function", "function": {"name": "shell", "parameters": {"properties": {"command": {}}}}}
 def ask(messages):
-    req = urllib.request.Request(url, json.dumps({"model": "m1", "messages": messages, "tools": [tool]}).encode(),
+    req = urllib.request.Request(url, json.dumps({"model": "m1", "stream": True, "messages": messages, "tools": [tool]}).encode(),
                                  {"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req))["choices"][0]["message"]
+    first = urllib.request.urlopen(req).read().decode().split("\n\n")[0]
+    return json.loads(first.removeprefix("data: "))["choices"][0]["delta"]
 call = ask([{"role": "user", "content": "go"}])["tool_calls"][0]
 cmd = json.loads(call["function"]["arguments"])["command"]
 out = json.dumps({"error": {"type": "permission.rejected", "message": "Permission denied: shell"}, "content": []}) \
@@ -55,6 +56,8 @@ PY
   assert_success
   assert_line --index 0 --regexp '^DENIED +git push DENYME$'
   assert_line --index 1 --regexp '^ran +echo permission denied$'
+  run ls -d "$TMPDIR"/opencode-perm-check.*
+  assert_failure  # no --keep, so the scratch dir is gone
 }
 
 @test "the copy points litellm and every agent at the fake and starts no MCP server" {
@@ -62,17 +65,9 @@ PY
   run "$CHECK" --keep --config "$CFG" --opencode "$STUB" 'true'
   assert_success
   seen="$(ls -d "$TMPDIR"/opencode-perm-check.*/seen.json)"
-  run python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); c=d["cfg"]
-print(d["argv"][:4], c["providers"]["litellm"]["settings"]["baseURL"].startswith("http://127.0.0.1:"),
-      c["agents"]["title"]["model"], c["model"], "mcp" in c, len(c["permissions"]))' "$seen"
-  assert_output "['run', '--standalone', '--auto', '--model'] True litellm/m1 litellm/m1 False 2"
-}
-
-@test "without --keep the scratch dir is removed" {
-  run "$CHECK" --config "$CFG" --opencode "$STUB" 'true'
-  assert_success
-  run ls -d "$TMPDIR"/opencode-perm-check.*
-  assert_failure
+  run jq -r '[(.argv[:4] | join(" ")), (.cfg.providers.litellm.settings.baseURL | test("^http://127.0.0.1:[0-9]+/v1$")),
+              .cfg.agents.title.model, .cfg.model, (.cfg | has("mcp")), (.cfg.permissions | length)] | @tsv' "$seen"
+  assert_output "$(printf 'run --standalone --auto --model\ttrue\tlitellm/m1\tlitellm/m1\tfalse\t2')"
 }
 
 @test "no tool result is NO-RESULT and exit 1; a config with no litellm model is exit 2" {

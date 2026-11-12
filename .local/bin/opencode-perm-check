@@ -29,7 +29,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-RUN_TIMEOUT_S = 120  # one opencode run: startup plus two model turns against a local fake
+RUN_TIMEOUT_S = 120  # per command: startup plus two model turns against a local fake
 
 
 def strip_jsonc(text):
@@ -70,76 +70,51 @@ class Fake(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        msgs = body.get("messages") or []
-        results = [m for m in msgs if m.get("role") == "tool"]
+        results = [m for m in body.get("messages") or [] if m.get("role") == "tool"]
+        if results:
+            self.server.results.extend(str(m.get("content") or "") for m in results)
+            return self.reply({"role": "assistant", "content": "done"}, "stop")
         tool = next((t["function"]["name"] for t in body.get("tools") or []
                      if "command" in ((t.get("function") or {}).get("parameters") or {}).get("properties", {})), None)
-        if results:
-            self.server.results.extend(content_text(m.get("content")) for m in results)
-        if tool and not results:
+        if tool:
             args = json.dumps({"command": self.server.command, "description": "permission check"})
             delta = {"role": "assistant", "tool_calls": [
                 {"index": 0, "id": "call_1", "type": "function", "function": {"name": tool, "arguments": args}}]}
-            self.reply(body, delta, "tool_calls")
+            self.reply(delta, "tool_calls")
         else:
-            self.reply(body, {"role": "assistant", "content": "done"}, "stop")
+            self.reply({"role": "assistant", "content": "done"}, "stop")
 
-    def reply(self, req, delta, finish):
-        base = {"id": "fake", "created": 0, "model": req.get("model", "fake")}
+    def reply(self, delta, finish):
+        """opencode's AI SDK always streams, so every answer is SSE."""
+        base = {"id": "fake", "created": 0, "model": "fake"}
         usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        if not req.get("stream"):
-            msg = dict(delta)
-            msg.setdefault("content", None)
-            self.send(200, "application/json", json.dumps(dict(base, object="chat.completion", usage=usage, choices=[
-                {"index": 0, "message": msg, "finish_reason": finish}])).encode())
-            return
         chunks = [dict(base, object="chat.completion.chunk", choices=[{"index": 0, "delta": delta, "finish_reason": None}]),
                   dict(base, object="chat.completion.chunk", usage=usage, choices=[{"index": 0, "delta": {}, "finish_reason": finish}])]
-        self.send(200, "text/event-stream", "".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode() + b"data: [DONE]\n\n")
-
-    def do_GET(self):
-        self.send(200, "application/json", b'{"object":"list","data":[]}')
-
-    def send(self, code, ctype, data):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
+        data = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode() + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-
-
-def content_text(content):
-    if isinstance(content, list):
-        return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return str(content or "")
 
 
 def verdict(results):
     """DENIED when opencode answered the call with its structured refusal (opencode 2.x:
     {"error":{"type":"permission.rejected",...}}), ran for any other result, the command's own output."""
     if not results:
-        return None
+        return "NO-RESULT"
     for text in results:
         try:
-            err = json.loads(text).get("error") or {}
-        except (ValueError, AttributeError):
-            continue
-        if isinstance(err, dict) and str(err.get("type", "")).startswith("permission."):
-            return "DENIED"
+            err = json.loads(text)["error"]
+            if str(err["type"]).startswith("permission."):
+                return "DENIED"
+        except (ValueError, LookupError, TypeError):
+            pass
     return "ran"
-
-
-def run_one(oc, model, scratch, env, log):
-    try:
-        subprocess.run([oc, "run", "--standalone", "--auto", "--model", model, "go"], cwd=os.path.join(scratch, "work"),
-                       env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=RUN_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        log.write("timed out\n")
 
 
 def scratch_config(cfg, model, port):
     """The config under test with litellm and every agent on the fake, and no MCP servers to start."""
-    cfg = json.loads(json.dumps(cfg))
     cfg.pop("mcp", None)
     lite = cfg.setdefault("providers", {}).setdefault("litellm", {})
     lite["package"] = "aisdk:@ai-sdk/openai-compatible"
@@ -154,7 +129,7 @@ def main():
     ap = argparse.ArgumentParser(prog="opencode-perm-check", description=__doc__.split("\n\n")[0])
     ap.add_argument("commands", nargs="+", metavar="COMMAND")
     ap.add_argument("--config", default=os.path.expanduser("~/.config/opencode/opencode.json"))
-    ap.add_argument("--opencode", default=shutil.which("opencode") or "opencode")
+    ap.add_argument("--opencode", default="opencode")
     ap.add_argument("--model", help="a litellm/<id> the config defines (default: its first litellm model)")
     ap.add_argument("--json", action="store_true", help="one JSON object per command")
     ap.add_argument("--keep", action="store_true", help="keep the scratch dir and print its path")
@@ -177,7 +152,8 @@ def main():
         os.makedirs(os.path.join(scratch, "config", "opencode"))
         with open(os.path.join(scratch, "config", "opencode", "opencode.json"), "w") as f:
             json.dump(scratch_config(cfg, model, server.server_address[1]), f)
-        subprocess.run(["git", "init", "-q", os.path.join(scratch, "work")], check=True)
+        work = os.path.join(scratch, "work")
+        subprocess.run(["git", "init", "-q", work], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENCODE_", "XDG_"))}
         env.update(OPENCODE_DISABLE_CLAUDE_CODE="1", OPENCODE_DISABLE_PROJECT_CONFIG="1",
                    **{f"XDG_{k}_HOME": os.path.join(scratch, k.lower()) for k in ("CONFIG", "DATA", "STATE", "CACHE")})
@@ -186,9 +162,13 @@ def main():
                 server.command, server.results = command, []
                 log.write(f"\n=== {command}\n")
                 log.flush()
-                run_one(a.opencode, model, scratch, env, log)
+                try:
+                    subprocess.run([a.opencode, "run", "--standalone", "--auto", "--model", model, "go"], cwd=work, env=env,
+                                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=RUN_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    log.write("timed out\n")
                 log.write("--- tool result: " + " | ".join(server.results) + "\n")
-                v = verdict(server.results) or "NO-RESULT"
+                v = verdict(server.results)
                 rc = 1 if v == "NO-RESULT" else rc
                 print(json.dumps({"command": command, "verdict": v}) if a.json else f"{v:<9} {command}", flush=True)
     finally:
