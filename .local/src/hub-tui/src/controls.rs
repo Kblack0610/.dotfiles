@@ -83,6 +83,8 @@ pub struct Controls {
     pub state: Vec<Value>,
     /// The state document's bucket vocabulary, which orders the rows.
     vocab: Vocab,
+    /// One line per fleet worker the state says did not answer (`session_table::silent`).
+    silent: Vec<String>,
     /// fleet-bench forecast's `schedule` rows: each session's phases and finish p50.
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
@@ -183,9 +185,11 @@ impl Controls {
         if let Some(doc) = state {
             let sessions = doc["sessions"].as_array().cloned().unwrap_or_default();
             let vocab = Vocab::from_state(doc);
+            let silent = session_table::silent(doc);
             self.moved(|c| {
                 c.state = sessions;
                 c.vocab = vocab;
+                c.silent = silent;
             });
         }
     }
@@ -405,7 +409,7 @@ impl Controls {
                 out.push(clip_line(Line::styled(t, p.dim()), w));
             }
         }
-        out.extend(self.feed.errors.iter().map(warn));
+        out.extend(self.feed.errors.iter().chain(&self.silent).map(warn));
         let mut chips = self.table.status(&self.all, p);
         let spend = session_table::spend(self.table.view.apply(&self.all));
         chips.push(Span::raw(format!(
