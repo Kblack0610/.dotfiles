@@ -142,6 +142,13 @@ impl Controls {
             .collect()
     }
 
+    /// The shown row a session page id names (`hub_core::session_page::find`): a session id, a
+    /// live row's target or an ended row's item, as `#sessions/<id>` resolves on the web.
+    pub fn position(&self, id: &str) -> Option<usize> {
+        let key = &hub_core::session_page::find(&self.all, id)?.key;
+        self.rows().iter().position(|r| r.target == key)
+    }
+
     fn len(&self) -> usize {
         self.table.view.apply(&self.all).len().min(OPEN)
     }

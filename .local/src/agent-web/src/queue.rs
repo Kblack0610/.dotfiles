@@ -154,7 +154,8 @@ fn render(
 
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
 /// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's
-/// label and link, `pr_merged` (the merge was recorded), `unproven`, its `timing` now
+/// label and link, `pr_merged` (the merge was recorded), `unproven`, `links` (what it names, each
+/// to its page: `Item::links`), its `timing` now
 /// (`Item::timing`), so the page does no duration math, and its `timeline`.
 fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
@@ -173,6 +174,7 @@ fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value 
     if i.unproven() {
         v["unproven"] = true.into();
     }
+    v["links"] = serde_json::to_value(i.links()).unwrap_or_default();
     v
 }
 

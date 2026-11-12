@@ -156,7 +156,7 @@ const tblDropdown = (el) => el?.dataset?.tsv !== undefined || (el?.dataset?.twin
 //   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html);
 //          render(): the tab's own, for a table drawn inside a tab that draws itself (Home)
 //   state  the tab's own fields, kept beside data, err, sel and all on the object this returns, which
-//          also carries refresh(), render(), view(patch), repaint(), redraw() and html().
+//          also carries refresh(), render(), view(patch), repaint(), redraw(), html() and moved().
 function tblTab(o) {
   const t = Object.assign({ data: null, err: null, sel: null, all: false }, o.state), id = o.id, pre = o.pre || "", elId = o.el || id;
   const shown = o.shown || (() => st.tab === o.tab);
@@ -169,11 +169,13 @@ function tblTab(o) {
   t.refresh = o.refresh || coalesce(async () => {
     const p = tblParams(st.views[o.tab], pre);
     if (o.params) o.params(p, t);
-    const q = p.toString();
+    const q = t.q = p.toString();
     try { t.data = await api(o.api + (q ? "?" + q : "")); t.err = null; if (o.got) o.got(t); } catch (e) { t.err = e.message; }
     t.render();
     if (o.after) o.after(t);
   });
+  // Whether the URL's view is not the one last read: a link changed it while the table sat unread.
+  t.moved = () => { const p = tblParams(st.views[o.tab], pre); if (o.params) o.params(p, t); return p.toString() !== t.q; };
   // A refresh must not take the search box or an open dropdown from under the human: with focus
   // in the bar only what is around the control repaints. False when focus is elsewhere.
   t.repaint = () => {

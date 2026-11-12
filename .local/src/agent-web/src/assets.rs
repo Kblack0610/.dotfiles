@@ -313,7 +313,8 @@ mod tests {
     #[test]
     fn the_builds_headers_are_hub_cores_columns() {
         // Rule 8: the CI run tables draw the first columns hub_core::builds sorts and filters;
-        // `forge` and `event` are dropdowns and `title` the open row's heading.
+        // `forge` and `event` are dropdowns, `title` the open row's heading, and `id` and `pr`
+        // only a query's (a run's record `id:=`, a PR's runs `pr:=`).
         use hub_core::table::Row;
         let js = include_str!("../static/ci.js");
         let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
@@ -324,8 +325,8 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 3]);
-        assert_eq!(all[all.len() - 3..], ["forge", "event", "title"]);
+        assert_eq!(keys, all[..all.len() - 5]);
+        assert_eq!(all[all.len() - 5..], ["forge", "event", "title", "id", "pr"]);
     }
 
     #[test]

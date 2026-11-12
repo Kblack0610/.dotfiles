@@ -7,7 +7,7 @@ use std::path::Path;
 
 use hub_core::alerts::Alert;
 use hub_core::infra::Infra;
-use hub_core::links::{self, Kind, Link, PAGES};
+use hub_core::links::{self, Kind, Link};
 use hub_core::machine_page::{self, MachinePage};
 use hub_core::pool_page::{self, PoolPage};
 use hub_core::session_page::Part;
@@ -40,17 +40,6 @@ impl InfraPage {
             Link::To(k, id) => Self::new(*k, id),
             Link::Url(_) => None,
         }
-    }
-
-    /// `hub tab 'infra <word>/<name>'`: the page its word names (`links::PAGES`), as its link
-    /// opens it.
-    pub fn parse(q: &str) -> Option<Self> {
-        let (word, name) = q.trim().split_once('/')?;
-        let name = name.trim();
-        let page = PAGES.iter().find(|p| p.tab == "infra" && p.word == word)?;
-        (!name.is_empty())
-            .then(|| Self::new(page.kind, name))
-            .flatten()
     }
 
     pub fn kind(&self) -> Kind {
@@ -139,23 +128,19 @@ mod tests {
 
     #[test]
     fn each_page_word_parses_to_its_page_and_anything_else_does_not() {
-        let m = InfraPage::parse(" machines/workstation ").unwrap();
+        // As `hub tab 'infra <word>/<name>'` opens it (App::open_query).
+        let parse = |q| links::page_of("infra", q).and_then(|(k, n)| InfraPage::new(k, n));
+        let m = parse(" machines/workstation ").unwrap();
         assert_eq!((m.kind(), m.name()), (Kind::Machine, "workstation"));
-        let p = InfraPage::parse("pools/unity").unwrap();
+        let p = parse("pools/unity").unwrap();
         assert_eq!(
             (p.kind(), p.name(), p.inner()),
             (Kind::Pool, "unity", "machines")
         );
         assert!(!p.is(&m));
-        assert!(InfraPage::parse("governor").is_none());
-        assert!(
-            InfraPage::parse("ci/7").is_none(),
-            "a CI run is no page of these"
-        );
-        assert!(
-            InfraPage::parse("machines/ ").is_none(),
-            "a page needs a name"
-        );
+        assert!(parse("governor").is_none());
+        assert!(parse("ci/7").is_none(), "a CI run is no page of these");
+        assert!(parse("machines/ ").is_none(), "a page needs a name");
         assert_eq!((m.inner(), m.back().as_str()), ("machines", "all machines"));
         assert_eq!(p.back(), "all pools");
     }

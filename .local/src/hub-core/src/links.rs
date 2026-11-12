@@ -31,6 +31,8 @@ pub enum Kind {
     CiRun,
     /// A job that runs on its own, by its name.
     Job,
+    /// A PR's CI runs, by `owner/repo#N`: Infra's runs table filtered to that PR.
+    PrRuns,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -68,6 +70,15 @@ pub const PAGES: &[Page] = &[
         inner: "jobs",
     },
 ];
+
+/// The page `hub tab '<tab> <word>/<id>'` names (`PAGES`), as `Link::tab_args` writes it.
+pub fn page_of<'a>(tab: &str, arg: &'a str) -> Option<(Kind, &'a str)> {
+    let (word, id) = arg.trim().split_once('/')?;
+    let p = PAGES
+        .iter()
+        .find(|p| p.tab.eq_ignore_ascii_case(tab) && p.word.eq_ignore_ascii_case(word))?;
+    Some((p.kind, id.trim())).filter(|(_, id)| !id.is_empty())
+}
 
 /// `kind`'s row, when its records have a page.
 pub fn page(kind: Kind) -> Option<&'static Page> {
@@ -111,18 +122,20 @@ impl Link {
             Kind::Row => format!("#board?q=id:={seg}"),
             Kind::Runner => format!("#fleet/{seg}"),
             Kind::Alert => format!("#alerts/{seg}"),
+            // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
+            Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
             Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
         }
     }
 
     /// What `hub tab` takes for it (the tab, then the word that tab opens), or None for a page
-    /// outside the hub. A page the TUI does not draw yet opens the inner tab that will hold it.
+    /// outside the hub. A page inside an inner tab is its `word/id`, as on the web.
     pub fn tab_args(&self) -> Option<(&'static str, String)> {
         let Link::To(kind, id) = self else {
             return None;
         };
         if let Some(p) = page(*kind) {
-            return Some((p.tab, p.inner.to_string()));
+            return Some((p.tab, format!("{}/{id}", p.word)));
         }
         Some(match kind {
             Kind::Tab => return crate::layout::resolve(id).map(|t| (t.id, String::new())),
@@ -132,6 +145,7 @@ impl Link {
             Kind::Row => ("board", format!("id:={id}")),
             Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
+            Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
         })
     }
@@ -171,6 +185,22 @@ fn component(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_page_tab_args_writes_is_the_page_page_of_reads() {
+        for p in PAGES {
+            let (tab, arg) = Link::to(p.kind, "x1").tab_args().unwrap();
+            assert_eq!(page_of(tab, &arg), Some((p.kind, "x1")), "{}", p.word);
+        }
+        assert_eq!(page_of("Infra", " CI/4412 "), Some((Kind::CiRun, "4412")));
+        assert_eq!(page_of("infra", "ci/"), None, "no id, no page");
+        assert_eq!(page_of("infra", "runs pr:=o/r#7"), None);
+        assert_eq!(
+            page_of("costs", "machines/w"),
+            None,
+            "a page is on its own tab"
+        );
+    }
 
     #[test]
     fn each_kind_has_one_address_on_each_surface() {
@@ -214,20 +244,30 @@ mod tests {
             both(Kind::Machine, "razer-laptop"),
             (
                 "#infra/machines/razer-laptop".into(),
-                a("infra", "machines")
+                a("infra", "machines/razer-laptop")
             )
         );
         assert_eq!(
             both(Kind::Pool, "unity"),
-            ("#infra/pools/unity".into(), a("infra", "machines"))
+            ("#infra/pools/unity".into(), a("infra", "pools/unity"))
         );
         assert_eq!(
             both(Kind::CiRun, "4412"),
-            ("#infra/ci/4412".into(), a("infra", "ci"))
+            ("#infra/ci/4412".into(), a("infra", "ci/4412"))
         );
         assert_eq!(
             both(Kind::Job, "agentctl-dream"),
-            ("#infra/jobs/agentctl-dream".into(), a("infra", "jobs"))
+            (
+                "#infra/jobs/agentctl-dream".into(),
+                a("infra", "jobs/agentctl-dream")
+            )
+        );
+        assert_eq!(
+            both(Kind::PrRuns, "Kblack0610/.dotfiles#1924"),
+            (
+                "#infra/runs?bq=pr:=Kblack0610%2F.dotfiles%231924".into(),
+                a("infra", "runs pr:=Kblack0610/.dotfiles#1924")
+            )
         );
     }
 

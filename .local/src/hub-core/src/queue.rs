@@ -11,6 +11,8 @@ use agent_panel::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::links::{Kind, Link};
+use crate::release_graph::pr_ref;
 use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
@@ -430,6 +432,46 @@ impl Item {
         pr_link_of(self.pr.as_deref()?)
     }
 
+    /// What the item names, each to its one page (`links`), which both surfaces list on the
+    /// opened item: its session, project and board row, then each PR and that PR's CI runs.
+    pub fn links(&self) -> Vec<ItemLink> {
+        let mut out = vec![];
+        let mut add = |what, text: &str, link| {
+            out.push(ItemLink {
+                what,
+                text: text.to_string(),
+                link,
+            })
+        };
+        // A session page is found by the item it worked (`session_page::find`), live or ended.
+        if let Some(s) = self.session.as_deref().filter(|s| !s.is_empty()) {
+            add("session", s, Link::to(Kind::Session, self.slug.clone()));
+        }
+        if !self.project.trim().is_empty() {
+            add(
+                "project",
+                self.project.trim(),
+                Link::to(Kind::Project, self.project.trim()),
+            );
+        }
+        if let Some((_, id)) = self.board_row() {
+            add("row", id, Link::to(Kind::Row, id));
+        }
+        for pr in self.pr_refs() {
+            if let Some((label, Some(url))) = pr_link_of(pr) {
+                add("pr", &label, Link::Url(url));
+            }
+            // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
+            if let Some((Some(repo), n)) =
+                pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
+            {
+                let r = format!("{repo}#{n}");
+                add("ci", &format!("CI runs of {r}"), Link::to(Kind::PrRuns, r));
+            }
+        }
+        out
+    }
+
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
     /// recorded` when `agent-land` wrote no merge commit beside it.
     pub fn pr_words(&self) -> Option<String> {
@@ -739,6 +781,16 @@ fn argv(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ItemLink {
+    /// session, project, row, pr or ci.
+    pub what: &'static str,
+    pub text: String,
+    #[serde(rename = "href")]
+    pub link: Link,
+}
+
 /// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
 pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     let pr = pr.trim();
@@ -974,6 +1026,16 @@ impl crate::table::Row for QueueRow<'_> {
             "pr" => text(said(&i.pr)),
             "title" => Val::Text(i.title()),
             _ => Val::None,
+        }
+    }
+
+    /// The project opens its page (queue.js draws the PR cell from the item's own link).
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "project" => Some(self.item.project.trim())
+                .filter(|p| !p.is_empty())
+                .map(|p| Link::to(Kind::Project, p)),
+            _ => None,
         }
     }
 
@@ -1410,6 +1472,64 @@ mod tests {
         assert_eq!(q.hold.as_deref(), Some("after w"));
         assert_eq!(d.status.as_deref(), Some("cancelled"));
         assert_eq!(d.pr.as_deref(), Some("812"));
+    }
+
+    #[test]
+    fn an_item_links_its_session_project_row_and_each_prs_page_and_ci_runs() {
+        let i = Item {
+            slug: "ops-center-p6".into(),
+            project: "dotfiles".into(),
+            row: Some("agent-runtime:ar-1726".into()),
+            session: Some("lab:dotfiles-agent-21".into()),
+            pr: Some("Kblack0610/.dotfiles#1930 https://github.com/o/r/pull/7 812".into()),
+            ..Item::default()
+        };
+        let got: Vec<(&str, String, String)> = i
+            .links()
+            .into_iter()
+            .map(|l| (l.what, l.text, l.link.href()))
+            .collect();
+        let want = |w, t: &str, h: &str| (w, t.to_string(), h.to_string());
+        assert_eq!(
+            got,
+            [
+                want(
+                    "session",
+                    "lab:dotfiles-agent-21",
+                    "#sessions/ops-center-p6"
+                ),
+                want("project", "dotfiles", "#projects/dotfiles"),
+                want("row", "ar-1726", "#board?q=id:=ar-1726"),
+                want(
+                    "pr",
+                    ".dotfiles#1930",
+                    "https://github.com/Kblack0610/.dotfiles/pull/1930"
+                ),
+                want(
+                    "ci",
+                    "CI runs of kblack0610/.dotfiles#1930",
+                    "#infra/runs?bq=pr:=kblack0610%2F.dotfiles%231930"
+                ),
+                want("pr", "#7", "https://github.com/o/r/pull/7"),
+                want("ci", "CI runs of o/r#7", "#infra/runs?bq=pr:=o%2Fr%237"),
+            ],
+            "a bare 812 names no repo: no page, no runs"
+        );
+        let row = QueueRow {
+            item: &i,
+            timing: Timing::default(),
+        };
+        use crate::table::Row;
+        assert_eq!(
+            row.link("project"),
+            Some(Link::to(Kind::Project, "dotfiles"))
+        );
+        assert_eq!(
+            row.link("pr"),
+            None,
+            "queue.js draws the PR cell from the item"
+        );
+        assert!(Item::default().links().is_empty());
     }
 
     #[test]

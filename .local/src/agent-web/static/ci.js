@@ -6,7 +6,7 @@
 // (hub_core::junit), the newest unless the picker names another. Each is the shared table
 // (table.js) under its own view keys (bq, bs, bsort, bdir; tq, ts, tsort, tdir, trun), so it sits
 // beside another table on its tab. A run's jobs and log, and a suite's tests, are read when the
-// row opens, never before.
+// row opens, never before; a run's workflow opens its own page, `#infra/ci/<repo>/<run>`.
 
 const RUNS_PRE = "b";
 const RUNS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests release:v1";
@@ -32,27 +32,15 @@ function runsTable(o) {
     after: o.after,
   });
 
-  function row(r) {
-    const open = bldKey(r) === t.sel;
+  function row(r, n) {
+    const open = bldKey(r) === t.sel, L = tblLinks(t.data.table, n);
     const wait = r.state === "queued" ? `wait ${secs(r.took)}` : secs(r.took);
     const tr = `<tr class="br${open ? " sel" : ""}" data-bkey="${esc(bldKey(r))}">` +
-      `<td class="n">${when(r.started)}</td><td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${esc(r.repo)}</td>` +
-      `<td class="wrap">${esc(r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
+      `<td class="n">${when(r.started)}</td><td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${tblLink(L.repo, r.repo)}</td>` +
+      `<td class="wrap">${tblLink(L.workflow, r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
       `<td class="n muted">${usualText(r.usual)}</td><td class="n">${runEta(r.eta)}</td>` +
       `<td class="muted">${esc(r.owner || "-")}</td><td class="muted">${esc(r.release?.tag || "-")}</td></tr>`;
-    return open ? tr + detail(r) : tr;
-  }
-
-  function detail(r) {
-    const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
-    const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
-    const log = t.log && t.log.key === bldKey(r) ? `<pre class="joblog">${esc(t.log.text)}</pre>` : "";
-    const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
-    const rel = r.release ? `${esc(r.release.project)} ${esc(r.release.tag)}` : "";
-    return `<tr class="wdet"><td colspan="10"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
-      line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
-      line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) +
-      line("Release", rel) + (t.detail && t.detail.key === bldKey(r) ? runJobs(t.detail, folds) : "") + log + `</div></td></tr>`;
+    return open ? tr + `<tr class="wdet"><td colspan="10">${runDetail(r, t, folds)}</td></tr>` : tr;
   }
 
   function body(d) {
@@ -80,16 +68,11 @@ function runsTable(o) {
     return `<div data-tbl="${RUNS_PRE}"><div id="${id}-head">${head(t.data)}</div>${tblBar(id, t.data.table, RUNS_HINT)}<div id="${id}-body">${b}</div></div>`;
   };
 
-  // A run's jobs and its failed-job log, read when its row opens and never before.
   async function openRun(key, r) {
     t.sel = key;
-    t.log = { key, text: "Loading..." };
-    t.detail = { key, d: null };
+    const read = readRun(t, r);
     t.render();
-    const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
-    const got = api("/api/builds/detail?" + q).then((d) => { t.detail.d = d; }, (e) => { t.detail.err = e.message; });
-    try { t.log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { t.log.text = e.message; }
-    await got;
+    await read;
     if (st.tab === o.tab && t.sel === key) t.render();
   }
 
@@ -104,6 +87,72 @@ function runsTable(o) {
     if (r) openRun(key, r);
   });
   return t;
+}
+
+// A run's jobs and its failed-job log into o.detail and o.log, read when it opens and never before;
+// both say Loading at once, so a paint straight after the call shows that.
+async function readRun(o, r) {
+  const key = bldKey(r);
+  // The objects this read fills: a reset of o while it runs leaves them, not the new ones.
+  const log = (o.log = { key, text: "Loading..." });
+  const detail = (o.detail = { key, d: null });
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
+  const got = api("/api/builds/detail?" + q).then((d) => { detail.d = d; }, (e) => { detail.err = e.message; });
+  try { log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { log.text = e.message; }
+  await got;
+}
+
+// One run's facts, then its jobs and log once readRun has them (o.detail, o.log): the table's open
+// row and the run's own page draw the same.
+function runDetail(r, o, folds) {
+  const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
+  const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
+  const log = o.log && o.log.key === bldKey(r) ? `<pre class="joblog">${esc(o.log.text)}</pre>` : "";
+  const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
+  const rel = r.release ? `${esc(r.release.project)} ${esc(r.release.tag)}` : "";
+  return `<div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
+    line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
+    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) +
+    line("Release", rel) + (o.detail && o.detail.key === bldKey(r) ? runJobs(o.detail, folds) : "") + log + `</div>`;
+}
+
+// `#infra/ci/<repo>/<run>` (hub_core::links Kind::CiRun, which the hub opens too): one run's record,
+// found through the runs read (runQuery), its newest attempt with its jobs and log. infra.js
+// draws it in place of CI's sections while the URL names it.
+const runFresh = (id) => ({ id, data: null, run: null, err: null, log: null, detail: null });
+const runst = runFresh("");
+const ciRunId = () => pageId("infra", "ci");
+// The runs query a run's page names, as hub_core::builds::run_query: `<repo>/<id>` is that repo's
+// run (a Forgejo run id is an index within its repo), a bare id that id in any repo.
+const runQuery = (page) => {
+  const at = page.lastIndexOf("/");
+  return at < 0 ? `id:=${page}` : `repo:=${page.slice(0, at)} id:=${page.slice(at + 1)}`;
+};
+const refreshRunPage = coalesce(async () => {
+  const id = ciRunId();
+  if (!id) return;
+  try { runst.data = await api("/api/builds?" + new URLSearchParams({ [RUNS_PRE + "q"]: runQuery(id) })); runst.err = null; } catch (e) { runst.err = e.message; }
+  if (ciRunId() !== id) return;
+  // The ledger's own order (hub_core::builds, live then newest) puts the newest attempt first, the row the hub opens too.
+  const run = runst.data?.rows?.[0];
+  // A ledger line for another run leaves this one's jobs and log as they were read.
+  const same = run && runst.run && bldKey(run) === bldKey(runst.run) && run.state === runst.run.state;
+  runst.run = run || null;
+  if (run && !same) { const read = readRun(runst, run); renderInfra(); await read; }
+  if (ciRunId() === id) renderInfra();
+});
+function showRunPage() {
+  const id = ciRunId(), moved = id !== runst.id;
+  if (moved) Object.assign(runst, runFresh(id));
+  if (id) runFeed.show(moved);
+}
+function runPage() {
+  const id = ciRunId();
+  const h = `<h2 class="sec" id="sec-run">CI run <span class="muted">${esc(id)}</span> <a href="#infra/ci">all runs</a></h2>`;
+  if (runst.err) return h + `<div class="panel down">${esc(runst.err)}</div>`;
+  if (!runst.data) return h + `<div class="empty">Loading...</div>`;
+  if (!runst.run) return h + `<div class="panel">No CI run ${esc(id)} in the ledger's 30 days.</div>`;
+  return h + `<div class="panel">${runDetail(runst.run, runst, CI_OPEN)}</div>`;
 }
 
 // An Infra CI element's own paint: its block, unless a repaint around a focused search box did it.
@@ -277,3 +326,4 @@ for (const el of ["ci-runs", "ci-tests"]) $(el).addEventListener("toggle", (e) =
 // A new ledger line re-reads both while Infra is open; TABS.infra (infra.js) drives them.
 const bldFeed = pushed("infra", ["builds"], bld.refresh);
 const tstFeed = pushed("infra", ["builds"], tst.refresh);
+const runFeed = pushed("infra", ["builds"], refreshRunPage);
