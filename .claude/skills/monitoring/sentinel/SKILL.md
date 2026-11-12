@@ -78,8 +78,10 @@ Picking the probe (deterministic-first):
 | "run this check / exit code" | `command` | `expect_cmd`, `expect_exit` |
 | "does X *look* healthy / are payments flowing / something off" | `agent` | `agent_question`, repeatable `signal:`, slow `interval`, `expiry` if temporary |
 
-Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high) and,
-for temporary asks, `expiry` (duration like `60m` from `created`, or an ISO timestamp).
+Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high) and
+`expiry`: a duration like `60m` from `created` or an ISO timestamp for a temporary ask, `null` for a standing watch (`--strict` refuses a manifest with no `expiry` key).
+
+A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints nothing once every standing watch has one.
 
 **Every new manifest must carry the four legibility fields**, one line each - they are what `list`
 renders and what a page carries, and a watch nobody can read is a watch nobody acts on:
@@ -106,6 +108,7 @@ probe: http
 target: https://api.myapp.com/health
 expect_status: 200
 interval: 5m
+expiry: null
 severity: high
 created: 2026-06-18T11:00:00-07:00
 source: user
@@ -115,9 +118,10 @@ Then **verify before telling the user it is registered**:
 
 ```bash
 sentinel-manifest validate --strict ~/.agent/watches/<name>.yaml
+fleet-bench triage --coverage    # standing watch: prints nothing once its route line is in
 ```
 
-`--strict` is the write-time lint that requires the four fields; plain `validate` (what the daemon
+`--strict` is the write-time lint that requires the four fields and the `expiry` key; plain `validate` (what the daemon
 runs every pass) does not, so a manifest missing them fails here and NOT at runtime - deliberately,
 because a runtime failure notifies, and a documentation gap must never page. Use a folded scalar
 (`>-`) for a long value, never `|-`: the value must stay one line.

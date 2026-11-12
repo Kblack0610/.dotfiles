@@ -32,7 +32,7 @@ Verbs
                  watches) carries an expect_cmd that is not valid bash.
   validate --strict FILE
                  the above, plus the four legibility fields (what/why/where/
-                 action). This is a LINT, deliberately not part of plain
+                 action) and an explicit `expiry` key. This is a LINT, deliberately not part of plain
                  `validate`: the loop runs `validate` on every pass and sends a
                  manifest that fails it to ERROR *and notifies*, so promoting a
                  documentation gap to a runtime fault would have paged eleven
@@ -230,6 +230,10 @@ def cmd_validate(path, strict=False):
     errors = []
     if strict:
         errors.extend(legibility_errors(doc))
+        # A missing key reads as null (standing) at runtime, so a forgotten bake-window
+        # expiry would leave a zombie watch; the writer says which one it is.
+        if "expiry" not in doc:
+            errors.append("missing 'expiry' -- write 'expiry: null' for a standing watch")
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
