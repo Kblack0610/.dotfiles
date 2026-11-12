@@ -5,7 +5,25 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
-  reviewed: 2026-11-07
+  reviewed: 2026-11-12
+  # The hand-typed forms that hang or kill the machine; hand_methods.py denies them. The Grep and Glob
+  # half of the root-search deny is block-root-search.sh.
+  replaces:
+    - match: |-
+        (?:^|[^A-Za-z0-9_.-])pkill(?:\s+[^;&|\s]+)*\s+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[\s;&|)"']|$)
+      use: "`pkill -x <name>`, or kill a PID you hold: `$!`, a pidfile, or `pgrep -x <name>`. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
+      mode: deny
+      why: "a -f pattern also matches this command's own shell and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
+    - match: |-
+        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])pgrep(?:\s+[^;&|\s]+)*\s+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[\s;&|)"']|$))
+      use: "`pgrep -x <name>`, or a PID you hold, before `kill`"
+      mode: deny
+      why: "the -f pattern is on the shell's own command line, so the pgrep matches that shell and the kill takes it down"
+    - match: |-
+        (?:^|[\s;&|(){}`])(?:\S*/)?(?:(?:find|bfs|fd|fdfind|rg|ugrep)|e?grep(?=[^;&|()`\n]*\s(?:-[A-Za-z0-9]*[rR][A-Za-z0-9]*|--(?:dereference-)?recursive)(?=\s|$)))(?=\s)(?![^;&|()`\n]*\s(?:-xdev|-mount|--one-file-system)(?=\s|$))[^;&|()`\n]*?\s(?<!-path\s)(?<!-ipath\s)(?<!-wholename\s)(?<!-iwholename\s)(?<!-newer\s)(?<!-samefile\s)(?<!-regex\s)/(?:mnt(?:/nas(?:/(?:private|public))?)?)?/*(?=\s|[;&|()`]|$)
+      use: "search the working directory (a repo's code, submodules included, is under it) or a named subdirectory; to search the share, name a subdirectory of it, or add `-xdev` / `--one-file-system`"
+      mode: deny
+      why: "a recursive walk from / or /mnt enters the CIFS mount /mnt/nas and blocks on it for tens of minutes (2026-10-29: three sessions, load 28 on 24 cores at 0% CPU); a new network mount adds its path here"
 ---
 
 # fleet-pace

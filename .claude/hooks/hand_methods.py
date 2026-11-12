@@ -21,7 +21,7 @@ had not moved that (skill-refine's propose-only run, retired 2026-11-05), so a f
 is denied, not reported.
 
 The command is matched as code the way block-poll.py parses it (it owns that parse): heredoc
-bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A grep for the pattern
+bodies dropped, quoted text blanked (a quoted bare path stays a path), `sh -c`/`eval`/`ssh` payloads kept. A grep for the pattern
 is not the pattern.
 
 The rows are read from every deployed SKILL.md (CLAUDE_SKILLS, default ~/.claude/skills) and
@@ -171,6 +171,8 @@ def code_texts(cmd):
     if _BP is None:
         _BP = _block_poll()
     cmd = _BP.strip_heredocs(cmd)
+    # A quoted path ("/", '/mnt') is a path, not text: a row that names a root still sees it.
+    cmd = re.sub(r"""(["'])((?:/|~)[^\s"'`\\()]*)\1""", r"\2", cmd)
     texts = _BP.code_texts(cmd, True)
     # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
     # substitutions outside them run.
