@@ -225,7 +225,7 @@ pub fn queue(
     .bar(running + review + ready, held, waiting)
     .part("Running", running, Level::Ok)
     .part("On a PR", review, Level::Ok)
-    .part("Up next", ready, Level::Ok)
+    .part("Ready", ready, Level::Ok)
     .part("Held", held, lvl(held, Level::Warn));
     c.big = q.count(State::Queued).to_string();
     c.unit = format!("queued, {running} running");
