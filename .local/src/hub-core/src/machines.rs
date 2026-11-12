@@ -680,13 +680,13 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::table::View;
     use serde_json::{json, Value};
 
     /// Prometheus `/api/v1/query` answers, as `infra::prometheus` reads them.
-    fn series(rows: Vec<Value>) -> Vec<Series> {
+    pub(crate) fn series(rows: Vec<Value>) -> Vec<Series> {
         let res: Vec<Value> = rows
             .into_iter()
             .map(|r| {
@@ -702,7 +702,7 @@ mod tests {
     /// The workstation as Prometheus names it, its runner and governor by its hostname, a cloud
     /// burst host the governor stopped, a Pi with readings and no CI, and a laptop with a runner
     /// and no exporter.
-    fn fleet() -> Infra {
+    pub(crate) fn fleet() -> Infra {
         let mut i = Infra {
             ok: true,
             ..Default::default()

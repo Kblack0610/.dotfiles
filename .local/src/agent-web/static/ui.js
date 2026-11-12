@@ -75,6 +75,13 @@ function when(t) {
   return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
     : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
+// One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
+// drawn as one: its link opens in place, or a URL outside the hub in a new tab.
+const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
+function pagePart(p) {
+  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
+  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
+}
 // A time (epoch seconds, or an ISO string) as epoch milliseconds, NaN when it is neither.
 const tms = (t) => new Date(typeof t === "number" ? t * 1e3 : t).getTime();
 // A time as HH:MM today, "Tue 3 Nov HH:MM" on another day.

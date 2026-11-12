@@ -383,6 +383,8 @@ pub enum Msg {
     Fleet(Box<hub_core::fleet::Fleet>),
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
     Runner(Box<(String, Result<hub_core::fleet::runner::Runner, String>)>),
+    /// One machine's page (hub_core::machine_page), for the host it was read for.
+    Machine(Box<(String, Result<hub_core::machine_page::MachinePage, String>)>),
     /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
     /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
@@ -491,6 +493,11 @@ pub struct App {
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
+    /// The machine whose page is open in place of Infra's tables (Enter on its row, a link to
+    /// it, or `hub tab 'infra machines/<host>'`); None is the tab.
+    pub machine_page: Option<String>,
+    /// That page's read; None until it comes back.
+    pub machine: Option<Result<hub_core::machine_page::MachinePage, String>>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -598,6 +605,7 @@ pub struct App {
     work_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
+    machine_read: Read,
     pipeline_read: Read,
     focus_read: Read,
     outbox_read: Read,
@@ -657,6 +665,8 @@ impl App {
             fleet_folded: Default::default(),
             fleet_page: None,
             fleet_runner: None,
+            machine_page: None,
+            machine: None,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -724,6 +734,7 @@ impl App {
             work_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
+            machine_read: Read::default(),
             pipeline_read: Read::default(),
             focus_read: Read::default(),
             outbox_read: Read::default(),
@@ -1027,6 +1038,48 @@ impl App {
         self.fleet_page = Some(name.to_string());
         self.scroll = 0;
         self.read_runner();
+    }
+
+    /// The open machine page's read, from the Machines rows and firing alerts last read: it
+    /// waits for the first Prometheus read, and a later one (or the alerts) reads it again.
+    pub fn read_machine(&mut self) {
+        let (Some(host), Some(infra)) = (self.machine_page.clone(), self.infra.clone()) else {
+            return;
+        };
+        // Its history is three range queries, so a page left open behind another tab is not read,
+        // and the first read waits for the alerts (`Msg::Alerts` reads it) rather than run twice.
+        if self.tab == Tab::Infra && self.alerts.is_some() && self.machine_read.want() {
+            let tx = self.tx.clone();
+            let firing = self.alerts.as_ref().map(|a| a.firing.clone());
+            let jobs = self.files.builds.jobs.clone();
+            std::thread::spawn(move || {
+                let now = jobs::now().max(0) as u64;
+                let alerts = firing.as_deref().ok_or_else(|| "not read yet".to_string());
+                let r = hub_core::machine_page::read(&infra, &host, alerts, &jobs, now);
+                let _ = tx.send(Msg::Machine(Box::new((host, r))));
+            });
+        }
+    }
+
+    /// Open `host`'s page in place of Infra's Machines tab.
+    pub fn open_machine(&mut self, host: &str) {
+        if self.machine_page.as_deref() != Some(host) {
+            self.machine = None;
+        }
+        self.go(Tab::Infra);
+        self.infra_inner = "machines";
+        self.infra_runs = false;
+        self.machine_page = Some(host.to_string());
+        self.read_reds();
+        self.read_alerts();
+        self.read_machine();
+    }
+
+    /// Back from a machine's page to the tab.
+    fn close_machine(&mut self) {
+        self.machine_page = None;
+        self.machine = None;
+        self.scroll = 0;
     }
 
     /// The tab's read, or the open page's.
@@ -1619,6 +1672,9 @@ impl App {
                 if self.alerts_read.done() && self.tab == Tab::Alerts {
                     self.read_alerts();
                 }
+                if self.machine_page.is_some() {
+                    self.read_machine();
+                }
             }
             Msg::WatchFiles => {
                 if self.tab == Tab::Alerts {
@@ -1690,6 +1746,15 @@ impl App {
                     self.read_runner();
                 }
             }
+            Msg::Machine(b) => {
+                let (host, r) = *b;
+                if self.machine_page.as_deref() == Some(host.as_str()) {
+                    self.machine = Some(r);
+                }
+                if self.machine_read.done() {
+                    self.read_machine();
+                }
+            }
             Msg::Pipeline(r) => {
                 self.pipeline = Some(r);
                 if self.pipeline_read.done() {
@@ -1724,6 +1789,9 @@ impl App {
                 self.infra = Some(*i);
                 if self.infra_read.done() {
                     self.read_infra();
+                }
+                if self.machine_page.is_some() {
+                    self.read_machine();
                 }
                 if self.tab == Tab::Alerts {
                     self.read_alerts();
@@ -2074,6 +2142,7 @@ impl App {
                 self.open_runner(id);
             }
             (Link::To(Kind::Session, id), _) => self.open_session(id),
+            (Link::To(Kind::Machine, id), _) => self.open_machine(id),
             (_, Some((tab, arg))) => {
                 if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
@@ -2182,6 +2251,11 @@ impl App {
                 if q.is_some_and(|q| q.trim().eq_ignore_ascii_case("outbox")) {
                     self.show_outbox(true);
                 }
+            }
+            // `hub tab 'infra machines/<host>'`: that machine's page, as its link opens.
+            (Tab::Infra, Some(q)) if q.trim().starts_with("machines/") => {
+                let host = q.trim().trim_start_matches("machines/").to_string();
+                self.open_machine(&host);
             }
             (Tab::Alerts | Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
@@ -2898,6 +2972,30 @@ impl App {
     /// times; elsewhere Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs
     /// tables: their keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
+        // A machine's page: Esc back to the tables, `o` its Grafana board, Left/Right another
+        // inner tab; the rest scroll it.
+        if self.machine_page.is_some() && !self.infra_jobs {
+            match k.code {
+                KeyCode::Esc | KeyCode::Backspace => self.close_machine(),
+                KeyCode::Char('o') => {
+                    let url = self
+                        .machine
+                        .as_ref()
+                        .and_then(|m| m.as_ref().ok())
+                        .and_then(crate::machinetab::grafana);
+                    match url {
+                        Some(u) => open(&u),
+                        None => return false,
+                    }
+                }
+                KeyCode::Left | KeyCode::Right => {
+                    self.close_machine();
+                    return self.infra_key(k);
+                }
+                _ => return false,
+            }
+            return true;
+        }
         if self.infra_runs {
             let v = &self.ci;
             let root = v.table.is_default() && v.log.is_none() && v.times.is_none();
@@ -2922,6 +3020,21 @@ impl App {
                 if k.code == KeyCode::Char('c') {
                     self.itab.cycle(self.infra_inner);
                     return true;
+                }
+                // G arrives with SHIFT; Ctrl and Alt keys are the page's.
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.itab.moves(self.infra.as_ref(), self.infra_inner, k)
+                {
+                    return true;
+                }
+                // Enter opens the selected row's record: a machine's page, a pool's.
+                if k.code == KeyCode::Enter {
+                    if let Some(l) = self.itab.opens(self.infra.as_ref(), self.infra_inner) {
+                        self.follow(&l);
+                        return true;
+                    }
                 }
             }
             // CI's runs table is one key away, as Jobs is from the rest: Enter opens it, `t`
@@ -3431,14 +3544,19 @@ impl App {
                     self.scroll = at + 1 - h;
                 }
             }
-            // Alerts' selected firing row is kept in view after a key moved it, and is no
+            // The selected row (Alerts, Infra) is kept in view after a key moved it, and is no
             // section for n/N.
             let mut sections = sections;
-            if self.tab == Tab::Alerts {
-                if let Some(i) = sections.iter().position(|s| s.0 == alertstab::ROW) {
+            let pick = match self.tab {
+                Tab::Alerts => Some((alertstab::ROW, &mut self.av.follow)),
+                Tab::Infra => Some((crate::infratables::ROW, &mut self.itab.follow)),
+                _ => None,
+            };
+            if let Some((row, follow)) = pick {
+                if let Some(i) = sections.iter().position(|s| s.0 == row) {
                     let (_, at) = sections.remove(i);
                     let h = (body.height as usize).max(1);
-                    if std::mem::take(&mut self.av.follow) {
+                    if std::mem::take(follow) {
                         if at < self.scroll {
                             self.scroll = at.saturating_sub(2);
                         } else if at >= self.scroll + h {
@@ -3530,6 +3648,9 @@ impl App {
             Tab::Alerts => format!(
                 "j/k move  Enter open  o fix PR  i its item  w watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Infra if self.machine_page.is_some() && !self.infra_jobs => format!(
+                "Esc all machines  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Infra if self.infra_runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Infra if self.infra_runs && self.ci.times.is_some() => {
                 "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  q quit".into()
@@ -3543,6 +3664,14 @@ impl App {
             Tab::Infra if !self.infra_jobs && self.infra_inner == "ci" => format!(
                 "<-/-> view  n/N section  Enter runs table  t run times  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
+            Tab::Infra
+                if !self.infra_jobs
+                    && crate::infratables::InfraTables::picks(self.infra_inner) =>
+            {
+                format!(
+                    "<-/-> view  n/N section  j/k pick  Enter open  / f s S x table  c next table  PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+                )
+            }
             Tab::Infra if !self.infra_jobs => format!(
                 "<-/-> view  n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
@@ -3901,6 +4030,25 @@ impl App {
                 Some(a) => self.av.page(a, self.p, now, w),
                 None => reading("Prometheus and fleet-bench reds"),
             },
+            // A machine's page in place of the Machines tables, under the strip.
+            (Tab::Infra, ..) if self.machine_page.is_some() && !self.infra_jobs => {
+                let strip = crate::innertabs::strip(
+                    infra_tab(),
+                    self.infra_inner,
+                    &self.infra_flagged(self.infra.as_ref()),
+                    self.p,
+                    w,
+                );
+                let mut l = vec![strip];
+                l.extend(crate::machinetab::page(
+                    self.machine_page.as_deref().unwrap_or_default(),
+                    self.machine.as_ref(),
+                    self.p,
+                    now,
+                    w,
+                ));
+                (l, vec![])
+            }
             // Infra: the strip first, while Prometheus is read too, then the pinned sections and
             // the inner tab shown, each section in hub_core::layout order with a blank line
             // between them.
@@ -3957,6 +4105,10 @@ impl App {
                 };
                 for name in tab.pinned.iter().chain(shown) {
                     put(name, &mut l);
+                }
+                // The selected row of the table with the keys, kept in view after a key moves it.
+                if let Some(r) = l.iter().position(|x| x.style == self.p.sel()) {
+                    at.push((crate::infratables::ROW, r));
                 }
                 (l, at)
             }
@@ -6807,6 +6959,71 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_a_machines_row_opens_its_page_and_esc_comes_back() {
+        let mut a = infra_app();
+        a.go(Tab::Infra);
+        a.infra_inner = "machines";
+        // No Prometheus in a test: the page's read is held, and its answer handed in below.
+        a.machine_read.busy = true;
+        assert!(a.hints().contains("j/k pick  Enter open"), "{}", a.hints());
+        let n = a.infra.as_ref().unwrap().machines.len();
+        // G comes with SHIFT, as a terminal sends it: it still picks the last row.
+        a.handle(Msg::Input(Event::Key(KeyEvent::new(
+            KeyCode::Char('G'),
+            KeyModifiers::SHIFT,
+        ))));
+        assert_eq!(a.itab.views[0].sel, n - 1, "G picks the last machine");
+        a.handle(key('g'));
+        let want = a.infra.as_ref().unwrap().machines[1].host.clone();
+        a.handle(key('j'));
+        assert!(a.itab.follow, "a moved selection is kept in view");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.machine_page.as_deref(), Some(want.as_str()));
+        assert!(screen(&mut a, 160, 30).contains(&format!("Reading {want}...")));
+        let page = hub_core::machine_page::MachinePage {
+            host: want.clone(),
+            head: format!("{want}, local, up"),
+            ..Default::default()
+        };
+        a.handle(Msg::Machine(Box::new((want.clone(), Ok(page)))));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains(&want.to_uppercase()) && s.contains("SHARE"),
+            "{s}"
+        );
+        assert!(a.hints().contains("Esc all machines"), "{}", a.hints());
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.machine_page.is_none() && a.machine.is_none());
+        assert!(screen(&mut a, 160, 40).contains("MACHINES"));
+    }
+
+    #[test]
+    fn a_link_to_a_machine_and_its_tab_request_open_its_page_and_a_wrong_name_says_so() {
+        let mut a = infra_app();
+        a.machine_read.busy = true;
+        a.follow(&hub_core::links::Link::to(Kind::Machine, "workstation"));
+        assert_eq!(
+            (a.tab, a.infra_inner, a.machine_page.as_deref()),
+            (Tab::Infra, "machines", Some("workstation"))
+        );
+        a.close_machine();
+        a.go(Tab::Home);
+        a.handle(Msg::Tab(Tab::Infra, Some("machines/nope".into())));
+        assert_eq!(a.machine_page.as_deref(), Some("nope"));
+        a.handle(Msg::Machine(Box::new((
+            "nope".into(),
+            Err("no machine named nope".into()),
+        ))));
+        assert!(screen(&mut a, 160, 30).contains("no machine named nope"));
+        // A late answer for another host does not land on this page.
+        a.handle(Msg::Machine(Box::new((
+            "other".into(),
+            Ok(Default::default()),
+        ))));
+        assert!(matches!(a.machine, Some(Err(_))));
+    }
+
+    #[test]
     fn the_alerts_keys_move_open_filter_fold_and_follow_a_fix_to_its_queue_item() {
         let mut a = app(Tab::Alerts);
         a.alerts = Some(crate::alertstab::tests::sample());
@@ -7075,6 +7292,8 @@ mod tests {
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
         a.handle(key('9'));
+        // On Machines and CI, Enter opens the selected row's record; on Jobs, the jobs table.
+        a.infra_inner = "jobs";
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
