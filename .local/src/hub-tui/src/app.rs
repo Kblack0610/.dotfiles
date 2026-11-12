@@ -4880,7 +4880,7 @@ fn open_rows(p: &Option<Result<Vec<proposals::Proposal>, String>>) -> &[proposal
 
 fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
     match c {
-        Some(Ok(c)) => &c.rows,
+        Some(Ok(c)) => c.shown(),
         _ => &[],
     }
 }

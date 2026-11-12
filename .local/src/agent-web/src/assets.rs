@@ -294,6 +294,21 @@ mod tests {
     }
 
     #[test]
+    fn the_candidates_headers_are_hub_cores_columns() {
+        // qCandRow writes its cells in this order, so the map must be COLUMNS, in order.
+        use hub_core::table::Row;
+        let js = include_str!("../static/queue.js");
+        let at = js.find("const CAND_COLS = {").expect("no CAND_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::queue::Candidate::COLUMNS);
+    }
+
+    #[test]
     fn the_releases_headers_are_hub_cores_columns() {
         // Rule 8, less `channel` and `id`: they only filter, an opened app lists its channels.
         use hub_core::table::Row;

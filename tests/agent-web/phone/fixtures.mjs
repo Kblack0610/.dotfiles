@@ -75,7 +75,8 @@ const flow = {
     nodes: RAIL.map(([key, label, to], i) => ({ key, label, count: String(12 - i), sub: key === "done" ? "24h" : `p90 ${20 + i * 7}m`, hot: i === 5, stopped: i === 3, to, stop: i === 3 ? "fleet-assess says HOLD" : null, facts: [`${12 - i} in the step, bound 30m`], problems_n: i === 3 ? 2 : 0, problems: i === 3 ? [{ text: `01:16  ${SLUGS[0]}  failed  ${TEXT[0]}`, item: SLUGS[0] }, { text: `00:42  inbox line  ${TEXT[1]}`, item: null }] : [], elsewhere: null })),
   },
 };
-const candidates = { rows: [], blocked_rows: [], total: 0, auto: 0, urgent_blocked: 0, clear: true, reasons: [], uncovered: [] };
+// /api/queue/candidates: the first page of hub_core::queue::Candidate rows on the shared table.
+const candidates = { rows: [], more: 0, table: table(0, ["rank", "project", "key", "task", "start", "why", "blocked"], ["all", "clear", "blocked"]), auto: 0, urgent_blocked: 0, uncovered: [], as_of: "" };
 
 // Projects: hub_core::projects.
 const projects = {
