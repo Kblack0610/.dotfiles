@@ -12,7 +12,7 @@ setup() {
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
   FJD="$SANDBOX/fj"; mkdir -p "$FJD"
   unset FORGEJO_TOKEN
-  export SCHEDULES_GH=gh-stub SCHEDULES_REPOS="$SANDBOX/repos" SCHEDULES_NOW=1762430400  # 2025-11-06T12:00Z
+  export SCHEDULES_GH=gh-stub PROJECT_MAP="$SANDBOX/project-map.json" SCHEDULES_NOW=1762430400  # 2025-11-06T12:00Z
   export SCHEDULES_CURL=curl-stub SCHEDULES_RBW=rbw-stub SCHEDULES_KUBECTL=kube-stub
   KD="$SANDBOX/kube"; mkdir -p "$KD"
   JOBS="$XDG_STATE_HOME/ci/jobs.jsonl"
@@ -59,19 +59,30 @@ EOF
 [ -e "$FJD/locked" ] && exit 1
 [ "\$2" = forgejo_repo_admin ] && echo fjtok
 EOF
-  # kube-stub get --raw <path>: the exporter feed. Serves $KD/feed-<cursor>, else an empty feed
-  # that collects no repo; $KD/down fails every call, $KD/down-<cursor> that page's. Calls are logged to $KD/calls.
+  # kube-stub get --raw <path>: the exporter feed. Serves $KD/feed-<cursor>, else a feed that stays
+  # at cursor 0, collects $KD/repos (GitHub) and $KD/forgejo_repos and serves the job records in
+  # $KD/records-* and the runs in $KD/runs-*;
+  # $KD/down fails every call, $KD/down-<cursor> that page's. Calls are logged to $KD/calls.
   cat > "$SANDBOX/bin/kube-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$3" >> "$KD/calls"
 c="\$(echo "\$3" | sed -n 's/.*cursor=\([0-9]*\).*/\1/p')"
 [ -e "$KD/down" ] || [ -e "$KD/down-\$c" ] && { echo "Error from server (ServiceUnavailable): no endpoints available" >&2; exit 1; }
 [ -f "$KD/feed-\$c" ] && exec cat "$KD/feed-\$c"
-echo '{"epoch":"e0","next":0,"more":false,"repos":[],"window_secs":86400,"records":[]}'
+printf '{"epoch":"e0","next":0,"more":false,"repos":%s,"forgejo_repos":%s,"window_secs":86400,"records":%s,"runs":%s}' \
+  "\$(cat "$KD/repos")" "\$(cat "$KD/forgejo_repos")" "\$(cat "$KD"/records-* 2>/dev/null | jq -sc 'add // []')" \
+  "\$(cat "$KD"/runs-* 2>/dev/null | jq -sc 'add // []')"
 EOF
   chmod +x "$SANDBOX/bin/gh-stub" "$SANDBOX/bin/curl-stub" "$SANDBOX/bin/rbw-stub" "$SANDBOX/bin/kube-stub"
-  printf '# owner/name base [clone]\no/game main ~/x\no/empty main\n' > "$SANDBOX/repos"
-  runs | serve 'repos/o/empty/actions/runs?per_page=100&page=1'
+  # The repo list: the feed names the CI repos, the project map their base, host, clone and prs-only.
+  echo '["o/game","o/empty"]' > "$KD/repos"; echo '[]' > "$KD/forgejo_repos"
+  cat > "$PROJECT_MAP" <<'EOF'
+{"forges": {"forgejo": "fj.test"},
+ "trackers": {"game": {"github": "o/game", "ciCost": true},
+              "fj": {"forgejo": "o/fj", "branch": "develop"}, "private": {"forgejo": "o/private", "branch": "develop"},
+              "gone": {"forgejo": "o/gone", "branch": "develop"}},
+ "paths": {"/home/u/x": "game"}}
+EOF
   # Every listed repo's PRs are read into the PR store each pass: none, unless a test serves some.
   for r in o/game o/empty; do echo '[]' | serve "$(pulls "$r" 1)"; done
   echo '[]' > "$FJD/$(key "$(fj_pulls o/fj 1)")"
@@ -130,11 +141,17 @@ game_files() {
 EOF
   blob o/game s1 "$NIGHTLY"
   blob o/game s2 "$PUSHONLY"
-  echo '{"jobs":[{"name":"PlayMode 2","conclusion":"failure"},{"name":"Plan","conclusion":"success"},{"name":"PlayMode 8","conclusion":"timed_out"}]}' \
-    | serve 'repos/o/game/actions/runs/30/attempts/1/jobs?per_page=100'
+  fedjobs 30 2025-11-06T10:01:00Z '{"name":"PlayMode 2","conclusion":"failure"}' '{"name":"Plan","conclusion":"success"}' \
+    '{"name":"PlayMode 8","conclusion":"timed_out"}'
 }
+# fedjobs <run> <created> <job json>...: the feed's finished record of o/game's run, attempt 1
+fedjobs() { local r=$1 at=$2; shift 2; echo "[$(frec "$r" 1 true "$at" "$@")]" > "$KD/records-$r"; }
 
-page1() { serve 'repos/o/game/actions/runs?per_page=100&page=1'; }
+# fed <repo>: the runs page on stdin ({"workflow_runs": [...]}) is that repo's runs in the feed;
+# page1 is o/game's. fj_list <repo>...: the feed collects those Forgejo repos and no GitHub one.
+fed() { jq -c --arg r "$1" '[.workflow_runs[] | {forge: "github", repo: $r, run: .}]' > "$KD/runs-${1//\//_}"; }
+page1() { fed o/game; }
+fj_list() { echo '[]' > "$KD/repos"; printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))' > "$KD/forgejo_repos"; }
 
 @test "a pass records each scheduled workflow: cron, critical-path timeout, purpose, jobs, runs newest first" {
   game_files
@@ -178,9 +195,9 @@ page1() { serve 'repos/o/game/actions/runs?per_page=100&page=1'; }
   run jq -c '.repos[0].workflows[0].runs | map([.id, .failed_jobs])' "$STATE"
   assert_output '[[30,["PlayMode 2","PlayMode 8"]]]'
   run grep -c '/jobs' "$GHD/calls"
-  assert_output 2
+  assert_output 1  # 30 is the feed's; 20, past its window, is read from GitHub
   run jq -sc 'map([.run_id, .attempt, .source, .complete, (.jobs | length)])' "$JOBS"
-  assert_output '[[30,1,"github",true,3],[20,1,"github",true,0]]'
+  assert_output '[[30,1,"exporter",true,3],[20,1,"github",true,0]]'
   : > "$GHD/calls"
   run "$SUBJECT"
   run grep -c '/jobs' "$GHD/calls"
@@ -199,7 +216,7 @@ page1() { serve 'repos/o/game/actions/runs?per_page=100&page=1'; }
   : > "$GHD/calls"
   runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" \
        "$(gh_run 31 .github/workflows/test.yml 2025-11-06T11:30:00Z completed failure)" | page1
-  echo '{"jobs":[{"name":"Plan","conclusion":"failure"}]}' | serve 'repos/o/game/actions/runs/31/attempts/1/jobs?per_page=100'
+  fedjobs 31 2025-11-06T11:30:00Z '{"name":"Plan","conclusion":"failure"}'
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
   assert_success
   run jq -c '.repos[0].workflows[0].runs | map([.id, .conclusion, .failed_jobs])' "$STATE"
@@ -222,12 +239,37 @@ page1() { serve 'repos/o/game/actions/runs?per_page=100&page=1'; }
   assert_line --index 1 '[["o/game","2025-11-06T12:00:00Z",true,1],["o/empty","2025-11-06T12:10:00Z",false,0]]'
 }
 
-@test "no repo list: exit 1 and no state file" {
-  rm "$SANDBOX/repos"
+@test "no repo list: a feed that never answered, or no project map, is exit 1 and no state file" {
+  touch "$KD/down"
   run "$SUBJECT"
   assert_failure 1
   assert_output --partial 'no repo list'
   [ ! -e "$STATE" ]
+  rm "$KD/down" "$PROJECT_MAP"
+  run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'no repo list'
+  [ ! -e "$STATE" ]
+}
+
+@test "repos: the feed's GitHub and Forgejo repos with each tracker's base, host and clone, then prs-only trackers" {
+  fj_list o/fj; echo '["o/game","o/empty"]' > "$KD/repos"
+  jq '.trackers.work = {github: "o/work", branch: "trunk", prsOnly: true}' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"
+  run "$SUBJECT" repos
+  assert_failure 1  # no feed has answered yet
+  assert_output --partial 'exporter feed has never answered'
+  "$SUBJECT" >/dev/null || true
+  run "$SUBJECT" repos
+  assert_success
+  assert_equal "$(jq -c 'map([.forge, .repo, .base, .host, .clone])' <<<"$output")" \
+    '[["github","o/game","main",null,"/home/u/x"],["github","o/empty","main",null,null],["forgejo","o/fj","develop","fj.test",null],["prs-only","o/work","trunk",null,null]]'
+  # NEGATIVE CONTROL: a tracker with no branch, or no ciCost, takes main and no clone
+  jq 'del(.trackers.fj.branch) | del(.trackers.game.ciCost)' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"
+  run "$SUBJECT" repos
+  assert_equal "$(jq -c 'map([.repo, .base, .clone])' <<<"$output")" '[["o/game","main",null],["o/empty","main",null],["o/fj","main",null],["o/work","trunk",null]]'
+  echo '{' > "$PROJECT_MAP"
+  run "$SUBJECT" repos
+  assert_failure 1
 }
 
 # pending: the nightly:<repo> hold's answer, from a hand-written state file. The desk is in
@@ -361,22 +403,6 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   assert_output '[[30,1,"failure"],[30,2,"success"],[31,1,"success"]]'
 }
 
-@test "ledger: an unchanged first page is a 304 that adds nothing, and the state still syncs" {
-  game_files
-  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
-  run "$SUBJECT"
-  assert_success
-  before="$(cat "$LEDGER")"
-  : > "$GHD/calls"
-  SCHEDULES_NOW=1762431000 run "$SUBJECT"
-  assert_success
-  run grep -c 'actions/runs?per_page=100&page=1 (conditional)' "$GHD/calls"
-  assert_output 2
-  [ "$(cat "$LEDGER")" = "$before" ]
-  run jq -c '[.repos[0].synced_at, (.repos[0].workflows[0].runs | map(.id))]' "$STATE"
-  assert_output '["2025-11-06T12:10:00Z",[30]]'
-}
-
 @test "ledger: state.json is byte-for-byte what the schedule-only fetch wrote (golden from main, plus night_absent)" {
   game_files
   # The golden was written by the event=schedule version of this script from these runs alone;
@@ -399,19 +425,17 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
 @test "negative control: a repo gh refuses (403) is errored in sync.json while the others land" {
   game_files
   runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
-  runs "$(gh_run 50 .github/workflows/ci.yml 2025-11-06T11:00:00Z completed success 1 push)" \
-    | serve 'repos/o/empty/actions/runs?per_page=100&page=1'
+  runs "$(gh_run 50 .github/workflows/ci.yml 2025-11-06T11:00:00Z completed success 1 push)" | fed o/empty
   echo 'gh: Resource not accessible by integration (HTTP 403)' > "$GHD/fail-o_game"
   run "$SUBJECT"
   assert_failure 1
   assert_output --partial 'o/game: gh api'
   run jq -c '.repos | map_values(.error != null)' "$XDG_STATE_HOME/ci/sync.json"
   assert_output '{"github:o/game":true,"github:o/empty":false}'
-  run jq -c '.repos["github:o/game"] | [.error, .etag]' "$XDG_STATE_HOME/ci/sync.json"
+  run jq -r '.repos["github:o/game"].error' "$XDG_STATE_HOME/ci/sync.json"
   assert_output --partial 'HTTP 403'
-  assert_output --partial ',null]'
   run jq -sc 'map([.repo, .id])' "$LEDGER"
-  assert_output '[["o/empty",50]]'
+  assert_output '[["o/game",30],["o/empty",50]]'  # o/game's runs are the feed's, kept though gh refused it
 }
 
 @test "a rate limit is stored as one short line that reads the same for every repo" {
@@ -477,7 +501,7 @@ fj_run() {
 }
 
 @test "forgejo: jobs group into one row per run, failed when one job failed; the token goes in on stdin" {
-  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_list o/fj
   fj_page "$(fj_task 9 5 running 2025-11-06T11:50:00Z)" "$(fj_task 8 5 success 2025-11-06T11:49:00Z)" \
           "$(fj_task 7 4 failure 2025-11-06T11:00:00Z)" "$(fj_task 6 4 success 2025-11-06T10:59:00Z)" | fj_serve 1
   fj_run 4 2025-11-06T11:00:00Z
@@ -496,7 +520,7 @@ fj_run() {
 }
 
 @test "forgejo: no token still reads a public repo; a private one is errored, naming the missing token" {
-  printf 'forgejo:fj.test/o/fj develop\nforgejo:fj.test/o/private develop\n' > "$SANDBOX/repos"
+  fj_list o/fj o/private
   touch "$FJD/locked"
   fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
   fj_run 4 2025-11-06T11:00:00Z
@@ -510,7 +534,7 @@ fj_run() {
 }
 
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
-  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_list o/fj
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
   echo '{"repos":{"forgejo:o/fj":{"synced_at":"2025-11-06T11:50:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
   page=(); for i in $(seq 50 -1 1); do page+=("$(fj_task $((100 + i)) $((i / 2)) success "$(date -ud "@$((1762430400 - (50 - i) * 120))" +%FT%TZ)")"); done
@@ -526,7 +550,7 @@ fj_run() {
 }
 
 @test "forgejo: a finished run ends when the run stopped, not when a log transfer rewrote a job; read once" {
-  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_list o/fj
   # job 7's updated_at is the next midnight, when transfer_lingering_logs moved its log
   fj_page "$(fj_task 7 4 success 2025-11-06T10:01:00Z ci.yml 2025-11-08T00:00:00Z)" \
           "$(fj_task 6 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
@@ -546,7 +570,7 @@ fj_run() {
 }
 
 @test "forgejo: a run whose job no runner took stays open, then is abandoned, not a day-long success" {
-  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_list o/fj
   # run 4's build job ran; its deploy job never got a runner, so actions/tasks never lists it
   fj_page "$(fj_task 6 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
   fj_run 4 0001-01-01T00:00:00Z waiting
@@ -639,12 +663,12 @@ lrow() {
 }
 
 # feed <cursor> <epoch> <next> <more> <records json> [<run json>...]: one page of the exporter feed,
-# collecting o/game; each run json is one of its runs as GitHub lists it
+# collecting $KD/repos; each run json is one of o/game's runs as GitHub lists it
 feed() {
   local c=$1 e=$2 n=$3 m=$4 recs=$5; shift 5
   local IFS=, runs=() r
   for r in "$@"; do runs+=("{\"forge\":\"github\",\"repo\":\"O/Game\",\"run\":$r}"); done
-  printf '{"epoch":"%s","next":%s,"more":%s,"repos":["O/Game"],"window_secs":86400,"records":[%s],"runs":[%s]}' "$e" "$n" "$m" "$recs" "${runs[*]}" > "$KD/feed-$c"
+  printf '{"epoch":"%s","next":%s,"more":%s,"repos":%s,"window_secs":86400,"records":[%s],"runs":[%s]}' "$e" "$n" "$m" "$(cat "$KD/repos")" "$recs" "${runs[*]}" > "$KD/feed-$c"
 }
 # frec <run> <attempt> <complete> <created> <job json>...: one feed record
 frec() {
@@ -672,7 +696,7 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run jq -c '.repos[0].workflows[0].runs | map([.id, .failed_jobs])' "$STATE"
   assert_output '[[30,["Feed fail"]]]'
   run jq -c '.exporter | [.epoch, .cursor, .repos, .error]' "$XDG_STATE_HOME/ci/sync.json"
-  assert_output '["e1",3,["O/Game"],null]'
+  assert_output '["e1",3,["o/game","o/empty"],null]'
   # warm: reads on from cursor 3, appends nothing it has
   feed 3 e1 3 false ''
   : > "$KD/calls"; before=$(wc -l < "$JOBS")
@@ -724,14 +748,13 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[30]'
   run jq -c '.repos[0] | [.error != null, (.workflows[0].runs | map([.id, .failed_jobs]))]' "$STATE"
   assert_output '[true,[[30,["Feed fail"]]]]'
-  # with no feed ever read, the exporter's repos are unknown: o/game's runs are read from GitHub, no jobs
+  # with no feed ever read there is no repo list: nothing is read from GitHub
   rm "$JOBS" "$XDG_STATE_HOME/ci/sync.json"
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431600 run "$SUBJECT"
-  run grep -c 'o/game/actions/runs?per_page' "$GHD/calls"
-  assert_output 1
-  run grep -c '/jobs' "$GHD/calls"
-  assert_output 0
+  assert_failure 1
+  assert_output --partial 'no repo list'
+  [ ! -s "$GHD/calls" ]
 }
 
 @test "negative control: a feed that fails after a page keeps that page's runs in the ledger and the state, and records the error" {
@@ -777,19 +800,18 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[[20,"completed"],[21,"in_progress"]]'
 }
 
-@test "feed runs: an exporter repo's runs come from the feed alone, and its scheduled runs reach the state; a repo it does not collect is polled" {
+@test "feed runs: a repo's runs come from the feed alone, and its scheduled runs reach the state; actions/runs is never listed" {
   game_files
   R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z in_progress null)"
   P31="$(gh_run 31 .github/workflows/checks.yml 2025-11-06T10:05:00Z completed success 1 push)"
   feed 0 e1 1 false '' "$R30" "$P31"
   # a runs page GitHub would serve: never asked, so run 99 never lands
-  runs "$(gh_run 99 .github/workflows/test.yml 2025-11-06T11:00:00Z completed success)" | page1
+  runs "$(gh_run 99 .github/workflows/test.yml 2025-11-06T11:00:00Z completed success)" \
+    | serve 'repos/o/game/actions/runs?per_page=100&page=1'
   run "$SUBJECT"
   assert_success
-  run grep -c 'o/game/actions/runs?' "$GHD/calls"
+  run grep -c 'actions/runs?' "$GHD/calls"
   assert_output 0
-  run grep -c 'o/empty/actions/runs?' "$GHD/calls"
-  assert_output 1
   run jq -sc 'map([.repo, .id, .status, .path, .title, .event])' "$LEDGER"
   assert_output '[["o/game",30,"in_progress",".github/workflows/test.yml","t30","schedule"],["o/game",31,"completed",".github/workflows/checks.yml","t31","push"]]'
   run jq -c '.repos[0].workflows[0].runs | map([.id, .status])' "$STATE"
@@ -814,8 +836,8 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
 
 @test "direct: a run of 130 jobs pages through; a page that fails after the first keeps the read jobs as partial" {
   game_files
-  runs "$(gh_run 40 .github/workflows/checks.yml 2025-11-06T11:00:00Z completed success 1 push)" \
-       "$(gh_run 41 .github/workflows/checks.yml 2025-11-06T11:10:00Z completed success 1 push)" | page1
+  runs "$(gh_run 40 .github/workflows/checks.yml 2025-11-04T11:00:00Z completed success 1 push)" \
+       "$(gh_run 41 .github/workflows/checks.yml 2025-11-04T11:10:00Z completed success 1 push)" | page1
   jobs100=$(jq -nc '[range(100) | {id: ., name: "j\(.)", conclusion: "success"}]')
   jobs30=$(jq -nc '[range(100;130) | {id: ., name: "j\(.)", conclusion: "success"}]')
   echo "{\"total_count\":130,\"jobs\":$jobs100}" | serve 'repos/o/game/actions/runs/40/attempts/1/jobs?per_page=100'
@@ -824,7 +846,7 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run "$SUBJECT"
   assert_success
   run jq -sc 'map([.run_id, .complete, (.jobs | length)])' "$JOBS"
-  assert_output '[[41,false,100],[40,true,130]]'
+  assert_output '[[30,true,3],[41,false,100],[40,true,130]]'  # 30 is game_files' feed record
   # the partial one is asked again next pass, the complete one is not
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
@@ -834,28 +856,22 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output 0
 }
 
-@test "direct: live and backfill each spend at most their budget, newest run first; the rest waits" {
+@test "direct: runs past the feed's window spend at most the backfill budget a pass, newest first; the rest waits; the feed's own are never read" {
   game_files
-  runs "$(gh_run 40 .github/workflows/checks.yml 2025-11-06T11:00:00Z completed success 1 push)" \
-       "$(gh_run 41 .github/workflows/checks.yml 2025-11-06T11:10:00Z completed success 1 push)" \
-       "$(gh_run 42 .github/workflows/checks.yml 2025-11-06T11:20:00Z completed success 1 push)" | page1
-  for r in 40 41 42; do echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/$r/attempts/1/jobs?per_page=100"; done
-  SCHEDULES_JOB_CALLS=2 run "$SUBJECT"
+  runs "$(gh_run 40 .github/workflows/checks.yml 2025-11-04T11:00:00Z completed success 1 push)" \
+       "$(gh_run 41 .github/workflows/checks.yml 2025-11-04T11:10:00Z completed success 1 push)" \
+       "$(gh_run 42 .github/workflows/checks.yml 2025-11-04T11:20:00Z completed success 1 push)" \
+       "$(gh_run 43 .github/workflows/checks.yml 2025-11-06T11:50:00Z completed success 1 push)" | page1
+  for r in 40 41 42 43; do echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/$r/attempts/1/jobs?per_page=100"; done
+  SCHEDULES_BACKFILL_CALLS=2 run "$SUBJECT"
   assert_success
   run jq -sc 'map(.run_id)' "$JOBS"
-  assert_output '[42,41]'
-  SCHEDULES_JOB_CALLS=2 SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_output '[30,42,41]'
+  SCHEDULES_BACKFILL_CALLS=2 SCHEDULES_NOW=1762431000 run "$SUBJECT"
   run jq -sc 'map(.run_id) | sort' "$JOBS"
-  assert_output '[40,41,42]'
-  # an old backlog spends only the backfill budget, so a new live run is still read
-  runs "$(gh_run 43 .github/workflows/checks.yml 2025-11-06T11:50:00Z completed success 1 push)" \
-       "$(gh_run 1 .github/workflows/checks.yml 2025-10-20T00:00:00Z completed success 1 push)" \
-       "$(gh_run 2 .github/workflows/checks.yml 2025-10-21T00:00:00Z completed success 1 push)" \
-       "$(gh_run 3 .github/workflows/checks.yml 2025-10-22T00:00:00Z completed success 1 push)" | page1
-  for r in 43 1 2 3; do echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/$r/attempts/1/jobs?per_page=100"; done
-  SCHEDULES_JOB_CALLS=1 SCHEDULES_BACKFILL_CALLS=1 SCHEDULES_NOW=1762431600 run "$SUBJECT"
-  run jq -sc 'map(.run_id) | sort' "$JOBS"
-  assert_output '[3,40,41,42,43]'
+  assert_output '[30,40,41,42]'
+  run grep -c 'runs/43/' "$GHD/calls"
+  assert_output 0  # in the window: the feed's, never asked of GitHub
 }
 
 @test "jobs: one repo's records in created order, by run and since; fails closed with no archive or bad usage" {
@@ -1080,7 +1096,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
 }
 
 @test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {
-  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  fj_list o/fj
   fj_page | fj_serve 1
   page() { jq -nc --arg r "$1" '[{number: 3, state: "closed", merged: true, merged_at: "2025-11-06T10:00:00Z", merge_commit_sha: "f3",
     title: "fix", head: {ref: $r, sha: "h3"}, base: {ref: "develop"}, user: {login: "bob"}, updated_at: "2025-11-06T10:00:00Z"}]' \
@@ -1097,7 +1113,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
 }
 
 @test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {
-  printf 'forgejo:fj.test/o/fj develop\nforgejo:fj.test/o/gone develop\n' > "$SANDBOX/repos"
+  fj_list o/fj o/gone
   fj_page | fj_serve 1
   rm "$FJD/$(key "$(fj_pulls o/fj 1)")"  # a mirror's pulls list is a 404
   echo '{"name":"fj","mirror":true,"has_pull_requests":false}' > "$FJD/$(key repos/o/fj)"
@@ -1142,7 +1158,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_equal "$(jq -c 'map([.repo, .number])' <<<"$output")" '[["o/game",7]]'
   run cat "$SANDBOX/err"
   assert_output 'o/empty: PRs last synced 2025-11-06T10:00:00Z, older than 30m: HTTP 502'
-  printf 'o/game main\n' > "$SANDBOX/repos"  # a repo dropped from the list is not read, so never stale
+  jq '.exporter.repos = ["o/game"]' "$XDG_STATE_HOME/ci/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$XDG_STATE_HOME/ci/sync.json"  # a repo dropped from the list is not read, so never stale
   run "$SUBJECT" prs all
   assert_success
 }
@@ -1165,6 +1181,10 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
 @test "sync-prs: refreshes the named repo now; 3 for one the list does not sync; a failed read keeps the last rows" {
   prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
   run "$SUBJECT" sync-prs o/game
+  assert_failure 1  # no feed has named the list yet
+  assert_output --partial 'no repo list'
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game","o/empty"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT" sync-prs o/game
   assert_success
   run "$SUBJECT" prs o/game
   assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
@@ -1186,8 +1206,25 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 'o/game: a pass holds the PR store'
 }
 
-@test "prs-only: a work repo's line feeds the PR store and sync-prs, never its runs, schedules or state" {
-  printf 'prs-only:o/work main\nprs-only:o/game main\n' >> "$SANDBOX/repos"  # o/game's CI line reads its PRs already
+@test "sync-prs: GitHub names are case-blind, so a list that changed a repo's case keeps its store file and name" {
+  # NEGATIVE CONTROL: keyed by the list's casing, this wrote a second store, o__game.jsonl, beside the old one.
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  mkdir -p "$PRS" "$XDG_STATE_HOME/ci"
+  echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  echo '{"forge":"github","repo":"O/Game","number":6,"state":"MERGED"}' > "$PRS/O__Game.jsonl"
+  echo '{"repos":{"O/Game":{"synced_at":"2025-11-06T09:00:00Z"}}}' > "$PRS/sync.json"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  [ ! -e "$PRS/o__game.jsonl" ]
+  run jq -sc 'map([.repo, .number])' "$PRS/O__Game.jsonl"
+  assert_output '[["O/Game",6],["O/Game",7]]'
+  run jq -c '.repos | keys' "$PRS/sync.json"
+  assert_output '["O/Game"]'
+}
+
+@test "prs-only: a tracker with prsOnly feeds the PR store and sync-prs, never its runs, schedules or state" {
+  # o/game is a CI repo, which reads its PRs already
+  jq '.trackers.work = {github: "o/work", prsOnly: true} | .trackers.game.prsOnly = true' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"
   prs_page o/work "$(gh_pr 4 closed 2025-11-06T10:00:00Z feat-w)"
   : > "$GHD/calls"
   run "$SUBJECT"

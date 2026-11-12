@@ -18,9 +18,11 @@ setup() {
   # ss-stub: the PR store, logging every call; `prs all --state merged` serves $GHD/merged and
   # --state open $GHD/open as store rows (author kblack0610 unless a row names one), unfiltered by
   # time, so the day's window is day-log's own. $GHD/fail fails every call; $GHD/stale names a
-  # repo the store is stale for: rc 1, the rest still printed.
+  # repo the store is stale for: rc 1, the rest still printed. `repos` serves $SANDBOX/ci-repos, the
+  # CI repo list, unlogged.
   cat > "$SANDBOX/bin/ss-stub" <<EOF
 #!/usr/bin/env bash
+[ "\$1" = repos ] && exec cat "$SANDBOX/ci-repos"
 echo "\$*" >> "$GHD/calls"
 [ -e "$GHD/fail" ] && exit 1
 case "\$*" in *"--state merged"*) f="$GHD/merged" st=MERGED ;; *"--state open"*) f="$GHD/open" st=OPEN ;; *) exit 2 ;; esac
@@ -58,10 +60,10 @@ EOF
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec cat "%s"\n' "$SANDBOX/fleet-args" "$SANDBOX/stages" > "$SANDBOX/bin/fleet-stub"
   echo '{"stages":{"NEEDS":{"minutes":90},"NEEDS:ask":{"minutes":60}},"ci":{"rerun_after_red":2},"ended_no_pr":3,"prs":{"open_to_merged":{"p50":16}}}' > "$SANDBOX/stages"
   # cif-stub: ci-failures --json serves $SANDBOX/cif and exits $SANDBOX/cif-rc
-  export DAYLOG_CI_FAILURES_CMD=cif-stub DAYLOG_CI="$SANDBOX/ci" DAYLOG_CI_CACHE="$SANDBOX/ci-cache"
+  export DAYLOG_CI_FAILURES_CMD=cif-stub DAYLOG_CI_CACHE="$SANDBOX/ci-cache"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
   echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
-  echo 'O/game trunk' > "$DAYLOG_CI"
+  echo '[{"forge":"github","repo":"O/game","base":"trunk","host":null,"clone":null}]' > "$SANDBOX/ci-repos"
   # hub-stub: hub ci pass serves $SANDBOX/pass (with --branch B: $SANDBOX/pass-B), logs its args, and
   # exits $SANDBOX/pass-rc (pass-B-rc)
   export DAYLOG_HUB_CMD=hub-stub
@@ -162,7 +164,7 @@ EOF
   git clone -q "$origin" "$SANDBOX/clone"
   git -C "$SANDBOX/clone" rm -q scripts/ci-cost.py
   git -C "$SANDBOX/clone" -c user.name=t -c user.email=t@t commit -qm 'a stale checkout'
-  echo "O/game trunk $SANDBOX/clone" > "$DAYLOG_CI"
+  jq -n --arg c "$SANDBOX/clone" '[{forge: "github", repo: "O/game", base: "trunk", host: null, clone: $c}]' > "$SANDBOX/ci-repos"
 }
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
@@ -568,7 +570,9 @@ PROM
 
 @test "nightly: CI per repo from ci-failures and ci-cost lands in the record, and a later gather keeps it" {
   ci_clone
-  printf 'forgejo:fj.test/o/fj develop\nprs-only:o/work main\n' >> "$DAYLOG_CI"   # never handed to the GitHub CI readers
+  jq '. + [{forge: "forgejo", repo: "o/fj", base: "develop", host: "fj.test", clone: null},
+           {forge: "prs-only", repo: "o/work", base: "main", host: null, clone: null}]' "$SANDBOX/ci-repos" > "$SANDBOX/ci-repos.new"
+  mv "$SANDBOX/ci-repos.new" "$SANDBOX/ci-repos"   # never handed to the GitHub CI readers
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" nightly
   assert_success
@@ -595,6 +599,16 @@ ci pass --since $since --until $until --branch trunk"
   run rec -c '.ci | [.repos["O/game"] | .runs, has("pass"), has("workflows")], [.unreadable[] | select(startswith("hub ci pass"))]' 2026-10-27
   assert_output '[10,false,false]
 ["hub ci pass: exit 1"]'
+}
+
+@test "negative control: an unreadable CI repo list is named unreadable, the nightly fails, no CI reader runs" {
+  rm "$SANDBOX/ci-repos"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  assert_failure
+  run rec -c '[.ci.repos, [.ci.unreadable[] | select(startswith("schedules-sync repos"))]]' 2026-10-27
+  assert_output --regexp '^\[\{\},\["schedules-sync repos: cat: .*ci-repos.*No such file'
+  [ ! -e "$SANDBOX/cif-args" ]
 }
 
 @test "nightly: main is the base branch's runs from hub ci pass --branch, less the green, never ci-failures' count" {

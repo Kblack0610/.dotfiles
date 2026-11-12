@@ -260,7 +260,7 @@ cmd_run() {
   # link may sit. A due session's GitHub repo the store cannot answer for stalls the run; a Forgejo
   # one (the home cluster) holds back only its own sessions; a clone's alone is skipped and reported.
   # A repo the store does not list (a test fixture's o/r in a pr-link or printed URL, or one
-  # day-log-ci lacks) is skipped, its claims are dropped from every line, and the report names it.
+  # `schedules-sync repos` lacks) is skipped, its claims are dropped from every line, and the report names it.
   local repo forge_note="" rc
   so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
   { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
