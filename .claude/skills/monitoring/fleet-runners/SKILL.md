@@ -37,7 +37,7 @@ Not for a spend alert (`sentinel`), a day cap you want lifted for an account (`f
 4. Map the reason to a cause.
    - `budget: ... (BUDGET_DAY_USD)` or exit 75: a cap stopped the call. `agentctl budget` lists spend against caps. `agentctl budget <name> raise <usd> [calls]` lifts the day cap until midnight; the hour cap (`MAX_CALLS_HOUR`) rises only by the `[calls]` count, so a rate stop needs `raise <usd> <calls>`. A cap is a checkpoint, and the first stop of the day pages once. A runner at its cap reads BLOCKED with a clean unit: a wrapper passes the 75 on and the oneshot drop-in counts it as success, so a failed unit with a budget reason is a wrapper bug.
    - Exit 78: `agentctl-run` refused a role, route or harness. `agentctl-run --agent <name> --explain` prints the resolved invocation and runs nothing; fix the conf.
-   - `held_why` file set: a gate holds runnable work (for example dispatch on "no account has room"). That is BLOCKED by design, not a fault. Find the gate with `fleet-dispatch stopped`.
+   - `held_why` file set: a gate holds runnable work (for example dispatch on "no account has room", or an `agent-hold dispatch`, whose reason names who set it). That is BLOCKED by design, not a fault. Find the gate with `fleet-dispatch stopped`.
    - `STALLED`: the runner exited without reporting. Read the stderr log, then fix the script.
 5. Fix at the cause: a conf edit (private repo), a script fix (public repo), or a raise for a cap that is too tight for real work. Lowering a lane's budget in its conf is fine.
 6. Re-run once: `agentctl start <name>` runs a oneshot now. Confirm `agentctl status <name>` reads WORKED or NOOP and the `held_since` and `held_why` files are gone (a good run clears them).
