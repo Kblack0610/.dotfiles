@@ -687,7 +687,11 @@ $listing"
     seen[n]=1
     case "$prio" in urgent|high|low) ;; *) continue ;; esac
     [ "$prio" = "${cur[n - 1]}" ] && continue
-    pt "$p" "$lane" tag --add "$prio" "${ids[n - 1]}" && TAGGED=$((TAGGED + 1))
+    # The ingest record names the writer inbox-priority, whoever ran the pass: judge-eval scores
+    # these tags as that lane's verdicts (SCORE=priority-kept), so a session or queue item must not
+    # take the credit, and the triager's own score must not count them.
+    AGENTCTL_NAME=inbox-priority AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' \
+      pt "$p" "$lane" tag --add "$prio" "${ids[n - 1]}" && TAGGED=$((TAGGED + 1))
   done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$OUT" | sed '1d;$d' | jq -rR "$PRIORITY_JQ")
   for ((n = 1; n <= ${#ids[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
   return 0
