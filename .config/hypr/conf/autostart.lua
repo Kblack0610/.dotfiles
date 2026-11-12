@@ -6,9 +6,10 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("hypridle")
     hl.exec_cmd(programs.terminal)
     hl.exec_cmd("~/.config/hypr/scripts/unity-workspace-router.py")
+    hl.exec_cmd("pkill -RTMIN+11 waybar")
 end)
 
--- The waybar submap chip reads live state; refresh it whenever the config is applied.
+-- The waybar submap chip reads live state; refresh it at start (above) and on every reload.
 hl.on("config.reloaded", function()
     hl.exec_cmd("pkill -RTMIN+11 waybar")
 end)

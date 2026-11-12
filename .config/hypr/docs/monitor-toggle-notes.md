@@ -1,4 +1,4 @@
-# Monitor on/off in Hyprland — findings (why there's no software toggle)
+# Monitor on/off in Hyprland - findings (why there's no software toggle)
 
 **Status:** Abandoned 2026-06-29 in favor of a **physical monitor switch/power button**.
 This doc captures *why*, so the wheel isn't reinvented.
@@ -11,13 +11,13 @@ A keybind to turn a secondary monitor (DP-4) off/on on demand, with the primary
 
 | Method | How | Layout count changes | Windows reflow | Stays off reliably? |
 |---|---|---|---|---|
-| **DPMS off** | `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "off" })'` | no — stays in layout | no | **YES** |
-| **disable** | `hyprctl eval 'hl.monitor({ output = "<name>", disabled = true })'` | yes — drops out | yes | **NO** (see below) |
+| **DPMS off** | `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "off" })'` | no - stays in layout | no | **YES** |
+| **disable** | `hyprctl eval 'hl.monitor({ output = "<name>", disabled = true })'` | yes - drops out | yes | **NO** (see below) |
 
 - DPMS and "disabled" are **independent** states. A monitor can be `disabled=false`
   (in layout) yet `dpmsStatus=false` (panel powered off → black). Check **both** fields
   when reasoning about "is this screen actually showing content."
-- Re-enabling a disabled output does **not** power its panel back up — you must also
+- Re-enabling a disabled output does **not** power its panel back up - you must also
   `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "on" })'`.
 - A live `hl.monitor({ output = "<name>", ... })` can **disable** an output but cannot **wake** a
   disabled one; only `hyprctl reload` re-applies the catch-all and brings it back.
@@ -33,22 +33,22 @@ hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })  -
 ```
 
 So the moment DP-4 re-handshakes, the catch-all **auto-re-enables it**. Result: disabling
-DP-4 is **intermittent** — sometimes it sticks (no re-handshake during the window),
+DP-4 is **intermittent** - sometimes it sticks (no re-handshake during the window),
 sometimes it pops back on ~4s later. Observed live, both outcomes, same command. That
 unpredictable "I turned it off and it came right back on" is the dealbreaker.
 
-`misc:disable_autoreload = 0` (autoreload is on), but that's not the trigger — the trigger
+`misc:disable_autoreload = 0` (autoreload is on), but that's not the trigger - the trigger
 is the DP re-announce + catch-all.
 
 ## Options that *would* have worked (not implemented)
 
-1. **DPMS + move windows** — move DP-4's workspaces to the primary, then `dpms off DP-4`.
+1. **DPMS + move windows** - move DP-4's workspaces to the primary, then `dpms off DP-4`.
    Reliable dark + windows on primary. Monitor count stays 2.
-2. **DPMS only** — `dpms off`/`on`. Reliable, but windows stay assigned to the dark screen.
-3. **disable + hotplug daemon** — a `socat` listener on `$XDG_RUNTIME_DIR/hypr/$HIS/.socket2.sock`
+2. **DPMS only** - `dpms off`/`on`. Reliable, but windows stay assigned to the dark screen.
+3. **disable + hotplug daemon** - a `socat` listener on `$XDG_RUNTIME_DIR/hypr/$HIS/.socket2.sock`
    that re-asserts `monitor=DP-4,disable` whenever DP-4 re-announces. Works but **fights the
    hardware** → visible flicker. Needs `socat` (not installed).
-4. **Pin explicit per-output rules** — drop the `monitor=,preferred,auto,1` catch-all and
+4. **Pin explicit per-output rules** - drop the `monitor=,preferred,auto,1` catch-all and
    list each output explicitly, so a re-announced DP-4 isn't auto-enabled. More brittle on
    a portable config that should "just work" on any connector.
 
@@ -66,4 +66,4 @@ hyprctl dispatch 'hl.dsp.dpms({ monitor = "DP-4", action = "on" })'    # wake
 ## History
 - `bcb60ef` added monitor toggle
 - `1aef052` hardened it (guards, single-monitor rescue, wake-panel-on-enable)
-- removal commit — this doc + keybind/script removed
+- removal commit - this doc + keybind/script removed

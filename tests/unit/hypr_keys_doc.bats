@@ -23,7 +23,7 @@ setup() {
 
 @test "every chord in every submap has a described bind" {
   # The output is the list of chords without one.
-  run bash -c "$(declare -f hypr_dump); REPO_ROOT='$REPO_ROOT'; hypr_dump binds | awk -F'\t' '\$3 == \"\"'"
+  run bash -c "set -o pipefail; $(declare -f hypr_dump); REPO_ROOT='$REPO_ROOT'; hypr_dump binds | awk -F'\t' '\$3 == \"\"'"
   assert_success
   assert_output ''
 }

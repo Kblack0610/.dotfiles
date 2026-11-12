@@ -6,6 +6,14 @@
 local k = require("conf.keys")
 local dsp = hl.dsp
 local HINT = "~/.config/waybar/pin-hint.sh "
+
+-- Leaving the leader: close the hint, then drop back to the global binds.
+local function leave(...)
+    local steps = { ... }
+    steps[#steps + 1] = dsp.exec_cmd(HINT .. "close")
+    steps[#steps + 1] = dsp.submap("reset")
+    return k.run(table.unpack(steps))
+end
 local BIN = "$HOME/.local/bin/"
 local through = { dont_inhibit = true }
 
@@ -19,7 +27,7 @@ local function open(sm)
 end
 
 local function leaf(key, desc, cmd)
-    k.bind(key, desc, k.run(dsp.exec_cmd(cmd), dsp.exec_cmd(HINT .. "close"), dsp.submap("reset")),
+    k.bind(key, desc, leave(dsp.exec_cmd(cmd)),
         "exec " .. cmd, through)
 end
 
@@ -31,9 +39,9 @@ local function exits(parent)
     if parent then
         k.bind("escape", "back", open(parent), "submap " .. parent, through)
     else
-        k.bind("escape", "exit", k.run(dsp.exec_cmd(HINT .. "close"), dsp.submap("reset")), "submap reset", through)
+        k.bind("escape", "exit", leave(), "submap reset", through)
     end
-    k.bind("q", "exit", k.run(dsp.exec_cmd(HINT .. "close"), dsp.submap("reset")), "submap reset", through)
+    k.bind("q", "exit", leave(), "submap reset", through)
 end
 
 local function float(cmd) return "kitty --class floating-term -e " .. cmd end

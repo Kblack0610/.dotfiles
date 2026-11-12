@@ -8,7 +8,7 @@
 -- control-menu runs a row whose dispatcher is "exec", so a leaf's arg is its command.
 local M = {}
 
-HYPR_BINDS = HYPR_BINDS or {}
+HYPR_BINDS = {}
 local current = ""
 
 local MODS = { SUPER = 64, CTRL = 4, CONTROL = 4, ALT = 8, SHIFT = 1 }

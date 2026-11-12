@@ -30,6 +30,6 @@ rule("scrcpy-ws7",   { class = "^(scrcpy)$" },                    { workspace = 
 
 -- Automation windows land on 7 without stealing focus.
 local quiet = function() return { workspace = "7", no_initial_focus = true, suppress_event = "activate" } end
-rule("playwright-ws7", { class = "^(chromium|Chromium|chrome|Chrome|google-chrome|Google-chrome)$", title = ".*Playwright.*" }, quiet())
+rule("playwright-ws7", { class = "^(chromium|Chromium|chrome|Chrome|google-chrome|Google-chrome)$", title = ":.*Playwright.*" }, quiet())
 rule("firefox-default-ws7", { class = "^(firefox-default)$" }, quiet())
 rule("emulator-ws7", { class = "^([Ee]mulator(64)?(-arm)?|qemu-system)$" }, quiet())
