@@ -48,7 +48,7 @@ const TABS = [
   { tab: "home", name: "home-running", row: `#home [data-tbl="r"] tr.jr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
-  { tab: "board", row: `#board tr.jr` },
+  { tab: "projects", name: "projects-all", inner: "all", row: `#p-all tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
   { tab: "alerts", row: `#alerts tr.jr` },
   { tab: "infra", inner: "jobs", row: `#jobs tr.jr` },
