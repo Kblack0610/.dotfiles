@@ -72,7 +72,7 @@ function costsSwitch(name, all, on, key, label = (x) => x) {
 // never reads as all of it. The pool and its keys are Burn rows.
 function directTile(dr) {
   const unpriced = dr.unpriced ? `<span class="warn">+${dr.unpriced} unpriced</span>, ` : "";
-  return tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
+  return tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || NOT_READ));
 }
 
 // The Spend tile row on the shared tile(): the whole fleet's 24h (hub_core::fleet_cost, the TUI's
@@ -275,7 +275,7 @@ function costsConsumers(d) {
 
 function costsBurn(d) {
   const b = d.burn;
-  if (!b || !b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">no data from claude-acct</div>`;
+  if (!b || !b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">${NO_DATA} from claude-acct</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
   const key = isPhone() ? "burn-phone" : "burn", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
@@ -361,7 +361,7 @@ function costsSections(d) {
 // the 24h, the history chart and period rows, the table, burn per session; Limits: burn, consumers; Models:
 // tokens, langfuse, sections; Budget).
 function costsHead(d) {
-  const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
+  const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : NO_DATA}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   const totals = costsTiles(d) + `<div class="muted fold">as of: ${asOf}${g}</div>`;
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;

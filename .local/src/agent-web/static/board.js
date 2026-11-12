@@ -1,5 +1,5 @@
 "use strict";
-// The Board tab (every project's rows) and the rows under an opened project on Projects: the
+// Projects' All rows inner tab (every project's rows) and the rows under an opened project: the
 // shared table (table.js) over the rows from `notes board --json` (/api/board, which filters and
 // sorts by the view in the showing tab's URL query): the human sheet, the agent board, playtest,
 // open ones under their sheet sections (each row's `label`) then the closed ones, each row's
@@ -13,15 +13,15 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// The Board holds thousands of rows, so the table stops here until asked.
-const B_OPEN = 200;
-// One view serves both tabs, so what it reads and where its query lives follow the showing tab.
-const bOnBoard = () => st.tab === "board";
-const bTab = () => (bOnBoard() ? "board" : "projects");
+// All rows holds thousands of rows, so the table stops here until asked (a search reads every row
+// on the server; this caps only what is drawn): 30 rows drew 1,824 px at 1400x900 on 2026-11-12.
+const B_OPEN = 30;
+// One view serves both places, both on Projects, so what it reads follows the one showing.
+const bOnBoard = () => st.tab === "projects" && !pst.open && pTab() === "all";
 const bScope = () => (bOnBoard() ? "all" : pst.open);
 // The table is drawn under the add form (renderBoard), which a re-read leaves alone.
 const bst = tblTab({
-  get tab() { return bTab(); }, get scroller() { return bTab(); },
+  tab: "projects", scroller: "projects",
   id: "board", el: "b-tbl", on: "b-root", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
   shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
   state: {
@@ -34,10 +34,11 @@ const bst = tblTab({
   body: () => bBody(),
 });
 
-// The view moves to the tab that shows it; rows read for the other scope go with the move.
+// The view moves to the place that shows it; rows read for the other scope go with the move.
 function bMount(parent) {
-  $(parent).appendChild($("b-root"));
+  if ($("b-root").parentNode !== $(parent)) $(parent).appendChild($("b-root"));
   if (bst.scope === bScope()) return;
+  bst.scope = bScope();
   bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
 }
 
@@ -47,15 +48,17 @@ function bMount(parent) {
 const refreshBoard = coalesce(async () => {
   const scope = bScope();
   if (!scope) return;
-  const p = tblParams(st.views[bTab()]);
+  const p = tblParams(st.views.projects);
   if (scope !== "all") p.set("scope", scope);
   const q = p.toString();
   try {
     const got = await api("/api/board" + (q ? "?" + q : ""));
-    if (scope === bScope()) { bst.feed = got; bst.scope = scope; bst.err = null; }
+    if (scope === bScope()) {
+      bst.feed = got; bst.scope = scope; bst.err = null;
+      if (scope === "all") pCountSet("all", got?.table?.total);
+    }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
-  else if (bOnBoard()) renderBoard();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -314,8 +317,3 @@ $("b-root").addEventListener("keydown", (e) => {
   const i = e.target.dataset.forminput || e.target.dataset.formremove;
   if (i != null) { e.preventDefault(); const b = $("b-root").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
-
-TABS.board = {
-  show() { bMount("board"); renderBoard(); refreshBoard(); },
-  onEvent(ev) { if (st.tab === "board" && ev.kind === "resync") refreshBoard(); },
-};

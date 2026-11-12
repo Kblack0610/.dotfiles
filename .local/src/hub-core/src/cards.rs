@@ -83,7 +83,7 @@ impl Card {
         why: impl Into<String>,
     ) -> Card {
         Card {
-            big: "NO DATA".into(),
+            big: crate::reading::NO_DATA.to_uppercase(),
             error: Some(why.into()),
             ..Card::new(tab, title, counted)
         }

@@ -82,7 +82,11 @@ pub fn page(
                 out.extend(power(pw, p, now));
             }
         }
-        None => out.push(heading(&format!("{DAYS} DAYS"), "not read", p)),
+        None => out.push(heading(
+            &format!("{DAYS} DAYS"),
+            hub_core::reading::NOT_READ,
+            p,
+        )),
     }
     out.push(blank());
     out.extend(recent(&page.recent, p, now, w));

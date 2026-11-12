@@ -230,7 +230,7 @@ const qdata = (o = {}) => ({
   lanes: [{ repo: "unity-core-playground", says: "unity-core-playground: 2 quarantined over 2 owner rows, 1 ended; nightly 11-12: 8 known red, 1 now pass", level: "bad", url: "https://github.com/o/play/actions/runs/43215863750" }],
   rows: [held({ test: "P.Gone", row: "ucp-1", ends: "2026-11-10", days_left: -2, left: "ended", level: "bad" }), held({ nightly: "now passing" })], more: 0, error: null,
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "ended", n: 1 }, { name: "ending", n: 0 }, { name: "held", n: 1 }], columns: ["test", "repo", "row", "ends", "left", "nightly"].map(tcol), facets: [],
-    links: [{ repo: "#projects?q=unity-core-playground", row: "#board?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#board?q=id:=db-265" }] },
+    links: [{ repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=db-265" }] },
   ...o,
 });
 const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'tests'"); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("tst.render()"); };
@@ -265,7 +265,7 @@ test("the Quarantine table lists each held test under each lane's line with its 
   assert.ok(b.indexOf('data-tbl="t"') < b.indexOf('id="sec-quarantine"'), "below the suites");
   assert.match(b, /<div class="cline bad">unity-core-playground: 2 quarantined[^<]*<a href="https:\/\/github.com\/o\/play\/actions\/runs\/43215863750"[^>]*>nightly<\/a>/);
   assert.match(b, /<div data-tbl="q">.*id="qtn-q"/s);
-  assert.match(b, /<td class="wrap">P\.<wbr>Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#board\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
+  assert.match(b, /<td class="wrap">P\.<wbr>Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#projects\/all\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
   assert.match(b, /<td class="n ">8d<\/td><td class="">now passing<\/td>/);
   assert.match(b, /data-ts="ended"/);
   // no run picked still lists the quarantine
