@@ -526,3 +526,35 @@ test("a row carries its start place, hold, source and board row, and the head sa
   load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
   assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);
 });
+
+// A page opened on a linked Queue view reads /api/queue once, with that view; any other tab still
+// reads it once for the nav badge. Each case loads the scripts into a fresh context and fires the
+// page's DOMContentLoaded listeners in the order the scripts added them.
+const loadAt = async (hash) => {
+  const ready = [], urls = [];
+  const d = { ...doc, addEventListener: (ev, f) => { if (ev === "DOMContentLoaded") ready.push(f); } };
+  const c = vm.createContext({
+    console, document: d, window: { addEventListener() {} }, URLSearchParams,
+    setInterval: () => 0, clearInterval() {}, setTimeout: () => 0,
+    EventSource: function () { return { addEventListener() {}, close() {} }; },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    MutationObserver: function () { return { observe() {}, disconnect() {} }; },
+    location: { pathname: "/", hash },
+    history: { url: "", replaceState(a, b, u) { this.url = u; } },
+    // Only the URLs count here: no reply ever lands, so nothing renders.
+    fetch: (url) => { urls.push(url); return new Promise(() => {}); },
+  });
+  // The page's own script order, since the listeners' order is what this checks.
+  const page = readFileSync(new URL("../src/index.html", dir), "utf8");
+  for (const [, f] of page.matchAll(/<script src="\/static\/([\w-]+\.js)/g)) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), c, { filename: f });
+  ready.forEach((f) => f());
+  await settle();
+  return urls.filter((u) => /^\/api\/queue(\?|$)/.test(u));
+};
+
+test("a linked Queue view reads once with its view, and another tab reads once for the badge", async () => {
+  const linked = await loadAt("#queue?s=ready");
+  assert.equal(linked.length, 1, linked.join(" "));
+  assert.match(linked[0], /s=ready/);
+  assert.equal((await loadAt("#board")).length, 1);
+});

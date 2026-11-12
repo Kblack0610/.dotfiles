@@ -16,8 +16,9 @@ const el = () => new Proxy({}, {
 let click = null;
 const on = {};
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { on[ev] = f; if (ev === "click") click = f; } });
-let logClick = null;
-const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
+const logClicks = [];
+const logClick = (e) => logClicks.forEach((f) => f(e));
+const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClicks.push(f); } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const parts = { "fleet-body": part(), "fleet-tiles": part(), "fleet-facets": part(), "fleet-head": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
@@ -92,7 +93,7 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   vs.render();
   const h = logBox.innerHTML;
   assert.match(h, /7d: 25% answered, 40% would answer, 91% right/);
-  assert.match(h, /<b>knowledge<\/b> "your login" only you know/);
+  assert.match(h, /<b>knowledge<\/b> &quot;your login&quot; only you know/);
   assert.match(h, /<td>ship_deploy<\/td>/);
   assert.match(h, /class="cchip bad">b</);
   // The tiles are the server's counts over all 120 verdicts, and the head says the count.
@@ -112,6 +113,36 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   assert.match(s.views.log, /vs=passed/);
   ctx.fetch = was;
   s.views.log = "";
+  Object.assign(s, { tab: "fleet", arg: "" });
+});
+
+test("Log's verdict lists stop at the server's verdicts_shown, clamp long text, and each +N older reads only its own list", async () => {
+  const s = vm.runInContext("st", ctx), vs = vm.runInContext("vst", ctx), cap = 20;
+  Object.assign(s, { tab: "log", arg: "judges" });
+  s.views.log = "";
+  const verdicts = Array.from({ length: cap }, (_, i) => ({ ...judge.verdicts[0], id: `v${i}`, question: `question-${i}?` }));
+  const recent = Array.from({ length: cap + 2 }, (_, i) => ({ ts: 1793942659, project: "p", key: `row-${i}`, verdict: "skip", reason: "tier 3", tier: 3, clear: false }));
+  vs.data = { ...data, verdicts_shown: cap, judge: { ...judge, verdicts, table: { ...judge.table, shown: cap + 4 } }, dispatch: { ...data.dispatch, recent } };
+  vs.render();
+  let h = logBox.innerHTML;
+  assert.match(h, /data-list="dispatch"[\s\S]*?>\+2 older</, "the dispatch list stops at verdicts_shown");
+  assert.doesNotMatch(h, new RegExp(`row-${cap + 1}<`));
+  assert.match(h, /data-all="1">\+4 older</, "the server's cap on the answer judge");
+  assert.match(h, /<td class="wrap"><div class="c2" title="question-0\?">question-0\?<\/div><\/td>/, "a long question clamps to two lines");
+  const asked = [], was = ctx.fetch;
+  ctx.fetch = async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => vs.data }; };
+  // The dispatch list's +N older shows what it holds, with no read.
+  logClick({ type: "click", target: { dataset: { all: "1" }, closest: (sel) => (sel === '[data-list="dispatch"]' ? {} : null) } });
+  h = logBox.innerHTML;
+  assert.match(h, new RegExp(`row-${cap + 1}<`), "the dispatch list shows every row");
+  assert.match(h, /data-all="1">\+4 older</, "the answer judge stays at its first rows");
+  assert.deepEqual(asked, []);
+  // The answer judge's +N older reads the rest from the server.
+  logClick({ type: "click", target: { dataset: { all: "1" }, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "v" } } : null) } });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked, ["/api/fleet?vall=1"]);
+  ctx.fetch = was;
+  Object.assign(vs, { all: false, dispatchAll: false, data });
   Object.assign(s, { tab: "fleet", arg: "" });
 });
 

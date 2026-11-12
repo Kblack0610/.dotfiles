@@ -37,12 +37,15 @@ pub struct Table {
     pub rows: Vec<Vec<Cell>>,
     /// Most important first; the first never drops.
     pub keep: Vec<usize>,
+    /// The column that takes the room the others leave. With columns after it, it is clipped
+    /// (or, with `fit_wrapped`, wrapped) and padded to that room so they line up; last, it runs
+    /// to the edge.
     pub flex: Option<usize>,
     pub flexmin: usize,
     /// The flex column never hides; keep columns drop from the end until it has `flexmin`.
     pub flexkeep: bool,
     pub right: Vec<usize>,
-    /// (column, max width)
+    /// (column, max width); a capped flex column is never wider than its cap.
     pub cap: Vec<(usize, usize)>,
     /// A suffix on one header, the sort's direction mark (`datatable::DataTable::mark`).
     pub mark: Option<(usize, &'static str)>,
@@ -122,9 +125,29 @@ impl Table {
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
         let (on, wid) = self.layout(w, false);
         let header = self.head(head);
+        // A flex column with columns after it takes the room they leave, clipped and padded
+        // to it, so they line up; a last one just runs to the edge.
+        let ncol = self.header.len();
+        let room = self
+            .flex
+            .filter(|&f| on[f] && (f + 1..ncol).any(|j| on[j]))
+            .map(|f| {
+                let n = match w {
+                    0 => wid[f],
+                    _ => wid[f].min(self.room(&on, &wid, f, w)),
+                };
+                (f, n)
+            });
         std::iter::once(&header)
             .chain(&self.rows)
-            .map(|r| clip_line(self.line(r, &on, &wid, None), w))
+            .map(|r| {
+                let flex = room.map(|(f, n)| {
+                    let t = clip(r.get(f).map_or("", |c| c.text.as_str()), n);
+                    let pad = n.saturating_sub(len(&t));
+                    t + &" ".repeat(pad)
+                });
+                clip_line(self.line(r, &on, &wid, flex), w)
+            })
             .collect()
     }
 
@@ -150,7 +173,7 @@ impl Table {
         };
         let indent = span(0..f);
         let after = span(f + 1..self.header.len());
-        let room = w.saturating_sub(indent + after).max(1);
+        let room = self.room(&on, &wid, f, w);
         let pad = |t: String| {
             if after > 0 {
                 let n = room.saturating_sub(len(&t));
@@ -187,6 +210,16 @@ impl Table {
             }
         }
         (out, starts)
+    }
+
+    /// The columns the flex column `f` has at width `w`: what the other shown columns and their
+    /// gaps leave, at least one.
+    fn room(&self, on: &[bool], wid: &[usize], f: usize, w: usize) -> usize {
+        let others: usize = (0..self.header.len())
+            .filter(|&j| on[j] && j != f)
+            .map(|j| wid[j] + GAP)
+            .sum();
+        w.saturating_sub(others).max(1)
     }
 
     /// Which columns show, and each one's width. A clipped flex column asks for its whole
@@ -255,8 +288,14 @@ impl Table {
                 spans.push(Span::raw(" ".repeat(GAP)));
             }
             if Some(j) == self.flex {
+                // Its pad is plain, like the other columns', so a cell's style stops at its text.
                 let text = flex.take().unwrap_or_else(|| c.text.clone());
-                spans.push(Span::styled(text, c.style));
+                let body = text.trim_end_matches(' ');
+                let pad = text.len() - body.len();
+                spans.push(Span::styled(body.to_string(), c.style));
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad)));
+                }
                 continue;
             }
             let v = clip(&c.text, wid[j]);
@@ -403,6 +442,60 @@ mod tests {
         let mut tb = t(&[&["alpha", "7", "a long note"]]);
         tb.flexkeep = true;
         assert_eq!(texts(&tb, 13), ["NAME   NOTE", "alpha  a lon~"]);
+    }
+
+    #[test]
+    fn a_flex_column_before_others_clips_and_pads_so_they_line_up() {
+        let mut tb = t(&[&["alpha", "7", "a long note here"], &["b", "12", "short"]]);
+        tb.header = vec!["NOTE", "NAME", "N"];
+        tb.rows = tb
+            .rows
+            .into_iter()
+            .map(|r| vec![r[2].clone(), r[0].clone(), r[1].clone()])
+            .collect();
+        (tb.keep, tb.flex, tb.flexkeep, tb.right) = (vec![1, 2], Some(0), true, vec![2]);
+        assert_eq!(
+            texts(&tb, 22),
+            [
+                "NOTE         NAME    N",
+                "a long not~  alpha   7",
+                "short        b      12"
+            ]
+        );
+        // With room to spare, the note keeps its own width rather than the line's.
+        assert_eq!(
+            texts(&tb, 0),
+            [
+                "NOTE              NAME    N",
+                "a long note here  alpha   7",
+                "short             b      12"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_padded_flex_cell_keeps_its_style_off_the_pad() {
+        let red = Style::new().fg(ratatui::style::Color::Red);
+        let tb = Table {
+            header: vec!["NOTE", "N"],
+            rows: vec![
+                vec![cell("hi", red), "7".into()],
+                vec!["longer".into(), "8".into()],
+            ],
+            keep: vec![1],
+            flex: Some(0),
+            flexkeep: true,
+            ..Default::default()
+        };
+        let lines = tb.fit(0, Style::new());
+        assert_eq!(plain(&lines[1]), "hi      7");
+        let styled: Vec<&str> = lines[1]
+            .spans
+            .iter()
+            .filter(|s| s.style == red)
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(styled, ["hi"]);
     }
 
     #[test]

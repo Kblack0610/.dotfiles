@@ -1231,18 +1231,25 @@ handoff_of() {
 # roster), each with the worker in `host` and its target as <host>@<server>/<session>:<window>. That
 # names no tmux server here, so a nudge or a set-option aimed at the row can never land on a local
 # session that shares its name, and item_of joins it to its queue item by session id alone. A worker
-# that does not answer, or runs no agent-panel, adds nothing: a laptop asleep is not this machine's
-# sources blinking ($CACHE/unreadable). It runs beside collect's row loop, so a gap goes straight to
-# $CACHE/blind as "+" (keep_blind), never through blind_row, which names the row the loop is on.
+# that does not answer (ssh exit 255), or whose agent-panel fails, adds no rows and is one
+# {host, why} line in $CACHE/silent, which state.json carries as `silent` so the Sessions table says its rows are missing (dashboards.md
+# rule 6). It is not $CACHE/unreadable: a laptop asleep is not this machine's sources blinking. It
+# runs beside collect's row loop, so a gap goes straight to $CACHE/blind as "+" (keep_blind), never
+# through blind_row, which names the row the loop is on.
 remote_panel_lines() {
-  local name out rc
+  local name out rc why
   fleet_hosts >/dev/null
   while IFS= read -r name; do
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
     # not log the sessions it missed as gone.
     rc=0; out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || rc=$?
     [ "$rc" -eq 3 ] && { unreadable "agent-panel@$name"; echo + >> "$CACHE/blind"; }
-    [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || continue
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+      # ssh exits 255 when the host does not answer; any other code is agent-panel's own failure.
+      why="did not answer"; [ "$rc" -eq 255 ] || why="ran agent-panel, which exited $rc"
+      jq -cn --arg h "$name" --arg w "$why" '{host: $h, why: $w}' >> "$CACHE/silent"
+      continue
+    fi
     jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   done < <(fleet_hosts | jq -r .name)
   return 0
@@ -1856,7 +1863,7 @@ write_state() {
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   # The rows and asks go in by file: 77 sessions came to 136 KB, past the kernel's 128 KB cap on one argument.
   printf '%s' "$json" > "$CACHE/rows" && printf '%s' "$asks" > "$CACHE/asks" || return 1
-  if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
+  if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" --arg silent "$(sort -u "$CACHE/silent" 2>/dev/null)" \
        --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \
        --rawfile asks "$CACHE/asks" --rawfile rows "$CACHE/rows" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
@@ -1865,6 +1872,7 @@ write_state() {
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" "))},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
+         silent: ($silent | split("\n") | map(select(length > 0) | fromjson)),
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))

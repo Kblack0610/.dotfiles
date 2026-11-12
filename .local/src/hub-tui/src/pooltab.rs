@@ -61,7 +61,11 @@ pub fn page(
     out.push(Line::raw(""));
     match &page.history {
         Some(h) => out.extend(history(h, p, now, w)),
-        None => out.push(heading(&format!("{DAYS} DAYS"), "not read", p)),
+        None => out.push(heading(
+            &format!("{DAYS} DAYS"),
+            hub_core::reading::NOT_READ,
+            p,
+        )),
     }
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }

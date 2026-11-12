@@ -7,7 +7,6 @@
 use std::collections::HashSet;
 
 use hub_core::fleet::{self, who, who::Who, AskVerdict, Fleet, Paths};
-use hub_core::layout::FOLD_ROWS;
 use hub_core::table::View;
 use serde::Deserialize;
 
@@ -35,6 +34,8 @@ pub struct VerdictQuery {
     pub vs: String,
     pub vsort: String,
     pub vdir: String,
+    /// Set by the list's "+N older": every verdict the view keeps, not the first `verdicts_shown`.
+    pub vall: Option<String>,
 }
 
 impl VerdictQuery {
@@ -66,7 +67,11 @@ pub async fn get(q: FleetQuery) -> String {
 /// The Fleet with its `who` rows cut to the view and folds, and the controls that drew them
 /// (`table`; `hidden` is how many rows the folds hold back), and the verdicts Log lists.
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
-    f.judge.view(&q.verdicts.view(), FOLD_ROWS);
+    let cap = match q.verdicts.vall {
+        Some(_) => usize::MAX,
+        None => hub_core::layout::fold_rows("verdicts"),
+    };
+    f.judge.view(&q.verdicts.view(), cap);
     let view = View::new::<Who>(&q.q, &q.s, &q.sort, &q.dir);
     let all = std::mem::take(&mut f.who);
     let (rows, mut table) = view.summary(&all);
@@ -85,6 +90,8 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         v["table"] = serde_json::json!(table);
         v["table"]["shown"] = shown.len().into();
         v["hidden"] = hidden.into();
+        // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
+        v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
@@ -160,6 +167,7 @@ mod tests {
         let v = who_of(&render(fleet(), &q("shepherd", "")));
         assert_eq!(v["who"].as_array().unwrap().len(), 1);
         assert_eq!(v["hidden"], 1);
+        assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
         assert!(v["table"].is_object());
         assert_eq!(
             v["table"]["links"],
@@ -181,13 +189,27 @@ mod tests {
             score: "wrong".into(),
             ..Default::default()
         };
+        let cap = hub_core::layout::fold_rows("verdicts");
         let mut f = fleet();
-        f.judge.verdicts = (0..FOLD_ROWS + 5).map(|_| wrong("ship it?")).collect();
+        f.judge.verdicts = (0..cap + 5).map(|_| wrong("ship it?")).collect();
         f.judge.verdicts.push(wrong("which login?"));
-        let v = who_of(&render(f, &q));
-        assert_eq!(v["judge"]["verdicts"].as_array().unwrap().len(), FOLD_ROWS);
-        assert_eq!(v["judge"]["table"]["shown"], FOLD_ROWS + 5);
-        assert_eq!(v["judge"]["table"]["total"], FOLD_ROWS + 6);
+        let v = who_of(&render(f.clone(), &q));
+        assert_eq!(
+            v["judge"]["verdicts"].as_array().unwrap().len(),
+            cap,
+            "Log's rows, then +N older"
+        );
+        assert_eq!(v["judge"]["table"]["shown"], cap + 5);
+        assert_eq!(v["judge"]["table"]["total"], cap + 6);
+        let uri = "/api/fleet?vs=wrong&vq=ship&vall=1".parse().unwrap();
+        let axum::extract::Query(all) =
+            axum::extract::Query::<FleetQuery>::try_from_uri(&uri).unwrap();
+        let v = who_of(&render(f, &all));
+        assert_eq!(
+            v["judge"]["verdicts"].as_array().unwrap().len(),
+            cap + 5,
+            "+N older reads them all"
+        );
         let uri = "/api/fleet/runner?name=ask-judge&vs=passed"
             .parse()
             .unwrap();

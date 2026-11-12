@@ -7,6 +7,8 @@
 const $ = (id) => document.getElementById(id);
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+// The empty-state words, hub_core::reading's NOT_READ and NO_DATA; its guard test keeps them equal.
+const NOT_READ = "not read", NO_DATA = "no data";
 
 // The answer to one request. A fetch that got none (agent-web restarting or down, the network
 // gone) says that, never the browser's bare "NetworkError"; an abort stays an abort.
@@ -20,7 +22,7 @@ async function reach(path, opts) {
   }
 }
 
-// How a sheet row closes (`notes ptask done` or `drop`), shared by the Board's form and Home's sheet
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the board's form and Home's sheet
 // cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
 const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
@@ -235,6 +237,8 @@ function poll(tab, refresh, ms) {
 // A folded Log section lists at most this many rows, then says how many older ones it left out.
 const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
+// A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
+const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
 
 function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;

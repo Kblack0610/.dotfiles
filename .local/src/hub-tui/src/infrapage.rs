@@ -92,7 +92,7 @@ impl InfraPage {
     pub fn read(&self, infra: &Infra, firing: Option<&[Alert]>, jobs: &Path, now: u64) -> Self {
         match self {
             Self::Machine(h, _) => {
-                let alerts = firing.ok_or_else(|| "not read yet".to_string());
+                let alerts = firing.ok_or_else(|| "the alerts have not answered yet".to_string());
                 let r = machine_page::read(infra, h, alerts, jobs, now);
                 Self::Machine(h.clone(), Some(r))
             }

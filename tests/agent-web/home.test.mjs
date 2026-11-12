@@ -263,7 +263,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
     ],
     // hub_core::links beside the rows (`Running::link`): the page draws these, it builds none.
     running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }], links: [
-      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#board?q=id:=ar-1494", epic: "#board?q=id:=ar-1292",
+      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#projects/all?q=id:=ar-1494", epic: "#projects/all?q=id:=ar-1292",
         pr: "https://github.com/o/r/pull/1871", ci: "https://github.com/o/r/pull/1871/checks" },
       { item: "#queue/q-2", project: "#projects/trader" },
     ] },
@@ -278,8 +278,8 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const cells = row[1];
   assert.match(cells, /<a class="tl" href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
   assert.match(cells, /<a class="tl" href="#projects\/agent-runtime">agent-runtime<\/a>/);
-  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
-  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
+  assert.match(cells, /<a class="tl" href="#projects\/all\?q=id:=ar-1494">ar-1494<\/a>/);
+  assert.match(cells, /<a class="tl" href="#projects\/all\?q=id:=ar-1292">ar-1292<\/a>/);
   assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
   assert.match(cells, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
   assert.match(cells, /<a class="tl ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
@@ -692,7 +692,7 @@ test("an opened sheet row closes from its card: a refresh keeps the form, the ro
   const needs = [sheet("t-1"), sheet("a row with no id")];
   const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
   assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
-  assert.match(html, /data-tab="board">Open the board/);
+  assert.match(html, /href="#projects\/all">Open all rows/);
   assert.equal((html.match(/data-closego/g) || []).length, 1);
   // What was picked and typed is Home's state, so the next draw shows it again.
   vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);

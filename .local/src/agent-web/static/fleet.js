@@ -107,11 +107,15 @@ function dispatchTiles(d) {
   return `<div class="tiles">${tiles}</div>`;
 }
 
-function dispatchList(d) {
-  const rows = d.recent.slice(0, LOG_ROWS).map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
+// A verdict list's first `cap` rows, or all of them when cap is null ("+N older" was asked for).
+const firstRows = (list, cap) => (cap == null ? list : list.slice(0, cap));
+
+function dispatchList(d, cap) {
+  const shown = firstRows(d.recent, cap);
+  const rows = shown.map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
     `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
-    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
+    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${clamp2(esc(v.reason), v.reason)}</td></tr>`).join("");
+  return `<div class="panel scroll" data-list="dispatch">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}${tblMore(d.recent.length - shown.length)}</div>`;
 }
 
 // The runner whose page draws a judge's tiles is the one whose conf names that extras block
@@ -148,15 +152,22 @@ const judgeWeek = (j) => `<div class="muted">7d: ${share(j.week.live_pct)} answe
 
 const VERDICT_COLS = { when: ["when", "n"], project: ["project"], type: ["type"], said: ["said"], question: ["question"], why: ["why"], you: ["you", "", true] };
 
-// The verdicts the server kept (Judge::view), newest first, with what the cap left out.
-function judgeRows(j) {
+// The verdicts the server kept (Judge::view), newest first, then what its cap left out: `more`
+// draws that count, Log's a button that reads them all, the runner page's a line.
+function judgeRows(j, more = older) {
   const t = j.table;
-  const why = (x) => `${x.rule && x.rule !== x.type ? `<b>${esc(x.rule)}</b> ` : ""}${x.evidence ? `"${esc(x.evidence)}" ` : ""}${esc(x.reason)}`;
+  // Why, built once as its parts (the rule, the quoted evidence, the reason): the title is their
+  // text, the cell the same parts escaped, the rule in bold.
+  const whyCell = (x) => {
+    const parts = [x.rule && x.rule !== x.type ? x.rule : "", x.evidence ? `"${x.evidence}"` : "", x.reason || ""];
+    const html = parts.map((p, i) => (i === 0 && p ? `<b>${esc(p)}</b>` : esc(p)));
+    return clamp2(html.filter((_, i) => parts[i]).join(" "), parts.filter(Boolean).join(" "));
+  };
   const rows = j.verdicts.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
-    `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
+    `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${clamp2(esc(x.question), x.question)}</td><td class="wrap muted">${whyCell(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
   return `<div class="panel scroll">${rows ? `<table class="tbl">${tblHead(t, VERDICT_COLS)}${rows}</table>` : `<div class="empty">${t.total ? "No verdict matches." : "No verdicts yet."}</div>`}</div>` +
-    older(t.shown - j.verdicts.length);
+    more(t.shown - j.verdicts.length);
 }
 
 function renderFleet() {
@@ -178,8 +189,7 @@ const RUNNER_TIME_KEYS = ["updated", "next"];
 function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
-      return secHead("", "Dispatch judge") +
-        dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
+      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
     case "ask-judge":
       return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells(x.judge) + judgeWeek(x.judge) +
         `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
@@ -257,17 +267,27 @@ function renderRunner(el) {
 }
 
 // Log's Judges' verdicts section: the dispatch judge's newest verdicts, then everything the answer
-// judge said, with why and what you did, under its tiles and search.
+// judge said, with why and what you did, under its tiles and search. Each list stops at the
+// server's verdicts_shown: the answer judge's "+N older" reads the rest (vall), the dispatch
+// list's shows what it holds (dispatchAll).
 const vst = tblTab({
-  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.",
+  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.", pages: true,
+  params: (p, t) => { if (t.all) p.set("vall", "1"); }, state: { dispatchAll: false },
   shown: () => logShows("verdicts"), hint: "search a question, project, rule or answer",
   table: (t) => t.data?.judge?.table,
-  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge),
+  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge, tblMore),
   wrap: (h) => `<div data-tbl="${VERDICTS_PRE}">${h}</div>`,
 });
 
+// The dispatch list's "+N older" sits above the verdicts' block, so tblTab leaves it here.
+$("log-verdicts").addEventListener("click", (e) => {
+  if (!e.target.dataset?.all || !e.target.closest?.('[data-list="dispatch"]')) return;
+  vst.dispatchAll = true;
+  vst.render();
+});
+
 function verdictsHead(d) {
-  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
+  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch, vst.dispatchAll ? null : d.verdicts_shown)}` +
     `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="n">${tblCount(d.judge.table)}</span></h3>${judgeWeek(d.judge)}`;
 }
 

@@ -503,7 +503,8 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
             (2, 18),
             (5, 18),
             (6, 8),
-            (10, 14),
+            // PR: room for `home-config#875 +2`, an item landed in several repos.
+            (10, 20),
             (11, 10),
             (12, 8),
             (14, 10),

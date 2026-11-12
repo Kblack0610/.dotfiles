@@ -532,7 +532,10 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
         return vec![clip_line(
-            Line::from(vec![dim("BURN  "), Span::raw("no data from claude-acct")]),
+            Line::from(vec![
+                dim("BURN  "),
+                Span::raw(format!("{} from claude-acct", hub_core::reading::NO_DATA)),
+            ]),
             w,
         )];
     }
@@ -1380,9 +1383,9 @@ fn direct(b: &Board, p: Palette) -> Vec<Span<'static>> {
 fn sources(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let mut s = vec![Span::styled("as of: ", p.dim())];
     for (i, src) in b.sources.iter().enumerate() {
-        let when = src
-            .as_of
-            .map_or("never".into(), |t| crate::fmt::clock(t, b.at));
+        let when = src.as_of.map_or(hub_core::reading::NO_DATA.into(), |t| {
+            crate::fmt::clock(t, b.at)
+        });
         let text = format!("{}{} {when}", if i == 0 { "" } else { "  " }, src.name);
         s.push(if src.stale {
             Span::styled(text, p.warn())

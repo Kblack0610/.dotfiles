@@ -463,4 +463,7 @@ TABS.queue = {
     if (ev.kind === "resync") refreshFlow();
   },
 };
-refreshQueue();
+// The nav badge needs one read on any tab. It waits for app.js's route (whose listener runs first:
+// app.js loads before this file) so a linked view (`#queue?s=ready`) reads once, with its view,
+// and the Queue tab's own show() makes that read there.
+document.addEventListener("DOMContentLoaded", () => { if (st.tab !== "queue") refreshQueue(); });
