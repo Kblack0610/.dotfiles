@@ -774,6 +774,44 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+@test "negative control: a harness's max_tier keeps a tier-2 item off it, pinned or routed; a tier-1 item and a tier-3 canary run on it" {
+  route_ready
+  printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
+  harness_set --arg k "$SANDBOX/nim.key" --arg c "$SANDBOX/eval-nim.json" '.harnesses.nim = {
+    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {deepseek: "litellm/free-deepseek (deepseek-v4.1-flash)"}}'
+  srcs nim:ok:0.1 codex:ok:5
+  # model-lane offers nim first (a trial pick); it has room at the lowest rank.
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
+case "$1" in log) echo run-9 ;; classify)
+  echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"trial\":\"nim:deepseek\",\"candidates\":[{\"harness\":\"nim\",\"model\":\"deepseek\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]}" ;; esac'
+  agent-queue set fix-menu tags=tier2 >/dev/null
+  agent-queue add --project game --slug pin-nim --agent nim --priority urgent --tags tier2 "Fix the save menu" >/dev/null
+  agent-queue set pin-nim model=deepseek >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  # Pinned: refused with the reason, and it stays queued.
+  assert_output --partial "queue item pin-nim has no source with room it may run on: nim: it takes tier 1 work at most (max_tier in $DISPATCH_HARNESSES, until its runs score beside claude), and this is tier 2"
+  [ -n "$(qitem queued pin-nim)" ] || fail "the pinned tier-2 item left the queue"
+  # Routed: the tier-2 item skips its nim trial pick and goes to the next fit.
+  assert_output --partial 'started queue item fix-menu on codex (sol), routed by model-lane'
+  assert_not_called 'opencode run'
+  # A max_tier that is no tier fails closed.
+  harness_set '.harnesses.nim.max_tier = "low"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "queue item pin-nim has no source with room it may run on: nim: its max_tier in $DISPATCH_HARNESSES is not 1, 2 or 3"
+  assert_not_called 'opencode run'
+  # Positive controls: the same pinned item as a tier-3 canary starts on nim (a canary opens no PR;
+  # the queue's own canaries are tier 3 by their night tag), and so does a tier-1 item, so each
+  # refusal above came from max_tier alone.
+  harness_set '.harnesses.nim.max_tier = 1'
+  canary_item pin-nim c-1; agent-queue set pin-nim tags="canary tier3" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-nim on nim (deepseek), the harness it is pinned to'
+  agent-queue add --project game --slug pin-nim-1 --agent nim --priority urgent --tags tier1 "Fix the load menu" >/dev/null
+  agent-queue set pin-nim-1 model=deepseek >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-nim-1 on nim (deepseek), the harness it is pinned to'
+}
+
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
