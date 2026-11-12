@@ -16,8 +16,6 @@
 # queue's admission held it, FAILED when a count could not be taken or the open pass has sat queued
 # or held by admission past DOCS_CLEANUP_STARVED_DAYS without starting.
 set -uo pipefail
-# The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
-PATH="$HOME/.local/bin:$PATH"
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-docs-cleanup: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
 NAME="${AGENTCTL_NAME:-docs-cleanup}"

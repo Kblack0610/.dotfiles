@@ -8,6 +8,7 @@ setup() {
   load '../vendor/bats-assert/load'
   export HOME="$BATS_TEST_TMPDIR/home"
   BIN="$HOME/.local/bin"
+  export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
   cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BIN/"
   printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"

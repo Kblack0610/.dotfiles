@@ -85,7 +85,6 @@
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
 
 set -uo pipefail
-export PATH="$HOME/.local/bin:$PATH"
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
 NAME="${AGENTCTL_NAME:-shepherd}"
