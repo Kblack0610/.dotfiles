@@ -678,7 +678,8 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
 
 /// The one CI pass rate's verdict on a run: `Some(true)` it succeeded, `Some(false)` it failed
 /// (failure, timeout, startup failure), `None` it is left out: still running, or cancelled,
-/// skipped, neutral, stale or waiting on approval, which stopped before saying pass or fail.
+/// skipped, abandoned (a Forgejo job no runner took), neutral, stale or waiting on approval,
+/// which stopped before saying pass or fail.
 /// Each attempt is a run, so a red re-run to green is one red and one green. Builds' Run times
 /// and `hub ci pass` (day-log's CI numbers) count with this and nothing else.
 pub fn verdict(conclusion: Option<&str>) -> Option<bool> {
@@ -1448,10 +1449,12 @@ mod tests {
             lines.push(timed(i, "Tests (affected)", "cancelled", 5));
         }
         lines.push(timed(21, "Tests (affected)", "skipped", 1));
+        // A Forgejo run whose job no runner took ends when the job was cancelled, a day on.
+        lines.push(timed(22, "Tests (affected)", "abandoned", 27 * 3600));
         let (_, times) = timed_rows(&lines);
         assert_eq!(times.len(), 1);
         let t = &times[0];
-        assert_eq!(t.runs, 10, "cancelled and skipped are left out");
+        assert_eq!(t.runs, 10, "cancelled, skipped and abandoned are left out");
         assert_eq!(
             t.usual,
             Some(Usual {

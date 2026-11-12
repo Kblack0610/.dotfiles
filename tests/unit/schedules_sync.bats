@@ -469,9 +469,9 @@ fj_task() {
 }
 fj_page() { local IFS=,; printf '{"total_count":0,"workflow_runs":[%s]}' "$*"; }
 fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr '/?&=' '____')"; }
-# fj_run <run> <stopped>: serves o/fj's actions/runs?run_number=<run>
+# fj_run <run> <stopped> [status]: serves o/fj's actions/runs?run_number=<run>
 fj_run() {
-  printf '{"total_count":1,"workflow_runs":[{"index_in_repo":%s,"status":"success","stopped":"%s"}]}' "$1" "$2" \
+  printf '{"total_count":1,"workflow_runs":[{"index_in_repo":%s,"status":"%s","stopped":"%s"}]}' "$1" "${3:-success}" "$2" \
     > "$FJD/$(echo "repos/o/fj/actions/runs?run_number=$1" | tr '/?&=' '____')"
 }
 
@@ -542,6 +542,33 @@ fj_run() {
   assert_output 1
   run jq -sc 'map(.ended_at) | unique' "$LEDGER"
   assert_output '["2025-11-06T10:05:00Z"]'
+}
+
+@test "forgejo: a run whose job no runner took stays open, then is abandoned, not a day-long success" {
+  printf 'forgejo:fj.test/o/fj develop\n' > "$SANDBOX/repos"
+  # run 4's build job ran; its deploy job never got a runner, so actions/tasks never lists it
+  fj_page "$(fj_task 6 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
+  fj_run 4 0001-01-01T00:00:00Z waiting
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map([.id, .status, .conclusion, .ended_at])' "$LEDGER"
+  assert_output '[[4,"queued",null,null]]'
+  # a day on, Forgejo's abandoned-job cron cancels the waiting job and the run stops
+  fj_run 4 2025-11-07T11:00:00Z cancelled
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'last | [.status, .conclusion, .ended_at]' "$LEDGER"
+  assert_output '["completed","abandoned","2025-11-07T11:00:00Z"]'
+  # the next pass keeps the ledger's verdict; a run cancelled while its job ran is a plain cancel,
+  # and one finished by its own status but with no stop is completed with no end
+  fj_page "$(fj_task 8 6 success 2025-11-06T13:00:00Z)" "$(fj_task 7 5 cancelled 2025-11-06T12:00:00Z)" \
+          "$(fj_task 6 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
+  fj_run 5 2025-11-06T12:05:00Z cancelled
+  fj_run 6 0001-01-01T00:00:00Z success
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'group_by(.id) | map(last | [.id, .status, .conclusion, .ended_at])' "$LEDGER"
+  assert_output '[[4,"completed","abandoned","2025-11-07T11:00:00Z"],[5,"completed","cancelled","2025-11-06T12:05:00Z"],[6,"completed","success",null]]'
 }
 
 # lrow <id> <attempt> <branch> <created> <conclusion>: one ledger row of o/game
