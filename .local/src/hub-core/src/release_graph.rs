@@ -1058,7 +1058,16 @@ impl<'a> Graph<'a> {
                     else {
                         continue;
                     };
-                    if !pr.by_bot() && self.item(repo, *n).and_then(Item::board_row).is_none() {
+                    // A PR merged before the date is history nobody recorded, never a red.
+                    let history = pr
+                        .merged_at
+                        .as_deref()
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .is_some_and(|t| t.timestamp() < links.since);
+                    if !history
+                        && !pr.by_bot()
+                        && self.item(repo, *n).and_then(Item::board_row).is_none()
+                    {
                         out.push(format!("{p} {}: {repo}#{n} has no board row", t.tag));
                     }
                 }
@@ -1149,7 +1158,17 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
         errors.push(e);
         Default::default()
     });
-    let items = queue::list(runner, "all").unwrap_or_else(|e| {
+    // The done items since the date, not only today's: a PR landed yesterday names its row there.
+    use chrono::TimeZone;
+    let since_day = chrono::Local
+        .timestamp_opt(snap.links.since, 0)
+        .single()
+        .map(|d| d.format("%Y-%m-%d").to_string());
+    let items = match since_day.filter(|_| snap.links.since > 0) {
+        Some(day) => queue::list_since(runner, "all", &day),
+        None => queue::list(runner, "all"),
+    }
+    .unwrap_or_else(|e| {
         errors.push(format!("agent-queue list: {e}"));
         vec![]
     });
@@ -1986,7 +2005,8 @@ mod tests {
         let mut old = tag("app-v1.2.0", "1.2.0", since - 100);
         old.prs = vec![10];
         let mut new = tag("app-v1.3.0", "1.3.0", since + 10);
-        new.prs = vec![11, 12, 14];
+        // 15 merged before the date: history, so no row is asked of it.
+        new.prs = vec![11, 12, 14, 15];
         let mut lines = HashMap::new();
         lines.insert(
             "app".to_string(),
@@ -2037,6 +2057,10 @@ mod tests {
                 ..human(12)
             },
             human(14),
+            Pr {
+                merged_at: Some(ts(since - 60)),
+                ..human(15)
+            },
         ];
         let mut items = vec![item(
             "a",
