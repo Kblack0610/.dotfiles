@@ -599,7 +599,12 @@ fn status(
     };
     let s = match st {
         None => return vec![head("reading...".into(), p.dim())],
-        Some(Err(e)) => return vec![head(format!("not read: {e}"), p.warn())],
+        Some(Err(e)) => {
+            return vec![head(
+                format!("{}: {e}", hub_core::reading::NOT_READ),
+                p.warn(),
+            )]
+        }
         Some(Ok(s)) => s,
     };
     let checked = s.newest.map_or("no result yet".into(), |t| {

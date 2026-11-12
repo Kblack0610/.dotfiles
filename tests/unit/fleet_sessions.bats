@@ -1073,16 +1073,24 @@ SH
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
   grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
-  # An unreachable worker drops its rows and is not named as an unreadable source.
+  # An unreachable worker has no rows; state.json names it silent, not an unreadable source,
+  # so the Sessions table says its rows are missing instead of showing fewer as all there is.
   printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
+  assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
   # A worker whose read had a gap (exit 3) keeps the rows it read (ar-916).
   printf '#!/usr/bin/env bash\n%q "$@"\nexit 3\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
+  # A worker that answers but whose agent-panel fails is silent with that reason, not "did not answer".
+  printf '#!/usr/bin/env bash\nexit 127\n' > "$SANDBOX/bin/ssh"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_equal "$(jq -r '.silent[0].why' "$SANDBOX/state.json")" 'ran agent-panel, which exited 127'
 }
 
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {

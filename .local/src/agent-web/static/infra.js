@@ -21,7 +21,7 @@ const refreshInfra = coalesce(async () => {
 // Status as the cc:* rules give it: 0 ok, 1 warn, 2 red, anything else no data. The colour
 // always comes with its word.
 const STATUS = [["OK", "var(--b-done)"], ["WARN", "var(--b-stalled)"], ["RED", "var(--b-needs)"]];
-const statusOf = (v) => STATUS[v] || ["NO DATA", "var(--c-other)"];
+const statusOf = (v) => STATUS[v] || [NO_DATA.toUpperCase(), "var(--c-other)"];
 
 // cc: "cc:pool_busy" -> {unity: 4, ...} by the series' key label (pool, host, site, or
 // domain/component), or the bare value with no label.

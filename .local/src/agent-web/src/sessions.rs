@@ -79,13 +79,13 @@ fn failed(e: String) -> String {
 impl Cache {
     pub(crate) async fn read(&self) -> Result<Arc<Read>, String> {
         let read = off(|| {
-            let (state, vocab) = session_table::read_state(&boards::fleet_state());
+            let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
             let feed = session_table::feed(&System, &session_table::registry());
             Read {
                 rows: session_table::rows(&state, &vocab, &feed, &actions::gather(&System).agents),
                 state,
                 buckets: vocab.buckets().to_vec(),
-                errors: feed.errors,
+                errors: feed.errors.into_iter().chain(silent).collect(),
             }
         });
         self.table.get((), read).await
@@ -175,7 +175,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state.json");
         std::fs::write(&path, doc.to_string()).unwrap();
-        let (state, vocab) = session_table::read_state(&path);
+        let (state, vocab, _) = session_table::read_state(&path);
         std::fs::remove_dir_all(&dir).ok();
         let r = Read {
             rows: session_table::rows(&state, &vocab, &session_table::Feed::default(), &[]),
