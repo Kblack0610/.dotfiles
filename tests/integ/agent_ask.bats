@@ -843,6 +843,69 @@ outcomes_cli() {
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
 }
 
+# ── reopen on answer ────────────────────────────────────────────────────────
+# A session that closes over its own pending ask (/wind-down auto, close rule "only its own ask is
+# open") sets the ask to reopen it: the answer starts the ended conversation again with the answer.
+
+@test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
+  local id other loose
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-8.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ -f "$NOTES_FIXTURE/live" ] && echo "{\\"session_id\\":\\"sid-8\\",\\"pane\\":\\"%%1\\"}"; exit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'ship it?')"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  assert_line --partial "$id reopens its session on the answer"
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'session gone: the answer reopens the session with it'
+  # The resume is the answer's route, so no board row is filed for it.
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  assert_not_called 'chore(ask)'
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: go"
+  # Negative controls: a live session already had the answer typed in; nothing starts.
+  : >"$NOTES_FIXTURE/calls.log"; : >"$NOTES_FIXTURE/live"
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'is live'
+  assert_not_called 'fleet-dispatch start'
+  rm "$NOTES_FIXTURE/live"
+  # A queue item tagged with the ask is the queue's to restart.
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$id" "the next phase" >/dev/null
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'a queue item holds it'
+  assert_not_called 'fleet-dispatch start'
+  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
+  "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  run "$AGENT_ASK" reopen "$failed"
+  assert_failure
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
+  # Refused: an ask that already resumes some other way, one with no session, one not pending.
+  other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
+  run "$AGENT_ASK" reopen-on-answer "$other"
+  assert_failure
+  assert_output --partial 'already resumes with: /captain resume'
+  loose="$(post demo 'loose?')"
+  run "$AGENT_ASK" reopen-on-answer "$loose"
+  assert_failure
+  assert_output --partial 'names no session'
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_failure
+  assert_output --partial 'answered, not pending'
+}
+
 # ── lifecycle: one home ──────────────────────────────────────────────────────
 # An ask stays pending until the human answers or drops it, however old and whether or not its
 # session lives. Nothing marks it stale or copies it to a board.
