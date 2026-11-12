@@ -226,9 +226,25 @@ opencode_path = os.environ["OPENCODE_CONFIG_PATH"]
 opencode_stage_path = os.environ["OPENCODE_STAGE_PATH"]
 opencode_current = read_json(opencode_path)
 opencode_stage = read_json(opencode_stage_path)
+
+
+def opencode_v2_mcp(v1: dict) -> dict:
+    # rulesync emits opencode's V1 map ({name: {..., enabled, timeout: ms}}); opencode 2.x
+    # reads mcp.servers with `disabled` and a per-phase timeout object.
+    servers = {}
+    for name, server in v1.items():
+        server = dict(server)
+        if "enabled" in server:
+            server["disabled"] = not server.pop("enabled")
+        if isinstance(server.get("timeout"), int):
+            server["timeout"] = {"execution": server["timeout"]}
+        servers[name] = server
+    return {"servers": servers}
+
+
 # opencode.jsonc is a required rulesync output (asserted above), so the stage is never
 # absent here; replacing the block prunes a removed server, as the Gemini branch does.
-opencode_current["mcp"] = opencode_stage.get("mcp", {})
+opencode_current["mcp"] = opencode_v2_mcp(opencode_stage.get("mcp", {}))
 write_json(opencode_path, opencode_current)
 PY
 
