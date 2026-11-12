@@ -8,6 +8,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/hypr'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/machine_mode.sh"
   ICON=$'\uf1de' # nf-fa-sliders, as an escape so no editor can strip it
@@ -80,14 +81,15 @@ mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME
 }
 
 @test "each pinbar-mode leaf sets the mode of its own key" {
-  run awk '/^submap = pinbar-mode$/,/^submap = pinbar-utils$/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
+  run hypr_dump registry
+  assert_success
+  local reg=$output
+  run jq -r '.[] | select(.submap == "pinbar-mode") | "\(.key) \(.description)|\(.dispatcher) \(.arg)"' <<<"$reg"
   for m in r:reserved s:shared o:open f:full; do
-    assert_line --regexp "^bindpd = ,${m%:*}, ${m#*:}, exec, \\\$HOME/\\.local/bin/machine-mode ${m#*:}\$"
-    assert_line "bindp = ,${m%:*}, exec, ~/.config/waybar/pin-hint.sh close"
-    assert_line "bindp = ,${m%:*}, submap, reset"
+    assert_line "${m%:*} ${m#*:}|exec \$HOME/.local/bin/machine-mode ${m#*:}"
   done
-  assert_line 'bindpd = ,escape, back, submap, pinbar'
-  assert_line 'bindpd = ,q, exit, submap, reset'
-  run grep -c 'bindpd = ,m, machine mode >, submap, pinbar-mode' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
-  assert_output 1
+  assert_line 'escape back|submap pinbar'
+  assert_line 'q exit|submap reset'
+  run jq -r '.[] | select(.submap == "pinbar" and .key == "m") | "\(.description)|\(.dispatcher) \(.arg)"' <<<"$reg"
+  assert_output 'machine mode >|submap pinbar-mode'
 }

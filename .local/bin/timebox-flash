@@ -18,15 +18,20 @@ cur=$(hyprctl getoption decoration:screen_shader -j 2>/dev/null \
         | sed -n 's/.*"str"[: ]*"\([^"]*\)".*/\1/p')
 
 # A flash that starts mid-pulse of another must not "restore" the red shader.
-restore="[[EMPTY]]"
-[ -n "${cur:-}" ] && [ "$cur" != "$SHADER" ] && restore="$cur"
+# getoption reports an unset shader as [[EMPTY]]; setting it is an empty string.
+restore=""
+[ -n "${cur:-}" ] && [ "$cur" != "[[EMPTY]]" ] && [ "$cur" != "$SHADER" ] && restore="$cur"
+
+# shader <path>: set decoration:screen_shader live ("" clears it). The path goes in a Lua
+# long string, so no character in it needs escaping.
+shader() { hyprctl eval "hl.config({ decoration = { screen_shader = [==[$1]==] } })" >/dev/null 2>&1; }
 
 # The sleeps are the pulse itself (a visual cadence), not a wait on an event.
 i=0
 while [ "$i" -lt "$COUNT" ]; do
-    hyprctl keyword decoration:screen_shader "$SHADER" >/dev/null 2>&1
+    shader "$SHADER"
     sleep "$ON"
-    hyprctl keyword decoration:screen_shader "$restore" >/dev/null 2>&1
+    shader "$restore"
     i=$((i + 1))
     [ "$i" -lt "$COUNT" ] && sleep "$OFF"
 done
