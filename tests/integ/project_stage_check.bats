@@ -470,3 +470,43 @@ real_row() {
   run "$CHECK" games-canon --stage dev
   assert_line --regexp '^PASS +dev +A build profile'
 }
+
+# rs_stub <stages-json>: release-state's snapshot as the stage rows read it.
+rs_stub() {
+  printf '{"rows": [], "stages": %s}\n' "$1" > "$SANDBOX/rs.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
+  chmod +x "$SANDBOX/bin/release-state"
+}
+
+@test "stages.md: a project deploys no higher than the stage checked, and no snapshot entry fails" {
+  real_row 'draft | base | Deploys no higher than its stage'
+  rs_stub '{"shooter": {"stage": "dev", "rungs": ["alpha", "prod"]}}'
+  run "$CHECK" shooter
+  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
+  # The same deploys pass for a move up to prod: the row reads the stage checked, not today's.
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
+  rs_stub '{"shooter": {"stage": "dev", "rungs": []}}'
+  run "$CHECK" shooter
+  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
+  # NEGATIVE CONTROL: a snapshot with no facts for the project is a FAIL, never a quiet pass.
+  rs_stub '{}'
+  run "$CHECK" shooter
+  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
+}
+
+@test "stages.md: each deploy rung row passes only when a live target serves that rung" {
+  real_row 'alpha | game, app | A private target live'
+  rs_stub '{"shooter": {"stage": "alpha", "rungs": ["prod"]}}'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A private target live'
+  rs_stub '{"shooter": {"stage": "alpha", "rungs": ["alpha", "prod"]}}'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +A private target live'
+  real_row 'beta | game, app | Its external tester channel live'
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Its external tester channel live'
+  real_row 'prod | game, app | Live on a public channel'
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +prod +Live on a public channel'
+}
