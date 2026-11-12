@@ -36,7 +36,11 @@ impl Clean {
     /// The words, or the ids when the text was nothing but ids (`fix(x): ar-186`), so a cell is
     /// never blank.
     pub fn shown(self) -> String {
-        if self.text.is_empty() { self.ids.join(", ") } else { self.text }
+        if self.text.is_empty() {
+            self.ids.join(", ")
+        } else {
+            self.text
+        }
     }
 }
 
@@ -54,20 +58,27 @@ fn is_tag(w: &str) -> bool {
 pub fn is_id(w: &str) -> bool {
     let mut parts = w.split('-');
     let head = parts.next().unwrap_or("");
-    let Some(num) = parts.next() else { return false };
+    let Some(num) = parts.next() else {
+        return false;
+    };
     !head.is_empty()
         && head.len() <= 12
         && head.bytes().all(|b| b.is_ascii_lowercase())
         && !num.is_empty()
         && num.bytes().all(|b| b.is_ascii_digit())
-        && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+        && parts.all(|p| {
+            !p.is_empty()
+                && p.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
 }
 
 /// A plan phase tag beside an id: `P2`, `P4+5`, `P2b`.
 fn is_phase(w: &str) -> bool {
     w.strip_prefix('P').is_some_and(|n| {
         n.starts_with(|c: char| c.is_ascii_digit())
-            && n.bytes().all(|b| b.is_ascii_digit() || b == b'+' || b.is_ascii_lowercase())
+            && n.bytes()
+                .all(|b| b.is_ascii_digit() || b == b'+' || b.is_ascii_lowercase())
     })
 }
 
@@ -94,7 +105,9 @@ fn kind_of(head: &str) -> Option<(String, Option<String>)> {
     let head = head.strip_suffix('!').unwrap_or(head);
     if let Some((k, rest)) = head.split_once('(') {
         let area = rest.strip_suffix(')')?;
-        let ok = !k.is_empty() && k.bytes().all(|b| b.is_ascii_lowercase()) && !area.contains(['(', ')']);
+        let ok = !k.is_empty()
+            && k.bytes().all(|b| b.is_ascii_lowercase())
+            && !area.contains(['(', ')']);
         return ok.then(|| (k.to_string(), Some(area.to_string())));
     }
     KINDS.contains(&head).then(|| (head.to_string(), None))
@@ -113,8 +126,7 @@ pub fn clean(text: &str) -> Clean {
         }
     }
     let mut t = t.split("<!--").next().unwrap_or(t).trim().to_string();
-    loop {
-        let Some((head, rest)) = t.split_once(": ") else { break };
+    while let Some((head, rest)) = t.split_once(": ") {
         if let Some(ids) = ids_of(head) {
             out.ids.extend(ids);
         } else if let Some((k, a)) = kind_of(head) {
@@ -133,7 +145,9 @@ pub fn clean(text: &str) -> Clean {
     let mut words = String::with_capacity(t.len());
     let mut rest = t.as_str();
     while let Some(open) = rest.find('(') {
-        let Some(close) = rest[open..].find(')').map(|c| open + c) else { break };
+        let Some(close) = rest[open..].find(')').map(|c| open + c) else {
+            break;
+        };
         match ids_of(&rest[open + 1..close]) {
             Some(ids) => {
                 out.ids.extend(ids);
@@ -179,14 +193,30 @@ pub fn title(text: &str) -> Title {
     let line = c.text.split_whitespace().collect::<Vec<_>>().join(" ");
     let (title, mut summary) = clause(&line);
     if title.is_empty() {
-        return Title { title: c.ids.join(", "), summary, kind: c.kind, area: c.area, ids: c.ids };
+        return Title {
+            title: c.ids.join(", "),
+            summary,
+            kind: c.kind,
+            area: c.area,
+            ids: c.ids,
+        };
     }
     // The ids the title lost stay readable in the summary, never in the title.
     if !c.ids.is_empty() {
         let refs = c.ids.join(", ");
-        summary = if summary.is_empty() { refs } else { format!("{summary} ({refs})") };
+        summary = if summary.is_empty() {
+            refs
+        } else {
+            format!("{summary} ({refs})")
+        };
     }
-    Title { title, summary, kind: c.kind, area: c.area, ids: c.ids }
+    Title {
+        title,
+        summary,
+        kind: c.kind,
+        area: c.area,
+        ids: c.ids,
+    }
 }
 
 /// `line` cut at its first clause break, as [`title`] describes.
@@ -233,7 +263,11 @@ pub fn headline(text: &str) -> (String, String) {
     let full = full.trim_end_matches('.');
     let title = cap(full, TITLE_MAX);
     let raw = text.trim();
-    let rest = if title != full { raw.to_string() } else { sentence(raw).1 };
+    let rest = if title != full {
+        raw.to_string()
+    } else {
+        sentence(raw).1
+    };
     (title, rest)
 }
 
@@ -348,9 +382,11 @@ mod tests {
     /// A title is dirty when it opens with ids or a type label and a colon (`apo-120: `,
     /// `ucp-486, ucp-526: `, `fix(hub): `) or holds a `#tag`.
     fn dirty(t: &str) -> bool {
-        t.split_once(": ").is_some_and(|(h, _)| ids_of(h).is_some() || kind_of(h).is_some())
+        t.split_once(": ")
+            .is_some_and(|(h, _)| ids_of(h).is_some() || kind_of(h).is_some())
             || t.split_whitespace().any(|w| {
-                w.strip_prefix('#').is_some_and(|r| r.starts_with(|c: char| c.is_alphabetic()))
+                w.strip_prefix('#')
+                    .is_some_and(|r| r.starts_with(|c: char| c.is_alphabetic()))
             })
     }
 
@@ -358,27 +394,122 @@ mod tests {
     fn a_title_holds_no_id_type_tag_or_marker_and_the_ids_come_out_in_order() {
         // Real shapes from the queue and the boards (2026-11-12).
         for (text, want, ids, kind) in [
-            ("apo-120: base UI screens lay lists out as rows", "base UI screens lay lists out as rows", vec!["apo-120"], None),
-            ("apo-104 P2: town gate frames, corner watchtowers", "town gate frames, corner watchtowers", vec!["apo-104 P2"], None),
-            ("ucp-819-hurt-grunts P4: Swap the grunt clip", "Swap the grunt clip", vec!["ucp-819-hurt-grunts P4"], None),
-            ("ucp-486, ucp-526: land both", "land both", vec!["ucp-486", "ucp-526"], None),
-            ("fix(agent-web): a Queue row opens under it (ar-1947)", "a Queue row opens under it", vec!["ar-1947"], Some("fix")),
-            ("feat(board): titles on every row (ar-1928, ar-1930) #size/s", "titles on every row", vec!["ar-1928", "ar-1930"], Some("feat")),
-            ("fix(x): ar-186: gate line", "gate line", vec!["ar-186"], Some("fix")),
-            ("feat!: drop the old flag", "drop the old flag", vec![], Some("feat")),
-            ("- [ ] fix(ci): runner OOM #tier/2 #low <!-- id:ucp-197 -->", "runner OOM", vec![], Some("fix")),
-            ("- [x] chore: tidy past #1980", "tidy past #1980", vec![], Some("chore")),
-            ("feat(deploy): cleanup(home-config): per the runbook", "per the runbook", vec![], Some("feat")),
-            ("chore(docs): docs: docs/architecture.md #size/s", "docs/architecture.md", vec![], Some("chore")),
-            ("chore(security): security: A secret scan gates commits", "A secret scan gates commits", vec![], Some("chore")),
+            (
+                "apo-120: base UI screens lay lists out as rows",
+                "base UI screens lay lists out as rows",
+                vec!["apo-120"],
+                None,
+            ),
+            (
+                "apo-104 P2: town gate frames, corner watchtowers",
+                "town gate frames, corner watchtowers",
+                vec!["apo-104 P2"],
+                None,
+            ),
+            (
+                "ucp-819-hurt-grunts P4: Swap the grunt clip",
+                "Swap the grunt clip",
+                vec!["ucp-819-hurt-grunts P4"],
+                None,
+            ),
+            (
+                "ucp-486, ucp-526: land both",
+                "land both",
+                vec!["ucp-486", "ucp-526"],
+                None,
+            ),
+            (
+                "fix(agent-web): a Queue row opens under it (ar-1947)",
+                "a Queue row opens under it",
+                vec!["ar-1947"],
+                Some("fix"),
+            ),
+            (
+                "feat(board): titles on every row (ar-1928, ar-1930) #size/s",
+                "titles on every row",
+                vec!["ar-1928", "ar-1930"],
+                Some("feat"),
+            ),
+            (
+                "fix(x): ar-186: gate line",
+                "gate line",
+                vec!["ar-186"],
+                Some("fix"),
+            ),
+            (
+                "feat!: drop the old flag",
+                "drop the old flag",
+                vec![],
+                Some("feat"),
+            ),
+            (
+                "- [ ] fix(ci): runner OOM #tier/2 #low <!-- id:ucp-197 -->",
+                "runner OOM",
+                vec![],
+                Some("fix"),
+            ),
+            (
+                "- [x] chore: tidy past #1980",
+                "tidy past #1980",
+                vec![],
+                Some("chore"),
+            ),
+            (
+                "feat(deploy): cleanup(home-config): per the runbook",
+                "per the runbook",
+                vec![],
+                Some("feat"),
+            ),
+            (
+                "chore(docs): docs: docs/architecture.md #size/s",
+                "docs/architecture.md",
+                vec![],
+                Some("chore"),
+            ),
+            (
+                "chore(security): security: A secret scan gates commits",
+                "A secret scan gates commits",
+                vec![],
+                Some("chore"),
+            ),
             // An id inside the sentence is prose, not a prefix: `week-46` and `tier-2` are words.
-            ("ucp-486 finish landing", "ucp-486 finish landing", vec![], None),
-            ("week-46 claude canaries scored", "week-46 claude canaries scored", vec![], None),
+            (
+                "ucp-486 finish landing",
+                "ucp-486 finish landing",
+                vec![],
+                None,
+            ),
+            (
+                "week-46 claude canaries scored",
+                "week-46 claude canaries scored",
+                vec![],
+                None,
+            ),
             // Words stay words: a name before a colon, a bracket that is prose, a version.
-            ("Home: the player room", "Home: the player room", vec![], None),
-            ("DodginBalls epic, P4 (game: verified join)", "DodginBalls epic, P4 (game: verified join)", vec![], None),
-            ("Space Raiders (v0.3.2)", "Space Raiders (v0.3.2)", vec![], None),
-            ("Phase 4 of the plan rewards-admin: Game", "Phase 4 of the plan rewards-admin: Game", vec![], None),
+            (
+                "Home: the player room",
+                "Home: the player room",
+                vec![],
+                None,
+            ),
+            (
+                "DodginBalls epic, P4 (game: verified join)",
+                "DodginBalls epic, P4 (game: verified join)",
+                vec![],
+                None,
+            ),
+            (
+                "Space Raiders (v0.3.2)",
+                "Space Raiders (v0.3.2)",
+                vec![],
+                None,
+            ),
+            (
+                "Phase 4 of the plan rewards-admin: Game",
+                "Phase 4 of the plan rewards-admin: Game",
+                vec![],
+                None,
+            ),
         ] {
             let c = clean(text);
             assert_eq!(c.text, want, "{text}");
@@ -389,7 +520,13 @@ mod tests {
             assert!(!dirty(&headline(text).0), "{text}");
         }
         // The negative control: the check catches what the old cleaners let through.
-        for old in ["apo-120: base UI", "apo-104 P2: town gate", "ucp-486, ucp-526: x", "fix(hub): x", "a row #size/s"] {
+        for old in [
+            "apo-120: base UI",
+            "apo-104 P2: town gate",
+            "ucp-486, ucp-526: x",
+            "fix(hub): x",
+            "a row #size/s",
+        ] {
             assert!(dirty(old), "{old}");
         }
     }
@@ -397,9 +534,15 @@ mod tests {
     #[test]
     fn the_ids_a_title_loses_stay_in_its_summary_and_a_colour_is_not_a_tag() {
         let t = title("ucp-486, ucp-526: land both");
-        assert_eq!((t.title.as_str(), t.summary.as_str()), ("land both", "ucp-486, ucp-526"));
+        assert_eq!(
+            (t.title.as_str(), t.summary.as_str()),
+            ("land both", "ucp-486, ucp-526")
+        );
         let t = title("fix(ui): set accent to #fff, then #a1b2c3 #size/s (ar-9)");
-        assert_eq!((t.title.as_str(), t.summary.as_str()), ("set accent to #fff", "then #a1b2c3 (ar-9)"));
+        assert_eq!(
+            (t.title.as_str(), t.summary.as_str()),
+            ("set accent to #fff", "then #a1b2c3 (ar-9)")
+        );
         assert!(is_tag("#size/s") && is_tag("#urgent") && !is_tag("#fff") && !is_tag("#1980"));
     }
 
@@ -417,7 +560,10 @@ mod tests {
     fn a_text_that_is_only_ids_is_titled_by_them_and_lines_keep_their_breaks() {
         assert_eq!(title("ar-186").title, "ar-186");
         assert_eq!(title("(ar-1, ar-2)").title, "ar-1, ar-2");
-        assert_eq!(clean("fix(x): one #a\ntwo (ar-9)\nthree").text, "one\ntwo\nthree");
+        assert_eq!(
+            clean("fix(x): one #a\ntwo (ar-9)\nthree").text,
+            "one\ntwo\nthree"
+        );
     }
 
     #[test]
