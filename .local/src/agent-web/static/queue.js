@@ -146,8 +146,8 @@ function qMin(m) {
 
 // The table's columns: key -> [header, class].
 const Q_COLS = {
-  state: ["state"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], project: ["project"],
-  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], plan: ["plan"], title: ["title"],
+  state: ["state"], title: ["title"], project: ["project"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"],
+  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], plan: ["plan"],
 };
 
 // The state cell: what the item is. A finish says how it ended.
@@ -171,15 +171,18 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
-// A row, and when it is the opened one its detail under it across every column.
+// A row, and when it is the opened one its detail under it across every column. The title leads,
+// so a glance reads what each item is; its note is the muted second line (the Board's two-line cell).
 function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   const open = i.slug === qst.sel;
   return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
+    `<td class="btitle"><div class="bt">${esc(i.title || i.slug)}${qProof(i) ? " " + qProof(i) : ""}</div>${i.note ? `<div class="bsum muted">${esc(i.note)}</div>` : ""}</td>` +
+    `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td>` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
-    `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
-    `${qPrCell(i)}<td class="muted">${dash(i.plan_label)}</td><td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
+    `<td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
+    `${qPrCell(i)}<td class="muted">${dash(i.plan_label)}</td></tr>` +
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
