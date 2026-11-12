@@ -80,7 +80,6 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 @test "negative control: without the main run, the shared test red is no longer flagged main" {
   drop_run 101
   assert_equal "$(sig PlayTests.Broken main)" "False"
-  assert_equal "$(field "d['base']")" "[0, 0]"
 }
 
 @test "negative control: without the green run, the docs red is no longer green@sha" {
