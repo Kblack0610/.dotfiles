@@ -1,6 +1,6 @@
 //! The Alerts page: `hub_core::alerts`, the same join agent-web's Alerts tab draws. The inner
-//! tabs' strip (`hub_core::layout`: Firing, Fixes, Watches, History, each with its count), Health
-//! pinned under it, then the inner tab shown: what is firing on the shared data table
+//! tabs' strip (`hub_core::layout`: Firing, Fixes, Watches, History, each with its count), then
+//! the inner tab shown: Health and what is firing on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear) with the selected row opened
 //! under it (an Alertmanager rule's row lists its alerts), the fixes, every watch, or the alert
 //! pages of the week. A source that could not be read is an error line, never an empty (green)
@@ -48,7 +48,7 @@ pub fn row_id(a: &Alert) -> RowId {
     (a.source.clone(), a.what.clone(), a.place.clone())
 }
 
-/// Alerts' layout entry: its pinned section and inner tabs.
+/// Alerts' layout entry: its sections and inner tabs.
 pub fn tab() -> &'static Tab {
     layout::resolve("alerts").expect("alerts is a layout tab")
 }
@@ -91,8 +91,8 @@ impl AlertsView {
         layout::inner_tab(tab(), Some(self.inner)).map_or("", |i| i.id)
     }
 
-    /// The page as lines, and where each section starts: the strip, the pinned sections, then
-    /// the inner tab's (every inner tab's with `all`), in `hub_core::layout`'s Alerts order,
+    /// The page as lines, and where each section starts: the strip, then the inner tab's
+    /// sections (every inner tab's with `all`), in `hub_core::layout`'s Alerts order,
     /// with `ROW` for the selected firing row.
     pub fn page(
         &self,
@@ -108,8 +108,8 @@ impl AlertsView {
             Level::Nodata => (p.status(None).0, "NO DATA"),
         };
         let c = &a.counts;
-        let strip = |id: &str| a.strip.get(id).copied().unwrap_or(0);
-        let mut l = vec![innertabs::strip_by(tab(), self.on(), strip, p, w)];
+        let strip = |i: &layout::Inner| a.strip.get(i.id).copied().unwrap_or(0);
+        let mut l = vec![innertabs::strip_of(tab().inner, self.on(), strip, p, w)];
         l.push(clip_line(
             Line::from(vec![
                 Span::styled("ALERTS  ", p.head()),
@@ -139,7 +139,7 @@ impl AlertsView {
         let shown = layout::inner_tab(t, Some(self.on())).map_or(&[][..], |i| i.sections);
         let mut row = None;
         for &sec in t.sections {
-            if !(t.pinned.contains(&sec) || self.all || shown.contains(&sec)) {
+            if !(self.all || shown.contains(&sec)) {
                 continue;
             }
             let lines = match sec {
@@ -685,7 +685,11 @@ pub(crate) mod tests {
         v.inner = "history";
         let (s, at) = page(&v, &a, 160);
         let names: Vec<&str> = at.iter().map(|x| x.0).collect();
-        assert_eq!(names, ["health", "history"], "no selected row off Firing");
+        assert_eq!(
+            names,
+            ["history"],
+            "no Health and no selected row off Firing"
+        );
         assert!(s.lines().next().unwrap().contains("[History]"), "{s}");
         assert!(!s.contains("SOURCE"), "{s}");
     }

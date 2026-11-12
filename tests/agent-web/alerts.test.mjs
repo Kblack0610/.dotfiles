@@ -57,7 +57,7 @@ const data = (o = {}) => ({
 });
 const show = (d, inner = "") => { run(`st.tab = 'alerts'; st.arg = ${JSON.stringify(inner)}`); Object.assign(alst, { data: d, err: null, sel: null }); for (const k of Object.keys(run("alertsOpen"))) delete run("alertsOpen")[k]; run("alst.render()"); return box.innerHTML; };
 
-test("the sections come in the layout's order, each open: the strip, health pinned, then one inner tab each", () => {
+test("the sections come in the layout's order, each open: the strip, then one inner tab each, health with firing", () => {
   const h = show(data());
   const at = (k) => h.indexOf(`id="sec-${k}" data-k="${k}" open>`);
   const order = ["health", "firing", "fixes", "watches", "history"].map(at);
@@ -66,8 +66,8 @@ test("the sections come in the layout's order, each open: the strip, health pinn
   assert.ok(h.indexOf('class="seg fseg istrip"') < order[0], "the strip is the first row");
   assert.match(h, /cchip bad">FIRING<\/span>/);
   assert.match(h, /Firing <span class="muted">2: 1 trip, 1 error, 0 no owner, 0 alertmanager<\/span>/);
-  // Health is pinned (in no group); Firing shows and the rest wait behind the strip.
-  assert.ok(!/<div data-in="[a-z]+"( hidden)?><details class="sec-d" id="sec-health"/.test(h));
+  // Health and Firing show; the rest wait behind the strip.
+  assert.match(h, /<div data-in="firing"><details class="sec-d" id="sec-health"/);
   assert.match(h, /<div data-in="firing"><details class="sec-d" id="sec-firing"/);
   for (const k of ["fixes", "watches", "history"]) assert.match(h, new RegExp(`<div data-in="${k}" hidden><details class="sec-d" id="sec-${k}"`));
   // Each label carries the reader's count, History none.
@@ -82,11 +82,11 @@ test("an old #alerts/<section> link opens the inner tab holding it", () => {
   assert.equal(run("route('#alerts/firing').arg"), "firing");
   assert.equal(run("route('#infra/red').arg"), "firing");
   assert.equal(run("route('#infra/reds').arg"), "fixes");
-  assert.equal(run("route('#alerts/health').arg"), "", "pinned: the first inner tab, Health on top");
+  assert.equal(run("route('#alerts/health').arg"), "firing", "Health opens with Firing");
   assert.equal(run("route('#infra/health').section"), "health", "a moved name still scrolls to it");
   const h = show(data(), "history");
   assert.match(h, /<div data-in="history"><details class="sec-d" id="sec-history"/);
-  assert.match(h, /<div data-in="firing" hidden>/);
+  assert.match(h, /<div data-in="firing" hidden><details class="sec-d" id="sec-health"/);
 });
 
 test("a rule firing in many places is one row with its count, and opens its alerts with their own text", () => {

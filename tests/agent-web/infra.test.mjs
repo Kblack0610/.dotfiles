@@ -145,11 +145,11 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.equal(ctx.route("#infra/cloud").query, "ms=cloud");
   assert.deepEqual(r("#infra/jobs"), ["infra", "jobs", undefined]);
   // Red now, Red fixes (and the Reds inner tab) and health moved to Alerts (layout::MOVED), each
-  // on the Alerts inner tab holding it; health is pinned above the strip.
+  // on the Alerts inner tab holding it; health opens with Firing.
   assert.deepEqual(r("#infra/reds"), ["alerts", "fixes", "fixes"]);
   assert.deepEqual(r("#infra/fixes"), ["alerts", "fixes", "fixes"]);
   assert.deepEqual(r("#infra/red"), ["alerts", "firing", "firing"]);
-  assert.deepEqual(r("#infra/health"), ["alerts", "", "health"]);
+  assert.deepEqual(r("#infra/health"), ["alerts", "firing", "health"]);
   // The retired #ci, #machines and #jobs tabs (layout::section) land on their inner tab too.
   assert.deepEqual(r("#ci"), ["infra", "ci", "ci"]);
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);
@@ -240,11 +240,11 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
     history: { step: 120, readings: 1, hours, down: [], power: null },
     tables: { down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no reading" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]) } });
   const h = drawPage("machines/workstation", d);
-  assert.match(h, /<a href="#infra\/pools\/unity">unity<\/a> 6\.0, other 6\.0, idle 12\.0 <span class="muted">of 24 cores/);
+  assert.match(h, /<a class="tl" href="#infra\/pools\/unity">unity<\/a> 6\.0, other 6\.0, idle 12\.0 <span class="muted">of 24 cores/);
   assert.doesNotMatch(h, /data-cloud/, "no power, no buttons");
   assert.match(h, /data-tip="[^"]*no reading"/, "an hour with no sample says so");
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
-  assert.match(h, /<a href="#infra\/ci\/7">/);
+  assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
 });
 
@@ -282,7 +282,7 @@ test("a pool page draws its parts, its machines and waiting jobs with their link
   const h = drawPool("unity", poolPage({ tables: { machines, waiting }, history: { step: 120, readings: 30, hours } }));
   assert.match(h, /<span class="pgv capwarn">2 jobs, the oldest 15m; 1 no online runner can take<\/span>/);
   assert.match(h, /href="https:\/\/g\.example\/d\/kb-ci-runners" target="_blank"/);
-  assert.match(h, /<a href="#infra\/machines\/workstation">workstation<\/a>/);
+  assert.match(h, /<a class="tl" href="#infra\/machines\/workstation">workstation<\/a>/);
   assert.match(h, /<td class="bad">Tests<\/td>/, "a job no runner can take is red");
   assert.match(h, />nobody</);
   assert.match(h, /data-tip="[^"]*1\.0 busy of 3\.0 slots, 2 waiting at most"/);

@@ -340,6 +340,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::sections::Section>(),
+        phone_table::<crate::spend_history::SessRow>(),
         phone_table::<crate::worklog::Work>(),
         phone_table::<crate::machines::Machine>(),
         phone_table::<crate::machines::Pool>(),

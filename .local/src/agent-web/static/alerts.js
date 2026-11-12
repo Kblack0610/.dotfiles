@@ -48,7 +48,7 @@ function alertsHead(d) {
     `<span class="muted">${c.fixes_open} open fixes, ${c.watches} watches</span></div>`;
   if (alst.err) html += `<div class="panel down">${esc(alst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  return html + alertsFold("health", `Health <span class="muted">${alertsHealthWord(d.health)}</span>`, alertsHealthChips(d));
+  return html + innerWrap("alerts", "health", alertsFold("health", `Health <span class="muted">${alertsHealthWord(d.health)}</span>`, alertsHealthChips(d)));
 }
 
 // Every domain with its hue, the not-green ones first, then why: each component that is not green.

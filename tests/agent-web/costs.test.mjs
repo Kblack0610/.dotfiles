@@ -140,7 +140,7 @@ const consumers = (o = {}) => ({
 test("Consumers start open after Burn, green or red, and the reader's fold stays", () => {
   const quiet = show(board({ consumers: consumers() }));
   assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is open");
-  assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="spend"'), "after Burn, before Spend");
+  assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="models"'), "after Burn, before Models");
   for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
   assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
   assert.match(quiet, /<div>team low lazer-pool \$228\/\$50\.00 AT CAP per 1mo<\/div><div>aliases: fast -&gt; gpt-oss-120b; fallbacks: gpt-oss-120b -&gt; gemini-flash<\/div>/);
@@ -226,7 +226,7 @@ test("a failed read says why instead of drawing an empty table", () => {
 
 test("the burn section leads the tab: headline, drip with its hold link, pace and a row per source", () => {
   const h = show(board());
-  assert.ok(h.indexOf("sec-burn") < h.indexOf("sec-totals"), "burn is above the spend tiles");
+  assert.ok(h.indexOf("sec-burn") > h.indexOf("sec-totals"), "burn leads Limits, which follows Spend");
   assert.match(h, /<span class="burn bad">4\.5 pts\/h vs 1\.4 sustainable, 3\.3x OVER, 39 live, carries ~11<\/span>/);
   assert.match(h, /<details class="csec" data-k="burn" id="sec-burn" open>/, "red starts open");
   assert.match(h, /15 started in 1h, 349 in 24h <a class="warn" href="#sessions" title="fleet-assess says HOLD">dispatch held -> Sessions<\/a>/);
@@ -358,7 +358,7 @@ test("the token and Langfuse folds follow the Spend sections, in the Models inne
   run("cost.open = {}");
   const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
   const at = (id) => h.indexOf(`id="${id}"`);
-  assert.ok(at("sec-burn") >= 0 && at("sec-burn") < at("sec-totals") && at("sec-totals") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse"), "the DOM order is the layout order");
+  assert.ok(at("sec-totals") >= 0 && at("sec-totals") < at("sec-burn") && at("sec-burn") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse"), "the DOM order is the layout order");
   assert.match(show(board()), /id="sec-tokens"><span class="warn">no snapshot|Where the tokens go <span class="warn">no snapshot/);
 });
 
@@ -505,7 +505,7 @@ test("a snapshot from before the reader has no langfuse key and still draws the 
   assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });
 
-test("the fleet figure leads the tab: every row says measured or estimated and every % is of the fleet", () => {
+test("the fleet figure is Spend's first tile; who spent it is a table under a plain title; every % is of the fleet", () => {
   const fleet_cost = { why: null, usd: "about $849", measured: "$310", estimated: "$538", as_of: 1700000000, stale: false,
     coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry",
     rows: [
@@ -517,8 +517,9 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
   const h = show(board({ fleet_cost }));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
-  assert.match(h, /Fleet cost 24h about \$849 <span class="muted">measured \$310, estimated \$538, as of /);
+  assert.ok(h.indexOf("FLEET 24H") < h.indexOf("SPEND 24H") && h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
+  assert.match(h, /<span class="tl">FLEET 24H<\/span><span class="tv">about \$849<\/span><span class="ts1">whole fleet, measured \$310, estimated \$538, as of /, "a shared tile");
+  assert.match(h, /<h2 class="sec" id="sec-fleet">Who spent the 24h<\/h2>/, "no figure in the title");
   assert.match(h, /<th class="n" data-role="glance">% of fleet<\/th>/);
   assert.match(h, /<tr><td>shepherd<\/td><td class="n">\$44<\/td><td class="n">5%<\/td><td class="muted">61 sessions, measured<\/td><\/tr>/);
   assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
@@ -529,7 +530,8 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.match(show(board({ fleet_cost: { ...fleet_cost, stale: true } })), /class="warn">stale, as of /);
   // negative control: nothing read says so, never a $0 table
   const none = show(board({ fleet_cost: { why: "nothing read: no file", rows: [] } }));
-  assert.match(none, /id="sec-fleet">Fleet cost 24h<\/h2><div class="panel"><span class="warn">nothing read: no file/);
+  assert.match(none, /FLEET 24H<\/span><span class="tv">-<\/span><span class="ts1"><span class="warn">nothing read: no file/);
+  assert.doesNotMatch(none, /id="sec-fleet"/, "no table to show");
   assert.doesNotMatch(none, /% of fleet/);
 });
 
@@ -546,7 +548,7 @@ test("spend leads with burn per session for the picked day, then the 30-day char
     table: { q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2, states: [], columns: ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"].map((k) => col(k)), facets: [] },
     series: { sid: "b", session: "shepherd", total: "$15", bars: [bar("2026-11-07", 10, 10, 0), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 5, 5, 0)] } };
   const h = show(board({ history, day }));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "spend sits after the pinned fleet figure");
+  assert.ok(h.indexOf("sec-totals") < h.indexOf("sec-sessions") && h.indexOf("sec-sessions") < h.indexOf("sec-spend"), "the tiles, then burn per session, then the chart");
   assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend <span class="muted">Nov \$1,579\/day vs Oct/, "open until the reader folds it");
   const days = h.slice(h.indexOf('id="spend-days"'), h.indexOf("By month"));
   assert.match(days, /class="cc sel" data-key="2026-11-09"/, "the picked day is marked");
@@ -561,7 +563,7 @@ test("spend leads with burn per session for the picked day, then the 30-day char
   assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
   assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
   assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
-  assert.match(h, /<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
+  assert.match(h, /<div class="card bfilter qcfilter" data-id="spend-dq"><div class="opts"><input data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
   assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
   assert.ok(h.indexOf("Burn per session") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
@@ -601,13 +603,19 @@ test("a URL that names an inner tab opens it, and the others stay hidden", () =>
   assert.match(h, /data-itab="spend" class="" aria-selected="false"/);
 });
 
-test("a missing, unknown or pinned inner tab opens the first", () => {
-  for (const hash of ["#costs", "#costs/nonsense", "#costs/fleet"]) assert.equal(ctx.route(hash).arg, "", hash);
-  const h = innerOn("");
-  assert.ok(shown(h, "limits") && !shown(h, "spend") && !shown(h, "models"));
-  assert.ok(h.indexOf("data-itab") < h.indexOf("sec-fleet"), "the strip leads the page, the fleet figure pinned under it");
-  assert.match(h, /id="sec-fleet"/);
-  assert.ok(!/data-in="[a-z]+"[^>]*><h2[^>]*id="sec-fleet"/.test(h), "the pinned section is in no group");
+test("a missing or unknown inner tab opens Spend, and the fleet figure shows on no other inner tab", () => {
+  for (const hash of ["#costs", "#costs/nonsense"]) assert.equal(ctx.route(hash).arg, "", hash);
+  const fleet = ctx.route("#costs/fleet");
+  assert.deepEqual([fleet.arg, fleet.section], ["spend", "fleet"], "the old fleet link opens Spend at the table");
+  run("st.arg = ''; st.section = null");
+  const h = show(board({ fleet_cost: { why: null, usd: "$9", measured: "$9", estimated: "$0", as_of: 1700000000, stale: false, coverage: "", rows: [], unpriced: [], foot: "" } }));
+  assert.ok(shown(h, "spend") && !shown(h, "limits") && !shown(h, "models"));
+  const groupOf = (needle) => { const at = h.indexOf(needle); return h.slice(h.lastIndexOf("data-in=", at), at).match(/data-in="([a-z]+)"/)[1]; };
+  assert.equal(groupOf("FLEET 24H"), "spend", "the tile is in Spend's group");
+  assert.equal(groupOf('id="sec-fleet"'), "spend", "the table is in Spend's group");
+  // the control: Limits hides Spend's group, and with it every fleet figure
+  const lim = innerOn("limits");
+  assert.ok(shown(lim, "limits") && !shown(lim, "spend"));
 });
 
 test("the strip is the first element of the page, on every inner tab", () => {
@@ -705,4 +713,15 @@ test("the Budget inner tab is this month's cash: head, what needs a look, the bi
   const none = show(board({ budget: { why: "no budget file: the fleet-bench budget step has not run" } }));
   assert.match(none, /id="sec-budget">Budget<\/h2><div class="panel"><span class="warn">no budget file/);
   run("st.arg = ''");
+});
+
+test("every Costs section is drawn in the layout's order, so each inner tab's group reads top to bottom", () => {
+  run("st.arg = ''; st.section = null; cost.open = {}");
+  const fleet_cost = { why: null, usd: "$9", measured: "$9", estimated: "$0", as_of: 1700000000, stale: false, coverage: "", rows: [], unpriced: [], foot: "" };
+  const h = show(board({ fleet_cost, tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) }));
+  const order = JSON.parse(run("JSON.stringify(INNER_TABS.costs.tabs.flatMap((t) => t[2]))"));
+  const drawn = order.filter((id) => h.includes(`id="sec-${id}"`));
+  assert.ok(drawn.length >= 6, `most sections drawn: ${drawn}`);
+  const at = drawn.map((id) => h.indexOf(`id="sec-${id}"`));
+  assert.deepEqual(at, [...at].sort((a, b) => a - b), `DOM order ${drawn} at ${at}`);
 });

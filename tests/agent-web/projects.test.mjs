@@ -164,16 +164,16 @@ test("with a project open every card is read, and an answer for a list no longer
 
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
-  needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
   need_groups: [
     { kind: "verify", says: "1 epic landed with no live proof", items: ["verify: Saves (4 of 4 rows landed, no live proof)"] },
     { kind: "plan", says: "2 plans with no epic", items: ["plan with no epic: a", "plan with no epic: <b>"] },
+    { kind: "stage", says: "1 beta check failing, 1 for a human", items: ["HUMAN sign off", "FAIL a soak test"] },
   ],
   alerts: { says: "2 watches, 1 firing", level: "bad" },
   systems: [
     { id: "ui", head: "ui  25%  1 feature, 0 done  criteria 5 of 7", percent: 25, closed: "+1 closed, 1 verified", criteria_met: 5, criteria_total: 7,
       features: 1, features_done: 0, standing: 1, open_rows: 3, behind: 1, wave: { id: "de-9", title: "Menus", percent: 25, more: 2 },
-      epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true, leaves: [{ id: "de-1", line: "[ ] de-1  feat: wire the pause key  m", done: false }] }] },
+      epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true }] },
     { id: "ci", head: "ci  criteria 1 of 2", percent: null, epics: [], closed: "", criteria_met: 1, criteria_total: 2, features: 0, features_done: 0, standing: 0, open_rows: 0, behind: 0, wave: null },
   ],
   systems_says: "2 systems, 1 open epics (2 rows with no epic)", next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
