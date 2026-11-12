@@ -20,6 +20,8 @@ struct Shown<'a> {
     question: &'a str,
     summary: &'a str,
     gaps: &'a str,
+    /// `Releases::coverage`: how full each history column is, over every app.
+    coverage: &'a str,
     stale_after: i64,
     rows: Vec<&'a App>,
     errors: &'a [String],
@@ -36,6 +38,7 @@ fn render(s: &Releases, q: &Query) -> String {
         question: &s.question,
         summary: &s.summary,
         gaps: &s.gaps,
+        coverage: &s.coverage,
         stale_after: STALE_SECS,
         rows,
         errors: &s.errors,
@@ -148,6 +151,7 @@ mod tests {
             question: "What is live where?".into(),
             summary: "2 apps: 1 drift, 1 ok".into(),
             gaps: "1 channel not read: steam 403 (1)".into(),
+            coverage: "coverage: prev 2/2, deployed 1/2".into(),
             apps: vec![
                 app("game", releases::Level::Bad),
                 app("site", releases::Level::Ok),
@@ -176,6 +180,7 @@ mod tests {
         );
         assert!(v.get("fold").is_none());
         assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
+        assert_eq!(v["coverage"], "coverage: prev 2/2, deployed 1/2");
         assert_eq!(v["table"]["total"], 2);
         assert_eq!(v["question"], "What is live where?");
         assert_eq!(v["stale_after"], STALE_SECS);

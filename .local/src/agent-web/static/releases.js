@@ -59,7 +59,8 @@ function appDetail(a) {
   const others = rest.length
     ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
-  const stage = `<div class="cline"><b>Stage</b> <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>`;
+  const stage = `<div class="cline"><b>Stage</b> <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>` +
+    (a.coverage_text ? `<div class="cline"><b>Coverage</b> <span class="muted">${esc(a.coverage_text)}</span></div>` : "");
   return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
@@ -74,7 +75,7 @@ function releaseHistory(a) {
   if (!h.length) return `<div class="cline"><b>Releases</b> <span class="muted">no tags read</span></div>`;
   const shown = relcl.project === a.project ? relcl.data?.tag : null;
   const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
-    `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
+    `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev_text)}</td>` +
     `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td>` +
     `<td class="wrap${s.prs.length ? "" : " muted"}">${esc(s.prs_text)}</td><td class="wrap${s.rows.length ? "" : " muted"}">${esc(s.rows_text)}</td></tr>`).join("");
   const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
@@ -135,7 +136,7 @@ function releaseDetail(r) {
   return `<tr class="rcd"><td colspan="6"><div class="sdet"><div class="muted">${status || esc(r.status_text)}</div>` +
     line("Pinned", releaseSide(r.pinned, r.pinned_text)) + line("Live", releaseSide(r.live, r.live_text)) +
     line("Tag", esc(r.tag || "")) + line("Where", esc(r.where || "")) +
-    line("Prev", esc(r.deploys.prev || "")) + line("Last deploy", r.deploys.last ? esc(r.last_deploy_text) : "") +
+    line("Prev", esc(r.prev_text)) + line("Last deploy", r.deploys.last ? esc(r.last_deploy_text) : "") +
     line("Deploys", r.deploys.error ? `<span class="warn">${esc(r.deploys.error)} (${esc(r.deploys.source)})</span>` : r.deploys.history.map(releaseDeploy).join("")) +
     line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") + `</div></td></tr>`;
 }
@@ -151,6 +152,7 @@ function releasesHead(d) {
   const read = d.at ? `refreshed ${clock(d.at * 1e3)} (${ago(d.at)} ago)` : "no snapshot read";
   let html = `<h2 class="sec">Releases <span class="muted">${esc(d.question || "")}</span></h2>` +
     `<div class="cline">${esc(d.summary || "")} <span class="${stale ? "warn" : "muted"}">${esc(read)}</span></div>`;
+  if (d.coverage) html += `<div class="cline muted">${esc(d.coverage)}</div>`;
   if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

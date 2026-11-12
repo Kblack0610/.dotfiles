@@ -10,7 +10,7 @@
 | `release-state show [--json] [project]` | The snapshot, drift and unknown first |
 | `release-state changelog [--json\|--list] <project> [tag]` | One tag's changelog (the newest release when no tag): that version's `CHANGELOG.md` section, else the merged PRs between it and the previous tag of the line. `--list` prints the project's tags, newest first |
 | `release-state released <project> <sha>...` | One JSON line per commit: `{sha, tag, at}`, the oldest tag of the project's line that holds it and that tag's creatordate epoch (a lightweight tag records none, so it is the tagged commit's date, a lower bound), `null` when no tag does yet, and an `error` when the checkout lacks the commit. `fleet-bench`'s `request_to_live_h` reads it |
-| `release-state check [--grace 30] [--max-age 60]` | Exit 1 naming each drift older than grace minutes, each floating prod target, each missing or tripped telemetry watch, and a snapshot older than max-age minutes |
+| `release-state check [--grace 30] [--max-age 60]` | Exit 1 naming each drift older than grace minutes, each floating prod target, and a snapshot older than max-age minutes. The `release-drift` Sentinel watch runs it; the links between stores are `hub releases check` (Relationships) |
 
 The agentctl runner `release-state` refreshes every 15 minutes. Clusters and stores offer no event we can subscribe to, so this is a poll. A release skill runs `release-state refresh <project>` at the end of a cut.
 
@@ -32,10 +32,12 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | `where` | Free text for the UI: the cluster or store |
 | `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store, with that Deployment's `build` when it recorded one), `{"deployed": "manual", "reason": "..."}` (a channel moved by hand, such as Steam `default` set live in Steamworks: nothing records its deploys, so the pin reads `manual`, the row is `released` with live alone, and the doctor wants the reason), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
 | `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
-| `telemetry` | Sentinel watch names that must exist and be OK |
+| `telemetry` | Sentinel watch names that watch the target; `hub releases check` fails one with no `~/.agent/watches/<name>.yaml` |
 | `deps` | Registry projects this one depends on |
 
 A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from their store targets. `project-map-doctor` check 4c validates every target.
+
+`deployWorkflows` (on the tracker of the app repo, `trackers.<repo>.deployWorkflows`) maps each deploy workflow file to what it deploys: a full path (`.github/workflows/deploy-production.yml`, `.forgejo/workflows/<f>.yml`) to a list of target ids, or to a string giving the reason it deploys none (`"seeds the preview DB"`). `refresh` flags a file as a deploy by a word in its name (`DEPLOY_NAMES` in `release-state`: deploy, release, publish, promote, submit, steam, upload, rollout) or a deploy step in it (`DEPLOY_MARKERS`); `hub releases check` fails a flagged file the map does not name, a mapped path that is not a workflow on the default branch, and an id that is no target. A flagged file whose name holds a project of that repo below alpha reads `ahead of its stage` instead.
 
 ## Deploy history
 
@@ -102,9 +104,38 @@ PRs have one store of their own, read by the graph (never by `refresh`): `~/.age
 | release -> rows | each of its PRs' items' rows | `Graph::history` |
 | dependency -> pinned version | the dependency's prod channel pin, else another channel's | `release_graph::deps_text` |
 
-`hub releases --json` prints the Releases read with every join, the graph's one output for shell tools (fleet-bench's lead time reads each tag's first deploy from it). `hub releases check` prints one line per place the stores disagree inside the ledger's 30 days: a PR an item or a tag names that the PR store lacks (in a repo the store holds), a bare `pr:N` on a project with no single repo, a Deployment naming a run of a ledger repo that the ledger lacks; it exits 1 when it prints a line or a store could not be read. `agent-land` closes a row with proof `pr:<owner>/<repo>#N`, so the join needs no project lookup.
+`hub releases --json` prints the Releases read with every join, the graph's one output for shell tools (fleet-bench's lead time reads each tag's first deploy from it). `hub releases check` prints one line per place the stores disagree inside the ledger's 30 days: a PR an item or a tag names that the PR store lacks (in a repo the store holds), a bare `pr:N` on a project with no single repo, a Deployment naming a run of a ledger repo that the ledger lacks, a tag in two projects' lines, a `deployed: true` target with no Deployment recorded, a `deployed: "manual"` with no reason, a telemetry watch that does not exist, and a PR store repo that failed or has not synced in 30 minutes. From the enforcement date on it also checks the links below. It exits 1 when it prints a line or a store could not be read; the `release-links` Sentinel watch runs it, and its trip routes to an agent (`fix-red`).
 
-An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, where each reached (`not recorded` when no channel says so), its PRs and their board rows (`-` when none); a release opens its changelog. The RELEASED column is the newest tag and its date.
+### Link facts
+
+`refresh` writes `links` into the snapshot, the raw facts the link checks read: per app repo the GitHub environments that hold a recorded Deployment and each workflow file on the default branch with its deploy flag, per lab project its versions (the roll stamp of each `versions/<v>.md` and the PRs of its frozen rows; a project whose profile has `automation = false` has no roll and carries none), the stage ladder, and `since`, the enforcement date (`RELEASE_NOTES_SINCE`, 2026-11-11). A part that could not be read carries `error`, which the check prints as a store it could not read.
+
+| Check | Fails on |
+|---|---|
+| environments | an environment holding recorded Deployments that no target is named |
+| deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
+| deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
+| tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
+| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's) with no board row |
+| versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
+
+A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
+
+### Blank cells
+
+A cell with nothing to show names why, in one of these words (`hub_core::releases::BLANKS`), so a blank never reads as a broken read:
+
+| Word | Means |
+|---|---|
+| `none declared` | The registry declares nothing to read: no live probe, no telemetry, no channel past the implicit release row |
+| `not recorded` | It should be there and nothing wrote it: a `deployed: true` target with no Deployment, a release whose channels and items name nothing |
+| `manual` | A channel moved by hand (`deployed: "manual"`) |
+| `not read` | The read failed; the row's `error` says why |
+| `none merged` | A tag with no merged PRs since the one before it |
+
+History cells also say `first tag` for a release with none before it, and `before 2026-11-11` (above). Each app, and the Apps head, carries counted coverage per column (`prev 2/2, deployed 0/1 (1 none declared), reached 1/2`): how many of its channels or releases hold a value, with the causes of the rest counted. `agent-land` closes a row with proof `pr:<owner>/<repo>#N`, so the join needs no project lookup.
+
+An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, where each reached (`not recorded` when no channel says so), its PRs (`none merged`) and their board rows (`not recorded`, or `before 2026-11-11`); a release opens its changelog. The RELEASED column is the newest tag and its date.
 
 ## Project identity
 
@@ -165,7 +196,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A row is `unknown` with `fetch failed` | The checkout's `origin` is unreachable (VPN, ssh agent). Fix the remote; the snapshot never reuses an older ref |
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
 | PREV and LAST DEPLOY say `?` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
-| PREV and LAST DEPLOY say `-` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
+| PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
 | A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
 | A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
 | A Steam row is `unknown` with `build <id> is not in the last 50 builds` | The branch has not moved in longer than `STEAM_BUILDS` covers. Raise that constant in `release-state` |
@@ -177,7 +208,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | An app's release history says `no tags read` | The project has no release tag and no `buildTags`, or the checkout has not fetched its tags. `release-state show --json \| jq '.releases["<p>"]'` gives the glob and any error |
 | `changelog` says `<tag> is not a release tag of <project>` | The tag is not on the project's line (a candidate of another product, or not fetched). `release-state changelog --list <project>` shows the ones it offers; fetch the checkout if a new tag is missing |
 | A version shows the merged PRs list | The tag has no `CHANGELOG.md` section for it. Add one under a heading holding the version and it is used from the next tag on (the file is read at the tag, then at the branch tip) |
-| A release's ROWS says `-` while PRS lists PRs | No queue item names those PRs: the work predates the queue, or its item recorded a bare `pr:N` in a project with several repos. `hub releases check` names the second |
+| A release's ROWS says `not recorded` while PRS lists PRs | No queue item names those PRs: the work predates the queue, or its item recorded a bare `pr:N` in a project with several repos. `hub releases check` names the second |
 | A run's OWNER is `-` | No session sits on its branch and no item names its PR, or the PR store does not hold the PR yet (`schedules-sync` polls every 10 minutes; `hub releases check` names an item PR the store lacks) |
 | An app's stage says `live above it: <target>` | A target is live on a rung its lab stage has not reached (a draft site live in prod). Either raise the stage through its gate (`notes projects --stage <p> --set <s>`, which runs `project-stage-check`) or remove the target and its deploy pipeline. Stage moves are the human's |
 | An app's stage says `no alpha target live` | Its stage needs a rung nothing serves: no target on that channel, or the target's probe failed (`unknown` serves no rung). Declare the target, or fix the probe |

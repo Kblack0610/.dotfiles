@@ -530,6 +530,8 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         prs: &prs,
         live: &live,
         registry: registry.as_deref(),
+        // The runs draw no release history, so no row cell reads it.
+        since: 0,
     })
     .join(&mut out.rows);
     // The quarantine is absent until a repo has one: no file is no fold, not an error.
@@ -610,7 +612,9 @@ impl Pass {
 
     /// The share as a whole percent, 0 when no run counted.
     pub fn percent(&self) -> u32 {
-        (self.green * 100).checked_div(self.runs).unwrap_or_default() as u32
+        (self.green * 100)
+            .checked_div(self.runs)
+            .unwrap_or_default() as u32
     }
 }
 
@@ -672,7 +676,10 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
         }
         pass.add(r.conclusion.as_deref());
         // A startup failure never ran its jobs, so its seconds would drag the usual time down.
-        let ran = matches!(r.conclusion.as_deref(), Some("success" | "failure" | "timed_out"));
+        let ran = matches!(
+            r.conclusion.as_deref(),
+            Some("success" | "failure" | "timed_out")
+        );
         let timed = ran && r.started_at.is_some();
         if let (true, Some(t)) = (timed, r.took) {
             took.push(t);

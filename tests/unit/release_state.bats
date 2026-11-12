@@ -187,19 +187,17 @@ field() { row "$1" | jq -r "$2"; }
   assert_output --partial 'FLOATING web web-prod'
 }
 
-@test "a declared telemetry watch with no definition fails check; a green one passes" {
+@test "a declared telemetry watch with no definition reads missing, and check leaves it to hub releases check" {
   write_map '"telemetry": ["web-health"]'
   "$RS" refresh >/dev/null
   [ "$(field web-prod '.telemetry[0].state')" = missing ]
   run "$RS" check
-  assert_failure
-  assert_output --partial 'TELEMETRY web web-prod: watch web-health is missing'
+  assert_success
+  refute_output --partial 'TELEMETRY'
   : > "$WATCH_DIR/web-health.yaml"
   echo OK > "$WATCH_STATE_DIR/web-health.state"
   "$RS" refresh >/dev/null
-  run "$RS" check
-  assert_success
-  assert_output 'ok'
+  [ "$(field web-prod '.telemetry[0].state')" = OK ]
 }
 
 @test "an app with no targets gets a release row: its tag, or unreleased" {
@@ -259,7 +257,7 @@ field() { row "$1" | jq -r "$2"; }
   "$RS" refresh >/dev/null
   run "$RS" show
   assert_success
-  [ "$(sed -n 3p <<<"$output" | awk '{print $NF, $(NF-3)}')" = "- drift" ]
+  sed -n 3p <<<"$output" | grep -Eq ' drift .*none declared$'
 }
 
 @test "doctor 4c names a malformed target and a duplicate id" {
@@ -649,7 +647,7 @@ EOF
   assert_success
   assert_equal "$(row shop-prod | jq -c '.deploys | [.error, .history, .prev, .last]')" '["gh api failed",[],null,null]'
   run "$RS" show shop
-  assert_line --regexp '^shop .*\?'
+  assert_line --regexp '^shop .* not read +not read +none declared$'
 }
 
 @test "deploys: an unreadable answer is an error, not an empty history" {
@@ -810,13 +808,13 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   assert_equal "$(row game-steam-beta | jq -c '[.live.error, .status]')" '["no branch beta on the app","unknown"]'
 }
 
-@test "store: a channel with no recorded upload is released, with live shown and the pin a dash" {
+@test "store: a channel with no recorded upload is released, with live shown and the pin not recorded" {
   store_setup
   unset GH_REPLY
   "$RS" refresh game
   assert_equal "$(row game-steam-beta | jq -c '[.pinned.value, .live.value, .status]')" '[null,"v0.5.0-g1","released"]'
   run "$RS" show game
-  assert_line --regexp '^game +beta game-steam-beta +- +v0\.5\.0-g1 +released'
+  assert_line --regexp '^game +beta game-steam-beta +not recorded +v0\.5\.0-g1 +released'
 }
 
 @test "store: unreadable deploy history is unknown, never the store's value called matching" {

@@ -72,15 +72,15 @@ const unread = {
 const binks = {
   project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
-  stage: "draft", stage_text: "draft: live above it: binks-prod", stage_level: "warn",
+  stage: "draft", stage_text: "draft: live above it: binks-prod", stage_level: "warn", coverage_text: "prev 1/1, deployed 1/2 (1 none declared)",
   line: "release", released_text: "v2 11-05", history: [
-    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
-    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
+    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
   ],
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
-  gaps: "1 channel not read: steam GetAppBetas failed (1)", rows: [binks], ...o,
+  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks], ...o,
 });
 
 const target = (attrs, tr = null, ch = null) => ({
@@ -103,6 +103,7 @@ test("the head asks the tab's question, counts the apps, names what it could not
   assert.match(h, /What is building, and what is live where\?/);
   assert.match(h, /2 apps: 1 drift, 1 ok/);
   assert.match(h, /<div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
+  assert.match(h, /<div class="cline muted">coverage: prev 2\/2, deployed 1\/2<\/div>/);
   assert.match(h, /refreshed .* \(2m ago\)/);
   assert.doesNotMatch(h, /class="warn">refreshed/);
 });
@@ -131,6 +132,7 @@ test("an app names its stage, amber when its deploys do not match it, and the op
   show();
   clickApp();
   assert.match(box.innerHTML, /<div class="cline"><b>Stage<\/b> <span class="warn">draft: live above it: binks-prod<\/span><\/div>/);
+  assert.match(box.innerHTML, /<b>Coverage<\/b> <span class="muted">prev 1\/1, deployed 1\/2 \(1 none declared\)<\/span>/, "the open app counts what each column holds");
   clickApp();
   show(data({ rows: [{ ...binks, stage: "", stage_text: "none on the lab sheet", stage_level: "ok" }] }));
   assert.match(box.innerHTML, /<td>binks<\/td>/, "no stage, no word");
@@ -218,7 +220,7 @@ test("an opened app lists its releases newest first with when, the one before an
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
   assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
-  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">-<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">-<\/td><td class="wrap muted">-<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">-<\/td><td class="wrap muted">-<\/td><\/tr>/);
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
   // Clicking a release reads its changelog, and the app stays open.
   asked.length = 0;
