@@ -42,6 +42,8 @@ CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.
 SETTLE_H=48
+# A row the ask-sweep model filed carries its quote: ask-sweep file_row writes `<row>; asked MM-DD "<quote>"`.
+SWEEP_ROW_RE='; asked [0-9]{2}-[0-9]{2} "'
 # judge_precision counts only rules with this many scored answers, and a false-defer percent only lanes
 # with this many scored defers: below it one miss swings 10+ points.
 KPI_LABELS=10
@@ -78,8 +80,8 @@ eval_json() {
     '[.[] | objects | select(.agent as $x | $a | split(" ") | index($x))]' > "$tmp/calls" 2>/dev/null
   jq -sc '[.[] | objects]' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$tmp/verdicts" 2>/dev/null
   $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
-  $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
-    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/") or test("; asked [0-9]{2}-[0-9]{2} \""))))
+  $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc --arg sweepre "$SWEEP_ROW_RE" '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
+    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/") or test($sweepre))))
     | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
   for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
@@ -92,7 +94,7 @@ eval_json() {
   jq -n --slurpfile A "$tmp/asks" --slurpfile C "$tmp/calls" --slurpfile V "$tmp/verdicts" \
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
-    --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    --argjson shas "$shas" --arg sweepre "$SWEEP_ROW_RE" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
     --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
@@ -123,13 +125,15 @@ JQ_EVAL="$JQ_EPOCH"'
   | (if $days == "" then null else $now - ($days | tonumber) * 86400 end
      | if $wm > 0 and (. == null or . < $wm) then $wm else . end) as $since
   # A row the ingest record scores has no call of its own: it is under the current prompt when
-  # written after the first call made with it.
-  | ($calls | map(select(.prompt_sha != null and .prompt_sha == $shas[.agent])) | group_by(.agent)
-     | map({(.[0].agent): (map(.at | epoch) | min)}) | add // {}) as $since_sha
+  # written after the first call made with it since the last call under another prompt.
+  | ($calls | map(select((.prompt_sha // "") != "") | {agent, s: .prompt_sha, e: (.at | epoch)} | select(.e != null))
+     | group_by(.agent) | map(.[0].agent as $a | ([.[] | select(.s != ($shas[$a] // "")) | .e] | max) as $other
+       | {($a): ([.[] | select(.s == ($shas[$a] // "") and ($other == null or .e > $other)) | .e] | min)})
+     | add // {}) as $since_sha
   | def inscope($agent): (.at | epoch) as $e
       | ($since == null or ($e != null and $e >= $since))
         and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-")
-             or ((.judge_call // "") == "" and ($src[$agent] // "") == "sweep-untouched"
+             or ((.judge_call // "") == "" and (($src[$agent] // "") | IN("triage-untouched", "plan-dispatched", "priority-kept", "sweep-untouched"))
                  and $since_sha[$agent] != null and $e != null and $e >= $since_sha[$agent]));
 
   # One verdict row each: {agent, id, project, question, rule, type, kind (answer|defer|error),
@@ -225,9 +229,9 @@ JQ_EVAL="$JQ_EPOCH"'
    # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
    # the record named the runner).
    [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | untouched("triage-untouched")] as $triagerows
-   # Ask sweep: each row its model filed, known by the quote it carries (`; asked MM-DD "..."`),
-   # whoever ran it. Its plan rows carry none, since no model wrote them.
-   | [$ev[] | select(.action == "added" and ((.text // "") | test("; asked [0-9]{2}-[0-9]{2} \""))) | untouched("sweep-untouched")] as $sweeprows
+   # Ask sweep: each row its model filed, known by the quote it carries (SWEEP_ROW_RE), whoever ran
+   # it. Its plan rows carry none, since no model wrote them, and the planner wrote a row split from one.
+   | [$ev[] | select(.action == "added" and ((.text // "") | test($sweepre) and (contains("#of/") | not))) | untouched("sweep-untouched")] as $sweeprows
    # Plan: each row the planner planned, right when it (or a row split from it in the same run)
    # starts before any re-split: a later plan, or a row split from it by someone else.
    | [$plans[] | min_by(.e) as $p
