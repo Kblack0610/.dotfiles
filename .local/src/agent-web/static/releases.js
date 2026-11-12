@@ -243,12 +243,12 @@ const dayBars = (days) => `<div class="appdays">${columns(days.map((d) => ({
   key: "d" + d.at, label: "", segs: [{ v: 1, color: dayColor(d) }],
   tip: `${dayLabel(d.at)}: ${d.text}${d.fail ? `, ${d.fail} failed of ${d.ok + d.fail}` : ""}`,
 })), { height: 34, yfmt: () => "" })}<div class="appdx muted"><span class="appd90">${days.length} days ago</span><span class="appd30">30 days ago</span><span>today</span></div></div>`;
-// The last 24 hours' response time, one column an hour ending with this one, each that hour's
-// average result (hub_core::app_status); an hour with none is an empty column.
+// The last 24 whole hours' response time, one column an hour ending with the one before this, each
+// that hour's average result, keyed by its start (hub_core::app_status); an hour with none is empty.
 const LATENCY_HOURS = 24;
 function latencyBars(pts, now) {
   if (!pts.length) return `<div class="muted">No response times in 24 hours.</div>`;
-  const last = Math.floor(now / 3600) * 3600, hours = new Map();
+  const last = Math.floor(now / 3600) * 3600 - 3600, hours = new Map();
   for (const [t, ms] of pts) hours.set(Math.floor(t / 3600) * 3600, ms);
   const cols = Array.from({ length: LATENCY_HOURS }, (_, i) => {
     const h = last - (LATENCY_HOURS - 1 - i) * 3600, ms = hours.get(h);
@@ -266,9 +266,9 @@ function appCheck(c, now) {
 }
 const LEVEL_COLOR = { ok: "var(--idle)", warn: "var(--busy)", bad: "var(--wait)" };
 function appIncidents(list) {
-  if (!list.length) return `<div class="panel muted">No incidents in 30 days.</div>`;
+  if (!list.length) return `<div class="panel muted">No incidents in 7 days.</div>`;
   return `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">check</th><th data-role="glance">from</th><th data-role="glance">to</th><th>failed</th></tr>` +
-    list.map((i) => `<tr><td>${esc(i.check)}</td><td>${stamp(i.from)}</td><td${i.to ? "" : ' class="bad"'}>${i.to ? stamp(i.to) : "ongoing"}</td><td>${esc(i.text)}</td></tr>`).join("") +
+    list.map((i) => `<tr><td>${esc(i.check)}</td><td>${stamp(i.from)}</td><td${i.to ? "" : ' class="bad"'}>${i.to ? stamp(i.to) : "ongoing"}</td><td>${esc(i.fails)}</td></tr>`).join("") +
     `</table></div>`;
 }
 // The open app's status section: what its Gatus checks say, each check's card, then its incidents.

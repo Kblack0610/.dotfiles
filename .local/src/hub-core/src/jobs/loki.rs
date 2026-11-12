@@ -63,6 +63,7 @@ pub(super) fn job_log(ns: &str, job: &str, from: i64, to: Option<i64>) -> Result
     }
     let to = to.unwrap_or_else(|| chrono::Utc::now().timestamp());
     text(&kube_proxy::get(
+        &crate::session_actions::System,
         "CC_LOKI_SERVICE",
         &path(ns, job, from, to),
     )?)

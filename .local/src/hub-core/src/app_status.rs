@@ -27,10 +27,12 @@ use crate::session_page::Part;
 pub const STALE_SECS: i64 = 300;
 /// How many daily bars a check shows.
 pub const DAYS: usize = 90;
-/// The step incidents and latency are read at.
-const STEP: i64 = 300;
-/// How far back incidents are read.
-const INCIDENT_SECS: i64 = 30 * 86_400;
+/// The step incidents are read at: the scrape interval and the shortest check interval, so a
+/// step holds one result and two failed steps in a row are two failed results in a row.
+const STEP: i64 = 60;
+/// How far back incidents are read: a week at `STEP` is 10,080 points a series, under
+/// VictoriaMetrics' 30,000 a series; older outages are the daily bars' dips.
+pub const INCIDENT_DAYS: i64 = 7;
 /// The uptime windows a card shows.
 const WINDOWS: [(&str, i64); 4] = [
     ("24h", 86_400),
@@ -93,8 +95,8 @@ pub struct AppStatus {
     pub groups: Vec<String>,
     /// The groups with no check reporting: a channel nothing probes yet.
     pub unchecked: Vec<String>,
-    /// `Operational`, `Partial outage: <names>`, `Down`, `Waiting for every check to report`,
-    /// `Monitor stopped reporting at <t>` or `not read: <why>`.
+    /// `Operational`, `Failing check: <names>`, `Partial outage: <names>`, `Down`, `Waiting for
+    /// every check to report`, `Monitor stopped reporting at <t>` or `not read: <why>`.
     pub banner: String,
     pub level: Level,
     /// The newest result of any check, unix seconds.
@@ -190,29 +192,32 @@ pub fn days(ok: &BTreeMap<i64, u64>, fail: &BTreeMap<i64, u64>, end: i64) -> Vec
         .collect()
 }
 
-/// A check's down stretches from its results per step (oldest first), and whether it is failing
-/// now without being down yet. A step with a failure starts or extends a run; the run is down
-/// once it holds `DOWN_AFTER` failed results, and ends at `UP_AFTER` good results with none
-/// failed between them. A single failed result is no incident.
+/// A check's down stretches from its results per step (oldest first, a step about one result),
+/// and whether it is failing now without being down yet. Failed results in a row make a run,
+/// down once it holds `DOWN_AFTER`; a pass before then drops it, and a down run ends at `UP_AFTER`
+/// good results with none failed between them. A single failed result is no incident. A step
+/// holding both is read failures first, so its passes count toward the way back up.
 pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bool) {
     let mut out = Vec::new();
     let (mut start, mut fails, mut good, mut down) = (None::<i64>, 0u64, 0u64, false);
     for &(t, ok, fail) in steps {
         if fail > 0 {
+            if good > 0 && !down {
+                (start, fails) = (None, 0);
+            }
             start.get_or_insert(t);
             fails += fail;
             good = 0;
             down |= fails >= DOWN_AFTER;
-            continue;
         }
-        if start.is_none() {
+        if start.is_none() || ok == 0 {
             continue;
         }
         good += ok;
-        if good >= UP_AFTER {
-            if down {
-                out.push((start.unwrap_or(t), Some(t), fails));
-            }
+        if !down && fail == 0 {
+            (start, fails, good) = (None, 0, 0);
+        } else if down && good >= UP_AFTER {
+            out.push((start.unwrap_or(t), Some(t), fails));
             (start, fails, good, down) = (None, 0, 0, false);
         }
     }
@@ -223,7 +228,7 @@ pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bo
     (out, failing)
 }
 
-/// The value at `p` (0..1) of `v`, sorted in place.
+/// `11-03 14:02` in local time.
 fn hm(t: i64) -> String {
     Local
         .timestamp_opt(t, 0)
@@ -246,14 +251,14 @@ pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level
     let Some(newest) = newest else {
         return waiting;
     };
-    if checks.is_empty() {
-        return waiting;
-    }
     if now - newest > STALE_SECS {
         return (
             format!("Monitor stopped reporting at {}", hm(newest)),
             Level::Warn,
         );
+    }
+    if checks.is_empty() {
+        return waiting;
     }
     if checks.iter().any(|c| c.state == NO_DATA) {
         return waiting;
@@ -333,7 +338,7 @@ pub struct Answers {
     pub windows: Vec<Result<Vec<Series>, String>>,
     /// The same over 1d, at a 1d step for `DAYS`, ending at `at`.
     pub days: Result<Vec<Series>, String>,
-    /// The same over 5m, at a 5m step for 30 days.
+    /// The same over 1m, at a `STEP` step for `INCIDENT_DAYS`.
     pub steps: Result<Vec<Series>, String>,
     /// Each hour's average response time in seconds, at a 1h step for 24h.
     pub latency: Result<Vec<Series>, String>,
@@ -343,8 +348,10 @@ pub struct Answers {
     pub newest: Result<Vec<Series>, String>,
 }
 
-/// The page from its answers. A failed answer is an error line and, for the checks themselves,
-/// the banner `not read`.
+/// The page from its answers. A failed answer is an error line; when it is one the banner rests
+/// on (24h uptime, incidents, newest result), the banner is `not read`, and a failed daily bars or
+/// latency read leaves the banner to the rest. The checks are those that reported in 24h, so a
+/// retired or renamed check drops off instead of holding the banner at waiting or down.
 pub fn build(
     app: &str,
     groups: Vec<String>,
@@ -353,10 +360,16 @@ pub fn build(
     now: i64,
 ) -> AppStatus {
     let mut errors = Vec::new();
-    let mut take = |what: &str, r: Result<Vec<Series>, String>| match r {
+    // The first failed read the banner rests on.
+    let mut blind: Option<String> = None;
+    let mut take = |what: &str, core: bool, r: Result<Vec<Series>, String>| match r {
         Ok(s) => s,
         Err(e) => {
-            errors.push(format!("{what}: {e}"));
+            let line = format!("{what}: {e}");
+            if core && blind.is_none() {
+                blind = Some(line.clone());
+            }
+            errors.push(line);
             vec![]
         }
     };
@@ -364,22 +377,33 @@ pub fn build(
         .windows
         .into_iter()
         .zip(WINDOWS)
-        .map(|(r, (w, _))| split(&take(&format!("uptime {w}"), r)))
+        .enumerate()
+        .map(|(i, (r, (w, _)))| split(&take(&format!("uptime {w}"), i == 0, r)))
         .collect();
-    let day = split(&take("daily bars", a.days));
-    let steps = split(&take("incidents", a.steps));
-    let latency = take("latency", a.latency);
-    let pct = take("latency percentiles", a.pct);
-    let newest = take("newest result", a.newest)
+    let day = split(&take("daily bars", false, a.days));
+    let steps = split(&take("incidents", true, a.steps));
+    let latency = take("latency", false, a.latency);
+    let pct = take("latency percentiles", false, a.pct);
+    let newest = take("newest result", true, a.newest)
         .iter()
         .filter_map(|s| s.value)
         .map(|v| v as i64)
         .max();
 
-    let mut keys: BTreeSet<Key> = BTreeSet::new();
-    for m in windows.iter().chain([&day, &steps]) {
-        keys.extend(m.keys().cloned());
-    }
+    // A check is current when it reported in 24h; with the 24h read failed, any it ever had.
+    let current = |(o, f): &Counts| o.values().chain(f.values()).sum::<u64>() > 0;
+    let keys: BTreeSet<Key> = match windows.first() {
+        Some(w) if !w.is_empty() || blind.is_none() => w
+            .iter()
+            .filter(|(_, c)| current(c))
+            .map(|(k, _)| k.clone())
+            .collect(),
+        _ => windows
+            .iter()
+            .chain([&day, &steps])
+            .flat_map(|m| m.keys().cloned())
+            .collect(),
+    };
     let empty = BTreeMap::new();
     let mut checks = Vec::new();
     let mut incidents_all = Vec::new();
@@ -467,7 +491,7 @@ pub fn build(
     }
     incidents_all.sort_by_key(|i| std::cmp::Reverse(i.from));
     incidents_all.truncate(INCIDENTS_SHOWN);
-    let (banner, level) = match errors.first() {
+    let (banner, level) = match blind {
         Some(e) => (format!("not read: {e}"), Level::Warn),
         None => banner(&checks, newest, now),
     };
@@ -504,7 +528,7 @@ fn queries(sel: &str) -> (Vec<String>, String, String, String, String, String) {
     (
         WINDOWS.iter().map(|(w, _)| inc(w)).collect(),
         inc("1d"),
-        inc("5m"),
+        inc("1m"),
         // The gauge holds the latest result; scraped at the checks' own cadence, its samples
         // are the results.
         format!("avg by (group,name) (avg_over_time(gatus_results_duration_seconds{sel}[1h]))"),
@@ -519,24 +543,52 @@ fn queries(sel: &str) -> (Vec<String>, String, String, String, String, String) {
     )
 }
 
-/// `app`'s page, read now: its channels from release-state and its checks from VictoriaMetrics.
-/// An app with no channel and no check is not one, so its name is an error (a 404 on the web).
-pub fn read(runner: &dyn Runner, app: &str, now: i64) -> Result<AppStatus, String> {
+/// `app`'s page, read now: its channels from release-state and its checks from VictoriaMetrics,
+/// the nine queries at once, so a slow cluster costs one call's time and not nine. An app with
+/// no channel and no check is not one, so its name is an error (a 404 on the web).
+pub fn read(runner: &(dyn Runner + Sync), app: &str, now: i64) -> Result<AppStatus, String> {
     if !label(app) {
         return Err(format!("no app named {app}"));
     }
     let channels = releases::channels(runner, app);
     let groups = groups(app, channels.as_deref().unwrap_or(&[]));
     let (windows, day, step, lat, pct, newest) = queries(&selector(&groups));
-    let q = |s: &str, r| prom::vm(s, r);
+    // Hour-aligned and ending on the last whole hour, so each point averages exactly one clock
+    // hour and the 24 points are the 24 hours before this one.
+    let hour = now / 3600 * 3600;
+    let mut asks: Vec<(&str, Option<prom::Range>)> =
+        windows.iter().map(|w| (w.as_str(), None)).collect();
+    asks.extend([
+        (
+            day.as_str(),
+            Some((now - (DAYS as i64 - 1) * 86_400, now, 86_400)),
+        ),
+        (
+            step.as_str(),
+            Some((now - INCIDENT_DAYS * 86_400, now, STEP)),
+        ),
+        (lat.as_str(), Some((hour - 23 * 3600, hour, 3600))),
+        (pct.as_str(), None),
+        (newest.as_str(), None),
+    ]);
+    let mut got: Vec<Result<Vec<Series>, String>> = std::thread::scope(|s| {
+        let handles: Vec<_> = asks
+            .iter()
+            .map(|(q, r)| s.spawn(move || prom::vm(runner, q, *r)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err("query panicked".into())))
+            .collect()
+    });
+    let mut next = || got.remove(0);
     let a = Answers {
-        windows: windows.iter().map(|w| q(w, None)).collect(),
-        days: q(&day, Some((now - (DAYS as i64 - 1) * 86_400, now, 86_400))),
-        steps: q(&step, Some((now - INCIDENT_SECS, now, STEP))),
-        // Hour-aligned, so each point averages exactly one clock hour.
-        latency: q(&lat, Some(((now - 86_400) / 3600 * 3600, now, 3600))),
-        pct: q(&pct, None),
-        newest: q(&newest, None),
+        windows: WINDOWS.iter().map(|_| next()).collect(),
+        days: next(),
+        steps: next(),
+        latency: next(),
+        pct: next(),
+        newest: next(),
     };
     let mut page = build(app, groups, &channels, a, now);
     page.monitor = prom::config("CC_GATUS_URL").map(Link::Url);
@@ -655,22 +707,27 @@ mod tests {
 
     #[test]
     fn one_failed_result_is_no_incident_two_in_a_row_are() {
-        let (runs, failing) = incidents(&[(0, 5, 0), (300, 4, 1), (600, 5, 0)]);
+        let (runs, failing) = incidents(&[(0, 5, 0), (60, 4, 1), (120, 5, 0)]);
         assert!(runs.is_empty());
         assert!(!failing);
-        let (runs, _) = incidents(&[(0, 5, 0), (300, 0, 1), (600, 0, 1), (900, 5, 0)]);
-        assert_eq!(runs, vec![(300, Some(900), 2)]);
-        let (runs, _) = incidents(&[(300, 3, 2), (600, 5, 0)]);
-        assert_eq!(runs, vec![(300, Some(600), 2)], "two in one step");
-        let (runs, _) = incidents(&[(0, 0, 1), (300, 0, 1)]);
+        let (runs, _) = incidents(&[(0, 5, 0), (60, 0, 1), (120, 0, 1), (180, 5, 0)]);
+        assert_eq!(runs, vec![(60, Some(180), 2)]);
+        let (runs, _) = incidents(&[(60, 0, 2), (120, 5, 0)]);
+        assert_eq!(runs, vec![(60, Some(120), 2)], "two in one step");
+        let (runs, _) = incidents(&[(0, 0, 1), (60, 0, 1)]);
         assert_eq!(runs, vec![(0, None, 2)], "still down");
-        let (runs, failing) = incidents(&[(0, 5, 0), (300, 0, 1)]);
+        let (runs, failing) = incidents(&[(0, 5, 0), (60, 0, 1)]);
         assert!(runs.is_empty() && failing, "one fail: failing, not down");
-        let (runs, _) = incidents(&[(0, 0, 1), (300, 1, 0), (600, 0, 1), (900, 2, 0)]);
+        let (runs, failing) = incidents(&[(0, 0, 1), (60, 1, 0), (120, 0, 1), (180, 1, 0)]);
+        assert!(
+            runs.is_empty() && !failing,
+            "isolated failures with passes between them are no incident"
+        );
+        let (runs, _) = incidents(&[(0, 0, 2), (60, 1, 0), (120, 0, 1), (180, 2, 0)]);
         assert_eq!(
             runs,
-            vec![(0, Some(900), 2)],
-            "one good result does not end a run"
+            vec![(0, Some(180), 3)],
+            "one good result does not end a down run"
         );
     }
 
@@ -688,10 +745,33 @@ mod tests {
     #[test]
     fn a_failed_query_is_not_read_never_up() {
         let mut a = answers(100.0, 0.0, NOW - 30);
-        a.windows[1] = Err("CC_VM_SERVICE is not set".into());
+        a.windows[0] = Err("CC_VM_SERVICE is not set".into());
         let p = page(a);
-        assert_eq!(p.banner, "not read: uptime 7d: CC_VM_SERVICE is not set");
+        assert_eq!(p.banner, "not read: uptime 24h: CC_VM_SERVICE is not set");
         assert_eq!(p.level, Level::Warn);
+        assert_eq!(p.checks.len(), 1, "the other reads still name the check");
+
+        let mut a = answers(100.0, 0.0, NOW - 30);
+        a.windows[1] = Err("timed out".into());
+        a.latency = Err("timed out".into());
+        let p = page(a);
+        assert_eq!(
+            p.banner, "Operational",
+            "a side read does not blind the banner"
+        );
+        assert_eq!(p.errors, ["uptime 7d: timed out", "latency: timed out"]);
+    }
+
+    #[test]
+    fn a_check_that_stopped_reporting_drops_off() {
+        let mut a = answers(100.0, 0.0, NOW - 30);
+        a.days = Ok(vec![
+            series("pmp", "api", Some(true), &[(NOW, 100.0)]),
+            series("pmp", "old", Some(false), &[(NOW - 20 * 86_400, 9.0)]),
+        ]);
+        let p = page(a);
+        assert_eq!(p.banner, "Operational");
+        assert_eq!(p.checks.len(), 1);
     }
 
     #[test]
@@ -714,6 +794,8 @@ mod tests {
             series("pmp", "api", Some(false), &[(NOW - 300, 1.0), (NOW, 1.0)]),
             series("pmp", "web", Some(true), &[(NOW, 5.0)]),
         ]);
+        let web = instant("pmp", "web", true, 100.0);
+        a.windows[0].as_mut().unwrap().push(web);
         let p = page(a);
         assert_eq!(p.banner, "Partial outage: api");
         assert_eq!(p.incidents.len(), 1);

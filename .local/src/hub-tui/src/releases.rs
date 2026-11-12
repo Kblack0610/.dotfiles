@@ -60,11 +60,12 @@ const BUILD_LINES: usize = 6;
 
 /// A read for the opened app's pane (its changelog, its status): whose it is, whether a worker
 /// is still on it (one at a time, so holding a key over many apps asks for the last one only),
-/// and what came back, None while it is being read.
+/// what came back, None while it is being read, and when it came back.
 pub struct PaneRead<T> {
     pub project: String,
     pub busy: bool,
     pub read: Option<Result<T, String>>,
+    pub at: Option<std::time::Instant>,
 }
 
 impl<T> Default for PaneRead<T> {
@@ -73,6 +74,7 @@ impl<T> Default for PaneRead<T> {
             project: String::new(),
             busy: false,
             read: None,
+            at: None,
         }
     }
 }
@@ -193,6 +195,7 @@ impl ReleasesView {
         self.others = true;
         self.cl.project.clear();
         self.st.project.clear();
+        self.st.at = None;
         self.want = Some(id.to_string());
         if let Some(s) = s {
             self.reselect(s, None);
@@ -638,7 +641,7 @@ fn status(
         ));
     }
     if s.incidents.is_empty() {
-        out.push(Line::styled("    no incidents in 30 days", p.dim()));
+        out.push(Line::styled("    no incidents in 7 days", p.dim()));
     }
     for i in s.incidents.iter().take(INCIDENT_LINES) {
         let style = if i.to.is_none() { p.warn() } else { p.dim() };

@@ -3,8 +3,8 @@
 //! token. Which cluster, and which service, are board settings (`CC_KUBE_CONTEXT` and the
 //! service's own `ns/name:port` setting), so no cluster is assumed.
 
-use crate::jobs::log::run;
 use crate::prom::required;
+use crate::session_actions::Runner;
 
 /// A guard on the API server call.
 const REQUEST_TIMEOUT: &str = "--request-timeout=10s";
@@ -47,22 +47,22 @@ pub fn path(svc: (&str, &str, u16), path: &str) -> String {
     )
 }
 
-/// The body of `GET <path>` on the service the board setting `setting` names.
-pub fn get(setting: &str, p: &str) -> Result<String, String> {
+/// The body of `GET <path>` on the service the board setting `setting` names, by `kubectl` run
+/// through `runner` (a test hands in a fake, so no test reaches a cluster).
+pub fn get(runner: &dyn Runner, setting: &str, p: &str) -> Result<String, String> {
     let ctx = required("CC_KUBE_CONTEXT")?;
     let svc = required(setting)?;
     let svc = service(&svc).ok_or_else(|| format!("{setting} is not namespace/name:port"))?;
-    run(
+    let argv = [
         "kubectl",
-        &[
-            "--context",
-            &ctx,
-            REQUEST_TIMEOUT,
-            "get",
-            "--raw",
-            &path(svc, p),
-        ],
-    )
+        "--context",
+        &ctx,
+        REQUEST_TIMEOUT,
+        "get",
+        "--raw",
+        &path(svc, p),
+    ];
+    runner.run(&argv.map(String::from))
 }
 
 #[cfg(test)]

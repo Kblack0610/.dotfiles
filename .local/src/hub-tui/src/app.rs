@@ -52,6 +52,9 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
+/// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
+/// the open app's checks this often, the web page's cadence.
+pub const APP_STATUS_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
 /// Deliverables only this often; entering Projects and `r` still read it at once.
 pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
@@ -940,7 +943,7 @@ impl App {
 
     /// With the pane open, the changelog and the checks are the selected app's: read each when
     /// the selection came to rest on another (a key, a re-sort, a new snapshot, an answer that
-    /// landed).
+    /// landed), and the checks again each `APP_STATUS_REFRESH`, keeping the last read meanwhile.
     fn sync_changelog(&mut self) {
         let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
             return;
@@ -953,10 +956,19 @@ impl App {
             self.rv.others = true;
             self.read_changelog(None);
         }
-        if project != self.rv.st.project && !self.rv.st.busy {
+        let other = project != self.rv.st.project;
+        let due = self
+            .rv
+            .st
+            .at
+            .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        if (other || due) && !self.rv.st.busy {
             self.rv.st.busy = true;
-            self.rv.st.project = project.clone();
-            self.rv.st.read = None;
+            if other {
+                self.rv.st.project = project.clone();
+                self.rv.st.read = None;
+                self.rv.st.at = None;
+            }
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let now = chrono::Utc::now().timestamp();
@@ -1664,6 +1676,9 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
+                if self.tab == Tab::Releases {
+                    self.sync_changelog();
+                }
                 if self.tab == Tab::Alerts
                     && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
                 {
@@ -1844,6 +1859,7 @@ impl App {
                 self.rv.st.busy = false;
                 if project == self.rv.st.project {
                     self.rv.st.read = Some(*r);
+                    self.rv.st.at = Some(std::time::Instant::now());
                 }
                 self.sync_changelog();
             }
