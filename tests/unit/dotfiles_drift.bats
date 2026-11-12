@@ -55,3 +55,32 @@ setup() {
   run bash "$DRIFT"
   assert_success
 }
+
+@test "LINK advice attaches a new script despite existing absolute links and lets stow run" {
+  echo new > "$DOTFILES/.local/bin/new-tool"
+  git -C "$DOTFILES" add .local/bin/new-tool
+  git -C "$DOTFILES" -c user.name=t -c user.email=t@t commit -q -m new
+  git -C "$DOTFILES" update-ref refs/remotes/origin/main HEAD
+
+  run stow --dir="$DOTFILES" --target="$HOME" --no-folding .
+  assert_failure
+  [ ! -e "$HOME/.local/bin/new-tool" ]
+
+  run bash "$DRIFT"
+  assert_failure
+  assert_output --partial 'LINK   -> run `dotfiles-deploy --apply`'
+  refute_output --partial 'stow --simulate'
+  local remedy
+  local -a command
+  remedy="$(sed -n 's/.*LINK   -> run `\([^`]*\)`.*/\1/p' <<< "$output")"
+  read -r -a command <<< "$remedy"
+  run env PATH="$(dirname "$DRIFT"):$PATH" "${command[@]}"
+  assert_success
+  [ "$HOME/.local/bin/new-tool" -ef "$DOTFILES/.local/bin/new-tool" ]
+  [[ "$(readlink "$HOME/.local/bin/tool")" != /* ]]
+
+  run stow --dir="$DOTFILES" --target="$HOME" --no-folding .
+  assert_success
+  run bash "$DRIFT"
+  assert_success
+}
