@@ -56,7 +56,24 @@ function historyCharts(sel) {
       segs: [...ac.top.map((a) => ({ v: r.areas[a] || 0, color: ac.of(a) })), { v: other, color: OTHER }],
     };
   }), { sel });
-  return `<div class="panel"><h3>Merged per day ${legend([...ac.top.map((a) => [a, ac.of(a)]), ["Other", OTHER]])}</h3>${merged}</div>`;
+  return `<div class="panel"><h3>Merged per day ${legend([...ac.top.map((a) => [a, ac.of(a)]), ["Other", OTHER]])}</h3>${merged}</div>` + ciChart(rows, lab, sel);
+}
+
+// Runner-hours on the CI pool per day (hub_core::boards::CiDay, ci-cost's numbers as day-log
+// recorded them): gating PRs, then the rest of the pool. A day ci-cost did not measure is empty.
+function ciChart(rows, lab, sel) {
+  if (!rows.some((r) => r.ci)) return "";
+  const h = (n) => n.toFixed(1) + " h";
+  const cols = columns(rows.map((r, i) => {
+    const c = r.ci, col = { key: r.date, label: lab(r.date, i) }, day = `${weekday(r.date)} ${r.date}: `;
+    if (!c) return { ...col, tip: day + "not measured", segs: [] };
+    return {
+      ...col,
+      tip: day + `${h(c.pool_h)} on the pool, ${h(c.gate_h)} gating, ${c.runs} pool runs` + (c.gate_p50_min == null ? "" : `, gate p50 ${c.gate_p50_min} min`),
+      segs: [{ v: c.gate_h, color: SLOTS[0] }, { v: Math.max(0, c.pool_h - c.gate_h), color: OTHER }],
+    };
+  }), { sel, yfmt: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) + " h" });
+  return `<div class="panel"><h3>CI hours per day ${legend([["Gate", SLOTS[0]], ["Rest of the pool", OTHER]])}</h3>${cols}</div>`;
 }
 
 // Projects keep their colour for the day: the top slots go to the busiest (rec.projects is
