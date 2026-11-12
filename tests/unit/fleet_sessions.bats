@@ -3159,10 +3159,10 @@ main_change() {
 }
 
 # verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the rule table in
-# fleet-states.md). base is a dispatched lab session, finished, idle an hour, nothing open. SELF names
+# fleet-states.md). base is a hand-started lab session, finished, idle an hour, nothing open. SELF names
 # the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson hand 60 --argjson chat 1440 --arg world lab --arg self "${SELF:-}" \
+  jq -nr --argjson hand 60 --argjson chat 1440 --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
       blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
@@ -3185,7 +3185,7 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "keep: the human was here 30m ago" ]
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
   # Only a STALLED row: a NEEDS row with its own ask open waits on the human (the ask rule).
@@ -3196,20 +3196,22 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 25h with no plan, PR or item" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "after: quiet 24h (now 300m)" ]
   [ "$(verdict '{target: "hub/d:5", own_asks: 1, blockers: ["open ask Cd34"]}')" = "after: the human answers its ask" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["1 open ask(s)"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["1 open ask(s)"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12", "next phase: 2"]}')" = "after: the human answers its ask" ]
 }
 
-@test "close verdict: dispatched is the window flag, the item origin or the dispatch world" {
+@test "close verdict: dispatched is the window flag or the item origin, never the world" {
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "keep: the human was here 30m ago" ]
-  # The world alone does not lift the hand-active keep: a human may type in a lab window.
+  # Being on lab is not dispatch: the human's own worktree sessions live there too.
   [ "$(verdict '{idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "moved"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   [ "$(verdict '{idle_min: 30, bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: the human was here 30m ago" ]
   # An unknown age is quiet 0 (as fleet-shepherd reads it), so it never closes on quiet.
   [ "$(verdict '{target: "hub/d:4", bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "keep: the human was here 0m ago" ]
-  [ "$(jq -r --argjson hand 60 --argjson chat 1440 --arg world lab \
+  [ "$(jq -r --argjson hand 60 --argjson chat 1440 \
        '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = keep ]
 }
 
@@ -3261,11 +3263,11 @@ verdict() {
 }
 
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 --arg world lab \
+  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
        '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 --arg world lab \
+  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
        '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 --arg world lab \
+  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
        '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
   run json_rows < <(age_row 45)
   assert_success

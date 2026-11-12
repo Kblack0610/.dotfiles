@@ -80,7 +80,7 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 | 14 | an ask of its own is open | after: the human answers it |
 | 15 | anything else | keep: its first blocker |
 
-Dispatched is the `@dispatch` window flag, a queue item with an `origin`, or a session on `FLEET_DISPATCH_WORLD` (lab); anything else is hand-started. Rule 7 counts only the flag and the origin, since a human may type in a lab window. Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0 as in `fleet-shepherd`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
+Dispatched is the `@dispatch` window flag or a queue item with an `origin`; anything else is hand-started. The world is not a sign: every worktree session is on lab, the human's own starts too. Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0 as in `fleet-shepherd`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
 
 ## Schema (version 1)
 

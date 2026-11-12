@@ -146,8 +146,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand), and every worktree the human starts | today's daily note |
-| `lab` - dispatch | only the sessions `fleet-dispatch` starts | no landing page: root resumes the last dispatched session |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand): main checkouts only | today's daily note |
+| `lab` - agents | every worktree session, `<repo>-agent-N`, started by hand or by `fleet-dispatch` | no landing page: root resumes the last worktree session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -186,7 +186,7 @@ The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
 | `~/dev/bnb/games/engine/unity-core-playground` | `hub`, session `unity-core-playground` | hub.conf declares it (`?`, on demand) |
-| `~/.worktrees/dotfiles-agent-3` | `hub`, session `dotfiles-agent-3` | a linked worktree goes to its main repo's world, under its own name; only what `fleet-dispatch` starts is on lab, because it names `--server` |
+| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | a linked worktree goes to the `@agents` world, under its own name, whoever started it |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
 | `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
@@ -195,7 +195,7 @@ session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
 
-`wt new` (`Prefix+F`) creates its session on its repo's world, inside tmux or out, and you hop there, so the human's own starts sit beside the main checkouts in hub and lab holds only what `fleet-dispatch` started (2026-11-11: the two shared lab, so it could not be read as what the fleet is doing). A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first, or on the server where its session already lives (a dispatched one on lab); `tmx land` would otherwise fall back to the world's last session.
+`wt new` (`Prefix+F`) creates its session on the agent world (lab), inside tmux or out, and you hop there: every worktree session is on lab and only main checkouts are in hub. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on lab first, or on the server where its session already lives; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every

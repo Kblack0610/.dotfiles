@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Tier 3: the real manifests against real tmux sockets. Every repo and every worktree a human
-# starts in hub, lab only for what fleet-dispatch starts.
+# Tier 3: the real manifests against real tmux sockets. Every main checkout in hub, every worktree
+# session in lab, whoever started it.
 #
 # TMUX_SERVERS_DIR is the repo's own .config/tmux-servers, so a manifest edit that breaks the
 # rule fails here. The fixture is the directories those manifests name, under the sandbox HOME.
@@ -74,14 +74,14 @@ in_pane() {
   assert_output 'hub tools'
 }
 
-@test "a dotfiles worktree the human starts resolves to hub and its session is made there, none on lab" {
+@test "a dotfiles worktree the human starts resolves to lab and its session is made there, none on hub" {
   run "$WT" new --detach -c "$HOME/.dotfiles"
   assert_success
   assert_equal "${lines[-1]}" dotfiles-agent-1
   run "$WORLD" route "$HOME/.worktrees/dotfiles-agent-1"
-  assert_output 'hub dotfiles-agent-1'
-  assert_equal "$(sessions_of hub)" dotfiles-agent-1
-  assert_equal "$(sessions_of lab)" ''
+  assert_output 'lab dotfiles-agent-1'
+  assert_equal "$(sessions_of lab)" dotfiles-agent-1
+  assert_equal "$(sessions_of hub)" ''
 }
 
 @test "a dispatched start names the dispatch world, so its session is made on lab" {
@@ -100,9 +100,9 @@ in_pane() {
   "$REAL_TMUX" -L hub has-session -t =dotfiles || fail "cancel killed hub dotfiles"
 }
 
-@test "the same --running from a hub worktree session records that session and its window" {
-  in_pane hub dotfiles-agent-1 "$(printf '%q' "$AQ") add --running --project dotfiles --slug hand 'by hand'"
+@test "the same --running from a lab worktree session records that session and its window" {
+  in_pane lab dotfiles-agent-1 "$(printf '%q' "$AQ") add --running --project dotfiles --slug hand 'by hand'"
   f="$(ls "$AGENT_QUEUE_DIR"/running/*-hand.md)"
-  assert_equal "$(field "$f" session)" hub:dotfiles-agent-1
+  assert_equal "$(field "$f" session)" lab:dotfiles-agent-1
   [ -n "$(field "$f" window)" ] || fail "no window recorded"
 }

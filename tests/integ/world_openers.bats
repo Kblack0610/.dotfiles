@@ -55,18 +55,18 @@ resumable() {
   assert_called 'tmx goto hub dotfiles'
 }
 
-@test "resume --window of a worktree session from lab makes its session on its repo's world" {
+@test "resume --window of a worktree session from hub makes its session on lab" {
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
   git init -q -b main "$HOME/dev/app"
   git -C "$HOME/dev/app" commit -q --allow-empty -m seed
   git -C "$HOME/dev/app" worktree add -q "$HOME/.worktrees/app-agent-1" -b a1
   resumable 22222222-aaaa-4aaa-8aaa-222222222222 "$HOME/.worktrees/app-agent-1"
-  : > "$NOTES_FIXTURE/tmux.sessions.hub"
-  export TMUX=/tmp/tmux-stub/lab,1,0
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  export TMUX=/tmp/tmux-stub/hub,1,0
   run "$REPO_ROOT/.local/bin/sessions" resume --window 22222222-aaaa-4aaa-8aaa-222222222222
   assert_success
-  assert_called 'tmux -L hub new-session -ds app-agent-1'
-  assert_called 'tmx goto hub app-agent-1'
+  assert_called 'tmux -L lab new-session -ds app-agent-1'
+  assert_called 'tmx goto lab app-agent-1'
   assert_not_called 'tmux new-window'
 }
 
