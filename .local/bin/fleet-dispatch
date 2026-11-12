@@ -4136,8 +4136,8 @@ cmd_run() {
   fi
   room=$(( room - STARTED ))
   # Promote to the low water, or to the units this pass can start if that is more. While the human
-  # is here only the present trickle starts board items, so room past it would sit queued: a pass
-  # with 40 free units promoted 40 rows, one burst per drain (queue review, 2026-11-12: 382 runnable).
+  # is here only the present trickle starts board items, so room past it would sit in the queue and
+  # every drain under the low water would add another room-sized batch.
   local can=$room
   if human_here; then can=${PRESENT_LEFT:-$(present_left)}; [ "$can" -le "$room" ] || can=$room; fi
   want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$can" ] || want=$can

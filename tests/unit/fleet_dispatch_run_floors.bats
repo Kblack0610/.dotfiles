@@ -329,6 +329,11 @@ load 'fleet_dispatch/common'
   assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
   # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
   assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
+  # Away, the same room promotes every row it can start (negative control).
+  stub fleet-presence 'echo "away 45 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(( $(grep -c 'wt new' "$NOTES_FIXTURE/calls.log") + $(ls "$AGENT_QUEUE_DIR/queued" | wc -l) ))" 5
 }
 
 @test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
