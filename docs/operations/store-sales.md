@@ -26,7 +26,7 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | rbw entry (password field, one line) | Contents | Scope |
 |---|---|---|
 | `store_sales_asc` | `{"key_id", "issuer_id", "p8", "vendor_number"}`, `p8` the `.p8` file in base64 | App Store Connect API key with the Sales role. The vendor number is on Payments and Financial Reports |
-| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_rev_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial |
+| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 
 ## Troubleshooting
 
@@ -38,5 +38,5 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | App Store `HTTP 400: Invalid vendor number` | `vendor_number` in the rbw entry is wrong |
 | App Store `HTTP 404` without "no sales" | The day's report is not out yet. Apple publishes Americas daily reports by 5am Pacific |
 | App Store "no sales yesterday" | Apple answered "There were no sales for the date specified" |
-| Google Play `no sales/salesreport_YYYYMM.zip in the bucket yet` | No sale this month yet, or the first report of the month is not published yet |
-| Google Play `HTTP 403` | The service account lacks "View financial data" in Play Console, Users and permissions |
+| Google Play `no sales/salesreport_YYYYMM.zip in the bucket yet` | No sale this month yet, or the first report of the month is not published yet. An account with no payments merchant account has no sales report at all |
+| Google Play `HTTP 403` | The service account cannot read the bucket. Google applies a new Play Console invite to the bucket about a day later, sometimes more, so a 403 that first day is expected. After that, check the service account has "View financial data" in Play Console, Users and permissions. GCP IAM roles on the bucket do not help: Play owns its ACL |
