@@ -156,7 +156,7 @@ const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic || r.parent) : "";
 
 // One line of the table, and the opened record under it. The title cell holds the row's area,
-// its title and what the title leaves out (hub_core::tasks::title_and_rest); the epic cell opens
+// its title and what the title leaves out (hub_core::text::title); the epic cell opens
 // the epic. The opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
