@@ -1846,9 +1846,10 @@ impl App {
             }
             Msg::SessionFeed(f) => {
                 self.controls.read_feed(*f);
-                if let Some(id) = self.session_want.take() {
-                    if self.tab == Tab::Sessions {
-                        self.show_session(&id);
+                // A wanted session the feed does not have yet stays wanted until the page moves.
+                if let Some(id) = self.session_want.clone() {
+                    if self.tab == Tab::Sessions && self.show_session(&id) {
+                        self.session_want = None;
                     }
                 }
                 self.read_page();
@@ -3015,7 +3016,10 @@ impl App {
                         return true;
                     }
                 }
-                if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
+                // With nothing running there is nothing to give the keys to: Tab turns the page.
+                if matches!(k.code, KeyCode::Tab | KeyCode::BackTab)
+                    && (self.hv.on_running || !self.home_build().running.is_empty())
+                {
                     self.hv.on_running = !self.hv.on_running;
                     self.hv.follow = self.hv.on_running;
                     return true;
@@ -3080,9 +3084,34 @@ impl App {
         {
             return false;
         }
-        let h = self.home_build();
-        if self.hv.running.typing.is_none() {
-            let rv = &mut self.hv.running;
+        let moves = matches!(
+            k.code,
+            KeyCode::Char('j' | 'k' | 'g' | 'G')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        );
+        let typing = self.hv.running.typing.is_some();
+        // Only the keys that read the rows build Home.
+        let reads = !typing && (moves || matches!(k.code, KeyCode::Enter | KeyCode::Char('f')));
+        let h = if reads {
+            self.home_build()
+        } else {
+            hub_core::home::Home::default()
+        };
+        // What Enter and j/k step through: the rows drawn, the selection back in their range.
+        let n = self.hv.running_rows(&h).len();
+        if reads {
+            // Nothing left to pick (the last item finished): the keys go back to Needs you.
+            if n == 0 {
+                self.hv.on_running = false;
+                return false;
+            }
+            self.hv.running.clamp(n);
+        }
+        let rv = &mut self.hv.running;
+        if !typing {
             match k.code {
                 KeyCode::Enter => {
                     let l = self
@@ -3111,7 +3140,7 @@ impl App {
                 return true;
             }
         }
-        match self.hv.running.key::<hub_core::home::Running>(k.code) {
+        match rv.key::<hub_core::home::Running>(k.code) {
             Took::View => {
                 self.hv.follow = true;
                 return true;
@@ -3119,16 +3148,7 @@ impl App {
             Took::Typing => return true,
             Took::No => {}
         }
-        let n = self.hv.running_rows(&h).len();
-        if matches!(
-            k.code,
-            KeyCode::Char('j' | 'k' | 'g' | 'G')
-                | KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Home
-                | KeyCode::End
-        ) && self.hv.running.moves(k, n, self.page)
-        {
+        if moves && rv.moves(k, n, self.page) {
             self.hv.follow = true;
             return true;
         }
@@ -3739,8 +3759,8 @@ impl App {
             let mut sections = sections;
             let pick = match self.tab {
                 Tab::Home => Some((crate::datatable::ROW, &mut self.hv.follow)),
-                Tab::Alerts => Some((alertstab::ROW, &mut self.av.follow)),
-                Tab::Infra => Some((crate::infratables::ROW, &mut self.itab.follow)),
+                Tab::Alerts => Some((crate::datatable::ROW, &mut self.av.follow)),
+                Tab::Infra => Some((crate::datatable::ROW, &mut self.itab.follow)),
                 _ => None,
             };
             if let Some((row, follow)) = pick {
@@ -3977,7 +3997,7 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Home if self.hv.on_running => format!(
+            Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
                 "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  u w n e m b flow  F fix  {tabs} pages  r refresh  q quit"
             ),
             Tab::Home => format!(
@@ -4307,7 +4327,7 @@ impl App {
                 }
                 // The selected row of the table with the keys, kept in view after a key moves it.
                 if let Some(r) = l.iter().position(|x| x.style == self.p.sel()) {
-                    at.push((crate::infratables::ROW, r));
+                    at.push((crate::datatable::ROW, r));
                 }
                 (l, at)
             }
@@ -6208,15 +6228,51 @@ mod tests {
             running.contains("Sweep the logs") && !running.contains("Fix the menu"),
             "{s}"
         );
-        // A session asked for before the feed read is dropped once the page moves on.
+        // A selection a re-read left past the rows opens the last row drawn, as it is marked.
+        a.handle(key('x'));
+        a.hv.running.sel = 9;
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_ne!(a.tab, Tab::Home, "Enter opened the last row");
+
+        // A session asked for before the feed has it stays wanted through a feed without it,
+        // and is dropped once the page moves on.
         a.follow(&hub_core::links::Link::to(
             hub_core::links::Kind::Session,
             "lab/dotfiles-agent-3:2",
         ));
+        a.handle(Msg::SessionFeed(Box::default()));
+        assert!(!a.controls.open && a.session_want.is_some());
         a.handle(key('1'));
         a.controls.set(crate::controls::tests::fixture());
         a.handle(Msg::SessionFeed(Box::default()));
         assert!(!a.controls.open && a.session_want.is_none());
+    }
+
+    #[test]
+    fn with_nothing_running_tab_turns_the_page_and_running_lets_the_keys_go() {
+        let tab = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab)));
+        let mut a = app(Tab::Home);
+        a.handle(tab());
+        assert!(!a.hv.on_running);
+        assert_ne!(
+            a.tab,
+            Tab::Home,
+            "nothing to give the keys to: Tab turns the page"
+        );
+
+        // The last running item finishes while Running has the keys: j scrolls the page again.
+        let mut a = home_running();
+        a.handle(tab());
+        assert!(a.hv.on_running);
+        a.queue = Some(Queue {
+            items: vec![],
+            stats: None,
+            errors: vec![],
+        });
+        assert!(!a.hints().starts_with("Running:"), "{}", a.hints());
+        let before = a.scroll;
+        a.handle(key('j'));
+        assert!(!a.hv.on_running && a.scroll == before + 1);
     }
 
     #[test]

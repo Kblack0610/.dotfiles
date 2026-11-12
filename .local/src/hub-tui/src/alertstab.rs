@@ -10,7 +10,7 @@ use hub_core::layout::FOLD_ROWS;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::datatable::DataTable;
+use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 
@@ -20,7 +20,6 @@ const HEADER: [&str; 7] = [
 ];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
-pub use crate::datatable::ROW;
 
 #[derive(Default)]
 pub struct AlertsView {
