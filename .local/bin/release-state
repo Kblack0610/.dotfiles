@@ -5,8 +5,9 @@
 #   release-state show [--json] [project] the snapshot, exceptions first
 #   release-state check [--grace MIN] [--max-age MIN]
 #                                         exit 1 naming each drift past grace (default 30), a
-#                                         missing or tripped telemetry watch, a floating prod
-#                                         target, or a snapshot older than max-age (default 60)
+#                                         floating prod target, or a snapshot older than max-age
+#                                         (default 60); the links between stores (a missing
+#                                         telemetry watch among them): hub releases check
 #   release-state changelog [--json|--list] <project> [tag]
 #                                         what a tag shipped (default: the newest release): its
 #                                         CHANGELOG.md section, else the merged PRs since the
@@ -69,6 +70,18 @@ DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
   }
 }'
 
+# One call per app repo: the newest Deployments' environments, for link_facts.
+ENV_QUERY='query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    deployments(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { environment description } }
+  }
+}'
+# What makes a workflow file a deploy for link_facts: its name, or a step that ships (a recorded
+# Deployment, a store upload, a cluster or gitops change, an image push). One that matches and is
+# not a deploy is declared so in the registry's `deployWorkflows`, with why.
+DEPLOY_NAMES='deploy|release|publish|promote|submit|steam|upload|rollout'
+DEPLOY_MARKERS='record-deployment|steamcmd|upload-google-play|upload-app|altool|fastlane|kubectl (set image|rollout|apply)|helm upgrade|flux reconcile|home-config|docker push|build-push-action|wrangler'
+
 # REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
 # the first die keeps it, so a caller's die does not hide the inner one that caused it.
 die() {
@@ -119,10 +132,12 @@ fetch_branch() {
   [ "${FETCHED[$k]}" = ok ]
 }
 
+# The branch name only: a clone whose origin/HEAD points at another remote's ref
+# (home-config's reads forgejo/master) still names the branch origin fetches.
 default_branch() {
   local dir="$1" b
   b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
-  printf '%s' "${b#origin/}"
+  printf '%s' "${b#*/}"
 }
 
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
@@ -533,7 +548,7 @@ row() {
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
 
-# stage_facts <rows-json> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
+# stage_facts <state-file> <labs-file> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
 # registered project's lab stage asks of its deploys (~/.local/src/docs/stages.md, "The ladder").
 # A live target serves the rung the registry's `channels` maps its channel to; `rungs` are the
 # rungs served, low to high (the stage gate's rows read them against the stage being checked, so
@@ -543,20 +558,20 @@ row() {
 # ahead. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
 # `stages_error` says why.
 stage_facts() {
-  local rows="$1" ladder labs
+  local state="$1" labs="$2" ladder
   ladder="$(notes projects --stages 2>/dev/null)"
   [ -n "$ladder" ] || { jq -n '{stages: {}, stages_error: "notes projects --stages printed nothing"}'; return; }
-  labs="$(notes projects --stats --json 2>/dev/null)"
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$labs" \
+  jq -e 'type == "array"' >/dev/null 2>&1 <"$labs" \
     || { jq -n '{stages: {}, stages_error: "notes projects --stats --json did not answer"}'; return; }
   project_machine_profile >/dev/null
-  jq -n --argjson rows "$rows" --argjson labs "$labs" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
+  jq --slurpfile st "$state" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
     --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
-    ($ladder | split(" ") | map(select(. != ""))) as $L
+    . as $labs | ($st[0].rows) as $rows
+    | ($ladder | split(" ") | map(select(. != ""))) as $L
     | ($L | to_entries | map({key: .value, value: .key}) | from_entries) as $rank
     | ($reg[0].channels // {}) as $ch
     | ($labs | map({key: .name, value: (.stage // "")}) | from_entries) as $at
-    | {stages: ([($reg[0].trackers // {}) | to_entries[] | select(.value | type == "object")
+    | {ladder: $L, stages: ([($reg[0].trackers // {}) | to_entries[] | select(.value | type == "object")
         | .key as $p | select($p | visible($m))
         | (if $rank[$at[$p] // ""] != null then $at[$p] else null end) as $s
         | (.value.type // null) as $t
@@ -569,7 +584,89 @@ stage_facts() {
                           | . as $r | select([$live[] | select(.rung == $r)] | length == 0)]
                     else [] end),
             ahead: (if $s != null then [$live[] | select($rank[.rung] > $rank[$s]) | .id] else [] end)}}]
-        | from_entries)}'
+        | from_entries)}' <"$labs"
+}
+
+# link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
+# with the error that stopped its read. Per app repo (a repo an app or game ships from): the
+# GitHub environments that hold a recorded Deployment (record-deployment writes the version as
+# its description; a job's `environment:` key writes none), and every workflow file on both
+# forges at origin's default branch with whether it looks like a deploy. Per lab project: its
+# versions, each with its roll stamp and its frozen rows' PRs; a project with `automation = false`
+# has no roll (agentctl-wave-roll skips it), so it carries none and no version check runs on it.
+# `since` is RELEASE_NOTES_SINCE, the day the links are enforced from.
+link_facts() {
+  local labs="$1" repos key slug dir branch f deploy envs out tmp proj lab root roadmap rolled manual
+  local -A labroot=()
+  project_machine_profile >/dev/null
+  repos="$(jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
+    (.trackers // {}) | to_entries[] | select(.value | type == "object")
+    | select(.key | visible($m)) | select(.value.type == "app" or .value.type == "game")
+    | .value.repo // .key' "$MAP" | sort -u)"
+  tmp="$(mktemp -d)" || die "mktemp failed"
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    slug="$(project_field "$key" github)"
+    if [ -n "$slug" ]; then
+      if envs="$(timeout "$PROBE_TIMEOUT" gh api graphql -f query="$ENV_QUERY" -F owner="${slug%%/*}" -F name="${slug#*/}" \
+          --jq '[.data.repository.deployments.nodes[] | select((.description // "") != "") | .environment] | unique' 2>/dev/null)"; then
+        jq -nc --arg k "$key" --arg s "$slug" --argjson e "$envs" '{key: $k, value: {slug: $s, names: $e}}'
+      else
+        jq -nc --arg k "$key" --arg s "$slug" '{key: $k, value: {slug: $s, names: [], error: "gh api deployments failed"}}'
+      fi >>"$tmp/env"
+    fi
+    dir="$(repo_dir "$key")"
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+      jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "no checkout"}}' >>"$tmp/wf"
+      continue
+    fi
+    branch="$(default_branch "$dir")"
+    if [ -z "$branch" ] || ! fetch_branch "$dir" "$branch"; then
+      jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "cannot fetch the default branch"}}' >>"$tmp/wf"
+      continue
+    fi
+    : >"$tmp/files"
+    while IFS= read -r f; do
+      case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
+      deploy=false
+      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || git -C "$dir" show "origin/$branch:$f" 2>/dev/null | grep -Eiq -- "$DEPLOY_MARKERS"; then
+        deploy=true
+      fi
+      jq -nc --arg p "$f" --argjson d "$deploy" '{path: $p, deploy: $d}' >>"$tmp/files"
+    done < <(git -C "$dir" ls-tree -r --name-only "origin/$branch" -- .github/workflows .forgejo/workflows 2>/dev/null)
+    jq -sc --arg k "$key" --arg b "$branch" '{key: $k, value: {branch: $b, files: .}}' "$tmp/files" >>"$tmp/wf"
+  done <<<"$repos"
+  manual="$(jq -r '.[]? | select(.automation == false) | .name' "$labs" 2>/dev/null || true)"
+  while IFS=$'\037' read -r proj lab; do
+    [ -n "$proj" ] || continue
+    ! grep -qxF "$proj" <<<"$manual" || continue
+    [ -v "labroot[$lab]" ] || labroot[$lab]="$(notes --profile "$lab" path projects 2>/dev/null || true)"
+    root="${labroot[$lab]}"
+    if [ -z "$root" ] || ! roadmap="$(notes --profile "$lab" projects --roadmap "$proj" --json 2>/dev/null)" \
+        || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$roadmap"; then
+      jq -nc --arg p "$proj" '{key: $p, value: {list: [], error: "notes projects --roadmap did not answer"}}' >>"$tmp/ver"
+      continue
+    fi
+    : >"$tmp/rolled"
+    for f in "$root/$proj"/versions/*.md; do
+      [ -f "$f" ] || continue
+      rolled="$(sed -n 's/.*<!-- rolled: \([0-9][0-9]*\) -->.*/\1/p' "$f" | tail -1)"
+      jq -nc --arg v "$(basename "$f" .md)" --arg r "$rolled" '{key: $v, value: ($r | tonumber? // null)}' >>"$tmp/rolled"
+    done
+    jq -c --arg p "$proj" --slurpfile r "$tmp/rolled" '($r | from_entries) as $at
+      | {key: $p, value: {list: [.[] | select(.state != "current")
+          | {version, state, rolled: $at[.version], prs: ([.rows[]?.prs[]?] | map(tonumber? // empty) | unique)}]}}' \
+      <<<"$roadmap" >>"$tmp/ver"
+  done < <(jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
+    (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.key | visible($m))
+    | select(.value.lab and (.value.type == "app" or .value.type == "game"))
+    | "\(.key)\u001f\(.value.lab)"' "$MAP")
+  out="$(jq -n --argjson since "$(date -d "$RELEASE_NOTES_SINCE" +%s)" \
+    --slurpfile e <(cat "$tmp/env" 2>/dev/null) --slurpfile w <(cat "$tmp/wf" 2>/dev/null) --slurpfile v <(cat "$tmp/ver" 2>/dev/null) \
+    '{links: {since: $since, environments: ($e | from_entries), workflows: ($w | from_entries), versions: ($v | from_entries)}}')"
+  rm -rf "$tmp"
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
 }
 
 # refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
@@ -585,7 +682,7 @@ refresh_snapshot() {
   # and a full refresh would then overwrite the snapshot with zero rows.
   targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
   store_credentials "$targets"
-  tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
+  tmp="$(mktemp -d "$STATE_DIR/.refresh.XXXXXX")" || die "cannot write in $STATE_DIR"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     proj="$(jq -r '.project' <<<"$line")"
@@ -593,27 +690,36 @@ refresh_snapshot() {
     # A target with no id cannot be joined across refreshes or named by check.
     [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
     [ -v "tag_of[$proj]" ] || tag_of[$proj]="$(project_release_tag "$proj" 2>/dev/null || true)"
-    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp"
+    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp/row"
   done <<<"$targets"
-  rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
-  : >"$tmp"
+  jq -sc . "$tmp/row" >"$tmp/rows" || { rm -rf "$tmp"; die "cannot read the probed rows"; }
+  : >"$tmp/rel1"
   while IFS= read -r proj; do
     [ -n "$proj" ] || continue
-    history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp"
+    history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp/rel1"
   done < <(jq -r '.project' <<<"$targets" | sort -u)
-  releases="$(jq -sc 'from_entries' "$tmp")" || { rm -f "$tmp"; die "cannot read the release history"; }
-  rm -f "$tmp"
+  jq -sc 'from_entries' "$tmp/rel1" >"$tmp/rel" || { rm -rf "$tmp"; die "cannot read the release history"; }
+  printf '%s\n' "$prev" >"$tmp/prev"
   local out="$STATE_DIR/.state.$$"
-  jq -n --argjson rows "$rows" --argjson releases "$releases" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
-    ($only | split(" ") | map(select(. != ""))) as $o
+  # Files, never --argjson: the snapshot passed 128 KB on 2026-11-11, the kernel's cap on one
+  # argument (MAX_ARG_STRLEN), and every refresh died with "Argument list too long".
+  jq -n --slurpfile rows "$tmp/rows" --slurpfile releases "$tmp/rel" --slurpfile prev "$tmp/prev" --arg only "$only" --argjson now "$(now_epoch)" '
+    $rows[0] as $rows | $releases[0] as $releases | $prev[0] as $prev
+    | ($only | split(" ") | map(select(. != ""))) as $o
     | { generated_at: ($now | todate), generated_epoch: $now,
         rows: ((if ($o | length) > 0
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
                 else [] end) + $rows),
-        releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+        releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" \
+    || { rm -rf "$out" "$tmp"; die "cannot write $out"; }
   # From the merged rows, so a subset refresh still judges every project on all its channels.
-  facts="$(stage_facts "$(jq -c .rows "$out")")" && jq --argjson f "$facts" '. + $f' "$out" >"$out.f" && mv -f "$out.f" "$out" \
-    || { rm -f "$out" "$out.f"; die "cannot write the stage facts"; }
+  # One `notes projects --stats --json` read serves both fact blocks.
+  notes projects --stats --json >"$tmp/labs" 2>/dev/null || : >"$tmp/labs"
+  stage_facts "$out" "$tmp/labs" >"$tmp/stage" || { rm -rf "$out" "$tmp"; die "cannot write the stage facts"; }
+  link_facts "$tmp/labs" >"$tmp/links" || { rm -rf "$out" "$tmp"; die "cannot write the link facts"; }
+  jq --slurpfile s "$tmp/stage" --slurpfile l "$tmp/links" '. + $s[0] + $l[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
+    || { rm -rf "$out" "$out.f" "$tmp"; die "cannot write the facts"; }
+  rm -rf "$tmp"
   summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
     || { rm -f "$out"; die "cannot summarize $out"; }
   mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }
@@ -659,15 +765,18 @@ cmd_show() {
   fi
   jq -r --argjson now "$(now_epoch)" '"refreshed \(.generated_at) (\((($now - .generated_epoch) / 60) | floor)m ago)"' "$STATE"
   jq -r --arg p "$proj" --argjson rank "$RANK" '
-    def v(x): (x.value // (if x.source == "manual" then "manual" elif x.source == "none" or x.error == "no release tag" then "-" else "?" end));
-    def tel: (.telemetry | if length == 0 then "-" else "\(map(select(.state == "OK")) | length)/\(length)" end);
-    def prev: (.deploys // {}) | if .error then "?" else (.prev // "-") end;
-    def last: (.deploys // {}) | if .error then "?" elif .last == null then "-"
+    # A blank says why: a pin nothing recorded yet, a live side nothing probes, a read that failed.
+    def v(x; none): (x.value // (if x.source == "manual" then "manual" elif x.error == "no release tag" then "not recorded"
+      elif x.source == "none" then none else "not read" end));
+    def tel: (.telemetry | if length == 0 then "none declared" else "\(map(select(.state == "OK")) | length)/\(length)" end);
+    def none: if .pinned.source == "manual" then "manual" elif (.deploys.source // "none") == "none" then "none declared" else "not recorded" end;
+    def prev: none as $n | (.deploys // {}) | if .error then "not read" else (.prev // $n) end;
+    def last: none as $n | (.deploys // {}) | if .error then "not read" elif .last == null then $n
       else "\(.last.at | strflocaltime("%m-%d %H:%M")) \(.last.state)" end;
     (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","PREV","LAST DEPLOY","TELEMETRY"] | @tsv),
     (.rows | map(select($p == "" or .project == $p))
       | sort_by(($rank[.status] // 9), .project, .id)[]
-      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, prev, last, tel] | @tsv)
+      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned; "not recorded"), v(.live; "none declared"), .status, prev, last, tel] | @tsv)
   ' "$STATE" | column -t -s $'\t'
 }
 
@@ -690,9 +799,7 @@ cmd_check() {
      | (select(.status == "drift" and (.drift_since != null) and ($now - .drift_since) > ($grace * 60))
         | "DRIFT \(.project) \(.id): pinned \(.pinned.value)\(if .pinned.build then " build \(.pinned.build)" else "" end) live \(.live.value)\(if .live.build then " build \(.live.build)" else "" end) for \((($now - .drift_since) / 60) | floor)m"),
        (select(.status == "floating" and .channel == "prod")
-        | "FLOATING \(.project) \(.id): prod runs an unpinned image"),
-       (.project as $p | .id as $i | .telemetry[] | select(.state == "missing" or .state == "TRIP")
-        | "TELEMETRY \($p) \($i): watch \(.watch) is \(.state)"))
+        | "FLOATING \(.project) \(.id): prod runs an unpinned image"))
   ' "$STATE")"
   [ -z "$out" ] && { echo "ok"; return 0; }
   printf '%s\n' "$out"
