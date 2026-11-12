@@ -2203,7 +2203,7 @@ close_row() {
     logline "queue item $1: $project row left started, no merge proof: ${out:-${oid:+no checkout of the repo $pr names}${oid:-no merged commit}}"
     return 0
   fi
-  np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
+  np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:$([[ "$pr" == */*#* ]] && echo "$pr" || echo "${pr##*#}") commit:${oid:0:12}" >/dev/null 2>&1 ||
     { logline "queue item $1: closing $project row $key failed"; return 0; }
   logline "closed $project $lane row on merge proof ($out): $key"
   dispatch_event settled "$project" "row closed on merge proof" --item "$1" --id "$key" --pr "$pr" --sha "$oid"

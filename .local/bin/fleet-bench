@@ -1747,8 +1747,10 @@ lead_time_json() {
   local t=$1 items graph rel deployed p released=() shas
   items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - BENCH_LEAD_DAYS * 86400))" +%F)" 2>/dev/null \
     | jq -sc 'map(select(.from == "human" and (.merged // "") != "") | {project, merged, queued, finished})') || return 1
+  # hub exits 1 on any fault, a channel not probed included, so its exit says nothing here: a read
+  # with no rows and an error is a snapshot that did not read.
   graph=$($BENCH_RELEASES_CMD 2>/dev/null)
-  rel=$(jq -ce '[.rows[].project] | unique' <<<"$graph") || return 1
+  rel=$(jq -ce 'if (.rows | length) == 0 and (.errors | length) > 0 then error("unread") else [.rows[].project] | unique end' <<<"$graph") || return 1
   # {project: {tag: the first deploy's epoch, null when none is recorded}}
   deployed=$(jq -c '[.apps[]? | {key: .project, value: ([.history[]? | {key: .tag, value: ([.reached[]?.at | values] | min)}] | from_entries)}] | from_entries' <<<"$graph") || return 1
   for p in $(jq -r --argjson r "$rel" '[.[].project | select(IN($r[]))] | unique[]' <<<"$items"); do

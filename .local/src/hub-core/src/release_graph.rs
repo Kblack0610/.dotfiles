@@ -313,9 +313,17 @@ impl<'a> Graph<'a> {
                 let repo = match repo {
                     Some(r) => r,
                     None => {
-                        let repos = g.i.registry.map_or(vec![], |r| r.repos(&it.project));
+                        // One repo mirrored on two forges is still one repo.
+                        let mut repos: Vec<String> = g
+                            .i
+                            .registry
+                            .map_or(vec![], |r| r.repos(&it.project))
+                            .iter()
+                            .map(|r| repo_key(r))
+                            .collect();
+                        repos.dedup();
                         if let [one] = &repos[..] {
-                            repo_key(one)
+                            one.clone()
                         } else {
                             g.bare.push(Bare {
                                 slug: it.slug.clone(),
@@ -496,7 +504,10 @@ impl<'a> Graph<'a> {
         }
         let mut bare: HashMap<(&str, usize), Vec<&str>> = HashMap::new();
         for b in &self.bare {
-            bare.entry((&b.project, b.repos)).or_default().push(&b.slug);
+            let slugs = bare.entry((&b.project, b.repos)).or_default();
+            if !slugs.contains(&b.slug.as_str()) {
+                slugs.push(&b.slug);
+            }
         }
         for ((project, repos), slugs) in bare {
             let what = if repos == 0 {
@@ -894,7 +905,8 @@ mod tests {
         Registry::parse(
             r#"{"trackers": {"app": {"github": "Acme/app"},
                 "infra": {"forgejo": "acme/infra"},
-                "multi": {"github": "Acme/one", "forgejo": "acme/two"}}}"#,
+                "multi": {"github": "Acme/one", "forgejo": "acme/two"},
+                "mirror": {"github": "Acme/mirror", "forgejo": "acme/mirror"}}}"#,
         )
         .unwrap()
     }
@@ -1116,7 +1128,10 @@ mod tests {
         )];
         let mut items = vec![
             item("a", "app", "Acme/app#7 Acme/app#8", "lab:s", "r:1"),
-            item("b", "multi", "#3", "lab:s", "r:2"),
+            // Two bare refs on one item are one item.
+            item("b", "multi", "#3 #4", "lab:s", "r:2"),
+            // One repo on two forges reads a bare ref through it.
+            item("d", "mirror", "#5", "lab:s", "r:4"),
             // A repo the store does not hold is not judged.
             item("c", "app", "Elsewhere/x#1", "lab:s", "r:3"),
         ];

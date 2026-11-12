@@ -51,8 +51,13 @@ fn failed(e: String) -> String {
 }
 
 /// The view `q` asks for, over a read of its own joined to the queue `items`.
-pub async fn get(q: Query, items: Vec<Item>) -> String {
-    match tokio::task::spawn_blocking(move || releases::read(&System, &items)).await {
+pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) -> String {
+    let read = move || {
+        let mut r = releases::read(&System, &items);
+        r.errors.extend(queue_error);
+        r
+    };
+    match tokio::task::spawn_blocking(read).await {
         Ok(s) => render(&s, &q),
         Err(e) => failed(e.to_string()),
     }

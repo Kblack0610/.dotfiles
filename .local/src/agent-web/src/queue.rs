@@ -60,9 +60,13 @@ impl Cache {
         r.await.and_then(|l| (*l).clone())
     }
 
-    /// The items the release graph joins on, with no stats read; none when agent-queue failed.
-    pub async fn items(&self) -> Vec<Item> {
-        self.all().await.unwrap_or_default()
+    /// The items the release graph joins on, with no stats read, and why there are none when
+    /// agent-queue failed (`hub_core::actions::queue_items`'s shape).
+    pub async fn items(&self) -> (Vec<Item>, Option<String>) {
+        match self.all().await {
+            Ok(items) => (items, None),
+            Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
+        }
     }
 
     /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.

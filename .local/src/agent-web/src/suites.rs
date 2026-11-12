@@ -137,7 +137,7 @@ async fn loaded(run: &PickRun) -> Result<Arc<Loaded>, String> {
 }
 
 /// The view `q` asks for.
-pub async fn get(q: Query, items: Vec<Item>) -> String {
+pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     let b = match builds::current(items).await {
         Ok(b) => b,
         Err(e) => return failed(e),
@@ -176,7 +176,10 @@ struct CaseList<'a> {
 /// The tests of the suite `q` names in run `q.run`, failed first. A request that names no run or
 /// suite is a 404; a failed read of the ledger or of GitHub is a 502. It never supplies a path
 /// or a URL.
-pub async fn cases(q: CasesQuery, items: Vec<Item>) -> Result<String, (StatusCode, String)> {
+pub async fn cases(
+    q: CasesQuery,
+    items: (Vec<Item>, Option<String>),
+) -> Result<String, (StatusCode, String)> {
     let bad = |e: String| (StatusCode::BAD_GATEWAY, e);
     let none = |e: &str| (StatusCode::NOT_FOUND, e.to_string());
     let b = builds::current(items).await.map_err(bad)?;

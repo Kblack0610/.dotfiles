@@ -125,14 +125,18 @@ fn failed(e: String) -> String {
 
 /// The ledger's read, joined to the PR store, the queue `items` and the releases, kept a few
 /// seconds: the Tests section picks its runs from the same one.
-pub async fn current(items: Vec<Item>) -> Result<Arc<Builds>, String> {
+pub async fn current(
+    (items, queue_error): (Vec<Item>, Option<String>),
+) -> Result<Arc<Builds>, String> {
     READ.get((), async {
         off(move || {
             let join = builds::Join {
                 runner: &System,
                 items: &items,
             };
-            builds::read(&Paths::from_env(), Some(join), now())
+            let mut b = builds::read(&Paths::from_env(), Some(join), now());
+            b.errors.extend(queue_error);
+            b
         })
         .await
     })
@@ -140,7 +144,7 @@ pub async fn current(items: Vec<Item>) -> Result<Arc<Builds>, String> {
 }
 
 /// The view `q` asks for.
-pub async fn get(q: Query, rates: Rates, items: Vec<Item>) -> String {
+pub async fn get(q: Query, rates: Rates, items: (Vec<Item>, Option<String>)) -> String {
     current(items)
         .await
         .map_or_else(failed, |b| render(&b, &q, &rates))

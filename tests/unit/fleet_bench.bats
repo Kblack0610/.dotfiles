@@ -3194,6 +3194,11 @@ lead_fixture() {
   assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
   run "$SUBJECT" chain
   assert_line 'request_to_live_h: the done items or the release graph (hub releases --json) unreadable'
+  # a snapshot that did not read: hub still prints JSON, with no rows and the error, and exits 1
+  printf '{"rows":[],"apps":[],"errors":["release-state: no snapshot yet"]}\n' > "$SANDBOX/graph.json"
+  export BENCH_RELEASES_CMD=releases-stub
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: the done items or the release graph (hub releases --json) unreadable'
 }
 
 @test "chain: dup_pairs reads the newest nightly dups.json against dup_pairs_max; no snapshot reads ?" {

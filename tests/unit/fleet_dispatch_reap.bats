@@ -603,7 +603,7 @@ epics_fixture() {
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
   # The reap and the settle are on the chain log, as the runner's own writes.
   run grep -o 'stage dispatch --action [a-z]* --from game --item fix-crash.* -- .*' "$NOTES_FIXTURE/calls.log"
   assert_output - <<OUT
@@ -995,7 +995,7 @@ OUT
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .merged)" "$OID"
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
 }
 
 @test "reap: a done item with merged: recorded closes its row with no gh call" {
@@ -1014,7 +1014,7 @@ OUT
   run cmd_reap
   assert_output --partial 'closed game: fix crash'
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
 }
 
 @test "reap: an item whose PR is in another of the project's repos proves its commit in that repo's checkout" {
@@ -1033,7 +1033,7 @@ OUT
   run cmd_reap
   assert_output --partial 'closed game: fix crash'
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:9 commit:${TOID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/tools#9 commit:${TOID:0:12}"
 }
 
 @test "reap: an item whose PR names a repo with no checkout leaves its row started" {
