@@ -32,7 +32,7 @@ const workRow = (r, today) => `<tr><td><span class="chip sm" style="--c:${WORK_C
 
 function workHead(t) {
   const d = t.data, errs = [t.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
-  return secHead("", "Work", d.table.shown === d.table.total ? d.table.total : `${d.table.shown} of ${d.table.total}`) + errs;
+  return secHead("", "Work", tblCount(d.table)) + errs;
 }
 
 function workBody(d) {

@@ -16,7 +16,7 @@ const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
   state: { open: null, inner: "overview", unlinked: true, page: {}, folds: {}, viewed: "" },
-  head: (t) => secHead("projects", "Projects", pCount(t.data.table)) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  head: (t) => secHead("projects", "Projects", tblCount(t.data.table)) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
 
@@ -32,7 +32,7 @@ const dst = tblTab({
   params: (p) => { if (pst.open) p.set("scope", pst.open); },
   draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
   // An epic behind its ETA hues the head; the track counts are the table's state chips.
-  head: (t) => secHead(pst.open ? "p-build" : "deliverables", pst.open ? "Build" : "Deliverables", pCount(t.data.table), t.data.behind ? "warn" : null),
+  head: (t) => secHead(pst.open ? "p-build" : "deliverables", pst.open ? "Build" : "Deliverables", tblCount(t.data.table), t.data.behind ? "warn" : null),
   body: (t) => dBody(t.data),
 });
 
@@ -77,7 +77,6 @@ function pSplit(arg) {
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
 // A table's head count: its rows, or "N of M" while a search or state narrows them.
-const pCount = (t) => (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
 
 // One running item: its title (two lines at most), then its phases and estimate.
 function pRunning(r) {

@@ -52,7 +52,7 @@ function runsTable(o) {
 
   function head(d) {
     const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after, v = d.table;
-    let html = secHead("runs", o.title, v && (v.shown === v.total ? v.total : `${v.shown} of ${v.total}`), stale ? "warn" : "");
+    let html = secHead("runs", o.title, v && tblCount(v), stale ? "warn" : "");
     if (stale) html += `<div class="cline warn">ledger older than ${dur(d.stale_after / 60)}</div>`;
     if (t.err) html += `<div class="panel down">${esc(t.err)}</div>`;
     if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -289,7 +289,7 @@ const testsTiles = (d) => {
 
 function testsHead(d) {
   const v = d.table;
-  let html = secHead("tests", "Tests", v && d.run ? (v.shown === v.total ? v.total : `${v.shown} of ${v.total}`) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
+  let html = secHead("tests", "Tests", v && d.run ? tblCount(v) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
   if (tst.err) html += `<div class="panel down">${esc(tst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

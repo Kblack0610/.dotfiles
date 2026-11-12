@@ -371,3 +371,6 @@ if (typeof MutationObserver !== "undefined") {
   new MutationObserver(tblStampAdded).observe(main, { childList: true, subtree: true });
   main.addEventListener("click", tblTap);
 }
+
+// A table's count for its section head: the total, or "shown of total" while a query narrows it.
+const tblCount = (t) => (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);

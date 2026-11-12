@@ -59,7 +59,7 @@ function jobsBody(d) {
 
 function jobsHead(d) {
   const t = d.table;
-  let html = secHead("jobs", "Jobs", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
+  let html = secHead("jobs", "Jobs", tblCount(t));
   if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#infra/runs">${esc(d.ci.says)}</a></div>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

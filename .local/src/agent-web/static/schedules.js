@@ -68,7 +68,7 @@ function schedulesBody(d) {
 
 function schedulesHead(d) {
   const t = d.table;
-  let html = secHead("", "Schedules", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
+  let html = secHead("", "Schedules", tblCount(t));
   if (schst.err) html += `<div class="panel down">${esc(schst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
