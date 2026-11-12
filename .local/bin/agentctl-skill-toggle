@@ -19,8 +19,6 @@
 # Verdict: NOOP none needed, BLOCKED a PR is open and waits for review or the window is not
 # covered, FAILED otherwise.
 set -uo pipefail
-# The user manager's PATH has no ~/.local/bin, where skill-drift, agent-queue and agent-land live.
-PATH="$HOME/.local/bin:$PATH"
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-skill-toggle: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
 NAME="${AGENTCTL_NAME:-skill-toggle}"
