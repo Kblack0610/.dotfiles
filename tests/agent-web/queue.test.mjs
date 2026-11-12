@@ -430,7 +430,7 @@ test("a row carries its start place, hold, source and board row, and the head sa
   const links = [{ row: "#board/apo-120" }, {}];
   load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
   const h = draw();
-  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="wrap">title q1<\/td>/, "# then the title");
+  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="bt">title q1<\/div><\/td>/, "# then the title");
   assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
   assert.match(h, /data-slug="q1">.*?<td>board<\/td>/);
   assert.match(h, /<a class="tl" href="#board\/apo-120">apo-120<\/a>/, "the row links to the board");

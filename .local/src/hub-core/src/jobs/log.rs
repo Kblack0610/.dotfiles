@@ -48,7 +48,7 @@ fn tail_file(path: &Path) -> Result<String, String> {
     slice(path, 0, None)
 }
 
-pub(super) fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
+pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     let out = Command::new(cmd)
         .args(args)
         .output()

@@ -311,10 +311,10 @@ fn state(i: &Item, p: Palette) -> Cell {
     }
 }
 
-/// The same columns as the web table (hub-core `QueueRow::COLUMNS`): the title leads, `#` is
-/// the start order of the ready items.
+/// hub-core `QueueRow::COLUMNS` in capitals, the web table's columns: the sort mark is an index
+/// into that list. The title leads; `#` is the start order of the ready items.
 const HEADER: [&str; 17] = [
-    "#", "TITLE", "PROJECT", "PRIO", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN", "PR", "ROW",
+    "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN", "PR", "ROW",
     "KIND", "SIZE", "ACCT", "MODE", "PLAN",
 ];
 
@@ -489,7 +489,7 @@ fn detail(
 
 /// The table's lines (header first), one per drawn row, columns dropped by priority to fit `w`:
 /// PLAN, MODE, ACCT, SIZE and KIND go first, then WAIT, ROW, FROM, RUN, PR and IN; STATE, TITLE,
-/// `#`, PROJECT, PRIO and HOLD stay longest.
+/// `#`, PROJECT, PRIORITY and HOLD stay longest.
 fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'static>> {
     Table {
         header: HEADER.to_vec(),
@@ -713,6 +713,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
     use hub_core::queue::Stats;
+    use hub_core::table::Row;
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(
@@ -826,15 +827,14 @@ pub(crate) mod tests {
         let q = fixture();
         let s = text(&q, &all(), 160);
         let header = line(&s, "STATE");
-        let cols = [
-            "#", "TITLE", "PROJECT", "PRIO", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN", "PR",
-            "ROW", "KIND", "SIZE", "ACCT", "MODE", "PLAN",
-        ];
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
-            cols,
+            HEADER,
             "columns in order"
         );
+        // The sort mark is an index into hub-core's columns, so the header is them in capitals.
+        let core: Vec<String> = QueueRow::COLUMNS.iter().map(|c| c.to_uppercase()).collect();
+        assert_eq!(HEADER.to_vec(), core);
         let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
         let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
         assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
@@ -936,14 +936,14 @@ pub(crate) mod tests {
         assert_eq!(
             heads(160),
             [
-                "#", "TITLE", "PROJECT", "PRIO", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN",
+                "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN",
                 "PR", "ROW", "KIND", "SIZE", "ACCT", "MODE", "PLAN"
             ]
         );
         // PLAN, MODE, ACCT, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
         assert_eq!(
             heads(80),
-            ["#", "TITLE", "PROJECT", "PRIO", "STATE", "HOLD", "IN"],
+            ["#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "IN"],
             "{}",
             text(&q, &all(), 80)
         );
