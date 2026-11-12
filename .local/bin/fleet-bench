@@ -3828,7 +3828,7 @@ hold_reds() {
     [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; unread=1; continue; }
     while IFS= read -r streak; do
       hold_streak "$repo" "$streak" "$runs" "$merges" || unread=1
-    done < <(jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs")
+    done < <(jq -c "$MAIN_LIVE | $MAIN_STREAKS"' | select(.green)' <<<"$runs")
   done < <(jq -r 'map(.repo) | unique[]' <<<"$merges")
   return "$unread"
 }
