@@ -28,7 +28,7 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | rbw entry (password field, one line) | Contents | Scope |
 |---|---|---|
 | `store_sales_asc` | `{"key_id", "issuer_id", "p8", "vendor_number"}`, `p8` the `.p8` file in base64 | App Store Connect API key with the Sales role. The vendor number is on Payments and Financial Reports |
-| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
+| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console account permissions, read-only only: "View financial data" and "View app information and download bulk reports (read-only)", which brings "View app quality information" with it. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 | `store_sales_steam` | The bare Web API key, one line | The key of a Steamworks Financial API Group (Users and Permissions, Manage Groups). Such a group has no users and no apps: the key reads sales and nothing else. It is not release-state's publisher key `release_state_steam` |
 
 ## Troubleshooting
