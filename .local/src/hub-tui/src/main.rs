@@ -25,6 +25,7 @@ mod jobs;
 mod logtab;
 mod machinetab;
 mod outboxtab;
+mod pooltab;
 mod projtab;
 mod proptab;
 mod queuetab;

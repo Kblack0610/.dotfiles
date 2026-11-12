@@ -59,8 +59,8 @@ pub struct PowerHistory {
     pub days: Vec<Day>,
 }
 
-/// A host name the governor could export: letters, digits, `-`, `_` and `.`, so it is safe
-/// inside the query's label matcher.
+/// A host (or pool) name the governor could export: letters, digits, `-`, `_` and `.`, so it
+/// is safe inside the query's label matcher.
 pub fn valid_host(host: &str) -> bool {
     !host.is_empty()
         && host.len() <= 64
@@ -146,7 +146,7 @@ pub struct HostHistory {
 }
 
 /// One range query over the window at `STEP`.
-fn range(base: &str, q: String, from: u64, now: u64) -> Result<Vec<Series>, String> {
+pub(crate) fn range(base: &str, q: String, from: u64, now: u64) -> Result<Vec<Series>, String> {
     prom::query(
         base,
         "query_range",
