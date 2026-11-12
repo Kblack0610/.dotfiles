@@ -33,6 +33,10 @@ pub enum Kind {
     Job,
     /// A PR's CI runs, by `owner/repo#N`: Infra's runs table filtered to that PR.
     PrRuns,
+    /// An app's status page (`hub_core::app_status`), by its project-map tracker key.
+    App,
+    /// An app's channels: the Releases table filtered to that project.
+    AppChannels,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -68,6 +72,12 @@ pub const PAGES: &[Page] = &[
         tab: "infra",
         word: "jobs",
         inner: "jobs",
+    },
+    Page {
+        kind: Kind::App,
+        tab: "releases",
+        word: "apps",
+        inner: "apps",
     },
 ];
 
@@ -124,7 +134,10 @@ impl Link {
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::AppChannels => format!("#releases?q=project:={seg}"),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         }
     }
 
@@ -146,7 +159,10 @@ impl Link {
             Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::AppChannels => ("releases", format!("project:={id}")),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         })
     }
 }
@@ -250,6 +266,17 @@ mod tests {
         assert_eq!(
             both(Kind::Pool, "unity"),
             ("#infra/pools/unity".into(), a("infra", "pools/unity"))
+        );
+        assert_eq!(
+            both(Kind::App, "shop"),
+            (
+                "#releases/apps/shop".into(),
+                a("releases", "apps/shop")
+            )
+        );
+        assert_eq!(
+            both(Kind::AppChannels, "binks"),
+            ("#releases?q=project:=binks".into(), a("releases", "project:=binks"))
         );
         assert_eq!(
             both(Kind::CiRun, "4412"),

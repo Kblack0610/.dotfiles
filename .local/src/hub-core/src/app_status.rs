@@ -1,0 +1,697 @@
+//! One app's status page on both surfaces (`#releases/apps/<app>`): its Gatus checks with their
+//! uptime, 90 daily bars, 24h latency and incidents, the banner the whole app reads as, and what is
+//! live and watched there as links to the tabs that own those facts.
+//!
+//! The checks are the apps Gatus (home-config `apps/gatus/config.yaml`, its URL `CC_GATUS_URL`), whose
+//! group is the project-map tracker key, and `<key>-<channel>` for a non-prod channel. Their
+//! history is VictoriaMetrics (`prom::vm`), which keeps what Prometheus scrapes from Gatus for 2
+//! years; it starts on 2026-11-12, so a day before that reads `No data`, never up.
+//!
+//! The rules are the fleet-platform status monitor's: a check is down after 2 failed results and
+//! up again after 2 good ones, an uptime with any failure never rounds to 100, a monitor silent
+//! for 5 minutes says so, and a check with no results is unknown, not up.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use chrono::{Local, TimeZone};
+use serde::Serialize;
+
+use crate::kube_proxy::label;
+use crate::links::{Kind, Link};
+use crate::prom::{self, Series};
+use crate::releases::{self, Level, Release};
+use crate::session_actions::Runner;
+use crate::session_page::Part;
+
+/// The newest result older than this means the monitor, its scrape or the remote-write stopped.
+pub const STALE_SECS: i64 = 300;
+/// How many daily bars a check shows.
+pub const DAYS: usize = 90;
+/// The step incidents and latency are read at.
+const STEP: i64 = 300;
+/// How far back incidents are read.
+const INCIDENT_SECS: i64 = 30 * 86_400;
+/// The uptime windows a card shows.
+const WINDOWS: [(&str, i64); 4] = [
+    ("24h", 86_400),
+    ("7d", 7 * 86_400),
+    ("30d", 30 * 86_400),
+    ("90d", 90 * 86_400),
+];
+/// Results in a row that make a check down, and that bring it back up.
+const DOWN_AFTER: u64 = 2;
+const UP_AFTER: u64 = 2;
+/// How many incidents the page lists, newest first.
+const INCIDENTS_SHOWN: usize = 20;
+const NO_DATA: &str = "No data";
+
+/// One day's bar: the 24 hours ending at `at`.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Day {
+    pub at: i64,
+    pub ok: u64,
+    pub fail: u64,
+    /// `100%`, `99.5%` or `No data`.
+    pub text: String,
+}
+
+/// A stretch a check was down: from its first failed result until 2 good ones in a row.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Incident {
+    pub check: String,
+    pub from: i64,
+    /// None while it is still down.
+    pub to: Option<i64>,
+    pub fails: u64,
+    /// `11-03 14:02  down 6m` or `11-03 14:02  down, ongoing`.
+    pub text: String,
+}
+
+/// One Gatus check of the app.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Check {
+    pub name: String,
+    pub group: String,
+    /// `Operational`, `Failing` (one failed result, not yet down), `Down` or `No data`.
+    pub state: String,
+    pub level: Level,
+    /// Each window and its uptime: `("7d", "99.98%")`.
+    pub uptime: Vec<(String, String)>,
+    /// The last `DAYS` days, oldest first.
+    pub days: Vec<Day>,
+    /// The last 24h of response times: (unix seconds, milliseconds).
+    pub latency: Vec<(i64, f64)>,
+    /// `p50 180ms, p95 420ms`, or `No data`.
+    pub latency_text: String,
+}
+
+/// The app's page.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct AppStatus {
+    pub app: String,
+    /// The Gatus groups read: the key, and `<key>-<channel>` per non-prod channel.
+    pub groups: Vec<String>,
+    /// `Operational`, `Partial outage: <names>`, `Down`, `Waiting for every check to report`,
+    /// `Monitor stopped reporting at <t>` or `not read: <why>`.
+    pub banner: String,
+    pub level: Level,
+    /// The newest result of any check, unix seconds.
+    pub newest: Option<i64>,
+    /// What is live and watched, each linking to its own tab.
+    pub context: Vec<Part>,
+    pub checks: Vec<Check>,
+    pub incidents: Vec<Incident>,
+    /// Gatus itself (`CC_GATUS_URL`, a board setting), for a reader who wants its own page.
+    pub monitor: Option<Link>,
+    pub errors: Vec<String>,
+    pub at: i64,
+}
+
+/// An app's Gatus groups: its key, and `<key>-<channel>` for each non-prod channel its project-map
+/// targets declare. The match is exact, never a prefix: `binks-chat` is its own tracker, not a
+/// channel of `binks`.
+pub fn groups(app: &str, channels: &[Release]) -> Vec<String> {
+    let mut out = vec![app.to_string()];
+    for r in channels {
+        if r.project != app || r.implicit || r.channel.is_empty() || r.channel == "prod" {
+            continue;
+        }
+        let g = format!("{app}-{}", r.channel);
+        if label(&g) && !out.contains(&g) {
+            out.push(g);
+        }
+    }
+    out
+}
+
+/// `ok` of `ok + fail` as the card says it: `No data` with no results, and with any failure at
+/// most 99.99, cut rather than rounded, so a failure never reads as 100.
+pub fn uptime(ok: u64, fail: u64) -> String {
+    let n = ok + fail;
+    if n == 0 {
+        return NO_DATA.into();
+    }
+    if fail == 0 {
+        return "100%".into();
+    }
+    let pct = (ok as f64 * 10_000.0 / n as f64).floor() / 100.0;
+    let pct = pct.min(99.99);
+    let s = format!("{pct:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s}%")
+}
+
+/// A check's identity in the series: its group and its name.
+type Key = (String, String);
+/// A check's result counts at each time: ok, then failed.
+type Counts = (BTreeMap<i64, u64>, BTreeMap<i64, u64>);
+
+/// A counter's `sum by (group,name,success)` series as ok and fail per check: from the instant
+/// value, or at each point of a range.
+fn split(series: &[Series]) -> BTreeMap<Key, Counts> {
+    let mut out: BTreeMap<Key, Counts> = BTreeMap::new();
+    for s in series {
+        let key = (s.label("group").to_string(), s.label("name").to_string());
+        let e = out.entry(key).or_default();
+        let side = if s.label("success") == "true" {
+            &mut e.0
+        } else {
+            &mut e.1
+        };
+        if let Some(v) = s.value {
+            *side.entry(0).or_default() += v.round().max(0.0) as u64;
+        }
+        for (t, v) in &s.points {
+            *side.entry(*t as i64).or_default() += v.round().max(0.0) as u64;
+        }
+    }
+    out
+}
+
+/// The `DAYS` bars ending at `end`, oldest first: a day with no results is `No data`.
+pub fn days(ok: &BTreeMap<i64, u64>, fail: &BTreeMap<i64, u64>, end: i64) -> Vec<Day> {
+    (0..DAYS as i64)
+        .rev()
+        .map(|k| {
+            let at = end - k * 86_400;
+            let (o, f) = (
+                ok.get(&at).copied().unwrap_or(0),
+                fail.get(&at).copied().unwrap_or(0),
+            );
+            Day {
+                at,
+                ok: o,
+                fail: f,
+                text: uptime(o, f),
+            }
+        })
+        .collect()
+}
+
+/// A check's down stretches from its results per step (oldest first), and whether it is failing
+/// now without being down yet. A step with a failure starts or extends a run; the run is down
+/// once it holds `DOWN_AFTER` failed results, and ends at `UP_AFTER` good results with none
+/// failed between them. A single failed result is no incident.
+pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bool) {
+    let mut out = Vec::new();
+    let (mut start, mut fails, mut good, mut down) = (None::<i64>, 0u64, 0u64, false);
+    for &(t, ok, fail) in steps {
+        if fail > 0 {
+            start.get_or_insert(t);
+            fails += fail;
+            good = 0;
+            down |= fails >= DOWN_AFTER;
+            continue;
+        }
+        if start.is_none() {
+            continue;
+        }
+        good += ok;
+        if good >= UP_AFTER {
+            if down {
+                out.push((start.unwrap_or(t), Some(t), fails));
+            }
+            (start, fails, good, down) = (None, 0, 0, false);
+        }
+    }
+    let failing = start.is_some() && !down;
+    if down {
+        out.push((start.unwrap_or(0), None, fails));
+    }
+    (out, failing)
+}
+
+/// The value at `p` (0..1) of `v`, sorted in place.
+fn quantile(v: &mut [f64], p: f64) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[((v.len() - 1) as f64 * p).round() as usize]
+}
+
+fn hm(t: i64) -> String {
+    Local
+        .timestamp_opt(t, 0)
+        .single()
+        .map_or_else(|| t.to_string(), |d| d.format("%m-%d %H:%M").to_string())
+}
+
+fn span(secs: i64) -> String {
+    match secs {
+        s if s < 3600 => format!("{}m", (s / 60).max(1)),
+        s if s < 86_400 => format!("{}h{}m", s / 3600, s % 3600 / 60),
+        s => format!("{}d{}h", s / 86_400, s % 86_400 / 3600),
+    }
+}
+
+/// The banner over every check: unknown is never up, and a silent monitor is said before what
+/// its last results claim.
+pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level) {
+    let waiting = ("Waiting for every check to report".to_string(), Level::Warn);
+    let Some(newest) = newest else {
+        return waiting;
+    };
+    if checks.is_empty() {
+        return waiting;
+    }
+    if now - newest > STALE_SECS {
+        return (
+            format!("Monitor stopped reporting at {}", hm(newest)),
+            Level::Warn,
+        );
+    }
+    if checks.iter().any(|c| c.state == NO_DATA) {
+        return waiting;
+    }
+    let down: Vec<&str> = checks
+        .iter()
+        .filter(|c| c.state == "Down")
+        .map(|c| c.name.as_str())
+        .collect();
+    if down.len() == checks.len() {
+        return ("Down".into(), Level::Bad);
+    }
+    if !down.is_empty() {
+        return (format!("Partial outage: {}", down.join(", ")), Level::Bad);
+    }
+    let failing: Vec<&str> = checks
+        .iter()
+        .filter(|c| c.state == "Failing")
+        .map(|c| c.name.as_str())
+        .collect();
+    if !failing.is_empty() {
+        return (format!("Failing check: {}", failing.join(", ")), Level::Warn);
+    }
+    ("Operational".into(), Level::Ok)
+}
+
+/// What is live and watched on the app's channels, each a link to the tab that owns it.
+pub fn context(app: &str, channels: &Result<Vec<Release>, String>) -> Vec<Part> {
+    let rows = match channels {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![Part::new("Live", format!("not read: {e}"))
+                .link(Link::to(Kind::AppChannels, app))
+                .warn(true)]
+        }
+    };
+    let mut out = vec![match releases::badge(rows) {
+        Some(b) => Part::new("Live", b.says)
+            .link(Link::to(Kind::AppChannels, app))
+            .warn(b.level != Level::Ok),
+        None => Part::new("Live", "no channel recorded").link(Link::to(Kind::AppChannels, app)),
+    }];
+    let mut watches: BTreeMap<&str, &str> = BTreeMap::new();
+    for r in rows {
+        for w in &r.telemetry {
+            let s = watches.entry(&w.watch).or_insert(&w.state);
+            if w.state == "TRIP" {
+                *s = "TRIP";
+            }
+        }
+    }
+    let firing: Vec<&str> = watches
+        .iter()
+        .filter(|(_, s)| **s == "TRIP")
+        .map(|(w, _)| *w)
+        .collect();
+    out.push(
+        Part::new(
+            "Watches",
+            format!(
+                "{} watch{}, {} firing",
+                watches.len(),
+                if watches.len() == 1 { "" } else { "es" },
+                firing.len()
+            ),
+        )
+        .link(Link::tab("alerts"))
+        .warn(!firing.is_empty()),
+    );
+    for w in firing {
+        out.push(
+            Part::new("Firing", w)
+                .link(Link::to(Kind::Alert, w))
+                .warn(true),
+        );
+    }
+    out
+}
+
+/// The answers the page is made from, read by [`read`] or handed in by a test.
+pub struct Answers {
+    /// Each window's `sum by (group,name,success)(increase(...[w]))`, in `WINDOWS` order.
+    pub windows: Vec<Result<Vec<Series>, String>>,
+    /// The same over 1d, at a 1d step for `DAYS`, ending at `at`.
+    pub days: Result<Vec<Series>, String>,
+    /// The same over 5m, at a 5m step for 30 days.
+    pub steps: Result<Vec<Series>, String>,
+    /// `max by (group,name)` response time in seconds, at a 5m step for 24h.
+    pub latency: Result<Vec<Series>, String>,
+    /// The newest result's time.
+    pub newest: Result<Vec<Series>, String>,
+}
+
+/// The page from its answers. A failed answer is an error line and, for the checks themselves,
+/// the banner `not read`.
+pub fn build(
+    app: &str,
+    groups: Vec<String>,
+    channels: &Result<Vec<Release>, String>,
+    a: Answers,
+    now: i64,
+) -> AppStatus {
+    let mut errors = Vec::new();
+    let mut take = |what: &str, r: Result<Vec<Series>, String>| match r {
+        Ok(s) => s,
+        Err(e) => {
+            errors.push(format!("{what}: {e}"));
+            vec![]
+        }
+    };
+    let windows: Vec<_> = a
+        .windows
+        .into_iter()
+        .zip(WINDOWS)
+        .map(|(r, (w, _))| split(&take(&format!("uptime {w}"), r)))
+        .collect();
+    let day = split(&take("daily bars", a.days));
+    let steps = split(&take("incidents", a.steps));
+    let latency = take("latency", a.latency);
+    let newest = take("newest result", a.newest)
+        .iter()
+        .filter_map(|s| s.value)
+        .map(|v| v as i64)
+        .max();
+
+    let mut keys: BTreeSet<Key> = BTreeSet::new();
+    for m in windows.iter().chain([&day, &steps]) {
+        keys.extend(m.keys().cloned());
+    }
+    let empty = BTreeMap::new();
+    let mut checks = Vec::new();
+    let mut incidents_all = Vec::new();
+    for key in keys {
+        let uptime = WINDOWS
+            .iter()
+            .zip(&windows)
+            .map(|((w, _), m)| {
+                let (o, f) = m.get(&key).map_or((0, 0), |(o, f)| {
+                    (o.values().sum::<u64>(), f.values().sum::<u64>())
+                });
+                (w.to_string(), uptime(o, f))
+            })
+            .collect();
+        let (dok, dfail) = day.get(&key).map_or((&empty, &empty), |(o, f)| (o, f));
+        let end = dok.keys().chain(dfail.keys()).max().copied().unwrap_or(now);
+        let (sok, sfail) = steps.get(&key).map_or((&empty, &empty), |(o, f)| (o, f));
+        let ts: BTreeSet<i64> = sok.keys().chain(sfail.keys()).copied().collect();
+        let series: Vec<(i64, u64, u64)> = ts
+            .into_iter()
+            .map(|t| {
+                (
+                    t,
+                    sok.get(&t).copied().unwrap_or(0),
+                    sfail.get(&t).copied().unwrap_or(0),
+                )
+            })
+            .filter(|s| s.1 + s.2 > 0)
+            .collect();
+        let (runs, failing) = incidents(&series);
+        let state = if series.is_empty() {
+            NO_DATA
+        } else if runs.last().is_some_and(|r| r.1.is_none()) {
+            "Down"
+        } else if failing {
+            "Failing"
+        } else {
+            "Operational"
+        };
+        for (from, to, fails) in runs {
+            incidents_all.push(Incident {
+                check: key.1.clone(),
+                from,
+                to,
+                fails,
+                text: match to {
+                    Some(to) => format!("{}  down {}", hm(from), span(to - from)),
+                    None => format!("{}  down, ongoing", hm(from)),
+                },
+            });
+        }
+        let lat: Vec<(i64, f64)> = latency
+            .iter()
+            .filter(|s| s.label("group") == key.0 && s.label("name") == key.1)
+            .flat_map(|s| s.points.iter().map(|(t, v)| (*t as i64, v * 1000.0)))
+            .collect();
+        let latency_text = if lat.is_empty() {
+            NO_DATA.into()
+        } else {
+            let mut v: Vec<f64> = lat.iter().map(|p| p.1).collect();
+            format!(
+                "p50 {:.0}ms, p95 {:.0}ms",
+                quantile(&mut v, 0.5),
+                quantile(&mut v, 0.95)
+            )
+        };
+        checks.push(Check {
+            level: match state {
+                "Down" => Level::Bad,
+                "Operational" => Level::Ok,
+                _ => Level::Warn,
+            },
+            state: state.into(),
+            name: key.1,
+            group: key.0,
+            uptime,
+            days: days(dok, dfail, end),
+            latency: lat,
+            latency_text,
+        });
+    }
+    incidents_all.sort_by_key(|i| std::cmp::Reverse(i.from));
+    incidents_all.truncate(INCIDENTS_SHOWN);
+    let (banner, level) = match errors.first() {
+        Some(e) => (format!("not read: {e}"), Level::Warn),
+        None => banner(&checks, newest, now),
+    };
+    AppStatus {
+        app: app.into(),
+        groups,
+        banner,
+        level,
+        newest,
+        context: context(app, channels),
+        checks,
+        incidents: incidents_all,
+        monitor: None,
+        errors,
+        at: now,
+    }
+}
+
+/// `{group=~"^(a|a-preview)$"}` for the groups, each a DNS-1123 label so none can break out.
+fn selector(groups: &[String]) -> String {
+    format!(r#"{{group=~"^({})$"}}"#, groups.join("|"))
+}
+
+/// The PromQL each answer asks, over `sel`.
+fn queries(sel: &str) -> (Vec<String>, String, String, String, String) {
+    let inc = |w: &str| format!("sum by (group,name,success) (increase(gatus_results_total{sel}[{w}]))");
+    (
+        WINDOWS.iter().map(|(w, _)| inc(w)).collect(),
+        inc("1d"),
+        inc("5m"),
+        format!("max by (group,name) (max_over_time(gatus_results_duration_seconds{sel}[5m]))"),
+        format!("max(tlast_over_time(gatus_results_total{sel}[7d]))"),
+    )
+}
+
+/// `app`'s page, read now: its channels from release-state and its checks from VictoriaMetrics.
+/// An app with no channel and no check is not one, so its name is an error (a 404 on the web).
+pub fn read(runner: &dyn Runner, app: &str, now: i64) -> Result<AppStatus, String> {
+    if !label(app) {
+        return Err(format!("no app named {app}"));
+    }
+    let channels = releases::channels(runner, app);
+    let groups = groups(app, channels.as_deref().unwrap_or(&[]));
+    let (windows, day, step, lat, newest) = queries(&selector(&groups));
+    let q = |s: &str, r| prom::vm(s, r);
+    let a = Answers {
+        windows: windows.iter().map(|w| q(w, None)).collect(),
+        days: q(&day, Some((now - (DAYS as i64 - 1) * 86_400, now, 86_400))),
+        steps: q(&step, Some((now - INCIDENT_SECS, now, STEP))),
+        latency: q(&lat, Some((now - 86_400, now, STEP))),
+        newest: q(&newest, None),
+    };
+    let mut page = build(app, groups, &channels, a, now);
+    page.monitor = prom::config("CC_GATUS_URL").map(Link::Url);
+    if page.checks.is_empty() && page.errors.is_empty() && channels.is_ok_and(|c| c.is_empty()) {
+        return Err(format!("no app named {app}"));
+    }
+    Ok(page)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn series(group: &str, name: &str, success: Option<bool>, points: &[(i64, f64)]) -> Series {
+        let mut labels = BTreeMap::new();
+        labels.insert("group".into(), group.into());
+        labels.insert("name".into(), name.into());
+        if let Some(s) = success {
+            labels.insert("success".into(), s.to_string());
+        }
+        Series {
+            labels,
+            value: None,
+            points: points.iter().map(|(t, v)| (*t as f64, *v)).collect(),
+        }
+    }
+
+    fn instant(group: &str, name: &str, success: bool, v: f64) -> Series {
+        Series {
+            value: Some(v),
+            ..series(group, name, Some(success), &[])
+        }
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn answers(ok: f64, fail: f64, newest: i64) -> Answers {
+        let w = || {
+            Ok(vec![
+                instant("pmp", "api", true, ok),
+                instant("pmp", "api", false, fail),
+            ])
+        };
+        Answers {
+            windows: vec![w(), w(), w(), w()],
+            days: Ok(vec![series("pmp", "api", Some(true), &[(NOW, ok)])]),
+            steps: Ok(vec![series("pmp", "api", Some(true), &[(NOW - 300, 5.0), (NOW, 5.0)])]),
+            latency: Ok(vec![series("pmp", "api", None, &[(NOW, 0.18)])]),
+            newest: Ok(vec![Series {
+                value: Some(newest as f64),
+                ..series("", "", None, &[])
+            }]),
+        }
+    }
+
+    fn page(a: Answers) -> AppStatus {
+        build("pmp", vec!["pmp".into()], &Ok(vec![]), a, NOW)
+    }
+
+    #[test]
+    fn a_day_with_no_results_is_no_data_never_up() {
+        let mut ok = BTreeMap::new();
+        ok.insert(NOW, 1440);
+        let d = days(&ok, &BTreeMap::new(), NOW);
+        assert_eq!(d.len(), DAYS);
+        assert_eq!(d[DAYS - 1].text, "100%");
+        assert_eq!(d[0].text, "No data");
+        assert_eq!(d[DAYS - 2].at, NOW - 86_400);
+        assert_eq!(uptime(0, 0), "No data");
+    }
+
+    #[test]
+    fn one_failure_never_rounds_to_100() {
+        assert_eq!(uptime(9_999, 1), "99.99%");
+        assert_eq!(uptime(99_999, 1), "99.99%");
+        assert_eq!(uptime(999, 1), "99.9%");
+        assert_eq!(uptime(1, 1), "50%");
+        assert_eq!(uptime(10, 0), "100%");
+        let p = page(answers(9_999.0, 1.0, NOW - 30));
+        assert_eq!(p.checks[0].uptime[0], ("24h".into(), "99.99%".into()));
+    }
+
+    #[test]
+    fn one_failed_result_is_no_incident_two_in_a_row_are() {
+        let (runs, failing) = incidents(&[(0, 5, 0), (300, 4, 1), (600, 5, 0)]);
+        assert!(runs.is_empty());
+        assert!(!failing);
+        let (runs, _) = incidents(&[(0, 5, 0), (300, 0, 1), (600, 0, 1), (900, 5, 0)]);
+        assert_eq!(runs, vec![(300, Some(900), 2)]);
+        let (runs, _) = incidents(&[(300, 3, 2), (600, 5, 0)]);
+        assert_eq!(runs, vec![(300, Some(600), 2)], "two in one step");
+        let (runs, _) = incidents(&[(0, 0, 1), (300, 0, 1)]);
+        assert_eq!(runs, vec![(0, None, 2)], "still down");
+        let (runs, failing) = incidents(&[(0, 5, 0), (300, 0, 1)]);
+        assert!(runs.is_empty() && failing, "one fail: failing, not down");
+        let (runs, _) = incidents(&[(0, 0, 1), (300, 1, 0), (600, 0, 1), (900, 2, 0)]);
+        assert_eq!(runs, vec![(0, Some(900), 2)], "one good result does not end a run");
+    }
+
+    #[test]
+    fn a_silent_monitor_says_so_before_its_last_results() {
+        let p = page(answers(100.0, 0.0, NOW - STALE_SECS - 1));
+        assert!(p.banner.starts_with("Monitor stopped reporting at "), "{}", p.banner);
+        assert_eq!(page(answers(100.0, 0.0, NOW - 30)).banner, "Operational");
+    }
+
+    #[test]
+    fn a_failed_query_is_not_read_never_up() {
+        let mut a = answers(100.0, 0.0, NOW - 30);
+        a.windows[1] = Err("CC_VM_SERVICE is not set".into());
+        let p = page(a);
+        assert_eq!(p.banner, "not read: uptime 7d: CC_VM_SERVICE is not set");
+        assert_eq!(p.level, Level::Warn);
+    }
+
+    #[test]
+    fn no_checks_or_no_results_wait_rather_than_read_up() {
+        let a = Answers {
+            windows: vec![Ok(vec![]), Ok(vec![]), Ok(vec![]), Ok(vec![])],
+            days: Ok(vec![]),
+            steps: Ok(vec![]),
+            latency: Ok(vec![]),
+            newest: Ok(vec![]),
+        };
+        assert_eq!(page(a).banner, "Waiting for every check to report");
+    }
+
+    #[test]
+    fn down_checks_name_the_outage() {
+        let mut a = answers(100.0, 0.0, NOW - 30);
+        a.steps = Ok(vec![
+            series("pmp", "api", Some(false), &[(NOW - 300, 1.0), (NOW, 1.0)]),
+            series("pmp", "web", Some(true), &[(NOW, 5.0)]),
+        ]);
+        let p = page(a);
+        assert_eq!(p.banner, "Partial outage: api");
+        assert_eq!(p.incidents.len(), 1);
+        assert!(p.incidents[0].text.ends_with("down, ongoing"));
+    }
+
+    #[test]
+    fn the_join_is_exact_never_a_prefix() {
+        let ch = |project: &str, channel: &str| Release {
+            project: project.into(),
+            channel: channel.into(),
+            ..Release::default()
+        };
+        let rows = [
+            ch("binks", "prod"),
+            ch("binks-chat", "prod"),
+            ch("shop", "preview"),
+        ];
+        assert_eq!(groups("binks", &rows), ["binks"]);
+        assert_eq!(groups("binks-chat", &rows), ["binks-chat"]);
+        assert_eq!(
+            groups("shop", &rows),
+            ["shop", "shop-preview"]
+        );
+        assert_eq!(selector(&groups("binks", &rows)), r#"{group=~"^(binks)$"}"#);
+    }
+
+    /// One live read as the page's JSON, for a screenshot of the page through the phone harness's
+    /// routing (agent-web needs a signed-in session). `APP_STATUS_APP=binks APP_STATUS_OUT=f
+    /// cargo test app_status::tests::dump_live_page -- --ignored --exact`; it needs the board's
+    /// settings (CC_KUBE_CONTEXT, CC_VM_SERVICE) and the cluster.
+    #[test]
+    #[ignore]
+    fn dump_live_page() {
+        let app = std::env::var("APP_STATUS_APP").expect("APP_STATUS_APP is the app");
+        let out = std::env::var("APP_STATUS_OUT").expect("APP_STATUS_OUT is the output path");
+        let page = read(&crate::session_actions::System, &app, crate::jobs::now()).unwrap();
+        std::fs::write(out, serde_json::to_string(&page).unwrap()).unwrap();
+    }
+}

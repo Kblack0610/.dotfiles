@@ -61,7 +61,8 @@ function appDetail(a) {
     : "";
   const stage = `<div class="cline"><b>Stage</b> <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>` +
     (a.coverage_text ? `<div class="cline"><b>Coverage</b> <span class="muted">${esc(a.coverage_text)}</span></div>` : "");
-  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}${appBuilds(a)}` +
+  const page = `<div class="cline"><b>Status</b> <a href="#releases/apps/${encodeURIComponent(a.project)}">uptime, latency and incidents</a></div>`;
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${page}${chTable(lead)}${others}${releaseHistory(a)}${appBuilds(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 
@@ -182,6 +183,91 @@ const relRuns = runsTable({
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
 const relRepaint = relst.repaint;
 relst.repaint = () => relRepaint() || relRuns.repaint();
+// An app's status page, `#releases/apps/<app>` (hub_core::links Kind::App, app_status), in place
+// of the Apps tab's table: a banner, the checks Gatus runs on it with their uptime, 90 days and
+// latency, and its incidents. Gatus results reach the board through Prometheus, which has no push,
+// so the open page re-reads on this cadence.
+const APP_PAGE_REFRESH_MS = 60e3;
+// A day bar's colours by what the day saw (dayColor). A phone shows the newest 30 (app.css).
+const APP_DAY_COLOR = { none: "var(--c-other)", up: "var(--idle)", dip: "var(--busy)", down: "var(--wait)" };
+// The open page, by its hash (`apps/<app>`), and its last read.
+const apst = { page: "", data: null, err: null };
+const appPage = () => pageId("releases", "apps");
+// A read that lands after another page opened is dropped; a failed one keeps the last read up.
+const refreshAppPage = coalesce(async () => {
+  const app = appPage(), page = st.page;
+  if (!app || apst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api("/api/releases/app?app=" + encodeURIComponent(app)); } catch (e) { err = e.message; }
+  if (apst.page !== page) return;
+  if (data) apst.data = data;
+  apst.err = err;
+  if (st.page === page) relst.render();
+});
+const pollAppPage = poll("releases", () => { if (appPage()) refreshAppPage(); }, APP_PAGE_REFRESH_MS);
+// The page draws in place of the tables; the strip stays above it.
+const relRender = relst.render;
+relst.render = () => {
+  const el = $("releases");
+  if (!appPage()) return relRender();
+  if (el && st.tab === "releases") paint(el, innerStrip("releases", relFlagged()) + appPageHtml());
+};
+// A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
+function dayColor(d) {
+  if (!d.ok && !d.fail) return APP_DAY_COLOR.none;
+  if (!d.fail) return APP_DAY_COLOR.up;
+  return d.fail / (d.ok + d.fail) < 0.01 ? APP_DAY_COLOR.dip : APP_DAY_COLOR.down;
+}
+const dayLabel = (t) => new Date(t * 1e3).toLocaleDateString([], { month: "short", day: "numeric" });
+// Every bar the same height, its colour the day's word; the tip says the day and its uptime.
+const dayBars = (days) => `<div class="appdays">${columns(days.map((d) => ({
+  key: "d" + d.at, label: "", segs: [{ v: 1, color: dayColor(d) }],
+  tip: `${dayLabel(d.at)}: ${d.text}${d.fail ? `, ${d.fail} failed of ${d.ok + d.fail}` : ""}`,
+})), { height: 34, yfmt: () => "" })}<div class="appdx muted"><span class="appd90">${days.length} days ago</span><span class="appd30">30 days ago</span><span>today</span></div></div>`;
+// The last 24 hours' response time, one column an hour ending with this one, each the worst
+// 5-minute sample in it; an hour with none is an empty column.
+const LATENCY_HOURS = 24;
+function latencyBars(pts, now) {
+  if (!pts.length) return `<div class="muted">No response times in 24 hours.</div>`;
+  const last = Math.floor(now / 3600) * 3600, hours = new Map();
+  for (const [t, ms] of pts) { const h = Math.floor(t / 3600) * 3600; hours.set(h, Math.max(hours.get(h) || 0, ms)); }
+  const cols = Array.from({ length: LATENCY_HOURS }, (_, i) => {
+    const h = last - (LATENCY_HOURS - 1 - i) * 3600, ms = hours.get(h);
+    return { key: "h" + h, label: i % 6 === 0 ? clock(h * 1e3) : "", segs: [{ v: ms || 0, color: "var(--c1)" }],
+      tip: `${clock(h * 1e3)}: ${ms === undefined ? "no result" : `worst ${Math.round(ms)} ms`}` };
+  });
+  return columns(cols, { height: 70, yfmt: (v) => `${Math.round(v)} ms` });
+}
+function appCheck(c, now) {
+  const up = c.uptime.map(([w, v]) => `<span class="appup"><span class="muted">${esc(w)}</span> ${esc(v)}</span>`).join("");
+  return `<div class="panel appchk"><div class="bhead"><span><b>${esc(c.name)}</b> <span class="muted">${esc(c.group)}</span></span>` +
+    `<span class="chip sm" style="--c:${LEVEL_COLOR[c.level] || APP_DAY_COLOR.none}">${esc(c.state.toUpperCase())}</span></div>` +
+    `<div class="cline appups">${up}<span class="appup"><span class="muted">latency</span> ${esc(c.latency_text)}</span></div>` +
+    dayBars(c.days) + `<div class="cline muted">Response time, 24 hours</div>` + latencyBars(c.latency, now) + `</div>`;
+}
+const LEVEL_COLOR = { ok: "var(--idle)", warn: "var(--busy)", bad: "var(--wait)" };
+function appIncidents(list) {
+  if (!list.length) return `<div class="panel muted">No incidents in 30 days.</div>`;
+  return `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">check</th><th data-role="glance">from</th><th data-role="glance">to</th><th>failed</th></tr>` +
+    list.map((i) => `<tr><td>${esc(i.check)}</td><td>${stamp(i.from)}</td><td${i.to ? "" : ' class="bad"'}>${i.to ? stamp(i.to) : "ongoing"}</td><td>${esc(i.text)}</td></tr>`).join("") +
+    `</table></div>`;
+}
+function appPageHtml() {
+  const app = appPage(), back = `<a class="btn sm" href="#releases/apps${st.views.releases ? "?" + st.views.releases : ""}">All apps</a>`;
+  const d = apst.data;
+  if (!d) return `<div class="bhead"><span>${esc(app)}</span>${back}</div><div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "Loading..."}</div>`;
+  const checked = d.newest ? `checked ${clock(d.newest * 1e3)} (${ago(d.newest)} ago)` : "no result yet";
+  let h = `<div class="bhead"><span><b>${esc(d.app)}</b> <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>` +
+    `<div class="panel"><div class="appbanner"><span class="chip" style="--c:${LEVEL_COLOR[d.level]}">${esc(d.banner)}</span> <span class="muted">${esc(checked)}</span>` +
+    (d.monitor ? ` <a href="${esc(d.monitor)}" target="_blank" rel="noopener">Gatus</a>` : "") + `</div>` +
+    d.context.map(pagePart).join("") + `</div>`;
+  const errs = apst.err ? [`refresh failed, showing the last read: ${apst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  h += `<h2 class="sec">Checks <span class="muted">${esc(d.groups.join(", "))}</span></h2>`;
+  h += d.checks.length ? d.checks.map((c) => appCheck(c, d.at)).join("") : `<div class="panel muted">No check reports for ${esc(d.groups.join(" or "))} yet.</div>`;
+  return h + `<h2 class="sec">Incidents <span class="muted">two failed results in a row, until two pass</span></h2>` + appIncidents(d.incidents);
+}
+
 $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 
 $("releases").addEventListener("click", (e) => {
@@ -211,6 +297,10 @@ const relRunsFeed = pushed("releases", ["builds"], relRuns.refresh);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
-  show() { relFeed.show(true); relRunsFeed.show(true); ageReleases(); },
+  show() {
+    const page = appPage() ? st.page : "";
+    if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
+    relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
+  },
   onEvent(ev) { relFeed.onEvent(ev); relRunsFeed.onEvent(ev); },
 };

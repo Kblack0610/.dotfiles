@@ -418,3 +418,38 @@ test("a count shows beside an inner tab needing a look: a bad app, a release run
   assert.match(box.innerHTML, />Release runs <span class="pill warn">1<\/span>/);
   run("st.arg = ''");
 });
+
+test("#releases/apps/<app> opens the app's status page in place of the table: banner, checks, day bars, incidents, back to all apps", async () => {
+  const r = run(`route("#releases/apps/binks")`);
+  assert.deepEqual([r.tab, r.arg, r.page], ["releases", "apps", "apps/binks"]);
+  const keep = { body, data: relst.data }, at = NOW();
+  const day = (i, ok, fail, text) => ({ at: at - (89 - i) * 86400, ok, fail, text });
+  const days = Array.from({ length: 90 }, (_, i) => (i < 80 ? day(i, 0, 0, "No data") : i === 85 ? day(i, 287, 1, "99.65%") : day(i, 288, 0, "100%")));
+  body = {
+    app: "binks", groups: ["binks", "binks-chat"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
+    context: [{ label: "Live", text: "v1.2.0 on prod", link: "#releases?q=project:=binks", warn: false }],
+    checks: [{ name: "chat", group: "binks-chat", state: "Down", level: "bad", uptime: [["24h", "50%"], ["7d", "99.9%"]], days, latency: [[at - 7200, 120.5], [at - 3600, 80]], latency_text: "80 ms" }],
+    incidents: [{ check: "chat", from: at - 600, to: null, fails: 3, text: "3 failed" }],
+    monitor: "https://status.example", errors: [], at,
+  };
+  asked.length = 0;
+  run("st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/binks'");
+  run("TABS.releases").show();
+  for (let i = 0; i < 4; i++) await settled();
+  assert.ok(asked.includes("/api/releases/app?app=binks"), asked.join(" "));
+  const h = box.innerHTML;
+  assert.match(h, /^<div class="seg fseg istrip"/, "the strip stays above the page");
+  assert.match(h, /href="#releases\/apps">All apps<\/a>/);
+  assert.match(h, /Partial outage: chat/);
+  assert.match(h, /<a href="#releases\?q=project:=binks">v1\.2\.0 on prod<\/a>/);
+  assert.equal(h.match(/class="cc"/g).length, 90 + 24, "90 day bars and 24 hourly latency columns");
+  assert.equal(h.match(/background:var\(--c-other\)/g).length, 80, "a day with no results is grey, never green");
+  assert.match(h, /data-tip="[^"]*: 99\.65%, 1 failed of 288"/);
+  assert.match(h, /<td class="bad">ongoing<\/td>/);
+  assert.doesNotMatch(h, /rel-body/, "the table is not drawn under the page");
+  Object.assign(run("st"), { page: "", arg: "" });
+  body = keep.body;
+  relst.data = keep.data;
+  run("TABS.releases").show();
+  await settled();
+});

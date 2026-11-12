@@ -604,3 +604,22 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 @media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
 #sec-spend tr[data-sid] { cursor: pointer; }
 #sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+/* Releases > an app's status page (releases.js appPageHtml): one check per panel, its uptime
+   windows on a line, 90 day bars of one height (30 on a phone, the newest), then 24h latency. */
+.appbanner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.appbanner .chip { font-size: 13px; padding: 3px 10px; }
+.appups { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.appup { white-space: nowrap; }
+.appdays .cols { padding: 0; }
+.appdays .cg { display: none; }
+.appdays .cplot { border-bottom: 0; }
+.appdays .cbars { gap: 1px; }
+.appdays .cs i { border-radius: 1px; }
+.appdx { display: flex; justify-content: space-between; font-size: 11px; }
+.appd30 { display: none; }
+@media (max-width: 640px) {
+  .appdays .cc:nth-child(-n+60) { display: none; }
+  .appd90 { display: none; }
+  .appd30 { display: inline; }
+}
+.appchk { margin-bottom: 10px; }

@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod alertmanager;
 pub mod alerts;
+pub mod app_status;
 pub mod boards;
 pub mod briefing;
 pub mod budget;
@@ -25,6 +26,7 @@ pub mod home;
 pub mod host_history;
 pub mod infra;
 pub mod jobs;
+pub mod kube_proxy;
 pub mod junit;
 pub mod layout;
 pub mod links;

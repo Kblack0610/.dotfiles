@@ -90,6 +90,8 @@ struct AppState {
     infra: infra::Cache,
     machines: infra::Pages,
     pools: infra::Pages,
+    /// `#releases/apps/<app>`'s read (`hub_core::app_status`).
+    apps: infra::Pages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -132,6 +134,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         machines: infra::Pages::default(),
         pools: infra::Pages::default(),
+        apps: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -174,6 +177,7 @@ async fn main() -> Result<()> {
         .route("/api/schedules", get(schedules_list))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
+        .route("/api/releases/app", get(releases_app))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
@@ -1314,6 +1318,17 @@ async fn infra_machine(
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
     let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
+#[derive(Deserialize)]
+struct AppQuery {
+    app: String,
+}
+
+/// One app's status page, read only when `#releases/apps/<app>` opens. An unknown name is a 404.
+async fn releases_app(State(s): State<Shared>, Query(q): Query<AppQuery>) -> ApiResult<Response> {
+    let json = s.apps.app(q.app).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
