@@ -687,7 +687,7 @@ pub(crate) mod tests {
             "{s}"
         );
         // Each section is named once, over its first row, then the closed rows with day and PR.
-        assert!(at("NOW (1)") < at("NEXT UP (1)") && at("BACKLOG (1)") < at("DONE (1)"));
+        assert!(at("NOW (1)") < at("NEXT UP (1)") && at("BACKLOG (1)") < at("DONE 11-03 (1)"));
         assert!(s.contains("11-03  pr 63"), "{s}");
         assert!(at("FOCUS  bnb 1 open, in the daily note") < at("PRIORITY"));
         assert!(
@@ -1018,7 +1018,9 @@ pub(crate) mod tests {
         assert_eq!(shown(&f, &v).len(), 4, "only bnb/demo's rows");
         let s = text(&f, &v, 60);
         assert!(s.contains("ROWS  4 of 4 rows"), "{s}");
-        assert!(!s.contains('~'), "nothing is clipped:\n{s}");
+        // The chip line (all .. done) clips under 66 columns; the table under it never does.
+        let table = &s[s.find("SECTION").unwrap()..];
+        assert!(!table.contains('~'), "no row is clipped:\n{s}");
         assert!(
             s.contains("the menu") && s.contains("maps"),
             "the title wraps whole:\n{s}"
