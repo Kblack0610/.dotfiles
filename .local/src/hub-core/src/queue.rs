@@ -70,8 +70,13 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
-/// How many table rows a view draws before "+N older"; the chips still count every row.
-pub const TABLE_OPEN_ROWS: usize = 200;
+/// How many table rows the web page draws before its "+N more" button; the chips still count
+/// every row and the search and filters reach them all. Holds the Queue tab under three screens
+/// at 1400x900 (render.mjs). Live data, 2026-11-12, 637 active items: at 200 rows the default
+/// view was 19,324 px; with two-line cells (54 px a row) 30 rows measured 2,683 px, too close to
+/// 2,700 to survive a wrapped dispatch line, so 25 (about 2,410 px). Revisit when the space above
+/// the table or the row height changes. The hub TUI scrolls one-line rows and draws every row.
+pub const TABLE_OPEN_ROWS: usize = 25;
 
 /// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
 /// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so

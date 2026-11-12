@@ -12,9 +12,7 @@
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
 use hub_core::links::Link;
-use hub_core::queue::{
-    money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
-};
+use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing};
 use hub_core::table::Row;
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -102,17 +100,15 @@ impl QueueView {
         }
     }
 
-    /// The rows the table draws, from every row in the table's own order: the view applied, then
-    /// capped at `TABLE_OPEN_ROWS`; and how many the cap left out.
-    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
-        let mut rows: Vec<QueueRow<'a>> = self.table.view.apply(all).into_iter().copied().collect();
-        let older = rows.len().saturating_sub(TABLE_OPEN_ROWS);
-        rows.truncate(TABLE_OPEN_ROWS);
-        (rows, older)
+    /// The rows the table draws, from every row in the table's own order: every one the view
+    /// keeps. Each is one line and the tab scrolls, so the web page's `TABLE_OPEN_ROWS` cap is not
+    /// this view's: j/k reaches every row.
+    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> Vec<QueueRow<'a>> {
+        self.table.view.apply(all).into_iter().copied().collect()
     }
 
     pub fn shown<'a>(&self, q: &'a Queue, now: i64) -> Vec<QueueRow<'a>> {
-        self.drawn(&q.rows(at(now))).0
+        self.drawn(&q.rows(at(now)))
     }
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
@@ -541,10 +537,10 @@ pub fn page(
     }
     out.push(status_line(v, p, w));
     let all = q.rows(at(now));
-    let (rows, older) = v.drawn(&all);
+    let rows = v.drawn(&all);
     let mut chips = v.table.status(&all, p);
     chips.push(Span::styled(
-        format!("    {} of {}", rows.len() + older, all.len()),
+        format!("    {} of {}", rows.len(), all.len()),
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
@@ -567,9 +563,6 @@ pub fn page(
         let mut t = table(&rows, v, p, w);
         at_line = v.table.style(&mut t, p).map(|i| out.len() + i);
         out.append(&mut t);
-        if older > 0 {
-            out.push(Line::styled(format!("+{older} older"), p.dim()));
-        }
     }
     out.push(Line::raw(""));
     let top = out.len();
@@ -1240,8 +1233,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_the_cap_of_rows_is_drawn_and_the_rest_are_counted_older() {
-        let n = TABLE_OPEN_ROWS + 5;
+    fn every_row_the_view_keeps_is_drawn_past_the_web_pages_cap() {
+        let n = hub_core::queue::TABLE_OPEN_ROWS + 5;
         let jsonl: Vec<String> = (0..n)
             .map(|i| {
                 format!(
@@ -1256,9 +1249,9 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let v = all();
-        assert_eq!(v.shown(&q, now()).len(), TABLE_OPEN_ROWS);
+        assert_eq!(v.shown(&q, now()).len(), n);
         let s = text(&q, &v, 120);
-        assert!(s.contains("+5 older"), "{s}");
+        assert!(!s.contains("older"), "{s}");
         assert!(
             s.contains(&format!("{n} of {n}")) && s.contains(&format!("done {n}")),
             "{s}"

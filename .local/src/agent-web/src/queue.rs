@@ -13,9 +13,11 @@ use hub_core::queue::{self as hub_queue, Candidates, Item, QueueRow, Stats};
 use hub_core::session_actions::System;
 use hub_core::table::View;
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::broadcast;
 
-use crate::cache::EventCache;
+use crate::cache::{EventCache, ReadCache};
 use crate::{bad, ApiResult, Shared};
 
 /// How many days back, today included, the page's Done section reaches.
@@ -106,27 +108,28 @@ pub struct QueueQuery {
 }
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
-/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
-/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the table.
+/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), the last
+/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the table,
+/// and `candidates`, the shut Candidates heading's counts (`cand_counts`), absent with no snapshot.
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    s.queue
-        .recent()
-        .await
-        .map(|items| {
-            let mut v = render(items, &q, chrono::Utc::now());
-            let d = hub_core::capacity::Dispatch::now();
-            v["dispatch"] = serde_json::json!({ "line": d.line(), "warn": d.warn() });
-            Json(v)
-        })
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+    let (items, cands) = tokio::join!(s.queue.recent(), read_candidates());
+    let mut v = items
+        .map(|items| render(items, &q, chrono::Utc::now()))
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    let d = hub_core::capacity::Dispatch::now();
+    v["dispatch"] = serde_json::json!({ "line": d.line(), "warn": d.warn() });
+    if let Ok(c) = cands {
+        v["candidates"] = cand_counts(&c);
+    }
+    Ok(Json(v))
 }
 
 /// The rows the view keeps, each worded by `item_view`, and the controls that drew them
 /// (`table`). `needs_you` counts every item whatever the view, for the tab's badge;
-/// `open_rows` is how many rows the page draws before "+N older"; `section_aliases` maps an old
+/// `open_rows` is how many rows the page draws before "+N more"; `section_aliases` maps an old
 /// section id (`#queue/running`) to the state chip it opens.
 fn render(
     items: Vec<Item>,
@@ -245,12 +248,37 @@ fn candidates_view(c: &Candidates) -> serde_json::Value {
     })
 }
 
+/// The counts the shut Candidates heading shows, not the rows: how many the snapshot ranks, how
+/// many a worker takes, how many urgent ones something blocks (red while any are), and its time.
+fn cand_counts(c: &Candidates) -> serde_json::Value {
+    serde_json::json!({
+        "total": c.total, "auto": c.auto, "urgent_blocked": c.urgent_blocked, "as_of": c.as_of,
+    })
+}
+
+/// The snapshot stays the same until fleet-dispatch rewrites it, so a read is kept by the file's
+/// mtime; this only bounds how long one is kept at all (its `as_of` names the day once it is old).
+const CANDIDATES_SECS: u64 = 3600;
+static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<SystemTime>> = ReadCache::new();
+
+/// fleet-dispatch's snapshot through hub-core, parsed once per write: it runs to megabytes, and
+/// every queue read carries its counts.
+async fn read_candidates() -> Result<Arc<Candidates>, String> {
+    let path = hub_core::boards::candidates_file();
+    let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let read = async move {
+        tokio::task::spawn_blocking(move || hub_queue::candidates(&path))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    CANDIDATES.get(at, read).await
+}
+
 /// The ranked board rows of fleet-dispatch's snapshot (`suggest --write`, each real pass), read
-/// through hub-core; the page asks for it on showing the tab and after a promote.
+/// through hub-core; the page asks for it when its Candidates fold opens and after a promote.
 pub async fn candidates() -> ApiResult<Json<serde_json::Value>> {
-    tokio::task::spawn_blocking(|| hub_queue::candidates(&hub_core::boards::candidates_file()))
+    read_candidates()
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(|c| Json(candidates_view(&c)))
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
@@ -494,6 +522,19 @@ mod tests {
         });
         assert_eq!(none["rows"].as_array().unwrap().len(), 0);
         assert_eq!(none["as_of"], "08:07", "the page stamps the fold with it");
+    }
+
+    #[test]
+    fn the_queue_read_carries_the_candidates_counts_and_no_row() {
+        let c = hub_queue::parse_candidates(
+            r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"auto":true}"##,
+        );
+        let v = cand_counts(&c);
+        assert_eq!(
+            (&v["total"], &v["auto"], &v["urgent_blocked"]),
+            (&1.into(), &1.into(), &1.into())
+        );
+        assert!(v.get("rows").is_none() && v.get("blocked_rows").is_none());
     }
 
     #[test]
