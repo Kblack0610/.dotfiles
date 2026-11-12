@@ -167,7 +167,7 @@ class Source:
             got = self.sync("job archive", "jobs", "--since", stamp(self.since))
             # The archive keeps a job's browser link as url; gh's own reads call it html_url.
             self.archived = {(r["run_id"], r["attempt"]): [{**j, "html_url": j.get("url")} for j in r["jobs"]]
-                             for r in got or [] if r.get("complete")}
+                             for r in got or [] if r.get("complete") and r.get("forge", "github") == "github"}
         rid = run["databaseId"]
         if (rid, attempt) in self.archived:
             return self.archived[(rid, attempt)]

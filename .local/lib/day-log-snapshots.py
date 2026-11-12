@@ -375,6 +375,8 @@ def ci(a):
     passes, err = ci_pass(start, end) if repos else ({}, None)
     if passes is None:
         out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
+    else:  # the ledger may spell a repo in another case; a repo with no run that day is absent, 0 runs
+        passes = {k.lower(): v for k, v in passes.items()}
     for repo, base, clone in repos:
         row, err = ci_failures(repo, base, start, end)
         if row is None:
@@ -383,7 +385,7 @@ def ci(a):
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
         if passes is not None:
-            got = passes.get(f"github:{repo}", {"runs": 0, "green": 0, "pass": None})
+            got = passes.get(f"github:{repo}".lower(), {"runs": 0, "green": 0, "pass": None})
             row["pass"] = {k: got[k] for k in ("runs", "green", "pass")}
             row["workflows"] = got.get("workflows", {})
         if clone:

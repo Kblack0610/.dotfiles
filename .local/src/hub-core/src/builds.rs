@@ -656,7 +656,9 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
             continue;
         }
         pass.add(r.conclusion.as_deref());
-        let timed = verdict(r.conclusion.as_deref()).is_some() && r.started_at.is_some();
+        // A startup failure never ran its jobs, so its seconds would drag the usual time down.
+        let ran = matches!(r.conclusion.as_deref(), Some("success" | "failure" | "timed_out"));
+        let timed = ran && r.started_at.is_some();
         if let (true, Some(t)) = (timed, r.took) {
             took.push(t);
         }
@@ -1354,6 +1356,8 @@ mod tests {
         // Run times read the same verdict: 2 of 7 finished Tests runs in the 30 days, 28%.
         let tests = times.iter().find(|t| t.workflow == "Tests").unwrap();
         assert_eq!(tests.pass, 28);
+        // The startup failure counts as red but is not timed: 6 of the 7 have a time.
+        assert_eq!(tests.runs, 6);
         assert_eq!(verdict(None), None);
     }
 

@@ -706,6 +706,7 @@ feedruns() {
   game_files
   R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)"
   feedruns 0 e1 1 false "$R30"
+  jq -c '.runs += [{"forge":"github","repo":"O/Game"}]' "$KD/feed-0" > "$KD/feed-0.new" && mv "$KD/feed-0.new" "$KD/feed-0"
   runs "$R30" | page1
   run "$SUBJECT"
   assert_success
@@ -718,11 +719,10 @@ feedruns() {
   assert_success
   run jq -c '[.ok, .repos["o/game"]]' <<<"$output"
   assert_output '[true,{"agree":1,"open":0,"differ":[]}]'
-  # by default it counts from runs_since, after this run
+  # by default it counts from runs_since, after this run: nothing compared is not agreement
   run "$SUBJECT" compare-feed
-  assert_success
-  run jq -c '.repos["o/game"].agree' <<<"$output"
-  assert_output 0
+  assert_failure 3
+  assert_output --partial 'no settled run to compare'
   # warm, unchanged: the shadow gains no row
   feed 1 e1 1 false ''
   SCHEDULES_NOW=1762431000 run "$SUBJECT"

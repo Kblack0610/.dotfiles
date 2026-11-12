@@ -937,7 +937,7 @@ def import_feed(entry, t):
                 run = r.get("run") or {}
                 out.append(job_record(r["forge"], r["repo"], r["run_id"], r["attempt"], run.get("created_at"),
                                       "exporter", bool(r.get("complete")), r.get("jobs", []), t))
-            rows += [gh_row(r["repo"], r["run"]) for r in d.get("runs", [])]
+            rows += [gh_row(r["repo"], r["run"]) for r in d.get("runs", []) if r.get("repo") and r.get("run")]
             cursor = d.get("next", cursor)
             entry.update(epoch=d.get("epoch"), cursor=cursor, repos=d.get("repos", []),
                          window_secs=d.get("window_secs", 86400))
@@ -1398,6 +1398,8 @@ def compare_feed(argv, t):
                                                          if f != "repo" and old.get(f) != new.get(f)}})
     ok = not any(r["differ"] for r in report.values())
     doc = {"since": iso(since), "settled_before": iso(edge), "ok": ok, "repos": report}
+    if ok and not any(r["agree"] for r in report.values()):
+        return 3, f"compare-feed: no settled run to compare since {iso(since)}"
     return (0 if ok else 1), json.dumps(doc, separators=(",", ":"))
 
 

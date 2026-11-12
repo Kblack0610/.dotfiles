@@ -609,9 +609,12 @@ EOF
   ci_clone
   mkdir -p "$PROM_TEXTFILE_DIR"
   echo '{"totals":{"context":900,"sessions":4},"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3}},"by_account":{"bnb":{"sessions":4}}}' > "$SANDBOX/tokjson-2026-10-27"
+  # the ledger spells the repo in its own case; a workflow whose runs all cancelled has no pass
+  echo '{"github:o/GAME":{"runs":8,"green":6,"pass":0.75,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Docs":{"runs":0,"green":0,"pass":null}}}}' > "$SANDBOX/pass"
   "$SUBJECT" nightly
   run cat "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
   assert_line 'agent_ci_pass_rate{repo="O/game",workflow="Tests"} 0.75'
+  refute_line --partial 'workflow="Docs"'
   assert_line 'agent_ci_main_red{repo="O/game"} 1'
   assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
   assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
