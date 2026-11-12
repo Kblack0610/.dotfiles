@@ -298,7 +298,7 @@ pub fn history(
     }
 }
 
-/// The stretches between readings more than one step apart, and an open one from the last
+/// The stretches between readings more than two steps apart (one missed scrape is no stretch), and an open one from the last
 /// reading to now when the readings stop. None at all is one open stretch over the whole window.
 fn gaps(times: &[u64], from: u64, to: u64) -> Vec<Down> {
     let mut out = vec![];
@@ -318,7 +318,7 @@ fn gaps(times: &[u64], from: u64, to: u64) -> Vec<Down> {
         });
     }
     for w in times.windows(2) {
-        if w[1] > w[0] + STEP {
+        if w[1] > w[0] + 2 * STEP {
             out.push(Down {
                 from: w[0],
                 to: w[1],
@@ -588,6 +588,13 @@ mod tests {
         );
         assert!(h.down.iter().all(|d| d.why == NO_READING));
         assert_eq!(h.readings, 15);
+    }
+
+    #[test]
+    fn one_missed_scrape_is_no_downtime() {
+        let t: Vec<u64> = (0..10).filter(|i| *i != 4).map(|i| T + i * STEP).collect();
+        let h = history("razer-laptop", &[cpu(&t)], &[], None, T, T + 9 * STEP);
+        assert!(h.down.is_empty(), "{:?}", h.down);
     }
 
     #[test]

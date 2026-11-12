@@ -1033,8 +1033,9 @@ impl App {
         let (Some(host), Some(infra)) = (self.machine_page.clone(), self.infra.clone()) else {
             return;
         };
-        // Its history is three range queries, so a page left open behind another tab is not read.
-        if self.tab == Tab::Infra && self.machine_read.want() {
+        // Its history is three range queries, so a page left open behind another tab is not read,
+        // and the first read waits for the alerts (`Msg::Alerts` reads it) rather than run twice.
+        if self.tab == Tab::Infra && self.alerts.is_some() && self.machine_read.want() {
             let tx = self.tx.clone();
             let firing = self.alerts.as_ref().map(|a| a.firing.clone());
             let jobs = self.files.builds.jobs.clone();
@@ -2970,7 +2971,10 @@ impl App {
                     self.itab.cycle(self.infra_inner);
                     return true;
                 }
-                if k.modifiers.is_empty()
+                // G arrives with SHIFT; Ctrl and Alt keys are the page's.
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && self.itab.moves(self.infra.as_ref(), self.infra_inner, k)
                 {
                     return true;
@@ -6761,6 +6765,14 @@ mod tests {
         // No Prometheus in a test: the page's read is held, and its answer handed in below.
         a.machine_read.busy = true;
         assert!(a.hints().contains("j/k pick  Enter open"), "{}", a.hints());
+        let n = a.infra.as_ref().unwrap().machines.len();
+        // G comes with SHIFT, as a terminal sends it: it still picks the last row.
+        a.handle(Msg::Input(Event::Key(KeyEvent::new(
+            KeyCode::Char('G'),
+            KeyModifiers::SHIFT,
+        ))));
+        assert_eq!(a.itab.views[0].sel, n - 1, "G picks the last machine");
+        a.handle(key('g'));
         let want = a.infra.as_ref().unwrap().machines[1].host.clone();
         a.handle(key('j'));
         assert!(a.itab.follow, "a moved selection is kept in view");

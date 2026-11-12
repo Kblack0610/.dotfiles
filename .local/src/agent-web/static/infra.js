@@ -354,34 +354,41 @@ const machineHost = () => (st.tab === "infra" && st.page.startsWith("machines/")
 const refreshMachine = coalesce(async () => {
   const host = machineHost();
   if (!host) return;
-  try { mst.data = await api("/api/infra/machine?host=" + encodeURIComponent(host)); mst.err = null; } catch (e) { mst.data = null; mst.err = e.message; }
+  try { mst.data = await api("/api/infra/machine?host=" + encodeURIComponent(host)); mst.err = null; } catch (e) { if (mst.data && mst.data.host !== host) mst.data = null; mst.err = e.message; }
   if (machineHost() === host) renderInfra();
 });
 // Power changes shown before "+N older".
 const HIST_ROWS = 30;
 
-// Each pool a slot colour, other the muted one, idle the empty track.
-function shareBar(d) {
+// Each pool one slot colour on the whole page (share bar and chart), by name.
+function poolColors(d) {
+  const names = new Set(d.share.filter((s) => s.what !== "idle" && s.what !== "other").map((s) => s.what));
+  if (d.history) d.history.hours.forEach((x) => Object.keys(x.pools).forEach((p) => names.add(p)));
+  return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
+}
+
+// Each pool its colour, other the muted one, idle the empty track.
+function shareBar(d, colors) {
   if (!d.share.length) return `<div class="muted">No core reading: no runner and no CPU series.</div>`;
-  const color = (s, i) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : SLOTS[i % SLOTS.length]);
-  const bar = d.share.map((s, i) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s, i)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
+  const color = (s) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : colors[s.what]);
+  const bar = d.share.map((s) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
   const words = d.share.map((s) => `${tblLink(s.link, s.what)} ${s.cores.toFixed(1)}`).join(", ");
   return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
 }
 
 // One column per hour: the pools' cores as a share of the machine, then the rest of its CPU.
-function historyChart(h, cores) {
+function historyChart(h, cores, colors) {
   const pools = [...new Set(h.hours.flatMap((x) => Object.keys(x.pools)))].sort();
   const cols = h.hours.map((x) => {
     const at = new Date(x.at * 1e3);
-    const segs = pools.map((p, i) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: SLOTS[i % SLOTS.length] }));
+    const segs = pools.map((p) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: colors[p] }));
     const ci = segs.reduce((a, s) => a + s.v, 0);
     if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
     const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
     const tip = x.cpu == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
     return { key: String(x.at), label: at.getHours() === 0 ? at.toLocaleDateString([], { weekday: "short" }) : "", tip, segs };
   });
-  const key = [...pools.map((p, i) => [p, SLOTS[i % SLOTS.length]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
+  const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
   return `${columns(cols, { height: 120, yfmt: pct })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`;
 }
 
@@ -431,32 +438,34 @@ function powerHistory(p) {
 // about two minutes.
 const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
 // The button armed by a first click ("host:action") and the last answer.
-const cst = { armed: "", msg: "" };
+const cst = { armed: "", msg: "", host: "" };
 function cloudButtons(p) {
   const btns = CLOUD_ACTS.map(([a, n, label]) => {
     const k = `${p.host}:${a}`;
     return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
   }).join(" ");
-  return pageRow("Hold", btns) + (cst.msg ? `<div class="err">${esc(cst.msg)}</div>` : "");
+  return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
 }
 
 function machinePage() {
   const back = `<a class="btn sm" href="#infra/machines${st.views.infra ? "?" + st.views.infra : ""}">All machines</a>`;
   const d = mst.data;
   if (!d) return `<div class="bhead"><span>${esc(mst.host)}</span>${back}</div><div class="${mst.err ? "panel down" : "empty"}">${mst.err ? esc(mst.err) : "Loading..."}</div>`;
+  const colors = poolColors(d);
   let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
-  if (d.errors.length) h += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  const errs = mst.err ? [`refresh failed, showing the last read: ${mst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   h += `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
-  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d)}`;
+  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   const hist = d.history;
   if (hist) {
-    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores)}`;
+    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores, colors)}`;
     h += `<h3 class="sec">Downtime <span class="muted">stretches with no CPU reading, newest first</span></h3>${pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.")}`;
     if (hist.power) h += powerHistory(hist.power);
   }
-  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.recent.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
+  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.tables.recent.rows.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
   h += `<h3 class="sec">Alerts <span class="muted">firing now and naming it</span></h3>${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
   return h;
 }
@@ -464,6 +473,7 @@ function machinePage() {
 async function cloudAct(key, hours) {
   const i = key.lastIndexOf(":"), host = key.slice(0, i), action = key.slice(i + 1);
   cst.armed = "";
+  cst.host = host;
   try { await post("/api/cloud-runner", { host, action, hours }); cst.msg = `${host}: ${action} sent; the governor reads it within about 2 minutes.`; }
   catch (e) { cst.msg = `${host}: ${e.message}`; }
   renderInfra();

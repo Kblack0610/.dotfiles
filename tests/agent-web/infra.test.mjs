@@ -197,7 +197,7 @@ const machinePage = (o = {}) => ({
   host: "aws-burst-1", at: 1700000000, head: "aws-burst-1, cloud, stopped", errors: [],
   parts: [{ label: "Now", text: "no reading: the governor has it stopped", link: null, warn: true },
     { label: "Grafana", text: "its fleet board", link: "https://g.example/d/kb-fleet?var-host=aws-burst-1", warn: false }],
-  machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, share: [], running: [], history: null, recent: [],
+  machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, share: [], running: [], history: null,
   tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]) }, ...o,
 });
 const drawMachine = (page, d, err) => {
@@ -241,4 +241,28 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
+});
+
+test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {
+  const h = drawMachine("machines/aws-burst-1", machinePage(), "Could not read infra (HTTP 502)");
+  assert.match(h, /refresh failed, showing the last read: Could not read infra \(HTTP 502\)/);
+  assert.match(h, /data-cloud="aws-burst-1:on"/, "the page is still drawn");
+  run(`Object.assign(cst, { host: "aws-burst-2", msg: "aws-burst-2: on sent" })`);
+  assert.doesNotMatch(drawMachine("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
+  run(`cst.host = "aws-burst-1"`);
+  assert.match(drawMachine("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
+  run(`Object.assign(cst, { host: "", msg: "" })`);
+});
+
+test("a pool has one colour in the share bar and the 7-day chart", () => {
+  const hours = [{ at: 1700000000, cpu: 0.9, pools: { alpha: 2, unity: 6 }, seen: 1 }];
+  const d = machinePage({ cores: 24, machine: {},
+    share: [{ what: "unity", cores: 6, link: null }, { what: "alpha", cores: 2, link: null }, { what: "idle", cores: 16, link: null }],
+    history: { step: 120, readings: 1, hours, down: [], power: null } });
+  const colors = run(`poolColors(${JSON.stringify(d)})`);
+  assert.deepEqual(Object.keys(colors), ["alpha", "unity"]);
+  const h = drawMachine("machines/workstation", d);
+  const bar = h.match(/title="unity: 6\.0 cores"/) && h.match(/<i style="flex:6\.00;background:([^"]+)"/)[1];
+  assert.equal(bar, colors.unity, "the share bar's unity is the chart's unity");
+  assert.match(h, new RegExp(`<span class="chip sm" style="--c:${colors.unity.replace(/[()]/g, "\\$&")}">unity</span>`));
 });

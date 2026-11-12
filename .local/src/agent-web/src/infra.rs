@@ -124,14 +124,8 @@ impl Cache {
 #[derive(Default)]
 pub struct Pages(ReadCache<String, CACHE_SECS, String>);
 
-/// The page with its tables' rows and links (`shown`, in their own order).
-#[derive(Serialize)]
-struct Page<'a> {
-    #[serde(flatten)]
-    page: &'a MachinePage,
-    tables: Map<String, Value>,
-}
-
+/// The page, its lists sent once: as tables with their rows and links (`shown`, in their own
+/// order), not also as the page's own fields.
 fn page_json(p: &MachinePage) -> String {
     let none = ViewQuery::new();
     let mut tables = Map::new();
@@ -139,8 +133,19 @@ fn page_json(p: &MachinePage) -> String {
     let down = p.history.as_ref().map_or(&[][..], |h| h.down.as_slice());
     tables.insert("down".into(), shown(down, &none, ""));
     tables.insert("alerts".into(), shown(&p.alerts, &none, ""));
-    serde_json::to_string(&Page { page: p, tables })
-        .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string())
+    let mut v = match serde_json::to_value(p) {
+        Ok(v) => v,
+        Err(e) => return json!({"error": e.to_string()}).to_string(),
+    };
+    if let Some(o) = v.as_object_mut() {
+        o.remove("recent");
+        o.remove("alerts");
+        if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
+            h.remove("down");
+        }
+        o.insert("tables".into(), Value::Object(tables));
+    }
+    v.to_string()
 }
 
 impl Pages {
@@ -172,6 +177,26 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A machine page sends its lists once, as tables.
+    #[test]
+    fn a_machine_page_sends_its_lists_once_as_tables() {
+        let p = MachinePage {
+            host: "ws".into(),
+            recent: vec![hub_core::machine_page::RecentJob {
+                job: "bats".into(),
+                ..Default::default()
+            }],
+            history: Some(hub_core::host_history::HostHistory::default()),
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
+        assert_eq!(v["host"], "ws");
+        assert!(v.get("recent").is_none() && v.get("alerts").is_none());
+        assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
+        assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
+        assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());
+    }
 
     /// Each table reads its own prefixed keys, and the CI lists are sent once, as tables.
     #[test]

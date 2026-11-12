@@ -3,6 +3,7 @@
 //! and downtime (`host_history`), the CI jobs that ran there (the jobs archive), the alerts that
 //! name it and its Grafana board. hub-core reads it; agent-web and the TUI only draw it.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -40,6 +41,9 @@ pub struct Share {
 /// One CI job that ran there, from the jobs archive.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct RecentJob {
+    /// GitHub's job id: one job in two archive records is one row.
+    #[serde(skip)]
+    pub id: u64,
     pub run_id: u64,
     pub repo: String,
     pub job: String,
@@ -365,7 +369,6 @@ fn recent(text: &str, runners: &HashMap<String, String>, names: &[String]) -> Ve
         .chain(names.iter().map(String::as_str))
         .collect();
     let (records, _) = run_detail::archive(text, |line| probes.iter().any(|p| line.contains(p)));
-    let mut seen = HashSet::new();
     let mut out: Vec<RecentJob> = records
         .into_values()
         .flat_map(|r| {
@@ -373,10 +376,10 @@ fn recent(text: &str, runners: &HashMap<String, String>, names: &[String]) -> Ve
             r.jobs.into_iter().map(move |j| (run_id, repo.clone(), j))
         })
         .filter(|(_, _, j)| j.runner_name.as_deref().is_some_and(mine))
-        .filter(|(_, _, j)| seen.insert(j.id))
         .map(|(run_id, repo, j)| {
             let started = run_detail::ts(&j.started_at);
             RecentJob {
+                id: j.id,
                 run_id,
                 repo,
                 job: j.name,
@@ -388,7 +391,20 @@ fn recent(text: &str, runners: &HashMap<String, String>, names: &[String]) -> Ve
             }
         })
         .collect();
-    out.sort_by(|a, b| b.started.cmp(&a.started).then(b.run_id.cmp(&a.run_id)));
+    out.sort_by(|a, b| {
+        let key = |j: &RecentJob| {
+            (
+                Reverse(j.started),
+                Reverse(j.run_id),
+                j.id,
+                j.took.is_none(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    // A job in two records is one row, its finished copy when one has finished.
+    let mut seen = HashSet::new();
+    out.retain(|j| seen.insert(j.id));
     out.truncate(RECENT);
     out
 }

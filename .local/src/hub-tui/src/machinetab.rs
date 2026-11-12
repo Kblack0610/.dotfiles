@@ -3,7 +3,7 @@
 //! jobs running there, its last days of CPU and downtime, the CI jobs that ran there and the
 //! alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
-use hub_core::host_history::{HostHistory, DAYS};
+use hub_core::host_history::{HostHistory, PowerHistory, DAYS};
 use hub_core::links::Link;
 use hub_core::machine_page::{MachinePage, RecentJob};
 use ratatui::text::{Line, Span};
@@ -17,6 +17,8 @@ pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
 
 /// Recent CI jobs drawn before `+N more`.
 const RECENT_ROWS: usize = 15;
+/// Power changes shown before "+N older".
+const POWER_ROWS: usize = 10;
 
 /// Width of a share bar.
 const SHARE_BAR: usize = 30;
@@ -56,7 +58,14 @@ pub fn page(
     let mut out = vec![clip_line(
         Line::from(vec![
             Span::styled(page.host.to_uppercase(), p.head()),
-            Span::styled(format!("  {}  {PAGE_KEYS}", page.head), p.dim()),
+            Span::styled(
+                format!(
+                    "  {}  read {}  {PAGE_KEYS}",
+                    page.head,
+                    clock(page.at as i64, now)
+                ),
+                p.dim(),
+            ),
         ]),
         w,
     )];
@@ -77,6 +86,10 @@ pub fn page(
             out.extend(history(h, p, now, w));
             out.push(blank());
             out.extend(downtime(h, p, now, w));
+            if let Some(pw) = &h.power {
+                out.push(blank());
+                out.extend(power(pw, p, now));
+            }
         }
         None => out.push(heading(&format!("{DAYS} DAYS"), "not read", p)),
     }
@@ -110,6 +123,41 @@ fn share(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
             Span::styled(format!("{off}]"), p.dim()),
             Span::raw(format!(" {pc}%")),
         ]));
+    }
+    out
+}
+
+/// The governor's hours per UTC day and its newest changes of power state, as on the web.
+fn power(pw: &PowerHistory, p: Palette, now: i64) -> Vec<Line<'static>> {
+    let days: Vec<String> = pw
+        .days
+        .iter()
+        .map(|d| format!("{} {:.1}h", d.day.get(5..).unwrap_or(&d.day), d.hours))
+        .collect();
+    let mut out = vec![
+        heading("POWER", "hours run per UTC day, newest change first", p),
+        Line::raw(format!(
+            "  {}",
+            if days.is_empty() {
+                "no samples".to_string()
+            } else {
+                days.join("  ")
+            }
+        )),
+    ];
+    for c in pw.changes.iter().rev().take(POWER_ROWS) {
+        let why = if c.reason == "none" { "" } else { &c.reason };
+        out.push(Line::raw(format!(
+            "  {:<12} {:<10} {why}",
+            clock(c.at as i64, now),
+            c.state
+        )));
+    }
+    if pw.changes.len() > POWER_ROWS {
+        out.push(Line::styled(
+            format!("  +{} older on the web page", pw.changes.len() - POWER_ROWS),
+            p.dim(),
+        ));
     }
     out
 }
@@ -325,7 +373,7 @@ fn alerts(page: &MachinePage, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
 mod tests {
     use super::*;
     use hub_core::ci::Slot;
-    use hub_core::host_history::{Down, Hour};
+    use hub_core::host_history::{Change, Day, Down, Hour};
     use hub_core::machine_page::Share;
     use hub_core::session_page::Part;
 
@@ -392,6 +440,21 @@ mod tests {
                     open: false,
                     why: "no reading".into(),
                 }],
+                power: Some(PowerHistory {
+                    changes: vec![Change {
+                        at: 7200,
+                        state: "running".into(),
+                        reason: "queue".into(),
+                    }],
+                    days: vec![Day {
+                        day: "2026-11-10".into(),
+                        hours: 3.5,
+                    }],
+                    host: "workstation".into(),
+                    from: 0,
+                    to: 7 * 86_400,
+                    step: 120,
+                }),
                 ..HostHistory::default()
             }),
             recent: vec![RecentJob {
@@ -424,6 +487,9 @@ mod tests {
             "7 DAYS",
             "DOWNTIME",
             "no reading",
+            "POWER",
+            "11-10 3.5h",
+            "queue",
             "RECENT CI JOBS",
             "bats",
             "failure",
