@@ -32,7 +32,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
@@ -47,12 +47,16 @@ const worker = (name, registry) => ({
     ...registry,
   },
 });
-const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d",
+const judge = { agree: 0, disagree: 0, deferred: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d",
   week: { live_pct: 25, coverage: 40, precision: 91 },
   verdicts: [
     { id: "a", project: "ucp", question: "land it?", type: "ship_deploy", rule: "ship_deploy", said: "answered", judge: "a", reason: "merged, not live", evidence: "merged", you: "kept", score: "right", at: 1793942659 },
     { id: "b", project: "trader", question: "which login?", type: "human_fact", rule: "knowledge", said: "passed", judge: "", reason: "only you know", evidence: "your login", you: "pending", score: "pending", at: 1793942600 },
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
+  ],
+  cells: [
+    { type: "ship_deploy", level: "repo", verdicts: 4, scored: 3, pending: 1, precision: 66.7, precision_lo: 20.8, precision_hi: 93.9, live: true, audited: 3, level_raised_pct: 25 },
+    { type: "", level: "", verdicts: 2, scored: 0, pending: 2, precision: null, precision_lo: null, precision_hi: null, live: false, audited: 0, level_raised_pct: 0 },
   ] };
 const data = {
   at: 1793942659, errors: [], judge,
@@ -99,7 +103,7 @@ const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
   states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "lead", n: 1, q: "kind:lead" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, on: false, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
@@ -108,7 +112,14 @@ const people = [
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
-const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table(), hidden: 0 };
+// What hub_core::links sends beside those rows (`Who::link`); the page builds no `#...` itself.
+const links = [
+  { who: "#fleet/fleet-dispatch", project: "#projects/dotfiles" },
+  { who: "#fleet/ask-judge" },
+  { who: "#sessions/lab%2Fdotfiles-agent-11%3A1", project: "#projects/dotfiles" },
+  { who: "#sessions/lab%2Fdotfiles-agent-12%3A1", project: "#projects/dotfiles" },
+];
+const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table({ links }), hidden: 0 };
 
 test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
   vm.runInContext("st", ctx).tab = "fleet";
@@ -117,12 +128,17 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="muted"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> lead<\/td>/);
-  assert.match(h, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<tr class="wr" data-href="#sessions\/lab%2Fdotfiles-agent-11%3A1">/);
   assert.match(h, /<td class="bad">failed<\/td>/);
   assert.match(h, /<td class="warn">needs you<\/td>/);
   assert.doesNotMatch(h, /data-fold="ask-judge"/, "only a row with children folds");
   assert.match(h, /2 sessions/);
+  assert.match(h, /<td class="muted"><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
+  // A row the server sent no link for draws its text and opens nothing.
+  f.data = { ...fleetData, table: table() };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<tr class="wr" data-href=""><td class="muted"><button[^>]*>v<\/button> lead<\/td><td>fleet-dispatch<\/td>/);
 });
 
 test("a held runner reads red and the held chip counts it", () => {
@@ -143,7 +159,8 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.match(h, /who spent what on <a href="#costs">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
-  assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind"[^>]*>/, "kind's dropdown sits under its header");
+  assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
 });
 
 test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
@@ -153,7 +170,7 @@ test("KIND and FOR say what each row is and why it is deployed, under the lanes.
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
-  assert.match(h, /<td class="muted">observe<\/td><td><a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<td class="muted">observe<\/td><td><a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
   assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
   for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}">${k} <span class="n">`));
@@ -241,7 +258,7 @@ const runnerPage = (name, o = {}) => ({
   runs_total: 2, failed_total: 1,
   days: Array.from({ length: 14 }, (_, i) => ({ day: `11-${String(i + 1).padStart(2, "0")}`, runs: i === 13 ? 2 : 0, failed: i === 13 ? 1 : 0 })),
   calls: { day: totals({ calls: 4, errors: 1, tokens: 12000, cost: 0.42, p50_ms: 2100 }), week: totals({ calls: 30, tokens: 90000, cost: 3.1, p50_ms: 2400 }), partial: true, recent: [call("s9")] },
-  extras: { kind: "ingest", counts_7d: { filed: 5, routed: 2 }, partial: false, steps: [{ ts: "2026-11-06T10:00:00Z", action: "filed", from: "inbox", to: "board", lane: "", text: "fix the thing", id: null, why: null }] },
+  extras: { kind: "ingest", counts_7d: { filed: 5, routed: 2 }, partial: false, steps: [{ ts: "2026-11-06T10:00:00Z", action: "filed", from: "inbox", to: "board", lane: "", text: "fix the thing", id: "ar-9", why: "model: names the hub", row: "fix the thing on the hub", by: "inbox-triage" }] },
   ...o,
 });
 const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: "", headers: { get: () => (status < 400 ? "application/json" : "text/plain") }, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
@@ -255,7 +272,7 @@ test("a runner row links to its runner page, and the page is read only when open
   ctx.setTab("fleet", "", "");
   vm.runInContext("fst", ctx).data = fleetData;
   ctx.renderFleet();
-  assert.match(box.innerHTML, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(box.innerHTML, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the Fleet tab never reads a runner page");
   assert.equal(ctx.route("#fleet/inbox-triage").arg, "inbox-triage");
 });
@@ -268,12 +285,21 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /<td class="bad">FAILED<\/td>/);
   assert.match(h, /<td>7d<\/td><td class="n">30\+<\/td>/, "a partial week is a floor");
   assert.match(h, /<span class="tl">FILED<\/span><span class="tv">5<\/span>/);
+  assert.match(h, /<td>filed <span class="muted">ar-9<\/span><\/td><td class="muted">inbox -&gt; board<\/td><td class="muted">inbox-triage<\/td>/, "an intake step names its id, route and writer");
+  assert.match(h, /fix the thing<div class="muted">=&gt; fix the thing on the hub<\/div><\/td><td class="wrap muted">model: names the hub<\/td>/, "and the row it became and why");
   assert.match(h, /<td>API_TOKEN<\/td><td class="wrap muted">\(set\)<\/td>/);
   assert.match(h, /href="#fleet">All runners<\/a>/);
   click({ target: { closest: (sel) => (sel === "tr.rr" ? { dataset: { i: "0" } } : null) } });
   await flush();
   assert.match(box.innerHTML, /<pre class="panel joblog">run log text<\/pre>/);
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
+});
+
+test("the sentinel page is one count line linking to Alerts' Watches, never the watch table", async () => {
+  const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
+  const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });
+  assert.match(h, /<h2 class="sec">Watches <span class="muted"><a href="#alerts\/watches">3 watches, 1 tripped<\/a><\/span><\/h2>/);
+  assert.doesNotMatch(h, /<th>watch<\/th>/);
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {
@@ -296,6 +322,12 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   assert.match(j, /<h2 class="sec">Answer judge /);
   assert.match(j, /<span class="tl">AGREE<\/span>/);
   assert.match(j, /land it\?/);
+  // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
+  assert.match(j, /<td>ship_deploy<\/td><td>repo<\/td><td class="n">4<\/td><td class="n">3<\/td><td class="n">66.7% <span class="muted">\[20.8-93.9\]<\/span><\/td><td class="n">1<\/td><td class="">yes<\/td><td class="n">3<\/td><td class="n">25%<\/td>/);
+  assert.match(j, /<td>\(no type\)<\/td><td>-<\/td>/);
+  assert.ok(j.indexOf("AGREE") < j.indexOf("By type and level") && j.indexOf("By type and level") < j.indexOf("land it?"));
+  const none = await openPage("ask-judge", { "ask-judge": runnerPage("ask-judge", { extras: { kind: "ask-judge", judge: { ...judge, cells: [] } } }) });
+  assert.match(none, /no verdicts under prompt 3fa1c2d/);
   ctx.setTab("fleet", "", "");
 });
 

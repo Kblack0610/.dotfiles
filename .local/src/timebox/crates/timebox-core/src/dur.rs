@@ -13,7 +13,11 @@ pub fn parse_duration(s: &str) -> Result<u64, String> {
         'm' | 'M' => (&s[..s.len() - 1], 60),
         's' | 'S' => (&s[..s.len() - 1], 1),
         c if c.is_ascii_digit() => (s, 1),
-        other => return Err(format!("bad duration unit '{other}' (use h|m|s or a bare number)")),
+        other => {
+            return Err(format!(
+                "bad duration unit '{other}' (use h|m|s or a bare number)"
+            ))
+        }
     };
     let n: u64 = num
         .trim()
@@ -32,6 +36,17 @@ pub fn fmt_hms(secs: i64) -> String {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m}:{s:02}")
+    }
+}
+
+/// Format a length the way it is usually typed: `5m`, `1h`, `90s`.
+pub fn fmt_short(secs: u64) -> String {
+    if secs > 0 && secs.is_multiple_of(3600) {
+        format!("{}h", secs / 3600)
+    } else if secs > 0 && secs.is_multiple_of(60) {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
     }
 }
 

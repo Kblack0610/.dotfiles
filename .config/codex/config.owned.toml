@@ -1,0 +1,6 @@
+# Top-level keys the sync owns in ~/.codex/config.toml: written at the head of the file between
+# the owned-keys markers, and any copy of the same key in the human's part is dropped.
+# Each key on one line. The human's other keys (personality, efforts, projects) stay theirs.
+model = "gpt-6.1-sol"
+# Read a repo's CLAUDE.md when the directory has no AGENTS.md; a repo with AGENTS.md keeps it.
+project_doc_fallback_filenames = ["CLAUDE.md"]

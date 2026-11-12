@@ -8,6 +8,7 @@
 use std::cell::Cell as Remembered;
 
 use hub_core::capacity::{Capacity, Part};
+use hub_core::links::Link;
 use hub_core::session_actions::{available, Action, Session, Snapshot};
 use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
@@ -139,6 +140,13 @@ impl Controls {
                 }
             })
             .collect()
+    }
+
+    /// The shown row a session page id names (`hub_core::session_page::find`): a session id, a
+    /// live row's target or an ended row's item, as `#sessions/<id>` resolves on the web.
+    pub fn position(&self, id: &str) -> Option<usize> {
+        let key = &hub_core::session_page::find(&self.all, id)?.key;
+        self.rows().iter().position(|r| r.target == key)
     }
 
     fn len(&self) -> usize {
@@ -422,14 +430,14 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first thirteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first fourteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
                     "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 4, 5, 6, 12, 2, 7, 8, 15, 14, 1, 13, 9, 10, 11],
-                flex: Some(16),
+                keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 1, 14, 9, 10, 11, 12],
+                flex: Some(17),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
                 right: vec![6, 7],
@@ -438,9 +446,9 @@ impl Controls {
                     (2, 16),
                     (3, 30),
                     (9, 16),
-                    (10, 22),
-                    (12, fleet::NAME_MAX),
-                    (13, 22),
+                    (11, 22),
+                    (13, fleet::NAME_MAX),
+                    (14, 22),
                 ],
             }
             .fit(w, p.head());
@@ -544,6 +552,7 @@ impl Controls {
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
             dash(&x.harness),
+            dash(&x.close),
             dash(&x.item),
             x.source.name().into(),
             session.into(),
@@ -671,10 +680,13 @@ impl Controls {
     }
 }
 
-/// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
-/// agent-web's own.
-fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
-    let url = part.link.as_deref().filter(|l| l.starts_with("http"));
+/// One part of the page. A URL is printed, since nothing here is clicked; a link to a record in
+/// the hub is not, since its value already names that record.
+pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
+    let url = match &part.link {
+        Some(Link::Url(u)) => Some(u),
+        _ => None,
+    };
     let text = match url {
         Some(u) => format!("{}  {u}", part.text),
         None => part.text.clone(),
@@ -693,7 +705,7 @@ fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
-fn dash(s: &str) -> Cell {
+pub(crate) fn dash(s: &str) -> Cell {
     if s.is_empty() { "-" } else { s }.into()
 }
 

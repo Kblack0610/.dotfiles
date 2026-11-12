@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":20,"output_tokens":5},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"bats tests/unit/menu.bats"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"not ok 1"}]}}

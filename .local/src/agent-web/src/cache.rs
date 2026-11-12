@@ -127,6 +127,11 @@ impl<T: Send + 'static, const TTL_SECS: u64, K: PartialEq> EventCache<T, TTL_SEC
         }
         self.last.get_if(key, off(read), keep).await
     }
+
+    /// Drop the kept read, so a write this server just made shows before its event arrives.
+    pub async fn clear(&self) {
+        self.last.clear().await;
+    }
 }
 
 /// `f` off the async workers; a panic in it comes back as its message.
@@ -181,6 +186,19 @@ mod tests {
         let reads = AtomicUsize::new(0);
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         assert_eq!(*c.get((), count(&reads, 2)).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_event_cache_reads_again_on_its_kind_or_a_clear_and_not_otherwise() {
+        let (tx, _) = broadcast::channel(8);
+        let c: EventCache<u32, 60> = EventCache::new(tx.subscribe(), &["queue"]);
+        assert_eq!(*c.get((), || 1).await.unwrap(), 1);
+        tx.send(r#"{"kind":"transcript"}"#.into()).unwrap();
+        assert_eq!(*c.get((), || 2).await.unwrap(), 1, "another kind keeps it");
+        tx.send(r#"{"kind":"queue"}"#.into()).unwrap();
+        assert_eq!(*c.get((), || 3).await.unwrap(), 3, "its kind outdates it");
+        c.clear().await;
+        assert_eq!(*c.get((), || 4).await.unwrap(), 4, "a clear outdates it");
     }
 
     #[tokio::test]

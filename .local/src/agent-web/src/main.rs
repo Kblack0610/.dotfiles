@@ -10,6 +10,7 @@
 //! Served behind the home cluster ingress (home-config `apps/agents`),
 //! which only proxies; Sign in with Forgejo (see `auth`) is the real gate.
 
+mod alerts;
 mod assets;
 mod auth;
 mod board;
@@ -19,6 +20,8 @@ mod cache;
 mod cli;
 mod cloud;
 mod costs;
+mod deliverables;
+mod epics;
 mod feed;
 mod fleet;
 mod focus;
@@ -29,11 +32,12 @@ mod outcomes;
 mod projects;
 mod proposals;
 mod queue;
-mod reds;
 mod releases;
+mod reqlog;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod suites;
 mod worklog;
 
 use std::convert::Infallible;
@@ -52,7 +56,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use hub_core::home::{Home, Need};
+use hub_core::home::{Home, Need, Running};
 use hub_core::session_actions::{self as actions, Action};
 use hub_core::session_table;
 use hub_core::table::{Summary, View};
@@ -60,8 +64,8 @@ use hub_core::{boards, transcript};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{broadcast, watch};
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
@@ -79,18 +83,26 @@ struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
     events: broadcast::Sender<String>,
+    /// True once the server is stopping: each live-update stream ends, so the drain finishes.
+    stopping: watch::Receiver<bool>,
     /// The paths agent-web could not watch, so changes there reach no page until a retry works.
     watch_off: WatchOff,
     infra: infra::Cache,
+    machines: infra::Pages,
+    pools: infra::Pages,
+    alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
     work: worklog::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
     briefing: briefing::Cache,
+    queue: queue::Cache,
 }
 
 type Shared = Arc<AppState>;
+/// The events a slow subscriber may fall behind by before it lags (see `main`).
+const EVENT_BACKLOG: usize = 4096;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -101,17 +113,25 @@ fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
 async fn main() -> Result<()> {
     let oauth = auth::OAuth::load()?;
     let sessions = auth::Sessions::load();
-    let (events, _) = broadcast::channel(256);
+    // Transcripts alone write about four events a second; a cache read less often than the
+    // channel holds takes a lag as a change and reads again, so it holds about a quarter hour.
+    let (events, _) = broadcast::channel(EVENT_BACKLOG);
     let watch_off = WatchOff::default();
     watch(events.clone(), watch_off.clone())?;
+    let (stop, stopping) = watch::channel(false);
     let state = Arc::new(AppState {
+        stopping,
         oauth,
         sessions,
         actions: feed::Cache::new(events.subscribe()),
         work: worklog::Cache::new(events.subscribe()),
+        alerts: alerts::Cache::new(events.subscribe()),
+        queue: queue::Cache::new(&events),
         events,
         watch_off,
         infra: infra::Cache::default(),
+        machines: infra::Pages::default(),
+        pools: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -131,6 +151,8 @@ async fn main() -> Result<()> {
         .route("/api/sessions/timer/{name}/start", post(sessions_start))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/asks/parked", get(parked_asks))
+        .route("/api/asks/park", post(park))
         .route("/api/asks/{id}/trace", get(ask_trace))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
@@ -141,6 +163,8 @@ async fn main() -> Result<()> {
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
+        .route("/api/infra/machine", get(infra_machine))
+        .route("/api/infra/pool", get(infra_pool))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
@@ -152,7 +176,11 @@ async fn main() -> Result<()> {
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
+        .route("/api/builds/detail", get(build_detail))
+        .route("/api/tests", get(tests_list))
+        .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
+        .route("/api/deliverables", get(deliverables::get))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))
@@ -167,7 +195,7 @@ async fn main() -> Result<()> {
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
-        .route("/api/reds", get(reds::get))
+        .route("/api/alerts", get(alerts_board))
         .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
         .route("/api/log/work", get(worklog::get))
@@ -183,13 +211,67 @@ async fn main() -> Result<()> {
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
         .layer(middleware::map_response(assets::headers))
+        .layer(middleware::from_fn(reqlog::log))
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     eprintln!("agent-web: listening on {addr}");
-    axum::serve(listener, app).await?;
+    serve_until(listener, app, stop_signal(term), stop, DRAIN).await?;
     Ok(())
+}
+
+/// How long a stop waits for the requests in flight: a cold project page reads for about 10s.
+const DRAIN: Duration = Duration::from_secs(30);
+
+/// SIGTERM (systemd's stop, so a rebuild's restart; installed before the listener serves, so a
+/// failure to install it stops the start) or Ctrl-C.
+async fn stop_signal(mut term: tokio::signal::unix::Signal) {
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+}
+
+/// Serve `app` until `signal`; then take no new connection, set `stop` (each live-update stream
+/// ends), and answer the requests in flight for at most `drain`, so a restart drops none of them.
+async fn serve_until(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    signal: impl std::future::Future<Output = ()> + Send + 'static,
+    stop: watch::Sender<bool>,
+    drain: Duration,
+) -> std::io::Result<()> {
+    let mut stopped = stop.subscribe();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        signal.await;
+        eprintln!("agent-web: stopping; answering the requests in flight first");
+        let _ = stop.send(true);
+    });
+    tokio::select! {
+        r = serve => r,
+        _ = async {
+            let _ = stopped.wait_for(|s| *s).await;
+            tokio::time::sleep(drain).await;
+        } => {
+            eprintln!("agent-web: stopped with requests still in flight after {drain:?}");
+            Ok(())
+        }
+    }
+}
+
+/// `stream` until `stopping` turns true.
+fn until_stopped<T: Send + 'static>(
+    stream: impl Stream<Item = T> + Send + 'static,
+    stopping: watch::Receiver<bool>,
+) -> impl Stream<Item = T> + Send + 'static {
+    let stop = WatchStream::new(stopping).filter(|s| *s).map(|_| None);
+    stream
+        .map(Some)
+        .merge(stop)
+        .take_while(Option::is_some)
+        .map(|o| o.expect("take_while kept only Some"))
 }
 
 /// A directory just created directly under `projects`: a new project, whose transcripts need a
@@ -350,6 +432,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if notes_state.is_dir() {
         targets.push((notes_state, flat));
     }
+    // Sentinel's state files: a watch tripping, clearing or failing pushes the Alerts tab.
+    let sentinel = hub_core::alerts::watch_dirs().1;
+    if sentinel.is_dir() {
+        targets.push((sentinel, flat));
+    }
     let mut failed = add_watches(&mut w, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
@@ -387,6 +474,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
 const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
+/// A Sentinel watch changed state: the Alerts tab reads afresh.
+const ALERTS_EVENT: &str = r#"{"kind":"alerts"}"#;
 
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
@@ -414,6 +503,12 @@ fn classify(p: &Path) -> Option<String> {
     // A park ledger is named by its tmux session; one starting with `.` is still being written.
     if p.parent()?.ends_with(".agent/parked") && !p.file_name()?.to_str()?.starts_with('.') {
         return Some(r#"{"kind":"sessions"}"#.to_string());
+    }
+    // A watch's state, written only when it changes (its lastrun and out files are not news).
+    if p.extension().is_some_and(|e| e == "state")
+        && p.parent() == Some(hub_core::alerts::watch_dirs().1.as_path())
+    {
+        return Some(ALERTS_EVENT.to_string());
     }
     let parent = p.parent()?.file_name()?.to_str()?;
     let name = p.file_name()?.to_str()?;
@@ -941,12 +1036,14 @@ struct Ask {
     answer_note: String,
     /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
     assume_at: String,
+    /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
+    parked_until: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note, assume_at.
+/// judge_reason, answer_note, assume_at, resume, parked_until.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -983,19 +1080,48 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     reason: col(22).into(),
                     answer_note: col(23).into(),
                     assume_at: col(24).into(),
+                    parked_until: col(26).into(),
                 }
             })
         })
         .collect()
 }
 
-async fn asks() -> ApiResult<Json<Vec<Ask>>> {
+async fn list_asks(filter: &str) -> ApiResult<Json<Vec<Ask>>> {
     let out = tokio::process::Command::new("agent-ask")
-        .args(["list", "--all", "--pending"])
+        .args(["list", "--all", filter])
         .output()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-ask: {e}")))?;
     Ok(Json(parse_asks(&String::from_utf8_lossy(&out.stdout))))
+}
+
+/// What waits on the human now: a parked ask is left out until its date (agent-ask list --pending).
+async fn asks() -> ApiResult<Json<Vec<Ask>>> {
+    list_asks("--pending").await
+}
+
+/// The parked asks, for Home's Parked fold.
+async fn parked_asks() -> ApiResult<Json<Vec<Ask>>> {
+    list_asks("--parked").await
+}
+
+#[derive(Deserialize)]
+struct ParkBody {
+    id: String,
+    /// true puts a parked ask back on the boards now.
+    #[serde(default)]
+    unpark: bool,
+}
+
+/// Park an ask until the revisit date agent-ask gives it from its item's priority, or unpark it.
+async fn park(Json(b): Json<ParkBody>) -> ApiResult<StatusCode> {
+    if !ask_id_ok(&b.id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let verb = if b.unpark { "unpark" } else { "park" };
+    run_cmd("agent-ask", &[verb, &b.id], None).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -1091,8 +1217,9 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-/// `/api/home`'s view keys, the ones the page keeps in its URL. Two tables share Home, so Needs
-/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`) and Proposals keeps the plain ones.
+/// `/api/home`'s view keys, the ones the page keeps in its URL. Three tables share Home, so Needs
+/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`), Running's r-prefixed (`rq`, `rs`, `rsort`,
+/// `rdir`) and Proposals keeps the plain ones.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct HomeQuery {
@@ -1106,26 +1233,34 @@ struct HomeQuery {
     sort: String,
     #[serde(rename = "ndir")]
     dir: String,
+    rq: String,
+    rs: String,
+    rsort: String,
+    rdir: String,
 }
 
-/// Home with a view on Needs you and one on Proposals, and the controls that drew each.
+/// Home with a view on Needs you, Running and Proposals, and the controls that drew each.
 #[derive(Serialize)]
 struct HomeShown {
     #[serde(flatten)]
     page: proposals::HomePage,
     table: Summary,
+    running_table: Summary,
 }
 
-/// The view narrows `needs` here and nowhere else: `build` and everything else that reads Home's
-/// needs (the TUI's counts, waybar, the phone) keep the whole list, and so does `table`'s total.
+/// The views narrow `needs` and `running` here and nowhere else: `build` and everything else that
+/// reads Home (the TUI's counts, waybar, the phone) keep the whole lists, and so do the totals.
 fn home_shown(mut home: Home, q: &HomeQuery) -> HomeShown {
     let view = View::new::<Need>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&home.needs);
-    let rows = rows.into_iter().cloned().collect();
-    home.needs = rows;
+    home.needs = rows.into_iter().cloned().collect();
+    let view = View::new::<Running>(&q.rq, &q.rs, &q.rsort, &q.rdir);
+    let (rows, running_table) = view.summary(&home.running);
+    home.running = rows.into_iter().cloned().collect();
     HomeShown {
         page: proposals::page(home, &q.proposals),
         table,
+        running_table,
     }
 }
 
@@ -1135,10 +1270,9 @@ async fn home_board(
     State(s): State<Shared>,
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
-    let infra = s.infra.infra().await;
+    let (infra, queue) = tokio::join!(s.infra.infra(), s.queue.queue());
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
-        let queue = hub_core::queue::Queue::read(&actions::System);
         let board = hub_core::tasks::feed(&actions::System);
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
@@ -1161,18 +1295,43 @@ async fn briefing_night(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn infra_board(State(s): State<Shared>) -> Response {
+async fn infra_board(State(s): State<Shared>, Query(q): Query<infra::ViewQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.infra.get().await,
+        s.infra.get(q).await,
     )
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct MachineQuery {
+    host: String,
+}
+
+/// One machine's page, read only when `#infra/machines/<host>` opens. An unknown name is a 404.
+async fn infra_machine(
+    State(s): State<Shared>,
+    Query(q): Query<MachineQuery>,
+) -> ApiResult<Response> {
+    let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
+#[derive(Deserialize)]
+struct PoolQuery {
+    name: String,
+}
+
+/// One pool's page, read only when `#infra/pools/<pool>` opens. An unknown name is a 404.
+async fn infra_pool(State(s): State<Shared>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
+    let json = s.pools.pool(&s.infra, q.name).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
 /// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
-async fn flow_strip() -> ApiResult<Json<serde_json::Value>> {
+async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let queue = s.queue.queue().await;
     tokio::task::spawn_blocking(move || {
-        let queue = hub_core::queue::Queue::read(&actions::System);
         let read = hub_core::pipeline::read();
         let line =
             hub_core::flow::Rail::build(Some(&queue), Some(&read), chrono::Utc::now().timestamp());
@@ -1211,18 +1370,18 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
-async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
+async fn releases_list(State(s): State<Shared>, Query(q): Query<releases::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        releases::get(q).await,
+        releases::get(q, s.queue.items().await).await,
     )
         .into_response()
 }
 
-async fn builds_list(Query(q): Query<builds::Query>) -> Response {
+async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q).await,
+        builds::get(q, s.queue.items().await).await,
     )
         .into_response()
 }
@@ -1233,6 +1392,44 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
+/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+async fn build_detail(
+    State(s): State<Shared>,
+    Query(key): Query<hub_core::builds::RunKey>,
+) -> ApiResult<Response> {
+    let body = builds::detail(key, s.infra.rates().await)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+async fn tests_list(State(s): State<Shared>, Query(q): Query<suites::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        suites::get(q, s.queue.items().await).await,
+    )
+        .into_response()
+}
+
+/// A suite is named by its run and its place in that run's results, never by a path.
+async fn tests_cases(
+    State(s): State<Shared>,
+    Query(q): Query<suites::CasesQuery>,
+) -> ApiResult<Response> {
+    let body = suites::cases(q, s.queue.items().await)
+        .await
+        .map_err(|(code, e)| bad(code, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.alerts.get(&s.infra, q).await,
+    )
+        .into_response()
 }
 
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
@@ -1322,8 +1519,8 @@ async fn events_stream(
         // A lagged receiver skipped messages; tell the page to refetch everything.
         m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string())
     });
-    let stream = tokio_stream::once(off)
-        .chain(changes)
+    // A stop ends the stream, so the drain is not held open by a page that is only listening.
+    let stream = until_stopped(tokio_stream::once(off).chain(changes), s.stopping.clone())
         .map(|data| Ok(SseEvent::default().data(data)));
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -1331,6 +1528,66 @@ async fn events_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::{oneshot, Notify};
+
+    // The clock is paused only while the request is in its handler and no socket has bytes in
+    // flight, so the timeout fires only once every task is idle: the server still running then is
+    // a server waiting on the request, not one that was slow to be polled. It resumes before the
+    // answer is written, so a socket wait never jumps the drain timer.
+    #[tokio::test]
+    async fn a_stop_answers_the_request_in_flight_and_ends_the_live_stream() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (e, r) = (entered.clone(), release.clone());
+        let app = Router::new().route(
+            "/slow",
+            get(move || async move {
+                e.notify_one();
+                r.notified().await;
+                "answered"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (fire, signal) = oneshot::channel::<()>();
+        let (stop, stopping) = watch::channel(false);
+        let mut live = until_stopped(tokio_stream::pending::<u32>(), stopping.clone());
+        let mut server = tokio::spawn(serve_until(
+            listener,
+            app,
+            async move {
+                let _ = signal.await;
+            },
+            stop,
+            Duration::from_secs(60),
+        ));
+        let client = tokio::spawn(async move {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            c.write_all(b"GET /slow HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut out = String::new();
+            c.read_to_string(&mut out).await.unwrap();
+            out
+        });
+        entered.notified().await;
+        fire.send(()).unwrap();
+        stopping.clone().wait_for(|s| *s).await.unwrap();
+        assert_eq!(live.next().await, None, "the live stream ends on a stop");
+        tokio::time::pause();
+        let early = tokio::time::timeout(Duration::from_secs(1), &mut server).await;
+        tokio::time::resume();
+        assert!(
+            early.is_err(),
+            "the server stopped before the request in flight was answered"
+        );
+        release.notify_one();
+        let out = client.await.unwrap();
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(out.ends_with("answered"), "{out}");
+        server.await.unwrap().unwrap();
+    }
 
     #[test]
     fn a_view_on_home_narrows_the_needs_it_sends_and_nothing_else() {
@@ -1365,11 +1622,11 @@ mod tests {
         );
     }
 
-    /// Needs you and Proposals share Home, so each reads its own keys out of one query string.
+    /// Needs you, Running and Proposals share Home, so each reads its own keys out of one query.
     #[test]
-    fn home_query_reads_needs_you_and_proposals_apart() {
+    fn home_query_reads_needs_you_running_and_proposals_apart() {
         let uri: axum::http::Uri =
-            "/api/home?nq=project:b&ns=ask&nsort=age&ndir=asc&q=queue&s=none&sort=id&dir=desc"
+            "/api/home?nq=project:b&ns=ask&nsort=age&ndir=asc&q=queue&s=none&sort=id&dir=desc&rq=project:y&rs=No+session&rsort=since&rdir=asc"
                 .parse()
                 .unwrap();
         let Query(q) = Query::<HomeQuery>::try_from_uri(&uri).unwrap();
@@ -1377,7 +1634,22 @@ mod tests {
             (q.q.as_str(), q.s.as_str(), q.sort.as_str(), q.dir.as_str()),
             ("project:b", "ask", "age", "asc")
         );
+        assert_eq!(
+            (
+                q.rq.as_str(),
+                q.rs.as_str(),
+                q.rsort.as_str(),
+                q.rdir.as_str()
+            ),
+            ("project:y", "No session", "since", "asc")
+        );
+        let run = |slug: &str, project: &str| hub_core::home::Running {
+            slug: slug.into(),
+            project: project.into(),
+            ..Default::default()
+        };
         let home = Home {
+            running: vec![run("x1", "x"), run("y1", "y"), run("y2", "y")],
             proposals: ["aa", "bb"]
                 .map(|id| hub_core::proposals::Proposal {
                     id: id.into(),
@@ -1391,6 +1663,20 @@ mod tests {
         assert_eq!(out["proposals_table"]["q"], "queue");
         assert_eq!(out["proposals_table"]["total"], 2);
         assert_eq!(out["table"]["q"], "project:b");
+        let slugs: Vec<&str> = out["running"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["slug"].as_str().unwrap())
+            .collect();
+        assert_eq!(slugs, ["y1", "y2"], "Running narrows by its own keys");
+        assert_eq!(
+            (
+                &out["running_table"]["total"],
+                &out["running_table"]["shown"]
+            ),
+            (&serde_json::json!(3), &serde_json::json!(2))
+        );
 
         let Query(plain) =
             Query::<HomeQuery>::try_from_uri(&"/api/home?q=x".parse().unwrap()).unwrap();
@@ -1512,6 +1798,14 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/shepherd/watch.state")), None);
+        // A watch's state change pushes Alerts; its per-run files do not.
+        let sentinel = hub_core::alerts::watch_dirs().1;
+        assert_eq!(
+            classify(&sentinel.join("nightly.state")).as_deref(),
+            Some(ALERTS_EVENT)
+        );
+        assert_eq!(classify(&sentinel.join("nightly.lastrun")), None);
+        assert_eq!(classify(&sentinel.join("nightly.out")), None);
         for p in [
             "/h/.local/state/agentctl/runs.jsonl",
             "/h/.agent/dispatch/verdicts.jsonl",
@@ -1629,6 +1923,10 @@ mod tests {
         let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
         assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
         assert_eq!(parse_asks(ruled)[0].assume_at, "");
+        // parked_until is the last column, after resume.
+        let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
+        assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
+        assert_eq!(parse_asks(&armed)[0].parked_until, "");
     }
 
     #[test]

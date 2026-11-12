@@ -1,7 +1,7 @@
 //! The header over Sessions on both surfaces: how many sessions are live and who started them,
 //! the run units `fleet-dispatch` has used, and whether the two timers that move work are on.
 //! The session counts come from the state document (`fleet-sessions`), the run units from
-//! `fleet-dispatch headroom --json`, the timers from `jobs::timer_starts`, and the shepherd's
+//! the last dispatch pass's `headroom.json`, the timers from `jobs::timer_starts`, and the shepherd's
 //! last pass from `fleet-shepherd stats`. Nothing here judges: a timer that is not on turns its
 //! part amber and offers [`start`], which only ever starts one of the two named here.
 
@@ -175,15 +175,33 @@ fn json(runner: &dyn Runner, cmd: &[&str], errors: &mut Vec<String>) -> Option<V
     }
 }
 
-/// Read every source. `fleet-dispatch headroom` walks the live units and takes seconds on a
-/// loaded machine, so a caller reads this on its own, off the table's path, and keeps it a while.
-pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
+/// A pass older than this is no answer, the age fleet-dispatch itself trusts (`find -mmin -45`).
+const HEADROOM_FRESH_SECS: u64 = 45 * 60;
+
+/// The last dispatch pass's `headroom.json`, or why there is none: missing, unparsable, or older
+/// than [`HEADROOM_FRESH_SECS`] (dispatch stopped writing it).
+pub fn headroom(path: &std::path::Path) -> Result<Value, String> {
+    let age = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map_err(|e| e.to_string())?
+        .elapsed()
+        .unwrap_or_default()
+        .as_secs();
+    if age > HEADROOM_FRESH_SECS {
+        return Err(format!("stale, last pass {}m ago", age / 60));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// Read every source. The run units are the last dispatch pass's `headroom.json`, never a fresh
+/// `fleet-dispatch headroom`: that walks the live units and took over a minute on a loaded
+/// machine, and the header names the pass's timer beside it.
+pub fn read(runner: &dyn Runner, sessions: &[Value], headroom: &std::path::Path) -> Capacity {
     let mut errors = vec![];
-    let headroom = json(
-        runner,
-        &["fleet-dispatch", "headroom", "--json"],
-        &mut errors,
-    );
+    let headroom = self::headroom(headroom)
+        .map_err(|e| errors.push(format!("headroom.json: {e}")))
+        .ok();
     let shepherd = json(runner, &["fleet-shepherd", "stats"], &mut errors);
     let timers = crate::jobs::timer_starts()
         .map_err(|e| errors.push(format!("systemctl: {e}")))
@@ -201,7 +219,11 @@ pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
 
 /// [`read`] over the sessions in `fleet-sessions`' state document.
 pub fn read_fleet(runner: &dyn Runner) -> Capacity {
-    read(runner, &read_state(&crate::boards::fleet_state()).0)
+    read(
+        runner,
+        &read_state(&crate::boards::fleet_state()).0,
+        &crate::boards::dispatch_dir().join("headroom.json"),
+    )
 }
 
 /// Enable and start one of the two timers. Any other name is refused, and nothing here stops one.
@@ -230,9 +252,6 @@ mod tests {
             self.calls.borrow_mut().push(argv.to_vec());
             match (self.fail, argv[0].as_str()) {
                 (true, _) => Err("no such thing".into()),
-                (_, "fleet-dispatch") => {
-                    Ok(r#"{"live_runs":2,"max_live":40,"per_pass":3,"held":null}"#.into())
-                }
                 (_, "fleet-shepherd") => Ok(r#"{"last_pass_epoch":0,"stuck":false}"#.into()),
                 _ => Ok(String::new()),
             }
@@ -372,17 +391,45 @@ mod tests {
 
     #[test]
     fn read_parses_headroom_and_names_what_failed() {
-        let c = read(&Fake::default(), &sessions());
+        let d = std::env::temp_dir().join(format!("hub-capacity-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let h = d.join("headroom.json");
+        std::fs::write(
+            &h,
+            r#"{"live_runs":2,"max_live":40,"per_pass":3,"held":null}"#,
+        )
+        .unwrap();
+        let f = Fake::default();
+        let c = read(&f, &sessions(), &h);
         assert!(c.parts[0].text.contains("2/40 run units, 3 per pass"));
+        assert!(
+            f.calls.borrow().iter().all(|a| a[0] != "fleet-dispatch"),
+            "the slow headroom walk is never run"
+        );
+        let old =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(HEADROOM_FRESH_SECS + 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&h)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let stale = headroom(&h).unwrap_err();
+        assert!(stale.starts_with("stale, last pass 4"), "{stale}");
+        assert!(read(&f, &sessions(), &h).parts[0]
+            .text
+            .contains("run units unknown"));
         let c = read(
             &Fake {
                 fail: true,
                 ..Fake::default()
             },
             &sessions(),
+            &d.join("none.json"),
         );
+        std::fs::remove_dir_all(&d).unwrap();
         assert!(c.parts[0].text.contains("run units unknown"));
-        assert!(c.errors.iter().any(|e| e.starts_with("fleet-dispatch: ")));
+        assert!(c.errors.iter().any(|e| e.starts_with("headroom.json: ")));
         assert!(c.errors.iter().any(|e| e.starts_with("fleet-shepherd: ")));
     }
 

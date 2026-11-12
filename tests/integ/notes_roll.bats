@@ -1,13 +1,14 @@
 #!/usr/bin/env bats
 # notes-roll: the headless version roll (extracted from the retired task cockpit).
 #
-# A wave IS a patch version, so a merged wave rolls itself, and a release tag closing its
-# wave rolls through here too. Everything that makes a roll worth anything -- freezing the
+# A release tag closing its version rolls through here, and so does the cadence cut of a project
+# with no tag (agentctl-wave-roll). Everything that makes a roll worth anything -- freezing the
 # sheet, appending the agent changelog, summarising the frozen note -- has to happen with
 # no TTY to ask.
 #
-# The level argument is where this can go quietly wrong: a wave must only ever roll a
-# PATCH. A minor is a release and a major is a breaking change, and both stay a human act.
+# The level argument is where this can go quietly wrong. With none, notes derives the bump from
+# what the version holds (stages.md, "Versions"); a level given overrides it, and a major is
+# only ever asked for.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -26,21 +27,22 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
 
 # -- the bump level --
 
-@test "a wave's roll defaults to PATCH -- no level flag reaches notes" {
+@test "a roll with no level leaves the bump to notes -- no level flag reaches it" {
   with_frozen
   run "$NOTES_ROLL" personal demoapp
   assert_success
   run notes_calls
   assert_output --partial 'projects --release demoapp'
-  refute_output --partial '--minor'
-  refute_output --partial '--major'
+  refute_output --regexp '--(patch|minor|major)'
 }
 
-@test "minor and major are reachable, but only by asking for them" {
+@test "patch, minor and major are reachable, but only by asking for them" {
   with_frozen
+  "$NOTES_ROLL" personal demoapp patch
   "$NOTES_ROLL" personal demoapp minor
   "$NOTES_ROLL" personal demoapp major
   run notes_calls
+  assert_output --partial 'projects --release demoapp --patch'
   assert_output --partial 'projects --release demoapp --minor'
   assert_output --partial 'projects --release demoapp --major'
 }
@@ -149,9 +151,9 @@ EOF
 #
 # The guard VERIFIES and never tags - creating one would make an agent able to ship.
 #
-# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only
-# the project -> repo mapping is stubbed. Stubbing the predicate would leave the tag
-# shapes (`<product>-v*`, bare `v*`) untested, which is the half most likely to rot.
+# These drive the REAL git_tag_for_version against a REAL repo with REAL tags; only the
+# project -> repo and tag family mapping (project_tag_scope) is stubbed. Stubbing the predicate
+# would leave the tag shapes (`<product>-v*`, bare `v*`) untested, the half most likely to rot.
 
 # $1=project $2=the wave version the sheet would freeze, $3.. = tags that exist
 with_shipping_project() {
@@ -164,7 +166,7 @@ with_shipping_project() {
   printf '%s' "$ver" > "$NOTES_FIXTURE/version-of.$proj"
   cat > "$SANDBOX/pn-lib.sh" <<LIB
 project_release_version() { printf 'v1.0.0'; }
-project_repo_path() { printf '%s' '$repo'; }
+project_tag_scope() { _PTS_REPO='$repo' _PTS_GLOB='${TAG_GLOB:-}'; }
 LIB
   export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
 }
@@ -202,6 +204,23 @@ LIB
   with_frozen
   with_shipping_project demoapp v1.13.0 demoapp-v1.13.0-rc1
   run "$NOTES_ROLL" personal demoapp minor
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+}
+
+@test "a declared tagGlob finds the tag whose prefix is not the project name" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --release kenneth-black-portfolio'
+}
+
+@test "a declared tagGlob is authoritative: its prerelease, or another family's tag, does not ship the version" {
+  with_frozen
+  TAG_GLOB='portfolio-v*' with_shipping_project kenneth-black-portfolio v1.6.4 portfolio-v1.6.4-rc1 v1.6.4
+  run "$NOTES_ROLL" personal kenneth-black-portfolio minor
   assert_failure
   assert_output --partial 'no git tag ships it'
 }
@@ -272,4 +291,59 @@ LIB
   run "$NOTES_ROLL" personal demoapp v1.1.0 renumber
   assert_failure
   assert_output --partial 'above the newest tag'
+}
+
+# -- --tag: one note per tag, named from the tag (agentctl-wave-roll on a tag-owned project) --
+
+@test "--tag reaches notes, and the guard checks the tag rather than the sheet" {
+  with_frozen
+  # The sheet is open at v1.18.1, which no tag ships; the app skipped it for v1.19.0.
+  with_shipping_project demoapp v1.18.1 demoapp-v1.19.0
+  run "$NOTES_ROLL" --tag v1.19.0 personal demoapp v1.19.1 carry
+  assert_success
+  run notes_calls
+  assert_output --partial 'projects --release demoapp --next v1.19.1 --carry --tag v1.19.0'
+}
+
+@test "--tag REFUSES a version no tag in the family ships" {
+  # NEGATIVE CONTROL: the same roll naming a tag that does not exist.
+  with_frozen
+  with_shipping_project demoapp v1.18.1 demoapp-v1.19.0
+  run "$NOTES_ROLL" --tag v1.19.2 personal demoapp v1.19.3 carry
+  assert_failure
+  assert_output --partial 'no tag in the demoapp family ships v1.19.2'
+  run notes_calls
+  refute_output --partial 'projects --release demoapp'
+}
+
+@test "--tag wants vX.Y.Z, and never goes with renumber" {
+  with_frozen
+  run "$NOTES_ROLL" --tag 1.2 personal demoapp
+  assert_failure 2
+  run "$NOTES_ROLL" --tag v1.2.0 personal demoapp v1.1.0 renumber
+  assert_failure 2
+  # An empty tag (a caller's unset variable) is refused, never read as an untagged roll.
+  run "$NOTES_ROLL" --tag "" personal demoapp
+  assert_failure 2
+  assert_output --partial '--tag needs a vX.Y.Z'
+  run notes_calls
+  refute_output --partial '--release demoapp'
+}
+
+@test "the agent changelog window skips a note with no planned rows" {
+  # v1.0.0 is the previous real version (rolled at 100); v1.0.1 is a hotfix tag's empty note.
+  # The window for the note being frozen starts at v1.0.0's stamp, not the hotfix's file time.
+  cat > "$SANDBOX/bin/agent-usage" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = changelog ] && printf '## Agents since %s\n' "${4:-}"
+EOF
+  chmod +x "$SANDBOX/bin/agent-usage"
+  printf '# v1.0.0\n<!-- rolled: 100 -->\n' > "$FROZEN"
+  printf '# v1.0.1\n<!-- no-planned-rows -->\n' > "$HOME/versions/v1.0.1.md"
+  printf '# v1.1.0\n' > "$HOME/versions/v1.1.0.md"
+  printf '%s' "$HOME/versions/v1.1.0.md" > "$NOTES_FIXTURE/roll.frozen"
+  run "$NOTES_ROLL" personal demoapp
+  assert_success
+  run cat "$HOME/versions/v1.1.0.md"
+  assert_output --partial '## Agents since 100'
 }

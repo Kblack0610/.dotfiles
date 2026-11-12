@@ -33,6 +33,7 @@ Examples:
   claude-recall stats --kind agent --by week
   claude-recall tool-output --by command          # which Bash commands fill the context
   claude-recall tool-output --by filetype         # which kinds of file reads fill it
+  claude-recall tool-output --by skill            # the tokens each skill's spans spent
 """
 import argparse
 import functools
@@ -217,6 +218,20 @@ def cmd_search(a):
     if candidates is not None:
         note += "  [rg prefilter]"
     print(c(DIM, note))
+
+
+def first_ts(path):
+    """The first event timestamp in a transcript, in window_bound's UTC format, or None."""
+    try:
+        with path.open(errors="replace") as f:
+            for line in f:
+                rec = parse_line(line)
+                ts = rec.get("timestamp") if isinstance(rec, dict) else None
+                if isinstance(ts, str):
+                    return ts.replace("Z", "")[:19]
+    except OSError:
+        pass
+    return None
 
 
 def session_meta(path):
@@ -777,12 +792,22 @@ def cmd_stats(a):
         if kind in ("skill", "slash") + USE_KINDS:
             skill_sessions.setdefault(key, set()).add(session)
 
+    # covered_from: the time from which every transcript root with a file has transcripts, so a
+    # caller can tell a quiet window from a corpus that does not cover it (skill-drift
+    # --overrides refuses then). Per root, since one account reaching back does not cover
+    # another that was wiped. A file last written before the window holds only older events, so
+    # its mtime is an upper bound on the root's reach; with none, the root's first event read.
+    older, read = {}, {}
     for path in iter_files():
         try:
-            if path.stat().st_mtime < since_epoch:
-                continue
+            mtime = path.stat().st_mtime
         except OSError:
             continue
+        root = next((r for r in ROOTS if path.is_relative_to(r)), None)
+        if mtime < since_epoch:
+            older[root] = min(older.get(root, mtime), mtime)
+            continue
+        read.setdefault(root, []).append(path)
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
@@ -841,8 +866,13 @@ def cmd_stats(a):
                 kept.append(r)
         rows = kept
 
+    reach = [datetime.fromtimestamp(older[r], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+             if r in older else min(filter(None, map(first_ts, read[r])), default=None)
+             for r in set(older) | set(read)]
+    covered_from = None if not reach or None in reach else max(reach)
+
     if a.json:
-        print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
+        print(json.dumps({"since": since, "covered_from": covered_from, "origin": a.origin, "by": a.by or "",
                           "rows": rows,
                           "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
                          ensure_ascii=False))
@@ -1006,12 +1036,33 @@ def ts_epoch(ts):
         return 0.0
 
 
-def tool_output_file(path, since, until, emit):
+SKILL_NONE = "(no skill)"  # the --by skill row for responses in no skill's span
+FORKED = re.compile(r'\ASkill "[^"]+" launched \(forked')
+
+
+def human_prompt(rec, text):
+    """A prompt a person typed, which closes a skill span: interactive, not meta, none of our harness
+    text, and either plain text or a slash command (a typed skill's body follows it and opens the next
+    span). A task notification or a system reminder opens with a tag and is not typed."""
+    s = text.lstrip()
+    return (user_origin(rec) == "interactive" and not rec.get("isMeta")
+            and (not s.startswith("<") or CMD_RE.match(text) is not None)
+            and not s.startswith(HARNESS_PREFIXES))
+
+
+def tool_output_file(path, since, until, emit, skills=False):
     """Stream one transcript: emit('turn', ...) per API response, emit('result', ...) per tool
     result, with how many later turns re-read the result before a compaction drops it, and
     emit('segment', ...) per stretch between compactions that had a response in the window,
     emit('session', ...) once with its responses in the window, and emit('hook', ...) per turn a
     hook forced (Stop feedback, a PreToolUse deny).
+    With skills, each turn carries the skill whose span it is in: a span opens at a Skill call or a
+    loaded skill body (a typed /skill loads one) and runs to the next prompt a person typed or the
+    next skill. A forked skill runs in a subagent, so its own thread stays in the span before it.
+    A subagent thread's turns carry ("inherit", session, agent id): the span of the Agent or Skill
+    call that started it. That call's result names the agent (toolUseResult.agentId, the
+    agent-<id>.jsonl stem); emit('spawn', ...) records it and the caller resolves the refs once
+    every transcript is read. emit('span', ...) marks each span opened in the window.
     A turn carries why it wrote cache and its context split three ways: start (the transcript's
     first context: system prompt, rules, first prompt), tool (tool output since the last
     compaction) and conversation (the rest: model text, hook and system text, loaded skills)."""
@@ -1022,6 +1073,18 @@ def tool_output_file(path, since, until, emit):
     session = path.parts[path.parts.index("subagents") - 1] if kind == "subagent" else path.stem
     first_ctx, prev_ctx, prev_ts, live_tool, compacted, in_win = 0, 0, 0.0, 0, False, 0
     ttl = 300  # the TTL of the prefix written before: 1h when that write was ephemeral_1h
+    cur = ("inherit", session, path.stem.removeprefix("agent-")) if skills and kind == "subagent" else None
+    before = {}  # Skill tool_use id -> the span it replaced, restored when the skill forks
+    calls = {}  # Agent/Skill tool_use id -> the span its subagent, if it starts one, inherits
+
+    def open_span(name, ts):
+        """A skill's span opens, unless it is the one already open: a Skill call names "plug:x" and
+        the body it loads names "x"."""
+        nonlocal cur
+        if not (isinstance(cur, str) and cur.rsplit(":", 1)[-1] == name.rsplit(":", 1)[-1]):
+            cur = name
+            if since <= ts < until:
+                emit("span", {"session": session, "skill": name, "project": project or "?"})
 
     def settle(compacted):
         for r in pending:
@@ -1042,7 +1105,8 @@ def tool_output_file(path, since, until, emit):
             live_tool, compacted = 0, True
             continue
         stop = '"Stop hook feedback' in line
-        if '"type":"assistant"' not in line and '"tool_result"' not in line and not stop:
+        if '"type":"assistant"' not in line and '"tool_result"' not in line and not stop \
+                and not (skills and '"type":"user"' in line):
             continue
         rec = parse_line(line)
         if not rec:
@@ -1077,24 +1141,50 @@ def tool_output_file(path, since, until, emit):
                     seg["last"] = ts
                     in_win += 1
                     emit("turn", {"ts": ts, "project": project or "?", **n, "cw_cause": cause,
-                                  "split": (start, tool, ctx - start - tool)})
+                                  "split": (start, tool, ctx - start - tool),
+                                  "session": session, "skill": cur})
             for b in msg.get("content") or []:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     name, inp = b.get("name") or "?", b.get("input") or {}
                     cmd = bash_head(inp.get("command") or "") if name == "Bash" else None
                     uses[b.get("id")] = (name, cmd, read_target(name, inp))
+                    if skills and name in ("Agent", "Task"):
+                        calls[b.get("id")] = cur
+                    elif skills and name == "Skill" and inp.get("skill"):
+                        skill = str(inp["skill"]).lstrip("/")
+                        calls[b.get("id")], before[b.get("id")] = skill, cur
+                        open_span(skill, ts)
             continue
+        if skills and rec.get("type") == "user":
+            text = user_text(rec)
+            if text is not None:
+                m = BODY_RE.match(text)
+                if m:
+                    open_span(m.group(1).rstrip("/").rsplit("/", 1)[-1], ts)
+                elif kind == "main" and human_prompt(rec, text):
+                    cur = None
+                continue
         win = since <= ts < until
         for b in msg.get("content") or [] if isinstance(msg.get("content"), list) else []:
             if not isinstance(b, dict) or b.get("type") != "tool_result":
                 continue
             text = result_text(b)
             live_tool += len(text) // 4
+            tid = b.get("tool_use_id")
+            res = rec.get("toolUseResult") if tid in calls else None
+            agent = res.get("agentId") if isinstance(res, dict) else None
+            if isinstance(agent, str):
+                emit("spawn", {"session": session, "id": agent, "skill": calls[tid], "project": project or "?"})
+            # A forked skill hands back to its caller; a failed call never ran, so its span is undone.
+            if tid in before and (b.get("is_error") or FORKED.match(text)):
+                prev = before.pop(tid)
+                if b.get("is_error") and prev != cur and since <= ts < until:
+                    emit("span", {"session": session, "skill": cur, "project": project or "?", "n": -1})
+                cur = prev
             if not win:
                 continue
             if b.get("is_error") and text.startswith("PreToolUse:") and "hook error" in text[:200]:
                 emit("hook", {"project": project or "?", "what": "tool_denied"})
-            tid = b.get("tool_use_id")
             name, cmd, ftype = uses.get(tid, ("?", None, None))
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "filetype": ftype, "kind": kind, "session": session,
@@ -1102,6 +1192,11 @@ def tool_output_file(path, since, until, emit):
     settle(False)
     if in_win and kind == "main":
         emit("session", {"project": project or "?", "turns": in_win})
+
+
+def response_tokens(r):
+    """Every token a row's responses read or wrote."""
+    return sum(r[f] for f in USAGE_FIELDS)
 
 
 def window_bound(s):
@@ -1138,13 +1233,16 @@ TURN_BY = {"day": lambda r: r["ts"][:10],
            "project": lambda r: r["project"]}  # cuts of responses too
 
 
+SKILL_BY = ("skill", "session,skill")  # cuts of responses by the skill span they are in
+
+
 def tool_output_by(v):
     """A --by value: one cut, or two cuts of tool results joined by a comma."""
     keys = v.split(",")
-    if (len(keys) == 1 and (keys[0] in RESULT_BY or keys[0] in TURN_BY)) or \
+    if v in SKILL_BY or (len(keys) == 1 and (keys[0] in RESULT_BY or keys[0] in TURN_BY)) or \
             (len(keys) == 2 and keys[0] != keys[1] and all(k in RESULT_BY for k in keys)):
         return v
-    raise argparse.ArgumentTypeError(f"{v!r}: one of {', '.join([*RESULT_BY, *TURN_BY])}, "
+    raise argparse.ArgumentTypeError(f"{v!r}: one of {', '.join([*RESULT_BY, *TURN_BY, *SKILL_BY])}, "
                                      f"or two of {', '.join(RESULT_BY)} joined by a comma")
 
 
@@ -1157,7 +1255,11 @@ def cmd_tool_output(a):
     for by in dict.fromkeys(a.by or ["tool"]):
         keys = by.split(",")
         cuts.append({"by": by, "keys": keys, "rows": {},
-                     "fns": [{**RESULT_BY, **TURN_BY}[k] for k in keys]})
+                     "fns": [] if by in SKILL_BY else [{**RESULT_BY, **TURN_BY}[k] for k in keys]})
+    skills = any(cut["by"] in SKILL_BY for cut in cuts)
+    # Responses by (paying session, skill or an unresolved subagent ref), subagents by (session,
+    # agent id) -> the span that started them, and spans opened by (session, skill).
+    span_turns, spawns, spans = {}, {}, {}
 
     def bucket_of(cut, r):
         """Two keys (`session,tool`) make a row per pair, its key a list of both. A result with
@@ -1188,7 +1290,18 @@ def cmd_tool_output(a):
         if kind == "hook":
             hooks[r["what"]] += 1
             return
+        if kind == "spawn":
+            spawns[(r["session"], r["id"])] = r["skill"]
+            return
+        if kind == "span":
+            spans[(r["session"], r["skill"])] = spans.get((r["session"], r["skill"]), 0) + r.get("n", 1)
+            return
         if kind == "turn":
+            if skills:
+                x = span_turns.setdefault((r["session"], r["skill"]), {"turns": 0, **{f: 0 for f in USAGE_FIELDS}})
+                x["turns"] += 1
+                for f in USAGE_FIELDS:
+                    x[f] += r[f]
             totals["turns"] += 1
             for f in USAGE_FIELDS:
                 totals[f] += r[f]
@@ -1210,6 +1323,8 @@ def cmd_tool_output(a):
             totals["bash_calls"] += 1
             totals["bash_chars"] += r["chars"]
         for cut in cuts:
+            if cut["by"] in SKILL_BY:
+                continue
             key = None if "command" in cut["keys"] and r["tool"] != "Bash" else bucket_of(cut, r)
             if key is None:
                 continue
@@ -1231,11 +1346,42 @@ def cmd_tool_output(a):
             continue
         seen.add(real)
         files += 1
-        tool_output_file(real, since, until, emit)
+        tool_output_file(real, since, until, emit, skills)
+
+    def resolve(ref):
+        """A subagent's ("inherit", session, id) -> the skill of the call that started it; a nested
+        subagent follows its parent's ref. A thread with no recorded call is in no skill."""
+        for _ in range(8):
+            if not isinstance(ref, tuple):
+                return ref
+            ref = spawns.get(ref[1:])
+        return None
+    for (sess, ref), u in span_turns.items():
+        skill = resolve(ref) or SKILL_NONE
+        for cut in cuts:
+            if cut["by"] not in SKILL_BY:
+                continue
+            x = row(cut, skill if cut["by"] == "skill" else (sess, skill))
+            x.setdefault("spans", 0)
+            x.setdefault("session_set", set()).add(sess)
+            x["turns"] += u["turns"]
+            for f in USAGE_FIELDS:
+                x[f] += u[f]
+    for (sess, skill), n in spans.items():
+        for cut in cuts if n else ():
+            if cut["by"] in SKILL_BY:
+                x = row(cut, skill if cut["by"] == "skill" else (sess, skill))
+                x["spans"] = x.get("spans", 0) + n
+                x.setdefault("session_set", set()).add(sess)
+    for cut in cuts:
+        for x in cut["rows"].values() if cut["by"] in SKILL_BY else ():
+            x["sessions"] = len(x.pop("session_set", ()))
+            x.setdefault("spans", 0)
 
     def ordered(cut):
         by = cut["by"]
         order = sorted(cut["rows"].values(), key=lambda r: r["key"]) if by in ("day", "week") \
+            else sorted(cut["rows"].values(), key=lambda r: -response_tokens(r)) if by in SKILL_BY \
             else sorted(cut["rows"].values(), key=lambda r: -r["chars"])
         return order[:a.top] if a.top and by not in ("day", "week", "kind") else order
     orders = {cut["by"]: ordered(cut) for cut in cuts}
@@ -1283,7 +1429,15 @@ def cmd_tool_output(a):
     for i, (by, order) in enumerate(orders.items()):
         if i:
             print()
-        if by not in TURN_BY:
+        if by in SKILL_BY:
+            print(c(DIM, f"  {'spans':>6} {'sessions':>8} {'responses':>9} {'in+write':>13} {'cache read':>14} "
+                         f"{'output':>11}  {by}"))
+            for r in order:
+                key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
+                print(f"  {r['spans']:>6,} {r['sessions']:>8,} {r['turns']:>9,} "
+                      f"{r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
+                      f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,}  {key}")
+        elif by not in TURN_BY:
             print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {by}"))
             for r in order:
                 key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
@@ -1930,7 +2084,9 @@ def main():
                          "calls by command head; filetype = Read and sed/cat/head/tail by the file's "
                          "class and extension; kind = main session or subagent; session = the session "
                          "that pays (a subagent's parent). Two of the first five, comma-joined "
-                         "(session,tool), give a row per pair. Repeat --by for several cuts from one "
+                         "(session,tool), give a row per pair. skill (or session,skill) = responses by "
+                         "the skill span they ran in, a subagent's in the span that started it. "
+                         "Repeat --by for several cuts from one "
                          "scan (default tool); --json then maps each cut to its rows")
     to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
     to.add_argument("--project", "-p", help="substring match on repo")

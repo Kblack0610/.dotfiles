@@ -1,0 +1,19 @@
+{
+  "paths": {
+    "/src/.dotfiles": "dotfiles",
+    "/src/platform": "bnb-platform",
+    "/src/crypto/freqtrade_trading_attempt": "trader",
+    "/src/client/fleet-platform": "brightsign-fleet-platform",
+    "/src/z/case-twin": "case-twin",
+    "/src/a/Case-Twin": "Case-Twin"
+  },
+  "trackers": {
+    "_comment": "a string, not a tracker",
+    "default": { "system": "github" },
+    "dotfiles": { "github": "Kblack0610/.dotfiles", "names": ["waybar"], "testWorkflows": [".github/workflows/tests.yml"] },
+    "bnb-platform": { "github": "Studio/platform", "forgejo": "kblack0610/platform", "names": ["monorepo"] },
+    "shopapp": { "repo": "bnb-platform", "path": "apps/shopapp", "names": ["shop-app"] },
+    "trader": { "github": "Kblack0610/freqtrade_trading_attempt", "names": ["freqtrade"] },
+    "unity-core-playground": { "names": ["Engine", "unity-playground"] }
+  }
+}

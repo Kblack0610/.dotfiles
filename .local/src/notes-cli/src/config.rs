@@ -59,6 +59,9 @@ struct RawConfig {
     /// `[sheet]`: how a project sheet's `## Tasks` is laid out ([`SheetShape`]).
     #[serde(default)]
     sheet: SheetShape,
+    /// `[release]`: how often a project cuts a version ([`ReleaseShape`]).
+    #[serde(default)]
+    release: ReleaseShape,
     /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
@@ -72,7 +75,7 @@ pub struct ProjectType {
     /// `notes doctor --projects` reports one missing).
     #[serde(default)]
     pub files: Vec<String>,
-    /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
+    /// Registry facts this type needs. Only `repo` is checked today (`project_map::Registry::has_repo`).
     #[serde(default)]
     pub requires: Vec<String>,
 }
@@ -102,6 +105,50 @@ impl Default for SheetShape {
 /// sheet looks the same in every org. The defaults when there is no config.
 pub fn sheet_shape() -> SheetShape {
     load_raw().map(|(raw, _)| raw.sheet).unwrap_or_default()
+}
+
+/// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
+/// are the human's 2026-11-09 choice: weekly from draft to beta, every two weeks at prod.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct ReleaseShape {
+    /// Days between cuts, keyed by stage. A stage not listed, or no stage, takes `draft`'s.
+    pub cadence_days: std::collections::BTreeMap<String, i64>,
+}
+
+impl Default for ReleaseShape {
+    fn default() -> Self {
+        let days = [
+            ("draft", 7),
+            ("dev", 7),
+            ("alpha", 7),
+            ("beta", 7),
+            ("prod", 14),
+        ];
+        ReleaseShape {
+            cadence_days: days.iter().map(|(s, d)| (s.to_string(), *d)).collect(),
+        }
+    }
+}
+
+impl ReleaseShape {
+    /// The days between cuts at `stage` (empty for a project with no stage tag).
+    pub fn cadence(&self, stage: &str) -> i64 {
+        let defaults = ReleaseShape::default();
+        [stage, "draft"]
+            .iter()
+            .find_map(|s| {
+                // a cadence under a day would make every closed row due on every pass
+                let set = self.cadence_days.get(*s).copied().filter(|d| *d >= 1);
+                set.or(defaults.cadence_days.get(*s).copied())
+            })
+            .unwrap_or(7)
+    }
+}
+
+/// The `[release]` table, read like [`sheet_shape`]; the defaults when there is no config.
+pub fn release_shape() -> ReleaseShape {
+    load_raw().map(|(raw, _)| raw.release).unwrap_or_default()
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -287,7 +334,7 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
+    /// Dated capture drop (`/remember`, `notes inbox add`).
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
     inbox: String,
@@ -569,6 +616,7 @@ fn builtin_default() -> RawConfig {
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
         sheet: SheetShape::default(),
+        release: ReleaseShape::default(),
         project_type: HashMap::new(),
     }
 }
@@ -768,29 +816,54 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     })
 }
 
-/// Every profile NAME defined in the active config, sorted. Cross-profile aggregation
-/// (`notes focus --all`) iterates this to visit all profiles without knowing them ahead
-/// of time. Falls back to the built-in default's single `personal` profile when no config
-/// file exists — the same source `resolve` reads, so the two never disagree.
+/// Every profile NAME this machine lists, sorted. Cross-profile aggregation
+/// (`notes focus --all`, the board, `config --profiles` and through it lab-sync) iterates this
+/// to visit all profiles without knowing them ahead of time. A work profile (one named in
+/// project-map.json `clients`) is listed only on its own machine ([`machine_profile`]), so the
+/// work Mac shows its job and the personal fleet does not; `--profile` still reaches it. Falls
+/// back to the built-in default's single `personal` profile when no config file exists — the
+/// same source `resolve` reads, so the two never disagree.
 pub fn all_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw.profile.keys().cloned().collect();
-    names.sort();
-    Ok(names)
+    Ok(listed(&raw, raw.profile.keys()))
 }
 
 /// The profiles board automation may write: [`all_profile_names`] less any with
 /// `automation = false`. Every fleet-wide loop that rewrites or judges sheets uses this.
 pub fn managed_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw
+    let names = raw
         .profile
         .iter()
         .filter(|(_, p)| p.automation)
-        .map(|(n, _)| n.clone())
+        .map(|(n, _)| n);
+    Ok(listed(&raw, names))
+}
+
+/// This machine's own profile: what `resolve` picks with no `--profile` flag
+/// ($NOTES_PROFILE, then `[hostname_map]`, then `default_profile`).
+pub fn machine_profile() -> Result<String> {
+    let (raw, _src) = load_raw()?;
+    Ok(pick_profile(&raw, None).0)
+}
+
+/// `names` less the work profiles this machine does not list, sorted.
+fn listed<'a>(raw: &RawConfig, names: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let machine = pick_profile(raw, None).0;
+    listed_in(names, &machine, project_map::cached().as_deref())
+}
+
+fn listed_in<'a>(
+    names: impl Iterator<Item = &'a String>,
+    machine: &str,
+    reg: Option<&project_map::Registry>,
+) -> Vec<String> {
+    let mut out: Vec<String> = names
+        .filter(|n| reg.is_none_or(|r| r.profile_visible(n, machine)))
+        .cloned()
         .collect();
-    names.sort();
-    Ok(names)
+    out.sort();
+    out
 }
 
 /// Whether board automation may touch `profile` (see [`managed_profile_names`]). An unknown
@@ -1101,6 +1174,25 @@ mod tests {
         std::env::remove_var("NOTES_HOSTNAME");
     }
 
+    // The personal fleet lists no work profile; the work machine lists its own and no other
+    // job's; no registry hides nothing. The rule itself: project-map's visibility fixture.
+    #[test]
+    fn a_work_profile_is_listed_only_on_its_own_machine() {
+        let reg = project_map::Registry::parse(
+            r#"{"clients":{"acme":{"profile":"acmework"},"globex":{"profile":"globex"}}}"#,
+        );
+        let names: Vec<String> = ["acmework", "bnb", "globex", "personal"]
+            .map(String::from)
+            .to_vec();
+        let on = |machine: &str, r| listed_in(names.iter(), machine, r);
+        assert_eq!(on("personal", reg.as_ref()), ["bnb", "personal"]);
+        assert_eq!(
+            on("acmework", reg.as_ref()),
+            ["acmework", "bnb", "personal"]
+        );
+        assert_eq!(on("personal", None), names);
+    }
+
     // A profile nested under another's root (a work profile under personal's ~/.notes) is the case
     // that matters: its files are unmanaged, its parent's are not.
     #[test]
@@ -1123,6 +1215,27 @@ mod tests {
         assert!(
             managed_in(&raw, Path::new("/n/jobs/gigs/README.md")),
             "a prefix is no parent"
+        );
+    }
+
+    #[test]
+    fn release_cadence_is_weekly_until_prod_and_a_partial_table_keeps_the_rest() {
+        let d = ReleaseShape::default();
+        assert_eq!((d.cadence("alpha"), d.cadence("prod")), (7, 14));
+        assert_eq!(d.cadence(""), 7, "no stage reads as draft");
+        let raw: RawConfig = toml::from_str("[release]\ncadence_days = { prod = 21 }\n").unwrap();
+        assert_eq!(raw.release.cadence("prod"), 21);
+        assert_eq!(
+            raw.release.cadence("beta"),
+            7,
+            "an unlisted stage keeps its default"
+        );
+        let raw: RawConfig =
+            toml::from_str("[release]\ncadence_days = { alpha = 0, beta = -3 }\n").unwrap();
+        assert_eq!(
+            (raw.release.cadence("alpha"), raw.release.cadence("beta")),
+            (7, 7),
+            "a cadence under a day is ignored, or every pass would cut"
         );
     }
 

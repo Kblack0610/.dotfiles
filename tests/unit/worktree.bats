@@ -84,7 +84,7 @@ make_repo() {
 
 @test "the first worktree of a repo is agent-1" {
   make_repo
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "1${PANEL_TAB}fresh"
 }
@@ -95,24 +95,21 @@ make_repo() {
   # because agent-panel says them out loud as a row label ("3:1").
   make_repo
   mkdir -p "$WT_ROOT/platform-agent-1" "$WT_ROOT/platform-agent-2" "$WT_ROOT/platform-agent-4"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "3${PANEL_TAB}fresh"
 }
 
-@test "a slot whose DIRECTORY is free but whose UNMERGED branch still exists is skipped" {
-  # A refused reap leaves branch agent-3 behind after its directory is gone. If it carries a
-  # commit the trunk does not have, it may be the only copy -- `new` resetting it with -B
-  # would throw that away.
+@test "a cut whose stamped name is taken, locally or on origin, gets a counter" {
+  # Two cuts of one slot in the same second: rm -rf of a slot, then `new` at once.
   make_repo
-  mkdir -p "$WT_ROOT/platform-agent-1" "$WT_ROOT/platform-agent-2" "$WT_ROOT/platform-agent-4"
-  git -C "$MAIN" branch agent-3
-  git -C "$MAIN" checkout --quiet agent-3
-  git -C "$MAIN" commit --quiet --allow-empty -m only-copy
-  git -C "$MAIN" checkout --quiet main
-  run wt_next_slot platform "$MAIN" origin/main
-  assert_success
-  assert_output "5${PANEL_TAB}fresh"
+  date() { printf '261110-120000\n'; }
+  assert_equal "$(wt_branch_name "$MAIN" 1)" agent-1-261110-120000
+  git -C "$MAIN" branch agent-1-261110-120000
+  assert_equal "$(wt_branch_name "$MAIN" 1)" agent-1-261110-120000-2
+  git -C "$MAIN" push --quiet origin main:agent-1-261110-120000-2
+  git -C "$MAIN" fetch --quiet origin
+  assert_equal "$(wt_branch_name "$MAIN" 1)" agent-1-261110-120000-3
 }
 
 @test "a live SESSION pins its slot even after its directory is gone" {
@@ -122,29 +119,51 @@ make_repo() {
   make_repo
   rm -f "$NOTES_FIXTURE/tmux.no-session"
   printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}fresh"
 }
 
-@test "a leftover branch already MERGED into the trunk does not pin its slot" {
-  # unity-core-playground had agent-1..3 branches with no directories, all merged: three
-  # slots nobody could ever take again.
+@test "a branch left by an earlier cut pins no slot, and the next cut leaves it alone" {
+  # Every cut starts on a new name (wt_branch_name), so a leftover agent-N branch is never
+  # reset: not one with the only copy of a commit, not one checked out elsewhere, not a merged
+  # one (unity-core-playground once had three slots nobody could take again).
   make_repo
   git -C "$MAIN" branch agent-1
-  run wt_next_slot platform "$MAIN" origin/main
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b agent-2 origin/main
+  git -C "$MAIN" branch agent-3
+  git -C "$MAIN" checkout --quiet agent-3
+  git -C "$MAIN" commit --quiet --allow-empty -m only-copy
+  git -C "$MAIN" checkout --quiet main
+  only_copy=$(git -C "$MAIN" rev-parse agent-3)
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-1" 1 fresh
+  assert_success
+  assert_equal "$(git -C "$MAIN" rev-parse agent-3)" "$only_copy"
+  git -C "$MAIN" rev-parse --verify --quiet agent-1 >/dev/null || fail "the cut touched a leftover branch"
 }
 
-@test "a merged branch CHECKED OUT in some other worktree still pins its slot" {
-  # -B cannot reset a branch another worktree has checked out; handing out the slot would
-  # just make `worktree add` fail.
+@test "each cut of a slot starts on a branch name no earlier cut used (ar-1121)" {
+  # GitHub keeps a PR's head after it merges or closes, so a reused `agent-N` met a stale
+  # origin/agent-N: the push was rejected and `gh pr create` opened a PR on the old head
+  # (dotfiles #1546, #1579). The negative control is the stale remote head itself.
   make_repo
-  git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b agent-1 origin/main
-  run wt_next_slot platform "$MAIN" origin/main
+  git -C "$MAIN" push --quiet origin main:agent-1
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-1" 1 fresh
   assert_success
-  assert_output "2${PANEL_TAB}fresh"
+  first=$(git -C "$WT_ROOT/platform-agent-1" branch --show-current)
+  [[ "$first" =~ ^agent-1-[0-9]{6}-[0-9]{6}$ ]] || fail "unexpected branch name: $first"
+  run git -C "$MAIN" ls-remote --exit-code --heads origin "$first"
+  assert_failure 2 # the new name is not on origin, unlike agent-1
+
+  wt_branch_name() { printf 'agent-1-later\n'; }
+  run wt_recycle "$WT_ROOT/platform-agent-1" 1 origin/main
+  assert_success
+  assert_equal "$(git -C "$WT_ROOT/platform-agent-1" branch --show-current)" agent-1-later
+  git -C "$MAIN" rev-parse --verify --quiet "$first" >/dev/null && fail "the merged old branch was kept"
+  return 0
 }
 
 @test "an IDLE landed worktree is recycled before a higher free slot is cut" {
@@ -155,7 +174,7 @@ make_repo() {
   make_repo
   mkdir -p "$WT_ROOT/platform-agent-1"
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-2" -b agent-2 origin/main
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}recycle"
 }
@@ -168,7 +187,7 @@ make_repo() {
   make_repo
   mkdir -p "$WT_ROOT/platform-agent-1"
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-3" -b agent-3 origin/main
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "3${PANEL_TAB}recycle"
 }
@@ -180,7 +199,7 @@ make_repo() {
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
   panel_live_servers() { printf 'lab\n'; }
   printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}fresh"
 }
@@ -194,7 +213,7 @@ make_repo() {
   panel_live_servers() { printf 'lab\n'; }
   printf 'platform-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   wt_work_reason() { echo "$1" >>"$SANDBOX/work.log"; }
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}fresh"
   [ ! -s "$SANDBOX/work.log" ] || fail "git work check ran on a live slot: $(cat "$SANDBOX/work.log")"
@@ -206,7 +225,7 @@ make_repo() {
   panel_live_servers() { printf 'lab\n'; }
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   printf '%s\n' "$WT_ROOT/platform-agent-1" > "$NOTES_FIXTURE/tmux.panes.lab"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}fresh"
 }
@@ -229,7 +248,7 @@ make_repo() {
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-2" -b agent-2 origin/main
   printf 'work\n' > "$WT_ROOT/platform-agent-2/file.txt"
   git -C "$WT_ROOT/platform-agent-2" commit --quiet -am work
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "3${PANEL_TAB}fresh"
 }
@@ -240,7 +259,7 @@ make_repo() {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
   printf '%s\n' /somewhere/else "$WT_ROOT/platform-agent-1/sub" > "$NOTES_FIXTURE/tmux.panes"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "2${PANEL_TAB}fresh"
 }
@@ -251,7 +270,7 @@ make_repo() {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/platform-agent-1" -b agent-1 origin/main
   printf '%s\n' "$WT_ROOT/platform-agent-10" > "$NOTES_FIXTURE/tmux.panes"
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_success
   assert_output "1${PANEL_TAB}recycle"
 }
@@ -384,7 +403,7 @@ make_drifted_submodule() {
   assert_output ' M sub' # the fixture really is in the drifted state
   run wt_reap_reason "$WT"
   assert_success
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_output "1${PANEL_TAB}recycle"
 }
 
@@ -395,7 +414,7 @@ make_drifted_submodule() {
   run wt_reap_reason "$WT"
   assert_failure
   assert_output 'dirty (1 uncommitted)'
-  run wt_next_slot platform "$MAIN" origin/main
+  run wt_next_slot platform "$MAIN"
   assert_output "2${PANEL_TAB}fresh"
 }
 
@@ -914,6 +933,80 @@ orphan_tree() {
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
+# -- orphans: the sweep over every Unity project --
+
+# orphan_project -- a Unity project outside $WT_ROOT (a main checkout or clone), whose editor
+# is gone and whose MCP server is left under the user manager.
+orphan_project() {
+  orphan_tree
+  P="$SANDBOX/dev/game"
+  mkdir -p "$P/ProjectSettings" "$P/Library/mcp-server/linux-x64"
+  rm -rf "$WT_PROC_ROOT/500"
+  fake_proc 500 "$P" "$P/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
+}
+
+@test "orphans ends a server whose editor is gone, outside the worktrees too" {
+  orphan_project
+  run cmd_orphans
+  assert_success
+  assert_output "ended 500  $P"
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "orphans -n names the server and signals nothing" {
+  orphan_project
+  run cmd_orphans -n
+  assert_success
+  assert_output "would end 500  $P"
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans leaves a server alone while its editor is open" {
+  orphan_project
+  wt_editor_open() { [ "$1" = "$P" ]; }
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans leaves a Library binary outside a Unity project alone" {
+  orphan_project
+  rm -r "$P/ProjectSettings"
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans fails, naming why, when a server outlives SIGTERM" {
+  orphan_project
+  touch "$SANDBOX/kill.ignored"
+  run cmd_orphans
+  assert_failure
+  assert_output "failed 500  $P: outlived SIGTERM"
+}
+
+@test "orphans counts an editor whose cwd is the project as open, however its path was spelled" {
+  orphan_project
+  fake_proc 700 "$P" /opt/Unity/Editor/Unity 400
+  echo Unity > "$WT_PROC_ROOT/700/comm"
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans finds a project that sits under a dir named Library" {
+  orphan_project
+  Q="$SANDBOX/Library/game"
+  mkdir -p "$Q/ProjectSettings"
+  rm -rf "$WT_PROC_ROOT/500"
+  fake_proc 500 "$Q" "$Q/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
+  run cmd_orphans -n
+  assert_output "would end 500  $Q"
+}
+
 # -- done: kill, then reap, on the server --
 
 # done_from_inside <tree> -- `wt done` the way an agent runs it: from a shell in its own tree,
@@ -1155,7 +1248,7 @@ held_slot() {
   held_slot
   run cmd_reap "$SLOT"
   assert_success
-  assert_output --partial 'reaped repo-agent-1 (branch agent-1 deleted)'
+  assert_output --regexp 'reaped repo-agent-1 \(branch agent-1-[0-9-]+ deleted\)'
   [ ! -d "$SLOT" ]
 }
 
@@ -1195,7 +1288,7 @@ held_slot() {
 @test "a hold that outlived its directory frees the slot for the next new" {
   held_slot
   rm -rf "$SLOT"
-  run wt_next_slot repo "$MAIN" origin/main
+  run wt_next_slot repo "$MAIN"
   assert_success
   assert_output "1${PANEL_TAB}fresh"
   run wt_prepare "$MAIN" "$SLOT" 1 fresh
@@ -1207,7 +1300,7 @@ held_slot() {
   held_slot
   rm -rf "$SLOT"
   rm "$NOTES_FIXTURE/tmux.no-session"
-  run wt_next_slot repo "$MAIN" origin/main
+  run wt_next_slot repo "$MAIN"
   git -C "$MAIN" worktree list --porcelain | grep -q '^locked'
 }
 

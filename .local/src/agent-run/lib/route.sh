@@ -231,6 +231,30 @@ route_account() {
   return 0
 }
 
+# route_source_room -- the claude-acct source a native ChatGPT (Codex) run spends from: SOURCE
+# when the caller names one (the agent conf: codex-core for priority-must work), else codex
+# (dispatch sessions); their reserves are in ~/.config/claude-acct/sources. A headless call has no
+# other gate: Codex bills a plan, so dollar caps never bind it. It refuses only on what holds the
+# source itself (capped, its reserve, its 5h window, its parent pool); pace, live sessions and
+# max_live are dispatch's to weigh, not a single small call's. An unread source is let through,
+# because `check pace` already reports it and a night of work should not stop on a read error.
+route_source_room() {
+  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" src="${SOURCE:-codex}" row rc=0 held
+  command -v "$cmd" >/dev/null 2>&1 ||
+    role_die "no $cmd on PATH: a ChatGPT plan run must check its source ($src)."
+  row="$("$cmd" room --source "$src" --json 2>/dev/null)" || rc=$?
+  case "$rc" in
+    0|2) ;;
+    1) held="$(jq -r '[.room.reasons[] | select(IN("capped", "reserve", "five_hour", "parent"))] | join(",")' <<<"$row" 2>/dev/null)" ||
+         role_die "$cmd room --source $src printed no row."
+       [ -z "$held" ] || role_die "source $src has no room ($held): $(jq -r .room.why <<<"$row")" ;;
+    *) role_die "no claude-acct source '$src' (SOURCE=${SOURCE:-}): name a row of ~/.config/claude-acct/sources." ;;
+  esac
+  ROUTE_SOURCE="$src"
+  if [ "$rc" = 2 ]; then ROUTE_SOURCE="$src (unread, let through)"; fi
+  return 0
+}
+
 route_apply() {
   local key; key="$(route_key)"
   case "$ROUTE_TRANSPORT" in
@@ -246,7 +270,9 @@ route_apply() {
       if [ -n "$key" ]; then export ANTHROPIC_AUTH_TOKEN="$key"; fi
       unset ANTHROPIC_API_KEY
       ;;
-    openai-native) ;;   # the Codex CLI's own ChatGPT login; the scrub already took any API key
+    openai-native)      # the Codex CLI's own ChatGPT login; the scrub already took any API key
+      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_source_room; fi
+      ;;
     openai-compatible)
       export LLM_BASE_URL="$ROUTE_BASE_URL"
       if [ -n "$ROUTE_MODEL_RAW" ]; then export LLM_MODEL="$ROUTE_MODEL_RAW"; fi
@@ -274,6 +300,7 @@ route_explain() {
   if [ -n "${ROUTE_ACCOUNT:-}" ]; then
     printf 'account:     %s  (from: %s)\n' "$ROUTE_ACCOUNT" "$ROUTE_ACCOUNT_FROM"
   fi
+  if [ -n "${ROUTE_SOURCE:-}" ]; then printf 'source:      %s\n' "$ROUTE_SOURCE"; fi
   printf 'safety:      personal=%s work=%s fallback=%s\n' \
     "$ROUTE_PERSONAL_SAFE" "$ROUTE_WORK_SAFE" "$ROUTE_FALLBACK_SAFE"
   printf 'data class:  %s  -> ALLOW\n' "$(route_data_class)"

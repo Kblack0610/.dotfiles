@@ -58,9 +58,10 @@ pub struct Prompt {
 }
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
-const HEADER: [&str; 12] = [
-    "SECTION", "PRIORITY", "PROJECT", "LANE", "STATE", "ID", "VERSION", "SIZE", "TIER", "SINCE",
-    "WHEN", "TEXT",
+/// The row's whole text is the preview's, under the rows.
+const HEADER: [&str; 13] = [
+    "SECTION", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE", "ID", "VERSION",
+    "SIZE", "TIER", "SINCE",
 ];
 
 #[derive(Debug, Default)]
@@ -74,8 +75,6 @@ pub struct TaskView {
     pub running: Option<String>,
     /// The last write's answer: notes' output, or why it failed.
     pub said: Option<Result<String, String>>,
-    /// The rows narrowed to these ids: the open tasks of the epic open on the card (projtab.rs).
-    pub only: Option<Vec<String>>,
 }
 
 /// A row's `profile/project`, as a write's label says it.
@@ -83,18 +82,14 @@ fn group(r: &Row) -> String {
     format!("{}/{}", r.profile, r.project.as_deref().unwrap_or_default())
 }
 
-/// The rows of the project in view, or its open epic's open tasks, before the search and the
-/// chip: open by section and rank, then the closed ones by day.
+/// The rows of the project in view before the search and the chip: open by section and rank,
+/// then the closed ones by day.
 fn scoped<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
-    let mut rows = f.board_rows(
+    f.board_rows(
         v.project
             .as_ref()
             .map(|(profile, project)| (profile.as_str(), project.as_str())),
-    );
-    if let Some(ids) = &v.only {
-        rows.retain(|r| r.id.as_ref().is_some_and(|id| ids.contains(id)));
-    }
-    rows
+    )
 }
 
 /// The rows the view keeps, in the table's order: what j/k move over.
@@ -393,25 +388,26 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     } else {
         cell(r.state.clone(), Default::default())
     };
-    let mut text = r.text.clone();
+    let mut title = r.title.clone();
     if r.requested {
-        text += "  #requested";
+        title += "  #requested";
     }
     let or_dash = |s: Option<&str>| s.unwrap_or("-").to_string().into();
     let when = r.when();
     vec![
         cell(section, p.head()),
+        title.into(),
+        or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
+        state,
+        or_dash((!when.is_empty()).then_some(when.as_str())),
         or_dash(r.project.as_deref()),
         r.lane.clone().into(),
-        state,
         or_dash(r.id.as_deref()),
         or_dash(r.release()),
         or_dash(r.size.as_deref()),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
-        or_dash((!when.is_empty()).then_some(when.as_str())),
-        text.into(),
     ]
 }
 
@@ -427,16 +423,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
                 } else {
                     "ALL PROJECTS"
                 },
-                format!(
-                    "  {} of {} rows{}",
-                    rows.len(),
-                    all.len(),
-                    if v.only.is_some() {
-                        " of the open epic (Esc shows all)"
-                    } else {
-                        ""
-                    }
-                ),
+                format!("  {} of {} rows", rows.len(), all.len()),
                 p,
             ),
             w,
@@ -480,11 +467,11 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             ))
             .map(|(r, s)| row(r, s, p))
             .collect(),
-        keep: vec![0, 10, 1, 4, 3, 2, 6, 5, 7, 9, 8],
-        flex: Some(11),
+        keep: vec![0, 3, 4, 2, 5, 6, 8, 7, 9, 10, 12, 11],
+        flex: Some(1),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(6, 16), (10, 18)],
+        cap: vec![(2, 24), (5, 18), (9, 16)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
@@ -625,6 +612,7 @@ pub(crate) mod tests {
             state: "open".into(),
             priority: prio.into(),
             text: text.into(),
+            title: tasks::title_and_rest(text, false).0,
             sheet: format!("/v/{profile}/{}/{lane}.md", project.unwrap_or_default()),
             raw: format!("- [ ] {text}"),
             ..Default::default()
@@ -703,7 +691,7 @@ pub(crate) mod tests {
         assert!(s.contains("11-03  pr 63"), "{s}");
         assert!(at("FOCUS  bnb 1 open, in the daily note") < at("PRIORITY"));
         assert!(
-            at("PROJECT") < at("LANE") && at("SINCE") < at("TEXT"),
+            at("SECTION") < at("TITLE") && at("TITLE") < at("EPIC") && at("PROJECT") < at("LANE"),
             "{s}"
         );
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
@@ -770,6 +758,9 @@ pub(crate) mod tests {
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
         assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "title");
+        v.key(key('c'), Some(&f), 10);
         v.key(key('c'), Some(&f), 10);
         assert_eq!(v.table.view.sort, "priority");
         assert!(text(&f, &v, 120).contains("PRIORITY v"));
@@ -1017,7 +1008,8 @@ pub(crate) mod tests {
     #[test]
     fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
         let mut f = fixture();
-        f.rows[1].text = "fix the menu so the back button returns to the map".into();
+        f.rows[1].text = "fix the menu so the back button maps".into();
+        f.rows[1].title = tasks::title_and_rest(&f.rows[1].text, false).0;
         f.rows[1].size = Some("m".into());
         let mut v = TaskView {
             project: Some(("bnb".into(), "demo".into())),
@@ -1028,8 +1020,8 @@ pub(crate) mod tests {
         assert!(s.contains("ROWS  4 of 4 rows"), "{s}");
         assert!(!s.contains('~'), "nothing is clipped:\n{s}");
         assert!(
-            s.contains("the menu") && s.contains("map"),
-            "the text wraps whole:\n{s}"
+            s.contains("the menu") && s.contains("maps"),
+            "the title wraps whole:\n{s}"
         );
         // The selected row is lit on every line it wraps onto.
         let (lines, at) = page(&f, &v, Palette::default(), 50);

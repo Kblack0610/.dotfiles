@@ -81,7 +81,7 @@ load_agent() {
         set -e
         # A conf without one of its keys must not inherit the caller's: Sentinel exports its
         # own AUTOSTART=yes, which made every KIND=call conf read as invalid.
-        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
+        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE PRIORITY SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
         # shellcheck disable=SC1090
         source "$conf"
         : "${NAME:?missing NAME}"
@@ -116,6 +116,14 @@ load_agent() {
             none|draft|shadow|acts) ;;
             *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
         esac
+        # A runner that launches a model declares how much it matters when money is short
+        # (README, PRIORITY); list --md shows it. The budget it spends from is its route's.
+        if [ -n "${ROLE:-}" ]; then
+            case "${PRIORITY:-}" in
+                must|low|off) ;;
+                *) printf 'invalid PRIORITY=%s on a conf with a ROLE (must|low|off)\n' "${PRIORITY:-}" >&2; exit 1 ;;
+            esac
+        fi
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -174,6 +182,7 @@ load_agent() {
         printf 'ROLE=%s\n' "${ROLE:-}"
         printf 'MODEL=%s\n' "${MODEL:-}"
         printf 'ROUTE=%s\n' "${ROUTE:-}"
+        printf 'PRIORITY=%s\n' "${PRIORITY:-}"
         printf 'SKILL=%s\n' "${SKILL:-}"
         printf 'SKILL_FOUND=%s\n' "$SKILL_FOUND"
     )
@@ -461,9 +470,9 @@ kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, len
 # cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
 # so it prints the same on any machine. PIPELINES.md points here instead of copying it.
 cmd_list_md() {
-    local name conf lane kind sched trigger model effect role route skill
-    printf '| Runner | Lane | Trigger | Role | Skill | Model | Effect | Purpose |\n'
-    printf '|---|---|---|---|---|---|---|---|\n'
+    local name conf lane kind sched trigger model effect role priority route skill
+    printf '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|---|---|\n'
     local -a names=() invalid=()
     mapfile -t names < <(list_agent_names)
     declare -A confs=()
@@ -475,7 +484,7 @@ cmd_list_md() {
             conf=${confs[$name]:-}
             [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
             kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
-            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf"); priority=$(kv_get PRIORITY <<<"$conf")
             skill=$(kv_get SKILL <<<"$conf")
             [ "$(kv_get SKILL_FOUND <<<"$conf")" = no ] && skill="$skill (not found)"
             model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
@@ -487,8 +496,8 @@ cmd_list_md() {
             if [ "$effect" = none ]; then model=-
             elif [ -z "$model" ]; then model='not in conf'; fi
             [ -n "$route" ] && model="$model via $route"
-            printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
-                "${role:--}" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "${priority:--}" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
         done
     done
     [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
@@ -516,8 +525,65 @@ cmd_skill() {
     esac
 }
 
+# list --json: one object per runner with what it runs on, for the Costs tab's Consumers (hub-core
+# gateway.rs): name, enabled, role, priority, harness, model, the route it resolves (route.sh
+# route_resolve) with that route's transport, model, key source and payer, and the claude-acct source
+# it spends from (SOURCE, else its harness's `source` in harnesses.json, else codex for the codex
+# harness). A conf that does not load is {name, invalid: true}. The role's pins (ROLE_MODEL,
+# ROLE_ROUTE) come from role_load and win as role_run_model and route_resolve say, the functions
+# agentctl-run calls; a role that does not load is named in role_error.
+cmd_list_json() {
+    local lib name harnesses="${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/harnesses.json" sources
+    lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib"
+    # Each harness's claude-acct source, read once: one "<harness> <source>" line each.
+    sources=$(jq -r '.harnesses // {} | to_entries[] | select(.value.source) | "\(.key) \(.value.source)"' \
+        "$harnesses" 2>/dev/null || true)
+    for name in $(list_agent_names); do
+        if ! load_agent "$name" >/dev/null 2>&1; then
+            jq -nc --arg n "$name" '{name: $n, invalid: true}'; continue
+        fi
+        (
+            unset ROLE ROUTE MODEL HARNESS SOURCE PRIORITY ENABLED DESCRIPTION ROLE_MODEL ROLE_ROUTE
+            # shellcheck disable=SC1090
+            source "$CONFIG_DIR/$name.conf"
+            harness=${HARNESS:-claude}
+            SELF_DIR="$lib/.."
+            # shellcheck source=../src/agent-run/lib/route.sh
+            . "$lib/route.sh"
+            # shellcheck source=../src/agent-run/lib/role.sh
+            . "$lib/role.sh"
+            # A role that does not load refuses the run, so its pins are unknown: say so, not guess.
+            role_err=''
+            if [ -n "${ROLE:-}" ]; then
+                if role_err=$( (role_load "$ROLE") 2>&1 >/dev/null ); then
+                    role_load "$ROLE" >/dev/null 2>&1
+                else
+                    role_err=${role_err:-role $ROLE does not load}
+                fi
+            fi
+            model=$(AGENTCTL_MODEL=${MODEL:-} ANTHROPIC_MODEL='' role_run_model)
+            route=$(AGENTCTL_ROUTE='' route_resolve)
+            src=${SOURCE:-$(awk -v h="$harness" '$1 == h {print $2; exit}' <<<"$sources")}
+            [ -n "$src" ] || [ "$harness" != codex ] || src=codex
+            ROUTE_TRANSPORT='' ROUTE_MODEL_RAW='' ROUTE_MODEL_CLAUDE='' ROUTE_KEY_SOURCE='' ROUTE_PAYER=''
+            f=$(route_file "$route") && { . "$f" 2>/dev/null || true; }
+            jq -nc --arg name "$name" --arg enabled "${ENABLED:-yes}" --arg role "${ROLE:-}" \
+                --arg priority "${PRIORITY:-}" --arg harness "$harness" --arg model "$model" \
+                --arg route "$route" --arg source "$src" --arg desc "${DESCRIPTION:-}" \
+                --arg transport "$ROUTE_TRANSPORT" --arg rmodel "${ROUTE_MODEL_RAW:-$ROUTE_MODEL_CLAUDE}" \
+                --arg key "$ROUTE_KEY_SOURCE" --arg payer "$ROUTE_PAYER" --arg role_err "$role_err" '
+                def n: if . == "" then null else . end;
+                {name: $name, enabled: ($enabled == "yes"), role: ($role | n), priority: ($priority | n),
+                 harness: $harness, model: ($model | n), route: $route, source: ($source | n),
+                 description: $desc, route_transport: ($transport | n), route_model: ($rmodel | n),
+                 route_key: ($key | n), route_payer: ($payer | n), role_error: ($role_err | n)}'
+        )
+    done | jq -s .
+}
+
 cmd_list() {
     [ "${1:-}" = --md ] && { cmd_list_md; return; }
+    [ "${1:-}" = --json ] && { cmd_list_json; return; }
     [ -e "$PAUSE_FILE" ] && printf 'PAUSED since %s - no runner starts until: agentctl resume\n' \
         "$(head -1 "$PAUSE_FILE" 2>/dev/null)"
     local -a names=()
@@ -661,12 +727,15 @@ cmd_status() {
     fi
 }
 
+# start <name> [--no-block]: --no-block queues the start job and returns, for a caller that must not wait
+# out the run (agent-ask start_held); without it, start returns when the run ends.
 cmd_start() {
-    local name="${1:-}"
-    [ -n "$name" ] || die "usage: agentctl start <name>"
+    local name="${1:-}" block=()
+    [ -n "$name" ] || die "usage: agentctl start <name> [--no-block]"
+    case "${2:-}" in "") ;; --no-block) block=(--no-block) ;; *) die "usage: agentctl start <name> [--no-block]" ;; esac
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
     [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
-    systemctl --user start "agentctl@${name}.service"
+    systemctl --user start ${block[@]+"${block[@]}"} "agentctl@${name}.service"
 }
 
 cmd_stop() {
@@ -1015,6 +1084,7 @@ agentctl — manage named long-running Claude agents via systemd
 Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
+  agentctl list --json           Each runner's priority, harness, model, route and source as JSON (the Costs tab's Consumers)
   agentctl status <name>         Detailed status for one agent
   agentctl skill <name>          The skill its conf names (SKILL=); --dangling lists those that name nothing
   agentctl budget                Spend against each runner's caps today (lib/budget.sh)

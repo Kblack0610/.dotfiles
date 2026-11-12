@@ -48,9 +48,6 @@ Media/Music
 
 .config/nvim/lazy-lock.json
 
-.config/OrcaSlicer
-!.config/OrcaSlicer/OrcaSlicer.conf
-
 # Windsurf - ignore everything except settings
 .config/Windsurf/*
 !.config/Windsurf/User/
@@ -78,12 +75,7 @@ Media/Music
 # private unless you add it here, so nothing client-specific auto-publishes.
 .claude/*
 !.claude/commands/
-.claude/commands/kb/
 .claude/commands/remember.md
-# Names a client monorepo blocklisted in .githooks/sensitive-tokens.txt, so it
-# lives in the private overlay alongside the other product-specific skills.
-# The path here is a symlink into ~/.dotfiles-private.
-.claude/commands/sc/manual-test.md
 !.claude/hooks/
 !.claude/settings.json
 # settings.json names a custom theme by slug, so the theme file has to travel with
@@ -123,6 +115,7 @@ Media/Music
 !.claude/skills/messaging/work-comms/
 !.claude/skills/messaging/comms-standard/
 !.claude/skills/messaging/catch-up/
+!.claude/skills/messaging/inbox-report/
 !.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
@@ -131,6 +124,7 @@ Media/Music
 !.claude/skills/monitoring/fleet-pace/
 !.claude/skills/monitoring/shepherd/
 !.claude/skills/monitoring/sentinel/
+!.claude/skills/monitoring/night-shift/
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/
@@ -145,6 +139,7 @@ Media/Music
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
 !.claude/skills/ops/ci-cleanup/
+!.claude/skills/ops/fix-ci/
 !.claude/skills/ops/context-trim/
 !.claude/skills/ops/docs-cleanup/
 !.claude/skills/ops/reaper-ops/
@@ -160,6 +155,7 @@ Media/Music
 !.claude/skills/reference/metavr-cli/
 !.claude/skills/research/deep-research/
 !.claude/skills/research/deep-research-code/
+!.claude/skills/research/blind-review/
 !.claude/skills/research/asset-store-audit/
 !.claude/skills/authoring/playground-ingest/
 !.claude/skills/authoring/playground-new-content/
@@ -167,6 +163,7 @@ Media/Music
 !.claude/skills/workstreams/discuss/
 !.claude/skills/workstreams/dotfiles-land/
 !.claude/skills/workstreams/final-pass/
+!.claude/skills/workstreams/go/
 !.claude/skills/workstreams/ingest-prs/
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
@@ -355,6 +352,7 @@ __pycache__/
 .config/waybar/style.css
 .config/sketchybar/colors.sh
 .config/dunst/dunstrc.d/
+.config/hypr/conf/theme.lua
 
 # Private-overlay files that NEST inside this repo's working tree.
 #

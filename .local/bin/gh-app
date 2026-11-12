@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# gh-app - installation tokens of the fleet's GitHub App, for the gh wrapper's read-only calls.
+# Every agent account is the same GitHub user and shares one 5000/h REST budget; each App
+# installation has its own, so reads moved there stop starving pushes and merges.
+#
+#   gh-app token <owner>   a token for <owner>'s installation, minted or cached. Exit 2: off (no
+#                          config), no installation, or one on selected repos only; 1: mint failed.
+#   gh-app status          the config, each installation, and its token's REST calls left.
+#
+# Config: GH_APP_CONFIG (~/.config/gh-app/fleet.env) sets GH_APP_ID and GH_APP_KEY_FILE. Without
+# it gh runs on the human's token as before. Setup: docs/operations/github-app.md.
+# The JWT and tokens reach curl in its stdin config, never argv.
+set -uo pipefail
+
+CONFIG="${GH_APP_CONFIG:-$HOME/.config/gh-app/fleet.env}"
+CACHE="${GH_APP_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/gh-app}"
+API="${GH_APP_API:-https://api.github.com}"
+TOKEN_REUSE_S=3000 # a token lives 3600 s; leave 10 min for the call that takes it
+INSTALLS_TTL_S=3600
+FAIL_BACKOFF_S=300 # after a failed mint, reads go straight to the user instead of waiting on curl
+
+die() {
+  [ ! -d "$CACHE" ] || : > "$CACHE/failed"
+  echo "gh-app: $*" >&2
+  exit 1
+}
+off() { [ -z "${1:-}" ] || echo "gh-app: $1" >&2; exit 2; }
+
+load_config() {
+  [ -f "$CONFIG" ] || off
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+  [ -n "${GH_APP_ID:-}" ] && [ -r "${GH_APP_KEY_FILE:-}" ] \
+    || die "$CONFIG must set GH_APP_ID and a readable GH_APP_KEY_FILE"
+  umask 077
+  mkdir -p "$CACHE"
+}
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# jwt -> the App's own credential, valid 9 minutes (GitHub allows 10; iat is backdated for skew).
+jwt() {
+  local now head body sig
+  now=$(date +%s)
+  head=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+  body=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' $((now - 60)) $((now + 540)) "$GH_APP_ID" | b64url)
+  sig=$(printf '%s.%s' "$head" "$body" | openssl dgst -sha256 -sign "$GH_APP_KEY_FILE" -binary | b64url) \
+    || die "signing with $GH_APP_KEY_FILE failed"
+  printf '%s.%s.%s' "$head" "$body" "$sig"
+}
+
+# api <method> <path> <bearer|token> <credential> -> the JSON body; the credential stays off argv.
+api() {
+  printf 'header = "Authorization: %s %s"\n' "$3" "$4" |
+    curl -fsS --max-time 15 -X "$1" -K - -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' "$API$2"
+}
+
+age() { echo $(( $(date +%s) - $(date -r "$1" +%s) )); }
+
+# installs -> "<login lowercased> <id>" per installation, from the cache when fresh.
+installs() {
+  local f="$CACHE/installations"
+  if [ ! -s "$f" ] || [ "$(age "$f")" -ge "$INSTALLS_TTL_S" ]; then
+    if ! api GET '/app/installations?per_page=100' Bearer "$(jwt)" |
+      jq -r '.[] | "\(.account.login | ascii_downcase) \(.id)"' > "$f.$$"; then
+      rm -f "$f.$$"
+      die "listing installations failed (App id $GH_APP_ID)"
+    fi
+    mv "$f.$$" "$f"
+  fi
+  cat "$f"
+}
+
+token() {
+  local owner id f out tok sel
+  owner=$(printf '%s' "${1:?usage: gh-app token <owner>}" | tr '[:upper:]' '[:lower:]')
+  load_config
+  if [ -f "$CACHE/failed" ] && [ "$(age "$CACHE/failed")" -lt "$FAIL_BACKOFF_S" ]; then
+    echo "gh-app: a mint failed under ${FAIL_BACKOFF_S}s ago; gh-app status retries now" >&2
+    exit 1
+  fi
+  f="$CACHE/token-$owner"
+  if [ -s "$f" ] && [ "$(age "$f")" -lt "$TOKEN_REUSE_S" ]; then
+    read -r sel tok < "$f"
+    [ "$sel" = all ] || off
+    printf '%s\n' "$tok"
+    return 0
+  fi
+  id=$(installs | awk -v o="$owner" '$1 == o { print $2 }') || exit 1
+  [ -n "$id" ] || off
+  out=$(api POST "/app/installations/$id/access_tokens" Bearer "$(jwt)") \
+    || die "minting a token for $owner (installation $id) failed"
+  read -r sel tok < <(jq -r '"\(.repository_selection) \(.token)"' <<<"$out")
+  [ -n "$tok" ] && [ "$tok" != null ] || die "GitHub returned no token for $owner"
+  printf '%s %s\n' "$sel" "$tok" > "$f.$$" && mv "$f.$$" "$f"
+  # A selected-repos install would 404 every other repo of the owner: reads stay on the user.
+  [ "$sel" = all ] || off "$owner's installation covers selected repos only; install it on all"
+  printf '%s\n' "$tok"
+}
+
+status() {
+  local login id tok left
+  [ -f "$CONFIG" ] || { echo "off: no $CONFIG (docs/operations/github-app.md)"; return 0; }
+  load_config
+  rm -f "$CACHE/failed"
+  echo "app $GH_APP_ID, key $GH_APP_KEY_FILE"
+  installs | while read -r login id; do
+    if tok=$(token "$login" 2>&1); then
+      left=$(api GET /rate_limit token "$tok" | jq -r '.resources.core | "\(.remaining)/\(.limit) REST calls left"')
+      echo "$login (installation $id): ${left:-rate limit unreadable}"
+    else
+      echo "$login (installation $id): no token: ${tok:-off}"
+    fi
+  done
+}
+
+case "${1:-}" in
+  token) token "${2:-}" ;;
+  status) status ;;
+  *) echo "usage: gh-app token <owner> | gh-app status" >&2; exit 2 ;;
+esac

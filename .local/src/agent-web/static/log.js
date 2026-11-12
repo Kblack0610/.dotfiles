@@ -1,5 +1,5 @@
 "use strict";
-// The Log tab: the hub's Log tab (Prefix i, then 7) for the browser. It reads day-log's
+// The Log tab: the hub's Log tab (Prefix i, then 6) for the browser. It reads day-log's
 // records through /api/log and /api/log/history; every number here is in the record already.
 
 // The charts show this many days; the day picker can step back through the fetched history.
@@ -89,11 +89,15 @@ function byHour(rec) {
 // What waits on the human is Home's to show and answer; the day says how much and links there.
 const waiting = (n) => (n ? `<div class="badge-line"><a href="#" data-asks><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>` : "");
 
+// A session leads with what it works on (its plan's name, hub_core::boards::log_view); on a
+// phone the row is that line plus phase, PRs and cost, and a tap shows the rest.
 function benchTable(rec) {
   const ss = ((rec.bench || {}).sessions || []).slice().sort((a, b) => (b.cost_usd || 0) - (a.cost_usd || 0));
   if (!ss.length) return "";
-  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr><th>session</th><th>plan</th><th class="n">phases</th><th class="n">working</th><th class="n">waiting</th><th class="n">stalled</th><th class="n">PRs</th><th class="n">CI reds</th><th class="n">peak ctx</th><th class="n">cost</th></tr>${
-    ss.map((s) => `<tr><td title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td><td class="muted">${esc(s.plan || "-")}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td></tr>`).join("")}</table></div>`;
+  const h = (label, role, n) => `<th${n ? ' class="n"' : ""}${role ? ` data-role="${role}"${role === "glance" ? " data-named" : ""}` : ""}>${label}</th>`;
+  const head = h("what", "lead") + h("phase", "glance", 1) + h("PRs", "glance", 1) + h("working", "", 1) + h("waiting", "", 1) + h("stalled", "", 1) + h("CI reds", "", 1) + h("peak ctx", "", 1) + h("cost", "glance", 1) + h("session");
+  const row = (s) => `<tr><td class="wrap" title="${esc(s.plan || "")}">${esc(s.name || s.plan || shortTarget(s.target))}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td><td class="muted" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td></tr>`;
+  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
 }
 
 function renderLog() {
@@ -122,7 +126,7 @@ function renderLog() {
   html += waiting(nWait);
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d"><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
   paint(el, html, lst.open);
 }
 

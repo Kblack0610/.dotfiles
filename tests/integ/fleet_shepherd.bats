@@ -61,9 +61,10 @@ fleet-sessions-real() { "$REPO_ROOT/.local/bin/fleet-sessions" "$@"; }
 # doc <sessions-json> [main-json]
 doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"; }
 
-row() { # target bucket nudged escalated [labels-json]
-  jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" \
-    '{target:$t, bucket:$b, nudged:$n, escalated:$e, labels:$l, fact:"f-\($t)", reason:"r-\($t)"}'
+row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
+  jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
+    '{target:$t, bucket:$b, nudged:$n, escalated:$e, labels:$l, fact:"f-\($t)", reason:"r-\($t)",
+      close:{verdict:(if $v != "" then $v elif $b == "DONE" then "now" else "keep" end), why:"w"}}'
 }
 
 # checked: `check` with the routing lines under each due line dropped, for tests of the due lines
@@ -120,17 +121,35 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
-@test "due never nudges a session holding an open ask it filed, and nudges the same row once the ask is gone" {
-  own="$(row a DONE false false | jq -c '. + {own_asks: 1}')"
-  doc "[$own, $(row b LANDED false false | jq -c '. + {own_asks: 2}'), $(row c STALLED false false | jq -c '. + {own_asks: 1}'), $(row d DONE false false)]"
+@test "due tells a session holding its own open ask to close once its verdict is now, and leaves it alone otherwise" {
+  own="$(row a DONE false false '[]' after | jq -c '. + {own_asks: 1}')"
+  doc "[$own, $(row b LANDED false false | jq -c '. + {own_asks: 2}'), $(row c STALLED false false | jq -c '. + {own_asks: 1}'), $(row d DONE false false),
+        $(row e NEEDS false false '[]' now | jq -c '. + {own_asks: 1}'), $(row f STALLED false false '[]' now | jq -c '. + {own_asks: 1}')]"
   run "$SH" due
-  refute_output --partial 'nudge DONE: a '
-  refute_output --partial 'nudge LANDED: b '
-  refute_output --partial 'nudge STALLED: c '
+  refute_output --partial ' a '
+  refute_output --partial ' b '
+  refute_output --partial ' c '
   assert_line 'nudge DONE: d f-d'
-  doc "[$(jq -c '. + {own_asks: 0}' <<<"$own")]"
+  # The answer reopens it (agent-ask reopen-on-answer), so its window need not wait.
+  assert_line 'nudge CLOSE: e f-e'
+  assert_line 'nudge CLOSE: f f-f'
+  refute_output --partial 'escalate NEEDS: e'
+  # A nudged one whose verdict held goes to the human once.
+  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1}')]"
+  run "$SH" due
+  assert_output 'escalate NEEDS: e r-e'
+  doc "[$(jq -c '. + {own_asks: 0, close: {verdict: "now"}}' <<<"$own")]"
   run "$SH" due
   assert_line 'nudge DONE: a f-a'
+}
+
+@test "due nudges a DONE row only on a close-now verdict: a hand-active or worker row is left alone" {
+  doc "[$(row a DONE false false '[]' keep), $(row b DONE false false '[]' now), $(row c DONE true false '[]' keep)]"
+  run "$SH" due
+  assert_line 'nudge DONE: b f-b'
+  refute_output --partial 'nudge DONE: a'
+  # One nudged before (the same fact survived) still escalates.
+  assert_line 'escalate DONE: c r-c'
 }
 
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
@@ -218,17 +237,14 @@ exit 0'
   assert_failure
 }
 
-# chat <target> <nudged> <escalated> <idle_min> [age_min]: a CHAT row, quiet for the lesser of the two
-chat() { row "$1" CHAT "$2" "$3" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
+# chat <target> <nudged> <escalated> <idle_min> [age_min] [verdict]: a CHAT row, quiet for the lesser of the two, its close verdict keep unless named
+chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
 
-@test "a CHAT row is due only past FLEET_CHAT_CLOSE_H, then nudged once and escalated once" {
-  doc "[$(chat a false false 60), $(chat b false false 1440), $(chat c false false 2000 30), $(row d CHAT false false)]"
+@test "a CHAT row is due only on a close-now verdict (FLEET_CHAT_CLOSE_H quiet, fleet-sessions), then nudged once and escalated once" {
+  doc "[$(chat a false false 60), $(chat b false false 1440 5000 now), $(chat c false false 2000 30 after)]"
   run "$SH" due
   assert_success
   assert_output 'nudge CHAT: b f-b'
-  FLEET_CHAT_CLOSE_H=1 run "$SH" due
-  assert_line 'nudge CHAT: a f-a'
-  refute_output --partial ' c '
   doc "[$(chat b true false 1500)]"
   run "$SH" due
   assert_output 'escalate CHAT: b r-b'
@@ -294,6 +310,12 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   rm "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  # One fleet-dispatch preempted (why=preempt) is its pass's to resume, never a pace line; a why=park one still is.
+  export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
+  printf 'session=p\ntarget=lab/p:1\nwhy=preempt\n' > "$CLAUDE_ACCT_PARKED_DIR/p"
+  printf 'session=q\ntarget=lab/q:1\nwhy=park\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  run "$SH" due
+  assert_output 'pace: parked lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
 }
 
 @test "run with nothing due starts no pass, calls no model, and still refreshes the document" {
@@ -350,7 +372,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$second" ]
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
+  assert_equal "$(cut -f2 "$FLEET_SHEPHERD_DIR/.unhandled")" 1
   # a STALLED row is urgent too, however young the last pass, and so is each red the producers write
   live "$(pass_id)" idle
   doc "[$(row c STALLED false false)]"
@@ -968,6 +990,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: queue-starved tripped (high)'
 }
 
+@test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
+  doc "[$(row a DONE false false)]"
+  stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nfleet-thermal\tlow\nneptune-health\tnormal\n' STUB_K3S='[]'
+  run "$SH" run
+  assert_output --partial 'watch: home-k3s-node-disk tripped (urgent)'
+  refute_output --partial 'watch: fleet-thermal'
+  refute_output --partial 'watch: neptune-health'
+}
+
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a DONE false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
@@ -987,7 +1019,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'unhandled: watch: queue-starved tripped (high)'
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$id" ]
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
+  assert_equal "$(cut -f2 "$FLEET_SHEPHERD_DIR/.unhandled")" 1
 }
 
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
@@ -1363,6 +1395,30 @@ gw_accts() {
   assert_output --partial 'passing: 1 due'
 }
 
+@test "two checks that each owe a different line are no streak: only the same line left twice is stuck" {
+  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  "$SH" check >/dev/null
+  # the pass handled b and left a, and c came due and is handed
+  doc "[$(row a DONE false false), $(row b LANDED true true), $(row c DONE false false)]"
+  run checked
+  assert_line --index 0 'unhandled: nudge DONE: a f-a'
+  # the next pass handled a and left c: a different line owed at the second check in a row
+  doc "[$(row a DONE true true), $(row b LANDED true true), $(row c DONE false false)]"
+  run checked
+  assert_line --index 0 'unhandled: nudge DONE: c f-c'
+  refute_output --partial 'nudge DONE: a'
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
+  run "$SH" stuck
+  assert_success
+  # Negative control: the same line left at the next check too is the streak
+  "$SH" check >/dev/null
+  run "$SH" stuck
+  assert_failure 1
+  assert_line 'stuck: an unhandled due line at 2 checks in a row'
+  assert_line 'unhandled: nudge DONE: c f-c'
+}
+
 @test "stuck: lines due and no pass started in an hour, whatever the lease says; a recent pass or nothing due is passing" {
   printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tescalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf '%s\tp1-1111\tWORKED\tx\n' "$(date -u -d '70 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
@@ -1451,6 +1507,48 @@ gw_accts() {
   assert_line --partial 'open 160m'
   run "$SH" skip 'overdue: t-s1 phase 2/4'
   assert_failure 2
+}
+
+@test "skip refuses a line that is not due, names the nearest due line, and stores nothing" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: a f-...' 'shortened'
+  assert_failure 2
+  assert_output --partial "nearest due: 'nudge DONE: a f-a'"
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  if grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"; then false; fi
+  # Negative control: the line as check printed it is accepted and stays out of the next check.
+  run "$SH" skip 'nudge DONE: a f-a' 'the human has it'
+  assert_success
+  run checked
+  assert_failure 1
+}
+
+@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is accepted" {
+  doc "[]"
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_failure 2
+  assert_output --partial 'nothing is due now'
+  run "$SH" skip 'unhandled: ' 'why'
+  assert_failure 2
+  assert_output --partial 'is empty'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  # no check has seen this line: it is due now, so it is a due line
+  doc "[$(row a DONE false false)]"
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_success
+}
+
+@test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
+  doc "[$(row a DONE false false),$(row b DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: zzz' 'why'
+  assert_failure 2
+  assert_output --partial "nudge DONE: a f-a'; 'nudge DONE: b f-b"
+  run "$SH" skip 'nudge DONE: ...f-b' 'why'
+  assert_failure 2
+  assert_output --partial "nearest due: 'nudge DONE: b f-b'"
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
 }
 
 @test "stats counts the ledgers: open, unhandled, skipped and paged lines, 24h receipts from log.md, the last pass" {

@@ -22,6 +22,7 @@ case "$*" in
   *cc:pool_*) cat "$FX/cc.json" ;;
   *github_runner_state*) cat "$FX/runners.json" ;;
   *github_runner_withheld*) cat "$FX/withheld.json" ;;
+  *ci_governor_power_state*) cat "$FX/power.json" ;;
   *) exit 22 ;;
 esac
 STUB
@@ -37,7 +38,8 @@ STUB
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
 # the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it), RATE_LEFT
-# the token's emptiest bucket.
+# the token's emptiest bucket. POWER is the governor's power state for aws-burst-1 (stopped
+# under cloud-off, else running).
 fixtures() {
   python3 - "$FX" "$1" <<'PY'
 import json, os, sys
@@ -95,6 +97,8 @@ runners = [
 ]
 out("runners", runners)
 out("withheld", [({"name": "hp-unity-3"}, "1")])
+power = os.environ.get("POWER", "stopped" if mode == "cloud-off" else "running")
+out("power", [({"host": "aws-burst-1", "state": power}, "1")] if power != "running" else [])
 PY
 }
 
@@ -216,6 +220,21 @@ PY2
   run tip
   assert_line --index 2 "running: local 5/9  cloud 5 (aws-burst-1 off, github-hosted 3)"
   refute_line --regexp "^aws-burst-1 +cloud"
+}
+
+# The governor powered it off, so its offline runners are by design, not DOWN.
+@test "a cloud host the governor powered off is not listed under DOWN" {
+  fixtures cloud-off
+  run "$MODULE"
+  refute_output --partial "DOWN"
+}
+
+# Negative control: the same offline runners on a host the governor says is running are DOWN.
+@test "...but offline runners on a host the governor runs are DOWN" {
+  POWER=running fixtures cloud-off
+  run "$MODULE"
+  run tip
+  assert_output --partial "  aws-burst-1  2 offline"
 }
 
 # Negative control: with no job on GitHub's runners the list does not name them.

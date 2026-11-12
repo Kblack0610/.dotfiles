@@ -7,7 +7,7 @@ only thing that tells projects apart is the title, `Unity - <project> - <scene>
 - ...`. A static `workspace` window rule cannot use it: static rules read the
 INITIAL title, and the playground editor maps as `Unity - Unity <version>`
 before it knows its project (seen 2026-09-28; dodginballs, by contrast, mapped
-with its name already in the title). So rules.conf puts every Unity window on
+with its name already in the title). So conf/rules.lua puts every Unity window on
 ws3, and this listener moves the playground editor to ws4 on the event that
 carries its real title.
 
@@ -19,7 +19,7 @@ must not be moved: a silent move leaves it unfocused, and Unity's menus and
 sub-menus then take no hover or clicks (the playground's broke that way from
 2026-09-28 until the static float rule went).
 
-Started by exec-once in conf.d/autostart.conf; exits when Hyprland closes the
+Started on hyprland.start in conf/autostart.lua; exits when Hyprland closes the
 socket, and the next session's exec-once starts it again.
 """
 
@@ -76,9 +76,9 @@ def address_of(data):
 
 
 def move(address, workspace, follow):
-    verb = "movetoworkspace" if follow else "movetoworkspacesilent"
-    subprocess.run(["hyprctl", "dispatch", verb, f"{workspace},address:{address}"],
-                   capture_output=True)
+    lua = (f'hl.dsp.window.move({{ window = "address:{address}", '
+           f'workspace = "{workspace}", follow = {"true" if follow else "false"} }})')
+    subprocess.run(["hyprctl", "dispatch", lua], capture_output=True)
 
 
 class Router:

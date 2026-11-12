@@ -2,8 +2,11 @@
 // Renders every agent-web table tab at phone width and records whether a phone can read it.
 // No server and no auth: the page is assets::index() (dumped by an ignored Rust test), the
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
-//   node tests/agent-web/phone/render.mjs [--out dir] [--control]
+//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit]
 // --control forces body min-width 900px and fails unless every tab reports the overflow.
+// The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
+// a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
+// --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -19,28 +22,36 @@ const SCRATCH = join(homedir(), ".cache/agent-web-phone");
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB = join(ROOT, ".local/src/agent-web");
 const STATIC = join(WEB, "static");
+const KIT = join(ROOT, ".local/src/web-kit");
+const WIDE = { width: 1280, height: 800 };
+const NAV = { menu: "kb-shell .kb-menu", nav: "kb-shell .kb-nav", group: ".kb-nav .kb-group", item: ".kb-nav > [id^=tab-]", cur: "kb-shell .kb-cur", script: "kb-shell.js" };
 const CONTROL_CSS = "body { min-width: 900px !important; }";
 
-// Each tab's first data row; a tab with several tables names the one the brief measures.
-const DATA_ROW = "tr:has(> td)";
+// Each tab's first data row; a tab with several tables names the one the brief measures, and a
+// tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`). A second
+// table on a tab is its own entry (`name`), scrolled to so its screenshot shows it.
+const DATA_ROW = "tr:has(> td):not(.tfilters)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
+  { tab: "home", name: "home-running", row: `#home [data-tbl="r"] tr.jr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "board", row: `#board tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
-  { tab: "infra", row: `#jobs tr.jr` },
+  { tab: "alerts", row: `#alerts tr.jr` },
+  { tab: "infra", inner: "jobs", row: `#jobs tr.jr` },
   { tab: "log", row: `#log-work ${DATA_ROW}` },
   { tab: "fleet", row: `#fleet tr.wr` },
   { tab: "schedules", row: `#schedules tr.jr` },
-  { tab: "costs", row: `#costs-body ${DATA_ROW}` },
+  { tab: "costs", inner: "spend", row: `#costs-body ${DATA_ROW}` },
   { tab: "releases", row: `#releases tr.jr` },
 ];
 
 const args = process.argv.slice(2);
 const control = args.includes("--control");
+const noKit = args.includes("--no-kit");
 const outAt = args.indexOf("--out");
-const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : "out");
+const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : noKit ? "no-kit" : "out");
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
@@ -51,45 +62,62 @@ function playwright() {
   if (!root) throw new Error(`no playwright-core under ${npx} or ${SCRATCH}/node`);
   return createRequire(join(root, "package.json"))("playwright-core");
 }
-function chromium() {
+// CI installs the browser its pinned playwright-core names (tests.yml, Phone render harness), so that
+// one wins when it is there.
+function chromium(pw) {
+  const own = pw.chromium.executablePath();
+  if (own && existsSync(own)) return own;
   const path = ["chromium-1208", "chromium-1200"].map((d) => join(homedir(), ".cache/ms-playwright", d, "chrome-linux64/chrome")).find(existsSync);
   if (!path) throw new Error("no cached chromium-1208 or chromium-1200 under ~/.cache/ms-playwright");
   return path;
 }
 
 // The page and CSP exactly as the server fills them, never a dump left over from another checkout.
+// CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
   const path = join(SCRATCH, "index.html");
-  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: join(SCRATCH, "target") }, encoding: "utf8" });
+  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(SCRATCH, "target") }, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
   return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
 }
 
 // The server's Column carries each column's phone role; the fixtures name only the keys, so the
-// roles come from hub-core itself, matched on the table's whole column list.
-function withRoles(body, roles) {
+// roles come from hub-core itself, matched on the table's whole column list. A fixture table that
+// matches none has drifted from the server; it is named with the hub-core table nearest it.
+function withRoles(body, roles, drift) {
   const byColumns = new Map(roles.map((t) => [[...t.columns].sort().join(), t]));
   const walk = (v) => {
     if (Array.isArray(v)) return v.map(walk);
     if (!v || typeof v !== "object") return v;
     const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
-    const t = Array.isArray(v.columns) && v.columns[0]?.key && byColumns.get(v.columns.map((c) => c.key).sort().join());
+    if (!Array.isArray(v.columns) || !v.columns[0]?.key) return out;
+    const keys = v.columns.map((c) => c.key);
+    const t = byColumns.get([...keys].sort().join());
     if (t) out.columns = out.columns.map((c) => ({ ...c, role: c.key === t.lead ? "lead" : t.glance.includes(c.key) ? "glance" : "" }));
+    else drift.add(driftLine(keys, roles));
     return out;
   };
   return walk(body);
+}
+function driftLine(keys, roles) {
+  const near = roles.map((t) => ({ t, shared: t.columns.filter((k) => keys.includes(k)).length })).sort((a, b) => b.shared - a.shared)[0]?.t;
+  if (!near) return `fixture columns [${keys}] match no hub-core table`;
+  const missing = near.columns.filter((k) => !keys.includes(k)), extra = keys.filter((k) => !near.columns.includes(k));
+  return `fixture columns [${keys}] match no hub-core table; nearest (lead ${near.lead}) ${missing.length ? `lacks [${missing}]` : ""}${extra.length ? ` has extra [${extra}]` : ""}`;
 }
 
 const JS = "text/javascript; charset=utf-8";
 const TYPES = { ".css": "text/css; charset=utf-8", ".js": JS, ".woff2": "font/woff2", ".html": "text/html; charset=utf-8" };
 const NOSNIFF = { "x-content-type-options": "nosniff", "referrer-policy": "same-origin" };
 
+// agent-web serves its own static files and web-kit's under one flat /static/ (assets.rs FILES).
 function staticFile(name) {
-  const path = join(STATIC, name.endsWith(".woff2") ? "fonts" : "", name);
+  if (noKit && name === NAV.script) return { status: 404, contentType: "text/plain", body: "no-kit control", headers: NOSNIFF };
+  const path = [join(STATIC, name), join(KIT, name)].find(existsSync) || join(STATIC, name);
   if (!existsSync(path)) return { status: 404, contentType: "text/plain", body: `no ${name}`, headers: NOSNIFF };
   const raw = readFileSync(path);
-  const body = name === "app.css" ? raw.toString("utf8").replaceAll("{{v}}", "harness") : raw;
+  const body = name.endsWith(".css") ? raw.toString("utf8").replaceAll("{{v}}", "harness") : raw;
   return { status: 200, contentType: TYPES[extname(name)], body, headers: NOSNIFF };
 }
 
@@ -102,7 +130,7 @@ async function wire(context, page, { index, csp, roles }, seen) {
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
     const body = path in FIXTURES ? FIXTURES[path] : {};
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles)) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles, seen.drift)) });
   });
   page.on("pageerror", (e) => seen.errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") seen.errors.push(`console: ${m.text()}`); });
@@ -136,7 +164,7 @@ function measure({ width, row: selector }) {
 async function renderTab(browser, spec, page0) {
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, hasTouch: true, isMobile: true, locale: "en-US", timezoneId: "America/Los_Angeles" });
   const page = await context.newPage();
-  const seen = { errors: [], unfixtured: new Set() };
+  const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
   await context.clock.setFixedTime(new Date(NOW * 1000));
   await page.addInitScript(() => {
     window.EventSource = class {
@@ -146,23 +174,78 @@ async function renderTab(browser, spec, page0) {
     };
   });
   await wire(context, page, page0, seen);
-  const result = { tab: spec.tab, pageOverflowX: null, firstRowTop: null, tableOverflowX: null, leadVisible: null, leadMethod: null };
+  const result = { tab: spec.name || spec.tab, pageOverflowX: null, firstRowTop: null, tableOverflowX: null, leadVisible: null, leadMethod: null };
   try {
-    await page.goto(`${ORIGIN}/#${spec.tab}`, { waitUntil: "load" });
+    await page.goto(`${ORIGIN}/#${spec.tab}${spec.inner ? "/" + spec.inner : ""}`, { waitUntil: "load" });
     if (control) await page.addStyleTag({ content: CONTROL_CSS });
     await page.waitForLoadState("networkidle");
     if (spec.open) await page.evaluate((id) => { document.getElementById(id).open = true; }, spec.open);
     await page.waitForSelector(spec.row, { state: "visible", timeout: WAIT_MS });
     await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
+    if (spec.name) await page.locator(spec.row).first().scrollIntoViewIfNeeded();
     const { badText, ...numbers } = await page.evaluate(measure, { width: VIEWPORT.width, row: spec.row });
     Object.assign(result, numbers);
     if (badText) seen.errors.push(`a fixture field is missing: the page shows "${badText}"`);
   } catch (e) {
     seen.errors.push(`no row: ${e.message.split("\n")[0]}`);
   }
-  await page.screenshot({ path: join(out, `${spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
+  await page.screenshot({ path: join(out, `${spec.name || spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
+  seen.errors.push(...seen.drift);
   return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
+}
+
+// The shell at phone width, closed then open then Escaped, and at a desktop width. Each failed
+// expectation is one error line; screenshots go beside the tabs' (nav-*.png).
+async function navCheck(browser, page0) {
+  const errors = [];
+  const expect = (ok, what) => { if (!ok) errors.push(what); };
+  const shown = (page, sel) => page.locator(sel).first().isVisible().catch(() => false);
+  for (const [name, viewport, phone] of [["phone", VIEWPORT, true], ["wide", WIDE, false]]) {
+    const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles" });
+    const page = await context.newPage();
+    const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
+    await context.clock.setFixedTime(new Date(NOW * 1000));
+    await page.addInitScript(() => { window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() {} close() {} }; });
+    await wire(context, page, page0, seen);
+    try {
+      await page.goto(`${ORIGIN}/#home`, { waitUntil: "load" });
+      await page.waitForLoadState("networkidle");
+      await page.evaluate(async () => { await document.fonts.ready; });
+      const items = await page.locator(NAV.item).count();
+      const groups = await page.locator(NAV.group).count();
+      expect(items >= 2 && groups >= 1, `${name}: ${items} tabs and ${groups} group headings in the nav`);
+      if (phone) {
+        expect(await shown(page, NAV.menu), `${name}: no menu button`);
+        expect(!(await shown(page, NAV.nav)), `${name}: the tab list shows before the menu is opened`);
+        const cur = (await page.locator(NAV.cur).first().textContent().catch(() => "")) || "";
+        expect(cur.trim() === "Home", `${name}: current tab label is "${cur.trim()}", not Home`);
+        await page.screenshot({ path: join(out, `nav-${name}-closed.png`) });
+        if (await shown(page, NAV.menu)) {
+          await page.locator(NAV.menu).first().click();
+          expect(await shown(page, NAV.nav), `${name}: the menu did not open the tab list`);
+          const visible = await page.locator(NAV.item).evaluateAll((es) => es.filter((e) => e.getBoundingClientRect().height > 0).length);
+          expect(visible === items, `${name}: ${visible} of ${items} tabs visible in the open menu`);
+          const groupsShown = await page.locator(NAV.group).evaluateAll((es) => es.filter((e) => e.getBoundingClientRect().height > 0).length);
+          expect(groupsShown === groups, `${name}: ${groupsShown} of ${groups} group headings visible in the open menu`);
+          await page.screenshot({ path: join(out, `nav-${name}-open.png`) });
+          await page.keyboard.press("Escape");
+          expect(!(await shown(page, NAV.nav)), `${name}: Escape did not close the menu`);
+        }
+      } else {
+        expect(await shown(page, NAV.nav), `${name}: the sidebar is not shown`);
+        expect(!(await shown(page, NAV.menu)), `${name}: the menu button shows on a wide screen`);
+        await page.screenshot({ path: join(out, `nav-${name}.png`) });
+      }
+      const over = await page.evaluate((w) => document.documentElement.scrollWidth - w, viewport.width);
+      expect(over <= 0, `${name}: the page scrolls sideways by ${over}px`);
+    } catch (e) {
+      errors.push(`${name}: ${e.message.split("\n")[0]}`);
+    }
+    errors.push(...[...seen.errors, ...seen.drift].filter(() => !noKit).map((e) => `${name}: ${e}`));
+    await context.close();
+  }
+  return errors;
 }
 
 function print(results) {
@@ -179,10 +262,21 @@ function print(results) {
 async function main() {
   mkdirSync(out, { recursive: true });
   const page = dumpIndex();
-  const browser = await playwright().chromium.launch({ headless: true, executablePath: chromium() });
+  const pw = playwright();
+  const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const results = [];
-  for (const spec of TABS) results.push(await renderTab(browser, spec, page));
+  // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
+  const navErrors = control ? [] : await navCheck(browser, page);
+  if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   await browser.close();
+  for (const e of navErrors) console.log(`NAV ${e}`);
+  if (noKit) {
+    if (!navErrors.some((e) => e.includes("no menu button"))) { console.log("FAIL: --no-kit control: the nav check did not report the missing menu button"); process.exit(1); }
+    console.log("no-kit control ok: the nav check reported the missing menu button");
+    return;
+  }
+  if (navErrors.length) { console.log(`FAIL: nav check, ${navErrors.length} error(s)`); process.exit(1); }
+  if (!control) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);

@@ -102,6 +102,9 @@ action: Check the rollout, then the ingress.
 EOF
 }
 
+# Drop a field so a test can write its own; a repeated key is refused, not overridden.
+without() { sed -i "/^$1:/d" "$M"; }
+
 @test "plain validate ignores the legibility fields entirely" {
   # The compatibility assertion, and the one that keeps the daemon quiet: every
   # manifest written before this schema existed must still pass the runtime check.
@@ -136,10 +139,35 @@ EOF
   assert_output --partial "missing 'action'"
 }
 
+@test "--strict requires an expiry key; plain validate still reads a missing one as standing" {
+  # The loop treats no key as null, so a bake watch whose writer forgot it never expires.
+  # The writer states it, null for standing; the runtime check stays lenient.
+  legible; sed -i '/^expiry:/d' "$M"
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial "missing 'expiry'"
+}
+
+@test "--strict rejects an expiry that reads as null without saying null" {
+  # A bare key, ~ and '' all mean standing at runtime, the same as no key; only the
+  # literal null says the writer chose it, and it is what triage --coverage reads.
+  for v in '' '~' "''"; do
+    legible; sed -i "s/^expiry:.*/expiry: $v/" "$M"
+    run "$SM" validate --strict "$M"
+    assert_failure
+    assert_output --partial "missing 'expiry'"
+  done
+  legible; sed -i 's/^expiry:.*/expiry: 60m/' "$M"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
 @test "--strict rejects a field that is present but empty" {
   # `where:` with nothing after it parses as None. A key that exists but says nothing
   # is the documentation equivalent of a false green.
-  legible; echo 'where:' >> "$M"
+  legible; without where; echo 'where:' >> "$M"
   run "$SM" validate --strict "$M"
   assert_failure
   assert_output --partial "missing 'where'"
@@ -148,7 +176,7 @@ EOF
 @test "--strict rejects a multi-line field, which would break both renderers" {
   # A `|-` block keeps its newlines; that value lands in one table cell and one push
   # notification, and mangles both.
-  legible
+  legible; without action
   printf 'action: |-\n  first line\n  second line\n' >> "$M"
   run "$SM" validate --strict "$M"
   assert_failure
@@ -156,7 +184,7 @@ EOF
 }
 
 @test "--strict accepts a folded block scalar, the documented way to write a long one" {
-  legible
+  legible; without why
   printf 'why: >-\n  a reason long enough to want\n  wrapping in the source file\n' >> "$M"
   run "$SM" validate --strict "$M"
   assert_success
@@ -224,4 +252,100 @@ EOF
   printf 'subject: Home cluster nodes\ntrip: A node is not Ready.\n' >> "$M"
   run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s|%s' \"\$W_subject\" \"\$W_trip\""
   assert_output "Home cluster nodes|A node is not Ready"
+}
+
+# `project:` files a watch under one project; none is fleet-wide. The registry is a copy, never
+# the live map, so the test names what it expects.
+projmap() {
+  export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/project-map.json"
+  printf '%s' '{"paths":{"/x/dotfiles":"dotfiles"},"trackers":{"_comment_lab":"x","agent-runtime":{},"dotfiles":{"names":["waybar"]},"unity-core-playground":{"names":["engine"]}}}' > "$AGENT_QUEUE_PROJECT_MAP"
+}
+
+@test "project accepts a paths key, a lab project and a tracker key" {
+  projmap
+  for p in dotfiles agent-runtime unity-core-playground; do
+    base; echo "project: $p" >> "$M"
+    run "$SM" validate "$M"
+    assert_success
+  done
+}
+
+@test "a watch with no project is fleet-wide and valid" {
+  projmap; base
+  run "$SM" validate "$M"
+  assert_success
+}
+
+@test "project refuses an unknown name, another spelling of a project, a comment key and an empty value" {
+  projmap
+  for p in dotfils waybar _comment_lab; do
+    base; echo "project: $p" >> "$M"
+    run "$SM" validate "$M"
+    assert_failure
+    assert_output --partial "project '$p' is not a canonical project"
+  done
+  base; echo 'project:' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'project is empty'
+}
+
+@test "project is not checked on a host with no project map, and an unreadable map fails" {
+  base; echo 'project: anything' >> "$M"
+  export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/absent.json"
+  run "$SM" validate "$M"
+  assert_success
+  echo '{not json' > "$AGENT_QUEUE_PROJECT_MAP"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'unreadable'
+}
+
+@test "env carries the project for the bash caller" {
+  base; echo 'project: dotfiles' >> "$M"
+  run bash -c "eval \"\$('$SM' env '$M')\"; printf '%s' \"\$W_project\""
+  assert_output "dotfiles"
+}
+
+@test "project says so when the registry is a directory, not a traceback" {
+  projmap; rm -f "$AGENT_QUEUE_PROJECT_MAP"; mkdir "$AGENT_QUEUE_PROJECT_MAP"
+  base; echo 'project: dotfiles' >> "$M"
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial 'cannot check project'
+  refute_output --partial Traceback
+}
+
+@test "a repeated key is refused by validate and env, naming the key and its line" {
+  # PyYAML keeps the last of a repeated key, so three `signal:` lines ran one
+  # signal of three with no error (ar-1825).
+  base
+  cat >> "$M" <<'EOF2'
+signal: one
+signal: two
+EOF2
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial "repeated key 'signal'"
+  assert_output --partial 'line 12'
+  run "$SM" env "$M"
+  assert_failure
+  assert_output --partial "repeated key 'signal'"
+}
+
+@test "signal as a YAML list keeps every value" {
+  # Control for the refusal above: the list form is the way to write several.
+  base
+  cat >> "$M" <<'EOF2'
+signal:
+  - one
+  - two
+  - three
+EOF2
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" env "$M"
+  assert_success
+  assert_line 'W_signal_count=3'
+  assert_line 'W_signal_2=three'
 }

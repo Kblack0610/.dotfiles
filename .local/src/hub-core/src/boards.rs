@@ -40,6 +40,11 @@ pub fn fleet_cost() -> PathBuf {
     fleet_state().with_file_name("fleet-cost.json")
 }
 
+/// `agent-usage budget --json`'s file, which fleet-bench's budget step writes beside fleet-cost.json.
+pub fn budget() -> PathBuf {
+    fleet_state().with_file_name("budget.json")
+}
+
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
@@ -126,7 +131,10 @@ fn live_waits(state: &mut Value, (agents, gaps): (Vec<Agent>, Gaps)) {
         return;
     };
     for a in &agents {
-        match sessions.iter_mut().find(|s| s["target"] == a.target.as_str()) {
+        match sessions
+            .iter_mut()
+            .find(|s| s["target"] == a.target.as_str())
+        {
             Some(s) if a.at_dialog() && s["bucket"] != "NEEDS" => {
                 s["bucket"] = "NEEDS".into();
                 s["reason"] = AT_PROMPT.into();
@@ -243,6 +251,17 @@ pub fn releases_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".agent/releases"))
 }
 
+/// `claude-acct gateway`'s snapshot (the Costs tab's Consumers): CLAUDE_ACCT_GATEWAY, else the
+/// file in claude-acct's cache dir, resolved as claude-acct resolves it.
+pub fn gateway_snapshot() -> PathBuf {
+    env("CLAUDE_ACCT_GATEWAY").unwrap_or_else(|| {
+        env("CLAUDE_ACCT_CACHE")
+            .or_else(|| env("XDG_CACHE_HOME").map(|c| c.join("claude-acct")))
+            .unwrap_or_else(|| home().join(".cache/claude-acct"))
+            .join("gateway.json")
+    })
+}
+
 /// `agent-usage tokens snapshot`'s records, one `<YYYY-MM-DD>.json` per day (its `TOKENS_DIR`).
 pub fn token_usage_dir() -> PathBuf {
     std::env::var_os("TOKENS_DIR")
@@ -321,16 +340,15 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
 }
 
 /// The project a merged PR counts under: the `project` day-log writes, or for a record from
-/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+/// before it did, its repo, each read through the name index (`project_map::canonical`), so an
+/// old spelling counts under today's key.
 pub fn pr_project(pr: &Value) -> String {
-    match pr["project"].as_str() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => pr["repo"]
-            .as_str()
-            .map(|r| r.trim_start_matches('.').to_string())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "other".into()),
-    }
+    let name = [&pr["project"], &pr["repo"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(project_map::canonical)
+        .find(|p| !p.is_empty());
+    name.unwrap_or_else(|| "other".into())
 }
 
 /// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
@@ -417,8 +435,20 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
 
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
-/// `projects` (project_order), so the browser draws the grid and computes neither.
+/// `projects` (project_order), so the browser draws the grid and computes neither. Each bench
+/// session carries `name`, its plan's (`plans::named`), so a row says what the session works on.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
+    let bench = rec.get_mut("bench").and_then(|b| b.get_mut("sessions"));
+    if let Some(ss) = bench.and_then(Value::as_array_mut) {
+        for s in ss {
+            let name = s["plan"]
+                .as_str()
+                .map(|p| crate::plans::named(&crate::plans::path(p)));
+            if let (Some(o), Some(name)) = (s.as_object_mut(), name) {
+                o.insert("name".into(), name.into());
+            }
+        }
+    }
     for k in ["merged", "open"] {
         if let Some(a) = rec[k].as_array_mut() {
             for pr in a {
@@ -542,7 +572,11 @@ pub struct Watch {
 
 pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
     let state = self::state(state, r);
-    let log = std::fs::read_to_string(log).unwrap_or_default();
+    // Only the end is read: the log only grows (4.8 MB by 2026-11), and a line averages under
+    // 100 bytes, so a kilobyte per line kept covers the last `WATCH_LOG_LINES` with room.
+    let log = crate::fleet::tail(log, WATCH_LOG_LINES as u64 * 1024)
+        .map(|(t, _)| t)
+        .unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
     Watch {
@@ -760,6 +794,7 @@ mod tests {
                        {"repo": "x", "project": "trader", "merged_at": "2026-11-05T16:00:00Z"}],
             "open": [{"repo": "web"}]});
         let v = log_view(rec, &chrono::Utc);
+        assert_eq!(v["bench"], Value::Null, "a record with no bench gains none");
         assert_eq!(v["merged"][0]["project"], "dotfiles");
         assert_eq!(v["merged"][1]["project"], "trader");
         assert_eq!(v["open"][0]["project"], "web");
@@ -769,6 +804,26 @@ mod tests {
             v["projects"],
             serde_json::json!(["dotfiles", "trader", "web"])
         );
+    }
+
+    #[test]
+    fn each_bench_session_is_named_by_its_plans_heading_else_its_plans_file_name() {
+        let dir = std::env::temp_dir().join(format!("hub-core-bench-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("ucp-145.md");
+        std::fs::write(
+            &plan,
+            "# ucp-145: first premium sets, Legends and own heroes\n",
+        )
+        .unwrap();
+        let rec = serde_json::json!({"bench": {"sessions": [
+            {"plan": plan.to_str().unwrap()}, {"plan": "/nowhere/quiet-ocean"}, {"target": "a:1"}]}});
+        let v = log_view(rec, &chrono::Utc);
+        let ss = &v["bench"]["sessions"];
+        assert_eq!(ss[0]["name"], "ucp-145: first premium sets");
+        assert_eq!(ss[1]["name"], "quiet-ocean");
+        assert_eq!(ss[2]["name"], Value::Null, "no plan, no name");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1057,7 +1112,11 @@ mod tests {
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));
-        std::fs::write(&f, r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
+        )
+        .unwrap();
         let answered = (vec![live("hub/a:1", '~', None)], vec![]);
         let s = state_with(&f, &Fixed(Ok(tsv.into())), &signals, 0, answered);
         assert_eq!(s["sessions"][0]["bucket"], "WORKING");

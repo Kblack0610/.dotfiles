@@ -6,6 +6,7 @@
 # write time: an id the model invents would sit on the row as a dangling parent until `notes doctor
 # --projects` found it. A row left with no `#of/` goes under its system's standing epic, which
 # `notes ptask` links (`~/.local/src/docs/lifecycle.md`, "What an epic is").
+# It also holds read_board, the one board read both inbox runners make.
 
 # epics_open <board json>: `id<TAB>project<TAB>title` for every open epic.
 epics_open() {
@@ -46,20 +47,21 @@ systems_of() {
 
 # new_epic_rule: the prompt text that lets an answer carry a new feature epic (epic_new files it).
 new_epic_rule() {
-  printf '%s' "When the work is a new capability the person could check by using it and no open epic covers it, the answer may carry \"epic\": \"epic(<system>): <that outcome, in the person's words>\", <system> being one of the project's systems; that epic is filed first, tagged #new for the person to review, and the rows go under it. Never an epic for a fix, a chore or one small change."
+  printf '%s' "When the work is a new capability the person could check by using it and no open epic covers it, the answer may carry \"epic\": \"epic(<system>): <that outcome, in the person's words>\", <system> being one of the project's systems; that epic is filed first, tagged #new, and the rows go under it. Never an epic for a fix, a chore or one small change."
 }
 
 # epic_new <project> <epic text>: file a model's new feature epic on the project's human sheet,
 # tagged #new, and print its id; an open twin's id when it is already there. Nothing, and exit 1,
 # when the text is not `epic(<system>): <outcome>` over one of the project's systems: the rows
-# are then filed without it and `notes ptask` puts them under their standing epics.
+# are then filed without it and `notes ptask` puts them under their standing epics. A dry run
+# prints what it would run and exits 2.
 epic_new() {
   local p="$1" text sys out rc=0
   text="$(sed -E 's/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$2")"
   [[ "$text" =~ ^epic\(([a-z][a-z0-9-]*)\):\ .+ ]] || return 1
   sys="${BASH_REMATCH[1]}"
   project-stage-check "$p" --list 2>/dev/null | cut -f1 | grep -qxF -- "$sys" || return 1
-  if [ "${DRY:-0}" = 1 ]; then printf 'would run: notes ptask %q add -- %q\n' "$p" "$text #new" >&2; return 1; fi
+  if [ "${DRY:-0}" = 1 ]; then printf 'would run: notes ptask %q add -- %q\n' "$p" "$text #new" >&2; return 2; fi
   out="$(notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ] || return 1
   # A new epic prints its row; a twin is named on the refusal line. Either carries the id.
@@ -70,4 +72,20 @@ epic_new() {
 under_epic() {
   [[ " $1 " == *' #of/'* ]] && { printf '%s\n' "$1"; return; }
   printf '%s #of/%s\n' "$1" "$2"
+}
+
+# read_board: `notes board --json` into BOARD, which holds the board only when it returns 0. A
+# failed read puts notes' own first error line and exit code in the log (the caller's say) and the
+# pass's reason (proof_why), so the red it raises names its cause.
+read_board() {
+  local err rc why
+  err="$(mktemp)"
+  BOARD="$(notes board --json 2>"$err")"; rc=$?
+  if [ "$rc" != 0 ]; then
+    why="$(grep -m1 '[^[:space:]]' "$err" | clean 120)"
+    why="notes board --json failed (exit $rc)${why:+: $why}"
+    say "$why"; proof_why "$why"
+  fi
+  rm -f -- "$err"
+  return "$rc"
 }

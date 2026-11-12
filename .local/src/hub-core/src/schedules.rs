@@ -115,10 +115,10 @@ impl Schedule {
 }
 
 impl Row for Schedule {
-    // `repo` and `next` are last and undrawn: they filter and sort, and the first seven line up
-    // with the columns each surface draws.
+    // `repo` is last and undrawn: it filters and sorts, and the first eight line up with the
+    // columns each surface draws.
     const COLUMNS: &'static [&'static str] = &[
-        "kind", "name", "schedule", "last", "result", "streak", "triage", "repo", "next",
+        "kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo",
     ];
     const STATES: &'static [&'static str] = &["all", "red", "ok", "unknown", "no-purpose"];
     const FACETS: &'static [&'static str] = &["kind", "repo", "result"];
@@ -835,7 +835,7 @@ fn status(row: &Schedule, at: i64, off: i32) -> String {
     parts.join(", ")
 }
 
-/// Exceptions first, then a stable order to read down.
+/// Exceptions first, then the soonest to run, those with no next start last, then a stable order.
 fn rank(rows: &mut [Schedule]) {
     let weight = |r: &Schedule| {
         if r.red() {
@@ -846,7 +846,8 @@ fn rank(rows: &mut [Schedule]) {
             2
         }
     };
-    rows.sort_by(|a, b| (weight(a), &a.kind, &a.name).cmp(&(weight(b), &b.kind, &b.name)));
+    let key = |r: &Schedule| (weight(r), r.next.unwrap_or(i64::MAX));
+    rows.sort_by(|a, b| (key(a), &a.kind, &a.name).cmp(&(key(b), &b.kind, &b.name)));
 }
 
 fn summary(rows: &[Schedule], ci_at: Option<i64>, at: i64) -> String {
@@ -1376,12 +1377,13 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         let yaml =
             "name: n\nwhere: >-\n  GitHub, Org/app, test.yml\n  and multi.yml\nprobe: dream\n";
         let mut w = watch("nightly", "OK");
-        w.place = runner::place(yaml);
+        w.place = runner::field(yaml, "where");
+        assert_eq!(w.place, "GitHub, Org/app, test.yml and multi.yml");
         assert_eq!(
-            runner::place("where: one line\nprobe: x").trim(),
+            runner::field("where: one line\nprobe: x", "where"),
             "one line"
         );
-        assert_eq!(runner::place("name: none"), "");
+        assert_eq!(runner::field("name: none", "where"), "");
 
         let row = |name: &str, words: &[&str]| Schedule {
             name: name.into(),
@@ -1504,6 +1506,31 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             "4 scheduled, 1 red, 1 no purpose, CI read 10m ago"
         );
         assert!(summary(&rows, None, AT).ends_with("CI not read"));
+    }
+
+    #[test]
+    fn within_a_class_the_soonest_start_leads_and_no_next_start_is_last() {
+        let at = |name: &str, next: Option<i64>| {
+            let mut r = row(TIMER, name, 3, "why");
+            r.next = next;
+            r
+        };
+        let mut rows = vec![
+            at("none", None),
+            at("late", Some(AT + 7200)),
+            at("soon", Some(AT + 60)),
+        ];
+        let mut red = row(TIMER, "red", -2, "why");
+        red.next = Some(AT + 99999);
+        rows.push(red);
+        rank(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["red", "soon", "late", "none"]);
+        assert_eq!(
+            Schedule::COLUMNS[3],
+            "next",
+            "next is drawn, after schedule"
+        );
     }
 
     #[test]

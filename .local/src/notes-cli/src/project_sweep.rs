@@ -39,8 +39,8 @@ pub(crate) struct Ctx {
     pub systems: Vec<crate::standing::System>,
 }
 
-/// Where an epic row sits in `### Epics`: a `#new` one first, so the human sees what the
-/// triager filed, then by its system in the list's order, an area the list does not name after
+/// Where an epic row sits in `### Epics`: a `#new` one first, so what the triager filed
+/// is seen first, then by its system in the list's order, an area the list does not name after
 /// those by its word; rank decides within one system, the sort being stable.
 fn epic_order(line: &str, systems: &[crate::standing::System]) -> (bool, usize, String) {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
@@ -294,26 +294,37 @@ pub(crate) fn old_done(content: &str, ctx: &Ctx) -> Vec<std::ops::Range<usize>> 
         .into_iter()
         .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], ctx.open))
         .collect();
-    let day = |r: &std::ops::Range<usize>| {
-        crate::project_tasks::done_on(lines[r.start])
-            .filter(|_| !md::is_dropped(lines[r.start]))
-            .filter(|d| (ctx.today - *d).num_days() < ctx.shape.done_days)
-    };
-    let mut kept: Vec<(NaiveDate, usize)> = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| day(r).map(|d| (d, i)))
-        .collect();
-    kept.sort_by_key(|(d, i)| (std::cmp::Reverse(*d), *i));
-    let keep: std::collections::HashSet<usize> = kept
-        .into_iter()
-        .take(ctx.shape.done_max)
-        .map(|(_, i)| i)
-        .collect();
+    let firsts: Vec<&str> = rows.iter().map(|r| lines[r.start]).collect();
+    let keep = kept_done(&firsts, ctx.today, &ctx.shape);
     rows.into_iter()
         .enumerate()
         .filter(|(i, _)| !keep.contains(i))
         .map(|(_, r)| r)
+        .collect()
+}
+
+/// Which of `rows` (each a closed row's first line) the Done window keeps: dated, not dropped,
+/// closed under `done_days` ago, and among the `done_max` newest (ties keep file order). The one
+/// window rule, for the sheets and `playtest.md` alike.
+pub(crate) fn kept_done(
+    rows: &[&str],
+    today: NaiveDate,
+    shape: &SheetShape,
+) -> std::collections::HashSet<usize> {
+    let mut kept: Vec<(NaiveDate, usize)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            crate::project_tasks::done_on(l)
+                .filter(|_| !md::is_dropped(l))
+                .filter(|d| (today - *d).num_days() < shape.done_days)
+                .map(|d| (d, i))
+        })
+        .collect();
+    kept.sort_by_key(|(d, i)| (std::cmp::Reverse(*d), *i));
+    kept.into_iter()
+        .take(shape.done_max)
+        .map(|(_, i)| i)
         .collect()
 }
 
@@ -322,11 +333,23 @@ pub(crate) fn old_done(content: &str, ctx: &Ctx) -> Vec<std::ops::Range<usize>> 
 /// editor, which no CLI verb dated. A close already undated in the saved file is an old one,
 /// not this edit's, and keeps its bytes (the sweep rolls it off as undated).
 pub(crate) fn stamp_undated(content: &str, saved: &str, today: NaiveDate) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    match md::section_span(&lines, sheet::TASKS) {
+        Some(span) => stamp_undated_in(content, saved, today, span),
+        None => content.to_string(),
+    }
+}
+
+/// [`stamp_undated`] over the lines in `span` (0-based), for a file whose rows are not under
+/// `## Tasks` (`playtest.md`).
+pub(crate) fn stamp_undated_in(
+    content: &str,
+    saved: &str,
+    today: NaiveDate,
+    span: std::ops::Range<usize>,
+) -> String {
     let before: std::collections::HashSet<&str> = saved.lines().map(str::trim_end).collect();
     let lines: Vec<&str> = content.lines().collect();
-    let Some(span) = md::section_span(&lines, sheet::TASKS) else {
-        return content.to_string();
-    };
     let token = crate::project_tasks::done_token(today);
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
     for r in crate::project_tasks::done_rows(content) {
