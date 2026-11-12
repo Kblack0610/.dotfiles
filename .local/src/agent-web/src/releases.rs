@@ -99,6 +99,22 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     }
 }
 
+impl crate::infra::Pages {
+    /// `#releases/apps/<app>`'s read (`hub_core::app_status`): release-state and eight
+    /// VictoriaMetrics queries, so it is kept `CACHE_SECS` like a machine's page.
+    pub async fn app(&self, app: String) -> Result<String, (StatusCode, String)> {
+        let a = app.clone();
+        self.get(app, async move {
+            let now = hub_core::jobs::now();
+            move || {
+                hub_core::app_status::read(&System, &a, now)
+                    .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
+            }
+        })
+        .await
+    }
+}
+
 /// Which tag of which project; no tag is the project's newest release.
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -248,7 +264,10 @@ mod tests {
             ..Default::default()
         });
         assert!(none.get("app").is_none() && body(Query::default()).get("app").is_none());
-        assert_eq!(none["asked"], "nope", "an unknown app's read says what it was asked");
+        assert_eq!(
+            none["asked"], "nope",
+            "an unknown app's read says what it was asked"
+        );
         assert!(body(Query::default()).get("asked").is_none());
     }
 

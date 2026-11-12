@@ -192,7 +192,7 @@ function renderLogRanked() {
       }).join("")}</table></div>`;
   $("log-ranked").innerHTML = body;
 }
-$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows) loadRanked(); });
+$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows && logShows("ranked")) loadRanked(); });
 $("log-ranked").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-sid]");
   if (!row) return;
@@ -200,7 +200,7 @@ $("log-ranked").addEventListener("click", (e) => {
   ost.open = ost.open === sid ? null : sid;
   if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderLogRanked();
 });
-LOG_PARTS.push({ show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
+LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
 // An overview section, open until the reader folds it; the fold is remembered across re-renders by its key.
 // title is text.
@@ -220,5 +220,5 @@ for (const id of ["scroll", "facts"]) {
   }, true);
 }
 
-const logWatchFeed = pushed("log", ["watch"], refreshWatch);
-LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
+const logWatchFeed = pushed("log", ["watch"], refreshWatch, () => logShows("changes"));
+LOG_PARTS.push({ sec: "changes", show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });

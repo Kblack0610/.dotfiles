@@ -176,11 +176,12 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.equal(ctx.route("#infra/governor").query, "ms=governed");
   assert.equal(ctx.route("#infra/cloud").query, "ms=cloud");
   assert.deepEqual(r("#infra/jobs"), ["infra", "jobs", undefined]);
-  // Red now, Red fixes (and the Reds inner tab) and health moved to Alerts (layout::MOVED).
-  assert.deepEqual(r("#infra/reds"), ["alerts", "", "fixes"]);
-  assert.deepEqual(r("#infra/fixes"), ["alerts", "", "fixes"]);
-  assert.deepEqual(r("#infra/red"), ["alerts", "", "firing"]);
-  assert.deepEqual(r("#infra/health"), ["alerts", "", "health"]);
+  // Red now, Red fixes (and the Reds inner tab) and health moved to Alerts (layout::MOVED), each
+  // on the Alerts inner tab holding it; health opens with Firing.
+  assert.deepEqual(r("#infra/reds"), ["alerts", "fixes", "fixes"]);
+  assert.deepEqual(r("#infra/fixes"), ["alerts", "fixes", "fixes"]);
+  assert.deepEqual(r("#infra/red"), ["alerts", "firing", "firing"]);
+  assert.deepEqual(r("#infra/health"), ["alerts", "firing", "health"]);
   // The retired #ci, #machines and #jobs tabs (layout::section) land on their inner tab too.
   assert.deepEqual(r("#ci"), ["infra", "runners", "ci"]);
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);

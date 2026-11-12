@@ -24,8 +24,14 @@ pub struct Work {
     /// Local `YYYY-MM-DDTHH:MM`: when it finished, or when it reached the state it is in.
     pub when: Option<String>,
     pub project: String,
+    /// The title, [`crate::text::clean`]: what the plan, the CI state and the type were
+    /// prefixed with stand in their own columns.
     pub what: String,
+    /// `<plan name> P5` of a plan item (`queue::Item::plan_label`).
+    pub plan: Option<String>,
     pub kind: Option<String>,
+    /// The PR's CI state (`gh` `statusCheckRollup`, or draft) while it is open.
+    pub ci: Option<String>,
     /// `repo#N`, then `+N` when the item has more than one.
     pub pr: Option<String>,
     pub url: Option<String>,
@@ -55,8 +61,9 @@ impl Work {
 }
 
 impl Row for Work {
-    const COLUMNS: &'static [&'static str] =
-        &["state", "when", "project", "what", "kind", "pr", "cost"];
+    const COLUMNS: &'static [&'static str] = &[
+        "state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost",
+    ];
     const STATES: &'static [&'static str] = &[
         "all",
         "done",
@@ -67,7 +74,7 @@ impl Row for Work {
         "failed",
         "cancelled",
     ];
-    const FACETS: &'static [&'static str] = &["state", "project", "kind"];
+    const FACETS: &'static [&'static str] = &["state", "project", "plan", "kind", "ci"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["state", "project", "when"];
 
@@ -78,7 +85,9 @@ impl Row for Work {
             "when" => text(self.when.as_deref()),
             "project" => Val::Text(self.project.clone()),
             "what" => Val::Text(self.what.clone()),
+            "plan" => text(self.plan.as_deref()),
             "kind" => text(self.kind.as_deref()),
+            "ci" => text(self.ci.as_deref()),
             "pr" => text(self.pr.as_deref()),
             "cost" => self.cost.map_or(Val::None, Val::Num),
             _ => Val::None,
@@ -139,14 +148,7 @@ where
         .map(|t| t.with_timezone(tz).format("%Y-%m-%dT%H:%M").to_string())
 }
 
-/// The conventional-commit type a PR's title starts with, so `kind:fix` finds items and PRs.
-fn title_kind(title: &str) -> Option<String> {
-    let head = title.split(':').next().filter(|h| h.len() < title.len())?;
-    let kind = head.split('(').next()?.trim_end_matches('!');
-    (!kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase())).then(|| kind.to_string())
-}
-
-/// What an open PR's row says before its title: that it is a draft, else its CI state.
+/// An open PR's `ci` cell: that it is a draft, else its CI state.
 fn check_of(v: &Value) -> Option<String> {
     if v["draft"].as_bool() == Some(true) {
         return Some("draft".to_string());
@@ -154,14 +156,6 @@ fn check_of(v: &Value) -> Option<String> {
     v["ci"]
         .as_str()
         .map(|ci| format!("CI {}", ci.to_lowercase()))
-}
-
-/// A row's text, led by what its open PR needs someone to know.
-fn tagged(what: String, pr: Option<&Pr>) -> String {
-    match pr.and_then(|p| p.check.as_deref()) {
-        Some(check) => format!("[{check}] {what}"),
-        None => what,
-    }
 }
 
 fn pr_of<Tz: TimeZone>(v: &Value, open: bool, tz: &Tz) -> Option<Pr>
@@ -258,8 +252,15 @@ where
         state,
         when,
         project: i.project.trim().to_string(),
-        what: tagged(i.title(), first),
-        kind: i.kind.clone().filter(|k| !k.is_empty()),
+        what: i.title(),
+        plan: i.plan_label.clone(),
+        // The item's own type, else the one its task led with (`fix(hub): ...`).
+        kind: i
+            .kind
+            .clone()
+            .filter(|k| !k.is_empty())
+            .or_else(|| crate::text::clean(&i.task).kind),
+        ci: first.and_then(|p| p.check.clone()),
         pr: label.map(|l| if more > 0 { format!("{l} +{more}") } else { l }),
         url: first
             .map(|p| p.url.clone())
@@ -271,12 +272,22 @@ where
 }
 
 fn pr_row(p: &Pr) -> Work {
+    let title = crate::text::clean(&p.title);
+    let kind = title.kind.clone();
+    let what = title.shown();
     Work {
         state: if p.open { "open" } else { "done" },
         when: p.at.clone(),
         project: p.project.clone(),
-        what: tagged(p.title.clone(), Some(p)),
-        kind: title_kind(&p.title),
+        what: if what.is_empty() {
+            p.title.trim().to_string()
+        } else {
+            what
+        },
+        plan: None,
+        // The conventional-commit type its title led with, so `kind:fix` finds items and PRs.
+        kind,
+        ci: p.check.clone(),
         pr: Some(format!("{}#{}", p.repo, p.number)),
         url: Some(p.url.clone()),
         cost: None,
@@ -287,11 +298,7 @@ fn pr_row(p: &Pr) -> Work {
 
 /// One row per item, one per unclaimed PR, attention first and newest first inside that. Queued
 /// items keep agent-queue's order, which is the order they will start in.
-pub fn gather<Tz: TimeZone>(
-    items: &[Item],
-    days: &[(String, Value)],
-    tz: &Tz,
-) -> Gathered
+pub fn gather<Tz: TimeZone>(items: &[Item], days: &[(String, Value)], tz: &Tz) -> Gathered
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -677,18 +684,14 @@ mod tests {
                 .find(|r| r.slug.as_deref() == Some(s))
                 .unwrap()
         };
+        let both = |s: &str| (row(s).what.clone(), row(s).plan.clone().unwrap_or_default());
+        let want = |w: &str, p: &str| (w.to_string(), format!("Systems you can see {p}"));
+        assert_eq!(both("old-p5"), want("Versions going forward", "P5"));
+        assert_eq!(both("new-p4"), want("Fourth thing", "P4+5"));
+        assert_eq!(both("own-p10"), want("live stage, gated", "P9"));
         assert_eq!(
-            row("old-p5").what,
-            "Systems you can see P5: Versions going forward"
-        );
-        assert_eq!(row("new-p4").what, "Systems you can see P4+5: Fourth thing");
-        assert_eq!(
-            row("own-p10").what,
-            "Systems you can see P9: live stage, gated"
-        );
-        assert_eq!(
-            row("multi").what,
-            "Systems you can see P4+5: P4 Fourth; P5 Fifth",
+            both("multi"),
+            want("P4 Fourth; P5 Fifth", "P4+5"),
             "a leading label names one of an item's two phases, so the place stands"
         );
         assert_eq!(row("hand").what, "other-plan P2: kept as written");
@@ -704,6 +707,8 @@ mod tests {
             when: Some(when.into()),
             project: "p".into(),
             what: "w".into(),
+            plan: None,
+            ci: None,
             kind: None,
             pr: None,
             url: None,
@@ -757,19 +762,49 @@ mod tests {
     }
 
     #[test]
-    fn an_open_prs_draft_or_ci_state_leads_its_row_claimed_or_not() {
+    fn an_open_prs_draft_or_ci_state_is_its_ci_cell_and_never_in_its_title() {
         let mut red = pr(".dotfiles", 7, AT);
         red["ci"] = json!("FAILURE");
         let mut draft = pr(".dotfiles", 8, AT);
         draft["draft"] = json!(true);
         let i = item("a", "running", json!({"pr": "Kb/.dotfiles#7"}));
         let rows = work(&[i], vec![("2026-11-08", json!({"open": [red, draft]}))]);
-        let what = |slugged: bool| {
+        let row = |slugged: bool| {
             let r = rows.iter().find(|r| r.slug.is_some() == slugged).unwrap();
-            r.what.clone()
+            (
+                r.what.clone(),
+                r.ci.clone().unwrap_or_default(),
+                r.kind.clone(),
+            )
         };
-        assert_eq!(what(true), "[CI failure] a");
-        assert_eq!(what(false), "[draft] fix(x): pr 8");
+        assert_eq!(row(true), ("a".into(), "CI failure".into(), None));
+        assert_eq!(
+            row(false),
+            ("pr 8".into(), "draft".into(), Some("fix".into()))
+        );
+    }
+
+    #[test]
+    fn a_rows_type_is_never_lost_and_an_id_only_pr_title_is_never_blank() {
+        let typed = item("fix(hub): mend the table", "running", json!({}));
+        let own = item("b", "running", json!({"type": "chore"}));
+        let mut ids = pr(".dotfiles", 9, AT);
+        ids["title"] = json!("fix(x): ar-186");
+        let mut deps = pr(".dotfiles", 10, AT);
+        deps["title"] = json!("deps: bump serde");
+        let rows = work(
+            &[typed, own],
+            vec![("2026-11-08", json!({"open": [ids, deps]}))],
+        );
+        let at = |what: &str| {
+            rows.iter()
+                .find(|r| r.what == what)
+                .unwrap_or_else(|| panic!("{what}: {rows:?}"))
+        };
+        assert_eq!(at("mend the table").kind.as_deref(), Some("fix"));
+        assert_eq!(at("b").kind.as_deref(), Some("chore"));
+        assert_eq!(at("ar-186").kind.as_deref(), Some("fix"));
+        assert_eq!(at("bump serde").kind.as_deref(), Some("deps"));
     }
 
     #[test]

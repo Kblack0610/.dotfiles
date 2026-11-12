@@ -549,12 +549,13 @@ mod tests {
         // section never shows under every inner tab or under none. Releases is checked per
         // inner tab below: its table and detail share one group.
         let pages = [
+            ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "log"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -569,6 +570,23 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Log's sections are index.html's `sec-` anchors, which log.js puts in their inner tab's
+        // group by id; one log.js draws (the day's history) it wraps where it draws it. The
+        // forecast is the TUI's alone, as `log_folds_are_the_layout` says.
+        let log_js = include_str!("../static/log.js");
+        assert!(
+            log_js.contains(r#"innerHide("log", el.id.slice(4), el)"#),
+            "log.js never puts Log's sections in their inner tabs"
+        );
+        let index = include_str!("index.html");
+        for s in hub_core::layout::resolve("log").expect("log").sections {
+            let id = format!("id=\"sec-{s}\"");
+            let drawn = log_js.contains(&format!("innerWrap(\"log\", \"{s}\", `<div {id}"));
+            assert!(
+                *s == "forecast" || index.contains(&id) || drawn,
+                "Log's {s} has no {id} in its inner tab's group"
+            );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
         let releases = include_str!("../static/releases.js");

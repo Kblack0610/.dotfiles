@@ -176,7 +176,7 @@ REPO="${REPO/#\~/$HOME}"
 # README, docs and CHANGELOG there; the predicates run from that root.
 sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
-[ -n "$LIST" ] || [ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
+[ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 [ -z "$FILE" ] || file_gaps
 
@@ -197,8 +197,9 @@ rows() {
 # applies <cell>: the Applies cell names `base` or the project's type.
 applies() { case ", $1, " in *", base, "*|*", ${TYPE:-none}, "*) return 0 ;; esac; return 1; }
 
-# With no repo, predicates run from an empty dir: `[ -f README.md ]` must not match a lab file.
+# With no project folder, predicates run from an empty dir, never the repo root or lab.
 EMPTY="$(mktemp -d)"; trap 'rmdir "$EMPTY"' EXIT
+CHECK_DIR="$ROOT"; [ -d "$CHECK_DIR" ] || CHECK_DIR="$EMPTY"
 
 # judge <check>: PASS, FAIL, HUMAN or TODO for one Check cell.
 judge() {
@@ -210,7 +211,7 @@ judge() {
       # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
       case "$pred" in *\`*) echo TODO; return ;; esac
       # A predicate is plain shell: `ls a b | grep -q .` must not fail on this script's pipefail.
-      if (set +o pipefail; STAGE=""; [ -n "$SYSTEMS" ] || STAGE="$TARGET"; export NAME TYPE REPO ROOT LAB STAGE; cd "${ROOT:-$EMPTY}" || exit 1; eval "$pred") >/dev/null 2>&1; then
+      if (set +o pipefail; STAGE=""; [ -n "$SYSTEMS" ] || STAGE="$TARGET"; export NAME TYPE REPO ROOT LAB STAGE; cd "$CHECK_DIR" || exit 1; eval "$pred") >/dev/null 2>&1; then
         echo PASS
       else
         echo FAIL

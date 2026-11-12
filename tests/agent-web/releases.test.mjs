@@ -24,6 +24,7 @@ let body = {};
 let cl = {};
 let builds = {};
 let detail = {};
+let status = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -37,7 +38,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -482,4 +483,39 @@ test("a count shows beside an inner tab needing a look: a bad app, a release run
   assert.match(box.innerHTML, />Apps <span class="pill warn">1<\/span>/);
   assert.match(box.innerHTML, />Release runs <span class="pill warn">1<\/span>/);
   run("st.arg = ''");
+});
+
+test("an app's page leads with its status from /api/releases/app: banner, watches, checks, day bars, incidents, then its channels", async () => {
+  const at = NOW();
+  const day = (i, ok, fail, text) => ({ at: at - (89 - i) * 86400, ok, fail, text });
+  const days = Array.from({ length: 90 }, (_, i) => (i < 80 ? day(i, 0, 0, "No data") : i === 85 ? day(i, 287, 1, "99.65%") : day(i, 288, 0, "100%")));
+  status = {
+    app: "binks", groups: ["binks", "binks-chat", "binks-beta"], unchecked: ["binks", "binks-beta"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
+    context: [{ label: "Firing", text: "binks-chat-spend", link: "#alerts/binks-chat-spend", warn: true }],
+    checks: [{ name: "chat", group: "binks-chat", state: "Down", level: "bad", uptime: [["24h", "50%"], ["7d", "99.9%"]], days, latency: [[at - 7200, 120.5], [at - 3600, 80]], latency_text: "p50 80ms, p95 120ms" }],
+    incidents: [{ check: "chat", from: at - 600, to: null, fails: 3, text: "3 failed" }],
+    monitor: "https://status.example", errors: [], at,
+  };
+  run("st.views.releases = ''");
+  await page();
+  run("TABS.releases").show();
+  for (let i = 0; i < 4; i++) await settled();
+  assert.ok(asked.includes("/api/releases/app?app=binks"), asked.join(" "));
+  const h = box.innerHTML;
+  assert.match(h, /Partial outage: chat/);
+  assert.match(h, /<a href="#alerts\/binks-chat-spend">binks-chat-spend<\/a>/, "a firing watch links to Alerts");
+  assert.match(h, /<h2 class="sec">Checks <span class="n">\d+<\/span><\/h2>/, "the head is its title and count; the groups with no check are the line under it");
+  assert.match(h, /No Gatus check yet: binks, binks-beta/);
+  assert.equal(h.match(/class="cc"/g).length, 90 + 24, "90 day bars and 24 hourly latency columns");
+  assert.equal(h.match(/background:var\(--c-other\)/g).length, 80, "a day with no results is grey, never green");
+  assert.match(h, /data-tip="[^"]*: 99\.65%, 1 failed of 288"/);
+  assert.match(h, /<td class="bad">ongoing<\/td>/);
+  assert.ok(h.indexOf("Partial outage") < h.indexOf("data-named>deployed"), "the status leads, the channels follow");
+  Object.assign(run("apst"), { page: "apps/other", data: null, err: null });
+  run("relst.render()");
+  assert.match(box.innerHTML, /<h2 class="sec">Status<\/h2><div class="empty">reading\.\.\.<\/div>/, "no status read yet says reading, never Operational");
+  Object.assign(run("st"), { page: "", arg: "" });
+  status = {};
+  run("TABS.releases").show();
+  await settled();
 });

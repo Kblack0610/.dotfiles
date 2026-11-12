@@ -281,8 +281,8 @@ $("fleet").addEventListener("click", (e) => {
   if (row) location.hash = row.dataset.href;
 });
 
-const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh);
-LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh, () => logShows("verdicts"));
+LOG_PARTS.push({ sec: "verdicts", show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
     if (rst.name !== st.arg) Object.assign(rst, { name: st.arg, data: null, err: null, log: null, sel: "" });

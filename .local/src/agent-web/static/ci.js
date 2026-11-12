@@ -66,7 +66,7 @@ function runsTable(o) {
 
   // The whole block, once it has been read.
   t.block = () => {
-    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : "";
+    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : secHead("", o.title) + `<div class="empty">Reading...</div>`;
     if (!t.data.table) return `<div id="${id}-head">${head(t.data)}</div>`;
     const b = tblBodyFirst(t.data.table, () => body(t.data));
     return `<div data-tbl="${RUNS_PRE}"><div id="${id}-head">${head(t.data)}</div>${tblBar(id, t.data.table, RUNS_HINT)}<div id="${id}-body">${b}</div></div>`;
@@ -321,13 +321,16 @@ const tst = tblTab({
 
 const TST_COLS = { state: ["state"], tier: ["tier"], suite: ["suite"], tests: ["tests", "n"], failed: ["failed", "n"], quarantined: ["quarantined", "n"], skipped: ["skipped", "n"], time: ["time", "n"] };
 const tstKey = (r) => `${r.tier}|${r.suite}`;
+// A dotted name (Playground.PlayTests.Suite.Case) has no space to wrap at, so one long name pushed
+// the columns after it off a 1400px page: it may break after each dot.
+const dotted = (s) => esc(s).replace(/\./g, ".<wbr>");
 const testTime = (s) => (s >= 60 ? secs(s) : s > 0 ? `${s.toFixed(s < 10 ? 2 : 0)}s` : "-");
 const testClass = (result) => (result === "failed" ? "bad" : result === "quarantined" ? "warn" : "");
 
 function suiteRow(r) {
   const open = tstKey(r) === tst.sel;
   const row = `<tr class="sr${open ? " sel" : ""}" data-skey="${esc(tstKey(r))}">` +
-    `<td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${esc(r.tier)}</td><td class="wrap">${esc(r.suite)}</td>` +
+    `<td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${esc(r.tier)}</td><td class="wrap">${dotted(r.suite)}</td>` +
     `<td class="n">${r.tests}</td><td class="n ${r.failed ? "bad" : "muted"}">${r.failed}</td><td class="n ${r.quarantined ? "warn" : "muted"}">${r.quarantined || 0}</td><td class="n muted">${r.skipped}</td><td class="n">${testTime(r.time)}</td></tr>`;
   return open ? row + suiteDetail(r) : row;
 }
@@ -341,12 +344,12 @@ function suiteDetail(r) {
     const all = c.data.cases, n = (x) => (x === "all" ? all.length : all.filter((t) => t.result === x).length);
     const chips = TEST_RESULTS.map((x) => chipBtn(x === "all" ? !tst.res : tst.res === x, "data-cres", x === "all" ? "" : x, x, n(x))).join("");
     const list = all.filter((t) => !tst.res || t.result === tst.res);
-    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${esc(t.name)} <span class="muted">${testTime(t.time)}</span>` +
+    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${dotted(t.name)} <span class="muted">${testTime(t.time)}</span>` +
       (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
     inner = `<div class="seg fseg">${chips}</div>` + (lines || `<div class="muted">No ${esc(tst.res)} tests.</div>`) +
       (c.data.more > 0 ? `<div class="muted">${c.data.more} more not shown; search for a test's name to find it.</div>` : "");
   }
-  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${esc(r.suite)}</div>${inner}</div></td></tr>`;
+  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${dotted(r.suite)}</div>${inner}</div></td></tr>`;
 }
 
 function testsBody(d) {
@@ -410,7 +413,7 @@ function qtnBody(q) {
   if (!rows.length) return `<div class="panel">${t.total ? "No quarantined test matches." : "No quarantine lists its tests yet."}</div>`;
   const row = (r, i) => {
     const L = tblLinks(t, i);
-    return `<tr><td class="wrap">${esc(r.test)}</td><td>${tblLink(L.repo, r.repo)}</td><td>${r.row ? tblLink(L.row, r.row) : "-"}</td>` +
+    return `<tr><td class="wrap">${dotted(r.test)}</td><td>${tblLink(L.repo, r.repo)}</td><td>${r.row ? tblLink(L.row, r.row) : "-"}</td>` +
       `<td>${esc(r.ends)}</td><td class="n ${levelClass(r.level)}">${esc(r.left)}</td><td class="${r.nightly === "now passing" ? "" : "muted"}">${esc(r.nightly)}</td></tr>`;
   };
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, QTN_COLS)}${rows.map(row).join("")}</table>` +
