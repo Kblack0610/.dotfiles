@@ -101,7 +101,7 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 const table = {
   q: "", state: "", sort: "", dir: "", total: 4, shown: 3,
   states: [{ name: "all", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "up next", n: 1 }, { name: "done", n: 0 }],
-  columns: ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"].map((k) => col(k)),
+  columns: ["state", "title", "project", "in", "wait", "run", "kind", "size", "acct", "pr", "plan"].map((k) => col(k)),
   facets: [],
 };
 const item = (slug, o = {}) => ({ state: "queued", project: "dotfiles", slug, title: `title ${slug}`, priority: "high", ...o });
@@ -165,7 +165,7 @@ test("the Queue is one table with the server's chips and every header a sort but
   assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
   assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
   assert.match(h, /<button class="tile" data-ts="up next"><span class="tl">UP NEXT<\/span><span class="tv">1<\/span><\/button>/);
-  for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"]) {
+  for (const c of ["state", "title", "project", "in", "wait", "run", "kind", "size", "acct", "pr", "plan"]) {
     assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");

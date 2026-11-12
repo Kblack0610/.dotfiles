@@ -349,8 +349,6 @@ def analyse(runs, records, base, branches):
         "by_workflow": {wf: [sum(r["workflowName"] == wf for r in scope),
                              len({x for x, r in first.items() if r["workflow"] == wf})]
                         for wf in sorted({r["workflowName"] for r in scope})},
-        "base": [len([r for r in scope if r["headBranch"] == base]),
-                 len({x for x, r in first.items() if r["branch"] == base})],
     }
 
 
@@ -362,7 +360,6 @@ def report(a, args, since, until, partial, logs_missing):
     print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), "
           f"{a['pending_runs']} pending (red only on a check that waits for another run, not red), {a['cancelled']} cancelled (not red)")
     print("red by workflow: " + ", ".join(f"{wf} {red}/{n}" for wf, (n, red) in a["by_workflow"].items()))
-    print(f"{args.base}: {a['base'][1]} red of {a['base'][0]}")
     print("\nbucket    runs  share   (each red run counted once, by its first failed job)")
     for b in ("test", "check", "infra", "timeout"):
         if a["buckets"].get(b):

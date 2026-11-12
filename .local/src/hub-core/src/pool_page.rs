@@ -141,6 +141,9 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     if has(p.withheld) {
         slots = format!("{slots}; {} withheld", n(p.withheld.unwrap_or(0.0)));
     }
+    if has(p.lent) {
+        slots = format!("{slots}; {} lent to their pair", n(p.lent.unwrap_or(0.0)));
+    }
     let hosts = p.machines.len();
     slots = format!(
         "{slots}, on {hosts} machine{}",
