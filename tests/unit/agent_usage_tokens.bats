@@ -63,14 +63,33 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8
   assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",6.0],["Read",2.0]]\n2.0'
 }
 
-@test "snapshot: the three recall cuts come from one tool-output scan" {
+@test "snapshot: by skill splits each session's cost over its skill spans by weighted tokens; one with no response allocates nothing" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  cat > "$stub/recall" <<'EOS'
+#!/bin/sh
+echo '{"totals":{"turns":5},"rows":{"session,skill":[{"key":["a","one-shot"],"turns":3,"spans":1,"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000,"output_tokens":20},{"key":["a","(no skill)"],"turns":2,"spans":0,"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"output_tokens":0}]}}'
+EOS
+  echo "#!/bin/sh
+echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":9,\"b\":1}}}'" > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  # a: one-shot weighs 1000*0.1 + 20*5 = 200, no skill 50 + 500*0.1 = 100, so $9 splits 6 and 3; b ($1) had no response
+  assert_equal "$(snap '[.by_skill[] | [.skill, .spans, .sessions, .responses, .context, .allocated_cost_usd]], .by_skill_unallocated_usd')" $'[["one-shot",1,1,3,1000,6.0],["(no skill)",0,1,2,550,3.0]]\n1.0'
+}
+
+@test "snapshot: by skill on the real fixture sums to the day's cost" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[((.by_skill | map(.responses) | add) == .totals.responses), ((((.by_skill | map(.allocated_cost_usd) | add) + .by_skill_unallocated_usd - .totals.cost_usd) | fabs) < 0.01)]')" '[true,true]'
+}
+
+@test "snapshot: the four recall cuts come from one tool-output scan" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"totals\\":{\\"turns\\":1},\\"rows\\":{}}"\n' "$stub" > "$stub/recall"
   printf '#!/bin/sh\necho {}\n' > "$stub/burn"
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
   assert_equal "$(grep -c -- '--by' "$stub/calls")" 1
-  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool '
+  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool --by session,skill '
 }
 
 @test "snapshot: the command cut is trimmed to the top 20 here, since recall is asked for every row" {
