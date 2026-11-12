@@ -313,8 +313,6 @@ pub struct Judge {
     pub disagree: u32,
     /// The judge said this one is the human's ("asks-you").
     pub deferred: u32,
-    /// Deferred, and the human took the recommendation anyway.
-    pub false_defer: u32,
     /// Judged, still waiting on the human.
     pub pending: u32,
     /// Answered in the session as free text naming no option, which no call can match.
@@ -1053,8 +1051,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         score: Score,
         tp: u32,
         fp: u32,
-        #[serde(rename = "fn")]
-        false_defer: u32,
         deferred: u32,
         pending: u32,
         unscorable: u32,
@@ -1087,7 +1083,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         agree: t.tp,
         disagree: t.fp,
         deferred: t.deferred,
-        false_defer: t.false_defer,
         pending: t.pending,
         unscored: t.unscorable,
         precision: t.score.precision,
@@ -1397,11 +1392,10 @@ mod tests {
                 j.agree,
                 j.disagree,
                 j.deferred,
-                j.false_defer,
                 j.pending,
                 j.unscored
             ),
-            (2, 1, 4, 3, 1, 2)
+            (2, 1, 4, 1, 2)
         );
         assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
         assert_eq!(j.prompt, "60c840b");

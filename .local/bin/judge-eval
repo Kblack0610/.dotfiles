@@ -410,7 +410,6 @@ kpi_json() {
             judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
-            ask_false_defer_pct: (.agents[] | select(.score == "ask-answers") | .total | fdefer),
             ask_unclear_pct: (.agents[] | select(.score == "ask-answers") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
