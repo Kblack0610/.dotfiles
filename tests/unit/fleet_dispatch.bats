@@ -1873,6 +1873,26 @@ J
   assert_output --partial 'dispatch is held'
 }
 
+@test "starved: a fleet at its pace target is held, not starved, whatever other gate is closed; one under it, or a stale count, starves" {
+  queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_BURST=3
+  fleet_state 3
+  run cmd_starved
+  assert_success
+  assert_output 'held by a full fleet (3 live sessions, the away pace target is 3), so nothing is starved'
+  # Negative control: one under the target the account gate binds, and the item starves.
+  fleet_state 2
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # A stale fleet state document reads no live count, so it holds nothing here.
+  fleet_state 3 30
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+}
+
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   acct main:pace
