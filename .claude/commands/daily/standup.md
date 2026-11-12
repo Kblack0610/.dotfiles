@@ -1,7 +1,7 @@
 ---
 name: standup
 description: Generate a concise standup update (yesterday, today, blockers)
-argument-hint: [format?]
+argument-hint: "[format?]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -9,7 +9,7 @@ disable-model-invocation: true
 # Daily Standup Generator
 
 Generate a concise standup update in the classic format. Sources are git +
-the `gh` CLI (`gh-workflows` skill) — Linear is no longer used; GitHub MCP
+the `gh` CLI (`gh-workflows` skill) - Linear is no longer used; GitHub MCP
 is intentionally NOT used (project preference: `gh` CLI over MCP).
 
 ## Workflow
@@ -68,18 +68,18 @@ is intentionally NOT used (project preference: `gh` CLI over MCP).
 📍 STANDUP - {date}
 
 ✅ YESTERDAY
-• Merged PR #42 — Add user authentication (repo-name)
+• Merged PR #42 - Add user authentication (repo-name)
 • 7 commits in repo-a (auth/migrations + bug-fix-x)
 • Reviewed PR #55 for @teammate
 
 📋 TODAY
 • PR #48 ready for review (repo-name)
 • On branch `feature/api-integration` (3 uncommitted files)
-• Today's focus: API integration → DB migration
+• Today's focus: API integration -> DB migration
 
 ⚠️ BLOCKERS
 • PR #45 waiting on @specific-reviewer (>2 days)
-• Draft PR #30 stalled — needs spec sign-off
+• Draft PR #30 stalled - needs spec sign-off
 ```
 
 ## Argument Options
