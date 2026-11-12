@@ -984,7 +984,7 @@ mod tests {
             line: "1 of 2 off target: Outcome".into(),
             all_ok: false,
             rows: vec![
-                row("Output", Level::Ok, &["1633 PRs merged in 7d"]),
+                row("Cost", Level::Ok, &["$12.54 per merged item"]),
                 row(
                     "Outcome",
                     Level::Warn,
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(
             drawn(&fleet_vitals(), 80),
             "VITALS    1 of 2 off target\n  \
-             Output     1633 PRs merged in 7d\n  \
+             Cost       $12.54 per merged item\n  \
              Outcome !  Oldest request 340h, limit 72h; 12 unverified, limit 0"
         );
     }

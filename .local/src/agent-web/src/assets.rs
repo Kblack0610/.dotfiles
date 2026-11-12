@@ -326,7 +326,10 @@ mod tests {
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
         assert_eq!(keys, all[..all.len() - 5]);
-        assert_eq!(all[all.len() - 5..], ["forge", "event", "title", "id", "pr"]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
@@ -487,6 +490,32 @@ mod tests {
                 to.2, to.3
             );
             assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
+    }
+
+    #[test]
+    fn project_page_is_the_layout() {
+        // Rule 8 for an opened project: app.js's PROJECT_PAGE is hub_core::layout::PROJECT_PAGE.
+        let want: Vec<serde_json::Value> = hub_core::layout::PROJECT_PAGE
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const PROJECT_PAGE = "))
+            .expect("app.js has PROJECT_PAGE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
+        assert_eq!(got, serde_json::Value::Array(want));
+        // Every section a group names is an anchor projects.js draws.
+        let js = include_str!("../static/projects.js");
+        for i in hub_core::layout::PROJECT_PAGE {
+            for s in i.sections {
+                assert!(
+                    js.contains(&format!("\"{s}\"")),
+                    "projects.js never names {s}"
+                );
+            }
         }
     }
 
