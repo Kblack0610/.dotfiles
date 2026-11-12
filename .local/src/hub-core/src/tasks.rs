@@ -745,6 +745,54 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
     Ok(a)
 }
 
+impl Write {
+    /// The audit line this write records (`crate::audit`): `board.<verb in the past tense>`, the
+    /// project and row as the target, and the verb's own fields as what was asked.
+    pub fn audit_entry(&self, actor: &str, via: &str) -> crate::audit::Entry {
+        use serde_json::{json, Value};
+        let (verb, raw, to) = match &self.verb {
+            Verb::Add {
+                text,
+                priority,
+                to,
+                game,
+            } => (
+                "add",
+                "",
+                json!({"text": text, "priority": priority, "to": to, "game": game}),
+            ),
+            Verb::Done {
+                raw,
+                proof,
+                unverified,
+            } => (
+                "done",
+                raw.as_str(),
+                json!({"proof": proof, "unverified": unverified}),
+            ),
+            Verb::Start { raw } => ("start", raw.as_str(), Value::Null),
+            Verb::Drop { raw, why, dup } => ("drop", raw.as_str(), json!({"why": why, "dup": dup})),
+            Verb::Move { raw, project, to } => {
+                ("move", raw.as_str(), json!({"project": project, "to": to}))
+            }
+            Verb::Promote { raw } => ("promote", raw.as_str(), Value::Null),
+            Verb::Demote { raw } => ("demote", raw.as_str(), Value::Null),
+            Verb::Edit { raw, text } => ("edit", raw.as_str(), json!({ "text": text })),
+            Verb::Tag { raw, add, remove } => {
+                ("tag", raw.as_str(), json!({"add": add, "remove": remove}))
+            }
+        };
+        let target = format!("{} {raw}", self.project);
+        crate::audit::Entry::new(
+            actor,
+            &format!("board.{}", crate::audit::past(verb)),
+            target.trim(),
+            via,
+        )
+        .to(to)
+    }
+}
+
 /// Run one write: its output, or its stderr (a stale row says nothing matched).
 pub fn apply(runner: &dyn Runner, w: &Write) -> Result<String, String> {
     runner.run(&argv(w)?)

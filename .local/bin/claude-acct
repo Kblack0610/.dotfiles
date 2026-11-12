@@ -71,6 +71,8 @@ set -uo pipefail
 
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
+# shellcheck source=../lib/audit.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
@@ -1428,16 +1430,18 @@ resumed() {
 # move is park and unpark back to back, so there is one exit path and one resume path.
 PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 
-# record <session> <what> -- park, move and unpark change the fleet the way a hold does, so each
-# pages low with a `park: <session>` title, as agent-hold does with `hold:` and `go:`. The
-# ledger is removed on unpark; agent-notify's log is what keeps the history.
-# record <ledger key> <what happened> [parked|unparked <session id>] -- a low page, and with an
-# action a dispatch step on the notes ingest record, under the queue item that session works,
-# so `notes log --item` shows the stop and the resume.
+# record <ledger key> <what happened> [parked|unparked <session id>] -- park, move and unpark
+# change the fleet the way a hold does, so each pages low with a `park: <session>` title, as
+# agent-hold does with `hold:` and `go:`, and writes a line on the audit log, which keeps the
+# history (the ledger is removed on unpark). With an action it is also a dispatch step on the
+# notes ingest record, under the queue item that session works, so `notes log --item` shows the
+# stop and the resume.
 record() {
-    local by="" item=""
+    local by="" item="" action=park.dropped
     [[ -n "${TMUX:-}" ]] && by=$(tmux display-message -p '#S' 2>/dev/null)
+    [[ -n "${3:-}" ]] && action="session.$3"
     agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
+    audit_append "${by:-${PWD##*/}}" "$action" "$1" ok "$2"
     [[ -n "${3:-}" ]] || return 0
     [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" 2>/dev/null)
     chain_event dispatch "$3" "-" "$2" --item "$item" --why "$1" --by claude-acct
