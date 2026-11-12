@@ -115,6 +115,51 @@ EOF
   assert_output --partial 'trackers.mono-canon has board "nope"'
 }
 
+@test "a tracker client that clients does not define fails and names it; a defined one passes" {
+  # A typo'd client hides a work project on the work machine too (project_visible), so the
+  # doctor is where it surfaces.
+  clean_map
+  jq '.clients = {"acme": {"profile": "acmework"}} | .trackers.alpha.client = "acme"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 1 tracker clients name a clients profile'
+  refute_output --partial 'has client'
+  jq '.trackers.labonly.client = "acmee"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has client "acmee", which clients does not define with a profile'
+  refute_output --partial 'tracker clients name a clients profile'
+}
+
+@test "work projects this machine does not list still resolve: the registry is shared" {
+  # On the personal box a work tracker is hidden from project_keys, but its repo relation and
+  # its runtime keys are the registry's, true on every machine; only its own machine lists it.
+  clean_map
+  jq '.clients = {"acme": {"profile": "acmework"}}
+    | .trackers.wapp = {"client": "acme", "repo": "wrepo", "lab": "acmework", "type": "app"}
+    | .trackers.wrepo = {"client": "acme"}' \
+    "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  mkdir -p "$AGENT_DIR/lessons" && : > "$AGENT_DIR/lessons/wrepo.md"
+  # A notes stub: this machine lists $STUB_PROFILES and is $STUB_MACHINE.
+  cat > "$SANDBOX/bin/notes" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "config --profiles") printf '%s\n' $STUB_PROFILES ;;
+  "config --machine-profile") echo "$STUB_MACHINE" ;;
+esac
+SH
+  chmod +x "$SANDBOX/bin/notes"
+  STUB_PROFILES=personal STUB_MACHINE=personal run "$DOCTOR" "$MAP"
+  assert_success
+  refute_output --partial 'names no registered project'
+  refute_output --partial '"wrepo"'
+  refute_output --partial 'is not a notes profile'
+  # Its own machine checks its lab: there, a lab that is not a profile fails.
+  jq '.trackers.wapp.lab = "acmewrk"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  STUB_PROFILES="personal acmework" STUB_MACHINE=acmework run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.wapp has lab "acmewrk"'
+}
+
 @test "a string comment key in trackers does not hide the relations after it" {
   # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.repo` dies on the
   # first string value, so every relation after it went unchecked and the check still

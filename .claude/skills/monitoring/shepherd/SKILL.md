@@ -1,7 +1,7 @@
 ---
 name: shepherd
 description: >-
-  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases. Use for "which sessions are stuck", "nudge the stalled ones", "wind down the finished ones", "/shepherd status". Load is fleet-pace; one pass is fleet-lead.
+  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases, close verdicts. Use for "which sessions are stuck", "nudge the stalled ones", "which can close", "/shepherd triage". Load is fleet-pace; one pass is fleet-lead.
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
@@ -33,6 +33,10 @@ Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every 
 **Labels** carry only what the facts cannot: `fleet-sessions label <session|self> +name|-name` (no ops prints them), shown in the `labels` field. `manual` is the human's: the shepherd leaves that session alone. `quality:<step>` is a session's own, set while a cleanup pass runs and shown in the board's quality column. Stages are never labels; they are derived every pass.
 
 `FLEET_IDLE_MIN` (20), `FLEET_SHELL_STALE_MIN` (120: a background shell waiting on a gate, a test or a subagent, by agent-panel's `open_job` class, is WORKING until this, then bucketed on its facts with "background shell idle over 120m"; any other shell, a sleep loop or a watch, is bucketed on its facts after `FLEET_IDLE_MIN` with "background shell is not a gate or test"; a finished plan reads DONE after `FLEET_IDLE_MIN` with "background shell still running") and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the NIGHTLY rows first, then the counts per bucket, then the NEEDS rows in full and the CHAT rows one line each. Read-only.
+
+## Verb: `triage`
+
+The close analysis, for "where is each session, can it close": `fleet-sessions close` (`--json` for a reader). One line per session, close-now first: verdict, session, bucket, phases done of total with percent, quiet minutes, `fleet-bench` eta, and why. The verdict (`now`, `after <step>`, `keep`) is the `close` field of the state document; its rules are the close table in `~/.local/src/docs/fleet-states.md`. Report it as counts per verdict, then the `now` rows by name, then the `after` rows with their step. It changes nothing and closes nothing.
 
 ## Verb: `nudge`
 

@@ -480,6 +480,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         ));
         // Home leads with the flow strip, whose inbox and board are the snapshot's.
         a.pipeline = Some(hub_core::pipeline::read());
+        // RUNNING joins each item to its session (phase, ETA, PR, CI) through the fleet state,
+        // which the live app reads in a worker.
+        a.boards = Some(app::Boards::read(&a.files, None));
     }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {

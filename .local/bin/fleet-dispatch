@@ -1406,6 +1406,23 @@ dropped_tools() {
   printf ' --disallowedTools %s' "$drop"
 }
 
+# claude_effort <item json> -- " --effort <level>" for a claude start or resume of an item that carries
+# an effort (a canary lane's), or nothing. A level claude does not take refuses the start (rc 2), so a
+# typo never runs, and scores, at the default effort under the lane's name.
+claude_effort() {
+  local e; e=$(jq -r '.effort // empty' <<<"${1:-null}")
+  case "$e" in
+    '') ;;
+    low | medium | high | xhigh | max) printf ' --effort %s' "$e" ;;
+    *) say "start: effort '$e' is not one claude takes (low, medium, high, xhigh, max)"; return 2 ;;
+  esac
+}
+
+# claude_pin <item json> -> the model a claude item names before any start ran it (a canary lane's,
+# fleet-bench canary queue --model): a pin like --model, so the lane is the model it says. A model a
+# start recorded (the item has sessions) is not one, so a requeued item is picked afresh.
+claude_pin() { jq -r 'select((.agent // "claude") == "claude" and (.sessions // "") == "") | .model // empty' <<<"${1:-null}"; }
+
 # lane_sandbox <cwd> -- set the caller's sbx_env and sbx_flags for a claude start under
 # DISPATCH_SANDBOX_PROFILE, both empty when the knob is empty (the lane runs as before). The profile
 # and the lane's GitHub token go through lib/sandbox.sh, the code agentctl-run runs a lane under, so a
@@ -1615,7 +1632,7 @@ resume_thread() {
 #                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -1733,8 +1750,10 @@ cmd_start() {
       gateway_launch "$rh" "$(jq -r '.model // empty' <<<"$it")" "$it" "$(item_brief "$it" "$rh")" || return
     else
       launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
+      eff=$(claude_effort "$it") || return 2
+      [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"${it:-null}")   # a resume keeps the model its start ran
       lane_sandbox "$cwd" || return 1
-      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     fi
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
@@ -1758,12 +1777,15 @@ cmd_start() {
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
+      # A pin is not the lane's pick, so like --model it logs no lane run.
+      [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
       [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
+      eff=$(claude_effort "$it") || return 2
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
@@ -3046,6 +3068,7 @@ lane_pick() {
   local it size kind
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
+  [ -z "$(claude_pin "$it")" ] || return 0   # a pinned model is the human's or a canary's pick, as --model is
   size=$(item_size "$it"); kind=$(item_kind "$it")
   model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} ${kind:+--kind "$kind"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true

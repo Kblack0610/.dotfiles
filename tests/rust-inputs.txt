@@ -9,3 +9,5 @@
 .local/src/hub-core    .local/bin/comms-lint
 .local/src/project-map tests/fixtures/project-names.json
 .local/src/project-map tests/fixtures/project-names.tsv
+.local/src/project-map tests/fixtures/project-visibility.json
+.local/src/project-map tests/fixtures/project-visibility.tsv
