@@ -63,7 +63,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would); fleet takes
-          a runner: `hub tab fleet inbox-triage` opens its page
+          a runner (`hub tab fleet inbox-triage` opens its page), sessions a session, queue an
+          item's slug, and board a row's `id:=ar-1`: what each link in hub_core::links opens
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
           whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
@@ -112,8 +113,8 @@ fn main() {
         it.next();
         let words: Vec<&str> = it.map(String::as_str).collect();
         let (t, q) = tabreq::parse(&words.join(" ")).unwrap_or_else(|| die(USAGE));
-        // A search is the Projects tab's; Infra's query is the section a retired name names.
-        if q.is_some() && t != Tab::Projects && words.len() > 1 {
+        // Every tab but these takes a word: what a link's `tab_args` names (hub_core::links).
+        if q.is_some() && matches!(t, Tab::Home | Tab::Schedules) && words.len() > 1 {
             die(USAGE)
         }
         if let Err(e) = tabreq::request(&tabreq::dir(), t, q.as_deref()) {

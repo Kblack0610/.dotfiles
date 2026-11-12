@@ -38,7 +38,7 @@ pub async fn get(q: FleetQuery) -> String {
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let view = View::new::<Who>(&q.q, &q.s, &q.sort, &q.dir);
     let all = std::mem::take(&mut f.who);
-    let (rows, table) = view.summary(&all);
+    let (rows, mut table) = view.summary(&all);
     let folded: HashSet<String> = q
         .fold
         .split(',')
@@ -47,6 +47,8 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         .collect();
     let shown = who::unfolded(rows.clone(), &folded, &view);
     let hidden = rows.len() - shown.len();
+    // The links run beside the rows the page gets, and the folds dropped some.
+    table.links = hub_core::table::links(&shown);
     let out = serde_json::to_value(&f).map(|mut v| {
         v["who"] = serde_json::json!(shown);
         v["table"] = serde_json::json!(table);
@@ -124,6 +126,13 @@ mod tests {
         assert_eq!(v["who"].as_array().unwrap().len(), 1);
         assert_eq!(v["hidden"], 1);
         assert!(v["table"].is_object());
+        assert_eq!(
+            v["table"]["links"],
+            serde_json::json!([{"who": "#fleet/shepherd", "project": "#projects/dotfiles"}]),
+            "the links match the rows the folds left"
+        );
+        let v = who_of(&render(fleet(), &q("", "")));
+        assert_eq!(v["table"]["links"][1]["who"], "#sessions/lab%2Fa%3A1");
     }
 
     #[test]

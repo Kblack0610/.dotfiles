@@ -14,6 +14,7 @@
 # work spending as intended, not a red. `core` is the gateway team lazer-core (priority must: home
 # services, comms, knowledge-engine, lazer-eval); `lazer` is lazer-pool (priority low: cl --lazer and
 # the rest). Gateway teams and key priorities: home-config apps/litellm/README.md.
+# `go` is the gateway key fleet-go on the OpenCode Go flat plan (no team, its own 5h and week budgets).
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
 codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
@@ -22,3 +23,4 @@ core       litellm-team  ~/.local/state/agentctl/lazer-eval.key   reserve=10 ale
 lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 alert=off
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
+go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low

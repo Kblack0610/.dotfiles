@@ -181,7 +181,7 @@ function renderLogRanked() {
   const rows = ost.rows || [];
   const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
     : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
-    : `<div class="panel scroll"><table class="tbl"><tr><th class="n">friction</th><th>session</th><th>project</th><th class="n">wall</th><th class="n">cost</th><th class="n">PRs</th><th>why</th></tr>${rows.map((r) => {
+    : `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance" data-named>friction</th><th data-role="lead">session</th><th>project</th><th class="n">wall</th><th class="n" data-role="glance" data-named>cost</th><th class="n">PRs</th><th data-role="glance">why</th></tr>${rows.map((r) => {
         const prs = r.prs_merged + r.prs_open + r.prs_closed_unmerged;
         const open = ost.open === r.session_id;
         const card = open ? `<tr><td colspan="7" class="wrap"><pre class="joblog">${ost.cards[r.session_id] == null ? "Loading the card." : esc(ost.cards[r.session_id])}</pre></td></tr>` : "";

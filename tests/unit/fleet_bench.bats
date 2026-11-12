@@ -5501,6 +5501,10 @@ STUB
   grep -q 'codex/sol@high' "$CQ/add.log"
   run "$SUBJECT" canary queue --harness codex --effort high
   assert_failure 2
+  # A claude lane with a model and no effort would score as the claude baseline itself.
+  run "$SUBJECT" canary queue --harness claude --model haiku
+  assert_failure 2
+  assert_output --partial "a claude lane needs --effort"
   run "$SUBJECT" canary queue --model sol
   assert_failure 2
   run "$SUBJECT" canary queue --bogus
@@ -5513,7 +5517,7 @@ STUB
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
   echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
-  printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1" = codex ] && { echo "codex: room"; exit 0; }\necho "$1: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" retro
   assert_success
@@ -5533,6 +5537,27 @@ STUB
   assert_success
   refute_output --partial 'codex/sol'
   [ -f "$CQ/canary-greet-$week.json" ]
+}
+
+@test "canary lanes: a claude lane needs no source, is queued while a Claude account has room and skipped while none has" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'claude haiku max\n' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{}}' > "$BENCH_HARNESSES"
+  # Room for any account is asked with no --source; ROOM is what the stub says this run.
+  printf '#!/usr/bin/env bash\necho "room $*" >> "%s"\n[ "$ROOM" = yes ] && { echo /home/u/.claude; exit 0; }\necho "every account is past its pace line" >&2; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  chmod +x "$SANDBOX/bin/room-stub"
+  ROOM=no run "$SUBJECT" retro
+  assert_success
+  assert_line "fleet-bench: canary: claude/haiku@max not queued, no Claude account has room: every account is past its pace line"
+  [ ! -f "$CQ/canary-greet-$week-haiku-ma.json" ]
+  ROOM=yes run "$SUBJECT" retro
+  assert_success
+  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (claude/haiku@max)"
+  # The slug names the model alone, so the id keeps letters to tell tasks apart; the item pins all three.
+  assert_equal "$(jq -c '[.agent, .model, .effort]' "$CQ/canary-greet-$week-haiku-ma.json")" '["claude","haiku","max"]'
+  assert_equal "$(sort -u "$SANDBOX/room.log")" 'room '
 }
 
 @test "canary lanes: score takes harness, model and session from the queue item; one lane scores once, another lane on the same task and week is its own run" {
@@ -5572,19 +5597,21 @@ STUB
     {epoch: ($t - 86000), run: "b", id: "greet", session_id: "x1", harness: "codex", model: "sol", pass: false},
     {epoch: ($t - 86000), run: "c", id: "greet", session_id: "x9", harness: "codex", model: "sol", pass: true},
     {epoch: ($t - 86000), run: "d", id: "solo", session_id: "x8", harness: "codex", model: "sol", pass: true},
+    {epoch: ($t - 86000), run: "h", id: "greet", session_id: "hk", harness: "claude", model: "haiku", effort: "max", pass: true},
     {epoch: ($t - 2592000), run: "e", id: "wk", pass: false}, {epoch: ($t - 2592000), run: "f", id: "wk", pass: false},
     {epoch: ($t - 2592000), run: "g", id: "wk", harness: "codex", model: "sol", pass: true}' > "$FLEET_BENCH_DIR/canary.jsonl"
   run "$SUBJECT" canary list --by harness,model --json
   assert_success
   # same: codex's "solo" has no claude run beside it, so greet and wk compare, each task weighing one:
   # codex (1/2 + 1/1) / 2 = 0.75, claude (1/1 + 0/2) / 2 = 0.5, where claude's three runs would read 0.333
-  assert_output $'{"harness":"claude","model":null,"effort":null,"runs":3,"tasks":2,"pass_rate":0.333,"same_tasks":null,"pass_rate_same":null,"claude_pass_rate_same":null,"joined":1,"min_per_run":10,"turns_per_run":40,"cost_per_run":3,"tokens_per_run":null}\n{"harness":"codex","model":"sol","effort":null,"runs":4,"tasks":3,"pass_rate":0.75,"same_tasks":2,"pass_rate_same":0.75,"claude_pass_rate_same":0.5,"joined":1,"min_per_run":20,"turns_per_run":90,"cost_per_run":null,"tokens_per_run":3000000}'
+  assert_output $'{"harness":"claude","model":null,"effort":null,"runs":3,"tasks":2,"pass_rate":0.333,"same_tasks":null,"pass_rate_same":null,"claude_pass_rate_same":null,"joined":1,"min_per_run":10,"turns_per_run":40,"cost_per_run":3,"tokens_per_run":null}\n{"harness":"claude","model":"haiku","effort":"max","runs":1,"tasks":1,"pass_rate":1,"same_tasks":1,"pass_rate_same":1,"claude_pass_rate_same":1,"joined":0,"min_per_run":null,"turns_per_run":null,"cost_per_run":null,"tokens_per_run":null}\n{"harness":"codex","model":"sol","effort":null,"runs":4,"tasks":3,"pass_rate":0.75,"same_tasks":2,"pass_rate_same":0.75,"claude_pass_rate_same":0.5,"joined":1,"min_per_run":20,"turns_per_run":90,"cost_per_run":null,"tokens_per_run":3000000}'
   run "$SUBJECT" canary list --by harness,model
   assert_line --index 0 $'claude/-\t3 runs\t2 tasks\tpass 0.333\t1 joined\t10 min\t40 turns\t$3\t- tokens'
-  assert_line --index 1 $'codex/sol\t4 runs\t3 tasks\tpass 0.75\tsame 2: pass 0.75 vs claude 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
+  assert_line --index 2 $'codex/sol\t4 runs\t3 tasks\tpass 0.75\tsame 2: pass 0.75 vs claude 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
   run "$SUBJECT" canary list --by model
   assert_failure 2
-  # Both codex sessions leave the human KPIs too (an eval is not work), but only claude scores canary_.
+  # Both codex sessions leave the human KPIs too (an eval is not work), but only the claude baseline scores canary_:
+  # the haiku lane pins an effort, so it is a lane beside claude, not a claude run.
   run "$SUBJECT" kpi --json
   run jq -c '[.sessions["7d"], .canary_runs["7d"], .canary_pass_rate["7d"], .canary_cost_per_task["7d"]]' <<<"$output"
   assert_output '[1,1,1,3]'

@@ -16,7 +16,7 @@
 | Command denies | `permissions.deny` in settings.json | the same list, twice over: `~/.codex/rules/claude-deny.rules` (`sync-codex-home.sh`), one execpolicy `forbidden` rule per whole-word `Bash(...)` deny, which binds even under `--dangerously-bypass-approvals-and-sandbox` and with hooks untrusted; and the PreToolUse hook `deny-list-guard.py`, which applies every entry with Claude's glob meaning, so the `# narrowed:` and `# skipped:` ones bind too | none |
 | Other hooks (plan gates, compact-prep, ask-settle, spawn-watch, edit guards) | yes | none: they read Claude transcripts or Claude-only tools | none |
 | Model and project docs | settings.json | `config.owned.toml` here: its keys (`model`, `project_doc_fallback_filenames`) head `~/.codex/config.toml` and replace the human's copies; a repo's CLAUDE.md is read only where it has no AGENTS.md | n/a |
-| MCP servers | each repo's `.mcp.json` | user scope, from rulesync (`codex mcp list`) | user scope, from rulesync (`opencode.json` `mcp`) |
+| MCP servers | each repo's `.mcp.json` | user scope, from rulesync (`codex mcp list`) | user scope, from rulesync, translated by the sync from its 1.x map to `opencode.json` `mcp.servers` |
 
 `hooks.json` here is the source for `~/.codex/hooks.json`: `$HOME` is filled in, and the sync refuses to write it when a command names a script that is not there (`tests/unit/codex_home_sync.bats`). Codex runs a hook only once it is trusted, and a changed `hooks.json` is untrusted again: an interactive `codex` asks, and fleet launches (`fleet-dispatch`) pass `--dangerously-bypass-hook-trust`.
 

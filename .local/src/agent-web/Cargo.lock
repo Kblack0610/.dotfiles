@@ -22,6 +22,7 @@ dependencies = [
  "chrono",
  "hub-core",
  "notify",
+ "project-map",
  "serde",
  "serde_json",
  "tokio",

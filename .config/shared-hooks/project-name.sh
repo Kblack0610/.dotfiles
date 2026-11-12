@@ -389,18 +389,65 @@ project_inherited() {
   return 0
 }
 
-# project_keys -> every registered project key, sorted, one per line: the `paths` names
-# plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
-# and a string-valued `_comment*` key is documentation. The one definition of "the
-# projects": project-map-doctor checks against it and `regen-anchor.sh --all` walks it.
-project_keys() {
+# --- machine visibility: a work project is listed only on its work machine ---
+#
+# The rule is the `clients` comment in project-map.json; project_map::Registry::project_visible
+# is its Rust side, and tests/fixtures/project-visibility.tsv holds both to it. `visible($m)`
+# runs on a project key with the registry slurped as `$reg`: true unless its tracker names a
+# `client`, and then only when that client's profile is `$m`, this machine's profile.
+# A `client` that is not a string, or names no `clients` profile, hides the project
+# everywhere (project-map-doctor names it), so a malformed client never leaks work.
+PROJECT_VISIBLE_JQ='def visible($m):
+  (($reg[0].trackers // {})[.] // {} | if type == "object" then .client // null else null end) as $c
+  | if $c == null then true
+    elif ($c | type) == "string" then (((($reg[0].clients | objects) // {})[$c] | objects | .profile) // null) == $m
+    else false end;'
+
+# project_machine_profile -> this machine's own notes profile (`notes config --machine-profile`),
+# kept in $PROJECT_MACHINE_PROFILE when called outside $(...), so callers run it bare once and
+# read the variable. When notes cannot say (absent, or built before the flag) it warns and
+# answers `personal`, so the box hides work rather than listing it.
+project_machine_profile() {
+  if [ -z "${PROJECT_MACHINE_PROFILE:-}" ]; then
+    PROJECT_MACHINE_PROFILE="$(notes config --machine-profile 2>/dev/null || true)"
+    if [ -z "$PROJECT_MACHINE_PROFILE" ]; then
+      printf 'project-name: `notes config --machine-profile` failed, so work projects are hidden here; rebuild notes (notes-bootstrap --build-only)\n' >&2
+      PROJECT_MACHINE_PROFILE=personal
+    fi
+  fi
+  printf '%s' "$PROJECT_MACHINE_PROFILE"
+}
+
+# project_visible <key> -> exit 0 when this machine lists the project (see PROJECT_VISIBLE_JQ).
+project_visible() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
-  jq -r '
-    [(.paths // {}) | .[]]
+  project_machine_profile >/dev/null
+  jq -en --arg k "$1" --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
+    "$PROJECT_VISIBLE_JQ"' $k | visible($m)' >/dev/null
+}
+
+# project_all_keys -> every registered project key, sorted, one per line: the `paths` names
+# plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
+# and a string-valued `_comment*` key is documentation. The one definition of "the
+# projects": project-map-doctor checks the registry's references against it, on any machine.
+project_all_keys() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r '[(.paths // {}) | .[]]
     + [(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key
        | select(. != "default")]
     | unique[]' "$map_file" 2>/dev/null || true
+}
+
+# project_keys -> the project_all_keys this machine lists: a work project off its work machine
+# is not one (project_visible). `regen-anchor.sh --all` walks it.
+project_keys() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  project_machine_profile >/dev/null
+  project_all_keys | jq -rR --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
+    "$PROJECT_VISIBLE_JQ"' select(visible($m))' 2>/dev/null || true
 }
 
 # project_anchor_keys -> the keys that get an anchor at ~/.agent/anchors/<key>.md: every
