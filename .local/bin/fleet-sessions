@@ -328,7 +328,7 @@ bucket_facts() {
 # handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
 # item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
 # dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
-# (fix_red_pr gives a red one a fix-ci session), so it is no longer the session's to finish.
+# (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
 handed_off() {
   [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
@@ -934,15 +934,17 @@ main_health() {
 # session's to land. -z: no quoting of odd names; --no-renames: one record per path.
 dirty_paths() {
   local d="$1" edited="$2" top
+  # Recursive status across many worktrees multiplies index reader and preload threads.
+  # Keep these scans serial without changing the repo config or hiding submodule dirt.
   case "$d/" in
     "$HOME/.worktrees/"*)
-      git -C "$d" status --porcelain -z --no-renames 2>/dev/null \
+      git -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
         | while IFS= read -r -d '' e; do printf '%s\n' "${e:3}"; done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
   # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
-  git -C "$d" status --porcelain -z --no-renames -uall 2>/dev/null \
+  git -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames -uall 2>/dev/null \
     | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
     | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
     | cut -c"$(( ${#top} + 2 ))"-
@@ -1179,7 +1181,7 @@ parked_lines() {
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
 # review:<slug> is one this session parked in review/: its open PR is the item's, and
-# fleet-dispatch's reap owns it once the session ends (fix_red_pr gives a red one a fix-ci session),
+# fleet-dispatch's reap owns it once the session ends (own_parked_pr gives a red one a fix-ci session and a green one a lander),
 # so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
 # refused, and the reap, which waits for the session to end, never took over.
 item_of() {

@@ -166,7 +166,17 @@ case "${args[0]}" in
       if [ -n "$t" ] && jq -e --arg t "$t" 'has($t)' "$DISPATCH_KINDS" >/dev/null 2>&1; then printf '%s\t-\t%s\t1\n' "$t" "$l"
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
-  board) if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"; else echo '{"rows": []}'; fi ;;
+  board)
+    if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"
+    else
+      for f in "$F"/rows.*.*; do
+        [ -f "$f" ] || continue
+        p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
+        jq -Rn --arg p "$p" --arg l "$lane" '
+          inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
+            state: (if (.[1] | startswith("- [/]")) then "doing" else "open" end)}' < "$f"
+      done | jq -sc '{rows: .}'
+    fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in

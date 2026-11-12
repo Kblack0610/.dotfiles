@@ -70,7 +70,7 @@ unset _k _v
 : "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
-: "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets before it goes to the human sheet (fix_red_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
+: "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
@@ -2138,7 +2138,10 @@ item_brief() {
     return 0
   fi
   if [ -n "$(resume_thread "$it" "$harness")" ]; then resume_brief "$it"; return; fi
-  if [ -n "$(jq -r 'select((.pr // "") != "") | .fix_tries // ""' <<<"$it")" ]; then fix_ci_brief "$it" "$harness"; return; fi
+  case "$(jq -r 'select((.pr // "") != "") | (.pr_owner // "fix") as $o | select((.[$o + "_tries"] // "") != "") | $o' <<<"$it")" in
+  fix) fix_ci_brief "$it" "$harness"; return ;;
+  land) land_brief "$it" "$harness"; return ;;
+  esac
   if [[ "$tags" == *" night "* ]] || { headless "$harness" && [[ "$tags" != *" red "* ]] && [ "$(item_tier "$it")" = 3 ]; }; then
     pr_only=' --pr-only'
   fi
@@ -2255,10 +2258,10 @@ resume_brief() {
   no_human "$slug"
 }
 
-# fix_ci_brief <item json> <harness> -- the brief of an item fix_red_pr requeued: its work is already
+# fix_ci_brief <item json> <harness> -- the brief of an item own_parked_pr requeued red: its work is already
 # its open PR, red at the head `fix_tries:` names, so the session owns that red through the fix-ci skill on
-# the PR's own branch. It never merges: the PR goes back to where it was parked, and reap closes the
-# item once it merges.
+# the PR's own branch. It never merges: the PR goes back to where it was parked, and a green one gets
+# a lander (own_parked_pr, land_brief).
 fix_ci_brief() {
   local slug pr n head repo=''
   IFS=$'\x1f' read -r slug pr n head < <(jq -r '(.fix_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // "")] | join("\u001f")' <<<"$1")
@@ -2268,8 +2271,24 @@ fix_ci_brief() {
   echo
   echo "This is agent-queue item $slug. Its PR $pr is red${head:+ at ${head:0:12}} and the session that opened it has ended, so this session owns the red: fix-ci try $n of $DISPATCH_FIX_TRIES."
   echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /fix-ci says, and push to that branch. Never open a second PR."
-  echo "Do not merge, and touch no board or sheet row: when the checks are green, or fix-ci stops on a red it cannot fix and files its row, run agent-queue move $slug review and end. The PR's merge closes the item (fleet-dispatch reap)."
+  echo "Do not merge, and touch no board or sheet row: when the checks are green, or fix-ci stops on a red it cannot fix and files its row, run agent-queue move $slug review and end. Once its checks are green, the next pass gives it a lander (own_parked_pr)."
   if headless "$2"; then no_human "$slug"; else ask_rule; fi
+}
+
+# land_brief <item json> <harness> -- the brief of an item own_parked_pr requeued green: its work is
+# its open PR, green at the head `land_tries:` names, and its session ended without merging it (a
+# --pr-only run, or fix-ci). This session decides it as one row of ingest-prs: land it through
+# agent-land, close it with the reason, or ask the human, and only that.
+land_brief() {
+  local slug pr n head repo='' land_repo=''
+  IFS=$'\x1f' read -r slug pr n head < <(jq -r '(.land_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // "")] | join("\u001f")' <<<"$1")
+  [[ "$pr" != */*#* ]] || { repo=" -R ${pr%#*}"; land_repo=" --repo ${pr%#*}"; }
+  echo "This is agent-queue item $slug. Its PR $pr is open and green${head:+ at ${head:0:12}}, and the session that opened it has ended without merging it, so this session decides it: land it or close it (try $n of $DISPATCH_FIX_TRIES)."
+  echo
+  echo "1. Read the PR (gh pr view ${pr##*#}$repo, its diff and checks), the item (agent-queue show $slug) and its board row. Give it one verdict as ~/.claude/skills/ingest-prs/SKILL.md defines them: LAND, FIX-THEN-LAND, or CLOSE when it is superseded, already on its base, or no longer wanted. A draft, or a PR waiting on a human approval, is the human's call (below)."
+  echo "2. LAND or FIX-THEN-LAND: work on the PR's own branch (gh pr checkout ${pr##*#}$repo; when another worktree has the branch, work in that one), merge its base in if it is behind, never a second PR. A tier-3 item (fleet-dispatch item-tier $slug prints 3) needs /code-review high and the line \"Review: /code-review high, <what it found and what you did>\" in the PR body first. Then run agent-land ${pr##*#}$land_repo --item $slug in the foreground."
+  echo "3. CLOSE: close the PR with a one-line comment giving the reason (superseded by #<n>, on its base at <sha>, or why it is no longer wanted), never deleting the branch, and end: reap fails the item on its closed PR."
+  if headless "$2"; then no_human "$slug"; else echo "If the verdict is the human's call (a product decision, or a repo that needs their approval to merge), file it with agent-ask post (options land and close, your recommendation in --recommend) and end: the item waits on the answer."; fi
 }
 
 # ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
@@ -2438,9 +2457,10 @@ land_orphan() {
 # settle_row does, so dispatch does not promote it again until its text changes; the grace keeps a
 # session that started a row a minute ago from losing it. First sightings live in $DIR/orphans.tsv;
 # a row that stops being one drops out. Human-lane rows are the human's own and never touched. A
-# queue it cannot read changes nothing. 2026-11-05: 40 started rows, 33 of them with no item.
+# queue or board it cannot read changes nothing. The board feed covers every profile, as the KPI does.
 unstart_orphans() {
-  local items landed linked prof name _rest key text first now slug seen=''
+  local items landed linked board prof name key first now slug seen=''
+  board=$(notes board --json 2>/dev/null | jq -ce '.rows | arrays') || return 0
   items=$(agent-queue list --json 2>/dev/null) || return 0
   landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
   landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "" and (.lane // "agent") == "agent")) | sort_by(.finished)
@@ -2449,31 +2469,25 @@ unstart_orphans() {
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "" and (.lane // "agent") == "agent")
     | .row | sub(":"; "\t")' <<<"$items")
   now=$(date +%s)
-  for prof in $(printf '%s\n' "${DISPATCH_NIGHT_PROFILE:--}" $DISPATCH_PROFILES | awk '!x[$0]++'); do
-    [ "$prof" = - ] && prof=''
-    while IFS=$'\t' read -r name _rest; do
-      [ -n "$name" ] || continue
-      while IFS=$'\t' read -r key text; do
-        [[ "$text" == '- [/]'* ]] || continue
-        grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
-        slug=$(K="$name"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { s = $3 } END { print s }' <<<"$landed")
-        [ -n "$slug" ] && land_orphan "$slug" && continue
-        first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
-        first=${first:-$now}
-        if [ $(( now - first )) -lt $(( DISPATCH_ORPHAN_HOURS * 3600 )) ]; then
-          seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first"$'\n'
-          continue
-        fi
-        np "$prof" ptask "$name" --agent unstart "$key" >/dev/null 2>&1 ||
-          { logline "orphan $name agent row $key: un-start failed"; continue; }
-        jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
-          '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
-        logline "un-started orphan $name agent row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
-        dispatch_event settled "$name" "orphan row un-started: ${DISPATCH_ORPHAN_HOURS}h with no queue item" --id "$key"
-        echo "un-started $name: $key (started with no queue item)"
-      done < <(rows "$prof" "$name" agent)
-    done < <(np "$prof" projects 2>/dev/null)
-  done
+  while IFS=$'\t' read -r prof name key; do
+    grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
+    slug=$(K="$name"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { s = $3 } END { print s }' <<<"$landed")
+    [ -n "$slug" ] && land_orphan "$slug" && continue
+    first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
+    first=${first:-$now}
+    if [ $(( now - first )) -lt $(( DISPATCH_ORPHAN_HOURS * 3600 )) ]; then
+      seen+="${prof:--}"$'\t'"$name"$'\t'"$key"$'\t'"$first"$'\n'
+      continue
+    fi
+    np "$prof" ptask "$name" --agent unstart "$key" >/dev/null 2>&1 ||
+      { logline "orphan $name agent row $key: un-start failed"; continue; }
+    jq -cn --arg p "$name" --arg k "$key" --arg at "$(date -Iseconds)" --arg h "$DISPATCH_ORPHAN_HOURS" \
+      '{project: $p, lane: "agent", key: $k, verdict: "failed", reason: "started \($h)h with no queue item", at: $at}' >> "$VERDICTS"
+    logline "un-started orphan $name agent row (started ${DISPATCH_ORPHAN_HOURS}h with no queue item): $key"
+    dispatch_event settled "$name" "orphan row un-started: ${DISPATCH_ORPHAN_HOURS}h with no queue item" --id "$key"
+    echo "un-started $name: $key (started with no queue item)"
+  done < <(jq -r '.[] | select(.lane == "agent" and .state == "doing")
+    | [.profile, .project, (.id // (.text | ascii_downcase))] | @tsv' <<<"$board")
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
 }
 
@@ -2563,8 +2577,8 @@ settle_item() {
     fi
   fi
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
-  # unless its checks went red with nobody on it (fix_red_pr).
-  [ "$state:$st" != OPEN:review ] || { fix_red_pr "$1" "$2" "$it" "$head" "$ci"; return 0; }
+  # unless its checks finished with nobody on it (own_parked_pr).
+  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
@@ -2618,37 +2632,46 @@ settle_item() {
   fi
 }
 
-# fix_red_pr <slug> <session> <item json> <head oid> <ci> -- a review item whose session is gone and
-# whose PR checks finished red (ci FAIL) gets an owner, since nothing else restarts a parked PR: 16
-# of 20 were red on 2026-11-09. It goes back to queued/ (--if review) as a oneshot stamped
-# `fix_tries: <n> <head>`, so item_brief starts it on /fix-ci and the next pass starts it behind every gate a queued item
-# waits on (agent-hold, the weekly pace, load, the run gate); while agent-queue admission holds
-# automated adds it waits in review/. DISPATCH_FIX_TRIES tries, then one human-sheet row and a page, as fleet-bench triage_human does once TRIAGE_FIX_TRIES are spent,
-# stamped `fix_human: <head>`; a head that moves after that row (the human pushed) starts the count
-# again. A session reap cannot witness (`unrecorded`, a cloud run) is never read as gone here.
-fix_red_pr() {
-  local slug=$1 it=$3 head=$4 tries human pr project prof note held row sheet where clear=()
-  [ "$5" = FAIL ] && [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
-  IFS=$'\x1f' read -r tries human pr project prof note < <(jq -r '[.fix_tries // "", .fix_human // "", .pr, .project // "", .profile // "", .note // ""] | join("\u001f")' <<<"$it")
+# own_parked_pr <slug> <session> <item json> <head oid> <ci> -- a review item whose session is gone
+# gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
+# fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
+# or closes it (land_brief), since a night or headless tier-3 run is --pr-only and fix-ci moves its
+# item back here without merging: 26 sat in review on 2026-11-12, 11 of them green. It goes back to
+# queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>` and `pr_owner`, which
+# item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
+# the weekly pace, load, the run gate); while agent-queue admission holds automated adds it waits in
+# review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
+# triage_human does once TRIAGE_FIX_TRIES are spent, stamped `fix_human: <head>`; a head that moves
+# after that row (the human pushed) starts the count again. A lander that asks the human is held on
+# its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
+# is never read as gone here.
+own_parked_pr() {
+  local slug=$1 it=$3 head=$4 owner verb color tries human pr project prof note held row sheet where clear=()
+  case "$5" in FAIL) owner=fix verb=fix-ci color=red ;; PASS) owner=land verb=land color=green ;; *) return 0 ;; esac
+  [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
+  IFS=$'\x1f' read -r tries human pr project prof note < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .profile // "", .note // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
   if [ -n "$human" ]; then
     [ "$human" != "$head" ] || return 0
-    tries=0 clear=(fix_human=)
+    tries=0 clear=(fix_human= fix_tries= land_tries=)
   fi
   if [ "$tries" -lt "$DISPATCH_FIX_TRIES" ]; then
-    held="PR $pr red at ${head:0:12}; fix-ci held by admission"
+    held="PR $pr $color at ${head:0:12}; $verb held by admission"
     if ! jq -e .admits >/dev/null 2>&1 < <(agent-queue admission --json 2>/dev/null); then
       # Said once, on the item and in the log, not on every pass of the hold.
       [ "$note" = "$held" ] || { agent-queue set "$slug" "note=$held" >/dev/null; logline "queue item $slug: $held"; }
       return 0
     fi
-    agent-queue set "$slug" "fix_tries=$((tries + 1)) $head" mode=oneshot "${clear[@]}" \
-      "note=PR $pr red at ${head:0:12}; fix-ci try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
+    # A tier-3 lander runs on claude: the Review line agent-land asks for comes from /code-review high,
+    # which a headless harness cannot run (the reason its first run was --pr-only).
+    [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || clear+=(agent=claude)
+    agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
+      "note=PR $pr $color at ${head:0:12}; $verb try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
     agent-queue move "$slug" queued --if review >/dev/null || return 0
-    logline "reaped $2: queue item $slug requeued for fix-ci, PR $pr red at ${head:0:12} (try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
-    dispatch_event requeued "$project" "PR red with nobody on it: fix-ci try $((tries + 1))" --item "$slug" --pr "$pr" --sha "$head"
-    echo "fix-ci queue item $slug (PR $pr red at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
+    logline "reaped $2: queue item $slug requeued for $verb, PR $pr $color at ${head:0:12} (try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
+    dispatch_event requeued "$project" "PR $color with nobody on it: $verb try $((tries + 1))" --item "$slug" --pr "$pr" --sha "$head"
+    echo "$verb queue item $slug (PR $pr $color at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
     return 0
   fi
   # The sheet of the board the item came from (a dotfiles item's row is on agent-runtime), else its
@@ -2657,12 +2680,14 @@ fix_red_pr() {
   sheet=$project row=$(item_row "$it")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
   agent-queue set "$slug" "fix_human=$head" >/dev/null || return 0
-  if np "$prof" ptask "$sheet" add "fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it or close it (queue item $slug) #size/s" >/dev/null 2>&1
+  local title="fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it"
+  [ "$owner" = fix ] || title="chore(review): PR $pr is green at ${head:0:12} after $tries land tries; land it"
+  if np "$prof" ptask "$sheet" add "$title or close it (queue item $slug) #size/s" >/dev/null 2>&1
   then where="on the $sheet sheet"; else where="not filed: the $sheet sheet refused the row"; fi
-  agent-queue set "$slug" "note=PR $pr red at ${head:0:12} after $tries fix-ci tries; $where" >/dev/null
-  agent-notify -t 'Needs you' "PR $pr red after $tries fix-ci tries ($where)" >/dev/null 2>&1
-  logline "queue item $slug: PR $pr red at ${head:0:12} after $tries fix-ci tries, $where"
-  echo "human row for queue item $slug (PR $pr red after $tries fix-ci tries, $where)"
+  agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
+  agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
+  logline "queue item $slug: PR $pr $color at ${head:0:12} after $tries $verb tries, $where"
+  echo "human row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
 
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
