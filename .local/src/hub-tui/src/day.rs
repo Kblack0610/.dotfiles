@@ -341,17 +341,20 @@ pub fn history(days: &[DayRow], sel: usize, p: Palette, w: usize) -> Vec<Line<'s
                 "#".repeat((d.merged * 20).div_ceil(max)).into(),
                 d.repos.to_string().into(),
                 d.sessions.map_or("-".into(), |n| n.to_string()).into(),
+                d.ci.as_ref()
+                    .map_or("-".into(), |c| format!("{:.1}", c.pool_h))
+                    .into(),
                 areas.join(", ").into(),
             ]
         })
         .collect();
     let mut lines = Table {
-        header: vec!["DAY", "MERGED", "", "REPOS", "SESSIONS", "AREAS"],
+        header: vec!["DAY", "MERGED", "", "REPOS", "SESSIONS", "CI H", "AREAS"],
         rows,
-        keep: vec![0, 1, 4, 3, 2],
-        flex: Some(5),
+        keep: vec![0, 1, 5, 4, 3, 2],
+        flex: Some(6),
         flexmin: 16,
-        right: vec![1, 3, 4],
+        right: vec![1, 3, 4, 5],
         ..Default::default()
     }
     .fit(w, p.head());
@@ -512,12 +515,19 @@ pub mod tests {
         old["date"] = "2026-11-02".into();
         old["live"] = false.into();
         old["merged"] = serde_json::json!([]);
+        old["ci"] = serde_json::json!({"repos": {"a": {"cost": {"runs": 204, "hours": {"pool": 186.6, "gate": 161.02}}}}});
         let rows = vec![
             day_row("2026-11-02", &old),
             day_row("2026-11-03", &record()),
         ];
         let l = history(&rows, 1, Palette { no_color: false }, 120);
         let t = text(&l);
+        assert!(t.contains("CI H"), "{t}");
+        assert!(
+            t.lines()
+                .any(|r| r.contains("Mon 11-02") && r.contains("186.6")),
+            "{t}"
+        );
         assert!(
             t.find("Tue 11-03 live").unwrap() < t.find("Mon 11-02").unwrap(),
             "{t}"
