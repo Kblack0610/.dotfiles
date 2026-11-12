@@ -132,10 +132,12 @@ fetch_branch() {
   [ "${FETCHED[$k]}" = ok ]
 }
 
+# The branch name only: a clone whose origin/HEAD points at another remote's ref
+# (home-config's reads forgejo/master) still names the branch origin fetches.
 default_branch() {
   local dir="$1" b
   b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
-  printf '%s' "${b#origin/}"
+  printf '%s' "${b#*/}"
 }
 
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
@@ -556,16 +558,17 @@ row() {
 # ahead. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
 # `stages_error` says why.
 stage_facts() {
-  local rows="$1" ladder labs
+  local state="$1" ladder labs
   ladder="$(notes projects --stages 2>/dev/null)"
   [ -n "$ladder" ] || { jq -n '{stages: {}, stages_error: "notes projects --stages printed nothing"}'; return; }
   labs="$(notes projects --stats --json 2>/dev/null)"
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$labs" \
     || { jq -n '{stages: {}, stages_error: "notes projects --stats --json did not answer"}'; return; }
   project_machine_profile >/dev/null
-  jq -n --argjson rows "$rows" --argjson labs "$labs" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
+  jq --slurpfile st "$state" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
     --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
-    ($ladder | split(" ") | map(select(. != ""))) as $L
+    . as $labs | ($st[0].rows) as $rows
+    | ($ladder | split(" ") | map(select(. != ""))) as $L
     | ($L | to_entries | map({key: .value, value: .key}) | from_entries) as $rank
     | ($reg[0].channels // {}) as $ch
     | ($labs | map({key: .name, value: (.stage // "")}) | from_entries) as $at
@@ -582,7 +585,7 @@ stage_facts() {
                           | . as $r | select([$live[] | select(.rung == $r)] | length == 0)]
                     else [] end),
             ahead: (if $s != null then [$live[] | select($rank[.rung] > $rank[$s]) | .id] else [] end)}}]
-        | from_entries)}'
+        | from_entries)}' <<<"$labs"
 }
 
 # link_facts -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
@@ -690,26 +693,31 @@ refresh_snapshot() {
     [ -v "tag_of[$proj]" ] || tag_of[$proj]="$(project_release_tag "$proj" 2>/dev/null || true)"
     row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp"
   done <<<"$targets"
-  rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
+  jq -sc . "$tmp" >"$tmp.rows" || { rm -f "$tmp" "$tmp.rows"; die "cannot read the probed rows"; }
   : >"$tmp"
   while IFS= read -r proj; do
     [ -n "$proj" ] || continue
     history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp"
   done < <(jq -r '.project' <<<"$targets" | sort -u)
-  releases="$(jq -sc 'from_entries' "$tmp")" || { rm -f "$tmp"; die "cannot read the release history"; }
-  rm -f "$tmp"
+  jq -sc 'from_entries' "$tmp" >"$tmp.rel" || { rm -f "$tmp" "$tmp.rows" "$tmp.rel"; die "cannot read the release history"; }
+  printf '%s\n' "$prev" >"$tmp.prev"
   local out="$STATE_DIR/.state.$$"
-  jq -n --argjson rows "$rows" --argjson releases "$releases" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
-    ($only | split(" ") | map(select(. != ""))) as $o
+  # Files, never --argjson: the snapshot passed 128 KB on 2026-11-11, the kernel's cap on one
+  # argument (MAX_ARG_STRLEN), and every refresh died with "Argument list too long".
+  jq -n --slurpfile rows "$tmp.rows" --slurpfile releases "$tmp.rel" --slurpfile prev "$tmp.prev" --arg only "$only" --argjson now "$(now_epoch)" '
+    $rows[0] as $rows | $releases[0] as $releases | $prev[0] as $prev
+    | ($only | split(" ") | map(select(. != ""))) as $o
     | { generated_at: ($now | todate), generated_epoch: $now,
         rows: ((if ($o | length) > 0
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
                 else [] end) + $rows),
-        releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+        releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" \
+    || { rm -f "$out" "$tmp" "$tmp.rows" "$tmp.rel" "$tmp.prev"; die "cannot write $out"; }
+  rm -f "$tmp" "$tmp.rows" "$tmp.rel" "$tmp.prev"
   # From the merged rows, so a subset refresh still judges every project on all its channels.
-  facts="$(stage_facts "$(jq -c .rows "$out")")" && jq --argjson f "$facts" '. + $f' "$out" >"$out.f" && mv -f "$out.f" "$out" \
+  facts="$(stage_facts "$out")" && jq --slurpfile f <(printf '%s\n' "$facts") '. + $f[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
     || { rm -f "$out" "$out.f"; die "cannot write the stage facts"; }
-  facts="$(link_facts)" && jq --argjson f "$facts" '. + $f' "$out" >"$out.f" && mv -f "$out.f" "$out" \
+  facts="$(link_facts)" && jq --slurpfile f <(printf '%s\n' "$facts") '. + $f[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
     || { rm -f "$out" "$out.f"; die "cannot write the link facts"; }
   summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
     || { rm -f "$out"; die "cannot summarize $out"; }

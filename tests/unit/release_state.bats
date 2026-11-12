@@ -126,6 +126,18 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(field web-prod .status)" = ok ]
 }
 
+@test "a target with no branch reads origin's default branch even when origin/HEAD names another remote" {
+  # home-config's clone points origin/HEAD at forgejo/master; fetching "origin forgejo/master" failed.
+  git -C "$CLONE" remote add mirror "$ORIGIN"
+  git -C "$CLONE" fetch -q mirror
+  git -C "$CLONE" symbolic-ref refs/remotes/origin/HEAD refs/remotes/mirror/main
+  run "$RS" refresh
+  assert_success
+  [ "$(field web-preview .pinned.source)" = "infra:origin/main:apps/web/kustomization.yaml" ]
+  [ "$(field web-preview .pinned.value)" = pre-abc ]
+  [ "$(field web-preview .pinned.error)" = null ]
+}
+
 @test "live differing from pinned is drift, and check names it once past grace" {
   export KUBE_IMAGE=reg/web:v0.9.0
   "$RS" refresh >/dev/null

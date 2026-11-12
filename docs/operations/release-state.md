@@ -196,7 +196,8 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 
 | Symptom | Cause and fix |
 |---|---|
-| A row is `unknown` with `fetch failed` | The checkout's `origin` is unreachable (VPN, ssh agent). Fix the remote; the snapshot never reuses an older ref |
+| A row is `unknown` with `fetch failed` | The checkout's `origin` is unreachable (VPN, ssh agent). Fix the remote; the snapshot never reuses an older ref. When `origin` fetches by hand, check the row's source: a target with no `branch` reads `origin/HEAD`, and only the branch name after the remote is used, so a clone whose `origin/HEAD` points at `forgejo/master` still fetches `origin master` |
+| `agentctl@release-state` exits 2 with `jq: Argument list too long` and the snapshot stops moving | A JSON value passed to jq as `--argjson` grew past the kernel's 128 KB per-argument cap. Pass it through a file (`--slurpfile`) or stdin, never an argument |
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
 | PREV and LAST DEPLOY say `?` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
 | PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
