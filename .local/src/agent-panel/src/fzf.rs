@@ -170,6 +170,12 @@ fn args(
         args.push("--bind".into());
         args.push(format!("{key}:{help}"));
     }
+    // A bare ? opens the page too, while the search box is empty; once a search is typed it is
+    // a plain ?. It needs no Alt, which a terminal or compositor can keep from the panel.
+    args.push("--bind".into());
+    args.push(format!(
+        "?:transform:[ -z \"$FZF_QUERY\" ] && echo '{help}' || echo 'put(?)'"
+    ));
     if let Some(q) = query {
         args.push(format!("--query={q}"));
     }
@@ -248,6 +254,13 @@ mod tests {
             "{a:?}"
         );
         assert!(a.contains(&"f1:execute(/bin/ap keys)".to_string()), "{a:?}");
+        assert!(
+            a.contains(
+                &"?:transform:[ -z \"$FZF_QUERY\" ] && echo 'execute(/bin/ap keys)' || echo 'put(?)'"
+                    .to_string()
+            ),
+            "{a:?}"
+        );
         // The bar is gone: the keys live on the help page.
         assert!(!a.iter().any(|x| x.starts_with("--header")), "{a:?}");
         // Negative control: each grab key is bound once, so no older up/down bind shadows it.
