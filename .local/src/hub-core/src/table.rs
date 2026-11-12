@@ -496,7 +496,11 @@ impl View {
                 Chip {
                     name: s,
                     n,
-                    tone: if n > 0 { crate::vocab::tone(R::TONES, s) } else { None },
+                    tone: if n > 0 {
+                        crate::vocab::tone(R::TONES, s)
+                    } else {
+                        None
+                    },
                     means: R::LEGEND.iter().find(|(w, _)| w == s).map(|(_, m)| *m),
                 }
             })

@@ -632,7 +632,10 @@ mod tests {
         let tone = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.tone);
         // Fleet's held runner is stopped, so its tile is red where Queue's held item is amber.
         assert_eq!(tone("held"), Some(Some(crate::vocab::Level::Bad)));
-        assert_eq!(crate::vocab::tone(&[], "held"), Some(crate::vocab::Level::Warn));
+        assert_eq!(
+            crate::vocab::tone(&[], "held"),
+            Some(crate::vocab::Level::Warn)
+        );
     }
 
     #[test]

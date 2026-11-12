@@ -219,7 +219,9 @@ impl DataTable {
                 self.view.state == c.name
             };
             let text = format!("{}{} {}", if i == 0 { "" } else { "  " }, c.name, c.n);
-            let hue = c.tone.map_or_else(Style::new, |l| crate::releases::level(l, p));
+            let hue = c
+                .tone
+                .map_or_else(Style::new, |l| crate::releases::level(l, p));
             out.push(Span::styled(
                 text,
                 if on { hue.patch(p.head()) } else { hue },
