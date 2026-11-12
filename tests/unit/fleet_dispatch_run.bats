@@ -719,6 +719,7 @@ ocfree_ready() {
   printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
   harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
     launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+  harness_sandboxed ocfree
 }
 
 @test "negative control: a private-project item never picks ocfree, pinned or routed, though ocfree has room and ranks first" {
@@ -739,12 +740,18 @@ case "$1" in log) echo run-9 ;; classify)
   assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
   assert_not_called 'opencode run'
   assert_not_called 'room --source ocfree'
-  # Positive control: the same pinned item starts on ocfree once its project is on the list, so the
-  # refusal above came from the allowlist and nothing else.
+  # With its project on the list it is still refused: a sandboxed run takes canary items only.
   harness_set '.harnesses.ocfree.projects = ["dotfiles", "game"]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item pin-free has no source with room it may run on: ocfree: runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:)'
+  assert_not_called 'opencode run'
+  # Positive control: the same pinned item, a canary, starts on ocfree, so each refusal above came
+  # from the allowlist or the canary rule and nothing else.
+  canary_item pin-free c-1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item pin-free on ocfree (beam), the harness it is pinned to'
-  assert_called "OPENCODE_CONFIG='$SANDBOX/eval-ocfree.json'"
+  assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-ocfree.json")"
+  assert_called 'srt --settings'
 }
 
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {

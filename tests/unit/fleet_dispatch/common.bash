@@ -718,6 +718,21 @@ JSON
 # launch_settings -> the JSON the last launch line passed to --settings
 launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/cmds.log" | sed -E 's/.* --settings (.*) --permission-mode.*/\1/')"; }
 
+# harness_sandboxed <harness> -- the harness names lane sandbox "pub", held by srt (a stub; the
+# start never runs it, the pane would). Its config exists, since the launch names it by its target.
+harness_sandboxed() {
+  export AGENTCTL_SANDBOX_DIR="$SANDBOX/sbx" SANDBOX_SRT_NEEDS=srt
+  mkdir -p "$AGENTCTL_SANDBOX_DIR"
+  printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/", "/tmp"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' \
+    > "$AGENTCTL_SANDBOX_DIR/pub.json"
+  stub srt 'exit 0'
+  harness_set --arg h "$1" '.harnesses[$h].sandbox = "pub"'
+  touch "$(jq -r --arg h "$1" '.harnesses[$h].config' "$DISPATCH_HARNESSES")"
+}
+
+# canary_item <slug> <canary id> -- the queued item is a fleet-bench canary that names its task.
+canary_item() { agent-queue set "$1" tags=canary canary="$2" >/dev/null; }
+
 # --- claude-cloud: a #cloud-ok item runs as a Claude cloud session ---------------------------
 
 cloud_ready() {
