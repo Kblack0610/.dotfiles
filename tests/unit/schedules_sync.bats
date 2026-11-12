@@ -1059,15 +1059,15 @@ with zipfile.ZipFile(sys.argv[1], "w") as z:
   assert_output --partial '7: log not read'
   assert_output --partial '8: the log names no tag'
   run jq -sc 'map([.id, .tag, .of])' "$XDG_STATE_HOME/ci/run-tags.jsonl"
-  assert_output '[[1,"v1-a",null],[2,null,1],[9,"v1-d",null]]'
+  assert_output '[[1,"v1-a",null],[2,null,1],[8,null,null],[9,"v1-d",null]]'
   run grep -c '/logs$' "$GHD/calls"
   assert_output 5
-  # a second call asks only what it could not answer, and the ledger was never rewritten
+  # a second call asks only the log it could not read, and the ledger was never rewritten
   run "$SUBJECT" run-tags o/game .github/workflows/release.yml .github/workflows/steam.yml
   run grep -c '/logs$' "$GHD/calls"
-  assert_output 7
+  assert_output 6
   run jq -sc 'length' "$XDG_STATE_HOME/ci/run-tags.jsonl"
-  assert_output 3
+  assert_output 4
   [ "$(md5sum < "$LEDGER")" = "$before" ]
   run "$SUBJECT" run-tags o/game
   assert_failure 2

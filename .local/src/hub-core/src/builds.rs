@@ -542,8 +542,8 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
 
 /// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
 /// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
-/// `Tests (delta)`), as does a version tag after `of` (`Release builds of v0.5.0-x7` is `Release
-/// builds`), so one workflow's runs pool.
+/// `Tests (delta)`), as does a tag after `of` (`Release builds of v0.5.0-x7`, `of web-v1.1.0`
+/// are `Release builds`), so one workflow's runs pool.
 pub fn timed_as(workflow: &str, path: &str) -> String {
     if path.starts_with("dynamic/dependabot/") {
         let eco = workflow.split_whitespace().next().unwrap_or_default();
@@ -555,9 +555,8 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
         let id = core.len() >= 7
             && core.chars().all(|c| c.is_ascii_hexdigit())
             && core.chars().any(|c| c.is_ascii_digit());
-        let tag = out.last().is_some_and(|w| w == "of")
-            && core.starts_with('v')
-            && core[1..].starts_with(|c: char| c.is_ascii_digit());
+        // What `release_graph::titled` reads as a tag: a word with a digit after `of`.
+        let tag = out.last().is_some_and(|w| w == "of") && core.chars().any(|c| c.is_ascii_digit());
         let id = id || tag;
         if !id {
             out.push(word.to_string());
@@ -1265,6 +1264,11 @@ mod tests {
             timed_as("Release builds of v0.5.0-dodginballs7", "x"),
             "Release builds"
         );
+        assert_eq!(
+            timed_as("Phone release of web-v1.1.0", "x"),
+            "Phone release"
+        );
+        assert_eq!(timed_as("Proof of concept", "x"), "Proof of concept");
         assert_eq!(
             timed_as("Steam (dodginballs of 43026871395)", "x"),
             "Steam (dodginballs)"

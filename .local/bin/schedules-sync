@@ -1116,8 +1116,9 @@ def log_names(repo, run_id):
 def run_tags(argv):
     """`run-tags <repo> <workflow path>...` -> (exit code, report). For each finished dispatched
     run of those workflows the ledger holds, whose name carries no tag (`... of <tag>`) and that
-    RUN_TAGS has no line for, reads the run's log and appends what it names. The ledger is never
-    rewritten. Exit 1 when a log could not be read; the next call asks it again."""
+    RUN_TAGS has no line for, reads the run's log and appends what it names (no tag when it names
+    none, so each log is read once). The ledger is never rewritten. Exit 1 when a log could not be
+    read; the next call asks it again."""
     if len(argv) < 2 or argv[0].startswith("-"):
         return 2, "run-tags <repo> <workflow path>..."
     repo, paths = argv[0], set(argv[1:])
@@ -1138,12 +1139,13 @@ def run_tags(argv):
             out.append(f"{run_id}: log not read: {e}")
             rc = 1
             continue
+        # A log that names nothing is kept too, with no tag, so it is read once.
+        with open(RUN_TAGS, "a") as f:
+            f.write(json.dumps({"repo": repo, "id": run_id, **(named or {})}, separators=(",", ":")) + "\n")
         if not named:
             out.append(f"{run_id}: the log names no tag")
-            continue
-        with open(RUN_TAGS, "a") as f:
-            f.write(json.dumps({"repo": repo, "id": run_id, **named}, separators=(",", ":")) + "\n")
-        out.append(f"{run_id}: {'tag ' + named['tag'] if 'tag' in named else 'uploads run ' + str(named['of'])}")
+        else:
+            out.append(f"{run_id}: {'tag ' + named['tag'] if 'tag' in named else 'uploads run ' + str(named['of'])}")
     return rc, "\n".join(out) or "nothing to read"
 
 

@@ -406,6 +406,8 @@ fn releases_cmd(args: Vec<String>) -> i32 {
             let paths = hub_core::builds::Paths::from_env();
             let b = hub_core::builds::read(&paths, Some(join), hub_core::jobs::now());
             r.with_builds(&b.rows);
+            r.errors
+                .extend(b.errors.iter().map(|e| format!("build runs: {e}")));
             r.errors.extend(queue_error);
             match serde_json::to_string(&r) {
                 Ok(s) => println!("{s}"),

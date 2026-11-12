@@ -155,7 +155,9 @@ enum Named {
 fn titled(title: &str) -> Option<Named> {
     let (_, rest) = title.rsplit_once(" of ")?;
     let word = rest.split_whitespace().next()?.trim_end_matches(')');
-    if word.is_empty() {
+    // A tag or a run id carries a digit; `Proof of concept` names neither. `builds::timed_as`
+    // folds the same word out of the name.
+    if !word.bytes().any(|b| b.is_ascii_digit()) {
         return None;
     }
     Some(if word.bytes().all(|b| b.is_ascii_digit()) {
@@ -510,10 +512,13 @@ impl<'a> Graph<'a> {
         titled(&r.workflow).or_else(|| self.logged.get(&(repo_key(&r.repo), r.id)).cloned())
     }
 
-    /// run -> release: the Deployment whose URL names the run, else a run on one of the line's
-    /// tags (a tag push), else the line's tag the run names, itself or through the run it
-    /// uploads: that run's Deployment, else the tag it names (`tags`, from [`Graph::join`]).
-    pub fn release(&self, r: &Run, tags: &HashMap<(String, u64), String>) -> Option<RunRelease> {
+    /// run -> release, the run's own: the Deployment whose URL names the run, else a run on one
+    /// of the line's tags (a tag push), else the line's tag its name or log names.
+    pub fn release(&self, r: &Run) -> Option<RunRelease> {
+        self.own(r, self.named(r).as_ref())
+    }
+
+    fn own(&self, r: &Run, named: Option<&Named>) -> Option<RunRelease> {
         let repo = repo_key(&r.repo);
         if let Some(x) = self.deployed_by.get(&(repo.clone(), r.id)) {
             return Some(x.clone());
@@ -526,29 +531,37 @@ impl<'a> Graph<'a> {
                     tag: tag.to_string(),
                 })
         };
-        on(&r.branch).or_else(|| match self.named(r)? {
-            Named::Tag(t) => on(&t),
-            Named::Run(id) => self
-                .deployed_by
-                .get(&(repo.clone(), id))
-                .cloned()
-                .or_else(|| on(tags.get(&(repo.clone(), id))?)),
+        on(&r.branch).or_else(|| match named? {
+            Named::Tag(t) => on(t),
+            Named::Run(_) => None,
         })
     }
 
-    /// Each run's PRs, owner and release.
+    /// Each run's PRs, owner and release. A run with no release of its own that uploads another
+    /// (`Steam (<game> of <run id>)`) has that run's: its Deployment, else that run's own join.
     pub fn join(&self, runs: &mut [Run]) {
-        let tags: HashMap<(String, u64), String> = runs
+        let named: Vec<Option<Named>> = runs.iter().map(|r| self.named(r)).collect();
+        let own: Vec<Option<RunRelease>> = runs
             .iter()
-            .filter_map(|r| match self.named(r)? {
-                Named::Tag(t) => Some(((repo_key(&r.repo), r.id), t)),
-                Named::Run(_) => None,
-            })
+            .zip(&named)
+            .map(|(r, n)| self.own(r, n.as_ref()))
             .collect();
-        for r in runs {
+        let by_run: HashMap<(String, u64), RunRelease> = runs
+            .iter()
+            .zip(&own)
+            .filter_map(|(r, x)| Some(((repo_key(&r.repo), r.id), x.clone()?)))
+            .collect();
+        for ((r, n), x) in runs.iter_mut().zip(named).zip(own) {
             r.prs = self.run_prs(r);
             r.owner = self.owner(r, &r.prs);
-            r.release = self.release(r, &tags);
+            r.release = x.or_else(|| {
+                let Some(Named::Run(id)) = n else { return None };
+                let key = (repo_key(&r.repo), id);
+                self.deployed_by
+                    .get(&key)
+                    .or_else(|| by_run.get(&key))
+                    .cloned()
+            });
         }
     }
 
@@ -1185,11 +1198,7 @@ mod tests {
             registry: None,
             run_tags: &[],
         });
-        let none = HashMap::new();
-        let rel = |r: &Run| {
-            g.release(r, &none)
-                .map(|x| format!("{} {}", x.project, x.tag))
-        };
+        let rel = |r: &Run| g.release(r).map(|x| format!("{} {}", x.project, x.tag));
         assert_eq!(
             rel(&run("Acme/app", 55, "main", "x", "")).as_deref(),
             Some("app app-v1.2.0")
@@ -1255,6 +1264,8 @@ mod tests {
         assert_eq!(titled("Release builds"), None);
         assert_eq!(titled("Steam"), None);
         assert_eq!(titled("fix: a list of "), None);
+        assert_eq!(titled("Phone release of web-v1.1.0"), tg("web-v1.1.0"));
+        assert_eq!(titled("Proof of concept"), None, "no digit, no tag");
     }
 
     #[test]
@@ -1305,6 +1316,9 @@ mod tests {
             titled_run(21, "Steam (game of 20)"),
             titled_run(30, "Release builds"),
             titled_run(31, "Steam"),
+            // An upload of a tag-push run, joined by its tag ref.
+            run("Acme/app", 60, "v0.5.0-game6", "x", ""),
+            titled_run(61, "Steam (game of 60)"),
             // negative controls: a tag no line keeps, an upload of a run that names none, and the
             // same run id in another repo.
             titled_run(40, "Release builds of v9.9.9"),
@@ -1335,6 +1349,8 @@ mod tests {
             vec![
                 want("game v0.5.0-game7"),
                 want("game v0.5.0-game7"),
+                want("game v0.5.0-game6"),
+                want("game v0.5.0-game6"),
                 want("game v0.5.0-game6"),
                 want("game v0.5.0-game6"),
                 None,
