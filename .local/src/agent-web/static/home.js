@@ -275,7 +275,7 @@ function cardHtml(c) {
   const first = c.first.map((f) => `<a class="kf" href="${esc(f.link || c.link)}"><span><b>${esc(f.text)}</b>${f.sub ? `<small>${esc(f.sub)}</small>` : ""}</span>${f.level !== "ok" ? `<em class="${HUE[f.level]}">${LEVEL[f.level]}</em>` : ""}</a>`).join("");
   return `<section class="kcard" data-card="${esc(c.tab)}">` +
     `<a class="kt" href="${to}" title="${esc(c.counted)}">${esc(c.title)}<span aria-hidden="true">-&gt;</span></a>` +
-    `<div class="kbig ${hue}">${esc(c.big)}</div><div class="ku">${esc(c.unit)}</div>` +
+    `<div class="kbig ${hue}">${esc(c.big)}<span class="ku">${esc(c.unit)}</span></div>` +
     `<div class="kbar" title="${esc(LEVEL[c.level])}">${bar}</div>` +
     (parts ? `<div class="kparts">${parts}</div>` : "") +
     (c.error ? `<div class="cline warn">${esc(c.error)}</div>` : "") +

@@ -365,7 +365,7 @@ test("the cards lead Home, one per tab, each title opening its tab with what it 
   for (const t of TABS) assert.match(html, new RegExp(`<section class="kcard" data-card="${t}"><a class="kt" href="#${t}" title="counted on ${t}">`));
   assert.ok(html.indexOf("kgrid") < html.indexOf("Needs you"), html);
   assert.doesNotMatch(html, /Flow|Spend|cchip warn">ci/, "the cards replace the Flow, Health and Spend lines");
-  assert.match(html, /<div class="kbig ok">3<\/div><div class="ku">live<\/div>/);
+  assert.match(html, /<div class="kbig ok">3<span class="ku">live<\/span><\/div>/);
   assert.match(html, /<div class="kbar"[^>]*><i class="ok" style="flex:2"><\/i><i class="bad" style="flex:1"><\/i><\/div>/);
   assert.match(html, /<a class="kp" href="#sessions"><span>Working<\/span><b class="ok">2<\/b><\/a>/);
 });
@@ -379,7 +379,7 @@ test("a look-first row opens its record, and is pilled only when it is not ok", 
 
 test("a card whose read failed says NO DATA and why, never an all-clear", () => {
   const html = drawCards([card("alerts", { big: "-", unit: "no data", level: "nodata", bar: [], parts: [], error: "Prometheus: down" })]);
-  assert.match(html, /<div class="kbig ">-<\/div><div class="ku">no data<\/div><div class="kbar" title="no data"><i><\/i><\/div><div class="cline warn">Prometheus: down<\/div>/);
+  assert.match(html, /<div class="kbig ">-<span class="ku">no data<\/span><\/div><div class="kbar" title="no data"><i><\/i><\/div><div class="cline warn">Prometheus: down<\/div>/);
   assert.doesNotMatch(html, /kbig ok/);
 });
 
