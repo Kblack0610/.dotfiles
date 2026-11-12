@@ -7,8 +7,9 @@
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
 // Below the queue, the Candidates fold: the ranked board rows (/api/queue/candidates, hub-core
 // over fleet-dispatch's snapshot, `as of` its time), each with a Promote that is the board's Start.
-// It starts shut and is read and drawn only while open (dashboards rule 10); shut, its heading
-// counts from the queue read's `candidates`, red while an urgent row is blocked.
+// It starts shut and its rows are read and drawn only while open (dashboards rule 10); its heading
+// counts from its own counts read (`?counts=1`), made once the table has painted, amber while an
+// urgent row is blocked and red with the read's error.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
 // The line's snapshot is written every 10 minutes; a minute is plenty.
@@ -27,7 +28,7 @@ const qst = tblTab({
   state: {
     items: null, table: null, aliases: {}, needs: 0, openRows: 0, sel: "", dispatch: null,
     stats: null, projects: [], busy: false, msg: "", draft: null,
-    // candCounts: the shut Candidates heading's counts, from the queue read.
+    // cands: the rows, held only while the fold is open; candCounts: the heading's counts.
     cands: null, candCounts: null, candErr: null, candMsg: "", promoting: null,
     // The Candidates filter: a reason chip ("" is every row) and the search words.
     candReason: "", candQ: "",
@@ -46,14 +47,30 @@ const qst = tblTab({
   },
 });
 
-// The candidates are fleet-dispatch's snapshot, read when the fold opens (or the tab shows with it
-// open) and after a promote (which takes its row out of the file), never on a queue event.
+// The candidates are fleet-dispatch's snapshot. The counts are read when the tab shows (after its
+// table), on the snapshot's own event and after a promote (which takes its row out of the file);
+// the rows the same, but only while the fold is open, and dropped when it shuts.
 const CAND_K = "sec:candidates";
 const qCandOpen = () => qst.open[CAND_K] === true;
-const refreshCands = coalesce(async () => {
-  try { qst.cands = await api("/api/queue/candidates"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
+const refreshCandCounts = coalesce(async () => {
+  try { qst.candCounts = await api("/api/queue/candidates?counts=1"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
   if (st.tab === "queue") qst.render();
 });
+// candReading: a rows read is out, so the toggle a redraw fires on the open fold asks for none.
+let candReading = false;
+const refreshCands = coalesce(async () => {
+  let rows = null, err = null;
+  candReading = true;
+  try { rows = await api("/api/queue/candidates"); } catch (e) { err = e.message; }
+  candReading = false;
+  // Shut while the read ran: a shut fold holds no rows, so a reopen reads afresh.
+  if (!qCandOpen()) return;
+  if (rows) qst.cands = rows;
+  qst.candErr = err;
+  if (st.tab === "queue") qst.render();
+});
+// The snapshot changed (its event, a promote, a resync): the counts, and the rows when open.
+const refreshCandAll = () => { refreshCandCounts(); if (qCandOpen()) refreshCands(); };
 
 // The pipeline line (flow.js) above the table: /api/flow is hub-core's `flow::Rail` over the live
 // queue and fleet-bench's snapshot. A queue event re-reads it with the table; the snapshot is a
@@ -79,7 +96,7 @@ const refreshQueue = coalesce(async () => {
   try {
     const q = tblParams(st.views.queue).toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
-    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, dispatch: d.dispatch || null, candCounts: d.candidates || null, err: null });
+    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, dispatch: d.dispatch || null, err: null });
   } catch (e) { qst.err = e.message; }
   // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
   if (st.tab === "queue" && st.arg) {
@@ -195,14 +212,21 @@ function qHoldCell(i) {
 }
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
-// so a glance reads what each item is; its note follows muted, the whole cell clamped to two lines (ui.md rule 9).
+// so a glance reads what each item is, over a muted line with the no-proof flag and the note (the
+// slug when it has none): a record cell, each line cut to one (ui.md rule 9, `rec2`).
+function qTitleCell(i) {
+  const title = i.title || i.slug, sub = i.note || (i.title ? i.slug : "");
+  const html = [qProof(i), esc(sub)].filter(Boolean).join(" ");
+  return rec2(`<span class="bt">${esc(title)}</span>`, title, html, sub);
+}
+
 function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   const open = i.slug === qst.sel;
   const links = tblLinks(qst.table, n);
   return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}"><td class="n">${i.start ?? ""}</td>` +
-    `<td class="btitle">${clamp2(`<span class="bt">${esc(i.title || i.slug)}</span>${qProof(i) ? " " + qProof(i) : ""}${i.note ? ` <span class="muted">${esc(i.note)}</span>` : ""}`, [i.title || i.slug, i.note].filter(Boolean).join("\n"))}</td>` +
+    `<td class="btitle">${qTitleCell(i)}</td>` +
     `<td>${tblLink(links.project, i.project)}</td><td${i.priority === "urgent" ? ` class="warn"` : ""}>${dash(i.priority)}</td>${qState(i)}${qHoldCell(i)}<td>${dash(i.source)}</td>` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `${qPrCell(i)}<td>${tblLink(links.row, i.row_id)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
@@ -210,7 +234,7 @@ function qRow(i, n) {
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
-// The table in its own scroll box, capped at the server's open_rows (hub-core TABLE_OPEN_ROWS, or
+// The table in its own scroll box, capped at the server's open_rows (agent-web TABLE_OPEN_ROWS, or
 // down to the opened row) with the rest a click away; the chips, search and filters reach every row.
 function qBody() {
   const t = qst.table, shown = qst.items || [];
@@ -348,7 +372,7 @@ function qCandBody() {
 // covers; the rows.
 function qCandOpenBody() {
   const c = qst.cands;
-  if (qst.candErr) return `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
+  if (qst.candErr) return "";
   if (!c) return `<div class="card muted">Reading candidates...</div>`;
   if (!c.rows.length) return `<div class="card muted">No open board row to start.</div>`;
   const chip = (v, label) => `<button class="btn sm${v === qst.candReason ? " primary" : ""}" data-creason="${esc(v)}">${esc(label)}</button>`;
@@ -361,14 +385,16 @@ function qCandOpenBody() {
     `${gap}<div id="qc-body">${qCandBody()}</div>`;
 }
 
-// The Candidates fold: the row count in the heading, hued when urgent rows are blocked, and a line
-// under it saying how many. Shut, the counts are the queue read's and nothing else is drawn.
+// The Candidates fold: the heading is always the counts read's (open or shut), hued when urgent
+// rows are blocked, red with a failed read and its error under it, shut or open. Shut, nothing
+// else is drawn.
 function qCandidates() {
-  const open = qCandOpen(), c = (open && qst.cands) || qst.candCounts;
+  const open = qCandOpen(), c = qst.candCounts;
   const level = qst.candErr ? "bad" : c?.urgent_blocked ? "warn" : null;
+  const why = qst.candErr ? `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>` : "";
   const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
   const urgent = c?.urgent_blocked ? `<div class="cline warn">${c.urgent_blocked} urgent blocked</div>` : "";
-  return `<details class="csec" id="sec-candidates" data-k="${CAND_K}"${open ? " open" : ""}><summary>${secHead("", "Candidates", c ? c.total : null, level)}</summary>` +
+  return `<details class="csec" id="sec-candidates" data-k="${CAND_K}"${open ? " open" : ""}><summary>${secHead("", "Candidates", c ? c.total : null, level)}${why}</summary>` +
     `${urgent}${open ? msg + qCandOpenBody() : ""}</details>`;
 }
 
@@ -387,7 +413,7 @@ async function qPromote(i) {
   qst.promoting = null;
   qst.render();
   refreshQueue();
-  refreshCands();
+  refreshCandAll();
 }
 
 function qSaveDraft() {
@@ -472,11 +498,15 @@ $("queue").addEventListener("toggle", (e) => {
   if (card) { askTrace(e, () => qst.render()); if (e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open; return; }
   const k = e.target.dataset?.k;
   if (k) {
-    // A redraw re-inserts an open fold, which fires toggle too: only shut -> open reads.
-    const was = qst.open[k] === true;
+    // The element's own state, every time: a redraw that lands before this async event re-inserts
+    // the fold as the map last said, so comparing with the map would lose the click.
     qst.open[k] = e.target.open;
-    if (k === CAND_K && e.target.open && !was) refreshCands();
-    if (k === CAND_K && !e.target.open && was) qst.render();
+    if (k !== CAND_K) return;
+    // Open with no rows for this snapshot (a shut fold dropped them) reads them and says so; the
+    // toggle that redraw fires, with the read out, does nothing, nor does a redraw of an open fold
+    // that has its rows. Shut drops them, so a reopen reads afresh.
+    if (e.target.open && !qst.cands) { if (!candReading) { refreshCands(); qst.render(); } }
+    else if (!e.target.open && qst.cands) { qst.cands = null; qst.render(); }
     return;
   }
   if (e.target.dataset?.pf === "q-flow") {
@@ -493,8 +523,8 @@ $("queue").addEventListener("keydown", (e) => {
 TABS.queue = {
   async show() {
     renderQueue();
-    refreshQueue();
-    if (qCandOpen()) refreshCands();
+    // The counts and an open fold's rows wait for the table's read, so the rows paint first.
+    refreshQueue().then(() => { if (st.tab === "queue") refreshCandAll(); });
     pollFlow();
     if (!qst.projects.length) {
       try { qst.projects = await api("/api/queue/projects"); } catch (e) { /* the select stays empty; add says why */ }
@@ -504,6 +534,8 @@ TABS.queue = {
   onEvent(ev) {
     if (ev.kind === "queue" || ev.kind === "resync") refreshQueue();
     if (ev.kind === "resync") refreshFlow();
+    // fleet-dispatch wrote its snapshot; a closed tab reads it on show.
+    if ((ev.kind === "candidates" || ev.kind === "resync") && st.tab === "queue") refreshCandAll();
   },
 };
 // The nav badge needs one read on any tab. It waits for app.js's route (whose listener runs first:

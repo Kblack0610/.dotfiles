@@ -70,14 +70,6 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
-/// How many table rows the web page draws before its "+N more" button; the chips still count
-/// every row and the search and filters reach them all. Holds the Queue tab under three screens
-/// at 1400x900 (render.mjs). Live data, 2026-11-12, 637 active items: at 200 rows the default
-/// view was 19,324 px; with two-line cells (54 px a row) 30 rows measured 2,683 px, too close to
-/// 2,700 to survive a wrapped dispatch line, so 25 (about 2,410 px). Revisit when the space above
-/// the table or the row height changes. The hub TUI scrolls one-line rows and draws every row.
-pub const TABLE_OPEN_ROWS: usize = 25;
-
 /// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
 /// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so
 /// a caller that hands the item on as JSON loses nothing agent-queue said.
@@ -1308,12 +1300,19 @@ pub struct Candidates {
     pub urgent_blocked: usize,
     /// Projects worked on in the last day that have a row no worker covers, sorted.
     pub uncovered: Vec<String>,
-    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
-    /// when the rows came from no file.
-    pub as_of: String,
+    /// When the snapshot file was written (its mtime), None when the rows came from no file. Kept
+    /// raw so a reader that keeps the parse words it at serve time (`as_of`).
+    #[serde(skip)]
+    pub written: Option<std::time::SystemTime>,
 }
 
 impl Candidates {
+    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
+    /// when the rows came from no file.
+    pub fn as_of(&self, now: chrono::DateTime<chrono::Local>) -> String {
+        self.written.map_or(String::new(), |t| as_of(t.into(), now))
+    }
+
     pub fn more(&self) -> usize {
         self.total - self.rows.len()
     }
@@ -1385,9 +1384,7 @@ pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
         _ => format!("{}: {e}", path.display()),
     })?;
     let mut c = parse_candidates(&body);
-    if let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified()) {
-        c.as_of = as_of(t.into(), chrono::Local::now());
-    }
+    c.written = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     Ok(c)
 }
 
@@ -1877,7 +1874,19 @@ mod tests {
         assert!(e.contains("next dispatch pass"), "no file yet: {e}");
         std::fs::write(&f, SUGGEST).unwrap();
         let c = candidates(&f).unwrap();
-        assert_eq!(c.as_of.len(), 5, "stamped HH:MM today: {}", c.as_of);
+        let now = chrono::Local::now();
+        assert_eq!(
+            c.as_of(now).len(),
+            5,
+            "stamped HH:MM today: {}",
+            c.as_of(now)
+        );
+        let day = now + chrono::Duration::days(1);
+        assert!(
+            c.as_of(day).contains(' '),
+            "worded when served, so a kept parse names the day once it is old: {}",
+            c.as_of(day)
+        );
         assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
         let c = c.rows;
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();

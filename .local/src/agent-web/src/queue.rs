@@ -107,23 +107,32 @@ pub struct QueueQuery {
     pub dir: String,
 }
 
+/// How many table rows the page draws before its "+N more" button; the chips still count every
+/// row and the search and filters reach them all. Holds the Queue tab under three screens at
+/// 1400x900 (tests/agent-web/phone/render.mjs reads this line). Live data, 2026-11-12, 637 active
+/// items: at 200 rows the default view was 19,324 px; with two-line cells (54 px a row) 30 rows
+/// measured 2,683 px, too close to 2,700 to survive a wrapped dispatch line, so 25 (about 2,410
+/// px). Revisit when the space above the table or the row height changes. Web only: the hub TUI
+/// scrolls one-line rows and reaches every row.
+pub const TABLE_OPEN_ROWS: usize = 25;
+
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
-/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), the last
-/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the table,
-/// and `candidates`, the shut Candidates heading's counts (`cand_counts`), absent with no snapshot.
+/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
+/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the
+/// table. The Candidates counts are their own read (`candidates?counts=1`), so the items never
+/// wait on the snapshot's parse.
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let (items, cands) = tokio::join!(s.queue.recent(), read_candidates());
-    let mut v = items
+    let mut v = s
+        .queue
+        .recent()
+        .await
         .map(|items| render(items, &q, chrono::Utc::now()))
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
     let d = hub_core::capacity::Dispatch::now();
     v["dispatch"] = serde_json::json!({ "line": d.line(), "warn": d.warn() });
-    if let Ok(c) = cands {
-        v["candidates"] = cand_counts(&c);
-    }
     Ok(Json(v))
 }
 
@@ -156,7 +165,7 @@ fn render(
         "items": shown.iter().map(|r| row_view(r, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
-        "open_rows": hub_queue::TABLE_OPEN_ROWS,
+        "open_rows": TABLE_OPEN_ROWS,
         "section_aliases": aliases,
     })
 }
@@ -223,7 +232,7 @@ pub async fn stats(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>
 }
 
 /// The counts and the rows hub-core keeps, each with the title and start label it words.
-fn candidates_view(c: &Candidates) -> serde_json::Value {
+fn candidates_view(c: &Candidates, now: chrono::DateTime<chrono::Local>) -> serde_json::Value {
     let view = |rows: &[hub_queue::Candidate]| -> Vec<serde_json::Value> {
         rows.iter()
             .map(|r| {
@@ -244,43 +253,67 @@ fn candidates_view(c: &Candidates) -> serde_json::Value {
         "total": c.total, "auto": c.auto, "rows": view(&c.rows),
         "blocked_rows": view(&c.blocked_rows), "reasons": reasons,
         "urgent_blocked": c.urgent_blocked, "uncovered": c.uncovered, "clear": c.clear,
-        "as_of": c.as_of,
+        "as_of": c.as_of(now),
     })
 }
 
 /// The counts the shut Candidates heading shows, not the rows: how many the snapshot ranks, how
 /// many a worker takes, how many urgent ones something blocks (red while any are), and its time.
-fn cand_counts(c: &Candidates) -> serde_json::Value {
+fn cand_counts(c: &Candidates, now: chrono::DateTime<chrono::Local>) -> serde_json::Value {
     serde_json::json!({
-        "total": c.total, "auto": c.auto, "urgent_blocked": c.urgent_blocked, "as_of": c.as_of,
+        "total": c.total, "auto": c.auto, "urgent_blocked": c.urgent_blocked, "as_of": c.as_of(now),
     })
 }
 
-/// The snapshot stays the same until fleet-dispatch rewrites it, so a read is kept by the file's
-/// mtime; this only bounds how long one is kept at all (its `as_of` names the day once it is old).
+/// The snapshot stays the same until fleet-dispatch rewrites it, so a read is kept by `snapshot_key`;
+/// this only bounds how long one is kept at all. The kept parse holds the raw write time and
+/// `as_of` is worded per answer, so it names the day once the snapshot is old.
 const CANDIDATES_SECS: u64 = 3600;
-static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<SystemTime>> = ReadCache::new();
+static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<(SystemTime, u64)>> =
+    ReadCache::new();
 
-/// fleet-dispatch's snapshot through hub-core, parsed once per write: it runs to megabytes, and
-/// every queue read carries its counts.
-async fn read_candidates() -> Result<Arc<Candidates>, String> {
+/// The snapshot file's mtime and inode. fleet-dispatch replaces the file by a rename on every
+/// write, so the inode is new each time; a promote drops its row and keeps the pass's mtime
+/// (`candidates_drop`, `touch -r`), which the mtime alone would miss.
+fn snapshot_key(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.ino()))
+}
+
+/// fleet-dispatch's snapshot through hub-core, parsed once per write (it runs to megabytes) and
+/// shared by the counts and the rows. A file that cannot be read is a 400 with hub-core's words;
+/// a parse task that died is a 500.
+async fn read_candidates() -> ApiResult<Arc<Candidates>> {
     let path = hub_core::boards::candidates_file();
-    let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let at = snapshot_key(&path);
     let read = async move {
         tokio::task::spawn_blocking(move || hub_queue::candidates(&path))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
     };
     CANDIDATES.get(at, read).await
 }
 
+/// `counts=1` asks for the heading's counts only (`cand_counts`), not the rows.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct CandQuery {
+    pub counts: String,
+}
+
 /// The ranked board rows of fleet-dispatch's snapshot (`suggest --write`, each real pass), read
-/// through hub-core; the page asks for it when its Candidates fold opens and after a promote.
-pub async fn candidates() -> ApiResult<Json<serde_json::Value>> {
-    read_candidates()
-        .await
-        .map(|c| Json(candidates_view(&c)))
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+/// through hub-core: the page asks for the counts once its table has painted and when the
+/// snapshot changes, and for the rows while its Candidates fold is open.
+pub async fn candidates(Query(q): Query<CandQuery>) -> ApiResult<Json<serde_json::Value>> {
+    let c = read_candidates().await?;
+    let now = chrono::Local::now();
+    Ok(Json(if q.counts.is_empty() {
+        candidates_view(&c, now)
+    } else {
+        cand_counts(&c, now)
+    }))
 }
 
 /// One hub-core action off the async workers: hub-core checks the input and runs the CLI, and
@@ -446,7 +479,7 @@ mod tests {
         );
         assert_eq!(v["table"]["total"], 4);
         assert_eq!(v["needs_you"], 1);
-        assert_eq!(v["open_rows"], hub_queue::TABLE_OPEN_ROWS);
+        assert_eq!(v["open_rows"], TABLE_OPEN_ROWS);
         assert_eq!(v["section_aliases"]["running"], "running");
         assert_eq!(v["section_aliases"]["waiting"], "needs you");
         assert_eq!(
@@ -492,7 +525,7 @@ mod tests {
             "\n",
             r##"{"key":"k-1","text":"- [ ] row 1","held":true}"##,
         ));
-        let v = candidates_view(&c);
+        let v = candidates_view(&c, chrono::Local::now());
         assert_eq!(
             (v["total"].as_u64(), v["auto"].as_u64()),
             (Some(2), Some(1))
@@ -503,9 +536,12 @@ mod tests {
         assert_eq!(rows[0]["start_label"], "auto dispatch");
         assert_eq!(rows[1]["start_label"], "man held");
         assert_eq!(v["blocked_rows"].as_array().unwrap().len(), 0);
-        let b = candidates_view(&hub_queue::parse_candidates(
-            r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
-        ));
+        let b = candidates_view(
+            &hub_queue::parse_candidates(
+                r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
+            ),
+            chrono::Local::now(),
+        );
         assert_eq!(b["rows"][0]["reasons"][0], "judge: skip");
         assert_eq!(b["reasons"][0]["reason"], "judge: skip");
         assert_eq!(b["reasons"][0]["rows"], 1);
@@ -516,20 +552,56 @@ mod tests {
             0,
             "a skip is not a gap in cover"
         );
-        let none = candidates_view(&Candidates {
-            as_of: "08:07".into(),
+        use chrono::TimeZone;
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 11, d, h, 7, 0)
+                .unwrap()
+        };
+        let kept = Candidates {
+            written: Some(at(9, 8).into()),
             ..Candidates::default()
-        });
+        };
+        let none = candidates_view(&kept, at(9, 9));
         assert_eq!(none["rows"].as_array().unwrap().len(), 0);
         assert_eq!(none["as_of"], "08:07", "the page stamps the fold with it");
+        assert_eq!(
+            candidates_view(&kept, at(10, 9))["as_of"],
+            "Nov 9 08:07",
+            "the same kept parse names its day the next morning"
+        );
     }
 
     #[test]
-    fn the_queue_read_carries_the_candidates_counts_and_no_row() {
+    fn a_promote_that_keeps_the_mtime_is_a_new_snapshot() {
+        let dir = std::env::temp_dir().join(format!("aw-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("candidates.jsonl");
+        std::fs::write(&f, "a\n").unwrap();
+        let before = snapshot_key(&f).unwrap();
+        let t = dir.join("candidates.jsonl.1");
+        std::fs::write(&t, "").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(before.0)
+            .unwrap();
+        std::fs::rename(&t, &f).unwrap();
+        let after = snapshot_key(&f).unwrap();
+        assert_eq!(after.0, before.0, "touch -r kept the pass's mtime");
+        assert_ne!(after, before, "the rename is still a new key");
+        assert_eq!(snapshot_key(&dir.join("none")), None);
+        std::fs::remove_file(&f).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_counts_read_carries_the_heading_and_no_row() {
         let c = hub_queue::parse_candidates(
             r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"auto":true}"##,
         );
-        let v = cand_counts(&c);
+        let v = cand_counts(&c, chrono::Local::now());
         assert_eq!(
             (&v["total"], &v["auto"], &v["urgent_blocked"]),
             (&1.into(), &1.into(), &1.into())
