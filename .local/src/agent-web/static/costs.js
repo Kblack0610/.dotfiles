@@ -1,5 +1,5 @@
 "use strict";
-// The Costs tab: what the fleet spent, cut seven ways, with fleet-bench's evaluation on the model
+// The Costs tab: what the fleet spent, cut eight ways, with fleet-bench's evaluation on the model
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir, and Spend's day, dq,
 // dsort, ddir, sid) in the URL, so
@@ -28,7 +28,7 @@ const COSTS_REFRESH_MS = INFRA_REFRESH_MS;
 
 // A column key as its header, the TUI's words (coststab.rs `header`); [text, class].
 const COST_COLS = {
-  session: ["session"], tool: ["tool"], kind: ["kind"], project: ["project"], harness: ["harness"],
+  session: ["session"], tool: ["tool"], skill: ["skill"], kind: ["kind"], project: ["project"], harness: ["harness"],
   model: ["model"], runner: ["runner"], sessions: ["sess", "n"], calls: ["calls", "n"], tokens: ["tokens", "n"],
   cost: ["cost", "n"], share: ["share of table", "n"], landed: ["landed", "n"], redo: ["redo", "n"], reverts: ["rev", "n"],
   per_pr: ["$/PR", "n"], src: ["src"], pr: ["PR"], at: ["updated", "n"],
