@@ -12,6 +12,7 @@
 
 mod alerts;
 mod assets;
+mod audit;
 mod auth;
 mod board;
 mod briefing;
@@ -219,6 +220,7 @@ async fn main() -> Result<()> {
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
+        .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
         .with_state(state);
@@ -431,6 +433,17 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             targets.push((dir, flat));
         }
     }
+    // The operator audit log, for Log's Actions section. Made here, so the first line reaches an
+    // open page.
+    if let Some(dir) = hub_core::audit::path().parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
+    // fleet-dispatch's state directory, for its Candidates snapshot (replaced by a rename). Made
+    // here, as the queue's is, so the first snapshot reaches an open page.
+    let dispatch_state = boards::dispatch_state_dir();
+    std::fs::create_dir_all(&dispatch_state)?;
+    targets.push((dispatch_state, flat));
     // The shepherd's kept rundowns: a directory of whole files, each landed by a rename.
     // Made here, as the queue's is, so the first record reaches an open page.
     let rundowns = boards::shepherd_dir().join("rundowns");
@@ -498,6 +511,8 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
 }
+/// fleet-dispatch wrote its Candidates snapshot: the Queue tab reads the counts afresh.
+const CANDIDATES_EVENT: &str = r#"{"kind":"candidates"}"#;
 /// A Sentinel watch changed state: the Alerts tab reads afresh.
 const ALERTS_EVENT: &str = r#"{"kind":"alerts"}"#;
 
@@ -520,6 +535,10 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    // fleet-dispatch's ranked snapshot, replaced by a rename: the Queue tab's Candidates counts.
+    if p == boards::candidates_file() {
+        return Some(CANDIDATES_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -544,9 +563,13 @@ fn classify(p: &Path) -> Option<String> {
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
-    // Log's Actions section's own ledgers: the shepherd's log and agent-notify's (which has no
-    // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
-    if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
+    // Log's Actions section's own ledgers: the shepherd's log, agent-notify's (which has no
+    // extension) and the audit log. The dispatch log, the run ledger and the queue reach it as
+    // their own kinds.
+    if (parent == "shepherd" && name == "log.md")
+        || (parent == "agent-notify" && name == "log")
+        || (parent == "audit" && name == "actions.jsonl")
+    {
         return Some(r#"{"kind":"actions"}"#.to_string());
     }
     // Daily's outbox: the doc and the ingest record of what intake did with its lines. Before
@@ -668,13 +691,19 @@ async fn callback(
     };
     if !s.oauth.is_allowed(&login) {
         eprintln!("agent-web: rejected Forgejo user {login}");
+        let refused = hub_core::audit::Entry::new(&login, "signin.refused", "agent-web", "web");
+        tokio::task::spawn_blocking(move || hub_core::audit::record(&refused));
         return denied(
             StatusCode::FORBIDDEN,
             "That Forgejo account is not allowed here.",
         );
     }
     let id = match s.sessions.create(&login) {
-        Ok(id) => id,
+        Ok(id) => {
+            let started = hub_core::audit::Entry::new(&login, "signin.started", "agent-web", "web");
+            tokio::task::spawn_blocking(move || hub_core::audit::record(&started));
+            id
+        }
         Err(e) => {
             eprintln!("agent-web: could not store session: {e:#}");
             return denied(
@@ -1393,13 +1422,8 @@ async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
-struct RunnerQuery {
-    name: String,
-}
-
-async fn fleet_runner(Query(q): Query<RunnerQuery>) -> ApiResult<Response> {
-    let json = fleet::runner(q.name)
+async fn fleet_runner(Query(q): Query<fleet::RunnerQuery>) -> ApiResult<Response> {
+    let json = fleet::runner(q)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
@@ -1858,6 +1882,13 @@ mod tests {
         // Its state.json is the Pipelines section's; a temp file beside it is not.
         let state = schedules_state();
         assert_eq!(classify(&state).as_deref(), Some(PIPELINES_EVENT));
+        // The Candidates snapshot is its own kind; fleet-dispatch's temp file beside it is none.
+        let cands = boards::candidates_file();
+        assert_eq!(classify(&cands).as_deref(), Some(CANDIDATES_EVENT));
+        assert_eq!(
+            classify(&cands.with_file_name("candidates.jsonl.123")),
+            None
+        );
         assert_eq!(classify(&state.with_file_name(".state.json.tmp")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
@@ -1899,6 +1930,7 @@ mod tests {
         for p in [
             "/h/.agent/shepherd/log.md",
             "/h/.local/state/agent-notify/log",
+            "/h/.agent/audit/actions.jsonl",
         ] {
             assert_eq!(
                 classify(Path::new(p)).as_deref(),

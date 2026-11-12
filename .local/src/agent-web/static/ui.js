@@ -22,7 +22,7 @@ async function reach(path, opts) {
   }
 }
 
-// How a sheet row closes (`notes ptask done` or `drop`), shared by the Board's form and Home's sheet
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the board's form and Home's sheet
 // cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
 const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
@@ -69,13 +69,17 @@ const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).p
 // A hub level ("bad", "warn", other) as its CSS class, "" for none.
 const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
 
-// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday otherwise.
+// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday within six days,
+// and with its MM-DD past that, where a weekday would name the wrong week.
 function when(t) {
   if (!t) return "-";
   const d = new Date(typeof t === "number" ? t * 1e3 : t);
   if (isNaN(d)) return esc(t);
-  return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
-    : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return clock(d.getTime());
+  const pad = (n) => String(n).padStart(2, "0");
+  return Math.abs(d - Date.now()) < 6 * 86400e3
+    ? `${d.toLocaleDateString([], { weekday: "short" })} ${clock(d.getTime())}`
+    : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock(d.getTime())}`;
 }
 // One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
 // drawn as one: its link opens in place, or a URL outside the hub in a new tab.
@@ -239,6 +243,11 @@ const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
 // A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
 const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
+// A record cell (ui.md rule 9): its name (html; `full` its text) on line one over a muted second
+// line (html; `subFull` its text), each one line cut with an ellipsis and whole on hover, so every
+// row is the same two lines high.
+const rec2 = (html, full, sub, subFull) =>
+  `<div class="c1" title="${esc(full)}">${html}</div><div class="c1 muted" title="${esc(subFull)}">${sub || "&nbsp;"}</div>`;
 
 function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;

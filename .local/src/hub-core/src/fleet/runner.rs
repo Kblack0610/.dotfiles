@@ -22,7 +22,7 @@ const PAGE_RUNS: usize = 20;
 const PAGE_ACTIVITY: usize = 20;
 const PAGE_CALLS: usize = 20;
 /// The newest verdicts and steps an extras block lists; the Log tab keeps the whole lists.
-const PAGE_ROWS: usize = 10;
+pub const PAGE_ROWS: usize = 10;
 /// Enough of calls.jsonl for a week at today's rate (about 70 KB a day); `partial` says when not.
 const CALLS_WEEK_TAIL: u64 = 16 << 20;
 const INGEST_TAIL: u64 = 2 << 20;
@@ -136,8 +136,9 @@ pub enum Extras {
     None,
     /// the dispatch judge (dispatch-judge.conf): the verdict counts and the newest `PAGE_ROWS`.
     DispatchVerdicts { dispatch: Dispatch },
-    /// The answer judge's tiles and its newest `PAGE_ROWS` verdicts.
-    AskJudge { judge: Judge },
+    /// The answer judge's tiles and every verdict: a surface cuts them to its view and the
+    /// newest `PAGE_ROWS` (`Judge::view`), so its state tiles count them all.
+    AskJudge { judge: Box<Judge> },
     /// The intake steps in the ingest record for the week: counts and the newest `PAGE_ROWS`.
     Ingest {
         counts_7d: BTreeMap<String, u32>,
@@ -255,11 +256,9 @@ pub fn runner(
             dispatch.recent.truncate(PAGE_ROWS);
             Extras::DispatchVerdicts { dispatch }
         }
-        "ask-judge" => {
-            let mut judge = judge;
-            judge.verdicts.truncate(PAGE_ROWS);
-            Extras::AskJudge { judge }
-        }
+        "ask-judge" => Extras::AskJudge {
+            judge: Box::new(judge),
+        },
         "ingest" => match tail(&paths.notes_state.join("ingest.jsonl"), INGEST_TAIL) {
             Ok((t, cut)) => ingest(&t, cut, at),
             Err(e) => {

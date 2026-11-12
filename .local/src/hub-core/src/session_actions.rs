@@ -300,7 +300,8 @@ pub trait Runner {
     }
 }
 
-/// The real runner: the command with no shell and no stdin.
+/// The real runner: the command with no shell and no stdin, marked as audited by its caller
+/// (`crate::audit::AUDITED_ENV`).
 pub struct System;
 
 impl Runner for System {
@@ -309,6 +310,7 @@ impl Runner for System {
         let out = Command::new(cmd)
             .args(args)
             .stdin(Stdio::null())
+            .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         if out.status.success() {
@@ -328,6 +330,7 @@ impl Runner for System {
         let out = Command::new(cmd)
             .args(args)
             .stdin(Stdio::null())
+            .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         let code = out

@@ -9,7 +9,7 @@ const SCHEDULES_REFRESH_MS = 60e3;
 // Runs a detail shows before folding the rest behind "+N older".
 const SCHEDULE_RUNS_OPEN = 2;
 const schst = tblTab({
-  tab: "schedules", id: "sched", el: "schedules", api: "/api/schedules", hint: "search, or kind:ci result:failure -name:dream",
+  tab: "schedules", id: "sched", el: "schedules", api: "/api/schedules", hint: "search, or kind:ci state:failing -name:dream",
   head: (t) => schedulesHead(t.data), body: (t) => schedulesBody(t.data),
   tiles: (t) => schedulesTiles(t.data),
 });
@@ -18,7 +18,10 @@ const schedulesTiles = (d) => tile("READ", d.at ? clock(d.at * 1e3) : "-", "var(
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
-const SCHED_COLS = { kind: ["kind"], name: ["name"], schedule: ["schedule"], next: ["next", "n"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
+const SCHED_COLS = { kind: ["kind"], name: ["name"], state: ["state"], schedule: ["schedule"], next: ["next", "n"], last: ["last", "n"], took: ["took", "n"], passed: ["passed", "n"], failed: ["failed", "n"], streak: ["streak"], triage: ["triage"] };
+// A job state's hue by its level (hub_core::reading::JobState::level); off is plain and dim.
+const SCHED_HUE = { bad: "bad", warn: "warn", ok: "" };
+const schedState = (r) => `<td class="${r.state === "off" ? "muted" : SCHED_HUE[r.state_level] ?? ""}" title="${esc(r.state_why || r.status || "")}">${esc(r.state)}</td>`;
 
 
 // A start as the time alone when it is today, else the day too: the TUI's clock().
@@ -29,18 +32,19 @@ function nextStart(t) {
 }
 
 function scheduleRow(r) {
-  const cls = r.ok === false ? "bad" : r.ok === true ? "" : "muted";
   const open = schedKey(r) === schst.sel;
   const none = r.purpose ? "" : ` <span class="warn" title="this schedule does not say why it exists">no purpose</span>`;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(schedKey(r))}">` +
-    `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td><td>${esc(r.schedule)}</td>` +
-    `<td class="n">${nextStart(r.next)}</td><td class="n">${r.last ? when(r.last) : "-"}</td><td class="${cls}">${esc(r.result || "-")}</td>` +
+    `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td>${schedState(r)}<td>${esc(r.schedule)}</td>` +
+    `<td class="n">${nextStart(r.next)}</td><td class="n">${r.last ? when(r.last) : "-"}</td><td class="n">${secs(r.took)}</td>` +
+    `<td class="n">${r.ok_at ? when(r.ok_at) : "-"}</td><td class="n${r.state === "failing" ? " bad" : ""}">${r.fail_at ? when(r.fail_at) : "-"}</td>` +
     `<td class="${r.streak < 0 ? "bad" : ""}">${esc(r.streak_word)}</td><td class="wrap muted">${esc(r.triage)}</td></tr>`;
   return open ? row + scheduleDetail(r) : row;
 }
 
 const runLine = (u) => `<div>${u.at ? when(u.at) : "-"} <span class="${u.ok === false ? "bad" : ""}">${esc(u.result)}</span>` +
-  (u.failed.length ? ` <span class="muted">${esc(u.failed.join(", "))}</span>` : "") +
+  (u.took > 0 ? ` <span class="muted">in ${secs(u.took)}</span>` : "") +
+  (u.failed.length ? `<span class="muted">: ${esc(u.failed.join(", "))}</span>` : "") +
   (u.url ? ` <a href="${esc(u.url)}" target="_blank" rel="noopener">Open run</a>` : "") + `</div>`;
 
 function scheduleRuns(runs) {
@@ -53,7 +57,7 @@ function scheduleDetail(r) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const list = (xs) => xs.map(esc).join("; ");
   const why = r.purpose ? esc(r.purpose) : `<span class="warn">no purpose written: it says what it is, not why it runs</span>`;
-  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.status)}</div>` +
+  return `<tr class="wdet"><td colspan="${Object.keys(SCHED_COLS).length}"><div class="sdet"><div class="muted">${esc(r.status)}</div>` +
     line("Why it exists", why) + line("Inside", esc(r.inside)) + line("Before", esc(r.before)) +
     line("After", list(r.after)) + line("Open triage", list(r.open)) +
     line("Runs", r.runs.length ? scheduleRuns(r.runs) : "") + `</div></td></tr>`;

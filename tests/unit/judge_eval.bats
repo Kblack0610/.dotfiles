@@ -14,7 +14,7 @@ setup() {
   unset AGENT_ASK_DELAY_RULES
   mkdir -p "$AGENTCTL_CONF_DIR" "$FLEET_DISPATCH_DIR" "$HOME/.agent/asks/demo"
   echo 'ask policy v2' > "$HOME/ask-policy.md"; echo 'dispatch policy v1' > "$HOME/dispatch-policy.md"
-  printf 'PROMPT="%s"\nDELAY_RULES=fast=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  printf 'PROMPT="%s"\nDELAY_RULES=fast@repo=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
   printf 'PROMPT="%s"\nSCORE=dispatch-queue\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
   echo 'SCORE=sweep-untouched' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
@@ -161,7 +161,7 @@ ask_fixture() {
   run jq -c '.agents[0] | [.total.precision_lo, .total.precision_hi, .live,
     (.rules[] | select(.rule == "agent_policy") | [.live, .bar.labels, .bar.need, .bar.met]),
     (.rules[] | select(.rule == "fast") | .live), (.misses | map(.id) | sort)]' <<<"$output"
-  assert_output '[15,85,["fast"],[false,2,30,false],true,["fp1","live_over"]]'
+  assert_output '[15,85,["fast@self","fast@repo"],[false,2,30,false],true,["fp1","live_over"]]'
   run "$JUDGE_EVAL" ask-judge
   assert_success
   assert_line --regexp '^  agent_policy .* 2/30$'
@@ -274,6 +274,20 @@ ask_fixture() {
   assert_output '[9,9,3,37.5,8]'
 }
 
+@test "kpi: judge_critical_live_pct is the share of critical verdicts the judge answered itself" {
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct' <<<"$output")" '{"7d":null,"28d":null}'
+  ask c_human judge=human judge_type=ship_deploy judge_rule=external judge_level=critical answer=no
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 0
+  ask c_live judge=take-recommend judge_type=fast judge_level=critical answered_by=judge judge_override=kept answer=yes
+  ask c_live2 judge=take-recommend judge_type=fast judge_level=critical answered_by=judge answer=yes
+  # negative control: a live answer at a lower level is no critical one
+  ask r_live judge=take-recommend judge_type=fast judge_level=repo answered_by=judge answer=yes
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 66.7
+}
+
 @test "cells: one per type and impact level, a live cell scored only on reviewed answers, and the floor's share" {
   ask s_tp judge=take-recommend judge_type=ship_deploy judge_level=self answer=yes
   ask s_fp judge=take-recommend judge_type=ship_deploy judge_level=self answer=no
@@ -281,12 +295,14 @@ ask_fixture() {
   ask r_over judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=no answer=yes
   # negative control: silence on a live answer is neither right nor audited
   ask r_none judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=none answer=yes
+  # the fast row stops at repo, so its fleet cell is not live
+  ask f_tp judge=take-recommend judge_type=fast judge_level=fleet answer=yes
   ask c_crit judge=human judge_type=ship_deploy judge_rule=external judge_level=critical judge_level_raised=true answer=no
   ask unrated judge=take-recommend judge_type=ship_deploy answer=yes
   run "$JUDGE_EVAL" cells --json
   assert_success
   run jq -c 'map([.type, .level, .verdicts, .tp, .fp, .unscorable, .live, .audited, .level_raised_pct, .precision_lo])' <<<"$output"
-  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","critical",1,0,0,1,false,0,100,null]]'
+  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["fast","fleet",1,1,0,0,false,0,0,20.7],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","critical",1,0,0,1,false,0,100,null]]'
   run "$JUDGE_EVAL" cells
   assert_success
   assert_line --regexp '^fast +repo +3 +2 +50% \[9.5-90.5\] +0 +yes +2 +33.3%$'

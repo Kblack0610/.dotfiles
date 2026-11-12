@@ -230,10 +230,19 @@ const qdata = (o = {}) => ({
   lanes: [{ repo: "unity-core-playground", says: "unity-core-playground: 2 quarantined over 2 owner rows, 1 ended; nightly 11-12: 8 known red, 1 now pass", level: "bad", url: "https://github.com/o/play/actions/runs/43215863750" }],
   rows: [held({ test: "P.Gone", row: "ucp-1", ends: "2026-11-10", days_left: -2, left: "ended", level: "bad" }), held({ nightly: "now passing" })], more: 0, error: null,
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "ended", n: 1 }, { name: "ending", n: 0 }, { name: "held", n: 1 }], columns: ["test", "repo", "row", "ends", "left", "nightly"].map(tcol), facets: [],
-    links: [{ repo: "#projects?q=unity-core-playground", row: "#board?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#board?q=id:=db-265" }] },
+    links: [{ repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=db-265" }] },
   ...o,
 });
-const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'tests'"); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("tst.render()"); };
+const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'tests'; st.views.infra = ''"); Object.assign(run("tst"), { data: d, err: null, sel: null }); Object.assign(run("cas"), { run: null, tier: "", suite: "", key: null, data: null, err: null }); run("tst.render()"); };
+// An opened suite's tests as /api/tests/cases sends them: the summary counts every test of the
+// suite (`n`, result -> count), the rows only what the cap kept.
+const cdata = (rows, n, more = 0) => {
+  const states = ["failed", "quarantined", "skipped", "passed"].map((name) => ({ name, n: n[name] || 0, tone: name === "failed" && n.failed ? "bad" : null }));
+  const total = states.reduce((a, c) => a + c.n, 0);
+  return { more, cases: rows, table: { q: "", state: "", sort: "", dir: "desc", total, shown: total, states: [{ name: "all", n: total }, ...states], columns: ["result", "name", "time"].map(tcol), facets: [] } };
+};
+// A click on a tile of the opened suite's tests.
+const caseTile = (ts) => ({ dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "c" } } : sel === "[data-ts]" ? { dataset: { ts } } : null) });
 const srow = (key) => ({ dataset: { skey: key }, closest: (sel) => (sel === "tr.sr" ? { dataset: { skey: key } } : null) });
 
 test("the Tests section draws the run's totals, its picker and each suite", () => {
@@ -251,11 +260,11 @@ test("the Tests section draws the run's totals, its picker and each suite", () =
 test("a suite whose failures are all quarantined is amber, and its tests say quarantined", async () => {
   showTests(tdata({ rows: [suite({ failed: 0, quarantined: 1, state: "quarantined", level: "warn" })] }));
   assert.match(tests_.innerHTML, /<td class="warn">quarantined<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n muted">0<\/td><td class="n warn">1<\/td>/);
-  cases = { more: 0, cases: [{ name: "held one", fullname: "A.held", result: "quarantined", time: 0.2, message: "Expected 1" }] };
+  cases = cdata([{ name: "held one", fullname: "A.held", result: "quarantined", time: 0.2, message: "Expected 1" }], { quarantined: 1 });
   fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
   await settled();
   assert.match(tests_.innerHTML, /<span class="warn">quarantined<\/span> held one/);
-  assert.match(tests_.innerHTML, /data-cres="quarantined">quarantined <span class="n">1<\/span>/);
+  assert.match(tests_.innerHTML, /<div data-tbl="c"><div id="cas-tiles"><div class="tiles stiles">.*<button class="tile" data-ts="quarantined"><span class="tl">QUARANTINED<\/span><span class="tv">1<\/span><\/button>/);
   assert.match(tests_.innerHTML, /<td colspan="8">/, "the detail spans every column");
 });
 
@@ -265,7 +274,7 @@ test("the Quarantine table lists each held test under each lane's line with its 
   assert.ok(b.indexOf('data-tbl="t"') < b.indexOf('id="sec-quarantine"'), "below the suites");
   assert.match(b, /<div class="cline bad">unity-core-playground: 2 quarantined[^<]*<a href="https:\/\/github.com\/o\/play\/actions\/runs\/43215863750"[^>]*>nightly<\/a>/);
   assert.match(b, /<div data-tbl="q">.*id="qtn-q"/s);
-  assert.match(b, /<td class="wrap">P\.<wbr>Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#board\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
+  assert.match(b, /<td class="wrap">P\.<wbr>Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#projects\/all\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
   assert.match(b, /<td class="n ">8d<\/td><td class="">now passing<\/td>/);
   assert.match(b, /data-ts="ended"/);
   // no run picked still lists the quarantine
@@ -315,31 +324,47 @@ test("a run with no artifacts says why, and no run at all names the declared wor
   assert.doesNotMatch(tests_.innerHTML, /<select data-twin="run"/);
 });
 
-test("opening a suite reads its tests then, failed first with a result filter, and again closes it", async () => {
+test("opening a suite reads its tests then, failed first with result tiles counted over every test, and again closes it", async () => {
   showTests();
-  cases = { more: 0, cases: [{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }] };
+  // 310 failed in all, past the server's cap: the tile says the server's count, not the rows'.
+  cases = cdata([{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }], { failed: 310, skipped: 1, passed: 1 }, 15);
   asked.length = 0;
   fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
   await settled();
   assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
   let b = tests_.innerHTML;
   assert.match(b, /<span class="bad">failed<\/span> fails here <span class="muted">0.20s<\/span><pre class="joblog">line 2: \[ 1 -gt 2 \] failed<\/pre>/);
-  assert.match(b, /data-cres="failed">failed <span class="n">1<\/span>/);
-  fire(tests_, "click", { type: "click", target: { closest: (sel) => (sel === "[data-cres]" ? { dataset: { cres: "skipped" } } : null) } });
+  assert.match(b, /<button class="tile t-bad" data-ts="failed"><span class="tl">FAILED<\/span><span class="tv">310<\/span><\/button>/);
+  assert.match(b, /<input id="cas-q" data-tsearch/);
+  assert.match(b, /15 more not shown/);
+  assert.doesNotMatch(b, /data-cres|class="seg fseg"/, "no result chips beside the tiles");
+  // A tile is a view key the server applies (`cs`), read again for the same suite.
+  cases = cdata([{ name: "skipped one", result: "skipped", time: 0, message: "not on CI" }], { failed: 310, skipped: 1, passed: 1 });
+  cases.table.state = "skipped";
+  asked.length = 0;
+  fire(tests_, "click", { type: "click", target: caseTile("skipped") });
+  await settled();
+  assert.deepEqual(asked, ["/api/tests/cases?cs=skipped&run=9&tier=unit&suite=a.bats"]);
+  assert.match(run("st.views.infra"), /cs=skipped/);
   b = tests_.innerHTML;
   assert.match(b, /skipped one/);
   assert.doesNotMatch(b, /fails here|passes/);
+  // Opened again, a suite shows all its tests.
   fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
   assert.doesNotMatch(tests_.innerHTML, /skipped one/);
+  asked.length = 0;
+  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  await settled();
+  assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
 });
 
 test("an opened suite is let go when the table is read for another run", async () => {
   showTests();
-  run("tst.sel = 'unit|a.bats'; tst.cases = { key: 'unit|a.bats', run: 9, data: { cases: [], more: 0 } }");
+  run("tst.sel = 'unit|a.bats'; Object.assign(cas, { run: 9, tier: 'unit', suite: 'a.bats', key: '9|unit|a.bats', data: { cases: [], more: 0 } })");
   tests = tdata({ run: pickRun(8, { state: "green" }) });
   await run("tst.refresh()");
   assert.equal(run("tst.sel"), null);
-  assert.equal(run("tst.cases"), null);
+  assert.equal(run("cas.data"), null);
   tests = {};
 });
 
@@ -360,6 +385,9 @@ test("the Pipelines table states each pipeline with its why, its night's schedul
   showPipes();
   const b = pipes_.innerHTML;
   assert.match(b, /<div id="pip-head"><h2 class="sec bad" id="sec-pipelines">Pipelines <span class="n">2<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
+  // tblPatch reads data-tsort; the block's data-tbl is what keeps the sort on the l keys
+  assert.match(b, /<button class="thsort" data-tsort="/, "a header click is one the shared listener reads");
+  assert.doesNotMatch(b, /data-lsort/);
   assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a class="tl" href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
   assert.match(b, /<td class="wrap muted"><a class="tl" href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a class="tl" href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
   assert.match(b, /<td class="bad" title="[^"]+"><a class="tl" href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");

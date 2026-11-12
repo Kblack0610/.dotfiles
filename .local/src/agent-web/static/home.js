@@ -162,14 +162,14 @@ function needCard(n) {
   return `<div class="card need k-${k}"${close} title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
 }
 
-// A sheet row closes on its card as on the Board's form (CLOSE_HOW), through the Board's write. Its
+// A sheet row closes on its card as on All rows' form (CLOSE_HOW), through the board's write. Its
 // choice, text, error and in-flight state live in hst.close by row id, so a refresh redraws them
 // (keepTyping keeps the focus). A row with no id (hub_core::home sends its text) is opened on the
-// Board instead, since only an id finds it there again.
+// Projects' All rows instead, since only an id finds it there again.
 const ROW_ID = /^[a-z][a-z0-9]*-[0-9]+$/;
 const SHEET_CLOSE = ["drop", "done"].flatMap((verb) => CLOSE_HOW[verb].map(([how, l]) => [`${verb}:${how}`, `${verb}, ${l}`]));
 function sheetClose(n) {
-  if (!ROW_ID.test(n.id)) return `<div class="opts"><button class="btn sm" data-tab="board">Open the board</button></div>`;
+  if (!ROW_ID.test(n.id)) return `<div class="opts"><a class="btn sm" href="#projects/all">Open all rows</a></div>`;
   const c = hst.close[n.id] || {};
   const how = c.how || SHEET_CLOSE[0][0];
   return `<div class="opts"><select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}"${v === how ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>` +
@@ -189,7 +189,7 @@ async function closeSheetRow(id, project) {
   try {
     const got = await api(`/api/board?q=${encodeURIComponent(`id:=${id}`)}`);
     const r = (got.rows || []).find((x) => x.id === id && (x.project || "") === project && x.state !== "done");
-    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on the Board.`);
+    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on Projects' All rows.`);
     await post("/api/board", { verb, [how]: v, ...rowTarget(r) });
     delete hst.close[id];
     hst.open.delete(`sheet:${id}`);

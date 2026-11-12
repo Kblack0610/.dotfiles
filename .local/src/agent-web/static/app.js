@@ -7,7 +7,8 @@
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], parked: [], views: {} };
-// The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
+// The board tabs (static/*.js) register here: { show(), onEvent(ev) }, and `inner(id)` for a tab whose
+// inner tabs read their own data (innerGo).
 const TABS = {};
 // Log's sections past the day (Work, Actions, Changes, Rundowns, the judges' verdicts, Ranked): the
 // file that owns each one's data adds {sec, show, onEvent} here and paints its own container.
@@ -320,18 +321,17 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home", "board": "projects" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
 // and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
-// And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
-  "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
+  "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","fleet","spend","table","sessions"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","All rows",["board"]],["deliverables","Deliverables",["deliverables"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","fleet","spend","table","sessions"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -361,6 +361,9 @@ function innerOf(tab, name) {
 const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
 // The inner tab each tab last showed, so a tab button brings it back as it was.
 const lastInner = {};
+// A tab whose arg also names a record (`#projects/<profile>/<name>`) keeps an arg that is not
+// one of its inner tabs: the record's page is under its first inner tab (projects.js).
+const RECORD_ARGS = ["projects", "sessions"];
 // A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
 // its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
 function innerRoute(r) {
@@ -377,7 +380,7 @@ function innerRoute(r) {
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
   if (g.tabs.some((t) => t[0] === want)) return { ...r, arg: want };
   // Any other Sessions arg is a session's id (`#sessions/lab%2Fa%3A1`), the record it opens.
-  return { ...r, arg: r.tab === "sessions" && !r.section ? r.arg || "" : "" };
+  return { ...r, arg: RECORD_ARGS.includes(r.tab) ? r.arg : "" };
 }
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
@@ -452,7 +455,8 @@ function route(hash) {
   return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
-// the groups' visibility and the strip's marks flip without a repaint.
+// the groups' visibility and the strip's marks flip without a repaint. A tab whose inner tabs
+// each read their own data (Projects) is told, through its `inner`, which one now shows.
 function innerGo(tab, id) {
   const page = st.page;
   st.arg = lastInner[tab] = id;

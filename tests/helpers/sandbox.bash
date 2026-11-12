@@ -148,6 +148,11 @@ sandbox_init() {
   # every test; agent_ask.bats turns it on with a fake judge command.
   export AGENT_ASK_NO_JUDGE=1
 
+  # A live judge answer posts an audit ask every Nth time per level, and a level ask-judge.conf
+  # does not rate is audited every time. Off in effect for every test (1 in a million);
+  # agent_ask.bats sets the rates it tests.
+  export AGENT_ASK_AUDIT_RATES='self=1000000 repo=1000000 fleet=1000000'
+
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude
   # session exports NTFY_URL to every tool subprocess, the Stop-hook suite included. The

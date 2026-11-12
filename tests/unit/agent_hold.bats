@@ -273,3 +273,23 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   run "$HOLD" show unity-tests
   assert_line 'lowered: tmux-spawn-aaa.scope'
 }
+
+@test "set, grant and release each write one audit line; a caller that records it writes none" {
+  run "$HOLD" set unity-tests --by coordinator "96 C"
+  assert_success
+  run "$HOLD" grant unity-tests agent-2
+  assert_success
+  run "$HOLD" release unity-tests
+  assert_success
+  log="$HOME/.agent/audit/actions.jsonl"
+  run jq -rc '[.actor, .action, .target, .outcome, .via, .to] | @tsv' "$log"
+  assert_line --index 0 $'coordinator\thold.placed\tunity-tests\tok\tcli\t96 C'
+  assert_line --index 1 --partial $'hold.granted\tunity-tests\tok\tcli\tagent-2'
+  assert_line --index 2 --partial $'hold.released\tunity-tests\tok\tcli\twas: 96 C'
+  # hub_core's System runner sets AGENT_AUDITED to its own pid, the tool's parent: here the
+  # bash that starts it (the trailing exit keeps bash from exec-ing the tool in its place).
+  run bash -c 'AGENT_AUDITED=$$ "$0" set unity-tests --by web x; exit $?' "$HOLD"
+  assert_success
+  run wc -l < "$log"
+  assert_output 3
+}

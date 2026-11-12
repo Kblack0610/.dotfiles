@@ -79,6 +79,77 @@ impl State {
     }
 }
 
+/// A scheduled job's state, most urgent first (the Schedules tab). The precedence is off, then
+/// never, then failing, then stale, then ok: a job turned off says so whatever its last run did,
+/// and one that has never run cannot have failed or gone quiet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    /// Its last finished run failed.
+    Failing,
+    /// No run finished in two of its intervals.
+    Stale,
+    /// It has not run yet.
+    #[default]
+    Never,
+    /// Its last run passed, on time.
+    Ok,
+    /// Turned off on purpose: nothing is expected.
+    Off,
+}
+
+impl JobState {
+    pub const ALL: [JobState; 5] = [
+        JobState::Failing,
+        JobState::Stale,
+        JobState::Never,
+        JobState::Ok,
+        JobState::Off,
+    ];
+
+    /// `off` turned off, `last` its newest finished run, `failed` whether that run failed,
+    /// `overdue` whether no run finished in two intervals.
+    pub fn of(off: bool, last: Option<i64>, failed: bool, overdue: bool) -> JobState {
+        match () {
+            _ if off => JobState::Off,
+            _ if last.is_none() => JobState::Never,
+            _ if failed => JobState::Failing,
+            _ if overdue => JobState::Stale,
+            _ => JobState::Ok,
+        }
+    }
+
+    pub const fn word(self) -> &'static str {
+        match self {
+            JobState::Failing => "failing",
+            JobState::Stale => "stale",
+            JobState::Never => "never",
+            JobState::Ok => "ok",
+            JobState::Off => "off",
+        }
+    }
+
+    /// What the state means, for a legend.
+    pub const fn means(self) -> &'static str {
+        match self {
+            JobState::Failing => "its last run failed",
+            JobState::Stale => "no run finished in two of its intervals",
+            JobState::Never => "it has not run yet",
+            JobState::Ok => "its last run passed, on time",
+            JobState::Off => "turned off on purpose, so nothing is expected",
+        }
+    }
+
+    /// Failing is red; stale and never need a look; ok and off need nothing.
+    pub const fn level(self) -> Level {
+        match self {
+            JobState::Failing => Level::Bad,
+            JobState::Stale | JobState::Never => Level::Warn,
+            JobState::Ok | JobState::Off => Level::Ok,
+        }
+    }
+}
+
 /// A reading's time as the dashboards print one: `11-12 13:05`, local.
 pub fn hm(t: i64) -> String {
     Local
@@ -112,6 +183,24 @@ mod tests {
             .starts_with("Monitor stopped reporting at "));
         assert_eq!(State::Off.level(), Level::Ok);
         assert_eq!(State::NotRead("x.".into()).sentence("any"), "Not read: x.");
+    }
+
+    #[test]
+    fn a_job_state_follows_the_precedence() {
+        use JobState::*;
+        assert_eq!(JobState::of(true, Some(1), true, true), Off);
+        assert_eq!(JobState::of(false, None, true, true), Never);
+        assert_eq!(JobState::of(false, Some(1), true, true), Failing);
+        assert_eq!(JobState::of(false, Some(1), false, true), Stale);
+        assert_eq!(JobState::of(false, Some(1), false, false), Ok);
+        assert_eq!(serde_json::to_string(&Stale).unwrap(), "\"stale\"");
+        for s in JobState::ALL {
+            assert_eq!(serde_json::to_value(s).unwrap(), s.word());
+        }
+        assert!(
+            JobState::ALL.windows(2).all(|w| w[0] < w[1]),
+            "ALL is most urgent first"
+        );
     }
 
     /// The files allowed to spell an empty-state word, per file, outside tests and comments:

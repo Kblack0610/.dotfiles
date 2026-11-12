@@ -143,11 +143,7 @@ impl Tab {
                 .into_iter()
                 .find(|t| t.title().eq_ignore_ascii_case(n))
         };
-        by_title(s).or_else(|| {
-            let t = hub_core::layout::resolve(s)?;
-            // Agent-web's Board tab is `a` on Projects here.
-            by_title(if t.id == "board" { "Projects" } else { t.title })
-        })
+        by_title(s).or_else(|| by_title(hub_core::layout::resolve(s)?.title))
     }
     fn index(self) -> usize {
         Tab::SHOWN.iter().position(|t| *t == self).unwrap_or(0)
@@ -895,8 +891,20 @@ impl App {
         }
     }
 
-    /// `fleet-bench epics` writes no file to watch, so Projects reads it on entering, on `r` and
-    /// on the tick while it is shown, at most every `DELIVERABLES_REFRESH`.
+    /// `fleet-bench epics` writes no file to watch, so Deliverables reads it when it comes into
+    /// view and on the tick while it shows, at most every `DELIVERABLES_REFRESH`, and on `r`.
+    fn read_deliverables_due(&mut self) {
+        if self.tab == Tab::Projects
+            && self.pv.deliverables_shown(&self.tv)
+            && self
+                .deliverables_at
+                .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
+        {
+            self.read_deliverables();
+        }
+    }
+
+    /// One `fleet-bench epics` read in a worker, unless one is already out.
     pub fn read_deliverables(&mut self) {
         if self.deliverables_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -1439,6 +1447,7 @@ impl App {
         let runner = self.runner.clone();
         std::thread::spawn(move || {
             let r = hub_core::capacity::start(runner.as_ref(), &name);
+            audited(entry("timer.started", &name), &r);
             let _ = tx.send(Msg::Acted(said(&label, r)));
         });
     }
@@ -1461,6 +1470,11 @@ impl App {
                 &snap.accounts,
             )
             .and_then(|steps| actions::execute(&steps, runner.as_ref()));
+            let action = format!("session.{}", hub_core::audit::past(a.name()));
+            audited(
+                entry(&action, &target).to(serde_json::json!({ "account": account })),
+                &r,
+            );
             let r = said(&label, r);
             let _ = tx.send(Msg::Acted(r));
         });
@@ -1494,6 +1508,7 @@ impl App {
     fn queue_act(
         &mut self,
         label: String,
+        e: hub_core::audit::Entry,
         f: impl FnOnce(&dyn Runner) -> Result<String, String> + Send + 'static,
     ) {
         self.qv.running = Some(label.clone());
@@ -1501,7 +1516,9 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(&label, f(runner.as_ref()));
+            let r = f(runner.as_ref());
+            audited(e, &r);
+            let r = said(&label, r);
             let _ = tx.send(Msg::QueueActed(r));
         });
     }
@@ -1587,6 +1604,10 @@ impl App {
                 ..Default::default()
             };
             let r = hub_core::queue::add(runner.as_ref(), &add).map(|o| o.trim().to_string());
+            audited(
+                entry("queue.added", &add.project).to(serde_json::json!({ "task": add.task })),
+                &r,
+            );
             let _ = tx.send(Msg::FixQueued(name, r));
         });
     }
@@ -1611,11 +1632,12 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = if accept {
-                proposals::accept(runner.as_ref(), &id)
+            let (r, action) = if accept {
+                (proposals::accept(runner.as_ref(), &id), "proposal.accepted")
             } else {
-                proposals::reject(runner.as_ref(), &id)
+                (proposals::reject(runner.as_ref(), &id), "proposal.rejected")
             };
+            audited(entry(action, &id), &r);
             let _ = tx.send(Msg::ProposalActed(said("proposal", r)));
         });
     }
@@ -1718,6 +1740,7 @@ impl App {
             let cards = self.cards().cards;
             self.pv.go(&mut self.tv, &cards, &name);
             self.scroll = 0;
+            self.read_deliverables_due();
         }
     }
 
@@ -1728,8 +1751,10 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(&label, hub_core::tasks::apply(runner.as_ref(), &w));
-            let _ = tx.send(Msg::TasksActed(r));
+            let e = w.audit_entry(&hub_core::audit::local_actor(), "hub");
+            let r = hub_core::tasks::apply(runner.as_ref(), &w);
+            audited(e, &r);
+            let _ = tx.send(Msg::TasksActed(said(&label, r)));
         });
     }
 
@@ -1741,11 +1766,12 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(
-                &label,
-                hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value),
+            let r = hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value);
+            audited(
+                entry("project.prio-set", &name).to(serde_json::json!({ "prio": value })),
+                &r,
             );
-            let _ = tx.send(Msg::TasksActed(r));
+            let _ = tx.send(Msg::TasksActed(said(&label, r)));
         });
     }
 
@@ -1796,13 +1822,7 @@ impl App {
                 {
                     self.read_reds();
                 }
-                if self.tab == Tab::Projects
-                    && self
-                        .deliverables_at
-                        .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
-                {
-                    self.read_deliverables();
-                }
+                self.read_deliverables_due();
                 if (home || self.tab == Tab::Costs)
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
@@ -1936,7 +1956,10 @@ impl App {
             Msg::Deliverables(r) => {
                 self.deliverables = Some(r);
                 self.deliverables_at = Some(std::time::Instant::now());
-                if self.deliverables_read.done() && self.tab == Tab::Projects {
+                if self.deliverables_read.done()
+                    && self.tab == Tab::Projects
+                    && self.pv.deliverables_shown(&self.tv)
+                {
                     self.read_deliverables();
                 }
             }
@@ -2273,6 +2296,7 @@ impl App {
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
             self.want_proj_page();
+            self.read_deliverables_due();
             return;
         }
         if self.tab == Tab::Schedules && self.schedules_key(k) {
@@ -2291,7 +2315,7 @@ impl App {
             let t = c.and_then(|c| c.tokens.as_ref());
             // Only `K` needs the Consumers level, so only `K` builds the section for it.
             let level = (k.code == KeyCode::Char('K'))
-                .then(|| c.map(|c| hub_core::costs::consumers(c, "", "").level))
+                .then(|| c.map(|c| hub_core::costs::consumers(c, Default::default()).level))
                 .flatten();
             let was = self.cv.inner;
             if let Some(seek) = self.cv.fold(k.code, t, level) {
@@ -2331,7 +2355,7 @@ impl App {
                     self.read_reds();
                     self.read_alerts();
                 }
-                if self.tab == Tab::Projects {
+                if self.tab == Tab::Projects && self.pv.deliverables_shown(&self.tv) {
                     self.read_deliverables();
                 }
                 if self.tab == Tab::Schedules {
@@ -2727,7 +2751,7 @@ impl App {
         }
         if t == Tab::Projects {
             self.read_projects();
-            self.read_deliverables();
+            self.read_deliverables_due();
         }
         if t == Tab::Home {
             self.read_home();
@@ -2738,6 +2762,15 @@ impl App {
     /// The Projects tab's keys: the list's (projtab.rs), or with the rows open theirs
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
+        // The tab's own inner tabs (the list, All rows, Deliverables): Left/Right switch them.
+        let typing =
+            self.tv.typing() || self.pv.table.typing.is_some() || self.pv.dv.typing.is_some();
+        if let (KeyCode::Left | KeyCode::Right, false) = (k.code, typing) {
+            if self.pv.step_top(&mut self.tv, k.code == KeyCode::Left) {
+                self.scroll = 0;
+                return true;
+            }
+        }
         if !self.pv.open {
             let cards = self.cards().cards;
             if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() && !self.pv.dfocus {
@@ -2750,19 +2783,16 @@ impl App {
                 }
                 return true;
             }
-            // `d` takes the keys only for a table that is read: with none, it is a plain no-op.
-            if k.code == KeyCode::Char('d')
-                && self.pv.table.typing.is_none()
-                && !self.pv.dfocus
-                && !matches!(self.deliverables, Some(Ok(_)))
-            {
-                return true;
-            }
+            // Deliverables before its read says it is reading, or why it failed; d/Esc go back.
             if self.pv.dfocus {
                 if let Some(Ok(d)) = &self.deliverables {
                     return self.pv.dkey(&mut self.tv, k, &cards, d, self.page);
                 }
-                self.pv.dfocus = false;
+                if let KeyCode::Esc | KeyCode::Char('d') = k.code {
+                    self.pv.dfocus = false;
+                    return true;
+                }
+                return false;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
@@ -2875,19 +2905,22 @@ impl App {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
-                self.queue_act(format!("cancel {slug}"), move |r| {
+                let e = entry("queue.canceled", &slug);
+                self.queue_act(format!("cancel {slug}"), e, move |r| {
                     hub_core::queue::cancel(r, &slug)
                 });
                 true
             }
             queuetab::Ask::Bump(slug, prio) => {
-                self.queue_act(format!("bump {slug} to {prio}"), move |r| {
+                let e = entry("queue.bumped", &slug).to(serde_json::json!({ "priority": prio }));
+                self.queue_act(format!("bump {slug} to {prio}"), e, move |r| {
                     hub_core::queue::bump(r, &slug, prio)
                 });
                 true
             }
             queuetab::Ask::Promote(label, w) => {
-                self.queue_act(label, move |r| hub_core::tasks::apply(r, &w));
+                let e = w.audit_entry(&hub_core::audit::local_actor(), "hub");
+                self.queue_act(label, e, move |r| hub_core::tasks::apply(r, &w));
                 true
             }
             queuetab::Ask::Follow(l) => {
@@ -3983,7 +4016,10 @@ impl App {
         } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
-            let (lines, sections) = self.body(body.width as usize);
+            let (lines, sections) = self.body(
+                body.width as usize,
+                Some((self.scroll, body.height as usize)),
+            );
             // Clamped first, so a jump to the end (G) is the last page before the selection is
             // kept in view on it.
             let max = lines.len().saturating_sub(body.height as usize);
@@ -4253,7 +4289,7 @@ impl App {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
-                "j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
+                "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
                 "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
@@ -4264,11 +4300,10 @@ impl App {
                 }
             ),
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "<- -> inner tabs  " } else { "" }
+                "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+                "<- -> inner tabs  j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
                 "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  F fix  {tabs} pages  r refresh  q quit"
@@ -4359,7 +4394,13 @@ impl App {
     }
 
     /// A page as lines (or what is being waited for), and where its sections start.
-    pub fn body(&self, w: usize) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
+    /// `win` is the scroll and the body's height when drawing a frame: a page that can run to
+    /// thousands of lines (Queue) formats only what can show. None is the whole page.
+    pub fn body(
+        &self,
+        w: usize,
+        win: Option<(usize, usize)>,
+    ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let now = jobs::now();
         let reading = |what: &str| {
             (
@@ -4404,10 +4445,19 @@ impl App {
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
-            // One project's card stays on top of its rows; All has none. Only Rows reads the
-            // board, so the other inner tabs draw while it is read or failed.
+            // One project's card stays on top of its rows; All rows has the tab's strip. Only
+            // Rows reads the board, so the other inner tabs draw while it is read or failed.
             (Tab::Projects, ..) => {
                 let mut l = vec![];
+                if self.tv.project.is_none() {
+                    let feed = match &self.tasks {
+                        Some(Ok(f)) => Some(f),
+                        _ => None,
+                    };
+                    let dl = self.deliverables.as_ref();
+                    l.push(projtab::top_strip(feed, dl, "all", self.p, w));
+                    l.push(Line::raw(""));
+                }
                 if let Some((profile, name)) = &self.tv.project {
                     let cards = self.cards().cards;
                     if let Some(c) = cards
@@ -4454,6 +4504,7 @@ impl App {
                         self.p,
                         now,
                         w,
+                        win,
                     );
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
@@ -4778,7 +4829,7 @@ impl App {
     }
 
     pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
-        self.body(w).0
+        self.body(w, None).0
     }
 
     /// The day list keeps its header and scrolls its rows to keep the selection in view.
@@ -5024,7 +5075,7 @@ fn open_rows(p: &Option<Result<Vec<proposals::Proposal>, String>>) -> &[proposal
 
 fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
     match c {
-        Some(Ok(c)) => &c.rows,
+        Some(Ok(c)) => c.shown(),
         _ => &[],
     }
 }
@@ -5091,6 +5142,21 @@ fn open(url: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// An audit line for a change made from this terminal, under the local user (`hub_core::audit`).
+fn entry(action: &str, target: &str) -> hub_core::audit::Entry {
+    hub_core::audit::Entry::new(&hub_core::audit::local_actor(), action, target, "hub")
+}
+
+/// Record `e` with how `r` went. This crate's tests drive these actions with a fake runner, so
+/// they write no line on the real log.
+fn audited<T>(e: hub_core::audit::Entry, r: &Result<T, String>) {
+    let e = e.outcome_of(r);
+    if cfg!(test) {
+        return;
+    }
+    hub_core::audit::record(&e);
 }
 
 #[cfg(test)]
@@ -5874,6 +5940,7 @@ mod tests {
             verb: verb.into(),
             text: format!("row {verb}"),
             priority: None,
+            failed: false,
             reference: None,
             source: "shepherd".into(),
         };
@@ -6311,7 +6378,10 @@ mod tests {
         a.handle(Msg::Projects(Box::new(loaded())));
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
-        assert!(at("ALL ROWS  4 open rows") < at("PROJECT "), "{s}");
+        assert!(
+            at("[Projects] All rows 5  Deliverables") < at("PROJECT "),
+            "{s}"
+        );
         assert!(
             at("demo  ") < at("garden  "),
             "by name when none is in flight"
@@ -8212,16 +8282,21 @@ mod tests {
     }
 
     #[test]
-    fn d_takes_the_keys_only_for_a_read_deliverables_table_and_p_leaves_its_search_alone() {
+    fn d_opens_deliverables_read_or_not_and_p_leaves_its_search_alone() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Projects, tx);
         a.deliverables_read.busy = true;
         a.handle(Msg::Projects(Box::new(loaded())));
-        // still reading, or failed: d does nothing, the list keeps the keys
+        // still reading, or failed: d shows it saying so, and d or Esc goes back
+        a.handle(key('d'));
+        assert!(a.pv.dfocus);
+        assert!(screen(&mut a, 140, 30).contains("reading fleet-bench epics"));
         a.handle(key('d'));
         assert!(!a.pv.dfocus);
         a.deliverables = Some(Err("fleet-bench epics: exit 2".into()));
         a.handle(key('d'));
+        assert!(screen(&mut a, 140, 30).contains("exit 2"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!a.pv.dfocus);
         // read: d moves the keys, / types into the table's search (a capital P is text there)
         a.deliverables = Some(Ok(hub_core::deliverables::Deliverables::default()));
@@ -8232,6 +8307,84 @@ mod tests {
         a.handle(key('P'));
         assert_eq!(a.pv.dv.typing.as_deref(), Some("P"));
         assert!(a.prv.said.is_none() && a.tv.said.is_none());
+    }
+
+    #[test]
+    fn left_right_walk_the_list_all_rows_and_deliverables_and_board_opens_all_rows() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Projects, tx);
+        a.projects_read.busy = true;
+        a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
+        a.handle(Msg::Projects(Box::new(loaded())));
+        let arrow = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let on = |a: &App| a.pv.top(&a.tv);
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("all"));
+        let s = screen(&mut a, 140, 30);
+        assert!(s.contains(" Projects [All rows 5] Deliverables "), "{s}");
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("deliverables"));
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Left));
+        assert_eq!(on(&a), Some("deliverables"));
+        // typing in the list's search, an arrow is the search's
+        a.handle(arrow(KeyCode::Right));
+        a.handle(key('/'));
+        a.handle(arrow(KeyCode::Left));
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Esc));
+        // `hub --tab board` and its search open All rows
+        let (t, q) = crate::tabreq::parse("board").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(on(&a), Some("all"));
+        assert!(a.tv.table.view.q.is_empty(), "board is no search");
+        let (t, q) = crate::tabreq::parse("board id:=ar-1").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(
+            (on(&a), a.tv.table.view.q.as_str()),
+            (Some("all"), "id:=ar-1")
+        );
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is All rows searched to it.
+        a.go(Tab::Home);
+        a.follow(&Link::to(Kind::Row, "ar-2"));
+        assert_eq!(
+            (a.tab, on(&a), a.tv.table.view.q.as_str()),
+            (Tab::Projects, Some("all"), "id:=ar-2")
+        );
+    }
+
+    #[test]
+    fn deliverables_read_only_while_they_show_and_the_tick_rereads_them_there() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Projects, tx);
+        a.projects_read.busy = true;
+        a.handle(Msg::Projects(Box::new(loaded())));
+        a.go(Tab::Home);
+        a.go(Tab::Projects);
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "read behind the list");
+        a.handle(key('d'));
+        assert!(
+            a.deliverables_read.busy,
+            "showing Deliverables did not read it"
+        );
+        a.handle(Msg::Deliverables(Err("x".into())));
+        assert!(!a.deliverables_read.busy);
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "the tick re-read a fresh answer");
+        // A stale answer is left while the list shows, and read again once Deliverables does.
+        a.deliverables_at = std::time::Instant::now().checked_sub(DELIVERABLES_REFRESH);
+        a.handle(key('d'));
+        assert_eq!(a.pv.top(&a.tv), Some("list"));
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "the tick read behind the list");
+        a.handle(key('d'));
+        assert!(
+            a.deliverables_read.busy,
+            "a stale answer was not read on showing"
+        );
     }
 
     #[test]
@@ -8420,7 +8573,7 @@ mod tests {
     fn infra_draws_its_strip_first_while_prometheus_is_still_read() {
         let mut a = app(Tab::Infra);
         a.infra = None;
-        let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
+        let body: Vec<String> = a.body(160, None).0.iter().map(crate::fit::plain).collect();
         assert!(
             body[0].starts_with("[Machines] Runners  Runs  Pipelines  Tests  Jobs"),
             "{body:?}"
@@ -8433,7 +8586,7 @@ mod tests {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
-            a.body(160)
+            a.body(160, None)
                 .0
                 .iter()
                 .map(crate::fit::plain)
@@ -8467,7 +8620,7 @@ mod tests {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         a.infra_inner = "jobs";
-        let lines = a.body(80).0;
+        let lines = a.body(80, None).0;
         assert!(lines
             .iter()
             .any(|l| crate::fit::plain(l).contains("Enter opens")));

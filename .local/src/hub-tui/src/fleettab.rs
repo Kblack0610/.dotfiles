@@ -6,7 +6,7 @@
 //! hub-core's `fleet::runner`, as agent-web's `#sessions/runners/<runner>`.
 
 use hub_core::boards::Due;
-use hub_core::fleet::runner::{Extras, Runner, Totals};
+use hub_core::fleet::runner::{self, Extras, Runner, Totals};
 use hub_core::fleet::who::Who;
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
 use ratatui::text::{Line, Span};
@@ -225,7 +225,7 @@ pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<
     out.extend(dispatch_list(&f.dispatch, p, now, w));
     out.push(Line::raw(""));
     out.push(judge_head(&f.judge, p, w));
-    out.extend(judge_list(&f.judge, filter, p, now, w));
+    out.extend(judge_list(&f.judge, filter, FOLD_ROWS, p, now, w));
     out
 }
 
@@ -554,8 +554,15 @@ fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The week's line, the filters, then what the judge said on each ask and why.
-fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// The week's line, the filters, then what the judge said on each ask and why, at most `cap`.
+fn judge_list(
+    j: &Judge,
+    filter: &str,
+    cap: usize,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let filters = ASK_FILTERS
         .map(|f| {
             if f == filter {
@@ -587,7 +594,7 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
     }
     let rows = shown
         .iter()
-        .take(FOLD_ROWS)
+        .take(cap)
         .map(|x| {
             let wrong = x.score == "wrong";
             vec![
@@ -619,7 +626,7 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
         }
         .fit(w, p.head()),
     );
-    out.extend(older(shown.len(), FOLD_ROWS, p));
+    out.extend(older(shown.len(), cap, p));
     out
 }
 
@@ -876,7 +883,14 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         Extras::AskJudge { judge } => {
             out.push(judge_head(judge, p, w));
             out.extend(judge_cells(judge, p, w));
-            out.extend(judge_list(judge, ASK_FILTERS[0], p, now, w));
+            out.extend(judge_list(
+                judge,
+                ASK_FILTERS[0],
+                runner::PAGE_ROWS,
+                p,
+                now,
+                w,
+            ));
         }
         Extras::Ingest {
             counts_7d,
@@ -1144,6 +1158,7 @@ pub mod tests {
                         ..Default::default()
                     },
                 ],
+                ..Default::default()
             },
         }
     }
@@ -1568,7 +1583,7 @@ pub mod tests {
     fn the_answer_judges_page_tables_each_type_at_each_level_as_judge_eval_scores_it() {
         let mut r = runner_fixture();
         r.extras = Extras::AskJudge {
-            judge: fixture().judge,
+            judge: Box::new(fixture().judge),
         };
         let lines = page_text(Some(&Ok(r.clone())), 160);
         let s = lines.join("\n");
@@ -1605,13 +1620,25 @@ pub mod tests {
         if let Extras::AskJudge { judge } = &mut r.extras {
             judge.prompt.clear();
         }
-        let lines = page_text(Some(&Ok(r)), 160);
+        let lines = page_text(Some(&Ok(r.clone())), 160);
         assert!(
             lines
                 .iter()
                 .any(|l| l.trim_end().ends_with("no verdicts under prompt none")),
             "{lines:?}"
         );
+        // The page lists the newest `PAGE_ROWS` of every verdict it is sent.
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            let v = judge.verdicts[0].clone();
+            judge.verdicts = vec![v; runner::PAGE_ROWS + 3];
+        }
+        let lines = page_text(Some(&Ok(r)), 160);
+        let rows = lines
+            .iter()
+            .filter(|l| l.contains("land the fleet tab"))
+            .count();
+        assert_eq!(rows, runner::PAGE_ROWS, "{lines:?}");
+        assert!(lines.iter().any(|l| l.trim() == "+3 older"), "{lines:?}");
     }
 
     #[test]
@@ -1621,7 +1648,7 @@ pub mod tests {
             Extras::None,
             r.extras.clone(),
             Extras::AskJudge {
-                judge: fixture().judge,
+                judge: Box::new(fixture().judge),
             },
             Extras::SentinelWatches {
                 watches: vec![hub_core::fleet::runner::Watch {

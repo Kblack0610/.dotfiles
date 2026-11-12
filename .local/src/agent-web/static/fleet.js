@@ -15,14 +15,18 @@ const RUNNERS_PRE = "r";
 // The runner page open, "" on the table.
 const runnerName = () => pageId("sessions", "runners");
 const runnersShown = () => !st.sel && sessShows("runners");
-// said: the answer judge's filter on Log; dispatchAll, judgeAll: each verdict list past its first rows,
-// asked for by its own "+N older". A read also answers Log's verdicts and the open runner page.
+// A read also answers the open runner page.
 const fst = tblTab({
   tab: "sessions", id: "runners", el: "ov-runners", on: "scroll", pre: RUNNERS_PRE, api: "/api/fleet", hint: "search, or kind:lead state:failed -who:shepherd",
-  state: { said: "all", dispatchAll: false, judgeAll: false }, shown: () => runnersShown() && !runnerName(),
+  shown: () => runnersShown() && !runnerName(),
   head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
-  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (runnerName()) renderRunners(); },
+  after: () => { if (runnerName()) renderRunners(); },
 });
+
+// The answer judge's verdicts are a table of their own (`v` keys, hub_core::fleet::AskVerdict),
+// filtered on the server so the tiles count every verdict, not only the rows it sends: Log's
+// Judges section (vst) and the ask-judge runner page, which keeps them in the Sessions URL.
+const VERDICTS_PRE = "v";
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
@@ -30,7 +34,8 @@ const rst = { name: "", data: null, err: null, log: null, sel: "" };
 const refreshRunner = coalesce(async () => {
   const name = runnerName();
   if (!name) return;
-  try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name)); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
+  const v = tblParams(st.views.sessions, VERDICTS_PRE).toString();
+  try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name) + (v ? "&" + v : "")); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
   if (runnerName() === name) renderRunners();
 });
 
@@ -144,26 +149,26 @@ function judgeCells(j) {
     `<tr><td colspan="9" class="muted">no verdicts under prompt ${esc(j.prompt || "none")}</td></tr>`}</table></div>`;
 }
 
-// The answer judge's filters: hub_core::fleet::ASK_FILTERS, read as the row they keep.
-const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
-const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
+const judgeWeek = (j) => `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>`;
 
-function judgeList(j, cap) {
-  const shown = j.verdicts.filter((v) => askShown(v, fst.said)), listed = firstRows(shown, cap);
-  const seg = `<div class="seg fseg">` + ASK_FILTERS.map((f) =>
-    chipBtn(f === fst.said, "data-said", f, f, j.verdicts.filter((v) => askShown(v, f)).length)).join("") + `</div>`;
+const VERDICT_COLS = { when: ["when", "n"], project: ["project"], type: ["type"], said: ["said"], question: ["question"], why: ["why"], you: ["you", "", true] };
+
+// The verdicts the server kept (Judge::view), newest first, then what its cap left out: `more`
+// draws that count, Log's a button that reads them all, the runner page's a line.
+function judgeRows(j, more = older) {
+  const t = j.table;
   // Why, built once as its parts (the rule, the quoted evidence, the reason): the title is their
   // text, the cell the same parts escaped, the rule in bold.
   const whyCell = (x) => {
     const parts = [x.rule && x.rule !== x.type ? x.rule : "", x.evidence ? `"${x.evidence}"` : "", x.reason || ""];
-    const html = parts.map((t, i) => (i === 0 && t ? `<b>${esc(t)}</b>` : esc(t)));
+    const html = parts.map((p, i) => (i === 0 && p ? `<b>${esc(p)}</b>` : esc(p)));
     return clamp2(html.filter((_, i) => parts[i]).join(" "), parts.filter(Boolean).join(" "));
   };
-  const rows = listed.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
+  const rows = j.verdicts.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${clamp2(esc(x.question), x.question)}</td><td class="wrap muted">${whyCell(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
-  return `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>${seg}` +
-    `<div class="panel scroll" data-list="judge">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}${tblMore(shown.length - listed.length)}</div>`;
+  return `<div class="panel scroll">${rows ? `<table class="tbl">${tblHead(t, VERDICT_COLS)}${rows}</table>` : `<div class="empty">${t.total ? "No verdict matches." : "No verdicts yet."}</div>`}</div>` +
+    more(t.shown - j.verdicts.length);
 }
 
 function renderRunners() {
@@ -187,11 +192,10 @@ const RUNNER_TIME_KEYS = ["updated", "next"];
 function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
-      return secHead("", "Dispatch judge") +
-        dispatchTiles(x.dispatch) + dispatchList(x.dispatch, fst.dispatchAll ? null : LOG_ROWS);
+      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
     case "ask-judge":
-      return secHead("", "Answer judge") +
-        judgeTiles(x.judge) + judgeCells(x.judge) + judgeList(x.judge, fst.judgeAll ? null : LOG_ROWS);
+      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells(x.judge) + judgeWeek(x.judge) +
+        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
@@ -265,34 +269,40 @@ function renderRunner(el) {
   paint(el, h);
 }
 
-// Log's Judges' verdicts section: the dispatch judge's newest verdicts and everything the answer
-// judge said, with why and what you did.
-function renderLogVerdicts() {
-  const el = $("log-verdicts"), d = fst.data;
-  if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading."}</div>`; return; }
-  paint(el, `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch, fst.dispatchAll ? null : d.verdicts_shown)}` +
-    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="muted">newest ${d.judge.verdicts.length}</span></h3>${judgeList(d.judge, fst.judgeAll ? null : d.verdicts_shown)}`);
-}
+// Log's Judges' verdicts section: the dispatch judge's newest verdicts, then everything the answer
+// judge said, with why and what you did, under its tiles and search. Each list stops at the
+// server's verdicts_shown: the answer judge's "+N older" reads the rest (vall), the dispatch
+// list's shows what it holds (dispatchAll).
+const vst = tblTab({
+  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.", pages: true,
+  params: (p, t) => { if (t.all) p.set("vall", "1"); }, state: { dispatchAll: false },
+  shown: () => logShows("verdicts"), hint: "search a question, project, rule or answer",
+  table: (t) => t.data?.judge?.table,
+  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge, tblMore),
+  wrap: (h) => `<div data-tbl="${VERDICTS_PRE}">${h}</div>`,
+});
 
-// A verdict list's "+N older" shows the rest of that list only; a new filter on the answer judge
-// starts its list at the first rows again. True when the click was one of these.
-function verdictsClick(e, render) {
-  const list = e.target.closest("[data-all]")?.closest("[data-list]");
-  if (list) { fst[list.dataset.list === "dispatch" ? "dispatchAll" : "judgeAll"] = true; render(); return true; }
-  const said = e.target.closest("[data-said]");
-  if (!said) return false;
-  fst.said = said.dataset.said;
-  fst.judgeAll = false;
-  render();
-  return true;
-}
+// The dispatch list's "+N older" sits above the verdicts' block, so tblTab leaves it here.
+$("log-verdicts").addEventListener("click", (e) => {
+  if (!e.target.dataset?.all || !e.target.closest?.('[data-list="dispatch"]')) return;
+  vst.dispatchAll = true;
+  vst.render();
+});
 
-$("log-verdicts").addEventListener("click", (e) => verdictsClick(e, renderLogVerdicts));
+function verdictsHead(d) {
+  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch, vst.dispatchAll ? null : d.verdicts_shown)}` +
+    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="n">${tblCount(d.judge.table)}</span></h3>${judgeWeek(d.judge)}`;
+}
 
 $("scroll").addEventListener("click", (e) => {
   const t = e.target;
   if (st.sel || !t.closest("#ov-runners")) return;
-  if (verdictsClick(e, renderRunners)) return;
+  // The runner page's verdict tiles and headers: the Sessions URL keeps their view, the page re-reads.
+  if (tblOf(e) === VERDICTS_PRE) {
+    const v = tblPatch(e);
+    if (v) { setQuery(tblSet(st.views.sessions, v, VERDICTS_PRE)); refreshRunner(); }
+    return;
+  }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   if (t.closest("a, button, select, input")) return;
@@ -300,8 +310,8 @@ $("scroll").addEventListener("click", (e) => {
   if (row) location.hash = row.dataset.href;
 });
 
-const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh, () => logShows("verdicts"));
-LOG_PARTS.push({ sec: "verdicts", show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], vst.refresh, () => logShows("verdicts"));
+LOG_PARTS.push({ sec: "verdicts", show() { vst.render(); logFleetFeed.show(!vst.data || vst.moved()); }, onEvent: logFleetFeed.onEvent });
 // TABS.sessions (sessions.js) calls these for the Runners inner tab.
 function runnersShow() {
   const name = runnerName();
