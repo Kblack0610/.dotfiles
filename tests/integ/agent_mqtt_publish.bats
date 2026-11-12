@@ -126,6 +126,20 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .name <<< "$c")" 'Dispatch queue'
 }
 
+# ar-1753: run one after the other, these two readers took a --full run past its unit's 60s at
+# load 63. fleet-dispatch here blocks until hub phone has started, so a serial run gets neither.
+@test "fleet-dispatch stats and hub phone run side by side, not one after the other" {
+  mkfifo "$NOTES_FIXTURE/meet"
+  printf '#!/usr/bin/env bash\ntimeout 20 bash -c %s _ "$NOTES_FIXTURE/meet" || exit 1\necho %s\n' \
+    "'read -r _ < \"\$1\"'" "'{\"state\":1,\"runnable\":1}'" > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  overview_stub 'timeout 20 bash -c '"'"'echo go > "$1"'"'"' _ "$NOTES_FIXTURE/meet" || exit 1; echo "{\"state\": \"ok\", \"rows\": []}"'
+  run "$PUB" --full --quiet
+  assert_success
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 1
+  assert_equal "$(jq -r .state <<< "$(payload agents/testhost/summary/overview)")" ok
+}
+
 @test "an unreadable dispatch queue publishes no dispatch sensor, rather than a zero" {
   printf '#!/usr/bin/env bash\necho "{\\"error\\":\\"agent-queue unreadable\\"}"; exit 1\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
