@@ -36,27 +36,61 @@ JUDGE_HARD_STOPS="$JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA gate grounded oth
 # judge_rules <policy>: its rule ids, one per line.
 judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 
+# The impact levels, narrowest first. The judge picks one of the first three per decision;
+# judge_derive alone gives `critical`.
+JUDGE_LEVELS='self repo fleet critical'
+
+# judge_floor <policy> <heading>: the names its `### <heading>` lists as `- \`name\``, one per line.
+judge_floor() {
+  awk -v h="### $2" '$0 == h { on = 1; next } /^#/ { on = 0 }
+    on && /^- `[^`]+`$/ { s = $0; sub(/^- `/, "", s); sub(/`$/, "", s); print s }' "$1" 2>/dev/null
+}
+
+# judge_floor_hit <policy> <text> <heading>...: the first name those headings list that <text>
+# contains, any case; fails when none does.
+judge_floor_hit() {
+  local policy="$1" text="${2,,}" h t; shift 2
+  for h in "$@"; do
+    while IFS= read -r t; do
+      [[ -n "$t" && "$text" == *"${t,,}"* ]] && { printf '%s\n' "$t"; return 0; }
+    done < <(judge_floor "$policy" "$h")
+  done
+  return 1
+}
+
 # judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON: `rule`,
 # what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
 # type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
 # quote behind `rule` (for an answerable verdict, what grounded it), and `reason` and `answer`.
 # `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
-# counts its worst item: a human criterion on any decision, a needed one missing on any decision.
+# counts its worst item: a human criterion on any decision, a needed one missing on any decision,
+# and the widest impact. `rated` is the level the judge gave, `level` what it is: `critical` when
+# external holds or reversible fails on any decision, both hard stops already; `level_evidence`
+# the quote behind it.
 judge_derive() {
-  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" '
+  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
     ($human | split(" ")) as $human
     | ($needed | split(" ")) as $needed
     | ($human + $needed + ["grounded"]) as $all
+    | ($levels | split(" ")) as $levels
     | select(type == "object" and (.type | type) == "string" and .type != ""
         and (.decisions | type) == "array" and (.decisions | length) > 0
-        and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")))
+        and all(.decisions[]; . as $d | all($all[]; ($d[.].met | type) == "boolean")
+              and ((.impact.level | type) == "string") and ($levels[0:3] | index($d.impact.level)) != null))
     | .decisions as $d
     | def holds($c): if ($human | index($c)) then any($d[]; .[$c].met) else all($d[]; .[$c].met) end;
       first(($human[] | select(holds(.))), ($needed[] | select(holds(.) | not)), null) as $by
+    | ($d | max_by(.impact.level as $l | $levels | index($l))) as $top
+    | (holds("external") or (holds("reversible") | not)) as $critical
     | {rule: ($by // .type), answerable: ($by == null), type, met: ([$all[] | select(holds(.))] | join(" ")),
        evidence: ([$d[] | select($by == null or (.[$by].met == (($human | index($by)) != null)))
                    | .[$by // "grounded"].evidence | select(. != "")] | first // ""),
+       rated: $top.impact.level, level: (if $critical then "critical" else $top.impact.level end),
+       level_evidence: (if $critical then
+           ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
+             | select(. != "")] | first // "")
+         else ($top.impact.evidence // "") end),
        reason: (.reason // ""), answer: (.answer // "")}' 2>/dev/null | head -1
 }
 

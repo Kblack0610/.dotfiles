@@ -9,9 +9,15 @@
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
 #   SENTINEL_SINCE (an epoch, set by a Sentinel probe) starts every window no earlier than a watch's fix.
-#   judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]
+#   judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]
 #       the answer judge's verdicts, newest first and under any prompt: what it said, why, the
-#       quote behind it and what you did. The same rows reach Log's Judges' verdicts section.
+#       quote behind it, its impact level, its call id (calls.jsonl .raw) and what you did. The
+#       same rows reach Log's Judges' verdicts section.
+#   judge-eval cells [--any-prompt] [--days N] [--json]
+#       the answer judge per type and impact level (self, repo, fleet, critical): verdicts, scored,
+#       precision with its 95% interval, pending, whether the type is live, the live answers you
+#       reviewed, and how often a floor raised the judge's level. A live answer you never reviewed
+#       is not scored, so silence never counts as agreement.
 #
 #   judge-eval replay [--limit N] [--out DIR] [--json]
 #       the answer judge's current policy over the asks the human answered with an option, newest
@@ -94,7 +100,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
-    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
+    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" --argjson levels "$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -144,19 +150,22 @@ JQ_EVAL="$JQ_EPOCH"'
        elif ($a.judge_type // "") == "" then "untyped deferral"
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
-       type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),
+       type: ($a.judge_type // ""), level: ($a.judge_level // ""), level_raised: ($a.judge_level_raised == "true"),
+       kind: $kind, live: ($a.answered_by == "judge"),
        assumed: ($a.answered_by == "judge" and ($a.assume_at // "") != ""), want: $want,
        human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
        reason: ($a.judge_reason // ""), evidence: ($a.judge_evidence // ""),
        at: $a.judged_at, answered_at: $a.answered_at, judge_call: ($a.judge_call // ""),
        outcome: (if $kind == "error" then null
+         # A live answer is right only when the human named its option (`kept`): `none` is a
+         # message that named no option, silence, which must never count as agreement.
          elif $a.answered_by == "judge" then
-           (if ($a.judge_override // "") == "" then "pending" elif $a.judge_override == "none" then "tp" else "fp" end)
+           ({"": "pending", kept: "tp", none: "unscorable"}[$a.judge_override // ""] // "fp")
          elif $a.status == "pending" then "pending"
          elif $why != null then "unscorable"
          elif $kind == "answer" then (if ($human | ascii_downcase) == ($want | ascii_downcase) then "tp" else "fp" end)
          elif ($human | ascii_downcase) == ($a.recommend | ascii_downcase) then "fn" else "tn" end)}
-    | . + {unscorable: (if .outcome == "unscorable" then $why else null end)}] as $askrows
+    | . + {unscorable: (if .outcome != "unscorable" then null elif .live then "live answer not reviewed" else $why end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
    # `failed` line did not. A run that ended for a cause outside the model (UNRATED_ENDS) labels
@@ -274,10 +283,11 @@ JQ_EVAL="$JQ_EPOCH"'
                   (([$j[] | ($call[.judge_call].cost_usd // 0) / $share[.judge_call]] | add) / ($j | length) * 10000 | round) / 10000 end)});
 
   # One row of the verdict list: what the judge said, and what became of it in plain words.
-  def listed: {id, project, question, rule, type, judge: .want, reason, evidence,
+  def listed: {id, project, question, rule, type, level, level_raised, call: .judge_call, judge: .want, reason, evidence,
         said: (if .kind == "error" then "error" elif .live then "answered"
                elif .kind == "answer" then "would answer" else "passed" end),
-        you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept" else .human end),
+        you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept"
+              elif .live and .human == "none" then "not reviewed" else .human end),
         score: ({tp: "right", tn: "right", fp: "wrong", fn: "needless", pending: "pending"}[.outcome // ""] // "-"),
         at: (.at | epoch)};
 
@@ -330,7 +340,15 @@ JQ_EVAL="$JQ_EPOCH"'
                                      + (if $n < $bar then "; a percent at \($bar) rows" else "" end) end)}}
           + (if $src[$ag] != "ask-answers" then {} else
              {verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
-               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end))]}'
+               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed)),
+              # One cell per type and impact level, in scope: what a promotion is weighed on. A
+              # live cell counts only reviewed answers (`audited`), never silence.
+              cells: ($mine | map(select(.kind != "error")) | group_by([.type, .level])
+                | map(.[0] as $c | stats + {type: $c.type, level: $c.level,
+                    live: (($lv | index("*")) != null or ($lv | index($c.type)) != null),
+                    audited: (map(select(.live and (.outcome | IN("tp", "fp")))) | length),
+                    level_raised_pct: pct(map(select(.level_raised)) | length; length)})
+                | sort_by(.type, (.level as $l | $levels | index($l) // -1)))} end))]}'
 
 # report <json>: the table, one block per agent.
 report() {
@@ -387,27 +405,55 @@ kpi_json() {
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
 }
 
-# log [filter] [--days N] [--limit N] [--json]: see the header.
+# log [filter] [--level L] [--days N] [--limit N] [--json]: see the header.
 log() {
-  local said="" days="" limit="$LOG_LIMIT" json=0 out
+  local said="" level="" days="" limit="$LOG_LIMIT" json=0 out
   while [ $# -gt 0 ]; do
     case "$1" in
       answered|would-answer|passed|wrong) said="$1"; shift ;;
+      --level) [[ " $JUDGE_LEVELS " == *" ${2:-x} "* ]] || { say "--level takes one of: $JUDGE_LEVELS"; return 2; }; level="$2"; shift 2 ;;
       --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
       --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
       --json) json=1; shift ;;
-      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]"; return 2 ;;
+      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]"; return 2 ;;
     esac
   done
   # Filtered before the limit, so the whole list is read rather than the dashboards' slice.
-  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --argjson n "$limit" '
+  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --arg l "$level" --argjson n "$limit" '
     .agents[0].verdicts | map(select($f == "" or (if $f == "wrong" then .score == "wrong"
-      else .said == ($f | sub("-"; " ")) end))) | .[0:$n]')" || { say "could not read the sources"; return 1; }
+      else .said == ($f | sub("-"; " ")) end)) | select($l == "" or .level == $l)) | .[0:$n]')" || { say "could not read the sources"; return 1; }
   if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
   jq -r 'if length == 0 then "no verdicts" else .[] |
       "\(.at | if . then localtime | strftime("%m-%d %H:%M") else "-" end)  \(.project)  \(if .type == "" then .rule else .type end)  \(.said)  you: \(.you | .[0:40])  \(.score)",
       "    \(.question | .[0:100])",
-      "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)" end' <<<"$out"
+      "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)",
+      "    level \(if .level == "" then "-" else .level end)\(if .level_raised then " (raised)" else "" end)  call \(if .call == "" then "-" else .call end)" end' <<<"$out"
+}
+
+# cells [--any-prompt] [--days N] [--json]: see the header.
+cells() {
+  local any=0 days="" json=0 out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --any-prompt) any=1; shift ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: judge-eval cells [--any-prompt] [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  out="$(VERDICTS=0 eval_json ask-judge "$any" "$days" | jq -c '[.agents[] | select(.score == "ask-answers") | .cells[]]')" ||
+    { say "could not read the sources"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
+  jq -r 'def pad($w): tostring | if length >= $w then .[0:$w] else . + " " * ($w - length) end;
+    def lpad($w): tostring | if length >= $w then . else " " * ($w - length) + . end;
+    def p: if . == null then "-" else "\(.)%" end;
+    if length == 0 then "no verdicts in scope" else
+      ("type" | pad(24)) + ("level" | pad(9)) + ("verd" | lpad(5)) + ("scored" | lpad(7)) + ("precision [95%]" | lpad(18))
+        + ("pend" | lpad(5)) + ("live" | lpad(5)) + ("audited" | lpad(8)) + ("raised" | lpad(7)),
+      (.[] | (if .type == "" then "(no type)" else .type end | pad(24)) + (if .level == "" then "-" else .level end | pad(9))
+        + (.verdicts | lpad(5)) + (.scored | lpad(7))
+        + ((.precision | p) + (if .precision == null then "" else " [\(.precision_lo)-\(.precision_hi)]" end) | lpad(18))
+        + (.pending | lpad(5)) + (if .live then "yes" else "no" end | lpad(5)) + (.audited | lpad(8)) + (.level_raised_pct | p | lpad(7))) end' <<<"$out"
 }
 
 # replay_labelled: the id and project of each ask the human answered with one option, newest
@@ -476,6 +522,7 @@ main() {
   local want="" any=0 days="" json=0 a
   if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
   if [ "${1:-}" = log ]; then shift; log "$@"; return; fi
+  if [ "${1:-}" = cells ]; then shift; cells "$@"; return; fi
   if [ "${1:-}" = kpi ]; then
     shift
     case "${1:-}" in --json) kpi_json ;; "") kpi_json | jq -r 'to_entries[] | "\(.key)\t7d \(.value["7d"] // "-")\t28d \(.value["28d"] // "-")"' ;;

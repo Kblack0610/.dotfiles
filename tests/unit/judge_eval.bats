@@ -81,6 +81,7 @@ ask_fixture() {
   ask old1 judge=take-recommend judge_call=c0 answer=yes
   ask live_over judge=take-recommend judge_rule=fast answered_by=judge judge_override=no answer=yes
   ask live_none judge=take-recommend judge_rule=fast answered_by=judge judge_override=none answer=yes
+  ask live_kept judge=take-recommend judge_rule=fast answered_by=judge judge_override=kept answer=yes
   ask live_wait judge=take-recommend judge_rule=fast answered_by=judge answer=yes
   ask pend judge=human status=pending answer=
   ask unclear judge=human judge_rule=unclear-ask answer=yes
@@ -91,15 +92,16 @@ ask_fixture() {
   run "$JUDGE_EVAL" ask-judge --json
   assert_success
   run jq -c '.agents[0].total | [.verdicts, .errors, .tp, .fp, .fn, .tn, .pending, .unscorable, .coverage, .precision, .false_defer_pct, .kappa]' <<<"$output"
-  # tp: tp1, live_none; fp: fp1, live_over; fn: fn1; tn: tn1, tn2 (the session text names "no");
-  # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault); gate and
-  # old1 (another prompt) are out
-  assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
+  # tp: tp1, live_kept; fp: fp1, live_over; fn: fn1; tn: tn1, tn2 (the session text names "no");
+  # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault) and
+  # live_none (a message naming no option is silence, never agreement); gate and old1 (another
+  # prompt) are out
+  assert_output '[13,1,2,2,1,2,2,3,58.3,50,33.3,0.16]'
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0].total | [.unscorable_pct, .unscorable_by]' <<<"$output"
-  assert_output '[18.2,{"answer naming no option":1,"unclear ask":1}]'
+  assert_output '[25,{"answer naming no option":1,"live answer not reviewed":1,"unclear ask":1}]'
   run "$JUDGE_EVAL" ask-judge
-  assert_line '  unscorable 2 of 11 (18.2%): 1 answer naming no option, 1 unclear ask'
+  assert_line '  unscorable 3 of 12 (25%): 1 answer naming no option, 1 live answer not reviewed, 1 unclear ask'
 }
 
 @test "ask-judge: an answer with a note is scored by the option it leads with, free text by none" {
@@ -231,12 +233,13 @@ ask_fixture() {
   run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
   # judge_precision needs 10 scored answers in a rule, and a false-defer percent 10 scored defers: 3
   # here (the lane's own 33.3 is in the first test). 3 of 12 asks were answered live.
-  assert_output '[2,null,25,null,8.3]'
+  assert_output '[2,null,30.8,null,7.7]'
 }
 
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
-  ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
+  ask live1 judge=take-recommend answered_by=judge judge_override=kept judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
+  ask live3 judge=take-recommend answered_by=judge judge_override=none 'answer=yes'
   ask would judge=take-recommend answer=no
   # a human criterion (knowledge) decided pass, so it scores nothing; skip was the judge's own call
   ask pass judge=human judge_rule=knowledge judge_type=agent_policy judge_reason=only-you answer=yes
@@ -250,7 +253,7 @@ ask_fixture() {
   run "$JUDGE_EVAL" log --json
   assert_success
   run jq -c 'sort_by(.id) | map([.id, .said, .you, .score])' <<<"$output"
-  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["old","passed","no","right"],["pass","passed","yes","-"],["skip","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
+  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["live3","answered","not reviewed","-"],["old","passed","no","right"],["pass","passed","yes","-"],["skip","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
   run "$JUDGE_EVAL" log passed --json
   run jq -c 'map(.id) | sort' <<<"$output"
   assert_output '["old","pass","skip","wait"]'
@@ -266,7 +269,41 @@ ask_fixture() {
   # The dashboards read the same rows, with the week beside them; the scores stay current-prompt.
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [(.verdicts | length), .week.verdicts, .week.live_answered, .week.live_pct, .total.verdicts]' <<<"$output"
-  assert_output '[8,8,2,28.6,7]'
+  assert_output '[9,9,3,37.5,8]'
+}
+
+@test "cells: one per type and impact level, a live cell scored only on reviewed answers, and the floor's share" {
+  ask s_tp judge=take-recommend judge_type=ship_deploy judge_level=self answer=yes
+  ask s_fp judge=take-recommend judge_type=ship_deploy judge_level=self answer=no
+  ask r_kept judge=take-recommend judge_type=fast judge_level=repo judge_level_raised=true answered_by=judge judge_override=kept answer=yes
+  ask r_over judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=no answer=yes
+  # negative control: silence on a live answer is neither right nor audited
+  ask r_none judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=none answer=yes
+  ask c_crit judge=human judge_type=ship_deploy judge_rule=external judge_level=critical judge_level_raised=true answer=no
+  ask unrated judge=take-recommend judge_type=ship_deploy answer=yes
+  run "$JUDGE_EVAL" cells --json
+  assert_success
+  run jq -c 'map([.type, .level, .verdicts, .tp, .fp, .unscorable, .live, .audited, .level_raised_pct, .precision_lo])' <<<"$output"
+  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","critical",1,0,0,1,false,0,100,null]]'
+  run "$JUDGE_EVAL" cells
+  assert_success
+  assert_line --regexp '^fast +repo +3 +2 +50% \[9.5-90.5\] +0 +yes +2 +33.3%$'
+  run "$JUDGE_EVAL" cells --sideways
+  assert_failure 2
+}
+
+@test "log --level keeps one impact level, and every row names its level and call" {
+  ask lv_self judge=take-recommend judge_level=self answer=yes
+  ask lv_repo judge=take-recommend judge_level=repo judge_level_raised=true answer=yes
+  run "$JUDGE_EVAL" log --level repo --json
+  assert_success
+  run jq -c 'map([.id, .level, .level_raised, .call])' <<<"$output"
+  assert_output '[["lv_repo","repo",true,"c1"]]'
+  run "$JUDGE_EVAL" log --level repo
+  assert_line '    level repo (raised)  call c1'
+  # negative control: a level the judge has not got is a usage error, not an empty list
+  run "$JUDGE_EVAL" log --level wide
+  assert_failure 2
 }
 
 @test "nothing to score reads as no verdicts, and an unknown lane is a usage error" {
@@ -288,7 +325,7 @@ replay_stub() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HOME/replay.calls"
 printf '{"type":"ship_deploy","decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
-  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true}'
+  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true},"impact":{"evidence":"q","level":"repo"}'
 SH
   chmod +x "$SANDBOX/bin/replay-stub"
   export JUDGE_EVAL_REPLAY_CMD=replay-stub

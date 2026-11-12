@@ -278,7 +278,7 @@ judge_line() {
     answer:*) if [ -n "$live" ]; then what="answered \"${j#answer:}\""; else what="${assumes:-would answer \"${j#answer:}\", type not proven}"; fi ;;
     *) what="$j" ;;
   esac
-  [ -n "$ov" ] && [ "$ov" != none ] && what+=", overridden: $ov"
+  case "$ov" in "" | none) ;; kept) what+=", kept by you" ;; *) what+=", overridden: $ov" ;; esac
   printf 'Judge: %s%s%s\n' "$what" "${rule:+ ($rule)}" "${reason:+ - $reason}"
 }
 
@@ -434,6 +434,14 @@ cmd_post() {
     done < <(grep -lx "claude_session: $owner" "$ASKS_ROOT"/*/*.md 2>/dev/null)
   fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
+  # An ask about the judge's own authority is the human's by rule: the judge never rules on its
+  # own reach (the policy's "Judge authority" list).
+  local authority
+  if [ "$kind" = question ] && authority="$(judge_floor_hit "$(judge_conf PROMPT "")" \
+       "$task $question $context $options $option_notes $why" "Judge authority")"; then
+    kind=approval
+    echo "agent-ask post: the ask names $authority, the judge's own authority, so it is an approval for the human" >&2
+  fi
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
   # A recommendation that is not one of the offered options is a bug in the caller, and a
@@ -845,7 +853,7 @@ judge_demote_check() {
   read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
     function out() {
       if (when == "") when = oat
-      if ((by == "judge" || ov != "") && r == rule && when != "") print when, (ov != "" && ov != "none")
+      if ((by == "judge" || ov != "") && r == rule && when != "") print when, (ov != "" && ov != "none" && ov != "kept")
     }
     FNR == 1 { if (NR > 1) out(); by = r = when = ov = oat = "" }
     /^answered_by: / && by == "" { by = substr($0, 14) }
@@ -1315,11 +1323,13 @@ cmd_settle_session() {
 # review_judge_answer <file> <text> <where>: a human message read as the review of what the judge
 # answered, or is waiting to assume, on this ask. <where> is "in session" or "from a board". Naming
 # one other option records judge_override (the label judge-eval scores) and runs the demote check.
-# Naming the judge's own records `none`. On a pending ask, naming no option disarms it: the human
-# is here, so nothing is assumed, and `assume_answer` stays so a later pick still counts.
+# Naming the judge's own records `kept`, the only review judge-eval scores as agreement. On a
+# pending ask, naming no option disarms it: the human is here, so nothing is assumed, and
+# `assume_answer` stays so a later pick still counts.
 #
-# After an answer at post, the first message in the session closes the review with `none`, so
-# later ones about other things cannot read as an override. After an assumed answer the human may
+# After an answer at post, the first message in the session naming no option closes the review
+# with `none`, which is silence, not agreement, so later ones about other things cannot read as an
+# override. After an assumed answer the human may
 # not have seen the question yet, so a later pick still counts; so does a board answer on any
 # judge answer, which names its ask. Free text naming no option is never guessed at.
 review_judge_answer() {
@@ -1342,6 +1352,9 @@ review_judge_answer() {
     set_field "$f" judge_override "$pick" judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
     judge_demote_check "$f"
+  elif [ -n "$pick" ]; then
+    set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
+    queue_changed
   elif [ -n "$pending" ] && [ -z "$pick" ]; then
     # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
     if [ -z "${ASK[assume_disarmed]:-}" ]; then
@@ -1453,7 +1466,7 @@ cmd_precedents() {
     def note($o): . as $a | ($a.options | split("|") | index($o)) as $i
       | (($a.option_notes // "") | split("|")[$i // 99] // "") as $n | if $n == "" then $o else "\($o) (\($n))" end;
     map((.judge_override // "") as $over
-      | if $over != "" and $over != "none" then
+      | if $over != "" and $over != "none" and $over != "kept" then
           . + {said: (.assume_answer // .answer), chose: $over, at: .judge_override_at}
         elif .answered_by == "judge" then empty
         elif (.answered_by // "human") == "human" then
@@ -1479,7 +1492,7 @@ cmd_judge() {
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
-  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call
+  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised
   case "$(field "$f" kind)" in
     gate|approval)
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
@@ -1545,7 +1558,22 @@ Return the verdict in the structured output."
   set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
   set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
   set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
+  # The level: the judge's rating, or what judge_derive and the policy's floors make it.
+  # judge_level_raised says a floor overrode the rating, which judge-eval counts per cell.
+  local level rated lev_ev floor
+  level=$(jq -r .level <<<"$verdict"); rated=$(jq -r .rated <<<"$verdict"); lev_ev=$(jq -r .level_evidence <<<"$verdict")
+  if [ "$level" = self ] || [ "$level" = repo ]; then
+    floor="$(judge_floor_hit "$(judge_conf PROMPT "")" "$(ask_text "$f")" "Judge authority" "Fleet floor")" &&
+      { level=fleet; lev_ev="the ask names $floor"; }
+  fi
+  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" \
+    judge_level_raised "$([ "$level" = "$rated" ] && echo false || echo true)"
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
+}
+
+# ask_text <file>: the ask's words the judge reads, on one line, for the policy's floors.
+ask_text() {
+  local k; for k in task question context options option_notes recommend_why; do printf '%s ' "$(field "$1" "$k")"; done
 }
 
 # judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.
@@ -1594,12 +1622,14 @@ cmd_trace() {
      events: [
        ev($a.created; "posted"; ["by \([$a.session, $a.agent] | map(select(. // "" != "")) | first // "a headless run")",
                                  ($a.kind | select(. != "question"))] | map(select(. != null)) | join(", ")),
-       ev($a.judged_at; "judged"; $judge | sub("^Judge: "; "")),
+       ev($a.judged_at; "judged"; ($judge | sub("^Judge: "; ""))
+         + (if ($a.judge_level // "") == "" then "" else "; level \($a.judge_level)"
+              + (if $a.judge_level_raised == "true" then " (the judge rated it lower)" else "" end) end)),
        ev($a.assume_at; "armed"; "\($a.assume_answer // "") goes out at this time unless the human replies"),
        ev($a.assume_disarmed; "disarmed"; "the human replied, so \($a.assume_answer // "the answer") is not assumed"),
        ev($a.answered_at; "answered"; "\($a.answer) by \(if ($a.answered_by // "") == "" then "human" else $a.answered_by end)"
                                       + (if ($a.answer_note // "") != "" then " (\($a.answer_note))" else "" end)),
-       ev($a.judge_override_at; "overridden"; ($a.judge_override // "") + (if ($a.judge_override_note // "") != "" then " (\($a.judge_override_note))" else "" end)),
+       ev($a.judge_override_at; (if $a.judge_override == "kept" then "kept" else "overridden" end); ($a.judge_override // "") + (if ($a.judge_override_note // "") != "" then " (\($a.judge_override_note))" else "" end)),
        ev($a.resumed_at; "resumed"; $a.resume // ""),
        ev($a.closed_at; "closed"; ($a.status // "") + (if ($a.closed_reason // "") != "" then ": \($a.closed_reason)" else "" end))
      ],

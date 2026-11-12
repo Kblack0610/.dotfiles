@@ -32,6 +32,37 @@ Answer this one too. It is what a reader sees behind a yes, and it never sends a
 
 - (grounded) A rule below or a fact the ask states picks this option over every other listed one, or gives the answer when there are no options. The facts it rests on are stated, not assumed. An option that only seems reasonable, or a recommendation with nothing but its own reasoning behind it, is not grounded.
 
+## Impact
+
+Answer this one too, on every decision: how far a wrong answer would reach. It never sends an ask to the human by itself; `agent-ask` records it beside your score, and the bundle takes its widest item.
+
+- self: only the asking session's own work in progress, such as its branch, its scratch files, its own plan or phase.
+- repo: one repo's behaviour that other sessions or the human rely on, such as its main branch, tests, CI or docs.
+- fleet: the shared runtime, the rules or every lane, such as a runner conf, a budget, a hook, a skill, a rule file or anything every session loads.
+
+Pick the widest level the decision reaches, and quote the words that show it. There is no fourth level to pick: `agent-ask` records `critical` when external is met or reversible is not, and an ask naming a floor below is `fleet` at least, whatever you score.
+
+### Judge authority
+
+An ask naming any of these is about the judge's own authority, so `agent-ask` posts it as an approval for the human and it never reaches you.
+
+- `ask-judge`
+- `ask judge`
+- `answer judge`
+- `agent-ask/policy.md`
+- `verdict.schema.json`
+- `DELAY_RULES`
+- `JUDGE_HARD_STOPS`
+- `judge.sh`
+
+### Fleet floor
+
+An ask naming any of these, or any name above, is `fleet` at least.
+
+- `CLAUDE.md`
+- `AGENTS.md`
+- `rulesync`
+
 ## The rules you may ground on
 
 - Landing is standing authorization, tests come with a change, the root cause beats a patch around it, and a fallback is not kept.
