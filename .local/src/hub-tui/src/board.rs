@@ -158,7 +158,6 @@ impl<'a> Board<'a> {
         }
         out
     }
-
 }
 
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
