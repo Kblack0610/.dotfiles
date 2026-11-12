@@ -130,6 +130,20 @@ EOF
   refute_output --partial 'tracker clients name a clients profile'
 }
 
+@test "work projects this machine does not list still resolve: the registry is shared" {
+  # On the personal box a work tracker is hidden from project_keys, but its repo relation and
+  # its runtime keys are the registry's, true on every machine; only its own machine lists it.
+  clean_map
+  jq '.clients = {"acme": {"profile": "acmework"}}
+    | .trackers.wapp = {"client": "acme", "repo": "wrepo"} | .trackers.wrepo = {"client": "acme"}' \
+    "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  mkdir -p "$AGENT_DIR/lessons" && : > "$AGENT_DIR/lessons/wrepo.md"
+  PROJECT_MACHINE_PROFILE=personal run "$DOCTOR" "$MAP"
+  assert_success
+  refute_output --partial 'names no registered project'
+  refute_output --partial '"wrepo"'
+}
+
 @test "a string comment key in trackers does not hide the relations after it" {
   # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.repo` dies on the
   # first string value, so every relation after it went unchecked and the check still

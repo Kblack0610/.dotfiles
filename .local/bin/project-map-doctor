@@ -49,11 +49,12 @@ if ! jq -e . "$MAP_FILE" >/dev/null 2>&1; then
 fi
 pass "map is valid JSON ($MAP_FILE)"
 
-# The set of names the registry considers real comes from `project_keys`, the one
+# The set of names the registry considers real comes from `project_all_keys`, the one
 # definition (`default` is a tracker fallback, not a project, so every typo'd name does not
-# "resolve").
+# "resolve"). Every key, work projects this machine does not list included: the registry is
+# shared, so its references hold on every machine.
 export PROJECT_MAP_FILE="$MAP_FILE"
-KNOWN="$(project_keys)"
+KNOWN="$(project_all_keys)"
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
 
 # --- 1. every `path` has a `repo` ----------------------------------------------------
@@ -542,6 +543,8 @@ while IFS=$'\037' read -r name lab type; do
     bad=$((bad + 1))
   fi
   [ -n "$profiles" ] || continue
+  # A work project this machine does not list has its profile hidden too; its own machine checks it.
+  project_visible "$name" || continue
   if ! printf '%s\n' "$profiles" | grep -qxF -- "$lab"; then
     fail "trackers.$name has lab \"$lab\", which is not a notes profile ($(printf '%s' "$profiles" | tr '\n' ' '))"
     bad=$((bad + 1))
