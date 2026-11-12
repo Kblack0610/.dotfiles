@@ -16,7 +16,7 @@ pub const QUEUE: &[(&str, &str)] = &[
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
-pub const JOBS: &[(&str, &str)] = &[("waiting", "the job is waiting to start, WAIT long")];
+pub const JOBS: &[(&str, &str)] = &[("waiting", "the job has not started; TOOK says how long it has waited")];
 
 /// A GitHub Actions job no runner has taken yet (`ci::Queued`), the CI Waiting table's rows.
 pub const CI: &[(&str, &str)] = &[
@@ -24,7 +24,7 @@ pub const CI: &[(&str, &str)] = &[
         "waiting",
         "a CI job waiting for a runner with every label in NEEDS; CAN RUN ON is who holds them",
     ),
-    ("stuck", "no online runner holds those labels"),
+    ("stuck", "the chip for a job no online runner holds those labels for"),
 ];
 
 #[cfg(test)]

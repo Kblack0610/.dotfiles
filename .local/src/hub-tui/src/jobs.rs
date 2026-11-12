@@ -366,7 +366,7 @@ mod tests {
             "{st:?}"
         );
         assert!(st[0].ends_with("4 of 4 (last 1d0h)"), "{st:?}");
-        assert!(st[1].starts_with("waiting: the job is waiting to start"), "{st:?}");
+        assert!(st[1].starts_with("waiting: the job has not started"), "{st:?}");
         assert_eq!(st[2], "unread: k8s: prometheus down");
     }
 

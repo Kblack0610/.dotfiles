@@ -35,7 +35,7 @@ function jobRow(j, n) {
   const next = j.next ? ` <span class="muted">next ${when(j.next)}</span>` : "";
   const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="jr${k === jst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-key="${esc(k)}">` +
-    `<td>${esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
+    `<td>${j.state === "queued" ? "waiting" : esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
     `<td class="n">${when(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +
     `<td class="muted">${tblLink(L.host, j.host)}</td><td class="wrap muted">${esc(j.detail || "")}${next}</td></tr>`;
 }
