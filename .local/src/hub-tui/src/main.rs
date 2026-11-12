@@ -439,6 +439,12 @@ fn releases_cmd(args: Vec<String>) -> i32 {
         ["--json"] => {
             let (items, queue_error) = hub_core::actions::queue_items();
             let mut r = hub_core::releases::read(&sys, &items);
+            let groups = r.check_groups();
+            r.with_checks(&hub_core::app_status::badges(
+                &sys,
+                &groups,
+                hub_core::jobs::now(),
+            ));
             let join = hub_core::builds::Join {
                 runner: &sys,
                 items: &items,
@@ -680,6 +686,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         let (items, queue_error) = hub_core::actions::queue_items();
         let mut s = hub_core::releases::read(&sys, &items);
         let now = hub_core::jobs::now();
+        s.with_checks(&hub_core::app_status::badges(&sys, &s.check_groups(), now));
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
