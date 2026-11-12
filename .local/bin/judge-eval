@@ -15,8 +15,9 @@
 #       same rows reach Log's Judges' verdicts section.
 #   judge-eval cells [--any-prompt] [--days N] [--json]
 #       the answer judge per type and impact level (self, repo, fleet, critical): verdicts, scored,
-#       precision with its 95% interval, pending, whether the type is live, the live answers you
-#       reviewed, and how often a floor raised the judge's level. A live answer you never reviewed
+#       precision with its 95% interval, pending, whether the cell is live (a DELAY_RULES row names
+#       its type at or above its level), the live answers you reviewed (by message or audit), and
+#       how often a floor raised the judge's level. A live answer you never reviewed
 #       is not scored, so silence never counts as agreement.
 #
 #   judge-eval replay [--limit N] [--out DIR] [--json]
@@ -333,7 +334,7 @@ JQ_EVAL="$JQ_EPOCH"'
                 cost_usd: (($cl | map(.cost_usd // 0) | add // 0) * 10000 | round / 10000)},
         total: ($mine | stats),
         rules: ($mine | group_by(.rule) | map(.[0].rule as $rl | stats + {rule: $rl,
-                  live: ($lv | index("*") != null or index($rl) != null)}
+                  live: any($lv[]; . == "*" or startswith($rl + "@"))}
                   | . + {bar: {labels: (.tp + .fp), need: $bar,
                                met: ((.tp + .fp) >= $bar and (.precision // 0) >= $barp)}})
                 | sort_by(-.verdicts)),
@@ -362,7 +363,7 @@ JQ_EVAL="$JQ_EPOCH"'
               # live cell counts only reviewed answers (`audited`), never silence.
               cells: ($mine | map(select(.kind != "error")) | group_by([.type, .level])
                 | map(.[0] as $c | stats + {type: $c.type, level: $c.level,
-                    live: (($lv | index("*")) != null or ($lv | index($c.type)) != null),
+                    live: any($lv[]; . == "*" or . == "\($c.type)@\($c.level)"),
                     audited: (map(select(.live and (.outcome | IN("tp", "fp")))) | length),
                     level_raised_pct: pct(map(select(.level_raised)) | length; length)})
                 | sort_by(.type, (.level as $l | $levels | index($l) // -1)))} end))]}'
@@ -410,6 +411,10 @@ kpi_json() {
             judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
+            # The share of critical verdicts the judge answered itself: never, by DELAY_RULES.
+            judge_critical_live_pct: (.agents[] | select(.score == "ask-answers")
+              | [.cells[] | select(.level == "critical")] as $c | ($c | map(.verdicts) | add // 0) as $n
+              | if $n > 0 then (($c | map(.live_answered) | add) * 1000 / $n | round) / 10 else null end),
             ask_unclear_pct: (.agents[] | select(.score == "ask-answers") | .total as $t
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),

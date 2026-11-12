@@ -2219,7 +2219,7 @@ cmd_rules() {
 
 KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
-KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct dispatch_false_defer_pct"
+KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_critical_live_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
