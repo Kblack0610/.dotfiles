@@ -436,6 +436,15 @@ fn releases_cmd(args: Vec<String>) -> i32 {
         ["--json"] => {
             let (items, queue_error) = hub_core::actions::queue_items();
             let mut r = hub_core::releases::read(&sys, &items);
+            let join = hub_core::builds::Join {
+                runner: &sys,
+                items: &items,
+            };
+            let paths = hub_core::builds::Paths::from_env();
+            let b = hub_core::builds::read(&paths, Some(join), hub_core::jobs::now());
+            r.with_builds(&b.rows);
+            r.errors
+                .extend(b.errors.iter().map(|e| format!("build runs: {e}")));
             r.errors.extend(queue_error);
             match serde_json::to_string(&r) {
                 Ok(s) => println!("{s}"),
@@ -672,6 +681,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
         let mut b = read_runs(&a, &items, now).releases(now);
+        s.with_builds(&b.rows);
         s.errors.extend(queue_error.clone());
         b.errors.extend(queue_error);
         let on = a.rv.on();
