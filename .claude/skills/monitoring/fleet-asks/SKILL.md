@@ -1,7 +1,7 @@
 ---
 name: fleet-asks
 description: >-
-  File, read, unstick and review agent asks: agent-ask post, answer, park, the judge, ask-resume. Use for "post an ask", "go over my asks", "review pending asks", "answer went nowhere", "stuck ask". Counts of what waits on the human: fleet-bench.
+  File, read, unstick and review agent asks: agent-ask post, answer, park, the judge, ask-resume. Use for "post an ask", "go over my asks", "review pending asks", "answer went nowhere", "stuck ask", "ask-filed blocked my turn". Counts of waits: fleet-bench.
 metadata:
   category: monitoring
   tags: [agent-ask, asks, judge, resume, stop-hook]
@@ -45,8 +45,8 @@ When the human says "go over my asks", turn the pending pile into decisions they
    - Close: `agent-ask cancel <id> '<reason>'`.
    - Answer: the option and why. Say plainly when a pick only follows the asker's recommendation, unread.
    - Only the human: what they run, bare with no leading `!`, and what declining costs.
-   - Park: `agent-ask park <id>`, for what waits on something not yet true.
-4. Write it per `comms-standard`. Run nothing until the human says go, then cancel, answer and park in one pass and report what resumed. A resumable answer gets `ask-resume <id>`.
+   - Park: `agent-ask park <id> --until <date>`, for what waits on something not yet true. A parked ask leaves `--pending` and the boards until that date; with no `--until` the date comes from the held item's priority (`park.conf` PARK_DAYS).
+4. Write it per `comms-standard`. Run nothing until the human says go. Then, per ask, `agent-ask show <id>` first and act only if it is still pending; one the judge, a session or the human settled meanwhile is skipped and named in the report, since cancelling an answered ask fails the items it holds. `answer` resumes the work itself; `ask-resume <id>` is only for rows step 1 found in `resumable`.
 5. Then explain each "only the human" row in plain words: what the thing is for and what happens if they skip it.
 
 ## Stuck asks
