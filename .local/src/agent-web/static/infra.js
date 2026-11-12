@@ -15,10 +15,8 @@ const ist = { data: null, err: null, open: {} };
 const refreshInfra = coalesce(async () => {
   const view = new URLSearchParams(Object.values(INFRA_TABLES).flatMap((pre) => [...tblParams(st.views.infra, pre)])).toString();
   try { ist.data = await api("/api/infra" + (view ? "?" + view : "")); ist.err = null; } catch (e) { ist.err = e.message; }
-  // An open machine or pool page re-reads with the board, so its numbers move and a failed read
-  // retries.
-  if (machineHost()) refreshMachine();
-  if (poolName()) refreshPool();
+  // An open page re-reads with the board, so its numbers move and a failed read retries.
+  if (infraPage()) refreshPage();
   if (st.tab === "infra") renderInfra();
 });
 
@@ -349,17 +347,50 @@ function budgetLines(g) {
   return month + (lines ? `<div class="muted">${lines}. Each day stops at its hour cap.</div>` : "");
 }
 
-// `#infra/machines/<host>` (GET /api/infra/machine, hub_core::machine_page, which the hub's page
-// draws too): its parts, the cores each pool uses there, what runs there, the governor and its
-// buttons, its last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
-const mst = { host: "", data: null, err: null, all: false };
-const machineHost = () => (st.tab === "infra" && st.page.startsWith("machines/") ? st.page.slice("machines/".length) : "");
-const refreshMachine = coalesce(async () => {
-  const host = machineHost();
-  if (!host) return;
-  try { mst.data = await api("/api/infra/machine?host=" + encodeURIComponent(host)); mst.err = null; } catch (e) { if (mst.data && mst.data.host !== host) mst.data = null; mst.err = e.message; }
-  if (machineHost() === host) renderInfra();
+// The page open in place of the tab's tables, `#infra/<word>/<name>` (hub_core::links PAGES, whose
+// inner tab app.js ENTITY_PAGES mirrors), each read by hub_core for the hub's page too: its word,
+// its read, its back button's words, and the body under the header every page shares. One state, one read and
+// one header serve them all, so a third page is a row here.
+const INFRA_PAGES = [
+  // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
+  // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
+  { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its busy, slots
+  // and waiting over 7 days.
+  { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
+];
+// The open page, by its hash (`machines/<host>`), and its last read; `all` unfolds a machine's
+// power history and lasts while the page stays open.
+const pgst = { page: "", data: null, err: null, all: false };
+// The row and name of the page the hash opens, or null on the tab's tables.
+const infraPage = () => {
+  if (st.tab !== "infra") return null;
+  const p = INFRA_PAGES.find((r) => st.page.startsWith(r.word + "/"));
+  return p ? { p, name: st.page.slice(p.word.length + 1) } : null;
+};
+// A read that lands after another page opened is dropped; a failed one keeps the last read up.
+const refreshPage = coalesce(async () => {
+  const o = infraPage(), page = st.page;
+  if (!o || pgst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api(o.p.api(o.name)); } catch (e) { err = e.message; }
+  if (pgst.page !== page) return;
+  if (data) pgst.data = data;
+  pgst.err = err;
+  if (st.page === page) renderInfra();
 });
+// Its header, back button and read errors, then its row's body.
+function infraPageHtml() {
+  const o = infraPage();
+  if (!o) return "";
+  const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
+  const d = pgst.data;
+  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
+  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
+  const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  return h + o.p.body(d);
+}
 // Power changes shown before "+N older".
 const HIST_ROWS = 30;
 
@@ -431,7 +462,7 @@ function pageTable(d, labels, cells, empty) {
 }
 
 function powerHistory(p) {
-  const ch = [...p.changes].reverse(), shown = mst.all ? ch : ch.slice(0, HIST_ROWS);
+  const ch = [...p.changes].reverse(), shown = pgst.all ? ch : ch.slice(0, HIST_ROWS);
   const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
   const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
   const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
@@ -452,15 +483,9 @@ function cloudButtons(p) {
   return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
 }
 
-function machinePage() {
-  const back = `<a class="btn sm" href="#infra/machines${st.views.infra ? "?" + st.views.infra : ""}">All machines</a>`;
-  const d = mst.data;
-  if (!d) return `<div class="bhead"><span>${esc(mst.host)}</span>${back}</div><div class="${mst.err ? "panel down" : "empty"}">${mst.err ? esc(mst.err) : "Loading..."}</div>`;
+function machineBody(d) {
   const colors = poolColors(d);
-  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
-  const errs = mst.err ? [`refresh failed, showing the last read: ${mst.err}`, ...d.errors] : d.errors;
-  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  h += `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
   h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
@@ -475,18 +500,6 @@ function machinePage() {
   return h;
 }
 
-// `#infra/pools/<pool>` (GET /api/infra/pool, hub_core::pool_page, which the hub's page draws
-// too): its parts, the machines with a slot in it, the CI jobs waiting
-// for it, and its busy, slots and waiting over 7 days.
-const poolst = { name: "", data: null, err: null };
-const poolName = () => (st.tab === "infra" && st.page.startsWith("pools/") ? st.page.slice("pools/".length) : "");
-const refreshPool = coalesce(async () => {
-  const name = poolName();
-  if (!name) return;
-  try { poolst.data = await api("/api/infra/pool?name=" + encodeURIComponent(name)); poolst.err = null; } catch (e) { if (poolst.data && poolst.data.pool !== name) poolst.data = null; poolst.err = e.message; }
-  if (poolName() === name) renderInfra();
-});
-
 // One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
@@ -499,14 +512,8 @@ function poolChart(h) {
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
 }
 
-function poolPage() {
-  const back = `<a class="btn sm" href="#infra/machines${st.views.infra ? "?" + st.views.infra : ""}">All pools</a>`;
-  const d = poolst.data;
-  if (!d) return `<div class="bhead"><span>${esc(poolst.name)}</span>${back}</div><div class="${poolst.err ? "panel down" : "empty"}">${poolst.err ? esc(poolst.err) : "Loading..."}</div>`;
-  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
-  const errs = poolst.err ? [`refresh failed, showing the last read: ${poolst.err}`, ...d.errors] : d.errors;
-  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  h += `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
+function poolBody(d) {
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
   h += `<h3 class="sec">Machines <span class="muted">with a slot in it</span></h3>${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
   h += `<h3 class="sec">Waiting <span class="muted">CI jobs queued for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
   const hist = d.history;
@@ -527,7 +534,7 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
-  if (e.target.closest("[data-hist-all]")) { mst.all = true; renderInfra(); return; }
+  if (e.target.closest("[data-hist-all]")) { pgst.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;
@@ -547,8 +554,7 @@ function drawInfra() {
   innerHide("infra", "tests", $("ci-tests"));
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
-  if (machineHost()) { paint(el, strip + machinePage()); return; }
-  if (poolName()) { paint(el, strip + poolPage()); return; }
+  if (infraPage()) { paint(el, strip + infraPageHtml()); return; }
   if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
@@ -586,10 +592,8 @@ TABS.infra = {
   // The Jobs section (jobs.js) reads its own source on its own timer; CI's runs and Tests (ci.js)
   // read on show and again on each new ledger line.
   show() {
-    const h = machineHost();
-    if (h !== mst.host) { Object.assign(mst, { host: h, data: null, err: null, all: false }); if (h) refreshMachine(); }
-    const p = poolName();
-    if (p !== poolst.name) { Object.assign(poolst, { name: p, data: null, err: null }); if (p) refreshPool(); }
+    const page = infraPage() ? st.page : "";
+    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
     renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data);
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.

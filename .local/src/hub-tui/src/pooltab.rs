@@ -4,7 +4,6 @@
 //! agent-web draws the same page at `#infra/pools/<pool>`.
 
 use hub_core::host_history::DAYS;
-use hub_core::links::Link;
 use hub_core::pool_page::{PoolHistory, PoolPage};
 use ratatui::text::{Line, Span};
 
@@ -15,14 +14,6 @@ use crate::machinetab::{heading, BLOCKS};
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all pools  o Grafana]";
-
-/// The Grafana board the page links, for `o`.
-pub fn grafana(page: &PoolPage) -> Option<String> {
-    page.parts.iter().find_map(|p| match &p.link {
-        Some(Link::Url(u)) => Some(u.clone()),
-        _ => None,
-    })
-}
 
 /// The page for `pool`: reading, why it could not be read, or each of its parts.
 pub fn page(
@@ -146,7 +137,9 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrapage::InfraPage;
     use hub_core::ci::Queued;
+    use hub_core::links::Link;
     use hub_core::machines::Machine;
     use hub_core::pool_page::PoolHour;
     use hub_core::session_page::Part;
@@ -238,7 +231,12 @@ mod tests {
             "a full hour, an idle one, then one with no reading: {t}"
         );
         assert!(t.contains("  waiting \u{2588} ."), "{t}");
-        assert_eq!(grafana(&f).as_deref(), Some("https://g/d/kb-ci-runners"));
+        assert_eq!(
+            InfraPage::Pool(String::new(), Some(Ok(f)))
+                .grafana()
+                .as_deref(),
+            Some("https://g/d/kb-ci-runners")
+        );
     }
 
     #[test]

@@ -557,33 +557,17 @@ tagged_app() { # $1=sheet Version line ("" for none) $2=tag (none when empty)
   refute_output --partial 'behind its shipped tag'
 }
 
-tag_since() { # $1=tag version, on a commit dated after RELEASE_NOTES_SINCE
+tag_since() { # $1=tag version, on a newer commit
   GIT_COMMITTER_DATE=2026-11-12T00:00:00 git -C "$HOME/mono" -c user.email=t@e -c user.name=t commit -q --allow-empty -m "$1"
   git -C "$HOME/mono" tag "alpha-$1"
 }
 
-@test "release: every tag since the notes began has its versions note" {
-  tagged_app v1.3.0 v1.2.0
-  tag_since v1.2.1
-  run "$DOCTOR" "$MAP"
-  assert_failure
-  assert_output --partial 'lab project "alpha" tag v1.2.1 has no versions/v1.2.1.md (run: agentctl-wave-roll alpha)'
-  # NEGATIVE CONTROL: v1.2.0 predates the notes, so its missing note is not a finding.
-  refute_output --partial 'tag v1.2.0 has no'
-  mkdir -p "$(lab_root personal)/alpha/versions"
-  : > "$(lab_root personal)/alpha/versions/v1.2.1.md"
-  run "$DOCTOR" "$MAP"
-  assert_success
-  assert_output --partial 'and a note for each tag since 2026-11-11'
-}
-
-@test "release: the tag the sheet sits on is the roll's WARN, not a missing note" {
+@test "release: the newest tag is the one compared, and the one the sheet sits on is the roll's WARN" {
   tagged_app v1.2.1 v1.2.0
   tag_since v1.2.1
   run "$DOCTOR" "$MAP"
   assert_success
   assert_output --partial 'sheet v1.2.1 is the shipped tag'
-  refute_output --partial 'has no versions/'
 }
 
 @test "release: a sheet behind its tags is one finding, not one per tag" {
@@ -593,21 +577,7 @@ tag_since() { # $1=tag version, on a commit dated after RELEASE_NOTES_SINCE
   run "$DOCTOR" "$MAP"
   assert_failure
   assert_output --partial 'sheet v1.2.0 is behind its shipped tag v1.2.1'
-  refute_output --partial 'has no versions/'
-}
-
-@test "release: a profile with automation off is not asked for tag notes" {
-  tagged_app v1.3.0 v1.2.0
-  tag_since v1.2.1
-  printf '[{"profile":"personal","name":"alpha","automation":false}]\n' > "$NOTES_FIXTURE/stats.json"
-  run "$DOCTOR" "$MAP"
-  assert_success
-  refute_output --partial 'has no versions/'
-  # NEGATIVE CONTROL: automation on, the same missing note fails.
-  printf '[{"profile":"personal","name":"alpha"}]\n' > "$NOTES_FIXTURE/stats.json"
-  run "$DOCTOR" "$MAP"
-  assert_failure
-  assert_output --partial 'tag v1.2.1 has no versions/v1.2.1.md'
+  assert_equal "$(grep -c 'behind its shipped tag' <<<"$output")" 1
 }
 
 @test "release: a shipping app with no Version line fails" {

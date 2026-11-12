@@ -69,7 +69,8 @@ pub const PAGES: &[Page] = &[
     },
 ];
 
-fn page(kind: Kind) -> Option<&'static Page> {
+/// `kind`'s row, when its records have a page.
+pub fn page(kind: Kind) -> Option<&'static Page> {
     PAGES.iter().find(|p| p.kind == kind)
 }
 
