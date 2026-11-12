@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The D-Bus file manager (org.freedesktop.FileManager1, which "show in folder" calls) is the
-# same program as Hyprland's $fileManager. Two installed packages claim that name; the user
+# same program as Hyprland's fileManager. Two installed packages claim that name; the user
 # service file decides which one starts. Read from the files as text, so no bus is involved.
 
 setup() {
@@ -9,7 +9,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   SERVICE="$REPO_ROOT/.local/share/dbus-1/services/org.freedesktop.FileManager1.service"
-  PROGRAMS="$REPO_ROOT/.config/hypr/conf.d/programs.conf"
+  PROGRAMS="$REPO_ROOT/.config/hypr/conf/programs.lua"
 }
 
 # The value of key $2 in the [D-BUS Service] file $1.
@@ -20,9 +20,9 @@ dbus_key() { sed -n "s/^$2=//p" "$1"; }
   assert_equal "$(dbus_key "$SERVICE" Name)" "org.freedesktop.FileManager1"
 }
 
-@test "FileManager1 starts the program Hyprland names as \$fileManager" {
-  fm=$(sed -n 's/^\$fileManager[[:space:]]*=[[:space:]]*//p' "$PROGRAMS"); fm=${fm%%[[:space:]]*}
-  [ -n "$fm" ] || fail "no \$fileManager in $PROGRAMS"
+@test "FileManager1 starts the program Hyprland names as fileManager" {
+  fm=$(sed -n 's/^[[:space:]]*fileManager[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$PROGRAMS")
+  [ -n "$fm" ] || fail "no fileManager in $PROGRAMS"
   exe=$(dbus_key "$SERVICE" Exec); exe=${exe%% *}; exe=${exe##*/}
   unit=$(dbus_key "$SERVICE" SystemdService)
   assert_equal "${exe,,}" "${fm,,}"

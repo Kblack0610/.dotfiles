@@ -14,6 +14,10 @@ use ratatui::text::{Line, Span};
 use crate::fit::wrap;
 use crate::fmt::Palette;
 
+/// The page section that marks a selected row's line (Home, Alerts, Infra), only so the app can
+/// keep it in view: the app takes it out of the sections `n`/`N` step through.
+pub const ROW: &str = "row";
+
 /// What a key did to the table.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Took {
