@@ -2017,22 +2017,22 @@ impl App {
         })
     }
 
-    /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web.
     /// Open what a link names, as `hub tab` would (`hub_core::links`): a record's tab and the
     /// word it opens there, or a page outside the hub in the browser.
     pub fn follow(&mut self, l: &Link) {
         match (l, l.tab_args()) {
             (Link::Url(u), _) => open(u),
             (_, Some((tab, arg))) => {
-                if let Some(t) = Tab::parse(tab) {
+                if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
-                    self.open_query(Some(arg).filter(|a| !a.is_empty()));
+                    self.open_query(q);
                 }
             }
             (Link::To(..), None) => {}
         }
     }
 
+    /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web.
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
         if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
@@ -2073,10 +2073,10 @@ impl App {
         if self.fleet_table.key::<Who>(k.code) != Took::No {
             return true;
         }
-        let rows: Vec<(Opens, String, Option<Link>)> = self.fleet.as_ref().map_or(vec![], |f| {
+        let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
                 .into_iter()
-                .map(|r| (r.opens, r.key.clone(), DataTable::opens(r)))
+                .map(|r| (r.opens, r.key.clone()))
                 .collect()
         });
         // The selection back in range of the rows for Enter and z: a re-read can leave fewer.
@@ -2088,12 +2088,17 @@ impl App {
         let sel = self.fleet_table.sel;
         match k.code {
             KeyCode::Enter => {
-                if let Some(l) = rows.get(sel).and_then(|r| r.2.clone()) {
+                let l = self.fleet.as_ref().and_then(|f| {
+                    fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
+                        .get(sel)
+                        .and_then(|r| DataTable::opens(*r))
+                });
+                if let Some(l) = l {
                     self.follow(&l);
                 }
             }
             KeyCode::Char('z') => {
-                if let Some((Opens::Runner, name, _)) = rows.get(sel) {
+                if let Some((Opens::Runner, name)) = rows.get(sel) {
                     if !self.fleet_folded.remove(name) {
                         self.fleet_folded.insert(name.clone());
                     }

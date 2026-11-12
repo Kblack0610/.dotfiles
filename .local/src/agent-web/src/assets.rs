@@ -29,17 +29,9 @@ const WOFF2: &str = "font/woff2";
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    (
-        "tokens.css",
-        CSS,
-        include_bytes!("../../web-kit/tokens.css"),
-    ),
+    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    (
-        "kb-shell.js",
-        JS,
-        include_bytes!("../../web-kit/kb-shell.js"),
-    ),
+    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),

@@ -425,8 +425,8 @@ impl Controls {
                 mark: self.table.mark::<SessionRow>(),
                 // The first thirteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST",
-                    "ACCOUNT", "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
+                    "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
                 keep: vec![0, 3, 4, 5, 6, 12, 2, 7, 8, 15, 14, 1, 13, 9, 10, 11],
