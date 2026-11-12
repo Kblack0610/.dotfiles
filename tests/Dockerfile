@@ -49,11 +49,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # it tmux falls back and the rendered grid differs. `column` comes from bsdextrautils on
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
 # nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
+# lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 nodejs openssl xxd \
+      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 \
     && rm -rf /var/lib/apt/lists/*
 
 # The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,

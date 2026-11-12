@@ -93,7 +93,7 @@ client() { printf '%s %s %s %s\n' "$2" "$1" "$3" "$4" >> "$NOTES_FIXTURE/tmux.cl
   HYPRLAND_INSTANCE_SIGNATURE=test run "$TMX" hop lab < /dev/null
   kill "$child"
   assert_success
-  assert_called "hyprctl dispatch focuswindow pid:$$"
+  assert_called "hyprctl dispatch hl.dsp.focus({ window = \"pid:$$\" })"
 }
 
 @test "off Hyprland nothing asks the compositor" {
@@ -118,7 +118,7 @@ client() { printf '%s %s %s %s\n' "$2" "$1" "$3" "$4" >> "$NOTES_FIXTURE/tmux.cl
   kill "$child"
   assert_success
   assert_called 'tmux -L lab display-popup -c /dev/pts/5 -E -w 95% -h 95% agent-notify pick'
-  assert_called "hyprctl dispatch focuswindow pid:$$"
+  assert_called "hyprctl dispatch hl.dsp.focus({ window = \"pid:$$\" })"
   assert_not_called 'kitty'
 }
 

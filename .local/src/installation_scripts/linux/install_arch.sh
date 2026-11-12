@@ -591,7 +591,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,hyprland"
         return 0
     fi
 
@@ -602,7 +602,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,hyprland
 }
 
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +

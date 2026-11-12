@@ -2,10 +2,10 @@
 # active palette into dunstrc.d/50-theme.conf (gitignored), which dunst reads as a
 # drop-in and which overrides anything set below. Edit the palette, not that file.
 #
-# Geometry follows hyprland's look-and-feel.conf (rounding 10, gaps_out 20) so a
+# Geometry follows hyprland's conf/look-and-feel.lua (rounding 10, gaps_out 20) so a
 # notification reads as one more window. Keyboard: Super+N close, Super+Shift+N close
 # all, Super+Ctrl+N reopen the last one from history, Super+Alt+N hide/show the stack
-# (keybindings.conf).
+# (hypr/conf/keybindings.lua).
 
 [global]
     # -- placement: waybar's exclusive zone already pushes this below the bar

@@ -11,25 +11,25 @@ A keybind to turn a secondary monitor (DP-4) off/on on demand, with the primary
 
 | Method | How | Layout count changes | Windows reflow | Stays off reliably? |
 |---|---|---|---|---|
-| **DPMS off** | `hyprctl dispatch dpms off <name>` | no — stays in layout | no | **YES** |
-| **disable** | `hyprctl keyword monitor <name>,disable` | yes — drops out | yes | **NO** (see below) |
+| **DPMS off** | `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "off" })'` | no — stays in layout | no | **YES** |
+| **disable** | `hyprctl eval 'hl.monitor({ output = "<name>", disabled = true })'` | yes — drops out | yes | **NO** (see below) |
 
 - DPMS and "disabled" are **independent** states. A monitor can be `disabled=false`
   (in layout) yet `dpmsStatus=false` (panel powered off → black). Check **both** fields
   when reasoning about "is this screen actually showing content."
 - Re-enabling a disabled output does **not** power its panel back up — you must also
-  `hyprctl dispatch dpms on <name>`.
-- `hyprctl keyword monitor <name>,...` can **disable** an output but cannot **wake** a
+  `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "on" })'`.
+- A live `hl.monitor({ output = "<name>", ... })` can **disable** an output but cannot **wake** a
   disabled one; only `hyprctl reload` re-applies the catch-all and brings it back.
 
 ## The blocker that killed the `disable` approach
 
 DP-4 is a **DisplayPort** monitor. When disabled it loses signal → enters standby →
 **re-announces itself over DP** (Hyprland sees a hotplug "monitor added" event).
-Our `conf.d/monitors.conf` has a catch-all:
+Our `conf/monitors.lua` has a catch-all:
 
-```
-monitor=,preferred,auto,1   # auto-enable ANY connected monitor
+```lua
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })  -- auto-enable ANY connected monitor
 ```
 
 So the moment DP-4 re-handshakes, the catch-all **auto-re-enables it**. Result: disabling
@@ -59,8 +59,8 @@ and 100% reliable. If revisiting, start from option 1 above.
 
 ## If you just want a quick one-off from a terminal
 ```bash
-hyprctl dispatch dpms off DP-4   # go dark (reliable)
-hyprctl dispatch dpms on  DP-4   # wake
+hyprctl dispatch 'hl.dsp.dpms({ monitor = "DP-4", action = "off" })'   # go dark (reliable)
+hyprctl dispatch 'hl.dsp.dpms({ monitor = "DP-4", action = "on" })'    # wake
 ```
 
 ## History
