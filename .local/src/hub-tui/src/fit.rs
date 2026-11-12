@@ -122,9 +122,33 @@ impl Table {
     pub fn fit(&self, w: usize, head: Style) -> Vec<Line<'static>> {
         let (on, wid) = self.layout(w, false);
         let header = self.head(head);
+        // A flex column with columns after it takes the room they leave, clipped and padded
+        // to it, so they line up; a last one just runs to the edge.
+        let ncol = self.header.len();
+        let room = self
+            .flex
+            .filter(|&f| on[f] && (f + 1..ncol).any(|j| on[j]))
+            .map(|f| {
+                let others: usize = (0..ncol)
+                    .filter(|&j| on[j] && j != f)
+                    .map(|j| wid[j] + GAP)
+                    .sum();
+                let n = match w {
+                    0 => wid[f],
+                    _ => wid[f].min(w.saturating_sub(others)).max(1),
+                };
+                (f, n)
+            });
         std::iter::once(&header)
             .chain(&self.rows)
-            .map(|r| clip_line(self.line(r, &on, &wid, None), w))
+            .map(|r| {
+                let flex = room.map(|(f, n)| {
+                    let t = clip(r.get(f).map_or("", |c| c.text.as_str()), n);
+                    let pad = n.saturating_sub(len(&t));
+                    t + &" ".repeat(pad)
+                });
+                clip_line(self.line(r, &on, &wid, flex), w)
+            })
             .collect()
     }
 
@@ -403,6 +427,35 @@ mod tests {
         let mut tb = t(&[&["alpha", "7", "a long note"]]);
         tb.flexkeep = true;
         assert_eq!(texts(&tb, 13), ["NAME   NOTE", "alpha  a lon~"]);
+    }
+
+    #[test]
+    fn a_flex_column_before_others_clips_and_pads_so_they_line_up() {
+        let mut tb = t(&[&["alpha", "7", "a long note here"], &["b", "12", "short"]]);
+        tb.header = vec!["NOTE", "NAME", "N"];
+        tb.rows = tb
+            .rows
+            .into_iter()
+            .map(|r| vec![r[2].clone(), r[0].clone(), r[1].clone()])
+            .collect();
+        (tb.keep, tb.flex, tb.flexkeep, tb.right) = (vec![1, 2], Some(0), true, vec![2]);
+        assert_eq!(
+            texts(&tb, 22),
+            [
+                "NOTE         NAME    N",
+                "a long not~  alpha   7",
+                "short        b      12"
+            ]
+        );
+        // With room to spare, the note keeps its own width rather than the line's.
+        assert_eq!(
+            texts(&tb, 0),
+            [
+                "NOTE              NAME    N",
+                "a long note here  alpha   7",
+                "short             b      12"
+            ]
+        );
     }
 
     #[test]
