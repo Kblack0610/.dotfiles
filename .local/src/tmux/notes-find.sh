@@ -23,7 +23,7 @@ NOTES_BIN="${NOTES_BIN:-notes}"
 NOTES_FIND_LIMIT="${NOTES_FIND_LIMIT:-50}"
 NOTES_FIND_VAULT="${NOTES_FIND_VAULT:-$HOME/.notes/}"
 
-# ── Rows ─────────────────────────────────────────────────────────────────────
+# --- Rows ---------------------------------------------------------------------
 # Path and line first (hidden by --with-nth), then the label: title, where, snippet.
 cmd_rows() {
   local q="${1:-}"
@@ -38,7 +38,7 @@ cmd_rows() {
   return 0
 }
 
-# ── Preview ──────────────────────────────────────────────────────────────────
+# --- Preview ------------------------------------------------------------------
 cmd_preview() {
   local path="$1" line="${2:-1}" start
   start=$((line > 5 ? line - 5 : 1))
@@ -49,7 +49,7 @@ cmd_preview() {
   nl -ba -w4 -s' | ' "$path" | sed -n "${start},\$p"
 }
 
-# ── Picker ───────────────────────────────────────────────────────────────────
+# --- Picker -------------------------------------------------------------------
 cmd_pick() {
   panel_need fzf
   panel_need "$NOTES_BIN"
@@ -71,8 +71,10 @@ cmd_pick() {
   path="$(cut -f1 <<<"$sel")"
   line="$(cut -f2 <<<"$sel")"
 
-  if panel_in_tmux && panel_have tmx; then
-    exec tmx open hub "$path" "$line"
+  # tmx refuses when the hub pane runs something other than nvim or a shell; the hit then
+  # opens here instead of being lost with the popup.
+  if panel_in_tmux && panel_have tmx && tmx open hub "$path" "$line"; then
+    return 0
   fi
   exec nvim "+${line}" "$path"
 }

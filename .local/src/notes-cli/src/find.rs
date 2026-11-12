@@ -261,7 +261,7 @@ fn add(tf: &mut TermMap, text: &str, w: f64) -> usize {
     n
 }
 
-fn parse_doc(path: &Path, content: &str, knowledge_root: &Path, sheets_root: &Path) -> Doc {
+fn parse_doc(path: &Path, content: &str, roots: &Roots) -> Doc {
     let (fm, body) = front_matter(content);
     let mut tf = TermMap::default();
     let mut len = 0usize;
@@ -289,17 +289,19 @@ fn parse_doc(path: &Path, content: &str, knowledge_root: &Path, sheets_root: &Pa
     for t in &tags {
         len += add(&mut tf, t, W_TAGS);
     }
+    // Relative to the vault, so path words and `#folder` filters never see the home dir; a
+    // note outside the vault (a custom search dir) scores by its file name alone.
     let rel = path
-        .strip_prefix(knowledge_root.parent().unwrap_or(Path::new("/")))
-        .unwrap_or(path);
+        .strip_prefix(&roots.vault)
+        .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()));
     len += add(&mut tf, &rel.with_extension("").to_string_lossy(), W_PATH);
     for key in ["summary", "description"] {
         if let Some(s) = md::parse_yaml_scalar(fm, key) {
             len += add(&mut tf, &s, W_SUMMARY);
         }
     }
-    let knowledge = path.starts_with(knowledge_root);
-    let sheet = path.starts_with(sheets_root);
+    let knowledge = path.starts_with(&roots.knowledge);
+    let sheet = path.starts_with(&roots.sheets);
     for line in body.lines() {
         let t = line.trim_start();
         // A task row on a lab sheet is a to-do, not knowledge: the boards are thousands of
@@ -335,28 +337,45 @@ fn parse_doc(path: &Path, content: &str, knowledge_root: &Path, sheets_root: &Pa
 fn files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for d in dirs {
-        collect_md(d, &mut out);
+        let mut found = Vec::new();
+        collect_md(d, &mut found);
+        // Only the part below the search dir counts: a root that itself sits under a dir
+        // named `agent` or `versions` must not lose every note.
+        found.retain(|p| {
+            !p.strip_prefix(d).unwrap_or(p).components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| SKIP_DIRS.contains(&s))
+            })
+        });
+        out.append(&mut found);
     }
-    out.retain(|p| {
-        !p.components().any(|c| {
-            c.as_os_str()
-                .to_str()
-                .is_some_and(|s| SKIP_DIRS.contains(&s))
-        })
-    });
     out.sort();
     out.dedup();
     out
 }
 
-/// Parse every file across the machine's cores (std threads, no crate). Workers pull the
-/// next file from a shared counter, so one thread never gets every big file.
-/// The project-sheet tree: lab/, which `search_dirs` also searches by default.
-fn sheets_root(p: &Profile) -> PathBuf {
-    p.vault.join("lab")
+/// The trees a note's place is judged by: the vault (paths are shown and tokenized relative
+/// to it), knowledge/ (boosted) and lab/, the project sheets (task rows skipped).
+struct Roots {
+    vault: PathBuf,
+    knowledge: PathBuf,
+    sheets: PathBuf,
 }
 
-fn load(dirs: &[PathBuf], knowledge_root: &Path, sheets_root: &Path) -> Vec<Doc> {
+impl Roots {
+    fn of(p: &Profile) -> Self {
+        Roots {
+            vault: p.vault.clone(),
+            knowledge: p.knowledge.clone(),
+            sheets: p.vault.join("lab"),
+        }
+    }
+}
+
+/// Parse every file across the machine's cores (std threads, no crate). Workers pull the
+/// next file from a shared counter, so one thread never gets every big file.
+fn load(dirs: &[PathBuf], roots: &Roots) -> Vec<Doc> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let paths = files(dirs);
     let next = AtomicUsize::new(0);
@@ -372,7 +391,7 @@ fn load(dirs: &[PathBuf], knowledge_root: &Path, sheets_root: &Path) -> Vec<Doc>
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(p) = paths.get(i) else { break };
                         if let Ok(c) = fs::read_to_string(p) {
-                            out.push(parse_doc(p, &c, knowledge_root, sheets_root));
+                            out.push(parse_doc(p, &c, roots));
                         }
                     }
                     out
@@ -381,7 +400,8 @@ fn load(dirs: &[PathBuf], knowledge_root: &Path, sheets_root: &Path) -> Vec<Doc>
             .collect();
         let mut docs: Vec<Doc> = handles
             .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
+            // A worker that panicked would otherwise drop its share of the vault silently.
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
             .collect();
         docs.sort_by(|a, b| a.path.cmp(&b.path));
         docs
@@ -668,7 +688,7 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
 
 /// Search the profile's `search_dirs` for `query`; at most `limit` hits.
 pub fn search(p: &Profile, query: &str, limit: usize) -> Result<Vec<Hit>> {
-    let docs = load(&p.search_dirs, &p.knowledge, &sheets_root(p));
+    let docs = load(&p.search_dirs, &Roots::of(p));
     let aliases = load_aliases(&aliases_path(p))?;
     let hits = rank(&docs, &parse_query(query), &aliases, limit);
     // The process exits right after printing: freeing millions of term strings one by one
@@ -743,7 +763,7 @@ pub struct EvalScore {
 pub fn eval(p: &Profile, file: &Path) -> Result<EvalScore> {
     let cases = read_cases(file)?;
     let t0 = std::time::Instant::now();
-    let docs = load(&p.search_dirs, &p.knowledge, &sheets_root(p));
+    let docs = load(&p.search_dirs, &Roots::of(p));
     let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let aliases = load_aliases(&aliases_path(p))?;
     let root = &p.vault;
@@ -877,13 +897,12 @@ mod tests {
     use super::*;
 
     fn doc(rel: &str, content: &str) -> Doc {
-        let root = Path::new("/v/knowledge");
-        parse_doc(
-            &Path::new("/v").join(rel),
-            content,
-            root,
-            Path::new("/v/lab"),
-        )
+        let roots = Roots {
+            vault: PathBuf::from("/v"),
+            knowledge: PathBuf::from("/v/knowledge"),
+            sheets: PathBuf::from("/v/lab"),
+        };
+        parse_doc(&Path::new("/v").join(rel), content, &roots)
     }
 
     fn corpus() -> Vec<Doc> {
@@ -1034,5 +1053,19 @@ mod tests {
         fs::write(&f, "ai oauth\tknowledge/sso\n").unwrap();
         assert_eq!(read_floor(&f), Floor::default());
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn skip_dirs_count_only_below_the_search_dir() {
+        // The root itself sits under a dir named `agent`: its notes must still be found,
+        // while an `_log` dir inside it is skipped.
+        let d = std::env::temp_dir().join(format!("notes-find-skip-{}", std::process::id()));
+        let root = d.join("agent/vault");
+        fs::create_dir_all(root.join("_log")).unwrap();
+        fs::write(root.join("keep.md"), "# Keep\n").unwrap();
+        fs::write(root.join("_log/drop.md"), "# Drop\n").unwrap();
+        let got = files(std::slice::from_ref(&root));
+        fs::remove_dir_all(&d).unwrap();
+        assert_eq!(got, vec![root.join("keep.md")]);
     }
 }

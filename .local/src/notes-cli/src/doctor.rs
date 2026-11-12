@@ -231,7 +231,8 @@ fn check_find(r: &mut Report, p: &Profile) {
         s.cases,
         s.millis_per_query
     );
-    let low = floor.recall5.is_some_and(|f| s.recall5 < f);
+    // recall@5 is undefined with no positive cases, so only a file that has some is judged.
+    let low = s.cases > s.negatives && floor.recall5.is_some_and(|f| s.recall5 < f);
     let slow = floor.ms.is_some_and(|m| s.millis_per_query > m);
     if low || slow {
         r.add(
