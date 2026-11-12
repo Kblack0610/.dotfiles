@@ -17,7 +17,7 @@ The loop that takes unity-core-playground's red nightly to green and proves it, 
 - When `Tests (all)` (`test.yml`) on main is red, the `playground-nightly` watch trips, or Home's NEEDS YOU shows a Nightly row.
 - When a validation item from an earlier pass fires.
 
-Not for one PR's gate red (`/my:fix-ci`) or for CI time (`ci-cost`).
+Not for one PR's gate red (`fix-ci`) or for CI time (`ci-cost`).
 
 ## Steps
 

@@ -102,6 +102,8 @@ To render Sessions from a chosen `state.json`, also set `HOME=$d` and put the fi
 
 The static files are compiled in, so restart the instance after editing one.
 
+To see it, `agent-web-shot --base http://127.0.0.1:8799 --out <dir> releases releases/apps/binks` saves each page as a PNG from a headless scratch Firefox (`--width 390` for a phone). With a signed-in cookie (`--cookie agent_web=<value>`) and the site's base it shoots the live site, the proof `docs/dashboards.md` rule 14 asks for. `tests/agent-web/phone/render.mjs` is the other one: fixtures only, no server, and the checks CI runs.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

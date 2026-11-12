@@ -548,15 +548,15 @@ row() {
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
 
-# stage_facts <state-file> <labs-file> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
+# stage_facts <state-file> <labs-file> -> {stages: {project: {stage, rungs, needs}}}: what each
 # registered project's lab stage asks of its deploys (~/.local/src/docs/stages.md, "The ladder").
 # A live target serves the rung the registry's `channels` maps its channel to; `rungs` are the
 # rungs served, low to high (the stage gate's rows read them against the stage being checked, so
 # a project with no stage yet has them too), `needs` the rungs from alpha up to the stage nothing
-# serves (game and app only: infra deploys by stow or Flux), `ahead` the targets live above the
-# stage. `stage` is null when the lab sheet names none on the ladder, and then nothing is needed or
-# ahead. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
-# `stages_error` says why.
+# serves (game and app only: infra deploys by stow or Flux). A target above the stage is fine: a
+# deploy is not the app being live, so the stage never caps where it deploys. `stage` is null when
+# the lab sheet names none on the ladder, and then nothing is needed. The rung order is
+# `notes projects --stages`. When notes cannot say, `stages` is empty and `stages_error` says why.
 stage_facts() {
   local state="$1" labs="$2" ladder
   ladder="$(notes projects --stages 2>/dev/null)"
@@ -576,14 +576,13 @@ stage_facts() {
         | (if $rank[$at[$p] // ""] != null then $at[$p] else null end) as $s
         | (.value.type // null) as $t
         | [$rows[] | select(.project == $p and (.implicit | not) and .live.value != null)
-           | {id, rung: ($ch[.channel] // "")} | select($rank[.rung] != null)] as $live
+           | {rung: ($ch[.channel] // "")} | select($rank[.rung] != null)] as $live
         | {key: $p, value: {stage: $s,
             rungs: ([$live[].rung] | unique | sort_by($rank[.])),
             needs: (if $s != null and ($t == "game" or $t == "app")
                     then [$L[] | select($rank[.] >= ($rank["alpha"] // 0) and $rank[.] <= $rank[$s])
                           | . as $r | select([$live[] | select(.rung == $r)] | length == 0)]
-                    else [] end),
-            ahead: (if $s != null then [$live[] | select($rank[.rung] > $rank[$s]) | .id] else [] end)}}]
+                    else [] end)}}]
         | from_entries)}' <"$labs"
 }
 
