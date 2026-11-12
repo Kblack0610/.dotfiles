@@ -204,9 +204,7 @@ function historySection(d) {
   if (!h) return "";
   if (h.why) return `<div id="sec-spend">${secHead("", "Spend")}<div class="panel muted">${esc(h.why)}</div></div>`;
   const stale = h.stale ? `<div class="cline warn">stale: no snapshot for yesterday</div>` : "";
-  // The headline's two clauses (this month's pace, the last day), split where the TUI splits them.
-  const [month, last] = (h.head || "").split("; ");
-  const pace = (month ? `<div><span class="muted">MONTH</span> ${esc(month)}</div>` : "") + (last ? `<div><span class="muted">LAST DAY</span> ${esc(last)}</div>` : "");
+  const pace = (h.month ? `<div><span class="muted">MONTH</span> ${esc(h.month)}</div>` : "") + (h.last_day ? `<div><span class="muted">LAST DAY</span> ${esc(h.last_day)}</div>` : "");
   const row = (r) => `<tr class="${r.kind === "day" ? "" : "allrow"}"><td>${esc(r.period)}</td><td class="n">${esc(r.total)}</td><td class="n">${r.days}</td>` +
     `<td class="n">${esc(r.per_day)}</td><td class="n">${esc(r.per_session)}</td><td class="n">${esc(r.vs_prev)}</td><td class="n">${esc(r.est)}</td></tr>`;
   const dv = d.day || {};

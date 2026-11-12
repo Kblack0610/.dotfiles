@@ -572,7 +572,7 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   const p = (kind, period, total, days, per_day, per_session, vs_prev, est) => ({ kind, period, total, days, per_day, per_session, vs_prev, est });
   const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
   const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
-  const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
+  const history = { why: null, month: "Nov $1,579/day vs Oct $1,102/day (+43%)", last_day: "11-09 $1,312 vs 7d median $1,120 (+17%)",
     rows: [p("year", "2026", "$61,300", 54, "$1,135", "$2.40", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "$2.51", "+43%", "21%"),
       p("day", "11-09", "$1,312", 1, "$1,312", "-", "+69%", "21%")],
     older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens", chart, months: [bar("2026-11", 130, 80, 50)] };
