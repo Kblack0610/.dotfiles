@@ -626,11 +626,7 @@ mod tests {
         assert_eq!(own.activity, "waiting on CI 4m");
         assert_eq!(own.val("activity"), Val::Text("waiting on CI 4m".into()));
         let hand = r.iter().find(|x| x.target == "lab/d:2").unwrap();
-        assert_eq!(
-            hand.val("activity"),
-            Val::None,
-            "no activity_line reads as blank"
-        );
+        assert_eq!(hand.val("activity"), Val::None, "no activity_line reads as blank");
     }
 
     #[test]

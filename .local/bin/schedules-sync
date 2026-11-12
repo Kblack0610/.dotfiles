@@ -1224,7 +1224,12 @@ def night_set(repo, base, prev, t):
     old, absent = prev.get("night"), when(prev.get("night_absent"))
     if absent and t - absent < QUARANTINE_RECHECK:
         return {"night_absent": prev["night_absent"]}
-    got, etag = gh_page(f"repos/{repo}/contents/{NIGHT_FILE}?ref={base}", (old or {}).get("etag"), missing={})
+    try:
+        got, etag = gh_page(f"repos/{repo}/contents/{NIGHT_FILE}?ref={base}", (old or {}).get("etag"), missing={})
+    except GhError as e:  # an optional file: a failed read keeps the last set and names the miss
+        print(f"schedules-sync: {NIGHT_FILE} of {repo}: {e.detail}", file=sys.stderr)
+        kept = {"night": dict(old, error=str(e))} if old else {}
+        return kept or ({"night_absent": prev["night_absent"]} if absent else {})
     if got is None or (old and isinstance(got, dict) and got.get("sha") == old.get("sha")):
         return {"night": dict(old, etag=etag or old.get("etag"))}  # unchanged since the last pass
     if not isinstance(got, dict) or not got.get("sha"):

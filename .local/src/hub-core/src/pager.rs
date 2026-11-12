@@ -234,15 +234,7 @@ pub fn run(needs: &[Need], now: i64, p: &Paths, r: &dyn Runner) -> Result<Option
     if let Some(page) = &d.page {
         // A decision only the human can make: agent-notify's buzz budget never holds it, and
         // `max_buzz_day` above is this sender's own cap.
-        let mut argv = vec![
-            "agent-notify",
-            "-p",
-            page.priority,
-            "-k",
-            "decision",
-            "-t",
-            TITLE,
-        ];
+        let mut argv = vec!["agent-notify", "-p", page.priority, "-k", "decision", "-t", TITLE];
         if let Some(r) = &page.reference {
             argv.extend(["-r", r]);
         }
@@ -465,17 +457,7 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(
             sent[0][..9],
-            [
-                "agent-notify",
-                "-p",
-                "high",
-                "-k",
-                "decision",
-                "-t",
-                TITLE,
-                "-r",
-                "ask:a1"
-            ]
+            ["agent-notify", "-p", "high", "-k", "decision", "-t", TITLE, "-r", "ask:a1"]
         );
         assert_eq!(sent[0][9], page.text);
         // comms-standard rule 12: the page as sent passes the page channel's lint.

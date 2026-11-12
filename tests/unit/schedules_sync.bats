@@ -22,7 +22,7 @@ setup() {
   # gh-stub api [-i] [-H "If-None-Match: <etag>"] <path>: serves $GHD/<path with / ? & = as _>,
   # with -i behind an ETag of the file's md5 (and a 304, exit 1, when the caller already has it).
   # A missing file is GitHub's 404; $GHD/fail-<owner>_<name> fails every call for that repo
-  # with its content as the error, HTTP 502 when empty.
+  # with its content as the error, HTTP 502 when empty; $GHD/<path>.fail fails that one path.
   cat > "$SANDBOX/bin/gh-stub" <<EOF
 #!/usr/bin/env bash
 shift; inc=; inm=
@@ -31,6 +31,7 @@ echo "\$1\${inm:+ (conditional)}" >> "$GHD/calls"
 r="\$(echo "\$1" | cut -d/ -f2-3 | tr / _)"
 [ -e "$GHD/fail-\$r" ] && { [ -s "$GHD/fail-\$r" ] && cat "$GHD/fail-\$r" >&2 || echo "HTTP 502" >&2; exit 1; }
 f="$GHD/\$(echo "\$1" | tr '/?&=' '____')"
+[ -e "\$f.fail" ] && { echo "HTTP 502" >&2; exit 1; }
 if [ -f "\$f" ]; then
   if [ -n "\$inc" ]; then
     tag="W/\\"\$(md5sum < "\$f" | cut -c1-32)\\""
@@ -1024,6 +1025,18 @@ night_file() {
   assert_output '[[{"test.yml":"Tests (all)","soak.yml":"Soak (all)"},{},"n2",null],[null,null,null,"2025-11-07T12:00:00Z"]]'
   run grep -c 'o/empty/contents/scripts/night.json' "$GHD/calls"
   assert_output 1
+}
+
+@test "night set: a failed read of night.json keeps the last set with its error, and the repo's sync stays good" {
+  game_files; runs | page1
+  night_file n1 '{"night": {"test.yml": "Tests (all)"}}'
+  run "$SUBJECT"
+  assert_success
+  touch "$GHD/repos_o_game_contents_scripts_night.json_ref_main.fail"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.error, .night.night, .night.sha, .night.error]' "$STATE"
+  assert_output '[null,{"test.yml":"Tests (all)"},"n1","HTTP 502"]'
 }
 
 @test "negative control: a night.json that is not a JSON object is kept with its error, never read as an empty night" {

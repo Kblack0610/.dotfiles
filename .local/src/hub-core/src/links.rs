@@ -145,6 +145,10 @@ impl Link {
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
+            // A cron row's name (`repo / Tests (all)`) holds spaces: quoted, it stays one term.
+            Kind::Schedule if id.chars().any(char::is_whitespace) => {
+                format!("#schedules?q=name:={}", component(&format!("\"{id}\"")))
+            }
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
             Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
                 unreachable!("in PAGES")
@@ -301,6 +305,10 @@ mod tests {
                 "#infra/runs?bq=pr:=Kblack0610%2F.dotfiles%231924".into(),
                 a("infra", "runs pr:=Kblack0610/.dotfiles#1924")
             )
+        );
+        assert_eq!(
+            Link::to(Kind::Schedule, "yard / Tests (all)").href(),
+            "#schedules?q=name:=%22yard%20%2F%20Tests%20(all)%22"
         );
         assert_eq!(
             both(Kind::Schedule, "playground-night"),

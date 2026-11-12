@@ -474,8 +474,12 @@ fn one<'a>(s: &Sources, slug: &str, base: &str, f: File<'a>, mut runs: Vec<&'a R
     if on {
         row.runner = s.runners.get(slug).cloned();
     }
+    // The start that meets a due one: the night runner dispatches, a cron slot is a `schedule`
+    // run, each on the base. A push, a PR or a branch's gate run says nothing about the miss.
     let mut due = None;
+    let mut meets = "schedule";
     if let Some(st) = start {
+        meets = "workflow_dispatch";
         row.schedule = st.schedule.clone();
         row.next = st.next;
         row.next_row = st.name.clone();
@@ -519,7 +523,11 @@ fn one<'a>(s: &Sources, slug: &str, base: &str, f: File<'a>, mut runs: Vec<&'a R
     }
 
     let when = |t: i64| schedules::local(t, s.off, "%m-%d %H:%M");
-    let late = due.filter(|d| !runs.iter().any(|r| r.started >= *d));
+    let late = due.filter(|d| {
+        !runs
+            .iter()
+            .any(|r| r.started >= *d && r.event == meets && r.branch == base)
+    });
     let scheduled = start.is_some() || !crons.is_empty();
     let held = f.night.is_some_and(|(w, _)| w == "held");
     let verdict = on_base.map(|r| builds::verdict(r.conclusion.as_deref()));
@@ -914,6 +922,37 @@ mod tests {
             g.why
         );
         assert_eq!(g.trigger, "cron");
+        // A push on main since the missed slot is no scheduled start: still late. Only a
+        // `schedule` run on the base clears it (negative control).
+        let mut pushed = runs(28 * H);
+        let mut late_push = builds::parse(
+            &run(
+                "Org/game",
+                20,
+                [
+                    ".github/workflows/gates.yml",
+                    "Drop gates",
+                    "push",
+                    "main",
+                    "success",
+                ],
+                H,
+            ),
+            NOW,
+        )
+        .0;
+        pushed.append(&mut late_push.clone());
+        assert_eq!(
+            row(&pipelines(&sources(NOW - 29 * H), &pushed), "Drop gates").state,
+            "amber"
+        );
+        late_push[0].event = "schedule".into();
+        let mut cleared = runs(28 * H);
+        cleared.append(&mut late_push);
+        assert_eq!(
+            row(&pipelines(&sources(NOW - 29 * H), &cleared), "Drop gates").state,
+            "ok"
+        );
         let v = row(&p, "Vuln scan");
         assert_eq!(
             (v.schedule.as_str(), v.next),
@@ -921,7 +960,7 @@ mod tests {
         );
         assert_eq!(
             v.link("next").unwrap().href(),
-            "#schedules?q=name:=game%20%2F%20Vuln%20scan"
+            "#schedules?q=name:=%22game%20%2F%20Vuln%20scan%22"
         );
 
         let c = row(&p, "Checks");

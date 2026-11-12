@@ -16,10 +16,7 @@ pub const QUEUE: &[(&str, &str)] = &[
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
-pub const JOBS: &[(&str, &str)] = &[(
-    "waiting",
-    "the job has not started; TOOK says how long it has waited",
-)];
+pub const JOBS: &[(&str, &str)] = &[("waiting", "the job has not started; TOOK says how long it has waited")];
 
 /// A GitHub Actions job no runner has taken yet (`ci::Queued`), the CI Waiting table's rows.
 pub const CI: &[(&str, &str)] = &[
@@ -27,10 +24,7 @@ pub const CI: &[(&str, &str)] = &[
         "waiting",
         "a CI job waiting for a runner with every label in NEEDS; CAN RUN ON is who holds them",
     ),
-    (
-        "stuck",
-        "the chip for a job no online runner holds those labels for",
-    ),
+    ("stuck", "the chip for a job no online runner holds those labels for"),
 ];
 
 #[cfg(test)]
@@ -86,10 +80,7 @@ mod tests {
     fn a_ci_job_waits_for_a_runner_and_a_table_without_words_sends_no_legend() {
         let rows = vec![Queued::default()];
         let (_, s) = View::new::<Queued>("", "", "", "").summary(&rows);
-        assert!(s
-            .legend
-            .unwrap()
-            .starts_with("waiting: a CI job waiting for a runner"));
+        assert!(s.legend.unwrap().starts_with("waiting: a CI job waiting for a runner"));
         // Negative control: the runners table defines no state word and sends no `legend` key.
         let (_, s) = View::new::<Slot>("", "", "", "").summary(&[Slot::default()]);
         assert_eq!(s.legend, None);

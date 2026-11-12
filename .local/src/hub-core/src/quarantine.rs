@@ -473,10 +473,7 @@ mod tests {
         let e = entries(&lanes);
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].test, "P.Yard.Each(\"a\")");
-        assert_eq!(
-            e[0].repo,
-            project_map::canonical("acme/yard")
-        );
+        assert_eq!(e[0].repo, project_map::canonical("acme/yard"));
         assert_eq!(
             (e[0].left.as_str(), e[0].nightly.as_str()),
             ("8d", "now passing")

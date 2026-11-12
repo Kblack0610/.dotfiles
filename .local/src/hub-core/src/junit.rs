@@ -390,10 +390,25 @@ impl Loaded {
 }
 
 /// Where a run's artifacts are kept.
-fn run_dir(cache: &Path, repo: &str, id: u64, attempt: u32) -> PathBuf {
-    cache
-        .join("junit")
-        .join(format!("{}-{id}-{attempt}", repo.replace('/', "_")))
+/// A run's download dir, keyed on its globs too: a repo whose `testArtifacts` change fetches its
+/// runs again rather than reading what the old globs left. The default globs keep the bare name.
+fn run_dir(cache: &Path, repo: &str, id: u64, attempt: u32, globs: &[&str]) -> PathBuf {
+    let base = format!("{}-{id}-{attempt}", repo.replace('/', "_"));
+    if globs == [project_map::DEFAULT_TEST_ARTIFACTS] {
+        return cache.join("junit").join(base);
+    }
+    let key: String = globs
+        .join("+")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '+' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    cache.join("junit").join(format!("{base}-{key}"))
 }
 
 /// Where a download lands before it is renamed into place, so a half-fetched run is never read.
@@ -427,7 +442,7 @@ fn none_note(globs: &[&str]) -> String {
 
 /// Downloads a run's artifacts that match its globs into its directory, once. A run with none
 /// leaves a marker so it is not asked again; any other failure leaves nothing, so the next read
-/// retries. A cached run is not fetched again when its repo's globs change.
+/// retries. New globs are a new dir (`run_dir`), so they fetch again.
 fn fetch(dir: &Path, run: &PickRun) -> Result<(), String> {
     if dir.is_dir() {
         return Ok(());
@@ -491,7 +506,7 @@ fn reports(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
 
 /// The results of `run`: downloaded on first read, then read from the kept files. Blocks on `gh`.
 pub fn load(cache: &Path, run: &PickRun) -> Result<Loaded, String> {
-    let dir = run_dir(cache, &run.repo, run.id, run.attempt);
+    let dir = run_dir(cache, &run.repo, run.id, run.attempt, &run.globs());
     fetch(&dir, run)?;
     let globs = run.globs();
     let mut out = Loaded::default();
@@ -1378,7 +1393,7 @@ at line nine
     #[test]
     fn kept_artifacts_are_read_by_tier_without_asking_github() {
         let cache = scratch("kept");
-        let dir = run_dir(&cache, "Org/app", 9, 1);
+        let dir = run_dir(&cache, "Org/app", 9, 1, &["junit-*"]);
         for (art, sub, name) in [
             ("junit-unit-0", "unit", "z.bats"),
             ("junit-unit-1", "unit", "a.bats"),
@@ -1426,7 +1441,12 @@ at line nine
             "no registry entry reads junit-*"
         );
         let cache = scratch("nunit");
-        let dir = run_dir(&cache, "Org/app", 9, 1);
+        // new globs are a new dir: the junit-* download of the same run is never read for them
+        assert_ne!(
+            run_dir(&cache, "Org/app", 9, 1, &run.globs()),
+            run_dir(&cache, "Org/app", 9, 1, &["junit-*"])
+        );
+        let dir = run_dir(&cache, "Org/app", 9, 1, &run.globs());
         let shard = dir.join("test-runs-playmode-3/20261112T121422Z-PlayMode");
         std::fs::create_dir_all(shard.join("xdg")).unwrap();
         std::fs::write(shard.join("results.xml"), NUNIT).unwrap();
@@ -1446,7 +1466,7 @@ at line nine
     #[test]
     fn a_run_marked_as_having_no_artifacts_says_why_and_a_bad_report_is_named() {
         let cache = scratch("none");
-        let dir = run_dir(&cache, "Org/app", 9, 1);
+        let dir = run_dir(&cache, "Org/app", 9, 1, &["junit-*"]);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(NONE_MARK), "").unwrap();
         let got = load(&cache, &pick()).unwrap();
@@ -1467,8 +1487,8 @@ at line nine
     #[test]
     fn two_runs_of_a_dotted_repo_never_share_a_download_dir() {
         let cache = Path::new("/c");
-        let a = part_dir(&run_dir(cache, "Kblack0610/.dotfiles", 1, 1));
-        let b = part_dir(&run_dir(cache, "Kblack0610/.dotfiles", 2, 1));
+        let a = part_dir(&run_dir(cache, "Kblack0610/.dotfiles", 1, 1, &["junit-*"]));
+        let b = part_dir(&run_dir(cache, "Kblack0610/.dotfiles", 2, 1, &["junit-*"]));
         assert_ne!(a, b);
         assert!(a.ends_with("Kblack0610_.dotfiles-1-1.part"));
     }

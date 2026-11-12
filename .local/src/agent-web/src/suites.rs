@@ -197,8 +197,10 @@ fn failed(e: String) -> String {
 /// or run asked for was not there.
 fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>, Option<String>) {
     let want = id.parse::<u64>().ok();
-    let mine =
-        |r: &&PickRun| r.repo.eq_ignore_ascii_case(repo) || project_map::canonical(&r.repo) == repo;
+    let mine = |r: &&PickRun| {
+        r.repo.eq_ignore_ascii_case(repo)
+            || project_map::canonical(&r.repo).eq_ignore_ascii_case(repo)
+    };
     let asked = want.and_then(|w| runs.iter().find(|r| r.id == w));
     let mut why = None;
     let of_repo: Vec<&PickRun> = if repo.is_empty() {
