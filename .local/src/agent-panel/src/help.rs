@@ -1,4 +1,4 @@
-//! The shortcuts page (alt-? or F1 in the chooser): every key, the sorts with the current one
+//! The shortcuts page (? on an empty search, alt-? or F1 in the chooser): every key, the sorts with the current one
 //! marked, and the row legend. The panel draws no header bar; this page is where the keys live.
 
 use std::io::{IsTerminal, Write};
