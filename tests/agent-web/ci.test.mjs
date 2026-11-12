@@ -343,9 +343,9 @@ test("the Pipelines table states each pipeline with its why, its night's schedul
   showPipes();
   const b = pipes_.innerHTML;
   assert.match(b, /<div id="pip-head"><h2 class="sec" id="sec-pipelines">Pipelines <span class="muted">2 pipelines in 1 repo: 1 red<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
-  assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
-  assert.match(b, /<td class="wrap muted"><a href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
-  assert.match(b, /<td class="bad" title="[^"]+"><a href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");
+  assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a class="tl" href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
+  assert.match(b, /<td class="wrap muted"><a class="tl" href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a class="tl" href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
+  assert.match(b, /<td class="bad" title="[^"]+"><a class="tl" href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");
   assert.match(b, /<td class="n bad">60%<\/td><td class="n">5<\/td><td class="n muted">25m<\/td><td class="n muted">40m<\/td>/);
   assert.match(b, /<td class="" title="passing">green <span class="muted">1 running<\/span><\/td>/);
   assert.match(b, /<td class="wrap muted">-<\/td><td class="n">-<\/td>/, "no schedule and no next start draw a dash");
@@ -366,7 +366,7 @@ test("opening a pipeline reads its detail then, and only then, and shows why, pu
   assert.match(b, /<b>Crons<\/b> 0 2 \* \* \*/);
   assert.match(b, /<b>Jobs<\/b> EditMode, PlayMode/);
   assert.match(b, /<b>Night title<\/b> Tests \(all\) night/);
-  assert.match(b, /<td data-label="started" class="n"><a href="#infra\/runs\/o%2Fplay%2F41">[^<]+<\/a><\/td><td data-label="result" class="bad">failure<\/td><td data-label="branch" class="wrap muted">main<\/td>/);
+  assert.match(b, /<td data-label="started" class="n"><a class="tl" href="#infra\/runs\/o%2Fplay%2F41">[^<]+<\/a><\/td><td data-label="result" class="bad">failure<\/td><td data-label="branch" class="wrap muted">main<\/td>/);
   // A click on the open row closes it.
   fire(pipes_, "click", { type: "click", target: prowEl(KEY) });
   assert.doesNotMatch(pipes_.innerHTML, /wdet/);
