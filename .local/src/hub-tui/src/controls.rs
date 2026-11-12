@@ -142,6 +142,12 @@ impl Controls {
             .collect()
     }
 
+    /// Every row before the view, as Home's Sessions card counts them; None until the first
+    /// snapshot, so the card reads as reading and never as no sessions.
+    pub fn all(&self) -> Option<&[SessionRow]> {
+        self.snap.as_ref().map(|_| self.all.as_slice())
+    }
+
     /// The shown row a session page id names (`hub_core::session_page::find`): a session id, a
     /// live row's target or an ended row's item, as `#sessions/<id>` resolves on the web.
     pub fn position(&self, id: &str) -> Option<usize> {
