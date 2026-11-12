@@ -30,7 +30,7 @@ Each `*.sh` is one independent check. The coordinator fans them out in parallel 
 | `2` | block | coordinator exits 2; Claude is gated |
 | other | block (defensive) | same as `2` |
 
-SessionStart snapshots tracked and untracked file state with `stop-session-changes.py`, preserving the snapshot on resume and compaction. Stop exports the paths changed since that snapshot as `STOP_CHANGED_FILES`, less any whose content now matches origin's default branch (`origin/HEAD`, else `origin/main` or `origin/master`), and any gone path that branch deleted, since a merge or fast-forward brought those in; `60-shell-tests.sh` uses that list instead of branch or pre-existing worktree dirt. A session without a snapshot skips content checks. Payloads without a session id retain the legacy worktree check.
+SessionStart snapshots tracked and untracked file state with `stop-session-changes.py`, preserving the snapshot on resume and compaction. Stop exports the paths changed since that snapshot as `STOP_CHANGED_FILES`, less any whose content now matches origin's default branch (`origin/HEAD`, else `origin/main` or `origin/master`), and any gone path that branch lacks but the fork point of the session's starting HEAD held, since a merge or fast-forward brought those in (a snapshot from before it recorded HEAD counts every deletion); `60-shell-tests.sh` uses that list instead of branch or pre-existing worktree dirt. A session without a snapshot skips content checks. Payloads without a session id retain the legacy worktree check.
 
 A timed-out check with no reported failures is logged and recorded as SKIPPED, does not block, and is never cached as a passing run. TAP failures printed before timeout still block.
 
