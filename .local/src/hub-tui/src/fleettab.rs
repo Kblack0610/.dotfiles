@@ -424,6 +424,11 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
+/// judge-eval's percent as it gives it, or "-" with none.
+fn share(x: Option<f64>) -> String {
+    x.map_or("-".to_string(), |x| format!("{x}%"))
+}
+
 /// The answer judge per type and impact level, judge-eval's cells under its current prompt. A
 /// live cell's scored count is the answers the human reviewed (AUDITED); silence scores nothing.
 fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
@@ -437,14 +442,20 @@ fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
     if j.cells.is_empty() {
         out.push(clip_line(
             Line::styled(
-                format!("{PAD}no verdicts under prompt {}", j.prompt),
+                format!(
+                    "{PAD}no verdicts under prompt {}",
+                    if j.prompt.is_empty() {
+                        "none"
+                    } else {
+                        &j.prompt
+                    }
+                ),
                 p.dim(),
             ),
             w,
         ));
         return out;
     }
-    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
     let or_dash = |s: &str, none: &str| {
         if s.is_empty() {
             none.to_string()
@@ -507,7 +518,6 @@ fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
 
 /// The week's line, the filters, then what the judge said on each ask and why.
 fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
     let filters = ASK_FILTERS
         .map(|f| {
             if f == filter {
@@ -1563,11 +1573,22 @@ pub mod tests {
         if let Extras::AskJudge { judge } = &mut r.extras {
             judge.cells.clear();
         }
-        let lines = page_text(Some(&Ok(r)), 160);
+        let lines = page_text(Some(&Ok(r.clone())), 160);
         assert!(
             lines
                 .iter()
                 .any(|l| l.contains("no verdicts under prompt 60c840b")),
+            "{lines:?}"
+        );
+        // No prompt reads "none", as the counts line above it does.
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.prompt.clear();
+        }
+        let lines = page_text(Some(&Ok(r)), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_end().ends_with("no verdicts under prompt none")),
             "{lines:?}"
         );
     }

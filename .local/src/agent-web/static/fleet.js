@@ -128,11 +128,13 @@ function judgeTiles(j) {
 
 // The answer judge per type and impact level, judge-eval's cells under its current prompt. A live
 // cell's scored count is the answers you reviewed (audited); silence scores nothing.
+// judge-eval's percent as it gives it, or "-" with none.
+const share = (x) => (x == null ? "-" : `${x}%`);
+
 function judgeCells(j) {
-  const pc = (x) => (x == null ? "-" : `${x}%`);
   const prec = (c) => c.precision == null ? "-" : `${c.precision}% <span class="muted">[${c.precision_lo}-${c.precision_hi}]</span>`;
   const rows = j.cells.map((c) => `<tr><td>${esc(c.type || "(no type)")}</td><td>${esc(c.level || "-")}</td><td class="n">${c.verdicts}</td><td class="n">${c.scored}</td>` +
-    `<td class="n">${prec(c)}</td><td class="n">${c.pending}</td><td class="${c.live ? "" : "muted"}">${c.live ? "yes" : "no"}</td><td class="n">${c.audited}</td><td class="n">${pc(c.level_raised_pct)}</td></tr>`).join("");
+    `<td class="n">${prec(c)}</td><td class="n">${c.pending}</td><td class="${c.live ? "" : "muted"}">${c.live ? "yes" : "no"}</td><td class="n">${c.audited}</td><td class="n">${share(c.level_raised_pct)}</td></tr>`).join("");
   return `<div class="muted">By type and level (self, repo, fleet, critical), under the current prompt</div>` +
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">type</th><th data-role="glance">level</th><th class="n">verdicts</th><th class="n">scored</th>` +
     `<th class="n" data-role="glance" data-named>precision [95%]</th><th class="n">pending</th><th data-role="glance" data-named>live</th><th class="n">audited</th><th class="n">raised</th></tr>${rows ||
@@ -144,7 +146,6 @@ const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
 const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
 
 function judgeList(j) {
-  const pct = (x) => (x == null ? "-" : `${x}%`);
   const shown = j.verdicts.filter((v) => askShown(v, fst.said));
   const seg = `<div class="seg fseg">` + ASK_FILTERS.map((f) =>
     chipBtn(f === fst.said, "data-said", f, f, j.verdicts.filter((v) => askShown(v, f)).length)).join("") + `</div>`;
@@ -152,7 +153,7 @@ function judgeList(j) {
   const rows = shown.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
-  return `<div class="muted">7d: ${pct(j.week.live_pct)} answered, ${pct(j.week.coverage)} would answer, ${pct(j.week.precision)} right</div>${seg}` +
+  return `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>${seg}` +
     `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
 }
 
