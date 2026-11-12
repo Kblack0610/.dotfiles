@@ -243,6 +243,16 @@ done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "obje
   | .key as $p | .value.buildTags
   | if type != "array" or length == 0 then "trackers.\($p).buildTags is not a list of globs"
     else .[] | select(type != "string" or . == "" or test("\\s")) | "trackers.\($p).buildTags has \(tojson): each entry is one glob, no spaces" end' "$MAP_FILE" 2>/dev/null)
+# testWorkflows: the workflow files whose junit-* artifacts are the repo's test results (Infra
+# CI Tests, hub_core::junit, which fetches them with gh). Each is a path in the repo, on a tracker
+# that names its github slug.
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.testWorkflows != null)
+  | .key as $p | .value as $t | $t.testWorkflows
+  | if type != "array" or length == 0 then "trackers.\($p).testWorkflows is not a list of workflow paths"
+    elif ($t.github // "") == "" then "trackers.\($p).testWorkflows needs a github slug to match runs on"
+    else .[] | select(type != "string" or (test("^\\.github/workflows/[^/\\s]+\\.ya?ml$") | not)) | "trackers.\($p).testWorkflows has \(tojson): each entry is a .github/workflows/<file>.yml path" end' "$MAP_FILE" 2>/dev/null)
 # One owner per tag: project_tag_scope subtracts a game's buildTags from its repo's declared
 # tagGlob. A repo project with none falls back to the bare `v*` ladder rung, which lists them.
 while IFS= read -r msg; do

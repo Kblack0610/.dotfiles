@@ -50,8 +50,9 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"
 : "${DAYLOG_AGENTS_DIR:=$HOME/.config/agentctl/agents}"
 : "${DAYLOG_JUDGE_CMD:=judge-eval}"
+: "${DAYLOG_HUB_CMD:=hub}"   # hub ci pass: the one CI pass rate (hub_core::builds::verdict)
 export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR DAYLOG_CI DAYLOG_FLEET_CMD
-export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD
+export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD DAYLOG_HUB_CMD
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -233,8 +234,8 @@ rollup_prom() {
   jq -r --slurpfile week "$2" "$PROM_JQ"'
     def quantiles($l): [$l + {quantile: "0.5"}, .p50], [$l + {quantile: "0.9"}, .p90];
     (.ci.repos // {} | to_entries) as $ci | .agents as $a | .work as $w
-    | gauge("agent_ci_pass_rate"; "Share of runs not red on the last finished day, by repo and workflow (ci-failures).";
-        $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | [{repo: $r, workflow: .key}, .value.pass_rate]),
+    | gauge("agent_ci_pass_rate"; "Green over green plus red runs on the last finished day, by repo and workflow (hub ci pass).";
+        $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | select(.value.pass != null) | [{repo: $r, workflow: .key}, .value.pass]),
       gauge("agent_ci_main_red"; "Red runs on main on the last finished day, by repo (ci-failures).";
         $ci[] | [{repo: .key}, .value.main.red]),
       gauge("agent_ci_gate_wall_minutes"; "Gate wall time on the last finished day, by repo (ci-cost).";

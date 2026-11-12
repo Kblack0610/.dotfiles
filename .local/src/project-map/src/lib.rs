@@ -263,6 +263,28 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    /// The workflow files whose `junit-*` artifacts are a repo's test results:
+    /// `testWorkflows` on the tracker whose `github` slug is `slug`, compared without case as
+    /// GitHub does. Empty for a repo that declares none, so its runs list no Tests.
+    pub fn test_workflows(&self, slug: &str) -> Vec<String> {
+        let Some(trackers) = self.raw.get("trackers").and_then(Value::as_object) else {
+            return vec![];
+        };
+        trackers
+            .values()
+            .filter_map(Value::as_object)
+            .filter(|t| {
+                t.get("github")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty() && s.eq_ignore_ascii_case(slug))
+            })
+            .filter_map(|t| t.get("testWorkflows")?.as_array())
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
     /// (`ar` in `ar-142`), when it is set and well formed. `project-map-doctor` checks it is
     /// unique.
@@ -321,6 +343,18 @@ mod tests {
 
     fn fixture() -> Registry {
         Registry::from_path(Path::new(FIXTURE_JSON)).expect("fixture registry")
+    }
+
+    #[test]
+    fn a_repo_declares_the_workflows_its_test_results_come_from() {
+        let r = fixture();
+        assert_eq!(
+            r.test_workflows("kblack0610/.dotfiles"),
+            [".github/workflows/tests.yml"]
+        );
+        // negative control: a repo the registry knows that declares none, and one it does not know.
+        assert!(r.test_workflows("Studio/platform").is_empty());
+        assert!(r.test_workflows("Org/nobody").is_empty());
     }
 
     #[test]

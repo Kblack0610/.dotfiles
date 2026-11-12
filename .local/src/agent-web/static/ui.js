@@ -64,6 +64,9 @@ function coalesce(fn) {
 
 // Epoch milliseconds as HH:MM local time.
 const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+// A hub level ("bad", "warn", other) as its CSS class, "" for none.
+const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
+
 // A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday otherwise.
 function when(t) {
   if (!t) return "-";
