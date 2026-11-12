@@ -1053,6 +1053,25 @@ EOF
     "o/r#10 MERGED,git.example.test/o/audio#12 MERGED"
 }
 
+@test "a sandboxed harness's sessions are read from its own run DB beside the shared one; an unreadable one loses only its lines" {
+  oc_db
+  export SO_HARNESSES="$SANDBOX/harnesses.json"
+  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, glm: {launcher: "opencode"}}}' > "$SO_HARNESSES"
+  mkdir -p "$SANDBOX/oc-free/run/data/opencode"
+  cp "$SO_OPENCODE_DB" "$SANDBOX/oc-free/run/data/opencode/opencode.db"
+  sqlite3 "$SANDBOX/oc-free/run/data/opencode/opencode.db" "UPDATE session_v2 SET id = 'ses_free' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_free' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_free' WHERE session_id = 'ses_root';"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | sort | join(" ")')" 'ses_free ses_root'
+  # A run DB that is not a DB: the shared one's line is still written, and the report names the bad one.
+  printf 'not sqlite' > "$SANDBOX/oc-free/run/data/opencode/opencode.db"
+  rm -rf "$SO_OUT"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
+  assert_output --partial "opencode rows unread from $SANDBOX/oc-free/run/data/opencode/opencode.db"
+}
+
 @test "an opencode session is observed once, and turns final like any other" {
   oc_db
   "$SUBJECT" run >/dev/null

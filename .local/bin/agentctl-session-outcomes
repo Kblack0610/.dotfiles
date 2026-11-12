@@ -94,6 +94,8 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 . "$LIB_DIR/session-outcomes.sh"
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-merge-proof.sh"   # merge_proof_branch: the branch rework reads
+# shellcheck source=/dev/null
+. "$LIB_DIR/harness-projects.sh"   # harness_run_dbs: a sandboxed harness's own opencode.db
 
 # queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, refs}}: the work
 # items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
@@ -192,9 +194,15 @@ cmd_run() {
 
   # A DB opencode's next upgrade reshapes loses its lines and says so, like the bench below: it must
   # not stall every Claude session's row. Nothing reads as zero, because no line is written.
-  local oc_note=""
-  so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
-    { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
+  # A harness in its own lane sandbox (ocfree) keeps its sessions in a DB of its own, read beside the
+  # shared one; one DB that cannot be read loses only its own lines.
+  local oc_note="" db dbn=0
+  : > "$work/opencode.jsonl"
+  while IFS= read -r db; do
+    dbn=$((dbn + 1)); mkdir -p "$work/oc$dbn"
+    if so_opencode_rows "$db" "$work/oc$dbn" > "$work/oc$dbn.jsonl" 2>"$work/oc.err"; then cat "$work/oc$dbn.jsonl" >> "$work/opencode.jsonl"
+    else oc_note="$oc_note; opencode rows unread from $db: $(head -c 120 "$work/oc.err")"; echo "$NAME: opencode rows unread from $db" >&2; fi
+  done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
   so_codex_rows "$CX_DIR" "$work" "$HARNESSES" > "$work/codex.jsonl" 2>"$work/cx.err" ||
     { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
 

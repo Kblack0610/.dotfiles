@@ -1,6 +1,7 @@
 # shellcheck shell=bash
-# harness-projects.sh -- the one reader of a harness's project allowlist (harnesses.json `projects`),
-# sourced by fleet-dispatch (route, gateway_launch) and fleet-bench (canary queue).
+# harness-projects.sh -- the one reader of a harness's project allowlist (harnesses.json `projects`) and of where a sandboxed harness keeps its runs,
+# sourced by fleet-dispatch (route, gateway_launch), fleet-bench (canary queue) and
+# agentctl-session-outcomes (harness_run_dbs).
 #
 # A harness whose provider may train on prompts (ocfree, OpenCode's free models) carries public
 # input only, so its `projects` names the public projects it may read; a harness with no `projects`
@@ -28,4 +29,18 @@ harness_project_why() {
   esac
   echo "it takes only ${v#out } work (projects in $1), and this is ${3:-an item with no project}"
   return 1
+}
+
+# harness_run_dir <map> <harness> -> where a sandboxed opencode harness keeps its runs' data
+# (XDG_DATA_HOME, <dir>/data), cache, state and tmp: <config_dir>/run, inside the config_dir its
+# sandbox leaves writable, so the shared opencode.db stays masked. Its sessions are in <dir>/data/opencode/opencode.db, which
+# agentctl-session-outcomes reads beside the shared one (harness_run_dbs).
+harness_run_dir() {
+  jq -r --arg h "$2" '.harnesses[$h].config_dir // empty | sub("^~"; env.HOME) | sub("/+$"; "") + "/run"' "$1"
+}
+
+# harness_run_dbs <map> -> the opencode.db of each harness that runs in its own lane sandbox, one a line.
+harness_run_dbs() {
+  jq -r '.harnesses // {} | to_entries[] | select(.value.sandbox and .value.config_dir) | .key' "$1" 2>/dev/null |
+    while IFS= read -r h; do printf '%s/data/opencode/opencode.db\n' "$(harness_run_dir "$1" "$h")"; done
 }

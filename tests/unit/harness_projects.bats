@@ -55,3 +55,16 @@ setup() {
   run harness_project_why "$MAP" codex dotfiles
   assert_failure 2
 }
+
+@test "a sandboxed harness keeps its runs under <config_dir>/run, and only such a harness has a run DB" {
+  jq -n '{harnesses: {ocfree: {sandbox: "ocfree", config_dir: "~/.local/state/agentctl/opencode-ocfree/"},
+    glm: {config_dir: "/x/glm"}, nodir: {sandbox: "ocfree"}}}' > "$MAP"
+  run harness_run_dir "$MAP" ocfree
+  assert_output "$HOME/.local/state/agentctl/opencode-ocfree/run"
+  run harness_run_dir "$MAP" nodir
+  assert_output ''
+  run harness_run_dbs "$MAP"
+  assert_output "$HOME/.local/state/agentctl/opencode-ocfree/run/data/opencode/opencode.db"
+  run harness_run_dbs "$BATS_TEST_TMPDIR/missing.json"
+  assert_output ''
+}

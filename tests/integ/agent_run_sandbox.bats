@@ -288,3 +288,46 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_line --index 1 '["raw",true]'
   [ ! -s "$calls" ] || fail "a refusal wrote a calls.jsonl line, which every reader counts as a call"
 }
+
+@test "srt: the cleared env keeps SANDBOX_ENV_KEEP alone, drops the master key, and an unset one reads empty under set -u" {
+  source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
+  printf 'unset LC_ALL; export LITELLM_MASTER_KEY=sk-master GH_TOKEN=gh-x\n%s env\n' "$(sandbox_env_clear)" > "$SANDBOX/line.sh"
+  run bash -u "$SANDBOX/line.sh"
+  assert_success
+  refute_output --partial 'LITELLM_MASTER_KEY'
+  refute_output --partial 'GH_TOKEN'
+  assert_output --partial 'LC_ALL='
+  refute_output --partial 'TZ='
+  assert_output --partial "HOME=$HOME"
+  assert_output --partial "PATH=$PATH"
+}
+
+@test "srt: a missing tool it needs is the refusal, and its own package is readable inside so its seccomp helper runs" {
+  source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
+  SANDBOX_FILE="$HOME/.config/agentctl/sandbox/lane.json"
+  cd "$SANDBOX"   # outside any repo, so no git common dir joins the lists
+  SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
+  assert_output 'srt is not on PATH'
+  # An npm install: the bin is a link to <package>/dist/cli.js. Not under $SANDBOX/lib, a link into the repo.
+  mkdir -p "$SANDBOX/npm/srt/dist"
+  printf '#!/bin/sh\n' > "$SANDBOX/npm/srt/dist/cli.js"; chmod +x "$SANDBOX/npm/srt/dist/cli.js"
+  ln -s "$SANDBOX/npm/srt/dist/cli.js" "$SANDBOX/bin/srt"
+  SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
+  assert_output ''
+  run sandbox_srt_settings --ro /etc/x --rw /var/y
+  assert_success
+  assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"/etc/x\",\"/var/y\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
+  assert_equal "$(jq -c '[.filesystem.allowWrite, .network.strictAllowlist]' <<<"$output")" '[[".","/var/y","~/.agent"],true]'
+  run sandbox_srt_settings --bogus x
+  assert_failure 2
+  # The profile's allowRead is readable; in a repo, its git common dir is readable and never writable.
+  jq '.sandbox.filesystem.allowRead = ["/opt/vendor"]' "$SANDBOX_FILE" > "$SANDBOX/p.json"; SANDBOX_FILE="$SANDBOX/p.json"
+  git init -q "$SANDBOX/r" && cd "$SANDBOX/r"
+  run sandbox_srt_settings
+  assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"$SANDBOX/r/.git\",\"/opt/vendor\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
+  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" '[[".","~/.agent"],[]]'
+  jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null
+  jq '.sandbox.filesystem.allowRead = ["rel/path"]' "$SANDBOX_FILE" > "$SANDBOX/bad.json"
+  run jq -e "$SANDBOX_SHAPE" "$SANDBOX/bad.json"
+  assert_failure
+}
