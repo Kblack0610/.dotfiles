@@ -181,7 +181,32 @@ JQ_EVAL="$JQ_EPOCH"'
    ($ev | map(select(.action == "added" or .action == "tagged")
         | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
       | bykey(.p)) as $kids
-   | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
+   # A re-tag that only changes the priority is a call of the priority pass, scored on its own lane,
+   # so it touches nothing the triager or planner wrote.
+   | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|low)$")));
+   def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
+       | ($w | length) > 0 and ($w | length) == (prios | length));
+   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (prio_only | not))) | bykey(.id)) as $touch
+   # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
+   # priority-only re-tag from before the pass named itself), right when nobody else changes the
+   # priority of the row for the settle window. A later pass on the row inside the window supersedes
+   # it, unless someone changed the priority before that pass ran.
+   | def prio_pass: .action == "tagged" and ((.by // "") == "inbox-priority" or ((.by // "") == "inbox-triage" and prio_only));
+   ($ev | map(select(.action == "tagged" and (prios | length > 0))) | bykey(.id)) as $prioev
+   | [$ev[] | select(prio_pass) | . as $s
+      | ([prios[] | select(startswith("+")) | ltrimstr("+#")] | last) as $set
+      | select($set != null)
+      | ($prioev[$s.id] // []) as $later
+      | ([$later[] | select(.e > $s.e and prio_pass) | .e] | min) as $next
+      | (if $next != null and $next <= ($s.e + $settle) then $next else $s.e + $settle end) as $end
+      | ([$later[] | select(.e > $s.e and .e <= $end and (prio_pass | not)
+           and (prios | any(. == "-#\($set)" or (startswith("+") and . != "+#\($set)"))))] | first) as $t
+      | select($t != null or $end == $s.e + $settle)
+      | {agent: $by["priority-kept"], id: $s.id, project: (if ($s.to // "") == "" then $s.from else $s.to end),
+         question: ($s.text // ""), rule: $set, kind: "answer", want: $set,
+         human: (if $t == null then "" else ($t.why // "") + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end),
+         reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
+         outcome: (if $t != null then "fp" elif ($now - $s.e) >= $settle then "tp" else "pending" end)}] as $priorows
    # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
    # the record named the runner), right when nothing edits, drops, moves or re-tags it for the settle window.
    | [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | . as $f
@@ -220,7 +245,7 @@ JQ_EVAL="$JQ_EPOCH"'
               outcome: (if $v.verdict == "skip" then
                   (if $hand != null then "fn" elif ($now - $skip0) >= $settle then "tn" else "pending" end)
                 elif $fail or ($st | test("^done/(failed|cancelled)")) then "fp"
-                elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows)
+                elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows + $priorows)
   | map(select(.agent != null)) as $all
 
   | ($all | map(select(.judge_call != "")) | group_by(.judge_call) | map({(.[0].judge_call): length}) | add // {}) as $share
@@ -266,12 +291,13 @@ JQ_EVAL="$JQ_EPOCH"'
      | (if $sc == "ask-answers" then $live elif $sc == "dispatch-queue" then ["*"] else [] end) as $lv
      # The word a score cell puts after its percent; a lane with no counted outcome has none.
      | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
-         "plan-dispatched": "dispatched"}[$sc]) as $lb
+         "plan-dispatched": "dispatched", "priority-kept": "kept"}[$sc]) as $lb
      | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
         truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (override or none)",
                  "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
                  "triage-untouched": "the ingest record: a filed row is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
                  "plan-dispatched": "the ingest record and the queue: a planned row is right when it starts before anyone re-splits it",
+                 "priority-kept": "the ingest record: a priority the pass set is right when nobody else changes the priority of the row for \($settle / 3600)h",
                  "unrecorded": "not recorded: the lane leaves no counted outcome, so only its calls show"}[$sc]
                // "unknown SCORE \($sc | tojson): judges.md lists the truth sources"),
         live: $lv,
@@ -355,7 +381,7 @@ kpi_json() {
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
             dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total | fdefer] | .[0])}
          # A runner lane scores from the one bar: below it a single miss swings the number.
-         + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched"))
+         + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched", "priority-kept"))
              | {("runner_score_" + (.agent | gsub("-"; "_"))): (if (.total.tp + .total.fp) >= $need then .total.precision else null end)}]
             | add // {});
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
