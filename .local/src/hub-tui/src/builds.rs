@@ -1,12 +1,13 @@
-//! The Releases page's Builds inner tab: the CI runs of the last 30 days from
-//! `hub_core::builds::read`, on the shared data table (`datatable`), with the selected run's
-//! detail (header, jobs and their cost, from `hub_core::builds::detail`) and failed-job log under
-//! it, both read when the row is opened. `t` opens each workflow's usual run time and $ per run
-//! in the same pane.
+//! The CI runs table: Infra's CI runs (every run of the last 30 days from
+//! `hub_core::builds::read`) and Releases' Release runs (the same rows scoped by
+//! `Builds::releases`), on the shared data table (`datatable`), with the selected run's detail
+//! (header, jobs and their cost, from `hub_core::builds::detail`) and failed-job log under it,
+//! both read when the row is opened. `t` opens each workflow's usual run time and the
+//! quarantine in the same pane; money is a cloud machine's POWER cell and Costs', not this table's.
 
 use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
 use hub_core::releases::Level;
-use hub_core::run_detail::{RunCosts, RunDetail};
+use hub_core::run_detail::RunDetail;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
@@ -16,8 +17,8 @@ use crate::jobs::LogPane;
 
 /// `Run::COLUMNS` in capitals, in its order, the sort mark placed by that index. `forge`, `event`
 /// and `title` filter without a column: the log pane's heading says what they would.
-const HEADER: [&str; 9] = [
-    "STARTED", "STATE", "REPO", "WORKFLOW", "BRANCH", "TOOK", "USUAL", "ETA", "OWNER",
+const HEADER: [&str; 10] = [
+    "STARTED", "STATE", "REPO", "WORKFLOW", "BRANCH", "TOOK", "USUAL", "ETA", "OWNER", "RELEASE",
 ];
 
 #[derive(Default)]
@@ -40,6 +41,11 @@ impl BuildsView {
         builds::cap(self.table.view.apply(&b.rows)).0
     }
 
+    /// The selected run, among the rows shown.
+    pub fn selected<'a>(&self, b: &'a Builds) -> Option<&'a Run> {
+        self.shown(b).get(self.table.sel).copied()
+    }
+
     /// Move the selection to the run with this key after a read, or keep the index in range.
     pub fn reselect(&mut self, b: &Builds, id: Option<RunKey>) {
         let rows = self.shown(b);
@@ -47,10 +53,11 @@ impl BuildsView {
         self.table.keep(at, rows.len());
     }
 
-    /// The section's heading with how the runs divide, the view and what stopped a read.
-    pub fn status(&self, b: &Builds, p: Palette, now: i64) -> Vec<Line<'static>> {
+    /// The section's heading (`title`) with how the runs divide, the view and what stopped a
+    /// read.
+    pub fn status(&self, title: &str, b: &Builds, p: Palette, now: i64) -> Vec<Line<'static>> {
         let mut head = vec![
-            Span::styled("Builds  ", p.head()),
+            Span::styled(format!("{title}  "), p.head()),
             Span::styled(b.summary(), level(b.counts.level(), p)),
         ];
         if b.stale(now) {
@@ -110,11 +117,11 @@ impl BuildsView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|r| run_row(r, p, now)).collect(),
-            keep: vec![1, 2, 3, 0, 5, 7, 6, 8, 4],
+            keep: vec![1, 2, 3, 0, 5, 7, 6, 9, 8, 4],
             flex: Some(4),
             flexmin: 10,
             right: vec![5, 6, 7],
-            cap: vec![(2, 24), (3, 28), (8, 16)],
+            cap: vec![(2, 24), (3, 28), (8, 16), (9, 16)],
             mark: self.table.mark::<Run>().filter(|(i, _)| *i < HEADER.len()),
             ..Default::default()
         }
@@ -259,20 +266,26 @@ pub fn detail_pane(d: &mut DetailPane, p: Palette, w: usize, h: usize) -> Vec<Li
     all.into_iter().skip(d.top).take(h).collect()
 }
 
-const TIMES_HEADER: [&str; 9] = [
-    "REPO", "WORKFLOW", "RUNS", "USUAL", "P90", "LONGEST", "PASS", "RUNNING", "$/RUN",
+/// What Infra's CI Tests section says: the suites are read by agent-web alone.
+pub fn tests_note(p: Palette, w: usize) -> Vec<Line<'static>> {
+    let text = "The suites of each repo's newest declared test-workflow run (testWorkflows in the project map) are on agent-web, Infra, CI, Tests. The TUI does not read them.";
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out = vec![Line::styled("TESTS", p.head())];
+    out.extend(
+        crate::fit::wrap(&words, " ", w.max(20))
+            .into_iter()
+            .map(|l| crate::fit::clip_line(Line::styled(l, p.dim()), w)),
+    );
+    out
+}
+
+const TIMES_HEADER: [&str; 8] = [
+    "REPO", "WORKFLOW", "RUNS", "USUAL", "P90", "LONGEST", "PASS", "RUNNING",
 ];
 
-/// The Run times pane: each workflow's usual time and $ per run over the window, `h` lines from
-/// line `top`, then the idle and month lines from `costs`.
-pub fn times(
-    b: &Builds,
-    costs: &RunCosts,
-    p: Palette,
-    w: usize,
-    h: usize,
-    top: usize,
-) -> Vec<Line<'static>> {
+/// The Run times pane: each workflow's usual time over the window and the quarantine, `h` lines
+/// from line `top`.
+pub fn times(b: &Builds, p: Palette, w: usize, h: usize, top: usize) -> Vec<Line<'static>> {
     let mut out = vec![Line::from(vec![
         Span::styled("Run times  ", p.head()),
         Span::styled(
@@ -287,17 +300,8 @@ pub fn times(
     ])];
     let mut table = Table {
         header: TIMES_HEADER.to_vec(),
-        rows: b
-            .times
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let mut row = time_row(t);
-                row.push(costs.times.get(i).map_or("-", String::as_str).into());
-                row
-            })
-            .collect(),
-        keep: vec![1, 3, 8, 4, 0, 7, 2, 6, 5],
+        rows: b.times.iter().map(time_row).collect(),
+        keep: vec![1, 3, 4, 0, 7, 2, 6, 5],
         flex: Some(1),
         flexmin: 12,
         right: vec![2, 3, 4, 5, 6, 7],
@@ -305,30 +309,15 @@ pub fn times(
         ..Default::default()
     }
     .fit(w, p.head());
-    let mut tail: Vec<Line<'static>> = costs
-        .idle
-        .iter()
-        .map(|l| Line::styled(l.clone(), p.dim()))
-        .collect();
-    if let Some(m) = &costs.month {
-        tail.push(Line::styled(
-            m.clone(),
-            if costs.month_off { p.warn() } else { p.dim() },
-        ));
-    }
-    if let Some(e) = &costs.rates_error {
-        tail.push(Line::styled(format!("no rates: {e}"), p.warn()));
-    }
     let head = table.remove(0);
     if b.times.is_empty() {
         table.push(Line::styled("no finished runs in the ledger", p.dim()));
     }
     table.extend(quarantine(b, p, w));
-    let body = h.saturating_sub(out.len() + 1 + tail.len());
+    let body = h.saturating_sub(out.len() + 1);
     let top = top.min(table.len().saturating_sub(body));
     out.push(head);
     out.extend(table.into_iter().skip(top).take(body));
-    out.extend(tail);
     out
 }
 
@@ -440,6 +429,10 @@ fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
         } else {
             r.owner.clone().into()
         },
+        r.release
+            .as_ref()
+            .map_or("-".into(), |x| x.tag.clone())
+            .into(),
     ]
 }
 
@@ -522,14 +515,14 @@ pub mod tests {
         let b = fixture();
         let v = BuildsView::default();
         let p = Palette { no_color: true };
-        let s: Vec<String> = v.status(&b, p, 1400).iter().map(plain).collect();
+        let s: Vec<String> = v.status("Runs", &b, p, 1400).iter().map(plain).collect();
         assert!(
             s[0].contains("3 runs in 30 days: 0 running, 1 queued, 1 red"),
             "{s:?}"
         );
         assert!(!s[0].contains("older than"));
         let late: Vec<String> = v
-            .status(&b, p, 1300 + builds::STALE_SECS + 1)
+            .status("Runs", &b, p, 1300 + builds::STALE_SECS + 1)
             .iter()
             .map(plain)
             .collect();
@@ -571,7 +564,7 @@ pub mod tests {
     fn the_status_says_each_quarantine_and_its_nightlys_counts() {
         let p = Palette { no_color: true };
         let s: Vec<String> = BuildsView::default()
-            .status(&quarantined(), p, 1400)
+            .status("Runs", &quarantined(), p, 1400)
             .iter()
             .map(plain)
             .collect();
@@ -580,7 +573,7 @@ pub mod tests {
             "Quarantine  play: 5 quarantined over 2 owner rows, 2 ended, next end 11-30 (19d); nightly 11-11: 12 known red, 3 now pass"
         );
         let none: Vec<String> = BuildsView::default()
-            .status(&fixture(), p, 1400)
+            .status("Runs", &fixture(), p, 1400)
             .iter()
             .map(plain)
             .collect();
@@ -591,10 +584,7 @@ pub mod tests {
     fn the_times_pane_lists_each_owner_row_under_run_times_and_scrolls_to_the_last() {
         let b = quarantined();
         let p = Palette { no_color: true };
-        let all: Vec<String> = times(&b, &RunCosts::default(), p, 100, 100, 0)
-            .iter()
-            .map(plain)
-            .collect();
+        let all: Vec<String> = times(&b, p, 100, 100, 0).iter().map(plain).collect();
         let at = all.iter().position(|l| l == "Quarantine").unwrap();
         assert!(all[at + 1].starts_with("play: 5 quarantined"), "{all:?}");
         assert!(all[at + 2].starts_with("OWNER ROW"), "{all:?}");
@@ -611,7 +601,7 @@ pub mod tests {
             all.len() - 2,
             "the scroll bound is every line under the pinned heading and header"
         );
-        let end: Vec<String> = times(&b, &RunCosts::default(), p, 100, 6, times_rows(&b) - 1)
+        let end: Vec<String> = times(&b, p, 100, 6, times_rows(&b) - 1)
             .iter()
             .map(plain)
             .collect();
@@ -668,10 +658,7 @@ pub mod tests {
             })
             .collect();
         let p = Palette { no_color: true };
-        let out: Vec<String> = times(&b, &RunCosts::default(), p, 100, 10, 0)
-            .iter()
-            .map(plain)
-            .collect();
+        let out: Vec<String> = times(&b, p, 100, 10, 0).iter().map(plain).collect();
         assert_eq!(out.len(), 10, "{out:?}");
         assert!(out[0].contains("30 workflows"), "{out:?}");
         assert!(out[1].starts_with("REPO"), "{out:?}");
@@ -682,10 +669,7 @@ pub mod tests {
                 && out[2].contains("69%"),
             "{out:?}"
         );
-        let end: Vec<String> = times(&b, &RunCosts::default(), p, 100, 10, 99)
-            .iter()
-            .map(plain)
-            .collect();
+        let end: Vec<String> = times(&b, p, 100, 10, 99).iter().map(plain).collect();
         let last = end.last().unwrap();
         assert!(
             last.contains("wf29") && last.contains(" - "),
@@ -787,7 +771,7 @@ pub mod tests {
     }
 
     #[test]
-    fn the_run_times_pane_prices_each_workflow_and_flags_the_month() {
+    fn the_run_times_pane_carries_no_money() {
         let mut b = fixture();
         b.times = vec![RunTime {
             repo: "o/ucp".into(),
@@ -795,19 +779,29 @@ pub mod tests {
             runs: 3,
             ..Default::default()
         }];
-        let costs = RunCosts {
-            times: vec!["$0.20 (3 priced)".into()],
-            idle: vec!["aws-burst-1: powered 2.0h today $3.71, jobs $1.00, idle $2.71".into()],
-            month: Some("month to date: jobs priced $4.00, AWS actual $10.00, off by 60%".into()),
-            month_off: true,
-            ..Default::default()
-        };
         let p = Palette { no_color: true };
-        let out: Vec<String> = times(&b, &costs, p, 100, 20, 0).iter().map(plain).collect();
-        assert!(out[1].contains("$/RUN"), "{out:?}");
-        assert!(out[2].contains("$0.20 (3 priced)"), "{out:?}");
-        assert!(out.iter().any(|l| l.contains("idle $2.71")), "{out:?}");
-        assert!(out.last().unwrap().contains("off by 60%"), "{out:?}");
+        let out: Vec<String> = times(&b, p, 100, 20, 0).iter().map(plain).collect();
+        assert!(
+            out[1].starts_with("REPO") && out[1].contains("RUNNING"),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().all(|l| !l.contains('$')),
+            "money is Cloud's and Costs': {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_run_tied_to_a_release_names_its_tag() {
+        let mut r = run(3, "binks", "green", "agent-3");
+        r.release = Some(hub_core::release_graph::RunRelease {
+            project: "binks".into(),
+            tag: "v1.2.0".into(),
+        });
+        let p = Palette { no_color: true };
+        let row: Vec<String> = run_row(&r, p, 0).iter().map(|c| c.text.clone()).collect();
+        assert_eq!(row[9], "v1.2.0");
+        assert_eq!(run_row(&run(4, "binks", "green", ""), p, 0)[9].text, "-");
     }
 
     #[test]

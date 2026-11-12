@@ -940,13 +940,13 @@ judge_fixture() {
   export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
   mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
   printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
-    'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' \
+    'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' 'judge_level: repo' \
     'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
   # a gate: never sent to the model, so no call and no score
   printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
     'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-2.md"
   printf '%s\n' \
-    '{"project":"p","lane":"agent","key":"k1","verdict":"skip","rule":"tier3","reason":"tier 3","judge_call":"c2","at":"2026-10-19T11:00:00-07:00"}' \
+    '{"project":"p","lane":"agent","key":"k1","verdict":"skip","rule":"tier3","reason":"tier 3","tier":3,"judge_call":"c2","at":"2026-10-19T11:00:00-07:00"}' \
     '{"project":"p","lane":"agent","key":"k2","verdict":"error","reason":"call failed (exit 7): x","judge_call":"c3","at":"2026-10-19T11:00:00-07:00"}' \
     '{"project":"p","lane":"agent","key":"k3","verdict":"dispatch","reason":"old, no call","at":"2026-10-19T11:00:00-07:00"}' \
     > "$SO_VERDICTS"
@@ -966,6 +966,8 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   assert_line --partial '"comment":"ship_deploy: landing is standing authorization"'
   assert_line --partial '"id":"jv:c2:p/agent/k1","sessionId":"js-2","name":"dispatch-judge","value":"skip"'
   assert_line --partial '"comment":"tier3: tier 3"'
+  # the level rides on the same score as its tag, never a second score: the ask's, dispatch's tier
+  assert_equal "$(judge_posted | jq -r '.body.metadata.level' | sort | paste -sd,)" "repo,tier 3"
   # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$(date -d 2026-10-19T18:00:00Z +%s)"
 }
@@ -982,6 +984,8 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   "$SUBJECT" run
   report | grep -q 'langfuse: nothing new; judge: 1 score(s)'
   assert_equal "$(judge_posted | jq -r .body.id)" jv:c4:p/agent/k4
+  # a verdict with no level recorded carries no level key, rather than an empty one
+  assert_equal "$(judge_posted | jq -c '.body.metadata | has("level")')" false
 }
 
 @test "langfuse: a failed judge push keeps its mark and says FAILED" {
