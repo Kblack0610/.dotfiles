@@ -13,7 +13,7 @@ const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {} };
+const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {} };
 
 const refreshNight = async () => {
   try {
@@ -146,8 +146,45 @@ function needCard(n) {
   const band = needBand(k, [esc(n.project), what, id, n.since ? waited(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
-    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
-  return `<div class="card need k-${k}" title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
+    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>`
+    : n.kind === "sheet" ? sheetClose(n) : "";
+  const close = n.kind === "sheet" && ROW_ID.test(n.id) ? ` data-close="${esc(n.id)}" data-closeproj="${esc(n.project)}"` : "";
+  return `<div class="card need k-${k}"${close} title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
+}
+
+// A sheet row closes on its card as on the Board's form (CLOSE_HOW), through the Board's write. Its
+// choice, text, error and in-flight state live in hst.close by row id, so a refresh redraws them
+// (keepTyping keeps the focus). A row with no id (hub_core::home sends its text) is opened on the
+// Board instead, since only an id finds it there again.
+const ROW_ID = /^[a-z][a-z0-9]*-[0-9]+$/;
+const SHEET_CLOSE = ["drop", "done"].flatMap((verb) => CLOSE_HOW[verb].map(([how, l]) => [`${verb}:${how}`, `${verb}, ${l}`]));
+function sheetClose(n) {
+  if (!ROW_ID.test(n.id)) return `<div class="opts"><button class="btn sm" data-tab="board">Open the board</button></div>`;
+  const c = hst.close[n.id] || {};
+  const how = c.how || SHEET_CLOSE[0][0];
+  return `<div class="opts"><select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}"${v === how ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>` +
+    `<input data-free data-closewhy value="${esc(c.why || "")}" placeholder="why, or pr:123 / a URL">` +
+    `<button class="btn sm" data-closego${c.busy ? " disabled" : ""}>${c.busy ? "Closing..." : "Close"}</button></div><div class="err">${esc(c.err || "")}</div>`;
+}
+
+// Read the row fresh off the board by its id, so a row changed since Home drew it fails the write
+// instead of closing the wrong line, then close it and read Home again.
+async function closeSheetRow(id, project) {
+  const c = hst.close[id] ??= {};
+  if (c.busy) return;
+  const [verb, how] = (c.how || SHEET_CLOSE[0][0]).split(":");
+  const v = (c.why || "").trim();
+  if (!v) { c.err = CLOSE_NEED[how]; renderHome(); return; }
+  c.busy = true; c.err = ""; renderHome();
+  try {
+    const got = await api(`/api/board?q=${encodeURIComponent(`id:=${id}`)}`);
+    const r = (got.rows || []).find((x) => x.id === id && (x.project || "") === project && x.state !== "done");
+    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on the Board.`);
+    await post("/api/board", { verb, [how]: v, ...rowTarget(r) });
+    delete hst.close[id];
+    hst.open.delete(`sheet:${id}`);
+    refreshHome();
+  } catch (e) { c.busy = false; c.err = e.message; renderHome(); }
 }
 
 // An ask or a session dialog the page can answer gets its answer card; the rest a plain card.
@@ -315,6 +352,11 @@ $("home").addEventListener("click", (e) => {
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
+  const closing = t.closest(".card[data-close]");
+  if (closing) {
+    if (t.closest("[data-closego]")) closeSheetRow(closing.dataset.close, closing.dataset.closeproj);
+    return;
+  }
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e).then(refreshHome); return; }
   const row = e.target.closest("tr.jr[data-need]");
@@ -328,7 +370,18 @@ $("home").addEventListener("click", (e) => {
   if (!run || t.closest("a")) return;
   if (run.dataset.target) setTab("sessions", run.dataset.target); else setTab("queue", run.dataset.slug);
 });
-$("home").addEventListener("keydown", answerOnEnter);
+$("home").addEventListener("keydown", (e) => {
+  const closing = e.target.closest && e.target.closest(".card[data-close]");
+  if (!closing) { answerOnEnter(e); return; }
+  if (e.key === "Enter" && e.target.matches("[data-closewhy]")) { e.preventDefault(); closeSheetRow(closing.dataset.close, closing.dataset.closeproj); }
+});
+for (const ev of ["input", "change"]) $("home").addEventListener(ev, (e) => {
+  const closing = e.target.closest && e.target.closest(".card[data-close]");
+  if (!closing) return;
+  const c = hst.close[closing.dataset.close] ??= {};
+  if (e.target.matches("[data-closehow]")) c.how = e.target.value;
+  if (e.target.matches("[data-closewhy]")) c.why = e.target.value;
+});
 $("home").addEventListener("toggle", (e) => {
   askTrace(e, renderHome);
   if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;
