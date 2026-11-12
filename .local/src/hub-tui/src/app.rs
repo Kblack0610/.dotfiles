@@ -869,8 +869,20 @@ impl App {
         }
     }
 
-    /// `fleet-bench epics` writes no file to watch, so Projects reads it on entering, on `r` and
-    /// on the tick while it is shown, at most every `DELIVERABLES_REFRESH`.
+    /// `fleet-bench epics` writes no file to watch, so Deliverables reads it when it comes into
+    /// view and on the tick while it shows, at most every `DELIVERABLES_REFRESH`, and on `r`.
+    fn read_deliverables_due(&mut self) {
+        if self.tab == Tab::Projects
+            && self.pv.deliverables_shown(&self.tv)
+            && self
+                .deliverables_at
+                .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
+        {
+            self.read_deliverables();
+        }
+    }
+
+    /// One `fleet-bench epics` read in a worker, unless one is already out.
     pub fn read_deliverables(&mut self) {
         if self.deliverables_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -1593,6 +1605,7 @@ impl App {
             let cards = self.cards().cards;
             self.pv.go(&mut self.tv, &cards, &name);
             self.scroll = 0;
+            self.read_deliverables_due();
         }
     }
 
@@ -1666,13 +1679,7 @@ impl App {
                 {
                     self.read_reds();
                 }
-                if self.tab == Tab::Projects
-                    && self
-                        .deliverables_at
-                        .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
-                {
-                    self.read_deliverables();
-                }
+                self.read_deliverables_due();
                 if self.tab == Tab::Costs
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
@@ -1805,7 +1812,10 @@ impl App {
             Msg::Deliverables(r) => {
                 self.deliverables = Some(r);
                 self.deliverables_at = Some(std::time::Instant::now());
-                if self.deliverables_read.done() && self.tab == Tab::Projects {
+                if self.deliverables_read.done()
+                    && self.tab == Tab::Projects
+                    && self.pv.deliverables_shown(&self.tv)
+                {
                     self.read_deliverables();
                 }
             }
@@ -2123,6 +2133,7 @@ impl App {
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
             self.want_proj_page();
+            self.read_deliverables_due();
             return;
         }
         if self.tab == Tab::Fleet && self.fleet_key(k) {
@@ -2184,7 +2195,7 @@ impl App {
                     self.read_reds();
                     self.read_alerts();
                 }
-                if self.tab == Tab::Projects {
+                if self.tab == Tab::Projects && self.pv.deliverables_shown(&self.tv) {
                     self.read_deliverables();
                 }
                 if self.tab == Tab::Schedules {
@@ -2607,7 +2618,7 @@ impl App {
         }
         if t == Tab::Projects {
             self.read_projects();
-            self.read_deliverables();
+            self.read_deliverables_due();
         }
         if t == Tab::Home {
             self.read_home();
@@ -3261,9 +3272,9 @@ impl App {
                 self.qv.open("");
                 self.qv.table.view.state = to.state.into();
             }
-            // As `hub --tab`: a retired tab that is now a section (`board`) opens that section.
+            // As `hub tab`: a `tab/inner` (`projects/all`) is the tab and the inner tab's word.
             tab => {
-                if let Some((t, q)) = crate::tabreq::parse(tab) {
+                if let Some((t, q)) = crate::tabreq::parse(&tab.replace('/', " ")) {
                     self.go(t);
                     self.open_query(q);
                 }
@@ -8001,6 +8012,45 @@ mod tests {
         a.go(Tab::Home);
         a.open_flow("board");
         assert_eq!((a.tab, on(&a)), (Tab::Projects, Some("all")));
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is All rows searched to it.
+        a.go(Tab::Home);
+        a.follow(&Link::to(Kind::Row, "ar-2"));
+        assert_eq!(
+            (a.tab, on(&a), a.tv.table.view.q.as_str()),
+            (Tab::Projects, Some("all"), "id:=ar-2")
+        );
+    }
+
+    #[test]
+    fn deliverables_read_only_while_they_show_and_the_tick_rereads_them_there() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Projects, tx);
+        a.projects_read.busy = true;
+        a.handle(Msg::Projects(Box::new(loaded())));
+        a.go(Tab::Home);
+        a.go(Tab::Projects);
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "read behind the list");
+        a.handle(key('d'));
+        assert!(
+            a.deliverables_read.busy,
+            "showing Deliverables did not read it"
+        );
+        a.handle(Msg::Deliverables(Err("x".into())));
+        assert!(!a.deliverables_read.busy);
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "the tick re-read a fresh answer");
+        // A stale answer is left while the list shows, and read again once Deliverables does.
+        a.deliverables_at = std::time::Instant::now().checked_sub(DELIVERABLES_REFRESH);
+        a.handle(key('d'));
+        assert_eq!(a.pv.top(&a.tv), Some("list"));
+        a.handle(Msg::Tick);
+        assert!(!a.deliverables_read.busy, "the tick read behind the list");
+        a.handle(key('d'));
+        assert!(
+            a.deliverables_read.busy,
+            "a stale answer was not read on showing"
+        );
     }
 
     #[test]

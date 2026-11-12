@@ -1382,8 +1382,8 @@ mod tests {
             (
                 Some("#sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
-                Some("#board?q=id:=tr-9"),
-                Some("#board?q=id:=tr-1")
+                Some("#projects/all?q=id:=tr-9"),
+                Some("#projects/all?q=id:=tr-1")
             )
         );
         assert_eq!(

@@ -32,7 +32,7 @@ const dst = tblTab({
   tab: "projects", id: "p-del", el: "p-deliv", pre: "d", api: "/api/deliverables", hint: "search, or sys:ui track:behind -project:x",
   shown: () => dShown(), wait: "Reading fleet-bench epics (about 10s when cold)...",
   params: (p) => { if (pst.open) p.set("scope", pst.open); },
-  got: (t) => { if (!new URLSearchParams(t.q).has("scope")) { pCount.deliverables = t.data.table.total; pStripPaint(); } },
+  got: (t) => { if (!new URLSearchParams(t.q).has("scope")) pCountSet("deliverables", t.data?.table?.total); },
   draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
   head: (t) => (pst.open ? pSec("p-build", "Build", t.data.says) : `<h2 class="sec" id="sec-deliverables">${esc(t.data.says)}</h2>`),
   body: (t) => dBody(t.data),
@@ -81,7 +81,30 @@ function pStrip() {
     [id, title + (pCount[id] == null ? "" : ` <span class="muted">${pCount[id]}</span>`), secs]);
   return stripHtml(tabs, pTab(), "itab");
 }
-const pStripPaint = () => paint($("p-strip"), pst.open ? "" : pStrip());
+// The strip's words as last drawn ("" while hidden): it is rebuilt only when a count changes,
+// and otherwise flips its marks in place, so a focused button (ArrowRight, an SSE re-read) keeps focus.
+let pStripSaid = "";
+function pStripPaint() {
+  const el = $("p-strip"), said = pst.open ? "" : JSON.stringify(pCount);
+  if (said !== pStripSaid) {
+    const at = document.activeElement, had = at && el.contains?.(at) && at.dataset?.itab;
+    el.innerHTML = said ? pStrip() : "";
+    pStripSaid = said;
+    if (had) el.querySelector(`[data-itab="${had}"]`)?.focus?.();
+  } else stripMark(el, "itab", pTab());
+  stripInView(el);
+}
+// A read's total for inner tab `id`: a number only, and the strip redrawn when it moved.
+function pCountSet(id, n) {
+  if (typeof n !== "number" || pCount[id] === n) return;
+  pCount[id] = n;
+  pStripPaint();
+}
+// Each inner tab's own view (its URL query), kept while another shows, so a filter set on All
+// rows is still there after a look at Deliverables. pOn is the inner tab last drawn; pOpenQ the
+// opened project's view as last drawn, which closing it drops (pClose).
+const pViews = {};
+let pOn = "list", pOpenQ = null;
 
 const pKey = (c) => c.profile + "/" + c.name;
 // The card `want` names, by `<profile>/<name>` or the name alone.
@@ -302,9 +325,12 @@ function pGo(key, inner, query) {
     renderProjects(); pRead();
   } else pOpen(key, inner);
 }
-// Back to the inner tabs: the opened project's rows and Build go, and cards read under its view.
+// Back to the inner tabs: the opened project's rows and Build go, and cards read under its view,
+// and so does its view: a query still the project's is cleared, as Back clears it (pGo(null));
+// a link that brought its own (`#board?q=...`) keeps that.
 function pClose() {
-  pst.open = null; bst.feed = null; dst.data = null;
+  if (pst.open && st.views.projects && st.views.projects === pOpenQ) setQuery("");
+  pst.open = null; pOpenQ = null; bst.feed = null; dst.data = null;
   if (pst.viewed) pst.data = null;
 }
 // Read what shows: the list (or an opened project's card), the rows, Deliverables.
@@ -331,12 +357,13 @@ function renderProjects() {
   innerHide("projects", "deliverables", $("p-dtop"));
   $("p-rows").hidden = !pst.open;
   if (!pst.open) {
-    const top = pTab();
+    const top = pOn = pTab();
     if (top === "all") renderBoard();
     if (top === "list") pst.render(); else if (top === "deliverables") dst.render();
     return;
   }
   $("p-cards").hidden = true;
+  pOpenQ = st.views.projects || "";
   const c = pCard(pst.open);
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pOpened(c) : ""), pst.folds);
@@ -397,9 +424,12 @@ TABS.projects = {
     if (pst.open && !st.arg) st.arg = pArg();
     pDeep(); renderProjects(); pRead();
   },
-  // A strip click: the view stays with the inner tab it was set on, and the one now showing reads.
-  inner() {
-    if (st.views.projects || pst.open) { setQuery(""); pClose(); }
+  // A strip click: the view stays with the inner tab it was set on, the one now showing gets its
+  // own back, and only that one reads.
+  inner(id) {
+    if (pst.open) pClose();
+    pViews[pOn] = st.views.projects || "";
+    setQuery(pViews[id] || "");
     renderProjects(); pRead();
   },
   // A section on another inner tab of the opened page (an outline click) shows that tab first.

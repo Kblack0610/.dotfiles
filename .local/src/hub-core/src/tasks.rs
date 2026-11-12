@@ -1008,7 +1008,7 @@ mod tests {
         );
         assert_eq!(
             f.rows[1].link("epic").map(|l| l.href()),
-            Some("#board?q=id:=ucp-1".to_string())
+            Some("#projects/all?q=id:=ucp-1".to_string())
         );
         assert!(f.rows[0].link("epic").is_none());
     }

@@ -368,9 +368,9 @@ test("rows past the cap wait behind a button, and a view with nothing says so", 
   await onBoard();
   ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i, title: "r" + i, summary: "" }));
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
-  assert.match(read().rows, /data-all="1">\+5 more/);
+  assert.match(read().rows, /data-all="1">\+175 more/);
   click("b-root", { all: "1" });
-  assert.doesNotMatch(read().rows, /\+5 more/);
+  assert.doesNotMatch(read().rows, /\+175 more/);
   assert.match(read().rows, /<span class="qtag">ui<\/span> r204</);
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
@@ -417,6 +417,64 @@ test("a link to All rows (`#board`) leaves an opened project", async () => {
   assert.equal(vm.runInContext(`pst.open`, ctx), null);
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the link's search is read, with no scope");
   assert.match(read().rows, /1 of 2 rows/);
+});
+
+test("a repaint with the same counts flips the strip's marks in place, so its focus stays", async () => {
+  await drawn(list());
+  vm.runInContext(`pCount.all = 2; pCount.deliverables = null; pStripPaint();`, ctx);
+  const strip = box("p-strip");
+  strip.innerHTML = "the strip in use";
+  vm.runInContext(`renderProjects()`, ctx);
+  assert.equal(strip.innerHTML, "the strip in use", "same counts, no rebuild");
+  // A count that changes rebuilds it, and the button that had focus gets it back.
+  let focused = null;
+  strip.querySelector = (sel) => ({ focus() { focused = sel; } });
+  ctx.document.activeElement = { dataset: { itab: "all" } };
+  strip.contains = () => true;
+  vm.runInContext(`pCountSet("all", 7)`, ctx);
+  ctx.document.activeElement = undefined;
+  delete strip.contains; delete strip.querySelector;
+  assert.match(strip.innerHTML, /All rows <span class="muted">7<\/span>/);
+  assert.equal(focused, '[data-itab="all"]');
+});
+
+test("each inner tab keeps its own view: All rows' search is back after a look at Deliverables", async () => {
+  await drawn(list());
+  ctx.answers = { "/api/deliverables": deliv(), "/api/projects": list() };
+  vm.runInContext(`innerGo("projects", "all");`, ctx);
+  await settle(); await settle();
+  vm.runInContext(`setQuery("q=water"); innerGo("projects", "deliverables");`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`st.views.projects`, ctx), "", "Deliverables has its own view");
+  ctx.sent = [];
+  vm.runInContext(`innerGo("projects", "all");`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`st.views.projects`, ctx), "q=water");
+  assert.deepEqual(ctx.sent.map((s) => s.u), ["/api/board?q=water"]);
+  assert.match(read().rows, /1 of 2 rows/);
+  vm.runInContext(`setQuery(""); innerGo("projects", "list");`, ctx);
+  await settle(); await settle();
+});
+
+test("All rows reached from an open project with no query of its own leaves the project's search behind", async () => {
+  ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
+  vm.runInContext(`st.tab = "projects"; pst.data = ${JSON.stringify(list())}; pGo("bnb/demo"); setQuery("q=menu"); renderProjects();`, ctx);
+  await settle(); await settle();
+  ctx.sent = [];
+  vm.runInContext(`setTab("projects", "all");`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`(pst.open) + "|" + st.views.projects`, ctx), "null|");
+  assert.deepEqual(ctx.sent.filter((s) => s.u.startsWith("/api/board")).map((s) => s.u), ["/api/board"]);
+});
+
+test("the All rows count is written only from a current answer with a number", async () => {
+  await onBoard();
+  assert.equal(vm.runInContext(`pCount.all`, ctx), 2);
+  vm.runInContext(`pCountSet("all", undefined); pCountSet("all", "9");`, ctx);
+  assert.equal(vm.runInContext(`pCount.all`, ctx), 2, "a count that is not a number is not written");
+  vm.runInContext(`pCount.all = 5; refreshBoard(); st.arg = "";`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`pCount.all`, ctx), 5, "an answer for an inner tab no longer shown counts nothing");
 });
 
 // The Summary hub_core::table sends beside the Deliverables rows.

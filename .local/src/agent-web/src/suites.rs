@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(q["rows"][1]["nightly"], "now passing");
         assert_eq!(q["rows"][0]["left"], "ended");
         assert_eq!(q["table"]["total"], 3);
-        assert_eq!(q["table"]["links"][0]["row"], "#board?q=id:=ucp-2");
+        assert_eq!(q["table"]["links"][0]["row"], "#projects/all?q=id:=ucp-2");
         let v = held_body(
             &Loaded::default(),
             Query {

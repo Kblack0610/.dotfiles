@@ -13,8 +13,9 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// The Board holds thousands of rows, so the table stops here until asked.
-const B_OPEN = 200;
+// All rows holds thousands of rows, so the table stops here until asked (a search reads every row
+// on the server; this caps only what is drawn): 30 rows drew 1,824 px at 1400x900 on 2026-11-12.
+const B_OPEN = 30;
 // One view serves both places, both on Projects, so what it reads follows the one showing.
 const bOnBoard = () => st.tab === "projects" && !pst.open && pTab() === "all";
 const bScope = () => (bOnBoard() ? "all" : pst.open);
@@ -52,8 +53,10 @@ const refreshBoard = coalesce(async () => {
   const q = p.toString();
   try {
     const got = await api("/api/board" + (q ? "?" + q : ""));
-    if (scope === bScope()) { bst.feed = got; bst.scope = scope; bst.err = null; }
-    if (scope === "all") pCount.all = got.table.total;
+    if (scope === bScope()) {
+      bst.feed = got; bst.scope = scope; bst.err = null;
+      if (scope === "all") pCountSet("all", got?.table?.total);
+    }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
 });

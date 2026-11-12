@@ -18,7 +18,8 @@ use serde::Serialize;
 use crate::pipeline::{Pipeline, Problem, Step};
 use crate::queue::{Queue, Recent, State};
 
-/// The tab a chip opens and, for the Queue, the state chip it filters to (`""` for none).
+/// The tab a chip opens, as a tab or `tab/inner` (`projects/all`, the board chip's All rows), and,
+/// for the Queue, the state chip it filters to (`""` for none).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Target {
     pub tab: &'static str,
@@ -105,7 +106,7 @@ impl Strip {
                     "board",
                     None,
                     Some(Target {
-                        tab: "board",
+                        tab: "projects/all",
                         state: "",
                     }),
                 ),
@@ -481,7 +482,7 @@ mod tests {
             to,
             vec![
                 None,
-                Some(("board", "")),
+                Some(("projects/all", "")),
                 Some(("queue", "up next")),
                 Some(("queue", "running")),
                 Some(("queue", "on a PR")),

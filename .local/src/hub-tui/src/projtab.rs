@@ -133,6 +133,12 @@ impl ProjView {
         }
     }
 
+    /// Deliverables shows: its own inner tab, or an opened project's Build (dashboards rule 10:
+    /// it reads only then).
+    pub fn deliverables_shown(&self, tv: &TaskView) -> bool {
+        self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == BUILD)
+    }
+
     /// Left/Right on the tab's own inner tabs; false on an opened project's page, whose are its.
     pub fn step_top(&mut self, tv: &mut TaskView, back: bool) -> bool {
         let Some(on) = self.top(tv) else {
@@ -217,6 +223,15 @@ impl ProjView {
         if let Some(id) = crate::innertabs::named(projects_tab(), name) {
             self.set_top(tv, id);
             return;
+        }
+        // `all <search>` (links::Link::tab_args for a row): All rows searched to it, as the web's
+        // `#projects/all?q=<search>`.
+        if let Some((first, q)) = name.split_once(char::is_whitespace) {
+            if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
+                self.set_top(tv, ALL);
+                tv.table.view.q = q.trim().to_string();
+                return;
+            }
         }
         let (name, inner) = match name.rsplit_once('/') {
             Some((n, i)) if inner_id(i).is_some() => (n, inner_id(i)),
@@ -339,8 +354,10 @@ fn projects_tab() -> &'static Tab {
 }
 
 /// The strip over the list, All rows and Deliverables, each with its total once read: All rows
-/// every project's rows open and closed (`Feed::board_rows`, agent-web's board total), and
-/// Deliverables its epics.
+/// every project's rows open and closed (the rows `Feed::board_rows` lists, agent-web's board
+/// total, counted without building them on every draw), and Deliverables its epics as of its
+/// last read: it reads only while it shows, so its count waits for the first visit and then
+/// stays at that read until the next.
 pub fn top_strip(
     feed: Option<&Feed>,
     dl: Option<&Result<Deliverables, String>>,
@@ -349,7 +366,7 @@ pub fn top_strip(
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.map(|f| f.board_rows(None).len()),
+        ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         _ => None,
     };
