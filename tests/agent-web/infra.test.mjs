@@ -139,6 +139,7 @@ test("a record's page inside an inner tab keeps its id: the route opens the inne
   assert.deepEqual(r("#infra/jobs/agentctl-dream"), ["infra", "jobs", "jobs/agentctl-dream"]);
   assert.deepEqual(r("#infra/machines"), ["infra", "machines", undefined], "no id: the inner tab alone");
   assert.deepEqual(r("#infra/machines/a%2Fb"), ["infra", "machines", "machines/a/b"], "an id keeps its slash");
+  assert.deepEqual(r("#infra/constructor/x"), ["infra", "", undefined], "an inherited name is not a page word: an unknown inner tab, as before");
   const urls = [];
   ctx.history = { replaceState: (_s, _t, u) => urls.push(u) };
   for (const h of ["#infra/machines/razer-laptop", "#infra/machines/a%2Fb"]) {

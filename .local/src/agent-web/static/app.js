@@ -334,7 +334,8 @@ function innerRoute(r) {
   // A record's page (`#infra/machines/<host>`) opens its inner tab and keeps `word/id` as `page`.
   const at = (r.arg || "").indexOf("/");
   const word = at < 0 ? "" : r.arg.slice(0, at).toLowerCase();
-  const inner = ENTITY_PAGES[r.tab]?.[word];
+  const pages = Object.hasOwn(ENTITY_PAGES, r.tab) ? ENTITY_PAGES[r.tab] : {};
+  const inner = Object.hasOwn(pages, word) ? pages[word] : undefined;
   if (inner && r.arg.slice(at + 1)) return { ...r, arg: inner, page: word + "/" + r.arg.slice(at + 1) };
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);

@@ -14,7 +14,7 @@ use hub_core::fleet::ASK_FILTERS;
 use hub_core::home::Need;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
-use hub_core::links::Link;
+use hub_core::links::{Kind, Link};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
@@ -2018,10 +2018,16 @@ impl App {
     }
 
     /// Open what a link names, as `hub tab` would (`hub_core::links`): a record's tab and the
-    /// word it opens there, or a page outside the hub in the browser.
+    /// word it opens there, or a page outside the hub in the browser. A runner or a session opens
+    /// by its id directly, so one named like a Fleet section (`workers`) or a moved tab still opens.
     pub fn follow(&mut self, l: &Link) {
         match (l, l.tab_args()) {
             (Link::Url(u), _) => open(u),
+            (Link::To(Kind::Runner, id), _) => {
+                self.go(Tab::Fleet);
+                self.open_runner(id);
+            }
+            (Link::To(Kind::Session, id), _) => self.open_session(id),
             (_, Some((tab, arg))) => {
                 if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
@@ -4494,6 +4500,12 @@ mod tests {
         assert_eq!(
             (a.tab, a.fleet_page.as_deref()),
             (Tab::Fleet, Some("inbox-triage"))
+        );
+        a.follow(&Link::to(Kind::Runner, "workers"));
+        assert_eq!(
+            (a.tab, a.fleet_page.as_deref()),
+            (Tab::Fleet, Some("workers")),
+            "a runner named like a Fleet section still opens its page"
         );
         a.follow(&Link::to(Kind::Session, "lab/x:1"));
         assert_eq!(a.tab, Tab::Sessions);

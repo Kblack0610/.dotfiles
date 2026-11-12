@@ -672,8 +672,8 @@ impl Controls {
     }
 }
 
-/// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
-/// agent-web's own.
+/// One part of the page. A URL is printed, since nothing here is clicked; a link to a record in
+/// the hub is not, since its value already names that record.
 fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
     let url = match &part.link {
         Some(Link::Url(u)) => Some(u),
