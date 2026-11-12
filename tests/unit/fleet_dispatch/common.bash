@@ -93,6 +93,9 @@ setup() {
   stub agent-hold 'exit 0'
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub fleet-presence 'echo "away 45 tmux"'
+  # A fresh fleet state document with no session in it: the pace target counts none unless a test adds them.
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  fleet_state 0
   stub fleet-bench 'exit 0'
   # Since boot the machine was 98% idle; the window is what the gate reads.
   export DISPATCH_PROC_STAT="$SANDBOX/stat"
@@ -375,6 +378,16 @@ held_game_app_row() {
   findings "$(finding starved pool:unity '["game"]')"
 }
 
+# fleet_state <live sessions> [<age in minutes>] -- the fleet state document fleet-sessions writes,
+# holding that many live sessions, written that long ago. On top sit a parked, a finished and the
+# shepherd's session, which the pace target never counts.
+fleet_state() {
+  jq -cn --argjson n "$1" --argjson at "$(( $(date +%s) - ${2:-0} * 60 ))" \
+    '{generated_epoch: $at, vocab: {finished: ["DONE", "LANDED"]},
+      sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}]
+        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
+}
+
 # outcome: what the pass told fleet-liveness, through the real agent-proof.sh the sandbox links.
 # agentctl calls a run that says nothing STALLED.
 outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev/null; }
@@ -382,7 +395,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 # 5 of 6 run units held by two heavy and one light live session, as the tests around it do.
 five_of_six_units() {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=6
+  export DISPATCH_TARGET_BURST=6
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
   sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
