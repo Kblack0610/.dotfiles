@@ -125,9 +125,8 @@ write_binds() {
     {submap: "", modmask: 5, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
     {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "kitty -e agent-panel", has_description: true, description: "agent panel"},
     {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "pin-hint.sh close", has_description: false, description: ""},
-    {submap: "pinbar", modmask: 0, key: "u", dispatcher: "submap", arg: "pinbar-utils", has_description: true, description: "utils >"},
-    {submap: "pinbar-utils", modmask: 0, key: "t", dispatcher: "submap", arg: "pinbar-timebox", has_description: true, description: "timebox >"},
-    {submap: "pinbar-timebox", modmask: 0, key: "escape", dispatcher: "submap", arg: "pinbar-utils", has_description: true, description: "back"},
+    {submap: "pinbar", modmask: 0, key: "t", dispatcher: "submap", arg: "pinbar-timebox", has_description: true, description: "timebox >"},
+    {submap: "pinbar-timebox", modmask: 0, key: "escape", dispatcher: "submap", arg: "pinbar", has_description: true, description: "back"},
     {submap: "pinbar-timebox", modmask: 0, key: "p", dispatcher: "exec", arg: "timebox pause", has_description: true, description: "pause"}
   ]' > "$FX/binds.json"
 }
@@ -140,9 +139,9 @@ write_binds() {
   assert_line $'win\twindow    app launcher                       Super+D\twofi --show drun'
   assert_line --regexp $'^win\twindow +stream transcription +Super\\+Alt\\+R\tgungan stream$'
   assert_line --regexp $'^win\twindow +agent panel +Super\\+A a\tkitty -e agent-panel$'
-  assert_line --regexp $'^win\twindow +pause +Super\\+A u t p\ttimebox pause$'
+  assert_line --regexp $'^win\twindow +pause +Super\\+A t p\ttimebox pause$'
   refute_output --partial "pin-hint.sh close"
-  refute_output --partial "utils >"
+  refute_output --partial "timebox >"
 }
 
 @test "a window row's Enter runs its bind through hyprctl dispatch exec; its preview names it" {

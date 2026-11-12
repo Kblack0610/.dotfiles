@@ -202,44 +202,58 @@ push_lands() {
   assert_equal "${lines[-1]}" repo-agent-2
 }
 
-# Every agent worktree lands on the world that declares `@agents`, whichever repo it was cut
-# from and wherever it was started. 2026-10-28: Prefix+F pressed on hub put three playground
-# agents on hub's socket while their 23 siblings sat on lab, because the repo routed `here`.
-declare_in_lab() {
+# A worktree the human cuts lands on its repo's world, whichever world the key was pressed in.
+# `@agents` only names where fleet-dispatch starts its sessions (it passes --server). 2026-10-28:
+# Prefix+F pressed on hub put three playground agents on hub's socket while 23 siblings sat on lab;
+# 2026-11-11: the human's own starts and the dispatched ones shared lab, so lab could not be read
+# as "what the fleet is doing".
+declare_game_in_hub() {
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"
   # `~`, because $SANDBOX has a space and the manifest format is whitespace-delimited.
-  printf 'game ~/dev/game\n@agents\n' > "$TMUX_SERVERS_DIR/lab.conf"
+  printf 'hub ~/hub\n?game ~/dev/game\n' > "$TMUX_SERVERS_DIR/hub.conf"
+  printf '@agents\n' > "$TMUX_SERVERS_DIR/lab.conf"
   make_repo "$HOME/dev/game"
 }
 
-@test "new pressed in hub makes the session on the agent world and hops there" {
-  declare_in_lab
-  export TMUX=/tmp/tmux-stub/hub,1,0
+@test "new pressed in lab makes the session on the repo's world and hops there" {
+  declare_game_in_hub
+  export TMUX=/tmp/tmux-stub/lab,1,0
   run "$WT" new -c "$MAIN"
   assert_success
   assert_equal "${lines[-1]}" game-agent-1
-  assert_called 'tmux -L lab new-session -ds game-agent-1'
-  assert_called 'tmx goto lab game-agent-1'
+  assert_called 'tmux -L hub new-session -ds game-agent-1'
+  assert_called 'tmx goto hub game-agent-1'
   assert_not_called 'switch-client'
+  assert_not_called 'tmux -L lab new-session'
 }
 
-@test "new pressed on the agent world itself stays put, with no hop" {
-  declare_in_lab
+@test "new pressed on the repo's own world stays put, with no hop" {
+  declare_game_in_hub
+  export TMUX=/tmp/tmux-stub/hub,1,0
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_called 'switch-client -t game-agent-1'
+  assert_not_called 'tmx goto'
+  assert_not_called 'tmux -L hub new-session'
+}
+
+@test "new for a repo no world claims stays on the world it was pressed in" {
+  declare_game_in_hub
+  printf 'hub ~/hub\n' > "$TMUX_SERVERS_DIR/hub.conf"
   export TMUX=/tmp/tmux-stub/lab,1,0
   run "$WT" new -c "$MAIN"
   assert_success
   assert_called 'switch-client -t game-agent-1'
   assert_not_called 'tmx goto'
-  assert_not_called 'tmux -L lab new-session'
 }
 
-@test "new --server still wins over the agent world" {
-  declare_in_lab
+@test "new --server still wins over the repo's world" {
+  declare_game_in_hub
   WT_NEW_CMD='true' run "$WT" new --server elsewhere --detach -c "$MAIN"
   assert_success
   assert_called 'tmux -L elsewhere new-session -ds game-agent-1'
-  assert_not_called 'tmux -L lab'
+  assert_not_called 'tmux -L hub'
   assert_not_called 'tmx goto'
 }
 

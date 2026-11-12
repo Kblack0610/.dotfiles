@@ -56,3 +56,26 @@
 #custom-audio-input.other {
     opacity: 0.6;
 }
+
+/* timebox blinks red in the last 10 seconds of a lap: `timebox status --json` sets
+ * class `final` there, only while flash alerts are on (`timebox toggle flash`). */
+@keyframes timebox-blink {
+    to {
+        background-color: #ff5555;
+        color: #1d1f21;
+    }
+}
+
+/* A queue task that timed out without `timebox done` stays red, no blink, until it is cleared. */
+#custom-timebox.overdue {
+    background-color: #ff5555;
+    color: #1d1f21;
+}
+
+#custom-timebox.final {
+    animation-name: timebox-blink;
+    animation-duration: 0.5s;
+    animation-timing-function: steps(1);
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+}

@@ -225,7 +225,7 @@ set -uo pipefail
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model [effort]` a line (content as data)
 : "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
 : "${BENCH_HARNESSES:=$HOME/.config/agentctl/harnesses.json}"   # each harness's `source`: a lane's capacity, a session's and an item's source
-: "${BENCH_ROOM_CMD:=claude-acct room --source}"   # retro: given a source name, exit 0 when it has room
+: "${BENCH_ROOM_CMD:=claude-acct room}"   # retro: exit 0 when a Claude account has room, or with --source <name>, when that source has
 : "${BENCH_SOURCES_CMD:=claude-acct status --json}"   # sources: every source's row, the one writer's
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
@@ -330,6 +330,8 @@ def round2: . * 100 | round / 100;
 def ownerless: select((.state == "running" or .state == "review" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
 def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
 def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
+# A canary score on the claude baseline: claude as dispatch runs it. A claude lane pins an effort (canary queue), so it is never pooled in.
+def canary_base: (.harness // "claude") == "claude" and (.effort // "") == "";
 # An end that says nothing about the model (UNRATED_ENDS, lib/end-reasons.sh) is no evidence for or against it.
 def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
 def hold_key: "fix(hold): \(.name) went red";
@@ -2294,7 +2296,7 @@ KPI_DEFS="$JQ_LIB"'
   def win($t; $d): bots as $bot | ($t - $d * 86400) as $since
     | humans($bot; $since; $t) as $s
     | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id] | not)))) as $ci
-    | ($k | map(select((.harness // "claude") == "claude" and .epoch > $since and .epoch <= $t))) as $kw
+    | ($k | map(select(canary_base and .epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
     | ($since | strflocaltime("%Y-%m-%d")) as $d0 | ($t | strflocaltime("%Y-%m-%d")) as $d1
@@ -4645,9 +4647,14 @@ canary_brief() {
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
 # A lane with an effort ends in its first two letters (me, hi, lo, mi, xh): the whole word would
-# leave the id too few letters to tell the tasks apart. Retro refuses a lane whose slug repeats one before it.
+# leave the id too few letters to tell the tasks apart. For the same reason a claude lane with a model
+# is named by the model alone, as the baseline lane names no harness. Retro refuses a lane whose slug
+# repeats one before it.
 # canary_lane_name <harness> [model] [effort] -> the lane part of the slug, as canary_slug keeps it whole
-canary_lane_name() { printf '%s' "$1${2:+-$2}${3:+-${3:0:2}}"; }
+canary_lane_name() {
+  local h=$1; [ "$h" != claude ] || [ -z "$2" ] || h=''
+  printf '%s' "$h${2:+${h:+-}$2}${3:+-${3:0:2}}"
+}
 
 canary_slug() {
   local id tail
@@ -4671,6 +4678,7 @@ canary_queue() {
   done
   [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
   [ -z "$effort" ] || [ -n "$model" ] || { say "canary queue: --effort needs --model"; return 2; }
+  [ "$harness" != claude ] || [ -z "$model" ] || [ -n "$effort" ] || { say "canary queue: a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 2; }
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
@@ -4694,7 +4702,8 @@ canary_queue() {
 # canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model [effort]` a
 # line, # comments), when the source its harness spends from (harnesses.json `source`) has room by
 # BENCH_ROOM_CMD; a lane with no source or no room is said and skipped, so retro never queues a run
-# its source cannot carry. Returns 1 when any lane could not be queued.
+# its source cannot carry. A claude lane spends a Claude account, so it asks for any with room, as a
+# start does. Returns 1 when any lane could not be queued.
 canary_queue_lanes() {
   local h m e src why label lane rc=0
   local -A lanes=()
@@ -4704,9 +4713,13 @@ canary_queue_lanes() {
     label="$h${m:+/$m}${e:+@$e}" lane=$(canary_lane_name "$h" "$m" "$e")
     if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
     lanes[$lane]=$label
-    src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
-    if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
-    if ! why=$($BENCH_ROOM_CMD "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+    if [ "$h" = claude ]; then
+      if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
+    else
+      src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
+      if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
+      if ! why=$($BENCH_ROOM_CMD --source "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+    fi
     canary_queue --harness "$h" ${m:+--model "$m"} ${e:+--effort "$e"} || rc=1
   done 3<"$BENCH_CANARY_LANES"
   return "$rc"
@@ -4810,7 +4823,7 @@ canary_list() {
 }
 
 # canary_lanes [json] -> one row per harness, model and effort over every score, joined to outcome rows.
-# same_tasks are the tasks a lane shares with the claude lane (harness claude, as the canary_ KPIs
+# same_tasks are the tasks a lane shares with the claude lane (canary_base, as the canary_ KPIs
 # read it): its pass rate and claude's over just those, each the mean of per-task pass rates so a
 # task claude re-ran every week weighs one, the like-for-like comparison; null on a claude row.
 canary_lanes() {
@@ -4818,13 +4831,12 @@ canary_lanes() {
     def mean(f): map(f | numbers) | if length == 0 then null else add / length end;
     def passed: map(select(.pass == true)) | length;
     def per_task($i): map(select(.id == $i)) | passed / length;   # a task weighs one, however many weeks ran it
-    def baseline: (.harness // "claude") == "claude";
     ($o | INDEX(.session_id)) as $os
-    | [$k[] | select(baseline)] as $base
+    | [$k[] | select(canary_base)] as $base
     | ($base | map(.id) | unique) as $bt
     | $k | group_by([.harness // "claude", .model // "", .effort // ""]) | map(
         [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
-        | any(.[]; baseline) as $isbase
+        | any(.[]; canary_base) as $isbase
         | (map(.id) | unique | map(select(IN($bt[])))) as $st
         | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null), runs: length,
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),

@@ -255,7 +255,12 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
         pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
       { slug: "q-2", title: "No session yet", project: "trader" },
     ],
-    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }] },
+    // hub_core::links beside the rows (`Running::link`): the page draws these, it builds none.
+    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }], links: [
+      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#board?q=id:=ar-1494", epic: "#board?q=id:=ar-1292",
+        pr: "https://github.com/o/r/pull/1871", ci: "https://github.com/o/r/pull/1871/checks" },
+      { item: "#queue/q-2", project: "#projects/trader" },
+    ] },
   }));
   assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
   assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
@@ -265,7 +270,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
   assert.ok(row, html);
   const cells = row[1];
-  assert.match(cells, /Queue cards<div class="muted">next: docs<\/div>/);
+  assert.match(cells, /<a href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
   assert.match(cells, /<a href="#projects\/agent-runtime">agent-runtime<\/a>/);
   assert.match(cells, /<a href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
   assert.match(cells, /<a href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
@@ -273,7 +278,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(cells, /<a href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
   assert.match(cells, /<a class="ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
   // No session: the row has no target to open and empty cells say so.
-  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap">No session yet<\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
+  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a href="#queue\/q-2">No session yet<\/a><\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
   // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
@@ -635,4 +640,44 @@ test("a row that leaves Needs you closes, so its id never comes back open", asyn
     await vm.runInContext("refreshHome()", ctx);
     assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; vm.runInContext("hst.open = new Set()", ctx); }
+});
+
+test("an opened sheet row closes from its card: a refresh keeps the form, the row is read fresh by id, then the board's write", async () => {
+  const sheet = (id) => ({ kind: "sheet", need: "todo", project: "p", text: "sheet row", id, score: { human: true, holds: "", priority: "urgent", value: 1 } });
+  const needs = [sheet("t-1"), sheet("a row with no id")];
+  const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
+  assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
+  assert.match(html, /data-tab="board">Open the board/);
+  assert.equal((html.match(/data-closego/g) || []).length, 1);
+  // What was picked and typed is Home's state, so the next draw shows it again.
+  vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+  assert.match(draw(home({ needs }), [], [], ["sheet:t-1"]), /value="done:proof" selected.*value="pr:9"/s);
+  const sent = [];
+  const reply = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  const row = { id: "t-1", project: "p", state: "open", profile: "personal", lane: "human", raw: "- [ ] sheet row #urgent" };
+  const before = ctx.fetch;
+  let rows = [row, { ...row, project: "other" }];
+  ctx.fetch = async (path, o) => {
+    if (path.startsWith("/api/board?")) { sent.push(["read", path]); return reply({ rows }); }
+    if (path === "/api/board") { sent.push(["write", JSON.parse(o.body)]); return reply({ out: "dropped" }); }
+    return reply(path === "/api/briefing" ? { error: "off" } : home({ needs }));
+  };
+  const close = () => vm.runInContext(`closeSheetRow("t-1", "p")`, ctx);
+  try {
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: " " }`, ctx);
+    await close();
+    assert.equal(vm.runInContext(`hst.close["t-1"].err`, ctx), "Say why it is dropped.");
+    assert.equal(sent.length, 0);
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: "stale" }`, ctx);
+    await close();
+    assert.deepEqual(sent, [["read", "/api/board?q=id%3A%3Dt-1"],
+      ["write", { verb: "drop", why: "stale", profile: "personal", project: "p", lane: "human", raw: "- [ ] sheet row #urgent" }]]);
+    assert.equal(vm.runInContext(`"t-1" in hst.close`, ctx), false);
+    rows = [{ ...row, state: "done" }];
+    vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+    await close();
+    assert.match(vm.runInContext(`hst.close["t-1"].err`, ctx), /t-1 is not open on the p sheet any more/);
+    assert.equal(vm.runInContext(`hst.close["t-1"].busy`, ctx), false);
+    assert.equal(sent.filter(([k]) => k === "write").length, 1);
+  } finally { ctx.fetch = before; vm.runInContext(`hst.close = {}`, ctx); }
 });

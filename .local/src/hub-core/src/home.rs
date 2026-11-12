@@ -411,6 +411,25 @@ impl crate::table::Row for Running {
         }
     }
 
+    /// The item opens its session, else its queue item; project, row and epic their own homes; PR
+    /// and CI their forge pages.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        let some = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(String::from);
+        match col {
+            "item" => Some(match some(self.target.as_deref()) {
+                Some(t) => Link::To(Kind::Session, t),
+                None => Link::to(Kind::Queue, &self.slug),
+            }),
+            "project" => some(Some(&self.project)).map(|p| Link::To(Kind::Project, p)),
+            "row" => some(self.row.as_deref()).map(|r| Link::To(Kind::Row, r)),
+            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Row, e)),
+            "pr" => some(self.pr_url.as_deref()).map(Link::Url),
+            "ci" => some(self.ci_url.as_deref()).map(Link::Url),
+            _ => None,
+        }
+    }
+
     fn in_state(&self, s: &str) -> bool {
         match s {
             "Overdue" => self.overdue,
@@ -1349,6 +1368,31 @@ mod tests {
         assert_eq!(shown("", "Overdue"), ["busy"]);
         assert_eq!(shown("epic:tr-1", ""), ["busy"]);
         assert_eq!(shown("tr-50", ""), ["lone"]);
+        // Each cell that names a record links its one page (hub_core::links), sent beside the rows.
+        let (_, t) = crate::table::View::default().summary(&h.running);
+        let at = |i: usize, c: &str| t.links[i].get(c).map(String::as_str);
+        assert_eq!(
+            (at(0, "item"), at(0, "project"), at(0, "row"), at(0, "epic")),
+            (
+                Some("#sessions/lab%2Frepo-agent-2%3A1"),
+                Some("#projects/p"),
+                Some("#board?q=id:=tr-9"),
+                Some("#board?q=id:=tr-1")
+            )
+        );
+        assert_eq!(
+            (at(0, "pr"), at(0, "ci"), at(0, "phase")),
+            (
+                Some("https://github.com/o/r/pull/12"),
+                Some("https://github.com/o/r/pull/12/checks"),
+                None
+            )
+        );
+        // No session: the item opens its queue record, and a CI never read links nothing.
+        assert_eq!(
+            (at(1, "item"), at(1, "epic"), at(1, "ci")),
+            (Some("#queue/lone"), None, None)
+        );
     }
 
     #[test]

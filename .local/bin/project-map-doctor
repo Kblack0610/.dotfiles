@@ -49,11 +49,13 @@ if ! jq -e . "$MAP_FILE" >/dev/null 2>&1; then
 fi
 pass "map is valid JSON ($MAP_FILE)"
 
-# The set of names the registry considers real comes from `project_keys`, the one
+# The set of names the registry considers real comes from `project_all_keys`, the one
 # definition (`default` is a tracker fallback, not a project, so every typo'd name does not
-# "resolve").
+# "resolve"). Every key, work projects this machine does not list included: the registry is
+# shared, so its references hold on every machine.
 export PROJECT_MAP_FILE="$MAP_FILE"
-KNOWN="$(project_keys)"
+KNOWN="$(project_all_keys)"
+LISTED="$(project_keys)"  # the keys this machine lists (project_visible)
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
 
 # --- 1. every `path` has a `repo` ----------------------------------------------------
@@ -95,6 +97,22 @@ done < <(jq -r '(.trackers // {}) as $t | $t | to_entries[] | select(.value | ty
     (if ($b | type) == "string" and (($t[$b] | objects | .lab) // "") != "" and (($t[$b] | objects | .code) // "") != "" then 1 else 0 end)]
   | @tsv' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n board relations name a sheet" || skip "no board relations to check"
+
+# --- 3c. every tracker `client` names a `clients` entry with a profile ----------------
+# A client marks a work project, listed only on the machine whose notes profile is
+# clients[client].profile (project_visible). A typo'd client hides the project everywhere,
+# the work machine included, so it fails here instead of vanishing quietly.
+n=0 bad=0
+while IFS=$'\t' read -r name client ok; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  [ "$ok" = 1 ] || { bad=$((bad + 1)); fail "trackers.$name has client \"$client\", which clients does not define with a profile"; }
+done < <(jq -r '(.clients // {}) as $c | (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.client != null)
+  | .value.client as $k | [.key, ($k | tostring),
+    (if ($k | type) == "string" and ((($c[$k] // null) | objects | .profile) // "") != "" then 1 else 0 end)]
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+if [ "$n" -eq 0 ]; then skip "no tracker clients to check"
+elif [ "$bad" -eq 0 ]; then pass "all $n tracker clients name a clients profile"; fi
 
 # --- 4. every spelling names one project, and every spelling in use resolves ---------
 # The name index (project_lookup; rule: docs/operations/release-state.md, "Project identity")
@@ -296,7 +314,8 @@ fi
 # session with no key facts, plans or lessons digest. One past the budget overflows Claude
 # Code's ~10 KB hook-output cap with the rest of the preflight, which then reaches the model
 # as a 2 KB preview. The budget counts what is injected: anchor-lib.sh swaps the decisions
-# log for a pointer line, so it is left out.
+# log for a pointer line, so it is left out. Only the projects this machine lists need one: a
+# work project's anchor lives on its work machine.
 ANCHOR_MAX=6144 FACTS_MAX=2048
 if [ -d "$AGENT_DIR/anchors" ]; then
   n=0; bad=0
@@ -526,6 +545,8 @@ while IFS=$'\037' read -r name lab type; do
     bad=$((bad + 1))
   fi
   [ -n "$profiles" ] || continue
+  # A work project this machine does not list has its profile hidden too; its own machine checks it.
+  grep -qxF -- "$name" <<<"$LISTED" || continue
   if ! printf '%s\n' "$profiles" | grep -qxF -- "$lab"; then
     fail "trackers.$name has lab \"$lab\", which is not a notes profile ($(printf '%s' "$profiles" | tr '\n' ' '))"
     bad=$((bad + 1))
