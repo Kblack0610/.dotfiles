@@ -704,10 +704,6 @@ fn opt(v: Option<i64>) -> Val {
     v.map_or(Val::None, |n| Val::Num(n as f64))
 }
 
-fn ratio(v: Option<f64>) -> Val {
-    v.map_or(Val::None, Val::Num)
-}
-
 /// What a job or slot runs for: `repo#pr`, else its branch, else its repo.
 fn reference(repo: &str, pr: &str, branch: &str) -> String {
     if !pr.is_empty() {
@@ -863,8 +859,8 @@ impl Row for Finished {
         match col {
             "repo" => Val::Text(self.repo.clone()),
             "workflow" => Val::Text(self.workflow.clone()),
-            "main" => ratio(self.main.pass()),
-            "branches" => ratio(self.branch.pass()),
+            "main" => self.main.pass().into(),
+            "branches" => self.branch.pass().into(),
             "runs" => Val::Num(self.all.runs as f64),
             "failed" => Val::Num(self.all.bad as f64),
             "cancelled" => Val::Num(self.all.can as f64),

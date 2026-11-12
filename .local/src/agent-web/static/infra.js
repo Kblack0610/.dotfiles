@@ -180,7 +180,7 @@ const SLOT_CELLS = {
   ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
 };
 
-const QUEUED_COLS = { job: ["queued"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"] };
+const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"] };
 const QUEUED_CELLS = {
   job: (q) => td(q.stuck ? "bad" : "", esc(q.job || "-")),
   pool: (q, l) => td("muted", tblLink(l.pool, q.pool)),
@@ -193,14 +193,14 @@ const QUEUED_CELLS = {
 
 // Main's pass rate leads: a red on the default branch is everyone's problem, while a red gate on
 // a work branch is usually the gate doing its job (github_runs_finished's scope label).
-const tpass = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
+const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
 const runSeg = (f) => `<span class="stack" data-tip="${esc(`${f.repo} ${f.workflow}\nmain: ${f.main.ok} passed, ${f.main.bad} failed, ${f.main.can} cancelled\nbranches: ${f.branch.ok} passed, ${f.branch.bad} failed, ${f.branch.can} cancelled`)}">${[[f.all.ok, "var(--b-done)"], [f.all.bad, "var(--b-needs)"], [f.all.can, "var(--c-other)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
 const FIN_COLS = { repo: ["repo"], workflow: ["workflow"], main: ["main", "n"], branches: ["branches", "n"], runs: ["runs"], failed: ["failed", "n"], cancelled: ["cancelled", "n"] };
 const FIN_CELLS = {
   repo: (f) => td("", esc(f.repo)),
   workflow: (f) => td("wrap", esc(f.workflow)),
-  main: (f) => td(`n ${passCls(tpass(f.main))}`, pct(tpass(f.main))),
-  branches: (f) => td("n muted", pct(tpass(f.branch))),
+  main: (f) => td(`n ${passCls(passOf(f.main))}`, pct(passOf(f.main))),
+  branches: (f) => td("n muted", pct(passOf(f.branch))),
   runs: (f) => td("m", `${runSeg(f)} ${f.all.runs}`),
   failed: (f) => td("n", f.all.bad),
   cancelled: (f) => td("n", f.all.can),
@@ -242,7 +242,6 @@ function tally(rows) {
   for (const r of rows) if (r.out) t[r.out] += r.n;
   return t;
 }
-const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
 const hh = (hour) => String(new Date(hour * 1e3).getHours()).padStart(2, "0");
 
 // What failed, like the Log tab's merged list: main first because a red there is everyone's
@@ -307,7 +306,7 @@ function doneToday(inst, t1) {
 const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
 function ciSection(inst, t1, ci) {
   const failed = failedCount(inst), done = ci.done;
-  const fin = `${done.runs} runs, ${pct(tpass(done))} pass, ${done.bad} failed, ${done.can} cancelled`;
+  const fin = `${done.runs} runs, ${pct(passOf(done))} pass, ${done.bad} failed, ${done.can} cancelled`;
   const green = !ci.busy && !ci.queued && !failed;
   let html = `<h2 class="sec" id="sec-ci">CI runners <span class="muted">${esc(ciHead(ci))}${failed ? `, failed 24h ${failed}` : green ? `; green: nothing queued or failed in 24h` : ""}</span></h2>`;
   // A queued job no online runner can take: hub_core::ci words the line, once for both surfaces.
@@ -375,7 +374,7 @@ function histRow(host, span) {
     const days = d.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
     const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
     const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="${esc(host)}">+${ch.length - shown.length} older</button>` : "";
-    body = `<div>Run per UTC day: ${days || "no samples"} <span class="muted">(counted from ${d.step / 60}-minute samples of the governor's power state)</span></div><table class="tbl"><tr><th>from</th><th>state</th><th>why</th></tr>${rows}</table>${more}`;
+    body = `<div>Run per UTC day: ${days || "no samples"} <span class="muted">(counted from ${d.step / 60}-minute samples of the governor's power state)</span></div><table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>${more}`;
   }
   return `<tr><td colspan="${span}">${body}</td></tr>`;
 }

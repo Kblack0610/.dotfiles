@@ -27,6 +27,13 @@ pub enum Val {
     None,
 }
 
+/// A reading that may be missing: a missing one sorts last (`Val::None`).
+impl From<Option<f64>> for Val {
+    fn from(v: Option<f64>) -> Self {
+        v.map_or(Val::None, Val::Num)
+    }
+}
+
 impl Val {
     /// The lower-case text a `key:value` term matches by prefix.
     fn text(&self) -> Option<String> {

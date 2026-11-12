@@ -135,10 +135,6 @@ pub struct Pool {
     pub machines: Vec<String>,
 }
 
-fn num(v: Option<f64>) -> Val {
-    v.map_or(Val::None, Val::Num)
-}
-
 fn text(s: &str) -> Val {
     if s.is_empty() {
         Val::None
@@ -167,12 +163,12 @@ impl Row for Machine {
             "state" => text(&self.state),
             "busy" if self.busy + self.slots == 0 => Val::None,
             "busy" => Val::Num(self.busy as f64),
-            "cpu" => num(self.cpu),
-            "6h" => num(self.cpu6h),
-            "load" => num(self.load),
-            "mem" => num(self.mem),
-            "temp" => num(self.temp),
-            "disk" => num(self.disk),
+            "cpu" => self.cpu.into(),
+            "6h" => self.cpu6h.into(),
+            "load" => self.load.into(),
+            "mem" => self.mem.into(),
+            "temp" => self.temp.into(),
+            "disk" => self.disk.into(),
             "pools" => text(&self.pools.join("  ")),
             "running" => text(&self.running.join(", ")),
             "governor" => self
@@ -180,7 +176,7 @@ impl Row for Machine {
                 .as_ref()
                 .map_or(Val::None, |g| Val::Text(g.says())),
             "power" => self.power.as_ref().map_or(Val::None, |p| text(&p.state)),
-            "up" => num(self.boot),
+            "up" => self.boot.into(),
             _ => Val::None,
         }
     }
@@ -239,13 +235,13 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
-            "slots" => num(self.slots),
-            "busy" => num(self.busy),
-            "withheld" => num(self.withheld),
-            "waiting" => num(self.waiting),
-            "oldest" => num(self.oldest),
-            "done" => num(self.done),
-            "pass" => num(self.pass),
+            "slots" => self.slots.into(),
+            "busy" => self.busy.into(),
+            "withheld" => self.withheld.into(),
+            "waiting" => self.waiting.into(),
+            "oldest" => self.oldest.into(),
+            "done" => self.done.into(),
+            "pass" => self.pass.into(),
             "machines" => text(&self.machines.join(", ")),
             _ => Val::None,
         }
