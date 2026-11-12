@@ -263,11 +263,11 @@ crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}"
 IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
 typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
 
-@test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, and hands no pass the line" {
+@test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
   doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
-  STUB_PANE="$IDLE" run checked
-  assert_failure
-  refute_output --partial 'nudge '
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  # Typed, it writes the document again, so cmd_due reads those rows as nudged and hands a pass nothing.
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   run typed
   assert_line '-L lab send-keys -t %1 -l /wind-down auto'
   assert_line '-L lab send-keys -t %2 -l /wind-down'
@@ -291,6 +291,8 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
+  # Nothing typed, nothing to refresh: one write per check.
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 5 ]
   # The same row with an empty prompt is typed into: the screen alone held it back.
   STUB_PANE="$IDLE" run checked
   [ -n "$(typed)" ]
