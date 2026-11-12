@@ -4536,7 +4536,7 @@ mod tests {
         // HARNESS gives way before YOU and ASK; a wide screen names each row's.
         let wide = screen(&mut a, 220, 30);
         let wl: Vec<&str> = wide.lines().collect();
-        assert!(wl[3].contains("ACCOUNT  HARNESS"), "{wide}");
+        assert!(wl[3].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
         assert!(wl[4].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.

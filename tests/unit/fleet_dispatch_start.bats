@@ -214,6 +214,18 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "a restore with no item wrote one"
 }
 
+@test "start --resume --prompt gives the resumed conversation its first message; without a resume it is refused" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session fix-crash \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --prompt "Answer to ask Ab12: b"
+  assert_success
+  assert_called "--resume abc-123 Answer\\ to\\ ask\\ Ab12:\\ b"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --item x --prompt hi
+  assert_failure 2
+  assert_output --partial 'first message of a --resume'
+}
+
 @test "start --resume --item re-attaches the started item to the new session; a queued item or a --row is refused" {
   project game beta "$SANDBOX/repos/game"
   started_item fix-crash lab:game-agent-9 run '' 'board:game:fix crash'

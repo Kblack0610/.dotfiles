@@ -133,10 +133,6 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
 : "${FLEET_SHEPHERD_BUDGET_USD:=25}" # an item with no size tag
 : "${FLEET_SHEPHERD_BUDGET_EXTEND:=3}" # a session still WORKING is parked only at this many budgets
-# A CHAT row is the human's own conversation: nothing is due on it until it has sat this long, by
-# the smaller of its idle and age (an epoch-0 idle on a new session cannot fire it early), and
-# then it gets one wind-down nudge. The human set 24h when approving the CHAT bucket, 2026-11-05.
-: "${FLEET_CHAT_CLOSE_H:=24}"
 # A row nudged and escalated that still sits unchanged this long pages the human again, in plain
 # words naming the one decision that closes it, once per fact per day (remind_sample).
 # trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
@@ -223,17 +219,17 @@ tag_pane() {
 }
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
-# the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once (never while the session holds an open ask it filed: its window is where the
-# question waits), and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
-# survived, is escalated once. A test red on several branches (shared) is owned by the queue item
+# the fleet-states.md bucket table and the row's close verdict (`close`, the close table there): a
+# manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
+# verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
+# question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
+# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several branches (shared) is owned by the queue item
 # shared_sample filed, and its sessions are told once; only one with no item escalates.
 # PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
-    --argjson items "$(shared_items)" '
+  out="$(jq -r --argjson items "$(shared_items)" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -244,13 +240,16 @@ cmd_due() {
         else empty end )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
-      | ([.idle_min // 0, .age_min // 0] | min) as $quiet
-      | if (.own_asks // 0) > 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+      | (.close.verdict // "") as $v
+      | ((.own_asks // 0) > 0) as $ask
+      | if $ask and $v == "now" and (.nudged | not) then
+          "nudge CLOSE: \(.target) \(.fact // "")"
+        elif $ask and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
           empty
-        elif (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
+        elif (.bucket | IN("DONE","CHAT")) and (.nudged | not) then
+          if $v == "now" then "nudge \(.bucket): \(.target) \(.fact // "")" else empty end
+        elif (.bucket | IN("LANDED","STALLED")) and (.nudged | not) then
           "nudge \(.bucket): \(.target) \(.fact // "")"
-        elif .bucket == "CHAT" and (.nudged | not) and $quiet >= $chat then
-          "nudge CHAT: \(.target) \(.fact // "")"
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
           "escalate \(.bucket): \(.target) \(.reason // "")"

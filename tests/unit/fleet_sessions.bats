@@ -1063,6 +1063,8 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  # The mode still keeps it open: the row carries it, and the close verdict reads it (ask 4RSfMg).
+  [ "$(jq -r '"\(.in_plan_mode) \(.close.verdict): \(.close.why)"' <<<"$output")" = "true keep: plan mode: the human approves or ends it" ]
   # a rejected plan leaves ExitPlanMode as the last tool call, but the session is idle: no dialog
   PANEL_PLAN_MODE=true PANEL_DOING=ExitPlanMode panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -3028,9 +3030,10 @@ main_change() {
 }
 
 # verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the rule table in
-# fleet-states.md). base is a dispatched lab session, finished, idle an hour, nothing open.
+# fleet-states.md). base is a dispatched lab session, finished, idle an hour, nothing open. SELF names
+# the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson hand 60 --argjson chat 1440 --arg world lab \
+  jq -nr --argjson hand 60 --argjson chat 1440 --arg world lab --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
       blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
@@ -3048,6 +3051,9 @@ verdict() {
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission"}')" = "keep: a dialog waits on the human" ]
   # A dialog in the pane keeps it even when an ask of its own is also open.
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
+  # Plan mode keeps it whether or not its approval dialog is open (ask 4RSfMg).
+  [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
+  [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "keep: the human was here 30m ago" ]
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
@@ -3071,6 +3077,37 @@ verdict() {
   [ "$(verdict '{target: "hub/d:4", bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "keep: the human was here 0m ago" ]
   [ "$(jq -r --argjson hand 60 --argjson chat 1440 --arg world lab \
        '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = keep ]
+}
+
+@test "close verdict: a session asking about itself reads as at the end of its turn" {
+  # Mid-turn it always reads WORKING and just used; those two keeps are not asked of itself.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1"}')" = "now: plan finished, nothing open" ]
+  [ "$(SELF=s1 verdict '{target: "hub/d:3", idle_min: 0, session_id: "s1"}')" = "now: plan finished, nothing open" ]
+  # Negative control: the same rows read by anyone else, or for another session, still keep.
+  [ "$(verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
+  [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
+  [ "$(SELF=s2 verdict '{target: "hub/d:3", idle_min: 0, session_id: "s1"}')" = "keep: the human was here 0m ago" ]
+  # Every other keep still holds it.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
+}
+
+@test "close --self: its verdict and blockers from a fresh collect, exit 0 only on now" {
+  bats_require_minimum_version 1.5.0
+  CLOSE_SELF=sid-45
+  run close_self "$(age_row 45)"
+  assert_failure 1
+  assert_output "keep: busy"
+  json_rows() { echo '{"session_id": "sid-45", "close": {"verdict": "now", "why": "only its own ask is open"}, "blockers": ["open ask Ab12"]}'; }
+  run close_self "x"
+  assert_success
+  assert_line --index 0 "now: only its own ask is open"
+  assert_line --index 1 "blocker: open ask Ab12"
+  CLOSE_SELF=sid-9
+  run --separate-stderr close_self "x"
+  assert_failure 2
+  [[ "$stderr" == *"no live session sid-9"* ]]
 }
 
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {

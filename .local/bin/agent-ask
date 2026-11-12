@@ -15,6 +15,11 @@
 #   agent-ask target [--reopen] <id>    where the asking session runs now, as an agent-panel
 #                                       jump target; fails saying why (ended, or no session).
 #                                       --reopen starts an ended one again first
+#   agent-ask reopen-on-answer <id>     set a pending ask's `resume` to reopen its session with the
+#                                       answer: the session may close before it comes (/wind-down auto)
+#   agent-ask reopen <id>               that resume: start the ended session again with the answer
+#                                       as its first message, unless it still runs or a queue item
+#                                       holds the ask (the queue restarts that one)
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
@@ -869,13 +874,13 @@ cmd_target() {
   jq -r .target <<< "$row"
 }
 
-# reopen_session <ask file> <claude session>: start an ended conversation again and print its
-# jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
+# reopen_session <ask file> <claude session> [prompt]: start an ended conversation again, with the
+# prompt as its first message when one is given, and print its jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
 # it too); this picks only where: the directory the conversation started in, which `claude
 # --resume` needs to find it, and the world and session that directory routes to, as window
 # ask-<id>. A world session that is up gains the window; one that is not starts with it.
 reopen_session() {
-  local f="$1" sid="$2" cwd world sess win out
+  local f="$1" sid="$2" prompt="${3:-}" cwd world sess win out
   # A running process outside tmux has no pane to go to, and a second resume would fork it.
   session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
   cwd="$(session_cwd "$sid")"
@@ -887,9 +892,47 @@ reopen_session() {
   [ -n "$world" ] && [ -n "$sess" ] || { echo "no world to reopen $cwd in; resume with claude --resume $sid" >&2; return 1; }
   win="ask-$(field "$f" id)"
   out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
-    --window "$win" --cwd "$cwd" --resume "$sid" </dev/null 2>&1)" ||
+    --window "$win" --cwd "$cwd" --resume "$sid" ${prompt:+--prompt "$prompt"} </dev/null 2>&1)" ||
     { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
   echo "$world/$sess:$win"
+}
+
+# REOPEN_RESUME: the `resume` reopen-on-answer sets; ask-resume runs it as `agent-ask reopen <id>`.
+REOPEN_RESUME='run: agent-ask reopen'
+
+# cmd_reopen_on_answer <id>: a session closing over its own pending ask (close rule "only its own
+# ask is open") has the answer reopen it, so the answer carries on without the window. Refuses an
+# ask that is not pending, has no session, or already resumes some other way.
+cmd_reopen_on_answer() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen-on-answer <id>" >&2; return 2; }
+  local f r; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status), not pending" >&2; return 1; }
+  [ -n "$(field "$f" claude_session)" ] || { echo "agent-ask: $id names no session to reopen" >&2; return 1; }
+  r="$(field "$f" resume)"
+  [ "$r" = "$REOPEN_RESUME" ] && return 0
+  [ -z "$r" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
+  set_field "$f" resume "$REOPEN_RESUME"
+  echo "$id reopens its session on the answer" >&2
+}
+
+# cmd_reopen <id>: the reopen-on-answer resume. A live session already had the answer typed in
+# (deliver_to_session), and a queue item tagged with the ask is restarted by the queue, so both
+# are left alone; otherwise the ended conversation starts again with the answer as its first
+# message. One that cannot be reopened gets the board row an answer nobody acts on gets.
+cmd_reopen() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen <id>" >&2; return 2; }
+  local f sid answer by; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  [ "$(field "$f" status)" = answered ] || { echo "agent-ask: $id is not answered" >&2; return 1; }
+  sid="$(field "$f" claude_session)"
+  [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; return 0; }
+  [ -z "$(queue_holders "$id")" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
+  answer="$(field "$f" answer)"; by="$(field "$f" answered_by)"
+  [ "$by" != judge ] || answer="$answer (the judge answered; the human can override in this session)"
+  session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $answer" && return 0
+  file_board_row "$f" "$(field "$f" question) -> answered: $(field "$f" answer)"
+  return 1
 }
 
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
@@ -1027,6 +1070,9 @@ answer_route() {
       on="${spec//+/ or }"
       echo "  answer releases: $items${on:+ (on $on)}"
     done < <(cut -f2 <<<"$held" | sort -u)
+  elif [ "${ASK[resume]:-}" = "$REOPEN_RESUME" ]; then
+    if [ -n "$alive" ]; then echo "  the answer goes to the asking session"
+    else echo "  ${who}the answer reopens the session with it"; fi
   elif [ -n "${ASK[resume]:-}" ]; then
     if [ -n "$alive" ]; then
       echo "  the answer goes to the asking session and starts \`${ASK[resume]:-}\`"
@@ -1595,6 +1641,8 @@ case "$sub" in
   card)   cmd_card "$@" ;;
   decision) cmd_decision "$@" ;;
   target) cmd_target "$@" ;;
+  reopen-on-answer) cmd_reopen_on_answer "$@" ;;
+  reopen) cmd_reopen "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer "$@" ;;
