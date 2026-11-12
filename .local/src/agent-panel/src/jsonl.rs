@@ -1856,6 +1856,8 @@ mod tests {
             .1
         };
         assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
+        // The playground's whole-nightly runner, a phase's proof run (2026-11-12 agent-6 read STALLED on it).
+        assert_eq!(open("agentctl-playground-night --only test > night.log 2>&1"), "test");
         // A wrapper script of the session's own hides its gh run view: a plain job.
         assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
     }
