@@ -181,6 +181,10 @@ pub struct Item {
         skip_serializing_if = "Option::is_none"
     )]
     pub work_min: Option<f64>,
+    /// `<plan name> P5`: a plan item's plan and phase, the column beside its title (`parse`
+    /// sets it); None for any other item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -314,12 +318,14 @@ impl Item {
     }
 
     /// What the item is in a few words: the `title:` header, else the task's first sentence
-    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    /// with each file path shortened to its name; either one [`crate::text::clean`] (no
+    /// `type(area):`, id or `#tag`) and capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
-        if self.title.trim().is_empty() {
+        let own = crate::text::clean(&self.title).text;
+        if own.is_empty() {
             headline(&self.task).0
         } else {
-            cap(self.title.trim(), TITLE_MAX)
+            cap(&own, TITLE_MAX)
         }
     }
 
@@ -328,13 +334,13 @@ impl Item {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
     }
 
-    /// `<plan name> P5: <phase words>`, a plan item's title as every view says it (`parse`
-    /// sets it): the plan by its heading (`plans::named`) in place of the file name
-    /// `agent-queue add --plan` titles it with. A one-phase item takes the label its words lead
-    /// with (`P9 live stage`) over its checklist place. An item with no `plan:` whose title has
-    /// that shape (one promoted from a board row) is named the same way when its plan file
-    /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
-    fn plan_title(&self) -> Option<String> {
+    /// A plan item's (`<plan name> P5`, `<phase words>`): its plan label and its title, as
+    /// every view says them (`parse` sets both): the plan by its heading (`plans::named`) in
+    /// place of the file name `agent-queue add --plan` titles it with. A one-phase item takes
+    /// the label its words lead with (`P9 live stage`) over its checklist place. An item with no
+    /// `plan:` whose title has that shape (one promoted from a board row) is named the same way
+    /// when its plan file exists. None for any other item.
+    fn plan_title(&self) -> Option<(String, String)> {
         use crate::plans::{base, legacy, named, own_label, path};
         // An item with no `title:` header is worded by its task, as `title()` words it.
         let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
@@ -357,10 +363,8 @@ impl Item {
             .then(|| own_label(words))
             .flatten()
             .unwrap_or((tag, words));
-        Some(cap(
-            &format!("{} {label}: {words}", named(&plan)),
-            TITLE_MAX,
-        ))
+        let words = cap(&crate::text::clean(words).text, TITLE_MAX);
+        Some((format!("{} {label}", named(&plan)), words))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
@@ -816,14 +820,17 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
-/// Each item's `title` becomes the one every view shows: `plan_title` for a plan item, else
-/// `title()`.
+/// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
+/// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            i.title = i.plan_title().unwrap_or_else(|| i.title());
+            match i.plan_title() {
+                Some((label, words)) => (i.plan_label, i.title) = (Some(label), words),
+                None => i.title = i.title(),
+            }
             i
         })
         .collect()
@@ -1104,16 +1111,9 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The row's words: no checkbox, no `#tags`, no trailing `<!-- -->` comment, capped.
+    /// The row's words, [`crate::text::clean`] and capped.
     pub fn title(&self) -> String {
-        let t = self.text.trim_start();
-        let t = t.strip_prefix("- [").and_then(|r| r.get(2..)).unwrap_or(t);
-        let t = t.split("<!--").next().unwrap_or(t);
-        let words: Vec<&str> = t
-            .split_whitespace()
-            .filter(|w| !w.starts_with('#'))
-            .collect();
-        cap(&words.join(" "), TITLE_MAX)
+        cap(&crate::text::clean(&self.text).text, TITLE_MAX)
     }
 
     /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip
@@ -1614,18 +1614,20 @@ mod tests {
         // worklog's plan test covers the shapes; these are the cap and the untitled item.
         let bare = serde_json::json!({"slug": "p6", "state": "queued", "phases": "6",
             "plan": plan.to_str().unwrap(), "task": "Sixth thing. Read the plan."});
+        let bare = parse(&bare.to_string()).remove(0);
         assert_eq!(
-            parse(&bare.to_string()).remove(0).title(),
-            "Systems you can see P6: Sixth thing",
-            "an item with no title header names its phase by its task"
+            (bare.title(), bare.plan_label.as_deref()),
+            ("Sixth thing".into(), Some("Systems you can see P6")),
+            "an item with no title header is titled by its task, its plan and phase beside it"
         );
         let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
             "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
-        let long = parse(&long.to_string()).remove(0).title();
+        let long = parse(&long.to_string()).remove(0);
+        assert_eq!(long.plan_label.as_deref(), Some("Systems you can see P5"));
+        let long = long.title();
         assert!(
-            long.starts_with("Systems you can see P5: word")
-                && long.chars().count() <= TITLE_MAX + 3,
-            "a plan title is capped like any other: {long}"
+            long.starts_with("word") && long.chars().count() <= TITLE_MAX + 3,
+            "a plan title is capped like any other, its label not in it: {long}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

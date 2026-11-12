@@ -16,7 +16,9 @@ use crate::fmt::{clock, older, Palette};
 /// What `d` steps Work's window through, the values `worklog::Window::parse` takes.
 pub const WORK_WINDOWS: [&str; 4] = ["", "today", "30d", "all"];
 /// `Work::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WORK_HEADER: [&str; 7] = ["STATE", "WHEN", "PROJECT", "WHAT", "KIND", "PR", "COST"];
+const WORK_HEADER: [&str; 9] = [
+    "STATE", "WHEN", "PROJECT", "WHAT", "PLAN", "KIND", "CI", "PR", "COST",
+];
 
 /// A time today reads as its clock; an older one keeps its month and day.
 fn work_when(when: &str, today: &str) -> String {
@@ -44,7 +46,9 @@ fn work_row(r: &Work, today: &str, p: Palette) -> Vec<Cell> {
         cell(work_when(r.when.as_deref().unwrap_or(""), today), p.dim()),
         r.project.as_str().into(),
         r.what.replace(['\t', '\n'], " ").into(),
+        cell(r.plan.as_deref().unwrap_or(""), p.dim()),
         cell(r.kind.as_deref().unwrap_or(""), p.dim()),
+        cell(r.ci.as_deref().unwrap_or(""), p.dim()),
         pr,
         r.cost
             .map_or(String::new(), |c| crate::day::money(Some(c)))
@@ -249,6 +253,8 @@ mod tests {
             when: Some(when.into()),
             project: "notes".into(),
             what: what.into(),
+            plan: None,
+            ci: None,
             kind: Some("fix".into()),
             pr: Some("notes#7".into()),
             url: None,
