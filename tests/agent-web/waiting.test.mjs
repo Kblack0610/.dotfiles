@@ -151,6 +151,44 @@ test("a re-render keeps the reply being typed into a card", () => {
   assert.ok(input.focused);
 });
 
+test("a card mid-send draws locked, saying what it sent, and a redraw keeps it so", () => {
+  run('askst.sending["ask:a1"] = \'"yes"\'', {});
+  const html = askHtml(ask());
+  run('delete askst.sending["ask:a1"]', {});
+  assert.match(html, /^<div class="card need k-ask sending" data-id="a1">/);
+  assert.match(html, /<div class="cstat" role="status"><span class="spin"><\/span>Sending &quot;yes&quot;\.\.\.<\/div>/);
+  assert.match(askHtml(ask()), /^<div class="card need k-ask" data-id="a1">.*<div class="cstat" role="status"><\/div><div class="err"><\/div><\/div>$/s);
+});
+
+test("answering an ask locks its card until the server replies, takes no second click, and a failure unlocks it with why", async () => {
+  const cls = new Set(), attrs = {}, stat = { innerHTML: "" }, err = { textContent: "" };
+  const card = { dataset: { id: "a1" }, classList: { toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) },
+    setAttribute: (k, v) => { attrs[k] = v; }, querySelector: (q) => (q === ".cstat" ? stat : q === ".err" ? err : null) };
+  const opt = { dataset: { a: "yes" } };
+  const click = { target: { dataset: {}, closest: () => opt } };
+  let posts = 0, release;
+  const fetch0 = ctx.fetch;
+  doc.querySelectorAll = () => [card];
+  ctx.fetch = (path) => (path === "/api/asks/answer"
+    ? (posts++, new Promise((res) => { release = res; }))
+    : Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }));
+  ctx.card = card; ctx.click = click;
+  const first = vm.runInContext("answerCard(card, click)", ctx);
+  assert.ok(cls.has("sending"));
+  assert.equal(attrs["aria-busy"], "true");
+  assert.match(stat.innerHTML, /Sending &quot;yes&quot;\.\.\./);
+  await vm.runInContext("answerCard(card, click)", ctx);
+  assert.equal(posts, 1, "a second click while sending posts nothing");
+  release({ ok: false, status: 400, statusText: "Bad Request", headers: { get: () => "text/plain" }, text: async () => "no ask 'a1'", json: async () => ({}) });
+  await first;
+  assert.ok(!cls.has("sending"));
+  assert.equal(attrs["aria-busy"], "false");
+  assert.equal(stat.innerHTML, "");
+  assert.match(err.textContent, /no ask 'a1'/, "the failure says why");
+  doc.querySelectorAll = () => [];
+  ctx.fetch = fetch0;
+});
+
 test("the page's scripts share one global scope with no top-level name declared twice", () => {
   // The browser runs each script in the page's one scope, so a second `const wst` throws there
   // and the rest of that script never runs. Compiled as one script, the same clash is an early

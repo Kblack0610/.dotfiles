@@ -57,9 +57,13 @@ document.addEventListener("click", async (e) => {
   const t = b.dataset.approveGo;
   st.approving = null;
   if (!t) { rerenderApprove(); return; }
-  const err = b.closest(".card") && b.closest(".card").querySelector(".err");
-  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); if (err) err.textContent = ""; }
-  catch (x) { if (err) err.textContent = x.message; }
+  // The card locks and says it is approving until the server replies (waiting.js markSending).
+  const key = `ses:${t}`;
+  if (askst.sending[key]) return;
+  rerenderApprove();
+  markSending(key, "the plan approval");
+  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); markSending(key, ""); }
+  catch (x) { markSending(key, "", x.message); }
   refreshAgents();
 }, true);
 
