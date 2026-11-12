@@ -535,20 +535,20 @@ test("the fleet figure is Spend's first tile; who spent it is a table under a pl
   assert.doesNotMatch(none, /% of fleet/);
 });
 
-test("spend leads with burn per session for the picked day, then the 30-day chart and month bars, and keeps the period rows", async () => {
-  const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
+test("spend: the 30-day chart and month bars, period rows with $/session, and burn per session last with no chips, search or dropdowns", async () => {
+  const p = (kind, period, total, days, per_day, per_session, vs_prev, est) => ({ kind, period, total, days, per_day, per_session, vs_prev, est });
   const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
   const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
   const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
-    rows: [p("year", "2026", "$61,300", 54, "$1,135", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "+43%", "21%"),
-      p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
+    rows: [p("year", "2026", "$61,300", 54, "$1,135", "$2.40", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "$2.51", "+43%", "21%"),
+      p("day", "11-09", "$1,312", 1, "$1,312", "-", "+69%", "21%")],
     older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens", chart, months: [bar("2026-11", 130, 80, 50)] };
   const srow = (sid, session, cost) => ({ sid, session, project: "dotfiles", origin: "runner", agent: null, harness: "claude", cost, share: cost, est: 0, days: 2 });
   const day = { day: "2026-11-09", head: "2026-11-09: 2 sessions, $95 of the day's $100", why: null, rows: [srow("c", "big run", 90), srow("b", "shepherd", 5)], more: 0, shown_usd: "$95",
     table: { q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2, states: [], columns: ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"].map((k) => col(k)), facets: [] },
     series: { sid: "b", session: "shepherd", total: "$15", bars: [bar("2026-11-07", 10, 10, 0), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 5, 5, 0)] } };
   const h = show(board({ history, day }));
-  assert.ok(h.indexOf("sec-totals") < h.indexOf("sec-sessions") && h.indexOf("sec-sessions") < h.indexOf("sec-spend"), "the tiles, then burn per session, then the chart");
+  assert.ok(h.indexOf("sec-totals") < h.indexOf("sec-spend") && h.indexOf("sec-spend") < h.indexOf('id="sec-table"') && h.indexOf('id="sec-table"') < h.indexOf("sec-sessions"), "the tiles, the chart, the table, then burn per session last");
   assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend <span class="muted">Nov \$1,579\/day vs Oct/, "open until the reader folds it");
   const days = h.slice(h.indexOf('id="spend-days"'), h.indexOf("By month"));
   assert.match(days, /class="cc sel" data-key="2026-11-09"/, "the picked day is marked");
@@ -556,17 +556,19 @@ test("spend leads with burn per session for the picked day, then the 30-day char
   assert.match(days, /height:60%;background:var\(--c1\)"><\/i><i style="height:40%;background:var\(--c-other\)/, "billed under estimated");
   assert.match(h, /By month<\/h3>.*data-key="2026-11"/s);
   assert.match(h, /id="sec-sessions" open><summary><h2 class="sec">Burn per session <span class="muted">2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
-  assert.ok(h.indexOf("sec-sessions") < h.indexOf("sec-spend"), "burn per session leads Spend, above the charts");
-  const chips = h.slice(h.indexOf('id="sec-sessions"'), h.indexOf('data-id="spend-dq"'));
-  assert.match(chips, /<button class="" data-cv="day" data-cval="2026-11-07">11-07<\/button><button class="on" data-cv="day" data-cval="2026-11-09">11-09<\/button>/, "a chip per day with a figure, the picked one on");
-  assert.doesNotMatch(chips, /2026-11-08/, "a day with no figure has no chip");
+  // negative control on the cleanup: no day chips, no search box, no facet dropdowns
+  const sess = h.slice(h.indexOf('id="sec-sessions"'));
+  assert.doesNotMatch(h, /data-cv="day"/, "no day chips: the chart picks the day");
+  assert.doesNotMatch(h, /spend-dq|data-dq/, "no search box");
+  assert.doesNotMatch(sess, /tfacet|<select/, "no dropdowns over the sessions");
   assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
   assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
   assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
-  assert.match(h, /<div class="card bfilter qcfilter" data-id="spend-dq"><div class="opts"><input data-dq data-free /, "a poll repaint keeps the day search being typed (keepTyping)");
   assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
-  assert.ok(h.indexOf("Burn per session") < h.indexOf("Year, month and day rows"), "the period rows come after the day");
-  assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
+  assert.ok(h.indexOf("Year, month and day rows") < h.indexOf("Burn per session"), "the period rows come before the day's sessions");
+  assert.match(h, /data-named title="what one session cost on an average day">\$\/session<\/th>/, "one $/session column");
+  assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\$2\.51<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
+  assert.match(h, /<td>11-09<\/td><td class="n">\$1,312<\/td><td class="n">1<\/td><td class="n">\$1,312<\/td><td class="n">-<\/td>/, "a day with no session rows is -, never $0");
   assert.match(h, /\+3 older/);
   assert.match(h, /2 days in the range have no figure and are not counted/);
   assert.match(show(board({ history: { ...history, stale: true }, day })), /class="warn">stale: no snapshot for yesterday/);
@@ -575,7 +577,9 @@ test("spend leads with burn per session for the picked day, then the 30-day char
   body = board({ history, day });
   run("st.tab = 'costs'; st.views.costs = ''");
   const at = (sel, data) => ({ dataset: data, closest: (q) => (q === sel ? { dataset: data } : null) });
-  fire("click", { type: "click", target: at("#spend-days [data-key], #spend-series [data-key]", { key: "2026-11-07" }) });
+  const dayBar = { dataset: { key: "2026-11-07" }, closest: (q) => (q === "#spend-days" || q.includes("#spend-days [data-key]") ? dayBar : null) };
+  fire("click", { type: "click", target: dayBar });
+  assert.equal(run("st.section"), "sessions", "a chart click scrolls to the day's sessions, Spend's last section");
   await tick();
   assert.equal(ctx.history.url, "#costs?day=2026-11-07");
   assert.match(asked.at(-1), /day=2026-11-07/);
