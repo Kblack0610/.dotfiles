@@ -10,8 +10,8 @@
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
 //! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
-//! from facts (who can act, what it holds, how long it waited, the row's own priority), never a
-//! model's number.
+//! from facts (who can act, whether it stops running work, what it holds, how long it waited, a
+//! sheet row's own priority), never a model's number.
 
 use std::collections::HashSet;
 
@@ -267,8 +267,9 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent` or `high`). A `high` row ranks after every live wait
-    /// and `urgent` row with the same `human`; a live wait has none and ranks as `urgent`.
+    /// A sheet row's priority (`urgent` or `high`). Every sheet row ranks after every live wait
+    /// with the same `human`, since a live wait stops work already running and a to-do does not;
+    /// among sheet rows, `high` follows `urgent`. A live wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
@@ -303,9 +304,14 @@ impl Score {
         }
     }
 
-    /// A `high` sheet row, which ranks after the rows that block running work or are urgent.
-    fn later(&self) -> bool {
-        self.priority.as_deref() == Some("high")
+    /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
+    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one.
+    fn tier(&self) -> u8 {
+        match self.priority.as_deref() {
+            None => 0,
+            Some("high") => 2,
+            Some(_) => 1,
+        }
     }
 }
 
@@ -671,9 +677,9 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
 }
 
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
-/// infra (None until read), ranked: the asks, sessions, queue items and `#urgent` sheet rows only
-/// the human can act on by what their wait costs (`Score::value`), then the `#high` sheet rows
-/// by the same value, then those the judge said a machine could answer, then the conditions:
+/// infra (None until read), ranked: the asks, sessions and queue items only the human can act on
+/// by what their wait costs (`Score::value`), then the `#urgent` sheet to-dos, then the `#high`
+/// ones, each by the same value, then those the judge said a machine could answer, then the conditions:
 /// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
 /// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
 pub fn needs(
@@ -988,7 +994,7 @@ pub fn needs(
             n.score.is_none(),
             n.score
                 .as_ref()
-                .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
+                .map(|s| (!s.human, s.tier(), std::cmp::Reverse(s.value))),
         )
     });
     for (i, n) in out.iter_mut().enumerate() {
@@ -1557,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn human_sheet_rows_that_need_the_human_rank_by_priority_then_their_wait() {
+    fn live_waits_lead_then_sheet_to_dos_by_priority_then_their_wait() {
         let mut asked = item("asked", State::Waiting, Some("lab:repo-agent-1"));
         asked.row = Some("trader:tr-51".into());
         let q = Queue {
@@ -1566,19 +1572,20 @@ mod tests {
         };
         let h = build(&state(), Some(&q), Some(&board()), None);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
-        // The #urgent row has waited longer than the ask, so it leads; the #high row, older
-        // still, follows every live wait; conditions stay last.
+        // The #urgent row has waited longer than the ask, but every live wait leads: it stops
+        // running work and a to-do does not. The #high row follows the #urgent one; conditions
+        // stay last.
         assert_eq!(
             rows,
             [
-                (Kind::Sheet, "tr-50"),
                 (Kind::Ask, "a1"),
                 (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Sheet, "tr-50"),
                 (Kind::Sheet, "tr-117"),
                 (Kind::Nightly, "repo"),
             ]
         );
-        let top = &h.needs[0];
+        let top = &h.needs[2];
         let age = (NOW - day_start("2026-11-04").unwrap()) / 60;
         assert!(age > 60 * 24, "a day-old row waits more than a day: {age}");
         assert_eq!(score(top), (true, false, 0, 0, age, age));
@@ -1587,7 +1594,7 @@ mod tests {
         let json = serde_json::to_value(top).unwrap();
         assert_eq!(json["kind"], "sheet");
         assert_eq!(json["score"]["priority"], "urgent");
-        assert!(serde_json::to_value(&h.needs[1]).unwrap()["score"]
+        assert!(serde_json::to_value(&h.needs[0]).unwrap()["score"]
             .get("priority")
             .is_none());
         // With no board read there are no sheet rows, and nothing else moves.

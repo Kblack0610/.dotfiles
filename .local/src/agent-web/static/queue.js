@@ -1,6 +1,7 @@
 "use strict";
 // The Queue tab: agent-queue's items as one table (/api/queue), a box to queue a task, and a
-// row's detail with cancel and re-rank for an active one. The table is the shared one
+// row's detail, opened under its row, with cancel and re-rank for an active one and the answer
+// card for anything its session waits on you for. The table is the shared one
 // (table.js): hub-core filters and sorts by the view in the tab's URL query, and the durations
 // are its `timing` minutes. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
@@ -32,11 +33,12 @@ const qst = tblTab({
   head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + qFlow() + qTableHead(),
   // Candidates sit under the table and are drawn only with the whole list: a repaint while the
   // search box has focus leaves them as they were.
-  body: () => qBody(), tail: () => qDetail(),
+  body: () => qBody(),
   draw: (html) => {
-    // A redraw keeps the Candidates search box focused, its caret where it was.
+    // A redraw keeps the Candidates search box focused, its caret where it was, and a reply half
+    // typed into an answer card.
     const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
-    $("q-list").innerHTML = html + qCandidates();
+    keepTyping("#queue .card", () => { $("q-list").innerHTML = html + qCandidates(); });
     if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
   },
 });
@@ -106,15 +108,15 @@ function qAgent(i) {
   return p.length === 1 ? p[0] : null;
 }
 
-// What the item's session needs from the human now: a count of the dialogs its panes show and the
-// asks they filed, linking to Home, which answers them in place. An ask belongs to the Claude
+// What the item's session needs from the human now: the answer card (waiting.js) of each dialog its
+// panes show and each ask they filed, answered here as on Home. An ask belongs to the Claude
 // session that filed it, never to a tmux name (agent-panel asks.rs). A waiting item with neither
 // says where the human has to look instead.
 function qNeeds(i) {
   const panes = qPanes(i);
   const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
-  const n = panes.filter((p) => p.question).length + asks.length;
-  if (n) return `<div class="badge-line"><a href="#" data-home><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>`;
+  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, dialogKind(p.question), true)).concat(asks.map((k) => askCard(k)));
+  if (cards.length) return cards.join("");
   if (i.state !== "waiting" || !i.session) return "";
   return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
 }
@@ -169,20 +171,25 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
+// A row, and when it is the opened one its detail under it across every column.
 function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
-  return `<tr class="qr${i.slug === qst.sel ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
+  const open = i.slug === qst.sel;
+  return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
-    `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>`;
+    `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
+    (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
-// The table in its own scroll box, capped at the server's open_rows with the rest a click away.
+// The table in its own scroll box, capped at the server's open_rows (or down to the opened row)
+// with the rest a click away.
 function qBody() {
   const t = qst.table, shown = qst.items || [];
   if (!shown.length) return `<div class="panel">${t.total ? "No item matches." : "Nothing in the queue."}</div>`;
-  const rows = qst.all ? shown : shown.slice(0, qst.openRows);
+  const last = shown.findIndex((i) => i.slug === qst.sel) + 1;
+  const rows = qst.all ? shown : shown.slice(0, Math.max(qst.openRows, last));
   const more = shown.length - rows.length;
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, Q_COLS)}${rows.map(qRow).join("")}</table>` +
     tblMore(more) + `</div>`;
@@ -201,11 +208,9 @@ function qFlowTail() {
 // What the item names, each to its page (hub-core Item::links): session, project, row, each PR and its CI runs.
 const qLinks = (i) => ((i.links || []).length ? `<div class="cline qlinks">${i.links.map((l) => `${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}`).join(", ")}</div>` : "");
 
-// An opened row: every header, the stages with the minutes between them (hub-core's `timeline`),
+// An opened row, drawn under it: every header, the stages with the minutes between them (hub-core's `timeline`),
 // the task as typed, and for an active item what it needs from the human and its actions.
-function qDetail() {
-  const i = qst.sel && (qst.items || []).find((x) => x.slug === qst.sel);
-  if (!i) return "";
+function qDetail(i) {
   const active = i.state !== "done";
   const a = qAgent(i);
   const p = a && a.phases;
@@ -219,8 +224,7 @@ function qDetail() {
       `<select data-bump="${esc(i.slug)}" title="priority">${prios}</select>` +
       `<button class="btn sm quiet" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
-  return `<h2 class="sec">Item <span class="muted">${esc(i.slug)}</span> <button class="btn sm quiet" data-qclose="1">Close</button></h2>` +
-    `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
+  return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
     cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) + qLinks(i) +
     (line ? `<div class="cline">${line}</div>` : "") +
     (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
@@ -393,9 +397,11 @@ $("queue").addEventListener("click", (e) => {
   const point = t.closest("[data-rail]");
   if (point) { qfl.node = point.dataset.rail; qst.render(); return; }
   if (t.id === "q-add") { qAdd(); return; }
-  if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
+  // An answer card (a session's dialog or an ask) answers in place, as on Home. Its cards come
+  // from st.asks and st.agents, whose own reads redraw the tab, so nothing re-reads the queue here.
+  const card = t.closest(".card[data-t], .card[data-id]");
+  if (card) { answerCard(card, e); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
-  if (t.dataset.qclose) { qst.sel = ""; qst.render(); return; }
   if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; qst.render(); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
@@ -428,10 +434,14 @@ $("queue").addEventListener("input", (e) => {
   if (e.target.closest(".qadd")) qSaveDraft();
 });
 $("queue").addEventListener("toggle", (e) => {
+  // An answer card's folds are waiting.js's (askst.open), and its Full log reads on opening.
+  const card = e.target.closest && e.target.closest(".card[data-t], .card[data-id]");
+  if (card) { askTrace(e, () => qst.render()); if (e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open; return; }
   if (e.target.dataset && e.target.dataset.k) qst.open[e.target.dataset.k] = e.target.open;
 }, true);
 $("queue").addEventListener("keydown", (e) => {
-  if (e.target.id === "q-task" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qAdd(); }
+  if (e.target.id === "q-task" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); qAdd(); return; }
+  answerOnEnter(e);
 });
 
 TABS.queue = {
