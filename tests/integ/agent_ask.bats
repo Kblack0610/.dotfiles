@@ -29,6 +29,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ -f "$HOME/.agent/asks/demo/$id.md" ]
 }
 
+@test "post refuses session terms its --context does not define, and files one that does" {
+  # 2026-11-09 YVyqvq: the question led with a flag name, the why cited a doc, and the context
+  # opened with an item id, so the human could only ask what was going on.
+  local q='Which game should turn scale.net.botsPredicted off next?'
+  local opts='a=keep botsPredicted on until you play one|b=turn it off now'
+  run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
+    --why 'scaling-net.md says play first' --context 'ucp-526 phase 3 is in' "$q"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
+  [[ "$stderr" == *"open --context with one plain-words line"* ]]
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
+    --why 'scaling-net.md says play first' \
+    --context 'scale.net.botsPredicted is the switch that runs bots on your machine; scaling-net.md is the netcode doc' "$q"
+  assert_success
+  # Plain words and quoted text need no definitions (negative control).
+  run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today in utf-8?'
+  assert_success
+  # A term counts as named only whole: ucp-5260 in the context does not name ucp-526.
+  run --separate-stderr "$AGENT_ASK" post --project demo --context 'ucp-5260 is a row' 'land ucp-526?'
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"(ucp-526)"* ]]
+}
+
 @test "a new ask starts pending" {
   local id; id="$(post demo 'ship it?')"
   run "$AGENT_ASK" show "$id"
@@ -1356,7 +1380,7 @@ ASK-JUDGE-END'
 @test "judge derives the call from the score" {
   check() {
     fake_judge "$(score "$1")"
-    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "case $1?")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$1 is the case under test" "case $1?")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
     assert_line "judge: $2"
@@ -1443,7 +1467,7 @@ ASK-JUDGE-END'
   bundle() { jq -cs '{type: .[0].type, decisions: map(.decisions[0]), reason: "x", answer: ""}' <(score engineering_design) <(score "$1"); }
   check() {
     fake_judge "$(bundle "$1")"
-    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "bundle $1?")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$1 is the item under test" "bundle $1?")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
     assert_line "judge: $2"
@@ -1580,7 +1604,7 @@ ASK-JUDGE-END'
   export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(score agent_policy)"
-  run --separate-stderr "$AGENT_ASK" post --project demo --options 'a=add ship_deploy=0 to DELAY_RULES|b=leave it' --recommend a 'let the judge answer more?'
+  run --separate-stderr "$AGENT_ASK" post --project demo --options 'a=add ship_deploy=0 to DELAY_RULES|b=leave it' --recommend a --context 'ship_deploy is the type of ask that ships a change; DELAY_RULES lists the types the judge answers' 'let the judge answer more?'
   assert_success
   assert_equal "$stderr" "agent-ask post: the ask names DELAY_RULES, the judge's own authority, so it is an approval for the human"
   local id="$output"
@@ -1594,7 +1618,7 @@ ASK-JUDGE-END'
   assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
   # a question posted before the floor existed is held to it when judged again
   rm "$BATS_TEST_TMPDIR/judge.calls"
-  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a 'trim the hard stops?')"
+  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a --context 'JUDGE_HARD_STOPS lists the asks the judge never answers' 'trim the hard stops?')"
   run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
@@ -1607,7 +1631,7 @@ ASK-JUDGE-END'
 # live_post <claude_session> <question>: a post from that Claude session, the way an agent asks.
 live_post() {
   CLAUDE_CODE_SESSION_ID="$1" "$AGENT_ASK" post --project demo \
-    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix "$2"
+    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix --context "$2 is the case under test" "$2"
 }
 
 @test "a live rule's take-recommend is answered by the judge at post, and the asker is told to proceed" {
@@ -1935,7 +1959,7 @@ delay_setup() {
   local rows; for rows in 'gate=0' 'reversible=0' 'credential_or_account=0' 'ship_deploy' 'ship_deploy=soon'; do
     case "$rows" in ship_deploy*) fake_judge "$(score ship_deploy)" ;; *) fake_judge "$(score "${rows%%=*}")" ;; esac
     run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-$rows" "$AGENT_ASK" post \
-      --project demo --options 'yes=do it|no=leave it' --recommend yes "row $rows?"
+      --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$rows is the row under test" "row $rows?"
     assert_success
     assert_regex "$stderr" 'refuses'
     run "$AGENT_ASK" show "${output##*$'\n'}"
