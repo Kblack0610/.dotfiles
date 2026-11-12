@@ -562,6 +562,9 @@ TABS.infra = {
     if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
     showRunPage();
     renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); pipFeed.show(!pip.data || pip.moved()); tstFeed.show(!tst.data || tst.moved());
+    // A section not read yet says so at once: its read paints it only when it answers (a cold
+    // /api/pipelines takes seconds), and an empty element reads as a broken tab.
+    for (const t of [bld, pip, tst]) if (!t.data) t.render();
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
