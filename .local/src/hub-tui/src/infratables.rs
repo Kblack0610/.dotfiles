@@ -6,9 +6,10 @@
 
 use hub_core::ci::{Finished, Queued, Slot, Tally};
 use hub_core::infra::Infra;
+use hub_core::links::Link;
 use hub_core::machines::{Machine, Pool};
 use hub_core::table::Row;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -22,11 +23,17 @@ pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "finish
 /// Finished rows drawn before `+N more`, as on the web.
 const FINISHED_ROWS: usize = 25;
 
+/// The page section that marks the selected row's line, so the page keeps it in view; no
+/// section for n/N.
+pub const ROW: &str = "row";
+
 /// Each table's view, and which one has the keys.
 #[derive(Debug, Default)]
 pub struct InfraTables {
     pub views: [DataTable; 5],
     pub at: usize,
+    /// A key moved the selection, so the next draw scrolls it into view.
+    pub follow: bool,
 }
 
 impl InfraTables {
@@ -105,6 +112,57 @@ impl InfraTables {
             2 => t.key::<Slot>(code),
             3 => t.key::<Queued>(code),
             _ => t.key::<Finished>(code),
+        }
+    }
+
+    /// The rows the table with the keys shows, at most its cap: what j/k step through.
+    fn shown_len(&self, infra: &Infra, i: usize) -> usize {
+        let v = &self.views[i].view;
+        match i {
+            0 => v.apply(&infra.machines).len(),
+            1 => v.apply(&infra.pools).len(),
+            2 => v.apply(&infra.ci.rows).len(),
+            3 => v.apply(&infra.ci.queue).len(),
+            _ => v.apply(&infra.ci.finished).len().min(FINISHED_ROWS),
+        }
+    }
+
+    /// j/k, g/G and Home/End move the selection in the table with the keys; PgUp/PgDn and
+    /// Ctrl-d/u stay the page's scroll.
+    pub fn moves(&mut self, infra: Option<&Infra>, inner: &str, k: KeyEvent) -> bool {
+        let (Some(infra), Some(i)) = (infra, self.focus(inner)) else {
+            return false;
+        };
+        if !matches!(
+            k.code,
+            KeyCode::Char('j' | 'k' | 'g' | 'G')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        ) {
+            return false;
+        }
+        let n = self.shown_len(infra, i);
+        self.at = i;
+        let moved = self.views[i].moves(k, n, 1);
+        self.follow |= moved;
+        moved
+    }
+
+    /// What Enter opens: the selected row's record in the table with the keys (`Row::link`).
+    pub fn opens(&self, infra: Option<&Infra>, inner: &str) -> Option<Link> {
+        let (infra, i) = (infra?, self.focus(inner)?);
+        let t = &self.views[i];
+        fn sel<R: Row>(t: &DataTable, rows: &[R]) -> Option<Link> {
+            DataTable::opens(*t.view.apply(rows).get(t.sel)?)
+        }
+        match i {
+            0 => sel(t, &infra.machines),
+            1 => sel(t, &infra.pools),
+            2 => sel(t, &infra.ci.rows),
+            3 => sel(t, &infra.ci.queue),
+            _ => sel(t, &infra.ci.finished),
         }
     }
 
@@ -189,14 +247,19 @@ impl Draw<'_> {
             return out;
         }
         let n = cap.unwrap_or(shown.len()).min(shown.len());
-        out.extend(
-            Table {
-                rows: shown[..n].iter().map(|r| cells(r)).collect(),
-                mark: self.t.mark::<R>(),
-                ..shape
+        let mut lines = Table {
+            rows: shown[..n].iter().map(|r| cells(r)).collect(),
+            mark: self.t.mark::<R>(),
+            ..shape
+        }
+        .fit(self.w, p.head());
+        // The table with the keys marks its selected row, which Enter opens.
+        if self.keys {
+            if let Some(l) = lines.get_mut(self.t.sel.min(n.saturating_sub(1)) + 1) {
+                l.style = p.sel();
             }
-            .fit(self.w, p.head()),
-        );
+        }
+        out.extend(lines);
         if shown.len() > n {
             out.push(Line::styled(
                 format!("+{} more: / or f narrows", shown.len() - n),

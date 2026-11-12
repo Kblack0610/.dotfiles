@@ -23,6 +23,7 @@ mod infratables;
 mod innertabs;
 mod jobs;
 mod logtab;
+mod machinetab;
 mod outboxtab;
 mod projtab;
 mod proptab;

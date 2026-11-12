@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use hub_core::infra::Infra;
+use hub_core::machine_page::{self, MachinePage};
 use hub_core::table::{Row, View};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -113,6 +115,57 @@ impl Cache {
     /// The rates in the same answer, for the Builds section's prices.
     pub async fn rates(&self) -> hub_core::run_detail::Rates {
         self.answer().await.0.rates()
+    }
+}
+
+/// One machine's page (`hub_core::machine_page`), kept for the host last asked for: its history
+/// is three week-long range queries and its recent jobs a pass over the jobs archive, so a reload
+/// or the page's own refresh inside `CACHE_SECS` is served the last read.
+#[derive(Default)]
+pub struct Pages(ReadCache<String, CACHE_SECS, String>);
+
+/// The page with its tables' rows and links (`shown`, in their own order).
+#[derive(Serialize)]
+struct Page<'a> {
+    #[serde(flatten)]
+    page: &'a MachinePage,
+    tables: Map<String, Value>,
+}
+
+fn page_json(p: &MachinePage) -> String {
+    let none = ViewQuery::new();
+    let mut tables = Map::new();
+    tables.insert("recent".into(), shown(&p.recent, &none, ""));
+    let down = p.history.as_ref().map_or(&[][..], |h| h.down.as_slice());
+    tables.insert("down".into(), shown(down, &none, ""));
+    tables.insert("alerts".into(), shown(&p.alerts, &none, ""));
+    serde_json::to_string(&Page { page: p, tables })
+        .unwrap_or_else(|e| json!({"error": e.to_string()}).to_string())
+}
+
+impl Pages {
+    /// `#infra/machines/<host>`'s read: a name no machine has is a 404, and is not kept.
+    pub async fn get(
+        &self,
+        infra: &Cache,
+        alerts: &crate::alerts::Cache,
+        host: String,
+    ) -> Result<String, (StatusCode, String)> {
+        let read = async {
+            let i = infra.infra().await;
+            let firing = alerts.firing(infra).await;
+            let h = host.clone();
+            let now = hub_core::jobs::now().max(0) as u64;
+            let jobs = hub_core::builds::Paths::from_env().jobs;
+            off(move || {
+                machine_page::read(&i, &h, firing.as_deref().map_err(Clone::clone), &jobs, now)
+                    .map(|p| page_json(&p))
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .map_err(|e| (StatusCode::NOT_FOUND, e))
+        };
+        self.0.get(host.clone(), read).await.map(|s| (*s).clone())
     }
 }
 
