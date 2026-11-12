@@ -62,34 +62,49 @@ function playwright() {
   if (!root) throw new Error(`no playwright-core under ${npx} or ${SCRATCH}/node`);
   return createRequire(join(root, "package.json"))("playwright-core");
 }
-function chromium() {
+// CI installs the browser its pinned playwright-core names (tests.yml, Phone render harness), so that
+// one wins when it is there.
+function chromium(pw) {
+  const own = pw.chromium.executablePath();
+  if (own && existsSync(own)) return own;
   const path = ["chromium-1208", "chromium-1200"].map((d) => join(homedir(), ".cache/ms-playwright", d, "chrome-linux64/chrome")).find(existsSync);
   if (!path) throw new Error("no cached chromium-1208 or chromium-1200 under ~/.cache/ms-playwright");
   return path;
 }
 
 // The page and CSP exactly as the server fills them, never a dump left over from another checkout.
+// CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
   const path = join(SCRATCH, "index.html");
-  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: join(SCRATCH, "target") }, encoding: "utf8" });
+  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(SCRATCH, "target") }, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
   return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
 }
 
 // The server's Column carries each column's phone role; the fixtures name only the keys, so the
-// roles come from hub-core itself, matched on the table's whole column list.
-function withRoles(body, roles) {
+// roles come from hub-core itself, matched on the table's whole column list. A fixture table that
+// matches none has drifted from the server; it is named with the hub-core table nearest it.
+function withRoles(body, roles, drift) {
   const byColumns = new Map(roles.map((t) => [[...t.columns].sort().join(), t]));
   const walk = (v) => {
     if (Array.isArray(v)) return v.map(walk);
     if (!v || typeof v !== "object") return v;
     const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
-    const t = Array.isArray(v.columns) && v.columns[0]?.key && byColumns.get(v.columns.map((c) => c.key).sort().join());
+    if (!Array.isArray(v.columns) || !v.columns[0]?.key) return out;
+    const keys = v.columns.map((c) => c.key);
+    const t = byColumns.get([...keys].sort().join());
     if (t) out.columns = out.columns.map((c) => ({ ...c, role: c.key === t.lead ? "lead" : t.glance.includes(c.key) ? "glance" : "" }));
+    else drift.add(driftLine(keys, roles));
     return out;
   };
   return walk(body);
+}
+function driftLine(keys, roles) {
+  const near = roles.map((t) => ({ t, shared: t.columns.filter((k) => keys.includes(k)).length })).sort((a, b) => b.shared - a.shared)[0]?.t;
+  if (!near) return `fixture columns [${keys}] match no hub-core table`;
+  const missing = near.columns.filter((k) => !keys.includes(k)), extra = keys.filter((k) => !near.columns.includes(k));
+  return `fixture columns [${keys}] match no hub-core table; nearest (lead ${near.lead}) ${missing.length ? `lacks [${missing}]` : ""}${extra.length ? ` has extra [${extra}]` : ""}`;
 }
 
 const JS = "text/javascript; charset=utf-8";
@@ -115,7 +130,7 @@ async function wire(context, page, { index, csp, roles }, seen) {
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
     const body = path in FIXTURES ? FIXTURES[path] : {};
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles)) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles, seen.drift)) });
   });
   page.on("pageerror", (e) => seen.errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") seen.errors.push(`console: ${m.text()}`); });
@@ -149,7 +164,7 @@ function measure({ width, row: selector }) {
 async function renderTab(browser, spec, page0) {
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, hasTouch: true, isMobile: true, locale: "en-US", timezoneId: "America/Los_Angeles" });
   const page = await context.newPage();
-  const seen = { errors: [], unfixtured: new Set() };
+  const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
   await context.clock.setFixedTime(new Date(NOW * 1000));
   await page.addInitScript(() => {
     window.EventSource = class {
@@ -176,6 +191,7 @@ async function renderTab(browser, spec, page0) {
   }
   await page.screenshot({ path: join(out, `${spec.name || spec.tab}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
   await context.close();
+  seen.errors.push(...seen.drift);
   return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
 }
 
@@ -188,7 +204,7 @@ async function navCheck(browser, page0) {
   for (const [name, viewport, phone] of [["phone", VIEWPORT, true], ["wide", WIDE, false]]) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles" });
     const page = await context.newPage();
-    const seen = { errors: [], unfixtured: new Set() };
+    const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
     await context.clock.setFixedTime(new Date(NOW * 1000));
     await page.addInitScript(() => { window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() {} close() {} }; });
     await wire(context, page, page0, seen);
@@ -226,7 +242,7 @@ async function navCheck(browser, page0) {
     } catch (e) {
       errors.push(`${name}: ${e.message.split("\n")[0]}`);
     }
-    errors.push(...seen.errors.filter((e) => !noKit).map((e) => `${name}: ${e}`));
+    errors.push(...[...seen.errors, ...seen.drift].filter(() => !noKit).map((e) => `${name}: ${e}`));
     await context.close();
   }
   return errors;
@@ -246,7 +262,8 @@ function print(results) {
 async function main() {
   mkdirSync(out, { recursive: true });
   const page = dumpIndex();
-  const browser = await playwright().chromium.launch({ headless: true, executablePath: chromium() });
+  const pw = playwright();
+  const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const results = [];
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
   const navErrors = control ? [] : await navCheck(browser, page);
