@@ -474,8 +474,15 @@ impl Item {
 
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
+    /// An item that landed one PR per repo names the first, `home-config#875 +2`; the opened
+    /// item's `links` lists each.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        pr_link_of(self.pr.as_deref()?)
+        let mut refs = self.pr_refs();
+        let (label, url) = pr_link_of(refs.next()?)?;
+        match refs.count() {
+            0 => Some((label, url)),
+            more => Some((format!("{label} +{more}"), url)),
+        }
     }
 
     /// What the item names, each to its one page (`links`), which both surfaces list on the
@@ -2027,6 +2034,18 @@ mod tests {
         // An older item carries a bare number: a label, no link, and no merge recorded.
         let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
+        // One PR per repo: the first one's label and page, and how many more.
+        let many = Item {
+            pr: Some("kblack0610/home-config#875 Kblack0610/.dotfiles-private#844, o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            many.pr_link(),
+            Some((
+                "home-config#875 +2".into(),
+                Some("https://github.com/kblack0610/home-config/pull/875".into())
+            ))
+        );
         assert!(!bare.merged() && !bare.unproven());
         assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
         assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
