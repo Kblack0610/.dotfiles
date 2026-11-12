@@ -152,7 +152,7 @@ test("a job's page is its URL: every run of it is read by name, and its host cel
   const h = box.innerHTML;
   assert.match(h, /every run of <b>gate<\/b> <a href="#infra\/jobs">back to all<\/a>/);
   assert.match(h, /<a href="#infra\/jobs\/gate" class="muted" title="every run of this job">4 runs<\/a>/);
-  assert.match(h, /<td class="muted"><a href="#infra\/machines\/workstation">workstation<\/a><\/td>/);
+  assert.match(h, /<td class="muted"><a class="tl" href="#infra\/machines\/workstation">workstation<\/a><\/td>/);
   run('st.page = ""; showJobs()');
   assert.equal(jst.hist, "", "leaving the page drops the rows read for it");
   assert.equal(jst.data, null);
