@@ -217,9 +217,9 @@ pub struct Feed {
     pub errors: Vec<String>,
 }
 
-/// The state document's `sessions` and its bucket vocabulary, empty when it is missing or
-/// unreadable.
-pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
+/// The state document's `sessions`, its bucket vocabulary and its `silent` lines, empty when it
+/// is missing or unreadable.
+pub fn read_state(path: &Path) -> (Vec<Value>, Vocab, Vec<String>) {
     let doc = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -227,7 +227,27 @@ pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
     (
         doc["sessions"].as_array().cloned().unwrap_or_default(),
         Vocab::from_state(&doc),
+        silent(&doc),
     )
+}
+
+/// One line per fleet worker that did not answer the pass (the state document's `silent`): its
+/// sessions are missing from the table, which must say so rather than show fewer rows as if
+/// that were all there is (dashboards.md rule 6).
+pub fn silent(doc: &Value) -> Vec<String> {
+    doc["silent"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            let (host, why) = (
+                s["host"].as_str().unwrap_or("?"),
+                s["why"].as_str().unwrap_or("?"),
+            );
+            crate::reading::State::NotRead(format!("{host} {why}, so its sessions are not shown"))
+                .words(host)
+        })
+        .collect()
 }
 
 /// The session registry's root, `~/.agent/sessions`.
@@ -985,5 +1005,21 @@ mod tests {
             .map(|e| e.session_id)
             .collect();
         assert_eq!(ids, ["today"]);
+    }
+
+    #[test]
+    fn a_worker_that_did_not_answer_is_named_not_dropped() {
+        let doc = json!({"sessions": [], "silent": [
+            {"host": "razer-laptop", "why": "did not answer"},
+            {"host": "mini", "why": "ran agent-panel, which exited 127"},
+        ]});
+        assert_eq!(
+            silent(&doc),
+            [
+                "not read: razer-laptop did not answer, so its sessions are not shown",
+                "not read: mini ran agent-panel, which exited 127, so its sessions are not shown",
+            ]
+        );
+        assert!(silent(&json!({"sessions": []})).is_empty());
     }
 }

@@ -7,6 +7,8 @@
 const $ = (id) => document.getElementById(id);
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+// The empty-state words, hub_core::reading's NOT_READ and NO_DATA; its guard test keeps them equal.
+const NOT_READ = "not read", NO_DATA = "no data";
 
 // The answer to one request. A fetch that got none (agent-web restarting or down, the network
 // gone) says that, never the browser's bare "NetworkError"; an abort stays an abort.

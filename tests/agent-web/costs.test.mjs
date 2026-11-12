@@ -100,7 +100,7 @@ test("the head says spend, the live gauges and how old each source is", () => {
   assert.doesNotMatch(h, /LAZER (POOL|RESERVE|GLM)/, "the pool and its keys are Burn rows, not tiles");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">\$1\.25<\/span><span class="ts1"><span class="warn">\+1 unpriced<\/span>, opencode lazer\/\*, nightly; other direct use unseen</);
   assert.match(h, /<span class="warn">token snapshot /, "a stale source is amber");
-  assert.match(h, /<span class="warn">calls never<\/span>/);
+  assert.match(h, /<span class="warn">calls no data<\/span>/);
   assert.match(h, /<span class="muted">outcomes /);
 });
 

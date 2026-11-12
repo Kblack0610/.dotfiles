@@ -1326,7 +1326,7 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
                 sha: t.sha.clone(),
                 at: t.at,
                 prev: t.prev.clone(),
-                at_text: t.at.map_or("not read".into(), dated),
+                at_text: t.at.map_or(crate::reading::NOT_READ.into(), dated),
                 prev_text: t.prev.clone().unwrap_or_else(|| "first tag".into()),
                 reached,
                 reached_text,

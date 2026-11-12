@@ -26,6 +26,7 @@ use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
 use crate::queue::money;
 use crate::queue::{self, Item, Queue, State};
+use crate::reading::State as Reading;
 use crate::releases::Release;
 use crate::text::{age, cap};
 
@@ -332,7 +333,7 @@ fn infra(i: &Inputs) -> Area {
             let word = match c.level {
                 home::Level::Red => "red",
                 home::Level::Warn => "warn",
-                _ => "no data",
+                _ => crate::reading::NO_DATA,
             };
             format!("{} {word}", c.name)
         })
@@ -802,7 +803,7 @@ fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
 fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
     let Some((rec, _)) = yesterday_and_avg(i, merged) else {
         return (
-            vec!["Not read: no day-log record for yesterday.".into()],
+            vec![Reading::NotRead("no day-log record for yesterday.".into()).sentence("")],
             None,
         );
     };
@@ -860,7 +861,7 @@ fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
 fn builds(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match &i.releases {
-        None => out.push("Not read: release-state could not be read.".into()),
+        None => out.push(Reading::NotRead("release-state could not be read.".into()).sentence("")),
         Some(rows) => {
             for r in rows {
                 if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
@@ -967,10 +968,10 @@ fn overnight(i: &Inputs) -> Vec<String> {
     // A source that could not be read is said so, never folded into "Nothing broke overnight".
     let mut unread = vec![];
     if i.done.is_none() {
-        unread.push("Not read: finished work could not be read.".to_string());
+        unread.push(Reading::NotRead("finished work could not be read.".into()).sentence(""));
     }
     if i.releases.is_none() {
-        unread.push("Not read: release-state could not be read.".to_string());
+        unread.push(Reading::NotRead("release-state could not be read.".into()).sentence(""));
     }
     let failed = i
         .done
@@ -1443,7 +1444,13 @@ pub fn gather(since: i64, now: i64) -> Inputs {
         std::thread::spawn(move || crate::money::apps(&crate::session_actions::System, &day));
     let mut i = gather_from(since, now, || {
         let (state, queue, board, infra) = home::gather(true);
-        let home = home::build(&state, Some(&queue), Some(&board), infra.as_ref());
+        let home = home::build(
+            Some(&state),
+            Some(&queue),
+            Some(&board),
+            infra.as_ref(),
+            now,
+        );
         (state, queue, home)
     });
     match sales

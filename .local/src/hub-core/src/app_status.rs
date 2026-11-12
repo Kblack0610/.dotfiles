@@ -5,7 +5,7 @@
 //! The checks are the apps Gatus (home-config `apps/gatus/config.yaml`, its URL `CC_GATUS_URL`), whose
 //! group is the project-map tracker key, and `<key>-<channel>` for a non-prod channel. Their
 //! history is VictoriaMetrics (`prom::vm`), which keeps what Prometheus scrapes from Gatus for 2
-//! years; it starts on 2026-11-12, so a day before that reads `No data`, never up.
+//! years; it starts on 2026-11-12, so a day before that reads `no data`, never up.
 //!
 //! The rules are the fleet-platform status monitor's: a check is down after 2 failed results and
 //! up again after 2 good ones, an uptime with any failure never rounds to 100, a monitor silent
@@ -13,12 +13,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{Local, TimeZone};
 use serde::Serialize;
 
 use crate::kube_proxy::label;
 use crate::links::{Kind, Link};
 use crate::prom::{self, Series};
+use crate::reading::{hm, State, NO_DATA};
 use crate::releases::{self, Badge, Level, Release};
 use crate::session_actions::Runner;
 use crate::session_page::Part;
@@ -51,7 +51,6 @@ const INCIDENTS_SHOWN: usize = 20;
 const BADGE_SECS: i64 = 86_400;
 /// How far back a group's newest result is looked for; an app with none in that time has no check.
 const NEWEST_RANGE: &str = "7d";
-const NO_DATA: &str = "No data";
 
 /// One day's bar: the 24 hours ending at `at`.
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -59,7 +58,7 @@ pub struct Day {
     pub at: i64,
     pub ok: u64,
     pub fail: u64,
-    /// `100%`, `99.5%` or `No data`.
+    /// `100%`, `99.5%` or `no data`.
     pub text: String,
 }
 
@@ -80,7 +79,7 @@ pub struct Incident {
 pub struct Check {
     pub name: String,
     pub group: String,
-    /// `Operational`, `Failing` (one failed result, not yet down), `Down` or `No data`.
+    /// `Operational`, `Failing` (one failed result, not yet down), `Down` or `no data`.
     pub state: String,
     pub level: Level,
     /// Each window and its uptime: `("7d", "99.98%")`.
@@ -89,7 +88,7 @@ pub struct Check {
     pub days: Vec<Day>,
     /// The last 24h of response times: (unix seconds, milliseconds).
     pub latency: Vec<(i64, f64)>,
-    /// `p50 180ms, p95 420ms`, or `No data`.
+    /// `p50 180ms, p95 420ms`, or `no data`.
     pub latency_text: String,
 }
 
@@ -134,7 +133,7 @@ pub fn groups(app: &str, channels: &[Release]) -> Vec<String> {
     out
 }
 
-/// `ok` of `ok + fail` as the card says it: `No data` with no results, and with any failure at
+/// `ok` of `ok + fail` as the card says it: `no data` with no results, and with any failure at
 /// most 99.99, cut rather than rounded, so a failure never reads as 100.
 pub fn uptime(ok: u64, fail: u64) -> String {
     let n = ok + fail;
@@ -178,7 +177,7 @@ fn split(series: &[Series]) -> BTreeMap<Key, Counts> {
     out
 }
 
-/// The `DAYS` bars ending at `end`, oldest first: a day with no results is `No data`.
+/// The `DAYS` bars ending at `end`, oldest first: a day with no results is `no data`.
 pub fn days(ok: &BTreeMap<i64, u64>, fail: &BTreeMap<i64, u64>, end: i64) -> Vec<Day> {
     (0..DAYS as i64)
         .rev()
@@ -252,7 +251,7 @@ fn results(c: Option<&Counts>) -> Vec<(i64, u64, u64)> {
         .collect()
 }
 
-/// A check's state from its results (`No data`, `Down`, `Failing` or `Operational`) and its down
+/// A check's state from its results (`no data`, `Down`, `Failing` or `Operational`) and its down
 /// stretches, as [`incidents`] reads them.
 type Runs = Vec<(i64, Option<i64>, u64)>;
 fn state(results: &[(i64, u64, u64)]) -> (&'static str, Runs) {
@@ -269,14 +268,6 @@ fn state(results: &[(i64, u64, u64)]) -> (&'static str, Runs) {
     (s, runs)
 }
 
-/// `11-03 14:02` in local time.
-fn hm(t: i64) -> String {
-    Local
-        .timestamp_opt(t, 0)
-        .single()
-        .map_or_else(|| t.to_string(), |d| d.format("%m-%d %H:%M").to_string())
-}
-
 fn span(secs: i64) -> String {
     match secs {
         s if s < 3600 => format!("{}m", (s / 60).max(1)),
@@ -289,14 +280,11 @@ fn span(secs: i64) -> String {
 /// its last results claim.
 pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level) {
     let waiting = ("Waiting for every check to report".to_string(), Level::Warn);
-    let Some(newest) = newest else {
-        return waiting;
-    };
-    if now - newest > STALE_SECS {
-        return (
-            format!("Monitor stopped reporting at {}", hm(newest)),
-            Level::Warn,
-        );
+    match State::of_age(newest, now, STALE_SECS) {
+        State::Never => return waiting,
+        s @ State::Stale(_) => return (s.words("Monitor"), s.level()),
+        State::Live => {}
+        State::Off | State::NotRead(_) => unreachable!("of_age gives Never, Stale or Live"),
     }
     if checks.is_empty() {
         return waiting;
@@ -511,7 +499,10 @@ pub fn build(
     incidents_all.sort_by_key(|i| std::cmp::Reverse(i.from));
     incidents_all.truncate(INCIDENTS_SHOWN);
     let (banner, level) = match blind {
-        Some(e) => (format!("not read: {e}"), Level::Warn),
+        Some(e) => {
+            let s = State::NotRead(e);
+            (s.words("checks"), s.level())
+        }
         None => banner(&checks, newest, now),
     };
     let unchecked = groups
@@ -756,9 +747,9 @@ mod tests {
         let d = days(&ok, &BTreeMap::new(), NOW);
         assert_eq!(d.len(), DAYS);
         assert_eq!(d[DAYS - 1].text, "100%");
-        assert_eq!(d[0].text, "No data");
+        assert_eq!(d[0].text, "no data");
         assert_eq!(d[DAYS - 2].at, NOW - 86_400);
-        assert_eq!(uptime(0, 0), "No data");
+        assert_eq!(uptime(0, 0), "no data");
     }
 
     #[test]
@@ -779,7 +770,7 @@ mod tests {
         assert_eq!(p.unchecked, ["pmp-beta"]);
         let mut a = answers(10.0, 0.0, NOW - 30);
         a.pct = Ok(vec![]);
-        assert_eq!(page(a).checks[0].latency_text, "No data");
+        assert_eq!(page(a).checks[0].latency_text, "no data");
     }
 
     #[test]

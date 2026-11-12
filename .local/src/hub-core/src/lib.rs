@@ -48,6 +48,7 @@ pub mod prom;
 pub mod proposals;
 pub mod quarantine;
 pub mod queue;
+pub mod reading;
 pub mod reds;
 pub mod release_graph;
 pub mod releases;

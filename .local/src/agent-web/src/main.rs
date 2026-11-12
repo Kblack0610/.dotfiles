@@ -1302,7 +1302,13 @@ async fn home_board(
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let board = hub_core::tasks::feed(&actions::System);
         let open = hub_core::proposals::read(&actions::System);
-        let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+        let mut home = hub_core::home::build(
+            Some(&state),
+            Some(&queue),
+            Some(&board),
+            Some(&infra),
+            hub_core::jobs::now(),
+        );
         home.set_proposals(&open);
         home_shown(home, &q)
     })
@@ -1652,7 +1658,7 @@ mod tests {
                 {"bucket": "NEEDS", "target": "hub/b:1", "project": "b", "idle_min": 1},
             ],
         });
-        let home = hub_core::home::build(&state, None, None, None);
+        let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), 2);
         let (sessions, shown) = (home.sessions.clone(), home.shown);
         let q = HomeQuery {

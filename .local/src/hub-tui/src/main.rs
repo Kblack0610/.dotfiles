@@ -271,7 +271,13 @@ fn needs(args: Vec<String>) -> i32 {
         _ => die(USAGE),
     };
     let (state, queue, board, infra) = hub_core::home::gather(!page);
-    let home = hub_core::home::build(&state, Some(&queue), Some(&board), infra.as_ref());
+    let home = hub_core::home::build(
+        Some(&state),
+        Some(&queue),
+        Some(&board),
+        infra.as_ref(),
+        hub_core::jobs::now(),
+    );
     if !page {
         let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
         println!("{out}");
@@ -407,7 +413,13 @@ fn phone(args: Vec<String>) -> i32 {
     }
     let (state, queue, board, infra) = hub_core::home::gather(true);
     let infra = infra.unwrap_or_default();
-    let home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+    let home = hub_core::home::build(
+        Some(&state),
+        Some(&queue),
+        Some(&board),
+        Some(&infra),
+        hub_core::jobs::now(),
+    );
     let projects = hub_core::projects::gather();
     let phone = hub_core::phone::build(
         &home,
