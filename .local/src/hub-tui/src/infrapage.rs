@@ -46,8 +46,11 @@ impl InfraPage {
     /// opens it.
     pub fn parse(q: &str) -> Option<Self> {
         let (word, name) = q.trim().split_once('/')?;
+        let name = name.trim();
         let page = PAGES.iter().find(|p| p.tab == "infra" && p.word == word)?;
-        Self::new(page.kind, name)
+        (!name.is_empty())
+            .then(|| Self::new(page.kind, name))
+            .flatten()
     }
 
     pub fn kind(&self) -> Kind {
@@ -78,15 +81,17 @@ impl InfraPage {
 
     /// The inner tab it opens on, as its link's (`links::PAGES`).
     pub fn inner(&self) -> &'static str {
-        links::page(self.kind()).map_or("", |p| p.inner)
+        self.row().inner
     }
 
-    /// What Esc goes back to, for the hint line.
-    pub fn back(&self) -> &'static str {
-        match self {
-            Self::Machine(..) => "all machines",
-            Self::Pool(..) => "all pools",
-        }
+    /// What Esc goes back to, for the hint line: all of its word's records.
+    pub fn back(&self) -> String {
+        format!("all {}", self.row().word)
+    }
+
+    /// Its kind's `links::PAGES` row, which every kind `new` builds has (the parse test pins it).
+    fn row(&self) -> &'static links::Page {
+        links::page(self.kind()).expect("every InfraPage kind has a links::PAGES row")
     }
 
     /// Its read takes the firing alerts, so its first read waits for them.
@@ -147,6 +152,12 @@ mod tests {
             InfraPage::parse("ci/7").is_none(),
             "a CI run is no page of these"
         );
+        assert!(
+            InfraPage::parse("machines/ ").is_none(),
+            "a page needs a name"
+        );
+        assert_eq!((m.inner(), m.back().as_str()), ("machines", "all machines"));
+        assert_eq!(p.back(), "all pools");
     }
 
     #[test]

@@ -3671,7 +3671,7 @@ impl App {
             ),
             Tab::Infra if self.infra_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
                 "Esc {}  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
-                self.infra_page.as_ref().map_or("", InfraPage::back)
+                self.infra_page.as_ref().map_or(String::new(), InfraPage::back)
             ),
             Tab::Infra if runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Infra if runs && self.ci.times.is_some() => {
