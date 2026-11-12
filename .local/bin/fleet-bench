@@ -4661,6 +4661,9 @@ canary_brief() {
 # task whose item exists in any state, so a second retro the same week queues nothing. `from:
 # canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
 # canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# A lane that spends a Claude account queues at high, the queue's working priority: at low it sat
+# behind every runnable item, and the week-46 claude run started none of its 14 tasks in 3 nights.
+# Another harness's lane stays low: it starts as overflow while its own source has room.
 # canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
@@ -4684,7 +4687,7 @@ canary_slug() {
 }
 
 canary_queue() {
-  local tasks t id slug week why lane="" label="" harness="" model="" effort="" added=0 had=0 off=0
+  local tasks t id slug week why lane="" label="" harness="" model="" effort="" prio=high added=0 had=0 off=0
   local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4698,6 +4701,7 @@ canary_queue() {
   [ -z "$effort" ] || [ -n "$model" ] || { say "canary queue: --effort needs --model"; return 2; }
   [ "$harness" != claude ] || [ -z "$model" ] || [ -n "$effort" ] || { say "canary queue: a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 2; }
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
+  [ -z "$harness" ] || [ "$harness" = claude ] || prio=low
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
@@ -4723,7 +4727,7 @@ canary_queue() {
     seen[$slug]=$id
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
-      --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
+      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
       { say "canary: queued $slug, but could not set its model and canary id"; return 1; }

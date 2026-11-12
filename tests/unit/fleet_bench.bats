@@ -5481,6 +5481,12 @@ STUB
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
+  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
+  # run sat behind every runnable item and never started.
+  run "$SUBJECT" canary queue --harness claude --model haiku --effort max
+  assert_success
+  run grep -A1 -x -- --priority "$CQ/add.log"
+  assert_output $'--priority\nlow\n--\n--priority\nhigh\n--\n--priority\nhigh'
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened and the lane kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
