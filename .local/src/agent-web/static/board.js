@@ -95,6 +95,7 @@ function bRow(r, i) {
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
+    r.epic ? "epic " + tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (r.state === "done") {
@@ -145,18 +146,29 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-const B_COLS = { section: ["section"], priority: ["priority"], project: ["project"], lane: ["lane"], state: ["state"], id: ["id"], version: ["version"], size: ["size"], tier: ["tier", "n"], since: ["since"], when: ["when"], text: ["text"] };
+// What a row is leads, then the epic it serves, then what to do about it. Version, size, tier,
+// since and the whole line are the opened row's (bRow), so the table fits the screen.
+const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 
-// One line of the table, and the opened record under it.
+// One line of the table, and the opened record under it. The title cell holds the row's area,
+// its title and what the title leaves out (hub_core::tasks::title_and_rest); the epic cell opens
+// the epic. The opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
+  const title = r.title || r.text;
+  const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
+  const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
+  // An epic is the deliverable itself; any other row under none says so, for triage.
+  const epic = r.epic ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : r.section === "epics" ? "" : `<span class="muted">no epic</span>`;
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
-    `<td><b>${esc(r.label || "")}</b></td><td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td><td>${bDash(r.project)}</td><td>${esc(r.lane)}</td>` +
-    `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td><code>${bDash(r.id)}</code></td>` +
-    `<td>${bDash(r.lane === "playtest" ? r.game : r.version)}</td><td>${bDash(r.size)}</td><td class="n">${bDash(r.tier)}</td>` +
-    `<td>${bDash((r.since || "").slice(5))}</td><td>${bDash(r.when)}</td><td><div class="btext">${esc(r.text)}</div></td></tr>`;
+    `<td><b>${esc(r.label || "")}</b></td>` +
+    `<td class="btitle"><div class="bt">${area}${esc(title)}</div>${sum}</td>` +
+    `<td class="bepic">${epic}</td>` +
+    `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
+    `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td class="bwhen">${bDash(r.when)}</td>` +
+    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td></tr>`;
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
@@ -244,6 +256,7 @@ $("b-root").addEventListener("click", (e) => {
   const d = t.dataset;
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
+    if (t.closest("a")) return;
     const line = t.closest("tr[data-row]");
     if (!line) return;
     const k = bSel(rows[line.dataset.row]);
