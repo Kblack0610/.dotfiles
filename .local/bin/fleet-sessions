@@ -443,8 +443,9 @@ plan_done() {
 # is DONE: its tail (the queued phases, "no plan file", the merged PR list) shrinks as its queue
 # items start, and each change drew a fresh wind-down nudge to the same session (2026-11-07:
 # dotfiles-agent-6 got three, from three passes). Whether the nudge moved it is the escalation's
-# question, not a reason to send it again.
-fact_key() { case "$1" in DONE\ *) echo DONE ;; *) printf '%s\n' "$1" ;; esac; }
+# question, not a reason to send it again. A NEEDS fact is what the human owes, so it drops the
+# branch and head: a session holding an ask that switched branch or pushed paged again (ar-233).
+fact_key() { case "$1" in DONE\ *) echo DONE ;; NEEDS\ *) printf '%s\n' "${1%% @*}" ;; *) printf '%s\n' "$1" ;; esac; }
 
 # nudged <sid> <fact> -> exit 0 when this fact was already nudged for this session.
 nudged() { [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$1" 2>/dev/null)")" = "$(fact_key "$2")" ]; }
@@ -475,13 +476,15 @@ mark() {
   ) 8>"$LEDGER/mark.lock"
 }
 
-# release_done <rows>: a session that left DONE is no longer holding the DONE nudge, so its next
-# DONE is a new fact and is nudged (fact_key makes every DONE one fact while it lasts).
-release_done() {
+# release_left <rows>: a session that left DONE is no longer holding the DONE nudge, so its next
+# DONE is a new fact and is nudged (fact_key makes every DONE one fact while it lasts). One that
+# left NEEDS drops its NEEDS escalation the same way, so its next ask or dialog pages once.
+release_left() {
   local b sid _
   while IFS=$'\t' read -r b _ sid _; do
-    [ -n "$sid" ] && [ "$b" != DONE ] || continue
-    if [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)")" = DONE ]; then rm -f "$LEDGER/$sid"; fi
+    [ -n "$sid" ] && [ -f "$LEDGER/$sid" ] || continue
+    if [ "$b" != DONE ] && [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid")")" = DONE ]; then rm -f "$LEDGER/$sid"
+    elif [ "$b" != NEEDS ] && grep -q '^escalated: NEEDS ' "$LEDGER/$sid"; then sed -i '/^escalated: NEEDS /d' "$LEDGER/$sid"; fi
   done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
@@ -1670,7 +1673,7 @@ tick() {
     fi
     cp "$cur" "$LEDGER/watch.state"
   ) 9>"$LEDGER/watch.lock"
-  release_done "$rows"
+  release_left "$rows"
   write_state "$t0" "$rows" > /dev/null
 }
 
