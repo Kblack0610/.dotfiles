@@ -126,7 +126,7 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 
 ```bash
 make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
-tests/docker.sh test-container # all tiers, only when the change touches the harness itself
+tests/docker.sh test-container # all tiers
 tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
 ```
 

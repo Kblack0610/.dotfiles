@@ -49,7 +49,7 @@ help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-pr      the files the PR gate picks for this change (BASE=<rev>, default the merge-base with origin/main)"
+	@echo "  make test-pr      the files the PR gate picks for this change (PR_BASE=<rev>, default the merge-base with origin/main)"
 	@echo "  make test-fast    unit + integ, every file (main and the nightly run it; CI shards it: shard.sh)"
 	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
@@ -114,16 +114,21 @@ test-integ: $(BATS)
 test-files: $(BATS)
 	@$(call junit_mk,files) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,files) $(FILES)
 
-# The local gate: the fast-tier files tests/pick.sh picks for the change from BASE to the working
-# tree (untracked files too), the set the PR's CI gate runs. Why: sessions ran the whole fast tier,
-# about 4,900 tests, as their gate, several at once, and with the runners off that held this
-# 24-core box at load 63 (ar-1652). A change pick.sh cannot scope still gets the whole tier.
-BASE ?= $(shell git -C $(HERE) merge-base HEAD origin/main 2>/dev/null)
+# The local gate: the fast-tier files tests/pick.sh picks for the change from PR_BASE to the
+# working tree (untracked files too), the set the PR's CI gate runs. Why: sessions ran the whole
+# fast tier, about 4,900 tests, as their gate, several at once, and with the runners off that held
+# this 24-core box at load 63 (ar-1652). A change pick.sh cannot scope (the harness) still gets the
+# whole tier; no change runs nothing, and a missing base is an error, never a silent full run.
+PR_BASE ?= $(shell git -C "$(HERE)" merge-base HEAD origin/main 2>/dev/null)
 test-pr: $(BATS)
-	@changed=$$( { git -C $(HERE).. diff --name-only $(BASE); git -C $(HERE).. ls-files --others --exclude-standard; } | sort -u); \
-	files=$$(for t in unit integ; do PICK_CHANGED="$$changed" $(HERE)pick.sh $$t $(BASE) || exit 1; done) || exit 1; \
+	@[ -n "$(PR_BASE)" ] || { echo "test-pr: no merge-base with origin/main: git fetch origin, or pass PR_BASE=<rev>" >&2; exit 2; }; \
+	diff=$$(git -C "$(HERE).." diff --name-only "$(PR_BASE)") || exit 2; \
+	new=$$(git -C "$(HERE).." ls-files --others --exclude-standard) || exit 2; \
+	changed=$$(printf '%s\n%s\n' "$$diff" "$$new" | grep . | sort -u); \
+	[ -n "$$changed" ] || { echo "test-pr: no change against $(PR_BASE)"; exit 0; }; \
+	files=$$(for t in unit integ; do PICK_CHANGED="$$changed" "$(HERE)pick.sh" $$t "$(PR_BASE)" || exit 1; done) || exit 1; \
 	[ -n "$$files" ] || { echo "test-pr: no fast-tier file picked"; exit 0; }; \
-	$(MAKE) --no-print-directory -C $(HERE) test-files FILES="$$(printf '$(HERE)%s ' $$files)"
+	$(MAKE) --no-print-directory -C "$(HERE)" test-files FILES="$$(sed 's|^|$(HERE)|' <<<"$$files" | tr '\n' ' ')"
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.

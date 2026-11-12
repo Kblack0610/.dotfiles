@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # tests/Makefile test-pr: the local gate runs the files tests/pick.sh picks for the change from
-# BASE to the working tree, untracked files included, never the whole fast tier (ar-1652).
+# PR_BASE to the working tree, untracked files included, never the whole fast tier (ar-1652).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -25,7 +25,7 @@ setup() {
   git -C "$FIX" update-ref refs/remotes/origin/main HEAD
 }
 
-gate() { env -u CI make -s --no-print-directory -C "$FIX/tests" test-pr; }
+gate() { env -u CI -u PR_BASE make -s --no-print-directory -C "$FIX/tests" test-pr; }
 
 @test "an uncommitted edit runs only the files that name it" {
   echo "echo changed" > "$FIX/bin/alpha.sh"
@@ -50,4 +50,45 @@ gate() { env -u CI make -s --no-print-directory -C "$FIX/tests" test-pr; }
   assert_success
   assert_output --partial "no fast-tier file picked"
   refute_output --partial "ran "
+}
+
+@test "no change against the base runs nothing, never the whole tier" {
+  run gate
+  assert_success
+  assert_output --partial "no change against"
+  refute_output --partial "ran "
+}
+
+@test "a missing origin/main is an error naming the fix, never a silent full run" {
+  git -C "$FIX" update-ref -d refs/remotes/origin/main
+  echo "echo changed" > "$FIX/bin/alpha.sh"
+  run gate
+  assert_failure 2
+  assert_output --partial "git fetch origin, or pass PR_BASE"
+  refute_output --partial "ran "
+}
+
+@test "a base git cannot read fails instead of running the whole tier" {
+  echo "echo changed" > "$FIX/bin/alpha.sh"
+  run env -u CI make -s --no-print-directory -C "$FIX/tests" test-pr PR_BASE=no-such-rev
+  assert_failure
+  refute_output --partial "ran "
+}
+
+@test "a harness change runs every file, as the PR gate does" {
+  echo "# touch" >> "$FIX/tests/pick.sh"
+  run gate
+  assert_success
+  assert_output --partial "ran unit/a.bats"
+  assert_output --partial "ran unit/b.bats"
+  assert_output --partial "ran integ/c.bats"
+}
+
+@test "PR_BASE picks the diff from that revision, committed work included" {
+  echo "echo changed" > "$FIX/bin/beta.sh"
+  git -C "$FIX" -c user.name=t -c user.email=t@t commit -qam beta
+  run env -u CI make -s --no-print-directory -C "$FIX/tests" test-pr PR_BASE=HEAD~1
+  assert_success
+  assert_output --partial "ran unit/b.bats"
+  refute_output --partial "a.bats"
 }
