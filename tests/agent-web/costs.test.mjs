@@ -577,7 +577,9 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   body = board({ history, day });
   run("st.tab = 'costs'; st.views.costs = ''");
   const at = (sel, data) => ({ dataset: data, closest: (q) => (q === sel ? { dataset: data } : null) });
-  fire("click", { type: "click", target: at("#spend-days [data-key], #spend-series [data-key]", { key: "2026-11-07" }) });
+  const dayBar = { dataset: { key: "2026-11-07" }, closest: (q) => (q === "#spend-days" || q.includes("#spend-days [data-key]") ? dayBar : null) };
+  fire("click", { type: "click", target: dayBar });
+  assert.equal(run("st.section"), "sessions", "a chart click scrolls to the day's sessions, Spend's last section");
   await tick();
   assert.equal(ctx.history.url, "#costs?day=2026-11-07");
   assert.match(asked.at(-1), /day=2026-11-07/);

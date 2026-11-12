@@ -9,7 +9,7 @@
 //! flips it. Spend charts the fleet's last 30 days and ranks the picked day's sessions: `,` and `.`
 //! pick the day, `v` opens a session's own days, `y` opens the year, month and day rows.
 //! The sections sit in inner tabs (`hub_core::layout`, Spend, Limits, Models, Budget); Spend opens
-//! first, on the 24h fleet figure and the totals, then burn per session per day. Left/Right switch
+//! first, on the 24h fleet figure and the totals, with burn per session per day last. Left/Right switch
 //! them, and a key for a section on another one switches to it. Budget is the one cash view
 //! (`hub_core::budget`); every other figure here is list price.
 
@@ -1118,7 +1118,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
     if past > 0 {
         out.push(Line::styled(
-            format!("+{past} cheaper sessions; the web table (#costs/spend) shows more"),
+            format!("+{past} more sessions; the web table (#costs/spend) shows up to 50"),
             p.dim(),
         ));
     }

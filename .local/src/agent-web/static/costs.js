@@ -156,7 +156,7 @@ function dayTable(dv) {
   const rows = dv.rows.map((r) => `<tr data-sid="${esc(r.sid)}" class="${dv.series && dv.series.sid === r.sid ? "sel" : ""}">` +
     Object.keys(SESS_COLS).map((k) => sessCell(r, k)).join("") + `</tr>`).join("");
   return series + `<div class="panel scroll"><table class="tbl">${tblHead(t, SESS_COLS, "d")}${rows}</table>` +
-    (dv.more ? `<div class="muted more">+${dv.more} cheaper sessions</div>` : "") + `</div>`;
+    (dv.more ? `<div class="muted more">+${dv.more} more sessions</div>` : "") + `</div>`;
 }
 
 // Burn per session: the day picked on the chart, its sessions ranked by what they cost, and a row
@@ -403,7 +403,8 @@ $("costs").addEventListener("click", (e) => {
   const ds = t.closest && t.closest("[data-dsort]");
   if (ds) { costsView({ dsort: ds.dataset.dsort, ddir: ds.dataset.dsort && ds.dataset.ddir === "asc" ? "asc" : "" }); return; }
   const day = t.closest && t.closest("#spend-days [data-key], #spend-series [data-key]");
-  if (day) { costsView({ day: day.dataset.key }); return; }
+  // The day's sessions are Spend's last section, so the paint scrolls there (seekSection).
+  if (day) { if (day.closest("#spend-days")) st.section = "sessions"; costsView({ day: day.dataset.key }); return; }
   const sess = t.closest && t.closest("tr[data-sid]");
   if (sess) { const v = new URLSearchParams(st.views.costs || ""); costsView({ sid: v.get("sid") === sess.dataset.sid ? "" : sess.dataset.sid }); }
 });
