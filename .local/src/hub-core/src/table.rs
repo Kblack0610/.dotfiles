@@ -430,6 +430,23 @@ pub fn links<R: Row>(rows: &[&R]) -> Vec<BTreeMap<&'static str, String>> {
     }
 }
 
+/// One table's view keys as a request names them (`q`, `s`, `sort`, `dir`), for a function that
+/// builds a board holding a second table, which a surface reads under its own prefixed keys.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Keys<'a> {
+    pub q: &'a str,
+    pub s: &'a str,
+    pub sort: &'a str,
+    pub dir: &'a str,
+}
+
+impl Keys<'_> {
+    /// The view of an `R` table these keys ask for ([`View::new`]).
+    pub fn view<R: Row>(&self) -> View {
+        View::new::<R>(self.q, self.s, self.sort, self.dir)
+    }
+}
+
 impl View {
     /// A view of an `R` table; a chip or sort column `R` does not have is dropped, and any
     /// direction but `asc` is descending.

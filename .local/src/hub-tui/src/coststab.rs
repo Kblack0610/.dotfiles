@@ -375,7 +375,11 @@ impl CostsView {
             &self.q,
             &self.sort,
             dir,
-            (&self.ssort, sdir),
+            hub_core::table::Keys {
+                sort: &self.ssort,
+                dir: sdir,
+                ..Default::default()
+            },
             &pick,
         )
     }

@@ -27,7 +27,7 @@ use crate::fleet_cost::FleetCost;
 use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
-use crate::table::{self, Row, Summary, Val, View};
+use crate::table::{self, Keys, Row, Summary, Val, View};
 
 const DAY: i64 = 24 * 3600;
 
@@ -1108,9 +1108,9 @@ fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> 
     out
 }
 
-/// The Consumers section of one read under a sort (blank: its own order).
-pub fn consumers(c: &Costs, sort: &str, dir: &str) -> crate::gateway::Consumers {
-    crate::gateway::build(&c.consumers, &c.burn, c.at, sort, dir)
+/// The Consumers section of one read under a view (no sort: its own order).
+pub fn consumers(c: &Costs, k: Keys) -> crate::gateway::Consumers {
+    crate::gateway::build(&c.consumers, &c.burn, c.at, k)
 }
 
 /// A cut or window the tab knows, else its default, so a stale link still opens.
@@ -1132,7 +1132,7 @@ pub fn window(w: &str) -> (&'static str, i64) {
 
 /// The view `by`/`w`/`q`/`sort`/`dir` over one read.
 ///
-/// `sec` is the Sections block's own `(sort, dir)`, which the main table's sort does not touch, and
+/// `sec` is the Sections block's own view keys, which the main table's do not touch, and
 /// `spend` the Spend day table's own day, query, sort and opened session.
 #[allow(clippy::too_many_arguments)]
 pub fn board(
@@ -1142,7 +1142,7 @@ pub fn board(
     q: &str,
     sort: &str,
     dir: &str,
-    sec: (&str, &str),
+    sec: Keys,
     spend: &crate::spend_history::Pick,
 ) -> Board {
     let by = cut(by);
@@ -1233,7 +1233,7 @@ pub fn board(
         links: vec![],
         legend: None,
     };
-    let consumers = consumers(c, "", "");
+    let consumers = consumers(c, Keys::default());
     Board {
         at: c.at,
         by: by.into(),
@@ -1254,7 +1254,7 @@ pub fn board(
         amber: amber(c, &consumers),
         consumers,
         tokens: c.tokens.clone(),
-        sections: sections::board(&c.sections, sec.0, sec.1),
+        sections: sections::board(&c.sections, sec),
         sources: sources(c),
         errors: c.errors.clone(),
         columns: cols,
@@ -1325,7 +1325,7 @@ mod tests {
             "",
             "",
             "desc",
-            ("", "desc"),
+            Keys::default(),
             &Default::default(),
         );
         assert!(b.tokens.is_some() && b.errors.len() == 1);
@@ -1342,7 +1342,7 @@ mod tests {
                 "",
                 "",
                 "desc",
-                ("", "desc"),
+                Keys::default(),
                 &Default::default(),
             )
             .amber
@@ -1373,7 +1373,7 @@ mod tests {
             .unwrap(),
             ..Costs::default()
         };
-        let names = |sec| {
+        let names = |sort, dir| {
             board(
                 &c,
                 "model",
@@ -1381,7 +1381,11 @@ mod tests {
                 "",
                 "cost",
                 "asc",
-                sec,
+                Keys {
+                    sort,
+                    dir,
+                    ..Keys::default()
+                },
                 &Default::default(),
             )
             .sections
@@ -1390,9 +1394,9 @@ mod tests {
             .map(|r| r[0].clone())
             .collect::<Vec<_>>()
         };
-        assert_eq!(names(("", "")), ["a", "b"], "fleet-bench's order");
-        assert_eq!(names(("prs", "desc")), ["b", "a"]);
-        assert_eq!(names(("prs", "asc")), ["a", "b"]);
+        assert_eq!(names("", ""), ["a", "b"], "fleet-bench's order");
+        assert_eq!(names("prs", "desc"), ["b", "a"]);
+        assert_eq!(names("prs", "asc"), ["a", "b"]);
         let b = board(
             &c,
             "model",
@@ -1400,7 +1404,11 @@ mod tests {
             "",
             "cost",
             "asc",
-            ("prs", "asc"),
+            Keys {
+                sort: "prs",
+                dir: "asc",
+                ..Keys::default()
+            },
             &Default::default(),
         );
         assert_eq!(b.table.sort, "cost", "the main table's sort is its own");
@@ -1412,7 +1420,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default()
         )
         .sections
@@ -1591,7 +1599,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
@@ -1609,7 +1617,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "model"), ["opus-5-5", "haiku-4-5", "gpt-5.4"]);
@@ -1640,7 +1648,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "harness"), ["claude", "claude-lazer"]);
@@ -1656,7 +1664,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "session"), ["s1", "s2", "s3", "s4"]);
@@ -1668,7 +1676,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "harness"), ["claude", "codex", "claude-lazer"]);
@@ -1680,11 +1688,20 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "project"), ["dotfiles", "playground", "_runner"]);
-        let b = board(&c, "kind", "30d", "", "", "", ("", ""), &Default::default());
+        let b = board(
+            &c,
+            "kind",
+            "30d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "kind"), ["human", "automated"]);
         let b = board(
             &c,
@@ -1693,7 +1710,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "runner"), ["dream", "ask-judge"]);
@@ -1703,7 +1720,16 @@ mod tests {
             "the 2-day-old call is outside 24h"
         );
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5"));
-        let b = board(&c, "tool", "7d", "", "", "", ("", ""), &Default::default());
+        let b = board(
+            &c,
+            "tool",
+            "7d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "tool"), ["Bash", "Read", "(no tool)"]);
         assert!(
             (b.shown_usd - 10.0).abs() < 1e-9,
@@ -1723,7 +1749,7 @@ mod tests {
                 "",
                 "",
                 "",
-                ("", ""),
+                Keys::default(),
                 &Default::default()
             )
             .unpriced
@@ -1739,7 +1765,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(
@@ -1758,7 +1784,7 @@ mod tests {
             "",
             "cost",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&up, "project"), ["_runner", "playground", "dotfiles"]);
@@ -1769,7 +1795,7 @@ mod tests {
             "",
             "cost",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1783,7 +1809,7 @@ mod tests {
             "",
             "project",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1798,7 +1824,7 @@ mod tests {
             "",
             "landed",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(off.table.sort, "");
@@ -1819,7 +1845,7 @@ mod tests {
             "harness:codex",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "project"), ["dotfiles"]);
@@ -1836,7 +1862,7 @@ mod tests {
             "-model:opus",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "model"), ["haiku-4-5", "gpt-5.4"]);
@@ -1847,7 +1873,7 @@ mod tests {
             "-model:opus",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(
@@ -1866,7 +1892,7 @@ mod tests {
             "harness:nope",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(b.rows.is_empty());
@@ -1884,7 +1910,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1948,7 +1974,16 @@ mod tests {
         .unwrap();
         c.snapshots[0].skills = snap.skills;
         c.snapshots[0].skill_unallocated_usd = snap.skill_unallocated_usd;
-        let b = board(&c, "skill", "7d", "", "", "", ("", ""), &Default::default());
+        let b = board(
+            &c,
+            "skill",
+            "7d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
         assert_eq!(b.columns, columns("skill"));
         assert_eq!(
             names(&b, "skill"),
@@ -1972,7 +2007,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(b.rows.is_empty() && b.unpriced.is_some());
@@ -2108,7 +2143,7 @@ not json
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
