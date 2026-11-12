@@ -548,7 +548,7 @@ row() {
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
 
-# stage_facts <rows-json> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
+# stage_facts <state-file> <labs-file> -> {stages: {project: {stage, rungs, needs, ahead}}}: what each
 # registered project's lab stage asks of its deploys (~/.local/src/docs/stages.md, "The ladder").
 # A live target serves the rung the registry's `channels` maps its channel to; `rungs` are the
 # rungs served, low to high (the stage gate's rows read them against the stage being checked, so
@@ -558,11 +558,10 @@ row() {
 # ahead. The rung order is `notes projects --stages`. When notes cannot say, `stages` is empty and
 # `stages_error` says why.
 stage_facts() {
-  local state="$1" ladder labs
+  local state="$1" labs="$2" ladder
   ladder="$(notes projects --stages 2>/dev/null)"
   [ -n "$ladder" ] || { jq -n '{stages: {}, stages_error: "notes projects --stages printed nothing"}'; return; }
-  labs="$(notes projects --stats --json 2>/dev/null)"
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$labs" \
+  jq -e 'type == "array"' >/dev/null 2>&1 <"$labs" \
     || { jq -n '{stages: {}, stages_error: "notes projects --stats --json did not answer"}'; return; }
   project_machine_profile >/dev/null
   jq --slurpfile st "$state" --arg ladder "$ladder" --arg m "$PROJECT_MACHINE_PROFILE" \
@@ -585,10 +584,10 @@ stage_facts() {
                           | . as $r | select([$live[] | select(.rung == $r)] | length == 0)]
                     else [] end),
             ahead: (if $s != null then [$live[] | select($rank[.rung] > $rank[$s]) | .id] else [] end)}}]
-        | from_entries)}' <<<"$labs"
+        | from_entries)}' <"$labs"
 }
 
-# link_facts -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
+# link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the
 # GitHub environments that hold a recorded Deployment (record-deployment writes the version as
 # its description; a job's `environment:` key writes none), and every workflow file on both
@@ -597,7 +596,7 @@ stage_facts() {
 # has no roll (agentctl-wave-roll skips it), so it carries none and no version check runs on it.
 # `since` is RELEASE_NOTES_SINCE, the day the links are enforced from.
 link_facts() {
-  local repos key slug dir branch f deploy envs out tmp proj lab root roadmap rolled manual
+  local labs="$1" repos key slug dir branch f deploy envs out tmp proj lab root roadmap rolled manual
   local -A labroot=()
   project_machine_profile >/dev/null
   repos="$(jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
@@ -637,7 +636,7 @@ link_facts() {
     done < <(git -C "$dir" ls-tree -r --name-only "origin/$branch" -- .github/workflows .forgejo/workflows 2>/dev/null)
     jq -sc --arg k "$key" --arg b "$branch" '{key: $k, value: {branch: $b, files: .}}' "$tmp/files" >>"$tmp/wf"
   done <<<"$repos"
-  manual="$(notes projects --stats --json 2>/dev/null | jq -r '.[]? | select(.automation == false) | .name' 2>/dev/null || true)"
+  manual="$(jq -r '.[]? | select(.automation == false) | .name' "$labs" 2>/dev/null || true)"
   while IFS=$'\037' read -r proj lab; do
     [ -n "$proj" ] || continue
     ! grep -qxF "$proj" <<<"$manual" || continue
@@ -683,7 +682,7 @@ refresh_snapshot() {
   # and a full refresh would then overwrite the snapshot with zero rows.
   targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
   store_credentials "$targets"
-  tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
+  tmp="$(mktemp -d "$STATE_DIR/.refresh.XXXXXX")" || die "cannot write in $STATE_DIR"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     proj="$(jq -r '.project' <<<"$line")"
@@ -691,20 +690,20 @@ refresh_snapshot() {
     # A target with no id cannot be joined across refreshes or named by check.
     [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
     [ -v "tag_of[$proj]" ] || tag_of[$proj]="$(project_release_tag "$proj" 2>/dev/null || true)"
-    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp"
+    row "$proj" "$t" "$prev" "${tag_of[$proj]}" >>"$tmp/row"
   done <<<"$targets"
-  jq -sc . "$tmp" >"$tmp.rows" || { rm -f "$tmp" "$tmp.rows"; die "cannot read the probed rows"; }
-  : >"$tmp"
+  jq -sc . "$tmp/row" >"$tmp/rows" || { rm -rf "$tmp"; die "cannot read the probed rows"; }
+  : >"$tmp/rel1"
   while IFS= read -r proj; do
     [ -n "$proj" ] || continue
-    history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp"
+    history "$proj" | jq -c --arg p "$proj" '{key: $p, value: .}' >>"$tmp/rel1"
   done < <(jq -r '.project' <<<"$targets" | sort -u)
-  jq -sc 'from_entries' "$tmp" >"$tmp.rel" || { rm -f "$tmp" "$tmp.rows" "$tmp.rel"; die "cannot read the release history"; }
-  printf '%s\n' "$prev" >"$tmp.prev"
+  jq -sc 'from_entries' "$tmp/rel1" >"$tmp/rel" || { rm -rf "$tmp"; die "cannot read the release history"; }
+  printf '%s\n' "$prev" >"$tmp/prev"
   local out="$STATE_DIR/.state.$$"
   # Files, never --argjson: the snapshot passed 128 KB on 2026-11-11, the kernel's cap on one
   # argument (MAX_ARG_STRLEN), and every refresh died with "Argument list too long".
-  jq -n --slurpfile rows "$tmp.rows" --slurpfile releases "$tmp.rel" --slurpfile prev "$tmp.prev" --arg only "$only" --argjson now "$(now_epoch)" '
+  jq -n --slurpfile rows "$tmp/rows" --slurpfile releases "$tmp/rel" --slurpfile prev "$tmp/prev" --arg only "$only" --argjson now "$(now_epoch)" '
     $rows[0] as $rows | $releases[0] as $releases | $prev[0] as $prev
     | ($only | split(" ") | map(select(. != ""))) as $o
     | { generated_at: ($now | todate), generated_epoch: $now,
@@ -712,13 +711,15 @@ refresh_snapshot() {
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
                 else [] end) + $rows),
         releases: ((if ($o | length) > 0 then ($prev.releases // {}) else {} end) + $releases) }' >"$out" \
-    || { rm -f "$out" "$tmp" "$tmp.rows" "$tmp.rel" "$tmp.prev"; die "cannot write $out"; }
-  rm -f "$tmp" "$tmp.rows" "$tmp.rel" "$tmp.prev"
+    || { rm -rf "$out" "$tmp"; die "cannot write $out"; }
   # From the merged rows, so a subset refresh still judges every project on all its channels.
-  facts="$(stage_facts "$out")" && jq --slurpfile f <(printf '%s\n' "$facts") '. + $f[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
-    || { rm -f "$out" "$out.f"; die "cannot write the stage facts"; }
-  facts="$(link_facts)" && jq --slurpfile f <(printf '%s\n' "$facts") '. + $f[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
-    || { rm -f "$out" "$out.f"; die "cannot write the link facts"; }
+  # One `notes projects --stats --json` read serves both fact blocks.
+  notes projects --stats --json >"$tmp/labs" 2>/dev/null || : >"$tmp/labs"
+  stage_facts "$out" "$tmp/labs" >"$tmp/stage" || { rm -rf "$out" "$tmp"; die "cannot write the stage facts"; }
+  link_facts "$tmp/labs" >"$tmp/links" || { rm -rf "$out" "$tmp"; die "cannot write the link facts"; }
+  jq --slurpfile s "$tmp/stage" --slurpfile l "$tmp/links" '. + $s[0] + $l[0]' "$out" >"$out.f" && mv -f "$out.f" "$out" \
+    || { rm -rf "$out" "$out.f" "$tmp"; die "cannot write the facts"; }
+  rm -rf "$tmp"
   summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
     || { rm -f "$out"; die "cannot summarize $out"; }
   mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }

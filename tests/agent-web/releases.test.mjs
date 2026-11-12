@@ -79,7 +79,7 @@ const binks = {
   ],
   line: "release", released_text: "v2 11-05", history: [
     { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
-    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "none merged", rows: [], rows_text: "none merged" },
   ],
 };
 const data = (o = {}) => ({
@@ -224,7 +224,7 @@ test("an opened app lists its releases newest first with when, the one before an
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
   assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
-  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">-<\/td><td class="wrap muted">-<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">none merged<\/td><td class="wrap muted">none merged<\/td><\/tr>/);
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
   // Clicking a release reads its changelog, and the app stays open.
   asked.length = 0;
