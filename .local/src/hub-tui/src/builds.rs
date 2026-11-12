@@ -162,8 +162,10 @@ impl BuildsView {
     ) -> Vec<Line<'static>> {
         if rows.is_empty() {
             return vec![Line::styled(
-                if !b.rows.iter().any(|r| self.scope.keeps(r)) {
+                if b.rows.is_empty() {
                     "no runs in the ledger"
+                } else if !b.rows.iter().any(|r| self.scope.keeps(r)) {
+                    "no run in the ledger is tied to a release"
                 } else {
                     "no run matches (/ query, f state, x clears)"
                 },
@@ -582,6 +584,11 @@ pub mod tests {
         assert_eq!((out.len(), all), (2, 1));
         assert_eq!(rel.shown(&b).len(), 1);
         assert!(plain(&out[1]).contains("v1.2.0"));
+        // A ledger with no run tied to a release says so, not that the ledger is empty.
+        b.rows[0].release = None;
+        let (out, all) = rel.preview(&b, 2, p, 100, 1300);
+        assert_eq!(all, 0);
+        assert_eq!(plain(&out[0]), "no run in the ledger is tied to a release");
     }
 
     #[test]

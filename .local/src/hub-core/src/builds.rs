@@ -373,7 +373,7 @@ impl Builds {
     }
 
     /// The counts the read took of the runs `scope` lists.
-    pub fn counts_in(&self, scope: Scope) -> &Counts {
+    fn counts_in(&self, scope: Scope) -> &Counts {
         match scope {
             Scope::All => &self.counts,
             Scope::Release => &self.released,
@@ -722,10 +722,7 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
         }
         pass.add(r.conclusion.as_deref());
         // A startup failure never ran its jobs, so its seconds would drag the usual time down.
-        let ran = matches!(
-            r.conclusion.as_deref(),
-            Some("success" | "failure" | "timed_out")
-        );
+        let ran = matches!(r.conclusion.as_deref(), Some("success" | "failure" | "timed_out"));
         let timed = ran && r.started_at.is_some();
         if let (true, Some(t)) = (timed, r.took) {
             took.push(t);
