@@ -111,7 +111,7 @@ function propBody(h) {
 }
 
 // A failed read hues the title, so the reason at the top of the page is not the only sign.
-const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? shownOf(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
+const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? tblCount(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
 
 function propSection(h) {
   const t = h.proposals_table;
@@ -254,8 +254,7 @@ function runBody(h) {
 }
 
 // A table's head count: its rows, or "N of M" while a search or state narrows them.
-const shownOf = (t) => (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
-const runHead = (h) => secHead("running", "Running", shownOf(h.running_table));
+const runHead = (h) => secHead("running", "Running", tblCount(h.running_table));
 
 // Green collapses to one chip; only what is not green is named.
 const LEVEL = { ok: ["ok", "OK"], warn: ["warn", "WARN"], red: ["bad", "RED"], nodata: ["", "NO DATA"] };
@@ -267,7 +266,7 @@ function healthHtml(chips) {
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
 
-const needsHead = (t) => secHead("needs", "Needs you", shownOf(t));
+const needsHead = (t) => secHead("needs", "Needs you", tblCount(t));
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
 // its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).

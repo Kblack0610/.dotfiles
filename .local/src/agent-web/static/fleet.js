@@ -241,7 +241,7 @@ function renderRunner(el) {
 
   const plus = r.calls.partial ? "+" : "";
   const trow = (l, t, p = "") => `<tr><td>${l}</td><td class="n">${t.calls}${p}</td><td class="n${t.errors ? " bad" : ""}">${t.errors}${p}</td><td class="n">${kTok(t.tokens)}${p}</td><td class="n">${usd(t.cost)}${t.cost == null ? "" : p}</td><td class="n">${secs(t.p50_ms && t.p50_ms / 1000)}</td></tr>`;
-  h += secHead("", "Calls", null, day.errors ? "warn" : "") +
+  h += secHead("", "Calls", null, day.errors ? "warn" : "") + (plus ? `<div class="cline warn">7d is a floor: the week starts past the tail read</div>` : "") +
     `<div class="panel scroll"><table class="tbl"><tr><th></th><th class="n">calls</th><th class="n">errors</th><th class="n">tokens</th><th class="n">$</th><th class="n">p50</th></tr>${trow("24h", day)}${trow("7d", week, plus)}</table>` +
     (r.calls.recent.length ? callsTable(r.calls.recent) : "") + `</div>`;
 

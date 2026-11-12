@@ -97,14 +97,10 @@ function fleetCostSection(d) {
   // Every column is on a phone's row too: "estimated" is never behind a tap.
   const row = (r) => `<tr><td>${esc(r.name)}</td><td class="n">${esc(r.cost)}</td><td class="n">${esc(r.share)}</td><td class="muted">${esc(r.basis)}</td></tr>` +
     (r.detail ? `<tr><td></td><td colspan="3" class="muted wrap">${esc(r.detail)}</td></tr>` : "");
-  // A phone folds the table under the head, so the head is the fold's summary there and stands
-  // above the table elsewhere (a wide screen never sees the summary).
-  const head = secHead("fleet", "Who spent the 24h", f.rows.length), phone = isPhone();
-  return (phone ? "" : head) +
-    pfold("cost-fleet", phone ? head : "", `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
+  return pfold("cost-fleet", secHead("fleet", "Who spent the 24h", f.rows.length), `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
     `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
-    `<div class="muted">${esc(f.foot)}</div></div>`);
+    `<div class="muted">${esc(f.foot)}</div></div>`, true);
 }
 
 // The Budget inner tab (hub_core::budget, the TUI's coststab.rs `budget`): this month's cash, what

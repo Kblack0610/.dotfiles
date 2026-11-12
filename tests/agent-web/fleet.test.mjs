@@ -284,6 +284,7 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /status: 3 filed; retry 14:20/);
   assert.match(h, /<td class="bad">FAILED<\/td>/);
   assert.match(h, /<td>7d<\/td><td class="n">30\+<\/td>/, "a partial week is a floor");
+  assert.match(h, /Calls<\/h2><div class="cline warn">7d is a floor: the week starts past the tail read<\/div>/, "the floor is said once, under the head");
   assert.match(h, /<span class="tl">FILED<\/span><span class="tv">5<\/span>/);
   assert.match(h, /<td>filed <span class="muted">ar-9<\/span><\/td><td class="muted">inbox -&gt; board<\/td><td class="muted">inbox-triage<\/td>/, "an intake step names its id, route and writer");
   assert.match(h, /fix the thing<div class="muted">=&gt; fix the thing on the hub<\/div><\/td><td class="wrap muted">model: names the hub<\/td>/, "and the row it became and why");
@@ -311,7 +312,7 @@ test("the sentinel page counts its watches, a tripped one a warn line linking to
   assert.doesNotMatch(h, /<th>watch<\/th>/);
   const quiet = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("b", "OK")] } }) });
   assert.match(quiet, /<h2 class="sec">Watches <span class="n">1<\/span><\/h2>/);
-  assert.doesNotMatch(quiet, /cline warn/, "no warn line while nothing is tripped");
+  assert.doesNotMatch(quiet, /Watches <span class="n">1<\/span><\/h2><div class="cline warn">/, "no warn line while nothing is tripped");
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {

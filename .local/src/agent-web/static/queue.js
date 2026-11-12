@@ -267,14 +267,13 @@ function renderQueue() {
 }
 
 // The worst step hues the head, so a phone's shut fold still says so, and is a line under it.
-// A phone's fold line is the head itself, so the open fold does not say Pipeline twice.
+// The fold line is the head itself, so the open fold does not say Pipeline twice.
 function qFlow() {
   const r = qfl.data?.line, n = r?.nodes[r.worst];
   const why = n?.stopped ? `${n.label} stopped` : n?.hot ? `${n.label} past its bound` : "";
-  const head = secHead("flow", "Pipeline", null, why ? "warn" : null), phone = isPhone();
-  return pfold("q-flow", phone ? head : "", (phone ? "" : head) + (why ? `<div class="cline warn">${esc(why)}</div>` : "") + qStrip() + qFlowTail());
+  return pfold("q-flow", secHead("flow", "Pipeline", null, why ? "warn" : null), (why ? `<div class="cline warn">${esc(why)}</div>` : "") + qStrip() + qFlowTail(), true);
 }
-const qTableHead = () => secHead("table", "Queue", qst.table.shown === qst.table.total ? qst.table.total : `${qst.table.shown} of ${qst.table.total}`);
+const qTableHead = () => secHead("table", "Queue", tblCount(qst.table));
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
 const qCandAll = () => (qst.cands ? qst.cands.rows.concat(qst.cands.blocked_rows || []) : []);

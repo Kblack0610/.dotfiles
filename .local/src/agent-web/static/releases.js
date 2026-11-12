@@ -198,7 +198,7 @@ const releasesTiles = (d) =>
 
 function releasesHead(d) {
   const t = d.table;
-  let html = secHead("", "Releases", t && (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`), d.gaps || relStale(d) ? "warn" : "");
+  let html = secHead("", "Releases", t && tblCount(t), d.gaps || relStale(d) ? "warn" : "");
   if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;

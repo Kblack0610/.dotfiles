@@ -156,8 +156,10 @@ const PHONE_WIDTH = "(max-width: 760px)";
 const isPhone = () => typeof matchMedia === "function" && matchMedia(PHONE_WIDTH).matches;
 const PFOLD = {};
 const pfoldOpen = (k) => !isPhone() || !!PFOLD[k];
-const pfold = (k, summary, inner) =>
-  `<details class="pfold" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+// `head`: the summary is the part's section head, so a wide screen shows it as the head (app.css .hfold)
+// and a phone taps it; one markup for both sides, so crossing the width needs no redraw.
+const pfold = (k, summary, inner, head = false) =>
+  `<details class="pfold${head ? " hfold" : ""}" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
 // Crossing the width: every drawn fold, on every tab, takes the state for the new side.
 const pfoldFit = () => document.querySelectorAll("details.pfold").forEach((d) => { d.open = pfoldOpen(d.dataset.pf); });
 // The facts (text) that have a value, as a name/value grid for a fold.

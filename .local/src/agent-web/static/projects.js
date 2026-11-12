@@ -76,7 +76,6 @@ function pSplit(arg) {
 }
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
-// A table's head count: its rows, or "N of M" while a search or state narrows them.
 
 // One running item: its title (two lines at most), then its phases and estimate.
 function pRunning(r) {

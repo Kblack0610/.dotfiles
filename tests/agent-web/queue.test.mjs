@@ -192,9 +192,9 @@ test("Pipeline is said once: the worst step hues the head and is a warn line und
   try {
     const h = run(`qfl.data = ${JSON.stringify({ line: rail() })}; qfl.err = null; qfl.node = ""; qFlow()`);
     assert.equal(h.match(/Pipeline/g).length, 1, h);
-    assert.match(h, /<h2 class="sec warn" id="sec-flow">Pipeline<\/h2><div class="cline warn">queued stopped<\/div>/);
+    assert.match(h, /<summary><h2 class="sec warn" id="sec-flow">Pipeline<\/h2><\/summary><div class="cline warn">queued stopped<\/div>/);
     const calm = run(`qfl.data = ${JSON.stringify({ line: rail({ nodes: { queued: { hot: false, stopped: false } } }) })}; qFlow()`);
-    assert.match(calm, /<h2 class="sec" id="sec-flow">Pipeline<\/h2><div class="flow">/, "the control: nothing past its bound, no line");
+    assert.match(calm, /<summary><h2 class="sec" id="sec-flow">Pipeline<\/h2><\/summary><div class="flow">/, "the control: nothing past its bound, no line");
   } finally { run("qfl.data = null"); }
 });
 
