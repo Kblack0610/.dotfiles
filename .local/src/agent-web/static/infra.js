@@ -264,7 +264,7 @@ const waitingSection = () => secHead("waiting", "Waiting for a runner", infraN("
 function localSection(inst, t1) {
   const open = secOpen(ist.open, "ci-more") ? " open" : "";
   const n = infraN("local");
-  return secHead("local", "Local Unity failures", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
+  return secHead("local", "Local Unity", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
     `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "Done today", null, "", "h3")}</summary>${doneToday(inst, t1)}</details>`;
 }
 
