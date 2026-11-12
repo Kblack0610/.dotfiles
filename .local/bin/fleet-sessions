@@ -69,7 +69,6 @@ set -uo pipefail
 # to close, and a CHAT one closes once quiet this long (the human set 24h, 2026-11-05).
 : "${FLEET_HAND_ACTIVE_MIN:=60}"
 : "${FLEET_CHAT_CLOSE_H:=24}"
-: "${FLEET_DISPATCH_WORLD:=lab}" # the tmux world dispatched sessions run on: every session there is the fleet's
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
@@ -1721,11 +1720,10 @@ explain() {
 # named by `--arg self` (close --self) is read as at the end of its turn: it runs this mid-turn, so it
 # always reads WORKING and just used, and the working and hand-active keeps are not asked.
 CLOSE_JQ='
-  def close_verdict($hand; $chat; $world):
+  def close_verdict($hand; $chat):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
     | ([.idle_min // 0, .age_min // 0] | min) as $quiet
     | ((.dispatch != null) or ((.item.origin // null) != null)) as $started
-    | ($started or ((.target // "") | startswith($world + "/"))) as $disp
     | ((.own_asks // 0) > 0) as $ask
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other[0] // .reason // .bucket) as $first
@@ -1743,8 +1741,8 @@ CLOSE_JQ='
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
       elif ($started | not) and ($me | not) and $quiet < $hand then {verdict: "keep", why: "the human was here \($quiet)m ago"}
       elif .finished and ($ask | not) then {verdict: "now", why: "plan finished, nothing open"}
-      elif $disp and $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer carries on without this window"}
-      elif $disp and (.item.is // "") == "moved" then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
+      elif $started and $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer carries on without this window"}
+      elif $started and (.item.is // "") == "moved" then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
       elif .bucket == "LANDED" and .next_phase != null then {verdict: "after", why: "queue the next phases (agent-queue add --plan), then close"}
       elif .bucket == "CHAT" and $quiet >= $chat then {verdict: "now", why: "quiet \($quiet / 60 | floor)h with no plan, PR or item"}
@@ -1753,7 +1751,7 @@ CLOSE_JQ='
       else {verdict: "keep", why: $first} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
-              else close_verdict($hand; $chat; $world) end)'
+              else close_verdict($hand; $chat) end)'
 
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
@@ -1797,7 +1795,7 @@ close_self() {
 # its close verdict (CLOSE_JQ).
 json_rows() {
   jq -cR --argjson hand "$FLEET_HAND_ACTIVE_MIN" --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
-    --arg world "$FLEET_DISPATCH_WORLD" ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
+    ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
       owners: (if .[13] == "-" then [] else .[13] | split(",") end),

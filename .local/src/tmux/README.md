@@ -146,8 +146,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand), and every worktree the human starts | today's daily note |
-| `lab` - dispatch | only the sessions `fleet-dispatch` starts | no landing page: root resumes the last dispatched session |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand): main checkouts only | today's daily note |
+| `lab` - agents | every worktree session, `<repo>-agent-N`, started by hand or by `fleet-dispatch` | no landing page: root resumes the last worktree session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
