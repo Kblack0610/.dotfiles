@@ -89,6 +89,7 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     machines: infra::Pages,
+    pools: infra::PoolPages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
         watch_off,
         infra: infra::Cache::default(),
         machines: infra::Pages::default(),
+        pools: infra::PoolPages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -162,6 +164,7 @@ async fn main() -> Result<()> {
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
         .route("/api/infra/machine", get(infra_machine))
+        .route("/api/infra/pool", get(infra_pool))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
@@ -1311,6 +1314,17 @@ async fn infra_machine(
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
     let json = s.machines.get(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
+#[derive(Deserialize)]
+struct PoolQuery {
+    name: String,
+}
+
+/// One pool's page, read only when `#infra/pools/<pool>` opens. An unknown name is a 404.
+async fn infra_pool(State(s): State<Shared>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
+    let json = s.pools.get(&s.infra, q.name).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 

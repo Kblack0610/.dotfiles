@@ -1,7 +1,7 @@
 ---
 name: analysis
 description: Run comprehensive repo analysis (security, quality, dependencies) with auto-fixes; logs findings to notes inbox; optional GitHub issue creation
-argument-hint: [--dry-run?] [--skip-pr?] [--github-issues?]
+argument-hint: "[--dry-run?] [--skip-pr?] [--github-issues?]"
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Task
 disable-model-invocation: true
 ---
@@ -163,7 +163,7 @@ append a structured markdown section to `~/.notes/inbox/<date>-analysis.md`:
 INBOX_FILE="$HOME/.notes/inbox/$(date +%Y-%m-%d)-analysis.md"
 mkdir -p "$(dirname "$INBOX_FILE")"
 cat >> "$INBOX_FILE" <<EOF
-## $(date +%H:%M) — $REPO_NAME analysis findings
+## $(date +%H:%M) - $REPO_NAME analysis findings
 
 ### {category}: {brief description}
 
@@ -207,9 +207,9 @@ EOF
 Off by default to avoid accidental issue spam.
 
 Categories:
-- `security` — vulnerabilities, secrets, OWASP issues
-- `quality` — complex lint issues, architectural concerns
-- `dependencies` — major version updates, breaking changes
+- `security` - vulnerabilities, secrets, OWASP issues
+- `quality` - complex lint issues, architectural concerns
+- `dependencies` - major version updates, breaking changes
 
 ---
 
@@ -279,7 +279,7 @@ Secrets Found: 0 ✓
 Lint Issues: 15 (12 auto-fixed, 3 manual)
 Type Errors: 0 ✓
 Auto-fixed: 12 issues
-→ Created: PR #123 (auto-fix lint issues)
+-> Created: PR #123 (auto-fix lint issues)
 
 📦 DEPENDENCIES
 ───────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ Outdated: 8 packages
   • 2 major (breaking)
   • 3 minor (safe)
   • 3 patch (auto-updated)
-→ Created: PR #124 (patch updates)
+-> Created: PR #124 (patch updates)
 
 📈 SUMMARY
 ───────────────────────────────────────────────────────
@@ -311,7 +311,7 @@ Parse from `$ARGUMENTS` if provided.
 
 ## Notes
 
-- Uses `gh` CLI (per `gh-workflows` skill) — no GitHub MCP tools
+- Uses `gh` CLI (per `gh-workflows` skill) - no GitHub MCP tools
 - Auth from `gh auth login` state, not MCP server config
 - Findings ALWAYS go to `~/.notes/inbox/<date>-analysis.md` (system of record)
 - GitHub issues are opt-in via `--github-issues` to avoid issue spam

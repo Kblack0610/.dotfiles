@@ -6,8 +6,11 @@
 //! stored, so it cannot drift from the facts it joins. The joins (the Links table of
 //! docs/operations/release-state.md, "Relationships"):
 //!
-//! - release -> channels: a Deployment's version, else its commit; or the pin ([`reached`]).
-//! - run -> release: the Deployment whose URL names the run, else a run on the tag itself.
+//! - release -> channels: a Deployment's version, else its commit; or the pin; or what the
+//!   channel reads live ([`reached`]).
+//! - run -> release: the Deployment whose URL names the run, else a run on the tag itself, else
+//!   the tag its run name names (`Release builds of <tag>`, `Steam (<game> of <run id>)`) or its log
+//!   named (`run-tags.jsonl`, [`RunTag`]).
 //! - run -> PR: a run on a PR's merge commit, else on its branch while it was open.
 //! - PR -> item -> row and session: the item whose `pr:` names it.
 //! - run -> owner: the live session on its branch, else the session of its PR's item.
@@ -20,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::builds::{self, Run};
-use crate::pipeline::stamp;
+use crate::pipeline::dated;
 use crate::queue::{self, Item};
 use crate::releases::{self, Deploy, Release};
 use crate::session_actions::Runner;
@@ -66,9 +69,11 @@ pub struct Line {
 pub struct Reached {
     pub id: String,
     pub channel: String,
-    /// When: the Deployment's time, or when the pin took the value (the gitops PR's merge).
+    /// When: the Deployment's time, or when the pin took the value (the gitops PR's merge); None
+    /// for a live reading, which says what is there now, not since when.
     pub at: Option<i64>,
-    /// `deploy` (a GitHub Deployment) or `pin` (the file a gitops target reads).
+    /// `deploy` (a GitHub Deployment), `pin` (the file a gitops target reads) or `live` (what the
+    /// channel's probe reads, a store branch set by hand).
     pub how: String,
     /// The run that made the Deployment, its page; None for a pin or a Deployment with no URL.
     pub run: Option<String>,
@@ -86,9 +91,10 @@ pub struct Shipment {
     pub prs: Vec<u64>,
     /// The board rows its PRs' items worked (`agent-runtime:ar-1655`).
     pub rows: Vec<String>,
-    /// The RELEASED cell: `11-10 22:07`, `-` when git gave no date.
+    /// The RELEASED cell: `11-10 22:07`, dated even today, `-` when git gave no date.
     pub at_text: String,
-    /// The REACHED cell: `beta 11-10, testflight (pin)`, `not recorded` when no channel says so.
+    /// The REACHED cell: `beta 11-10 22:07, flux 11-09 10:00 (pin), steam-default (live)`,
+    /// `not recorded` when no channel says so.
     pub reached_text: String,
     /// The PRS cell: `#12, #13`, `-` with none.
     pub prs_text: String,
@@ -121,6 +127,71 @@ pub struct Pr {
     pub merged_at: Option<String>,
     pub merge_sha: Option<String>,
     pub url: String,
+}
+
+/// The tag a release run's log named, kept for a run started before its workflow's title carried
+/// it: one line per run in `run-tags.jsonl` beside the runs ledger, which `schedules-sync
+/// run-tags` writes from the log's `TAG:` line (a build) or `RUN_ID:` line (an upload of another
+/// run). The ledger itself is never rewritten.
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct RunTag {
+    pub repo: String,
+    pub id: u64,
+    pub tag: Option<String>,
+    /// The run it uploads (a Steam run's `RUN_ID`): its release is that run's.
+    pub of: Option<u64>,
+}
+
+/// What a run names as its release: a tag, or another run whose tag it carries.
+#[derive(Debug, Clone, PartialEq)]
+enum Named {
+    Tag(String),
+    Run(u64),
+}
+
+/// What a run name names after its last ` of `: a tag (`Release builds of v0.5.0`) or, all
+/// digits, another run (`Steam (dodginballs of 42961937735)`). A title with no ` of ` names none.
+fn titled(title: &str) -> Option<Named> {
+    let (_, rest) = title.rsplit_once(" of ")?;
+    let word = rest.split_whitespace().next()?.trim_end_matches(')');
+    // A tag or a run id carries a digit; `Proof of concept` names neither. `builds::timed_as`
+    // folds the same word out of the name.
+    if !word.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(if word.bytes().all(|b| b.is_ascii_digit()) {
+        Named::Run(word.parse().ok()?)
+    } else {
+        Named::Tag(word.to_string())
+    })
+}
+
+/// Every run tag the backfill kept (see [`RunTag`]), and a line when the file did not read. No
+/// file is none kept yet, not an error.
+pub fn read_run_tags(path: &Path) -> (Vec<RunTag>, Vec<String>) {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (vec![], vec![]),
+        Err(e) => return (vec![], vec![format!("{}: {e}", path.display())]),
+    };
+    let mut bad = 0;
+    let tags = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| match serde_json::from_str::<RunTag>(l) {
+            Ok(t) if t.id > 0 && (t.tag.is_some() || t.of.is_some()) => Some(t),
+            _ => {
+                bad += 1;
+                None
+            }
+        })
+        .collect();
+    let errors = (bad > 0)
+        .then(|| format!("{}: {bad} unreadable line(s) skipped", path.display()))
+        .into_iter()
+        .collect();
+    (tags, errors)
 }
 
 /// Where the PR store lives: what schedules-sync writes, `SCHEDULES_PRS_DIR` or ~/.agent/prs.
@@ -257,6 +328,8 @@ pub struct Inputs<'a> {
     pub live: &'a HashMap<String, String>,
     /// Resolves a bare `pr:N` through its project's one repo.
     pub registry: Option<&'a Registry>,
+    /// The tags release runs' logs named ([`read_run_tags`]).
+    pub run_tags: &'a [RunTag],
 }
 
 /// An item `pr:` ref that names no repo, on a project with no one repo to read it through.
@@ -277,6 +350,7 @@ pub struct Graph<'a> {
     bare: Vec<Bare>,
     deployed_by: HashMap<(String, u64), RunRelease>,
     tag_in: HashMap<(String, String), String>,
+    logged: HashMap<(String, u64), Named>,
 }
 
 impl<'a> Graph<'a> {
@@ -290,8 +364,17 @@ impl<'a> Graph<'a> {
             bare: vec![],
             deployed_by: HashMap::new(),
             tag_in: HashMap::new(),
+            logged: HashMap::new(),
             i,
         };
+        for t in g.i.run_tags {
+            let named = match (&t.tag, t.of) {
+                (Some(tag), _) if !tag.is_empty() => Named::Tag(tag.clone()),
+                (_, Some(of)) => Named::Run(of),
+                _ => continue,
+            };
+            g.logged.insert((repo_key(&t.repo), t.id), named);
+        }
         for (n, p) in g.i.prs.iter().enumerate() {
             let repo = repo_key(&p.repo);
             g.pr_at.insert((repo.clone(), p.number));
@@ -423,27 +506,62 @@ impl<'a> Graph<'a> {
         names.join(", ")
     }
 
-    /// run -> release: the Deployment whose URL names the run, else a run on one of the line's
-    /// tags (a tag push).
+    /// What a run names as its release: its run name's tag or run (the workflow's `run-name:`,
+    /// never a commit message), else its log's.
+    fn named(&self, r: &Run) -> Option<Named> {
+        titled(&r.workflow).or_else(|| self.logged.get(&(repo_key(&r.repo), r.id)).cloned())
+    }
+
+    /// run -> release, the run's own: the Deployment whose URL names the run, else a run on one
+    /// of the line's tags (a tag push), else the line's tag its name or log names.
     pub fn release(&self, r: &Run) -> Option<RunRelease> {
+        self.own(r, self.named(r).as_ref())
+    }
+
+    fn own(&self, r: &Run, named: Option<&Named>) -> Option<RunRelease> {
         let repo = repo_key(&r.repo);
         if let Some(x) = self.deployed_by.get(&(repo.clone(), r.id)) {
             return Some(x.clone());
         }
-        self.tag_in
-            .get(&(repo, r.branch.clone()))
-            .map(|p| RunRelease {
-                project: p.clone(),
-                tag: r.branch.clone(),
-            })
+        let on = |tag: &str| {
+            self.tag_in
+                .get(&(repo.clone(), tag.to_string()))
+                .map(|p| RunRelease {
+                    project: p.clone(),
+                    tag: tag.to_string(),
+                })
+        };
+        on(&r.branch).or_else(|| match named? {
+            Named::Tag(t) => on(t),
+            Named::Run(_) => None,
+        })
     }
 
-    /// Each run's PRs, owner and release.
+    /// Each run's PRs, owner and release. A run with no release of its own that uploads another
+    /// (`Steam (<game> of <run id>)`) has that run's: its Deployment, else that run's own join.
     pub fn join(&self, runs: &mut [Run]) {
-        for r in runs {
+        let named: Vec<Option<Named>> = runs.iter().map(|r| self.named(r)).collect();
+        let own: Vec<Option<RunRelease>> = runs
+            .iter()
+            .zip(&named)
+            .map(|(r, n)| self.own(r, n.as_ref()))
+            .collect();
+        let by_run: HashMap<(String, u64), RunRelease> = runs
+            .iter()
+            .zip(&own)
+            .filter_map(|(r, x)| Some(((repo_key(&r.repo), r.id), x.clone()?)))
+            .collect();
+        for ((r, n), x) in runs.iter_mut().zip(named).zip(own) {
             r.prs = self.run_prs(r);
             r.owner = self.owner(r, &r.prs);
-            r.release = self.release(r);
+            r.release = x.or_else(|| {
+                let Some(Named::Run(id)) = n else { return None };
+                let key = (repo_key(&r.repo), id);
+                self.deployed_by
+                    .get(&key)
+                    .or_else(|| by_run.get(&key))
+                    .cloned()
+            });
         }
     }
 
@@ -463,11 +581,11 @@ impl<'a> Graph<'a> {
     }
 
     /// `project`'s history (see [`history`]), each release joined to its PRs' rows.
-    pub fn history(&self, project: &str, channels: &[Release], now: i64) -> Vec<Shipment> {
+    pub fn history(&self, project: &str, channels: &[Release]) -> Vec<Shipment> {
         let Some(line) = self.i.lines.get(project) else {
             return vec![];
         };
-        let mut h = history(line, channels, now);
+        let mut h = history(line, channels);
         for s in &mut h {
             s.rows = self.rows(line.repo.as_deref(), &s.prs);
             s.rows_text = cell(s.rows.iter().map(|r| {
@@ -601,6 +719,7 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
         prs: &prs,
         live: &none,
         registry: registry.as_deref(),
+        run_tags: &[],
     });
     (graph.check(Some(&ledger.rows), now), errors)
 }
@@ -664,9 +783,10 @@ fn shipped(d: &Deploy, t: &Tag, line: &[Tag]) -> bool {
             && same_commit(d.sha.as_deref(), t.sha.as_deref()))
 }
 
-/// release -> channels: each channel whose successful Deployment of it (see [`shipped`]) or
-/// current pin names the tag. A channel counts once per release, at its earliest successful
-/// deploy of it. `line` is every tag of the project's line, `t` among them.
+/// release -> channels: each channel whose successful Deployment of it (see [`shipped`]), current
+/// pin or live reading names the tag. A channel counts once per release, at its earliest
+/// successful deploy of it; a live reading has no time and sorts last. `line` is every tag of the
+/// project's line, `t` among them.
 pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
     let mut out: Vec<Reached> = vec![];
     for r in channels {
@@ -682,6 +802,9 @@ pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
                 && r.pinned.at.is_some() =>
             {
                 Some((r.pinned.at, "pin", None))
+            }
+            None if !r.unread() && r.live.value.as_deref().is_some_and(|v| names(v, t)) => {
+                Some((None, "live", None))
             }
             None => None,
         };
@@ -701,7 +824,7 @@ pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
 
 /// An app's history: every tag the collector kept, each joined to the channels it reached and
 /// carrying the PRs it holds. Its rows are [`Graph::history`]'s join.
-pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
+pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
     line.tags
         .iter()
         .map(|t| {
@@ -712,11 +835,13 @@ pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
                 reached
                     .iter()
                     .map(|x| {
-                        let when =
-                            x.at.map(|a| format!(" {}", stamp(a, now)))
-                                .unwrap_or_default();
-                        let pin = if x.how == "pin" { " (pin)" } else { "" };
-                        format!("{}{when}{pin}", x.id)
+                        let when = x.at.map(|a| format!(" {}", dated(a))).unwrap_or_default();
+                        let how = match x.how.as_str() {
+                            "pin" => " (pin)",
+                            "live" => " (live)",
+                            _ => "",
+                        };
+                        format!("{}{when}{how}", x.id)
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -727,7 +852,7 @@ pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
                 sha: t.sha.clone(),
                 at: t.at,
                 prev: t.prev.clone(),
-                at_text: t.at.map_or("-".into(), |a| stamp(a, now)),
+                at_text: t.at.map_or("-".into(), dated),
                 reached,
                 reached_text,
                 prs: t.prs.clone(),
@@ -815,7 +940,6 @@ mod tests {
         let h = history(
             &line,
             &[channel("steam", vec![("v0.5.0-game2", "ok", 50)], None)],
-            1000,
         );
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].reached_text, "not recorded");
@@ -823,7 +947,6 @@ mod tests {
         let h = history(
             &line,
             &[channel("steam", vec![("v0.5.0-game3", "ok", 150)], None)],
-            1000,
         );
         assert_eq!(h[0].reached[0].id, "steam");
     }
@@ -971,6 +1094,7 @@ mod tests {
             prs: &prs,
             live: &live,
             registry: Some(&reg),
+            run_tags: &[],
         });
         let t = "2026-11-05T01:00:00Z";
         assert_eq!(g.run_prs(&run("acme/app", 1, "feat/a", "s1", t)), [2]);
@@ -1029,6 +1153,7 @@ mod tests {
                 prs: &prs,
                 live,
                 registry: Some(&reg),
+                run_tags: &[],
             })
             .join(&mut runs);
             runs.iter().map(|r| r.owner.clone()).collect::<Vec<_>>()
@@ -1071,6 +1196,7 @@ mod tests {
             prs: &[],
             live: &live,
             registry: None,
+            run_tags: &[],
         });
         let rel = |r: &Run| g.release(r).map(|x| format!("{} {}", x.project, x.tag));
         assert_eq!(
@@ -1085,7 +1211,7 @@ mod tests {
         assert_eq!(rel(&run("Acme/other", 55, "main", "x", "")), None);
         assert_eq!(rel(&run("Acme/app", 9, "feat/a", "x", "")), None);
         // release -> deploy run, PRs and rows on the history.
-        let h = g.history("app", &chans, 1000);
+        let h = g.history("app", &chans);
         assert_eq!(
             h[0].reached[0].run.as_deref(),
             Some("https://github.com/Acme/app/actions/runs/55")
@@ -1094,6 +1220,163 @@ mod tests {
             (h[0].prs_text.as_str(), h[0].rows_text.as_str()),
             ("#7", "ar-1")
         );
+    }
+
+    #[test]
+    fn a_live_reading_counts_as_reached_and_history_cells_carry_their_date() {
+        let t = tag("v0.5.0-game3", "0.5.0-game3", 1_794_000_000);
+        let line = Line {
+            line: "build".into(),
+            tags: vec![t],
+            ..Default::default()
+        };
+        let mut prod = channel("steam-default", vec![], None);
+        prod.status = "ok".into();
+        prod.live.value = Some("v0.5.0-game3".into());
+        let h = history(&line, std::slice::from_ref(&prod));
+        assert_eq!(
+            (h[0].reached[0].how.as_str(), h[0].reached[0].at),
+            ("live", None)
+        );
+        assert_eq!(h[0].reached_text, "steam-default (live)");
+        assert_eq!(h[0].at_text, dated(1_794_000_000));
+        assert_eq!(h[0].at_text.len(), "11-11 00:16".len());
+        // negative control: an unread channel's reading, and another build live, never reach.
+        prod.status = "unknown".into();
+        assert_eq!(
+            history(&line, std::slice::from_ref(&prod))[0].reached_text,
+            "not recorded"
+        );
+        prod.status = "ok".into();
+        prod.live.value = Some("v0.5.0-game2".into());
+        assert_eq!(history(&line, &[prod])[0].reached_text, "not recorded");
+    }
+
+    #[test]
+    fn a_title_names_a_tag_or_the_run_it_uploads() {
+        let tg = |s: &str| Some(Named::Tag(s.into()));
+        assert_eq!(titled("Release builds of v0.5.0-game7"), tg("v0.5.0-game7"));
+        assert_eq!(titled("Phone release of v1.2.0"), tg("v1.2.0"));
+        assert_eq!(
+            titled("Steam (game of 42961937735)"),
+            Some(Named::Run(42961937735))
+        );
+        assert_eq!(titled("Release builds"), None);
+        assert_eq!(titled("Steam"), None);
+        assert_eq!(titled("fix: a list of "), None);
+        assert_eq!(titled("Phone release of web-v1.1.0"), tg("web-v1.1.0"));
+        assert_eq!(titled("Proof of concept"), None, "no digit, no tag");
+    }
+
+    #[test]
+    fn a_run_joins_the_tag_its_title_or_log_names_and_an_upload_the_run_it_uploads() {
+        let mut lines = HashMap::new();
+        lines.insert(
+            "game".to_string(),
+            Line {
+                line: "build".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![
+                    tag("v0.5.0-game7", "0.5.0-game7", 100),
+                    tag("v0.5.0-game6", "0.5.0-game6", 90),
+                ],
+                ..Default::default()
+            },
+        );
+        let logged = vec![
+            RunTag {
+                repo: "Acme/app".into(),
+                id: 30,
+                tag: Some("v0.5.0-game6".into()),
+                of: None,
+            },
+            RunTag {
+                repo: "Acme/app".into(),
+                id: 31,
+                tag: None,
+                of: Some(30),
+            },
+        ];
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &[],
+            prs: &[],
+            live: &live,
+            registry: None,
+            run_tags: &logged,
+        });
+        let titled_run = |id, name: &str| Run {
+            workflow: name.into(),
+            ..run("Acme/app", id, "main", "x", "")
+        };
+        let mut runs = vec![
+            titled_run(20, "Release builds of v0.5.0-game7"),
+            titled_run(21, "Steam (game of 20)"),
+            titled_run(30, "Release builds"),
+            titled_run(31, "Steam"),
+            // An upload of a tag-push run, joined by its tag ref.
+            run("Acme/app", 60, "v0.5.0-game6", "x", ""),
+            titled_run(61, "Steam (game of 60)"),
+            // negative controls: a tag no line keeps, an upload of a run that names none, and the
+            // same run id in another repo.
+            titled_run(40, "Release builds of v9.9.9"),
+            titled_run(41, "Steam (game of 99)"),
+            Run {
+                workflow: "Steam".into(),
+                ..run("Acme/other", 31, "main", "x", "")
+            },
+            // A push run's title is its commit message: never read for a tag.
+            Run {
+                workflow: "Release builds".into(),
+                title: "chore: bump of v0.5.0-game7".into(),
+                ..run("Acme/app", 50, "main", "x", "")
+            },
+        ];
+        g.join(&mut runs);
+        let got: Vec<Option<String>> = runs
+            .iter()
+            .map(|r| {
+                r.release
+                    .as_ref()
+                    .map(|x| format!("{} {}", x.project, x.tag))
+            })
+            .collect();
+        let want = |s: &str| Some(s.to_string());
+        assert_eq!(
+            got,
+            vec![
+                want("game v0.5.0-game7"),
+                want("game v0.5.0-game7"),
+                want("game v0.5.0-game6"),
+                want("game v0.5.0-game6"),
+                want("game v0.5.0-game6"),
+                want("game v0.5.0-game6"),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_run_tags_file_reads_what_it_can_and_says_what_it_could_not() {
+        let dir = std::env::temp_dir().join(format!("hub-run-tags-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("run-tags.jsonl");
+        assert_eq!(read_run_tags(&f), (vec![], vec![]), "not written yet");
+        std::fs::write(
+            &f,
+            "{\"repo\":\"Acme/app\",\"id\":5,\"tag\":\"v1\"}\n{half\n{\"repo\":\"Acme/app\",\"id\":6}\n",
+        )
+        .unwrap();
+        let (tags, errors) = read_run_tags(&f);
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].tag.as_deref(), Some("v1"));
+        assert!(errors[0].contains("2 unreadable"), "{errors:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1152,6 +1435,7 @@ mod tests {
             prs: &prs,
             live: &live,
             registry: Some(&reg),
+            run_tags: &[],
         });
         let runs = vec![run("Acme/app", 55, "main", "x", "")];
         assert_eq!(
@@ -1175,6 +1459,7 @@ mod tests {
             prs: &whole,
             live: &live,
             registry: Some(&reg),
+            run_tags: &[],
         });
         let runs = vec![
             run("Acme/app", 55, "main", "x", ""),

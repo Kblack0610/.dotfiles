@@ -254,6 +254,48 @@ test("a failed refresh keeps the page on screen and says so, and a governor answ
   run(`Object.assign(cst, { host: "", msg: "" })`);
 });
 
+// A pool page as GET /api/infra/pool sends it (hub_core::pool_page plus agent-web's tables).
+const poolPage = (o = {}) => ({
+  pool: "unity", at: 1700000000, head: "unity, 1/3 busy, 2 waiting", errors: [],
+  parts: [{ label: "Waiting", text: "2 jobs, the oldest 15m; 1 no online runner can take", link: null, warn: true },
+    { label: "Grafana", text: "the CI runners board", link: "https://g.example/d/kb-ci-runners", warn: false }],
+  history: null, tables: { machines: tbl([], ["machine"]), waiting: tbl([], ["job"]) }, ...o,
+});
+const drawPool = (name, d, err) => {
+  run(`st.tab = "infra"; st.page = ${JSON.stringify("pools/" + name)}`);
+  Object.assign(run("poolst"), { name, data: d, err: err || null });
+  return run("poolPage()");
+};
+
+test("a pool page for a name no pool has says so, from the server's 404", () => {
+  const h = drawPool("nope", null, "Could not read infra (HTTP 404): no pool named nope. Retry, or check the agent-web log.");
+  assert.match(h, /<div class="panel down">[^<]*no pool named nope/);
+  assert.match(h, /href="#infra\/machines">All pools<\/a>/);
+});
+
+test("a pool page draws its parts, its machines and waiting jobs with their links, and its 7 days", () => {
+  const machines = tbl([{ host: "workstation", where: "local", state: "up", pools: ["unity 4"], running: [] }], ["machine", "where", "state"]);
+  machines.table.links = [{ machine: "#infra/machines/workstation" }];
+  const waiting = tbl([{ job: "Tests", pool: "unity", n: 2, wait: 900, needs: ["unity"], can: [], stuck: true }], ["job", "n", "wait", "can"]);
+  const hours = [{ at: 1700000000, busy: 1, slots: 3, waiting: 2 }, { at: 1700003600, busy: null, slots: null, waiting: null }];
+  const h = drawPool("unity", poolPage({ tables: { machines, waiting }, history: { step: 120, readings: 30, hours } }));
+  assert.match(h, /<span class="pgv capwarn">2 jobs, the oldest 15m; 1 no online runner can take<\/span>/);
+  assert.match(h, /href="https:\/\/g\.example\/d\/kb-ci-runners" target="_blank"/);
+  assert.match(h, /<a href="#infra\/machines\/workstation">workstation<\/a>/);
+  assert.match(h, /<td class="bad">Tests<\/td>/, "a job no runner can take is red");
+  assert.match(h, />nobody</);
+  assert.match(h, /data-tip="[^"]*1\.0 busy of 3\.0 slots, 2 waiting at most"/);
+  assert.match(h, /data-tip="[^"]*: no reading"/, "an hour with no sample says so");
+  assert.match(h, /30 readings/);
+});
+
+test("a failed pool refresh keeps the page on screen and says so", () => {
+  const h = drawPool("unity", poolPage(), "Could not read infra (HTTP 502)");
+  assert.match(h, /refresh failed, showing the last read: Could not read infra \(HTTP 502\)/);
+  assert.match(h, /No machine has a slot in it\./);
+  assert.match(h, /Nothing waits for it\./);
+});
+
 test("a pool has one colour in the share bar and the 7-day chart", () => {
   const hours = [{ at: 1700000000, cpu: 0.9, pools: { alpha: 2, unity: 6 }, seen: 1 }];
   const d = machinePage({ cores: 24, machine: {},

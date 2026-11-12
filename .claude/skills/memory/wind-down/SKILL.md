@@ -264,4 +264,3 @@ thing shown before the window closes.
   `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
-- Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.

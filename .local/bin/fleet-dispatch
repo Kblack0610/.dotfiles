@@ -74,6 +74,7 @@ unset _k _v
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats), when reap made one of them twice in a row
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
@@ -1827,6 +1828,16 @@ cmd_start() {
 
 PANES="$DIR/panes"   # <server>.json the live record, <server>.lost.json a dead server's last one
 
+# planned_reboot -- session-snapshot down's marker predates this boot, and the boot is under
+# PLANNED_REBOOT_WINDOW_S old. Bounded both ways, so a down with no reboot yet, or a marker an `up`
+# never cleared, still lets a real server death page.
+planned_reboot() {
+  local m="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}" boot
+  [ -e "$m" ] || return 1
+  boot=${FLEET_BOOT_TIME:-$(awk '/^btime/ {print $2}' /proc/stat)}
+  [ "$(stat -c %Y "$m")" -lt "$boot" ] && [ $(( $(date +%s) - boot )) -lt "$PLANNED_REBOOT_WINDOW_S" ]
+}
+
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
 # A record with no conversations has nothing to restore, so it never replaces one that does.
 world_lost() {
@@ -1835,6 +1846,8 @@ world_lost() {
   n=${n:-0}
   if [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
   logline "tmux server $srv died with $n conversation(s) on it"
+  # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
+  ! planned_reboot || return 0
   agent-notify -p high -t "tmux $srv server died" "$n conversation(s) were on it. Reopen them: fleet-dispatch restore" ||
     say "could not page: tmux server $srv died"
 }
@@ -3286,8 +3299,8 @@ cmd_stopped() {
 # and the last pass's outcome. A standing hold past that long trips it too, led by the Stopped line,
 # and no run start clears it then: a run-floor start goes past an account hold, and on 11-05/06 one
 # every hour cleared this while every other pass stopped. A deep queue the passes are moving is not starved, and neither is one
-# held on purpose (agent-hold) or by the load gates, whose alarm is fleet-thermal: a busy machine is
-# not a broken queue, and any other gate still trips. A board item is not starved while it waits for
+# held on purpose (agent-hold), high items behind a fleet at its pace target, or the load gates, whose alarm is
+# fleet-thermal: a busy machine is not a broken queue, and any other gate still trips. A board item is not starved while it waits for
 # the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
@@ -3317,6 +3330,17 @@ cmd_starved() {
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
+  # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
+  # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
+  # session there, and a standing hold, board or low water still trips. On 11-11 this tripped 4h at
+  # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
+  local TARGET TARGET_WHEN TOTAL_LIVE
+  pace_target
+  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
+    ! grep -q '(urgent, ' <<<"$items"; then
+    echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET), so nothing is starved"
+    [ -z "$dead" ]; return
+  fi
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
   # and gate leaves that one out while another source has room, so room is read here from the verdict
   # gate reads too (ACCT_ROWS, asked once for both).

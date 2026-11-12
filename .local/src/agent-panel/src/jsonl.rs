@@ -1004,6 +1004,10 @@ fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
 /// to another command is not writing it. With `lands_only`, only the agent-land `--plan` ones.
 fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
+    if !cmd.contains("/plans/") {
+        return Vec::new();
+    }
+    let cmd = &without_heredoc_bodies(cmd);
     let mut out = Vec::new();
     for (i, _) in cmd.match_indices("/plans/") {
         let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
@@ -1021,11 +1025,7 @@ fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
             .strip_suffix(['\'', '"'])
             .unwrap_or(&cmd[..start])
             .trim_end();
-        let words: Vec<&str> = before[segment_start(before)..]
-            .trim_start_matches([' ', '('])
-            .split_whitespace()
-            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
-            .collect();
+        let words = command_words(&before[segment_start(before)..]);
         let cmd_is = |name: &str| {
             words
                 .first()
@@ -1043,6 +1043,104 @@ fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
                     || (cmd_is("sed") && words.iter().any(sed_in_place)))
         {
             out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The words of one shell command from its name on: leading `VAR=x` assignments and the
+/// wrappers that run the command after them (`timeout`, `env`, `nice`, `nohup`, with their
+/// options, an option's argument and timeout's duration) are dropped.
+fn command_words(segment: &str) -> Vec<&str> {
+    const WRAPPERS: &[&str] = &["timeout", "env", "nice", "nohup"];
+    // The wrapper options that take the next word: env -u/-C/-S, timeout -s/-k, nice -n.
+    const TAKES_ARG: &[&str] = &["-u", "-C", "-S", "-s", "-k", "-n"];
+    let mut words = segment
+        .trim_start_matches([' ', '('])
+        .split_whitespace()
+        .peekable();
+    while words
+        .next_if(|w| w.contains('=') && !w.starts_with('-'))
+        .is_some()
+    {}
+    while words.next_if(|w| WRAPPERS.contains(w)).is_some() {
+        while let Some(w) = words.next_if(|w| {
+            w.starts_with('-')
+                || w.starts_with(|c: char| c.is_ascii_digit())
+                || (w.contains('=') && !w.starts_with('-'))
+        }) {
+            if TAKES_ARG.contains(&w) {
+                words.next();
+            }
+        }
+    }
+    words.collect()
+}
+
+/// The command with each heredoc body dropped: its lines are data fed to a command (a script, a
+/// file's text), not shell, so a plan path in them is no write or landing. The marker line stays,
+/// with any redirect on it. A body whose terminator never comes is kept, so a `<<` the scan
+/// misreads cannot hide the rest of the command.
+fn without_heredoc_bodies(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut pending: std::collections::VecDeque<(String, bool)> = Default::default();
+    let mut body = String::new();
+    for line in cmd.split_inclusive('\n') {
+        if let Some((word, dash)) = pending.front() {
+            let text = line.trim_end_matches(['\n', '\r']);
+            let text = if *dash {
+                text.trim_start_matches('\t')
+            } else {
+                text
+            };
+            if text == word {
+                pending.pop_front();
+                if pending.is_empty() {
+                    body.clear();
+                }
+            } else {
+                body.push_str(line);
+            }
+            continue;
+        }
+        out.push_str(line);
+        pending.extend(heredoc_words(line));
+    }
+    out.push_str(&body);
+    out
+}
+
+/// The terminators of the heredocs a line opens, in order (`<<EOF`, `<<-'EOF'`, `<< "EOF"`,
+/// `<<\EOF`), each with whether it is `<<-` (tab-indented terminator). A `<<` inside quotes, a
+/// `<<<` here-string and a shift (`1<<3`) open none.
+fn heredoc_words(line: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut quote = None;
+    let mut skip_to = 0;
+    for (i, c) in line.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if line[i..].starts_with("<<<") => skip_to = i + 3,
+            None if line[i..].starts_with("<<") => {
+                skip_to = i + 2;
+                let rest = &line[i + 2..];
+                let dash = rest.starts_with('-');
+                let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+                let word: String = rest
+                    .trim_start_matches(['\'', '"', '\\'])
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                    out.push((word, dash));
+                }
+            }
+            None => {}
         }
     }
     out
@@ -2335,6 +2433,53 @@ mod tests {
             ),
             ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
             ("cat > ~/notes/plans/a.md", vec![]),
+            // A wrapper runs the command after it; a heredoc body is data, its marker line is not.
+            (
+                "timeout 590 agent-land 9 --item x --plan ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cd ~/w; env A=1 nice -n 5 agent-land 9 --plan=~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "env -u FOO timeout -s KILL 5 agent-land 9 --plan ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            ("command -v agent-land --plan ~/.claude/plans/a.md", vec![]),
+            ("-x agent-land 9 --plan ~/.claude/plans/a.md", vec![]),
+            (
+                "cd ~/w; python3 - <<'EOF'\ns = \"x && agent-land 9 --plan ~/.claude/plans/b.md\"\nEOF\ngit status",
+                vec![],
+            ),
+            (
+                "cat > ~/.claude/plans/a.md <<-\"END\"\necho y > ~/.claude/plans/b.md\nEND\necho z >> ~/.claude/plans/c.md",
+                vec!["a.md", "c.md"],
+            ),
+            (
+                "jq . <<<x\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "python3 -c \"print(1<<3)\"\necho \"a <<EOF\"\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cat <<\\EOF\nagent-land 9 --plan ~/.claude/plans/b.md\nEOF\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "paste - - <<A 3<<B\necho y > ~/.claude/plans/b.md\nA\necho z > ~/.claude/plans/c.md\nB\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cat <<EOF\n  EOF\necho y > ~/.claude/plans/b.md\nEOF",
+                vec![],
+            ),
+            (
+                "echo \u{e9}\u{2014} <<EOF\necho y > ~/.claude/plans/b.md\nEOF",
+                vec![],
+            ),
         ] {
             assert_eq!(bash_plan_refs(cmd, false), want, "{cmd}");
         }

@@ -362,18 +362,38 @@ const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] ||
 const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])];
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
-// it paints; the first paint that has the section clears it.
+// it paints; the first paint that has the section clears it. A section that paints later above
+// it (Infra CI's runs above Tests, each from its own read) pushes it down, so until the reader
+// touches the page, a paint that moved the anchor puts it back on top. Any input ends that
+// hold: a reader who opened a fold or scrolled is never pulled back.
+let seekHeld = null;
+for (const ev of ["pointerdown", "wheel", "keydown", "touchstart"]) document.addEventListener(ev, () => { seekHeld = null; }, { capture: true, passive: true });
+const anchorAt = (e) => e.getBoundingClientRect?.().top;
+function seekTo(board, e) {
+  seekHeld = null;
+  if (!e.scrollIntoView) return;
+  e.scrollIntoView({ block: "start" });
+  if (board) seekHeld = { board, id: e.id, top: board.scrollTop, at: anchorAt(e) };
+}
 function seekSection() {
   // A section on another inner tab switches to it first, so the anchor is on screen.
   const home = st.section && homeOf(st.tab, st.section);
   if (home && home[0] !== innerOf(st.tab, st.arg)[0]) innerGo(st.tab, home[0]);
+  const board = $(st.tab);
   const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
-  if (!e) return;
+  if (!e) {
+    // A section still to paint is the new target: the old hold ends.
+    const h = !st.section && seekHeld;
+    const a = h && h.board === board && board.scrollTop === h.top && tabAnchors().find((x) => x.id === h.id);
+    if (!a) seekHeld = null;
+    else if (Math.abs(anchorAt(a) - h.at) > 1) seekTo(board, a);
+    return;
+  }
   st.section = null;
   // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
   const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
   if (fold) fold.open = true;
-  if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
+  seekTo(board, e);
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
 // (`#daily/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
