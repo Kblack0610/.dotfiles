@@ -24,7 +24,7 @@ const LOCAL_FRESH: &str =
 /// error instead of numbers: a board blanks rather than leave stale values up.
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
-    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|kpi_subject|vital)"}"#;
 
 /// What CI time costs: each host's rate and basis and its registered slots, which
 /// `run_detail::Rates` prices jobs from (`Infra::rates`).
