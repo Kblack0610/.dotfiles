@@ -6,7 +6,7 @@ usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
 as DIR/<hash>-<width>.png, the whole page. The cookie signs the browser in: `agent_web=dev` for the
 dev instance in .local/src/agent-web/README.md ("look at a change"). A page is shot once its tab
-element has drawn and says neither "Loading..." nor "Reading..." (in any case), watched by a MutationObserver.
+element has drawn and says neither "Loading..." nor "reading..." (either capitalised), watched by a MutationObserver.
 
 The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
 started is stopped, by its process group. Never point this at the live Firefox profile.
