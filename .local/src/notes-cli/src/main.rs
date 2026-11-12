@@ -482,9 +482,12 @@ enum Cmd {
     },
     /// Print the resolved profile + paths
     Config {
-        /// List every configured profile name instead
+        /// List every profile this machine lists instead (a work profile only on its own machine)
         #[arg(long)]
         profiles: bool,
+        /// Print this machine's own profile: the one picked with no --profile flag
+        #[arg(long, conflicts_with = "profiles")]
+        machine_profile: bool,
     },
 }
 
@@ -1761,8 +1764,13 @@ fn main() -> Result<()> {
         Cmd::Doctor {
             projects: false, ..
         } => doctor::run(&prof, &log)?,
-        Cmd::Config { profiles } => {
-            if profiles {
+        Cmd::Config {
+            profiles,
+            machine_profile,
+        } => {
+            if machine_profile {
+                println!("{}", config::machine_profile()?);
+            } else if profiles {
                 for name in config::all_profile_names()? {
                     println!("{name}");
                 }
