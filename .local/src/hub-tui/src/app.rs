@@ -913,7 +913,13 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             let items = self.queue_items();
             std::thread::spawn(move || {
-                let s = hub_core::releases::read(runner.as_ref(), &items);
+                let mut s = hub_core::releases::read(runner.as_ref(), &items);
+                let now = jobs::now();
+                s.with_checks(&hub_core::app_status::badges(
+                    runner.as_ref(),
+                    &s.check_groups(),
+                    now,
+                ));
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
@@ -1562,7 +1568,9 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                let pg = hub_core::page::read(runner.as_ref(), &name, &stage, jobs::now());
+                let now = jobs::now();
+                let mut pg = hub_core::page::read(runner.as_ref(), &name, &stage, now);
+                pg.read_checks(runner.as_ref(), now);
                 let _ = tx.send(Msg::ProjPage(Box::new(pg)));
             });
         }
@@ -1571,7 +1579,10 @@ impl App {
     /// Read the open card's page here and now, for `--once`.
     pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
         if let Some((name, stage)) = self.open_card() {
-            self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
+            let now = jobs::now();
+            let mut pg = hub_core::page::read(runner, &name, &stage, now);
+            pg.read_checks(runner, now);
+            self.proj_page = Some(pg);
         }
     }
 

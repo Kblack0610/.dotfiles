@@ -51,7 +51,7 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "", sort: "", dir: "", total: 2, shown: 2,
   states: [{ name: "all", n: 2 }, { name: "attention", n: 1 }, { name: "ok", n: 1 }],
-  columns: ["project", "stage", "live", "status", "channels", "released", "last_deploy"].map(col),
+  columns: ["project", "stage", "live", "status", "checks", "channels", "released", "last_deploy"].map(col),
   facets: [],
 };
 const NOW = () => Math.round(Date.now() / 1e3);
@@ -72,7 +72,7 @@ const unread = {
   pinned_text: "-", live_text: "?", telemetry: [], drift_since: null, deploys: { source: "o/r", error: null, prev: null, last: null, history: [] },
 };
 const binks = {
-  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "1 drift, 1 not read", unread: 1,
+  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", checks: { says: "Partial outage: chat", level: "bad" }, channels_text: "1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
   stage: "alpha", stage_text: "alpha: no alpha target deployed", stage_level: "warn", coverage_text: "prev 1/1, deployed 1/2 (1 none declared)",
   builds: [
@@ -87,7 +87,7 @@ const binks = {
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
   gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks],
-  blanks: ["none declared", "not recorded", "manual", "not read", "none merged"], ...o,
+  blanks: ["none declared", "not recorded", "manual", "not read", "none merged", "no check"], ...o,
 });
 
 const target = (attrs, tr = null, ch = null) => ({
@@ -143,13 +143,15 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: its stage in its own column, what is deployed, its channels amber when one was not read, blanks dimmed", () => {
   show(data({ table: { ...table, links: [{ project: "#projects/binks" }] } }));
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="bad">Partial outage: chat<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /data-label="checks"><button class="thsort" data-tsort="checks"/, "the app's Gatus banner is a column of its own");
   assert.match(b, /data-label="stage"><button class="thsort" data-tsort="stage"/, "the stage sorts and filters as a column");
   assert.match(b, /data-label="deployed"><button class="thsort" data-tsort="live"/, "a deploy is not the app being live");
   assert.match(b, /placeholder="search, or stage:alpha channel:prod status:drift"/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app's page");
-  show(data({ rows: [{ ...binks, stage: "", stage_level: "ok", released_text: "none declared", last_deploy_text: "not recorded", deploy_level: "" }] }));
+  show(data({ rows: [{ ...binks, stage: "", stage_level: "ok", checks: { says: "no check", level: "ok" }, released_text: "none declared", last_deploy_text: "not recorded", deploy_level: "" }] }));
+  assert.match(box.innerHTML, /<td class="muted">no check<\/td>/, "an app Gatus does not check is dimmed, never up");
   assert.match(box.innerHTML, /<td>binks<\/td><td class="muted" title="alpha: no alpha target deployed">-<\/td>/, "no stage, a dash; no link, plain text");
   assert.match(box.innerHTML, /<td class="muted">none declared<\/td><td class="muted">not recorded<\/td>/);
 });
