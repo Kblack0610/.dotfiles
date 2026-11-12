@@ -84,8 +84,8 @@ function renderLogRundowns() {
     : list.length ? `<div class="muted">${list.length} newest</div>` + list.slice(0, LOG_ROWS).map(rundownCard).join("") + older(list.length - LOG_ROWS)
     : '<div class="empty">No rundowns kept yet. The shepherd writes one with <code>fleet-shepherd log --rundown</code> each time it sums up the fleet or answers you in its session.</div>');
 }
-const logShepFeed = pushed("log", ["shepherd"], refreshShepherd);
-LOG_PARTS.push({ show() { renderLogRundowns(); logShepFeed.show(!shst.data); }, onEvent: logShepFeed.onEvent });
+const logShepFeed = pushed("log", ["shepherd"], refreshShepherd, () => logShows("rundowns"));
+LOG_PARTS.push({ sec: "rundowns", show() { renderLogRundowns(); logShepFeed.show(!shst.data); }, onEvent: logShepFeed.onEvent });
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;

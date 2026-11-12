@@ -201,6 +201,19 @@ test("a builds event re-reads the runs, the pipelines and the tests, and only wh
   assert.equal(asked.length, 0);
 });
 
+test("Infra shown before its reads answer says reading in Runs, Pipelines and Tests, never a blank tab", async () => {
+  run("bld.data = null; bld.err = null; pip.data = null; pip.err = null; tst.data = null; tst.err = null; st.tab = 'infra'");
+  for (const b of [runs, pipes_, tests_]) b.innerHTML = "";
+  try {
+    run("TABS.infra.show()");
+    // Before any read settles: each section already holds its heading and the word.
+    for (const [name, b] of [["Runs", runs], ["Pipelines", pipes_], ["Tests", tests_]]) assert.match(b.innerHTML, new RegExp(`${name} <span class="muted">reading\\.\\.\\.`), name);
+  } finally {
+    await settled();
+    run("st.tab = 'home'");
+  }
+});
+
 const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, quarantined: 0, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
 const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "main", sha: "abc1234", title: "t", state: "red", level: "bad", started: NOW() - 600, prs: [], url: `https://github.com/o/binks/actions/runs/${id}`, ...o });
@@ -227,13 +240,13 @@ test("the Tests section draws the run's totals, its picker and each suite", () =
   const b = tests_.innerHTML;
   assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec" id="sec-tests">Tests <span class="muted">main abc1234: 5 tests in 2 suites: 1 failed/);
   assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
-  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">0<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
+  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">0<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
   assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
 });
 
 test("a suite whose failures are all quarantined is amber, and its tests say quarantined", async () => {
   showTests(tdata({ rows: [suite({ failed: 0, quarantined: 1, state: "quarantined", level: "warn" })] }));
-  assert.match(tests_.innerHTML, /<td class="warn">quarantined<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n muted">0<\/td><td class="n warn">1<\/td>/);
+  assert.match(tests_.innerHTML, /<td class="warn">quarantined<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n muted">0<\/td><td class="n warn">1<\/td>/);
   cases = { more: 0, cases: [{ name: "held one", fullname: "A.held", result: "quarantined", time: 0.2, message: "Expected 1" }] };
   fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
   await settled();
@@ -248,7 +261,7 @@ test("the Quarantine table lists each held test under each lane's line with its 
   assert.ok(b.indexOf('data-tbl="t"') < b.indexOf('id="sec-quarantine"'), "below the suites");
   assert.match(b, /<div class="cline bad">unity-core-playground: 2 quarantined[^<]*<a href="https:\/\/github.com\/o\/play\/actions\/runs\/43215863750"[^>]*>nightly<\/a>/);
   assert.match(b, /<div data-tbl="q">.*id="qtn-q"/s);
-  assert.match(b, /<td class="wrap">P.Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#board\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
+  assert.match(b, /<td class="wrap">P\.<wbr>Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#board\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
   assert.match(b, /<td class="n ">8d<\/td><td class="">now passing<\/td>/);
   assert.match(b, /data-ts="ended"/);
   // no run picked still lists the quarantine

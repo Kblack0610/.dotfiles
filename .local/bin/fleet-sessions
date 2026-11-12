@@ -65,9 +65,8 @@ set -uo pipefail
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
-# The close verdict (close_verdict): a hand-started session the human used this recently is theirs
-# to close, and a CHAT one closes once quiet this long (the human set 24h, 2026-11-05).
-: "${FLEET_HAND_ACTIVE_MIN:=60}"
+# The close verdict (close_verdict): a CHAT session closes once quiet this long (the human set 24h,
+# 2026-11-05). It is the only rule that reads quiet; DONE's own FLEET_IDLE_MIN is the idle gate.
 : "${FLEET_CHAT_CLOSE_H:=24}"
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -329,7 +328,7 @@ bucket_facts() {
 # handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
 # item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
 # dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
-# (fix_red_pr gives a red one a fix-ci session), so it is no longer the session's to finish.
+# (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
 handed_off() {
   [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
@@ -1180,7 +1179,7 @@ parked_lines() {
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
 # review:<slug> is one this session parked in review/: its open PR is the item's, and
-# fleet-dispatch's reap owns it once the session ends (fix_red_pr gives a red one a fix-ci session),
+# fleet-dispatch's reap owns it once the session ends (own_parked_pr gives a red one a fix-ci session and a green one a lander),
 # so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
 # refused, and the reap, which waits for the session to end, never took over.
 item_of() {
@@ -1339,7 +1338,7 @@ collect() {
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
     # included: the session may close (bucket), and the close verdict says whether its window must
-    # stay open for the answer (close rule 9). askids are the ones still its own to wait on.
+    # stay open for the answer (close rule 8). askids are the ones still its own to wait on.
     local ownids; ownids="$(asks_for "$sid")"
     ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
@@ -1715,15 +1714,17 @@ explain() {
 # CLOSE_JQ: a row -> its `pct` (phases ticked, of the checklist) and `close` {verdict, why}:
 # whether the session may close now, after one named step, or must stay (keep). The one
 # definition of when a session closes, first match wins, in the close table of
-# .local/src/docs/fleet-states.md. Dispatched is the `@dispatch` window flag, a queue item with an
-# origin, or a session on the dispatch world; only the first two lift the hand-active keep, since
-# a human may still type in a lab window. Unlanded work reads from `blockers` (work_blockers), not
-# raw git counts: a squash-merged branch stays `ahead` of main with nothing left to land. Quiet is
-# fleet-shepherd's: a null age_min reads 0, so an unknown age never closes. The row of the session
-# named by `--arg self` (close --self) is read as at the end of its turn: it runs this mid-turn, so it
-# always reads WORKING and just used, and the working and hand-active keeps are not asked.
+# .local/src/docs/fleet-states.md. Dispatched is the `@dispatch` window flag or a queue item with
+# an origin; the world is not a sign, since a human may still type in a lab window. Only a
+# dispatched session closes over its own open ask (the answer reopens it); a hand-started one waits
+# for it. What waits on the human (an ask, a dialog, plan mode, the manual label) keeps a window.
+# Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
+# stays `ahead` of main with nothing left to land. Quiet is fleet-shepherd's: a null age_min reads
+# 0, so an unknown age never closes a CHAT row. The row of the session named by `--arg self`
+# (close --self) is read as at the end of its turn: it runs this mid-turn, so it always reads
+# WORKING, and the working keep is not asked.
 CLOSE_JQ='
-  def close_verdict($hand; $chat):
+  def close_verdict($chat):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
     | ([.idle_min // 0, .age_min // 0] | min) as $quiet
     | ((.dispatch != null) or ((.item.origin // null) != null)) as $started
@@ -1742,7 +1743,6 @@ CLOSE_JQ='
       elif .bucket == "STALLED" and ($only_item | not) then {verdict: "keep", why: "stalled: \($first)"}
       elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
-      elif ($started | not) and ($me | not) and $quiet < $hand then {verdict: "keep", why: "the human was here \($quiet)m ago"}
       elif .finished and ($ask | not) then {verdict: "now", why: "plan finished, nothing open"}
       elif $started and $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer carries on without this window"}
       elif $started and (.item.is // "") == "moved" then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
@@ -1754,7 +1754,7 @@ CLOSE_JQ='
       else {verdict: "keep", why: $first} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
-              else close_verdict($hand; $chat) end)'
+              else close_verdict($chat) end)'
 
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
@@ -1797,7 +1797,7 @@ close_self() {
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
 # its close verdict (CLOSE_JQ).
 json_rows() {
-  jq -cR --argjson hand "$FLEET_HAND_ACTIVE_MIN" --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
+  jq -cR --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
     ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),

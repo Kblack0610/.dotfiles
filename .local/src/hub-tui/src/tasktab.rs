@@ -612,7 +612,7 @@ pub(crate) mod tests {
             state: "open".into(),
             priority: prio.into(),
             text: text.into(),
-            title: tasks::title_and_rest(text, false).0,
+            title: hub_core::text::title(text).title,
             sheet: format!("/v/{profile}/{}/{lane}.md", project.unwrap_or_default()),
             raw: format!("- [ ] {text}"),
             ..Default::default()
@@ -1009,7 +1009,7 @@ pub(crate) mod tests {
     fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
         let mut f = fixture();
         f.rows[1].text = "fix the menu so the back button maps".into();
-        f.rows[1].title = tasks::title_and_rest(&f.rows[1].text, false).0;
+        f.rows[1].title = hub_core::text::title(&f.rows[1].text).title;
         f.rows[1].size = Some("m".into());
         let mut v = TaskView {
             project: Some(("bnb".into(), "demo".into())),
