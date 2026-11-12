@@ -171,6 +171,8 @@ def code_texts(cmd):
     if _BP is None:
         _BP = _block_poll()
     cmd = _BP.strip_heredocs(cmd)
+    # A backslash-newline outside quotes is one command line to the shell, and so to a row.
+    cmd = cmd.replace("\\\n", " ")
     texts = _BP.code_texts(cmd, True)
     # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
     # substitutions outside them run.

@@ -215,7 +215,7 @@ plan_dialog() {
   grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
   # The state is spent: a second enter sends nothing more.
   run "$Q" key enter @hub/demo:2
-  assert_output --partial 'press a number, t or d first'
+  assert_output --partial 'press a number, t, d or p first'
 }
 
 @test "a dialog that changed or closed before enter is refused, said, and the list reloads" {
@@ -254,6 +254,8 @@ plan_dialog() {
   assert_output 'change-footer~this one takes no typed answer . pick a number~'
   run "$Q" key d @hub/demo:2
   assert_output 'change-footer~a dialog is answered, not dropped . g goes there~'
+  run "$Q" key p @hub/demo:2
+  assert_output 'change-footer~a dialog is answered, not parked . g goes there~'
   rm "$NOTES_FIXTURE/agent-panel.options"
   local k
   for k in 1 t; do
@@ -261,7 +263,7 @@ plan_dialog() {
     assert_output 'change-footer~no dialog to answer here . g goes there~'
   done
   run "$Q" key enter @lab/demo-agent-4:1
-  assert_output --partial 'press a number, t or d first'
+  assert_output --partial 'press a number, t, d or p first'
   run grep -c '^agent-panel answer' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   run "$Q" key g @lab/demo-agent-4:1
@@ -302,7 +304,7 @@ plan_dialog() {
   assert_output 1
   # The state is spent: a second enter sends nothing more.
   run "$Q" key enter "$id"
-  assert_output --partial 'press a number, t or d first'
+  assert_output --partial 'press a number, t, d or p first'
 }
 
 @test "esc after a number sends nothing, and esc with nothing armed closes" {
@@ -469,6 +471,50 @@ transcript() {
   assert_equal "$(status_of "$id")" cancelled
   run grep -c '^closed_reason: dropped by the human$' "$(ask_file "$id")"
   assert_output 1
+}
+
+@test "a parked ask is the last row, tagged park with its date, and stays out of count" {
+  local live parked
+  live="$(ask demo agent-1 'a=the first|b=the second' 'live?')"
+  parked="$(ask demo agent-2 'a=the first|b=the second' 'wear the headset?')"
+  created "$parked" 2026-11-01T10:00:00-0800
+  "$AGENT_ASK" park "$parked" --until '+3 days +5 minutes' 2>/dev/null
+  run rows
+  assert_success
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live $parked "
+  assert_line --index 1 --partial $'\tpark demo:2'
+  # Its age column says how long until it is back, as wide as an age, so the question lines up.
+  assert_line --index 1 --partial 'park demo:2  3d  wear the headset?'
+  assert_equal "$(cut -f2 <<<"${lines[1]}" | grep -bo 'wear' | cut -d: -f1)" "$(cut -f2 <<<"${lines[0]}" | grep -bo 'live' | cut -d: -f1)"
+  . "$Q"
+  assert_equal "$("$Q" rows | rows_count)" '1 0 0 0 1'
+  assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked'
+  run "$Q" count
+  assert_output 1
+  # Negative control: unparked, it counts again.
+  "$AGENT_ASK" unpark "$parked" 2>/dev/null
+  run "$Q" count
+  assert_output 2
+}
+
+@test "p then enter parks the question until its revisit date; p on a parked one then enter puts it back" {
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'fly the drone?')"
+  run "$Q" key p "$id"
+  assert_output --partial "park $id until its revisit date"
+  "$Q" key esc "$id" >/dev/null
+  run grep -c '^parked_until:' "$(ask_file "$id")"
+  assert_output 0
+  "$Q" key p "$id" >/dev/null
+  run "$Q" key enter "$id"
+  assert_success
+  assert_equal "$(status_of "$id")" pending
+  run grep -c '^parked_until:' "$(ask_file "$id")"
+  assert_output 1
+  run "$Q" key p "$id"
+  assert_output --partial "put $id back on the list now?"
+  "$Q" key enter "$id" >/dev/null
+  run grep -c '^parked_until:' "$(ask_file "$id")"
+  assert_output 0
 }
 
 @test "a ~ in what the footer shows never reaches fzf as a delimiter" {

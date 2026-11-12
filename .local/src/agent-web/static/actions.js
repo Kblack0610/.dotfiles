@@ -10,6 +10,7 @@ const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
 const ast = tblTab({
   tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
+  shown: () => logShows("actions"),
   wait: "Loading.", state: { read: null, all: false },
   params: (p, t) => { p.set("hours", actionHours()); t.asked = actionsView(); }, got: (t) => { t.read = t.asked; },
   days: () => ({ key: "hours", on: actionHours() === ACTION_HOURS ? "" : String(actionHours()), windows: ACTION_WINDOWS }),
@@ -33,7 +34,7 @@ function actionsView() {
 function showActions(actor, verb) {
   st.section = "actions";
   const q = [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ");
-  setTab("log", undefined, tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
+  setTab("log", "actions", tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
 }
 
 const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], prio: ["prio"], source: ["source"], text: ["text"] };
@@ -60,8 +61,9 @@ function actionsBody(d) {
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue", the ingest record as "outbox".
-const actionsFeed = pushed("log", ["actions", "fleet", "queue", "outbox"], ast.refresh);
+const actionsFeed = pushed("log", ["actions", "fleet", "queue", "outbox"], ast.refresh, () => logShows("actions"));
 LOG_PARTS.push({
+  sec: "actions",
   show() {
     // A view this page has not read asks the server, and when it came by a link opens its section.
     const view = actionsView(), fresh = ast.read !== view;

@@ -1,16 +1,21 @@
-//! The Releases tab, both surfaces: one row per app, what is live where it matters most and its
+//! The Releases tab, both surfaces: one row per app, what is deployed where it matters most and its
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
-//! exceptions-first order. The Builds inner tab beside the apps is its own reader's.
+//! exceptions-first order. The Release runs inner tab beside the apps is `builds`' reader, cut by
+//! `Scope::Release`.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::stamp;
+use crate::builds::{self, Run};
+use crate::pipeline::{dated, stamp};
 
 use crate::layout;
+use crate::links::{Kind, Link};
+use crate::queue::Item;
+use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 
@@ -41,15 +46,7 @@ fn shown(status: &str) -> &str {
 /// by name.
 const ENVS: [&str; 6] = ["prod", "release", "beta", "alpha", "internal", "preview"];
 
-/// What one row's state means, for its colour (docs/dashboards.md rule 5).
-#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Bad,
-    Warn,
-    #[default]
-    Ok,
-}
+pub use crate::vocab::Level;
 
 /// One side of a channel: the version pinned there or the version running there.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -60,17 +57,44 @@ pub struct Side {
     pub source: String,
     pub error: Option<String>,
     pub image: Option<String>,
+    /// A gitops pin only: when the file took this value (the commit that set it) and the value
+    /// it held before.
+    pub at: Option<i64>,
+    pub prev: Option<String>,
+    /// The store's build number: what the store reports live, or what the upload recorded on
+    /// its Deployment; when both sides have one it decides the status.
+    pub build: Option<String>,
+    /// Why a channel moved by hand (`source` `manual`) has no recorded deploy, from the registry.
+    pub reason: Option<String>,
+}
+
+/// The words a blank cell says, one per cause: nothing declares the fact, nothing recorded it,
+/// it moves by hand, its read failed, or the release merged nothing. A surface sorts and
+/// filters them as no value. docs/operations/release-state.md, "Blank cells".
+pub const BLANKS: [&str; 5] = [
+    "none declared",
+    "not recorded",
+    "manual",
+    "not read",
+    "none merged",
+];
+
+/// A cell with no value: `-` or one of [`BLANKS`].
+pub fn blank(cell: &str) -> bool {
+    cell.is_empty() || cell == "-" || BLANKS.contains(&cell)
 }
 
 impl Side {
-    /// The cell: the value, `-` when there is nothing to read, `?` when a read failed.
-    fn text(&self) -> String {
+    /// The cell: the value, `manual` for a channel moved by hand, `not recorded` for a release
+    /// tag or a recorded pin nothing has made yet, `none` when this side has no source, `not
+    /// read` when a read failed.
+    fn text(&self, none: &str) -> String {
         match &self.value {
             Some(v) => v.clone(),
-            None if self.source == "none" || self.error.as_deref() == Some("no release tag") => {
-                "-".into()
-            }
-            None => "?".into(),
+            None if self.source == "manual" => "manual".into(),
+            None if self.error.as_deref() == Some("no release tag") => "not recorded".into(),
+            None if self.source == "none" => none.into(),
+            None => "not read".into(),
         }
     }
 }
@@ -84,6 +108,12 @@ pub struct Deploy {
     pub state: String,
     pub at: i64,
     pub url: Option<String>,
+    /// The commit the Deployment was made for (its `commitOid`): the tag's commit when the
+    /// recorder passes the tag as its ref, what the release graph joins on when the version
+    /// names no tag.
+    pub sha: Option<String>,
+    /// The store's build number the upload recorded (TestFlight, Play), when it recorded one.
+    pub build: Option<String>,
 }
 
 impl Deploy {
@@ -107,21 +137,21 @@ pub struct Deploys {
 }
 
 impl Deploys {
-    /// The PREV cell: `?` when the read failed, as [`Side::text`] says it.
-    fn prev_text(&self) -> String {
+    /// The PREV cell: `not read` when the read failed, else `none` when there is none.
+    fn prev_text(&self, none: &str) -> String {
         match (&self.error, &self.prev) {
-            (Some(_), _) => "?".into(),
+            (Some(_), _) => "not read".into(),
             (None, Some(v)) => v.clone(),
-            (None, None) => "-".into(),
+            (None, None) => none.into(),
         }
     }
 
     /// The LAST DEPLOY cell: `11-06 15:00 ok`, the date dropped for one today.
-    fn last_text(&self, now: i64) -> String {
+    fn last_text(&self, now: i64, none: &str) -> String {
         match (&self.error, &self.last) {
-            (Some(_), _) => "?".into(),
+            (Some(_), _) => "not read".into(),
             (None, Some(d)) => format!("{} {}", stamp(d.at, now), d.state),
-            (None, None) => "-".into(),
+            (None, None) => none.into(),
         }
     }
 
@@ -220,6 +250,18 @@ pub struct Release {
 }
 
 impl Release {
+    /// Why the channel has no deploy to show: moved by hand, no repo whose Deployments it
+    /// reads, or nothing recorded there yet.
+    fn no_deploy(&self) -> &'static str {
+        if self.pinned.source == "manual" {
+            "manual"
+        } else if matches!(self.deploys.source.as_str(), "" | "none") {
+            "none declared"
+        } else {
+            "not recorded"
+        }
+    }
+
     /// Nothing about this channel asks for attention.
     pub fn green(&self) -> bool {
         self.level == Level::Ok
@@ -264,7 +306,7 @@ fn env_rank(env: &str) -> (usize, &str) {
     )
 }
 
-/// One app: every channel of one project, what is live where it matters most, and the worst of
+/// One app: every channel of one project, what is deployed where it matters most, and the worst of
 /// what the channels it could read say. A channel the collector could not read is counted, but it
 /// never sets the app's word: a missing store key must not hide a prod that reads fine.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -292,6 +334,138 @@ pub struct App {
     pub lead: usize,
     /// The folded envs in one line: `preview 2 ok; beta 1 released; internal 1 not read`.
     pub others_text: String,
+    /// Which tags the history reads: `release` (its own family), `build` (per-build tags, the
+    /// registry's `buildTags`) or `none`.
+    pub line: String,
+    /// Every tag the collector kept, newest first, each joined to the channels it reached
+    /// (`hub_core::release_graph`).
+    pub history: Vec<Shipment>,
+    /// The RELEASED cell: the newest tag and when it was made, `v1.19.0 11-10 14:02`; with
+    /// none, `none declared` with no tag glob, `not read` when git failed, `not recorded` when
+    /// the glob matched none. While a build runs it adds `; building <tag> (<workflow> <elapsed>)`.
+    pub released_text: String,
+    /// The RELEASED cell's word with no tag, kept for [`Releases::with_builds`].
+    #[serde(skip)]
+    pub no_release: &'static str,
+    /// The build runs the release graph joins to this app's tags, newest first.
+    pub builds: Vec<AppBuild>,
+    /// How full each history column is ([`Coverage`]).
+    pub coverage: Coverage,
+    /// `prev 6/6, deployed 4/6 (1 manual, 1 not recorded), reached 2/6, rows 2/6 (4 before
+    /// 2026-11-11: not recorded)`.
+    pub coverage_text: String,
+    /// The lab stage (`draft` .. `prod`), empty when the snapshot names none.
+    pub stage: String,
+    /// What the stage asks of the deploys: `draft: no deploy needed`,
+    /// `alpha: no alpha target deployed`
+    /// (`docs/stages.md`, The ladder; facts from `release-state`).
+    pub stage_text: String,
+    pub stage_level: Level,
+    /// Where the stage sits on the ladder, lowest first: what the STAGE column sorts by.
+    #[serde(skip)]
+    pub stage_rank: Option<usize>,
+}
+
+/// One build run of an app: a CI run the release graph joins to one of its tags (its run name, its
+/// log's `TAG:` line, its Deployment or its tag ref), so a queued, running, failed or cancelled
+/// run lists as well as one that shipped.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct AppBuild {
+    pub tag: String,
+    /// The workflow with its tag or run id folded out (`Release builds`, `Steam (dodginballs)`).
+    pub workflow: String,
+    /// `queued 2m`, `in progress 14m`, `success`, `failed`, `cancelled`.
+    pub state_text: String,
+    pub level: Level,
+    /// Queued or in progress.
+    pub live: bool,
+    /// When it started (queued: when it was created), with the date.
+    pub started_text: String,
+    /// When it finished, with the date; `-` while it runs.
+    pub ended_text: String,
+    pub url: String,
+}
+
+/// The RELEASED cell: the newest tag with when it was made, a release line's tag as its version
+/// (`v1.19.0`), a build tag as its own name; and the build running now, if one is.
+fn released_text(
+    line: Option<&str>,
+    history: &[Shipment],
+    builds: &[AppBuild],
+    none: &str,
+) -> String {
+    let made = history.first().map(|h| {
+        let tag = if line == Some("release") && !h.version.is_empty() {
+            format!("v{}", h.version)
+        } else {
+            h.tag.clone()
+        };
+        format!("{tag} {}", h.at_text)
+    });
+    let building = builds.iter().find(|b| b.live).map(|b| {
+        let took = b
+            .state_text
+            .strip_prefix("in progress ")
+            .unwrap_or(&b.state_text);
+        format!("building {} ({} {took})", b.tag, b.workflow)
+    });
+    match (made, building) {
+        (Some(m), Some(b)) => format!("{m}; {b}"),
+        (m, b) => m.or(b).unwrap_or_else(|| none.into()),
+    }
+}
+
+impl Releases {
+    /// Each app's build runs: the builds read's `runs` the release graph tied to one of its tags
+    /// (the rows Release runs lists), the newest attempt of each, newest first. The RELEASED cell
+    /// then says when one is running. Safe to call again on a newer read.
+    pub fn with_builds(&mut self, runs: &[Run]) {
+        let mut newest: HashMap<(&str, &str, u64), (&Run, &release_graph::RunRelease)> =
+            HashMap::new();
+        for (r, rel) in runs.iter().filter_map(|r| Some((r, r.release.as_ref()?))) {
+            let e = newest.entry((&r.forge, &r.repo, r.id)).or_insert((r, rel));
+            if r.attempt > e.0.attempt {
+                *e = (r, rel);
+            }
+        }
+        let mut picked: Vec<_> = newest.into_values().collect();
+        picked.sort_by_key(|(r, _)| (std::cmp::Reverse(r.started), std::cmp::Reverse(r.id)));
+        for a in &mut self.apps {
+            a.builds = picked
+                .iter()
+                .filter(|(_, rel)| rel.project == a.project)
+                .map(|(r, rel)| app_build(r, &rel.tag))
+                .collect();
+            let line = Some(a.line.as_str());
+            a.released_text = released_text(line, &a.history, &a.builds, a.no_release);
+        }
+    }
+}
+
+fn app_build(r: &Run, tag: &str) -> AppBuild {
+    let took = crate::run_detail::took_text(r.took);
+    let state_text = match (r.state.as_str(), r.conclusion.as_deref()) {
+        ("queued", _) => format!("queued {took}"),
+        ("running", _) => format!("in progress {took}"),
+        (_, Some("failure" | "startup_failure")) => "failed".into(),
+        (_, Some("timed_out")) => "timed out".into(),
+        (_, Some(c)) if !c.is_empty() => c.replace('_', " "),
+        (s, _) => s.to_string(),
+    };
+    let live = matches!(r.state.as_str(), "queued" | "running");
+    let ended = (!live)
+        .then(|| r.ended_at.as_deref().and_then(crate::fleet::ts))
+        .flatten();
+    AppBuild {
+        tag: tag.to_string(),
+        workflow: builds::timed_as(&r.workflow, &r.path),
+        state_text,
+        level: r.level,
+        live,
+        started_text: dated(r.started),
+        ended_text: ended.map_or("-".into(), dated),
+        url: r.url.clone(),
+    }
 }
 
 impl App {
@@ -306,22 +480,27 @@ impl Row for App {
     // `channel:prod` and an id still find the app.
     const COLUMNS: &'static [&'static str] = &[
         "project",
+        "stage",
         "live",
         "status",
         "channels",
+        "released",
         "last_deploy",
         "channel",
         "id",
     ];
     const STATES: &'static [&'static str] = &["all", "attention", "ok"];
-    const FACETS: &'static [&'static str] = &["project", "status"];
+    const FACETS: &'static [&'static str] = &["project", "stage", "status"];
     const LEAD: &'static str = "project";
-    const GLANCE: &'static [&'static str] = &["live", "status"];
+    const GLANCE: &'static [&'static str] = &["stage", "live", "status"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" | "-" => Val::None,
-            s => Val::Text(s.to_string()),
+        let text = |s: &str| {
+            if blank(s) {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
         };
         let every = |f: fn(&Release) -> &str| {
             let mut v: Vec<&str> = self.channels.iter().map(f).collect();
@@ -330,9 +509,12 @@ impl Row for App {
         };
         match col {
             "project" => text(&self.project),
+            "stage" => text(&self.stage),
             "live" => text(&self.live_text),
-            "status" => text(&self.status_text),
+            // `not read` is a status word here, not a blank.
+            "status" => Val::Text(self.status_text.clone()),
             "channels" => text(&self.channels_text),
+            "released" => text(&self.released_text),
             "last_deploy" => text(&self.last_deploy_text),
             "channel" => every(|r| r.channel.as_str()),
             "id" => every(|r| r.id.as_str()),
@@ -360,6 +542,7 @@ impl Row for App {
             self.live_text.clone(),
             self.status_text.clone(),
             self.channels_text.clone(),
+            self.released_text.clone(),
             self.last_deploy_text.clone(),
         ];
         for r in &self.channels {
@@ -390,8 +573,106 @@ impl Row for App {
     fn rank(&self, col: &str) -> Val {
         match col {
             "status" => Val::Num(-(rank(&self.status) as f64)),
+            // Up the ladder (draft, dev, alpha, beta, prod), not by the word's spelling.
+            "stage" => self.stage_rank.map_or(Val::None, |r| Val::Num(r as f64)),
+            // Newest release first on the first click, by when, not by the tag's spelling.
+            "released" => self
+                .history
+                .first()
+                .and_then(|h| h.at)
+                .map_or(Val::None, |a| Val::Num(a as f64)),
             _ => self.val(col),
         }
+    }
+
+    /// The app's name leads to its project page; the row itself opens the app's own page.
+    fn link(&self, col: &str) -> Option<Link> {
+        (col == "project").then(|| Link::to(Kind::Project, &self.project))
+    }
+}
+
+/// How many of an app's history cells hold a value, per column: what the Apps summary and an
+/// opened app count so a blank is a number, not a guess.
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Coverage {
+    pub tags: usize,
+    /// Tags with the release before them (the line's first counts: it has none to name).
+    pub prev: usize,
+    /// Declared channels, and those with a recorded deploy.
+    pub channels: usize,
+    pub deployed: usize,
+    /// Tags some channel says it reached.
+    pub reached: usize,
+    /// Tags that merged PRs, those whose PRs name a board row, and those with none from before
+    /// the links were held (`Links::since`).
+    pub merged: usize,
+    pub rows: usize,
+    pub before: usize,
+}
+
+impl Coverage {
+    fn of(channels: &[Release], history: &[Shipment], since: i64) -> Coverage {
+        let declared: Vec<&Release> = channels.iter().filter(|r| !r.implicit).collect();
+        let merged: Vec<&Shipment> = history.iter().filter(|h| !h.prs.is_empty()).collect();
+        Coverage {
+            tags: history.len(),
+            prev: history
+                .iter()
+                .enumerate()
+                .filter(|(i, h)| h.prev.is_some() || *i + 1 == history.len())
+                .count(),
+            channels: declared.len(),
+            deployed: declared.iter().filter(|r| r.deploys.last.is_some()).count(),
+            reached: history.iter().filter(|h| !h.reached.is_empty()).count(),
+            merged: merged.len(),
+            rows: merged.iter().filter(|h| !h.rows.is_empty()).count(),
+            before: merged
+                .iter()
+                .filter(|h| h.rows.is_empty() && h.at.is_some_and(|a| a < since))
+                .count(),
+        }
+    }
+
+    fn add(&mut self, o: &Coverage) {
+        self.tags += o.tags;
+        self.prev += o.prev;
+        self.channels += o.channels;
+        self.deployed += o.deployed;
+        self.reached += o.reached;
+        self.merged += o.merged;
+        self.rows += o.rows;
+        self.before += o.before;
+    }
+
+    /// `prev 6/6, deployed 4/6, reached 2/6, rows 2/6 (4 before 2026-11-11: not recorded)`;
+    /// `undeployed` follows the deployed count. Empty when there is nothing to count.
+    fn text(&self, since: i64, undeployed: &str) -> String {
+        let mut parts = vec![];
+        if self.tags > 0 {
+            parts.push(format!("prev {}/{}", self.prev, self.tags));
+        }
+        if self.channels > 0 {
+            parts.push(format!(
+                "deployed {}/{}{undeployed}",
+                self.deployed, self.channels
+            ));
+        }
+        if self.tags > 0 {
+            parts.push(format!("reached {}/{}", self.reached, self.tags));
+        }
+        if self.merged > 0 {
+            let before = if self.before > 0 {
+                format!(
+                    " ({} before {}: not recorded)",
+                    self.before,
+                    release_graph::since_day(since)
+                )
+            } else {
+                String::new()
+            };
+            parts.push(format!("rows {}/{}{before}", self.rows, self.merged));
+        }
+        parts.join(", ")
     }
 }
 
@@ -405,6 +686,8 @@ pub struct Releases {
     pub summary: String,
     /// `9 channels not read: steam GetAppBetas failed (6), ...`; empty when every one was read.
     pub gaps: String,
+    /// Every app's [`Coverage`] summed: `coverage: prev 40/40, deployed 20/30, ...`.
+    pub coverage: String,
     /// Every app, exceptions first: the tab's rows.
     pub apps: Vec<App>,
     /// Every channel, flat, for the readers that join one (the briefing).
@@ -425,24 +708,64 @@ impl Releases {
     }
 }
 
+/// `release-state show --json`: the collector's raw facts, before any join.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct Snapshot {
-    generated_epoch: i64,
-    rows: Vec<Release>,
+pub struct Snapshot {
+    pub generated_epoch: i64,
+    pub rows: Vec<Release>,
+    /// Each project's tag history, keyed by project (`release-state refresh`).
+    pub releases: HashMap<String, Line>,
+    /// What each lab project's stage asks of its deploys, keyed by project.
+    stages: HashMap<String, StageFacts>,
+    /// Why `stages` is empty: `notes` could not say.
+    pub stages_error: Option<String>,
+    /// The stage ladder, lowest first (`notes projects --stages`).
+    pub ladder: Vec<String>,
+    /// The raw facts `hub releases check` holds the links to.
+    pub links: crate::release_graph::Links,
+}
+
+/// One project's stage against its deploys, as `release-state refresh` computed it: the rungs its
+/// live targets serve and the rungs its stage needs and nothing serves. A target above the stage is
+/// fine: a deploy is not the app being live.
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+struct StageFacts {
+    /// None when the lab sheet names no stage on the ladder.
+    stage: Option<String>,
+    needs: Vec<String>,
+}
+
+/// The stage cell and its level. A project with no stage on its lab sheet says so; one the
+/// snapshot has no facts for (the read failed, which `errors` names) says `not read`.
+fn staged(f: Option<&StageFacts>) -> (String, String, Level) {
+    let Some(f) = f else {
+        return (String::new(), "not read".into(), Level::Warn);
+    };
+    let Some(stage) = f.stage.as_deref() else {
+        return (String::new(), "none on the lab sheet".into(), Level::Ok);
+    };
+    let (text, level) = match (f.needs.is_empty(), stage) {
+        (true, "draft" | "dev") => ("no deploy needed".to_string(), Level::Ok),
+        (true, _) => ("deploys match".to_string(), Level::Ok),
+        (false, _) => (
+            format!("no {} target deployed", f.needs.join(" or ")),
+            Level::Warn,
+        ),
+    };
+    (stage.to_string(), format!("{stage}: {text}"), level)
 }
 
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
 fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     let now = chrono::Local::now().timestamp();
-    let mut pins: HashMap<String, String> = HashMap::new();
-    for prod in [true, false] {
-        for r in rows.iter().filter(|r| (r.channel == "prod") == prod) {
-            pins.entry(r.project.clone())
-                .or_insert_with(|| r.pinned.value.clone().unwrap_or_default());
-        }
-    }
-    for r in &mut rows {
+    let deps: Vec<String> = rows
+        .iter()
+        .map(|r| release_graph::deps_text(&r.deps, &rows))
+        .collect();
+    for (r, deps_text) in rows.iter_mut().zip(deps) {
+        r.deps_text = deps_text;
         for w in &mut r.telemetry {
             w.level = w.judged();
         }
@@ -461,27 +784,16 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
         } else {
             format!("{} {}", r.channel, r.id)
         };
-        r.pinned_text = r.pinned.text();
-        r.live_text = r.live.text();
-        r.prev_text = r.deploys.prev_text();
-        r.last_deploy_text = r.deploys.last_text(now);
+        r.pinned_text = r.pinned.text("not recorded");
+        r.live_text = r.live.text("none declared");
+        let none = r.no_deploy();
+        r.prev_text = r.deploys.prev_text(none);
+        r.last_deploy_text = r.deploys.last_text(now, none);
         r.telemetry_text = if r.telemetry.is_empty() {
-            "-".into()
+            "none declared".into()
         } else {
             let ok = r.telemetry.iter().filter(|w| w.state == "OK").count();
             format!("{ok}/{}", r.telemetry.len())
-        };
-        r.deps_text = if r.deps.is_empty() {
-            "-".into()
-        } else {
-            r.deps
-                .iter()
-                .map(|d| match pins.get(d) {
-                    Some(pin) if !pin.is_empty() => format!("{d} {pin}"),
-                    _ => d.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
         };
     }
     rows.sort_by(|a, b| {
@@ -491,8 +803,15 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     rows
 }
 
-/// One project's settled channels as its app.
-fn app(project: &str, mut channels: Vec<Release>) -> App {
+/// One project's settled channels as its app, with its tag history joined to them.
+fn app(
+    project: &str,
+    mut channels: Vec<Release>,
+    line: Option<&Line>,
+    graph: Option<&Graph>,
+    stage: Option<&StageFacts>,
+    since: i64,
+) -> App {
     channels.sort_by(|a, b| {
         let key = |r: &Release| (r.unread(), r.level, rank(&r.status));
         (env_rank(&a.channel), key(a), &a.id).cmp(&(env_rank(&b.channel), key(b), &b.id))
@@ -500,26 +819,36 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
     // Only a channel that was read speaks for what is live: an unread one's pin is not.
     let value = |r: &Release| r.live.value.clone().or_else(|| r.pinned.value.clone());
     let head = channels.iter().find(|r| !r.unread() && value(r).is_some());
-    let live_text = head.map_or("-".into(), |h| {
-        // Every distinct version read in the headline env, so a web and an api that differ
-        // both show.
-        let mut vs: Vec<String> = vec![];
-        for v in channels
-            .iter()
-            .filter(|r| r.channel == h.channel && !r.unread())
-            .filter_map(value)
-        {
-            if !vs.contains(&v) {
-                vs.push(v);
+    let live_text = head.map_or_else(
+        || {
+            (if channels.iter().all(Release::unread) {
+                "not read"
+            } else {
+                "not recorded"
+            })
+            .into()
+        },
+        |h| {
+            // Every distinct version read in the headline env, so a web and an api that differ
+            // both show.
+            let mut vs: Vec<String> = vec![];
+            for v in channels
+                .iter()
+                .filter(|r| r.channel == h.channel && !r.unread())
+                .filter_map(value)
+            {
+                if !vs.contains(&v) {
+                    vs.push(v);
+                }
             }
-        }
-        let vs = vs.join(", ");
-        if h.implicit {
-            vs
-        } else {
-            format!("{vs} {}", h.channel)
-        }
-    });
+            let vs = vs.join(", ");
+            if h.implicit {
+                vs
+            } else {
+                format!("{vs} {}", h.channel)
+            }
+        },
+    );
     let lead_env = head
         .or(channels.first())
         .map(|r| r.channel.clone())
@@ -554,6 +883,11 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
+    let history = match (graph, line) {
+        (Some(g), _) => g.history(project, &channels),
+        (None, Some(l)) => release_graph::history(l, &channels),
+        (None, None) => vec![],
+    };
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {
@@ -561,34 +895,86 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
             format!("{} {words}", env[0].channel)
         })
         .collect();
+    let (stage, stage_text, stage_level) = staged(stage);
+    let coverage = Coverage::of(&channels, &history, since);
+    let undeployed = counts(
+        channels
+            .iter()
+            .filter(|r| !r.implicit && r.deploys.last.is_none())
+            .map(|r| {
+                if r.deploys.error.is_some() {
+                    "not read"
+                } else {
+                    r.no_deploy()
+                }
+            }),
+    );
+    let undeployed = if undeployed.is_empty() {
+        String::new()
+    } else {
+        format!(" ({undeployed})")
+    };
+    let no_deploy = if channels.iter().all(|r| r.pinned.source == "manual") {
+        "manual"
+    } else if channels.iter().all(|r| r.no_deploy() == "none declared") {
+        "none declared"
+    } else if channels.iter().any(|r| r.deploys.error.is_some()) {
+        "not read"
+    } else {
+        "not recorded"
+    };
+    let no_release = match line {
+        Some(l) if l.error.is_some() => "not read",
+        Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
+        _ => "none declared",
+    };
     App {
         project: project.to_string(),
         status_text: shown(&status).to_string(),
         status,
         level,
         live_text,
-        channels_text: format!(
-            "{}: {}",
-            channels.len(),
-            counts(channels.iter().map(|r| r.status.as_str()))
-        ),
+        channels_text: counts(channels.iter().map(|r| r.status.as_str())),
         unread,
-        last_deploy_text: last.map_or("-".into(), |r| r.last_deploy_text.clone()),
+        last_deploy_text: last.map_or(no_deploy.into(), |r| r.last_deploy_text.clone()),
         deploy_level: last.map_or(Level::Ok, |r| r.deploy_level),
         others_text: others.join("; "),
         lead,
+        released_text: released_text(line.map(|l| l.line.as_str()), &history, &[], no_release),
+        line: line.map_or("none".into(), |l| l.line.clone()),
+        no_release,
+        builds: vec![],
+        coverage_text: coverage.text(since, &undeployed),
+        coverage,
+        history,
         channels,
+        stage,
+        stage_text,
+        stage_level,
+        stage_rank: None,
     }
 }
 
 /// The settled channels grouped into apps, exceptions first, then by name.
-fn apps(rows: &[Release]) -> Vec<App> {
+fn apps(
+    rows: &[Release],
+    lines: &HashMap<String, Line>,
+    stages: &HashMap<String, StageFacts>,
+    ladder: &[String],
+    graph: Option<&Graph>,
+    since: i64,
+) -> Vec<App> {
     let mut names: Vec<&str> = rows.iter().map(|r| r.project.as_str()).collect();
     names.sort_unstable();
     names.dedup();
     let mut out: Vec<App> = names
         .into_iter()
-        .map(|p| app(p, rows.iter().filter(|r| r.project == p).cloned().collect()))
+        .map(|p| {
+            let channels = rows.iter().filter(|r| r.project == p).cloned().collect();
+            let mut a = app(p, channels, lines.get(p), graph, stages.get(p), since);
+            a.stage_rank = ladder.iter().position(|s| *s == a.stage);
+            a
+        })
         .collect();
     out.sort_by(|a, b| {
         let key = |x: &App| (x.level, rank(&x.status));
@@ -648,6 +1034,11 @@ fn says(apps: &[App]) -> String {
     }
 }
 
+/// Every channel's and every project's raw facts, unjoined: what the release graph reads.
+pub fn snapshot(runner: &dyn Runner) -> Result<Snapshot, String> {
+    show(runner, None)
+}
+
 fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> {
     let mut argv: Vec<String> = ["release-state", "show", "--json"]
         .map(String::from)
@@ -660,23 +1051,58 @@ fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> 
 }
 
 /// The tab: every app, or what stopped the read. Nothing is carried over from an earlier read, so
-/// a failed probe is never shown as the last good value.
-pub fn read(runner: &dyn Runner) -> Releases {
+/// a failed probe is never shown as the last good value. `items` are the queue's, which join a
+/// release's PRs to their rows; none leaves the ROWS cell `-`. Each app's build runs are the
+/// builds read's rows, put on with [`Releases::with_builds`].
+pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
     let question = layout::resolve("releases")
         .map(|t| t.question.to_string())
         .unwrap_or_default();
     match show(runner, None) {
         Ok(s) => {
             let rows = settle(s.rows);
-            let apps = apps(&rows);
+            let registry = project_map::cached();
+            let none = HashMap::new();
+            let graph = Graph::new(Inputs {
+                lines: &s.releases,
+                channels: &rows,
+                items,
+                prs: &[],
+                live: &none,
+                registry: registry.as_deref(),
+                since: s.links.since,
+                run_tags: &[],
+            });
+            let apps = apps(
+                &rows,
+                &s.releases,
+                &s.stages,
+                &s.ladder,
+                Some(&graph),
+                s.links.since,
+            );
+            let mut total = Coverage::default();
+            for a in &apps {
+                total.add(&a.coverage);
+            }
+            let coverage = total.text(s.links.since, "");
             Releases {
                 at: s.generated_epoch,
                 question,
                 summary: says(&apps),
                 gaps: gaps(&rows),
+                coverage: if coverage.is_empty() {
+                    coverage
+                } else {
+                    format!("coverage: {coverage}")
+                },
                 apps,
                 rows,
-                errors: vec![],
+                errors: s
+                    .stages_error
+                    .map(|e| format!("release-state stages: {e}"))
+                    .into_iter()
+                    .collect(),
             }
         }
         Err(e) => Releases {
@@ -691,7 +1117,7 @@ pub fn read(runner: &dyn Runner) -> Releases {
 /// One project's app as the Projects card's badge, linking to this tab (rule 2).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Badge {
-    /// `v1.19.0 prod, ok; channels 7: 4 ok, 1 released, 2 not read`.
+    /// `v1.19.0 prod, ok; channels 4 ok, 1 released, 2 not read`.
     pub says: String,
     pub level: Level,
 }
@@ -709,17 +1135,20 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    apps(rows).into_iter().next().map(|a| {
-        let live = if a.live_text == "-" {
-            String::new()
-        } else {
-            format!("{}, ", a.live_text)
-        };
-        Badge {
-            says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
-            level: a.level,
-        }
-    })
+    apps(rows, &HashMap::new(), &HashMap::new(), &[], None, 0)
+        .into_iter()
+        .next()
+        .map(|a| {
+            let live = if blank(&a.live_text) {
+                String::new()
+            } else {
+                format!("{}, ", a.live_text)
+            };
+            Badge {
+                says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
+                level: a.level,
+            }
+        })
 }
 
 /// What one tag of a project shipped, from `release-state changelog --json`: the tag's
@@ -785,6 +1214,11 @@ pub fn changelog(
 mod tests {
     use super::*;
     use crate::table::View;
+
+    /// The tab with no queue items: the joins these tests pin need none.
+    fn read(runner: &dyn Runner) -> Releases {
+        super::read(runner, &[])
+    }
 
     struct Fake(Result<String, String>);
     impl Runner for Fake {
@@ -887,7 +1321,10 @@ mod tests {
         let apps: Vec<&str> = r.apps.iter().map(|x| x.project.as_str()).collect();
         assert_eq!(apps, ["d", "e", "c", "a", "b"]);
         assert_eq!(r.at, 100);
-        assert_eq!(r.question, "What is building, and what is live where?");
+        assert_eq!(
+            r.question,
+            "What is deployed where, and which builds made it?"
+        );
     }
 
     #[test]
@@ -913,28 +1350,58 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_value_is_a_dash_and_a_failed_read_a_question_mark() {
-        let side = |v: serde_json::Value| serde_json::from_value::<Side>(v).unwrap().text();
+    fn a_blank_says_its_cause() {
+        let side = |v: serde_json::Value, none: &str| {
+            serde_json::from_value::<Side>(v).unwrap().text(none)
+        };
         assert_eq!(
-            side(serde_json::json!({"value": "v1", "source": "x"})),
+            side(
+                serde_json::json!({"value": "v1", "source": "x"}),
+                "none declared"
+            ),
             "v1"
         );
+        // A pin nothing recorded yet, and a live side nothing probes.
         assert_eq!(
-            side(serde_json::json!({"value": null, "source": "none"})),
-            "-"
+            side(
+                serde_json::json!({"value": null, "source": "none"}),
+                "not recorded"
+            ),
+            "not recorded"
         );
         assert_eq!(
-            side(serde_json::json!({"source": "tag", "error": "no release tag"})),
-            "-"
+            side(
+                serde_json::json!({"value": null, "source": "none"}),
+                "none declared"
+            ),
+            "none declared"
         );
         assert_eq!(
-            side(serde_json::json!({"source": "k8s", "error": "timeout"})),
-            "?"
+            side(
+                serde_json::json!({"source": "tag", "error": "no release tag"}),
+                "none declared"
+            ),
+            "not recorded"
+        );
+        assert_eq!(
+            side(
+                serde_json::json!({"source": "k8s", "error": "timeout"}),
+                "none declared"
+            ),
+            "not read"
+        );
+        // A channel moved by hand says so instead of a blank.
+        assert_eq!(
+            side(
+                serde_json::json!({"value": null, "source": "manual", "reason": "set in Steamworks"}),
+                "not recorded"
+            ),
+            "manual"
         );
     }
 
     #[test]
-    fn a_channel_with_no_history_is_a_dash_and_a_failed_read_a_question_mark() {
+    fn a_channel_with_no_history_says_why() {
         let with = |d: serde_json::Value| {
             let mut v = row("a", "a", "ok");
             v["deploys"] = d;
@@ -943,13 +1410,18 @@ mod tests {
         let none = with(serde_json::json!({"source": "none", "history": []}));
         assert_eq!(
             (none.prev_text.as_str(), none.last_deploy_text.as_str()),
-            ("-", "-")
+            ("none declared", "none declared")
         );
         assert!(none.green());
+        let empty = with(serde_json::json!({"source": "o/r", "history": []}));
+        assert_eq!(
+            (empty.prev_text.as_str(), empty.last_deploy_text.as_str()),
+            ("not recorded", "not recorded")
+        );
         let broken = with(serde_json::json!({"source": "o/r", "error": "gh api failed"}));
         assert_eq!(
             (broken.prev_text.as_str(), broken.last_deploy_text.as_str()),
-            ("?", "?")
+            ("not read", "not read")
         );
         assert!(
             broken.green(),
@@ -1055,7 +1527,7 @@ mod tests {
         let app = r.apps.iter().find(|a| a.project == "app").unwrap();
         assert_eq!(app.live_text, "v1.19.0 prod");
         assert_eq!((app.status_text.as_str(), app.level), ("ok", Level::Ok));
-        assert_eq!(app.channels_text, "6: 2 not read, 3 ok, 1 released");
+        assert_eq!(app.channels_text, "2 not read, 3 ok, 1 released");
         assert_eq!(app.unread, 2);
         let ids: Vec<&str> = app.channels.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(
@@ -1091,7 +1563,7 @@ mod tests {
             (game.status_text.as_str(), game.level),
             ("not read", Level::Warn)
         );
-        assert_eq!((game.live_text.as_str(), game.unread), ("-", 2));
+        assert_eq!((game.live_text.as_str(), game.unread), ("not read", 2));
         assert_eq!(r.summary, "2 apps: 1 not read, 1 ok");
     }
 
@@ -1136,7 +1608,7 @@ mod tests {
         let a = &read(&snapshot(vec![pinned])).apps[0];
         assert_eq!(
             (a.live_text.as_str(), a.status_text.as_str()),
-            ("-", "not read")
+            ("not read", "not read")
         );
     }
 
@@ -1233,7 +1705,7 @@ mod tests {
         )
         .unwrap();
         let b = badge(&rows).unwrap();
-        assert_eq!(b.says, "v1 prod, drift; channels 2: 1 drift, 1 ok");
+        assert_eq!(b.says, "v1 prod, drift; channels 1 drift, 1 ok");
         assert_eq!(b.level, Level::Bad);
         assert_eq!(badge(&channels(&snapshot(vec![]), "a").unwrap()), None);
     }
@@ -1247,7 +1719,244 @@ mod tests {
           "telemetry": [], "deps": [], "probed_at": 9}]}"#;
         let r = read(&Fake(Ok(raw.into())));
         assert_eq!(r.errors, Vec::<String>::new());
-        assert_eq!(r.rows[0].pinned_text, "-");
-        assert_eq!(r.rows[0].live_text, "-");
+        assert_eq!(r.rows[0].pinned_text, "not recorded");
+        assert_eq!(r.rows[0].live_text, "none declared");
+        assert_eq!(
+            (r.apps[0].line.as_str(), r.apps[0].released_text.as_str()),
+            ("none", "none declared")
+        );
+    }
+
+    #[test]
+    fn an_app_reads_its_tag_history_joined_to_its_channels() {
+        let raw = r#"{"generated_epoch": 7, "rows": [{"project": "pmp", "id": "pmp-web-prod",
+          "channel": "prod", "pinned": {"value": "v1.19.0", "source": "repo:origin/main:f.yaml",
+          "at": 1793111939, "prev": "v1.18.0"}, "live": {"value": "v1.19.0", "source": "k8s"},
+          "status": "ok", "deploys": {"source": "none", "history": []}}],
+          "releases": {"pmp": {"line": "release", "glob": "pmp-v*", "error": null, "tags": [
+            {"tag": "pmp-v1.19.0", "version": "1.19.0", "sha": "fc99", "at": 1793081423, "prev": "pmp-v1.18.0"},
+            {"tag": "pmp-v1.18.0", "version": "1.18.0", "sha": "ab12", "at": 1792000000, "prev": null}]}}}"#;
+        let r = read(&Fake(Ok(raw.into())));
+        let a = &r.apps[0];
+        assert_eq!(a.line, "release");
+        assert_eq!(a.history.len(), 2);
+        assert!(
+            a.released_text.starts_with("v1.19.0 "),
+            "{}",
+            a.released_text
+        );
+        assert_eq!(a.history[0].prev.as_deref(), Some("pmp-v1.18.0"));
+        // The prod pin names v1.19.0, so the newest release reached it; the older one did not.
+        assert_eq!(a.history[0].reached[0].how, "pin");
+        assert_eq!(a.history[1].reached_text, "not recorded");
+        assert_eq!(r.rows[0].pinned.prev.as_deref(), Some("v1.18.0"));
+        // Each column counted, the undeployed channel with its cause; a tag that merged no PR
+        // has no row to count.
+        assert_eq!(
+            a.coverage_text,
+            "prev 2/2, deployed 0/1 (1 none declared), reached 1/2"
+        );
+        assert_eq!(r.coverage, "coverage: prev 2/2, deployed 0/1, reached 1/2");
+        assert_eq!(a.history[1].prs_text, "none merged");
+    }
+
+    #[test]
+    fn an_app_lists_its_build_runs_newest_first_and_its_row_says_one_is_running() {
+        let dir = std::env::temp_dir().join(format!("hub-rel-builds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = builds::Paths {
+            ledger: dir.join("runs.jsonl"),
+            sync: dir.join("sync.json"),
+            fleet: dir.join("state.json"),
+            prs: dir.join("prs"),
+            jobs: dir.join("jobs.jsonl"),
+            quarantine: dir.join("quarantine.json"),
+            run_tags: dir.join("run-tags.jsonl"),
+        };
+        let now = chrono::Utc::now();
+        let iso = |ago: i64| (now - chrono::Duration::seconds(ago)).to_rfc3339();
+        let run = |id: u64,
+                   attempt: u32,
+                   name: &str,
+                   status: &str,
+                   concl: Option<&str>,
+                   ago: i64,
+                   end: Option<i64>| {
+            serde_json::json!({"forge": "github", "repo": "Acme/game", "id": id, "attempt": attempt,
+                "workflow": name, "path": ".github/workflows/release.yml", "title": name,
+                "branch": "main", "event": "workflow_dispatch", "status": status,
+                "conclusion": concl, "created_at": iso(ago), "started_at": iso(ago),
+                "ended_at": end.map(iso), "url": format!("https://github.com/Acme/game/actions/runs/{id}")})
+            .to_string()
+        };
+        let ledger = [
+            run(
+                10,
+                1,
+                "Release builds",
+                "completed",
+                Some("success"),
+                9000,
+                Some(8000),
+            ),
+            run(
+                11,
+                1,
+                "Steam",
+                "completed",
+                Some("cancelled"),
+                7000,
+                Some(6900),
+            ),
+            run(
+                11,
+                2,
+                "Steam",
+                "completed",
+                Some("success"),
+                6000,
+                Some(5000),
+            ),
+            run(
+                12,
+                1,
+                "Release builds of v0.5.0-game8",
+                "in_progress",
+                None,
+                600,
+                None,
+            ),
+            run(13, 1, "Tests", "completed", Some("failure"), 500, Some(400)),
+        ];
+        std::fs::write(&paths.ledger, ledger.join("\n")).unwrap();
+        std::fs::write(
+            &paths.run_tags,
+            "{\"repo\":\"Acme/game\",\"id\":10,\"tag\":\"v0.5.0-game7\"}\n{\"repo\":\"Acme/game\",\"id\":11,\"of\":10}\n",
+        )
+        .unwrap();
+        let raw = r#"{"generated_epoch": 7, "rows": [{"project": "game", "id": "game-steam",
+          "channel": "prod", "status": "ok", "live": {"value": "v0.5.0-game7"}}],
+          "releases": {"game": {"line": "build", "repo": "Acme/game", "tags": [
+            {"tag": "v0.5.0-game8", "version": "0.5.0-game8", "at": 1794000000},
+            {"tag": "v0.5.0-game7", "version": "0.5.0-game7", "at": 1793990000}]}}}"#;
+        let fake = Fake(Ok(raw.into()));
+        let join = || builds::Join {
+            runner: &fake,
+            items: &[],
+        };
+        let b = builds::read(&paths, Some(join()), now.timestamp());
+        let mut r = read(&fake);
+        r.with_builds(&b.rows);
+        assert_eq!(r.errors, Vec::<String>::new());
+        let a = &r.apps[0];
+        let got: Vec<(&str, &str, &str)> = a
+            .builds
+            .iter()
+            .map(|b| (b.tag.as_str(), b.workflow.as_str(), b.state_text.as_str()))
+            .collect();
+        // The running one's elapsed time is read against the clock: 10m, or 10m01 a second on.
+        assert!(got[0].2.starts_with("in progress 10m"), "{}", got[0].2);
+        let got: Vec<_> = got
+            .into_iter()
+            .map(|(t, w, s)| {
+                (
+                    t,
+                    w,
+                    if s.starts_with("in progress") {
+                        "in progress"
+                    } else {
+                        s
+                    },
+                )
+            })
+            .collect();
+        // The newest attempt of each run; the Tests run names no tag and lists nowhere.
+        assert_eq!(
+            got,
+            vec![
+                ("v0.5.0-game8", "Release builds", "in progress"),
+                ("v0.5.0-game7", "Steam", "success"),
+                ("v0.5.0-game7", "Release builds", "success"),
+            ]
+        );
+        assert_eq!(a.builds[0].ended_text, "-");
+        assert_eq!(a.builds[2].started_text.len(), "11-11 00:16".len());
+        assert!(a.builds[2].url.ends_with("/runs/10"));
+        assert!(
+            a.released_text
+                .contains("; building v0.5.0-game8 (Release builds 10m"),
+            "{}",
+            a.released_text
+        );
+        // A newer builds read replaces the runs rather than adding to them.
+        r.with_builds(&b.rows);
+        assert_eq!(r.apps[0].builds.len(), 3);
+        assert_eq!(r.apps[0].released_text.matches("building").count(), 1);
+        // negative control: no ledger is no builds, and the cell names no build.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let b = builds::read(&paths, Some(join()), now.timestamp());
+        r.with_builds(&b.rows);
+        assert_eq!(r.apps[0].builds.len(), 0);
+        assert!(!r.apps[0].released_text.contains("building"));
+    }
+
+    #[test]
+    fn each_app_says_what_its_stage_asks_of_its_deploys() {
+        let row = |p: &str| {
+            format!(
+                r#"{{"project": "{p}", "id": "{p}-prod", "channel": "prod", "status": "ok",
+                  "pinned": {{"value": "v1"}}, "live": {{"value": "v1"}}}}"#
+            )
+        };
+        let raw = format!(
+            r#"{{"generated_epoch": 7, "rows": [{}, {}, {}, {}, {}],
+              "stages": {{"site": {{"stage": "draft", "rungs": ["prod"], "needs": []}},
+                "tool": {{"stage": "draft", "rungs": [], "needs": []}},
+                "new": {{"stage": null, "rungs": ["prod"], "needs": []}},
+                "game": {{"stage": "prod", "rungs": ["prod"],
+                  "needs": ["alpha", "beta"]}}}}}}"#,
+            row("site"),
+            row("tool"),
+            row("game"),
+            row("new"),
+            row("lone")
+        );
+        let r = read(&Fake(Ok(raw)));
+        let says = |p: &str| {
+            let a = r.apps.iter().find(|a| a.project == p).unwrap();
+            (a.stage.as_str(), a.stage_text.as_str(), a.stage_level)
+        };
+        // A draft deployed to prod is fine: a deploy is not the app being live.
+        assert_eq!(
+            says("site"),
+            ("draft", "draft: no deploy needed", Level::Ok)
+        );
+        assert_eq!(
+            says("tool"),
+            ("draft", "draft: no deploy needed", Level::Ok)
+        );
+        assert_eq!(
+            says("game"),
+            (
+                "prod",
+                "prod: no alpha or beta target deployed",
+                Level::Warn
+            )
+        );
+        assert_eq!(says("new"), ("", "none on the lab sheet", Level::Ok));
+        // No facts at all is a read that failed, never a quiet blank.
+        assert_eq!(says("lone"), ("", "not read", Level::Warn));
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn a_stage_the_collector_could_not_read_is_an_error_not_a_blank() {
+        let raw = r#"{"generated_epoch": 7, "rows": [], "stages": {},
+          "stages_error": "notes projects --stages printed nothing"}"#;
+        let r = read(&Fake(Ok(raw.into())));
+        assert_eq!(
+            r.errors,
+            ["release-state stages: notes projects --stages printed nothing"]
+        );
     }
 }

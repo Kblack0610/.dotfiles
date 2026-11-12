@@ -1,14 +1,17 @@
 //! The infra board's questions to Prometheus, asked once for both surfaces: the `hub`
 //! TUI's Infra tab (and Home's health line) and agent-web's Infra tab. Both read the `cc:*` recording rules (home-config
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
-//! Grafana's kb-command-center does, so none of them judges anything itself.
+//! Grafana's kb-command-center does, so none of them judges anything itself. Alertmanager is
+//! asked in the same gather (`alertmanager::read`), so the Alerts tab's rules ride this cadence.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
+use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
 use crate::run_detail::Rates;
@@ -21,19 +24,17 @@ const LOCAL_FRESH: &str =
 /// error instead of numbers: a board blanks rather than leave stale values up.
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
-    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|kpi_subject|vital)"}"#;
 
-/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
-/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
-pub const RATES_QUERY: &str =
-    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
+/// What CI time costs: each host's rate and basis and its registered slots, which
+/// `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
-        ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
         // runner rows may be missing.
@@ -55,16 +56,20 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
+        // Each host's emptiest real filesystem, free share: the NodeDisk* alerts' recording
+        // rule, keyed by host through cc:host_instance. A CI host with no row here (the AWS
+        // hosts, never scraped) has no disk reading at all, and the machines table says so.
+        ("disk", "min by (host) (device:node_filesystem_avail:ratio * on (instance) group_left (host) cc:host_instance)".into()),
         // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
         ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
-        // Done today: when runs finished, and which failed. An absent metric is an empty answer,
-        // so the tab says "no data" rather than an error until the exporters publish them.
+        // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
+        // absent metric is an empty answer, so the tab says "no data" rather than an error until
+        // the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
-        ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
@@ -74,6 +79,12 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
         ("rates", RATES_QUERY.into()),
+        // Each node's hostname, keyed by host: a runner or the governor can name a machine by
+        // its hostname (`cachyos-x8664-main`) where node_exporter names it `workstation`, so
+        // `aliases` joins the two.
+        ("uname", "group by (host, nodename) (node_uname_info * on (instance) group_left (host) cc:host_instance)".into()),
+        // When each node last booted, for the machines table's UP column.
+        ("boot", "max by (host) (node_boot_time_seconds * on (instance) group_left (host) cc:host_instance)".into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -85,9 +96,12 @@ pub const OPTIONAL: &[&str] = &[
     "runner_cores",
     "withheld",
     "power",
+    "disk",
     "governor",
     "job_usual",
     "rates",
+    "uname",
+    "boot",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -106,6 +120,17 @@ pub struct Infra {
     pub down: Vec<Series>,
     /// The CI runners board, built once here for both surfaces (`ci::build`).
     pub ci: Ci,
+    /// Every machine and pool, built once here for both surfaces (`machines::build`). agent-web
+    /// sends them as their tables' rows, so the board's JSON leaves them out.
+    #[serde(skip)]
+    pub machines: Vec<Machine>,
+    #[serde(skip)]
+    pub pools: Vec<Pool>,
+    /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
+    /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
+    /// leaves it out.
+    #[serde(skip)]
+    pub alertmanager: Option<Result<Vec<Firing>, String>>,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -124,6 +149,18 @@ fn grafana_base(url: &str) -> String {
 /// Ask every query at once (each is a curl with its own timeout) and keep what answered.
 /// Any required query failing, or no `cc:overall_status`, makes the whole answer an error.
 pub fn gather() -> Infra {
+    // Alertmanager is asked beside Prometheus, and even when Prometheus cannot be, since the
+    // Alerts tab shows each source's answer on its own.
+    let (am, mut out) = std::thread::scope(|s| {
+        let am = s.spawn(alertmanager::read);
+        let out = prometheus();
+        (am.join().unwrap_or_else(|_| Err("panicked".into())), out)
+    });
+    out.alertmanager = Some(am);
+    out
+}
+
+fn prometheus() -> Infra {
     let mut out = Infra {
         at: crate::jobs::now().max(0) as u64,
         grafana: grafana(),
@@ -160,7 +197,13 @@ pub fn gather() -> Infra {
     judge(&mut out, errors);
     out.down = out.runners_down().into_iter().cloned().collect();
     out.ci = ci::build(&out);
+    (out.machines, out.pools) = machines::build(&out);
     out
+}
+
+/// A machine's one name: `host` as `Infra::aliases` maps it, else as it is.
+pub fn host(alias: &HashMap<String, String>, host: &str) -> String {
+    alias.get(host).cloned().unwrap_or_else(|| host.to_string())
 }
 
 /// Set `ok` and `error` from the failed required queries, and fail an answer with no
@@ -194,6 +237,26 @@ impl Infra {
                 ..Default::default()
             },
         }
+    }
+
+    /// Hostname -> node name, for a machine whose runners or governor series carry its
+    /// hostname while node_exporter's `host` is another name (this workstation is
+    /// `cachyos-x8664-main` to its runner and `workstation` to Prometheus). Only a hostname one
+    /// node alone has: several Pis are all `raspberrypi`, and none of them is the other.
+    pub fn aliases(&self) -> HashMap<String, String> {
+        let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+        for s in self.get("uname") {
+            let (host, name) = (s.label("host"), s.label("nodename"));
+            if !host.is_empty() && !name.is_empty() && host != name {
+                by.entry(name).or_default().push(host);
+            }
+        }
+        let hosts: std::collections::HashSet<&str> =
+            self.get("uname").iter().map(|s| s.label("host")).collect();
+        by.into_iter()
+            .filter(|(name, h)| h.len() == 1 && !hosts.contains(name))
+            .map(|(name, h)| (name.to_string(), h[0].to_string()))
+            .collect()
     }
 
     /// One query's series, or none.
@@ -379,14 +442,11 @@ mod tests {
         let mut i = Infra::default();
         i.instant.insert(
             "rates",
-            vec![
-                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
-                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
-            ],
+            vec![cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0)],
         );
         let r = i.rates();
         assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
-        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        assert_eq!(r.error, None);
         let none = Infra {
             error: Some("cannot read prom".into()),
             ..Default::default()
@@ -409,9 +469,12 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
+                "disk",
                 "governor",
                 "job_usual",
-                "rates"
+                "rates",
+                "uname",
+                "boot"
             ]
         );
     }

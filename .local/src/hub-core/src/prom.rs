@@ -37,6 +37,9 @@ fn num(v: &Value) -> Option<f64> {
     v.as_str()?.parse::<f64>().ok().filter(|f| f.is_finite())
 }
 
+/// A range query's `(start, end, step)` in unix seconds.
+pub type Range = (i64, i64, i64);
+
 /// A Prometheus `/api/v1/query(_range)` answer as one Series per result, labels and all.
 pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
     if resp["status"] != "success" {
@@ -70,6 +73,30 @@ pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
         .collect())
 }
 
+/// A query of VictoriaMetrics, the long-term copy (2 years) Prometheus remote-writes to: an
+/// instant query, or a range `(start, end, step)` in unix seconds. VictoriaMetrics is
+/// ClusterIP-only, so it is read through `kube_proxy` (`CC_VM_SERVICE`, `monitoring/victoria-metrics:8428`).
+/// A range asks `nocache=1`: with its cache on, VictoriaMetrics rounds a long range's start and
+/// end down to the step, so a daily range ends at 00:00 UTC and today's results are missing.
+pub fn vm(
+    runner: &dyn crate::session_actions::Runner,
+    query: &str,
+    range: Option<Range>,
+) -> Result<Vec<Series>, String> {
+    use crate::kube_proxy::{encode, get};
+    let path = match range {
+        None => format!("/api/v1/query?query={}", encode(query)),
+        Some((start, end, step)) => format!(
+            "/api/v1/query_range?query={}&start={start}&end={end}&step={step}&nocache=1",
+            encode(query)
+        ),
+    };
+    let body = get(runner, "CC_VM_SERVICE", &path)?;
+    let v: Value =
+        serde_json::from_str(&body).map_err(|e| format!("VictoriaMetrics answer: {e}"))?;
+    flatten(&v)
+}
+
 /// A board setting: the environment wins, else its `KEY=value` line in
 /// `~/.config/command-center/env`, so a TUI started from tmux or waybar needs no wrapper.
 pub fn config(key: &str) -> Option<String> {
@@ -101,22 +128,26 @@ fn env_line(file: &str, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// `CC_PROM_URL`, or why it is missing.
-pub fn base() -> Result<String, String> {
-    config("CC_PROM_URL").ok_or_else(|| {
-        "CC_PROM_URL is not set: it comes from ~/.config/command-center/env".to_string()
-    })
+/// A board setting that must be set, or why it is not.
+pub fn required(key: &str) -> Result<String, String> {
+    config(key)
+        .ok_or_else(|| format!("{key} is not set: it comes from ~/.config/command-center/env"))
 }
 
-/// Ask `<base>/api/v1/<path>` (query or query_range) through curl.
-pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Series>, String> {
+/// `CC_PROM_URL`, or why it is missing.
+pub fn base() -> Result<String, String> {
+    required("CC_PROM_URL")
+}
+
+/// GET `<base><path>` with `params` through curl, as JSON. Prometheus and Alertmanager share it.
+pub fn get_json(base: &str, path: &str, params: &[(&str, String)]) -> Result<Value, String> {
     let mut cmd = Command::new("curl");
     cmd.args([
         "-sf",
         "-m",
         &std::env::var("PROM_TIMEOUT").unwrap_or_else(|_| QUERY_TIMEOUT_SECS.into()),
         "-G",
-        &format!("{base}/api/v1/{path}"),
+        &format!("{base}{path}"),
     ]);
     for (k, v) in params {
         cmd.arg("--data-urlencode").arg(format!("{k}={v}"));
@@ -125,8 +156,12 @@ pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Se
     if !out.status.success() {
         return Err(format!("cannot read {base}"));
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))?;
-    flatten(&v)
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))
+}
+
+/// Ask `<base>/api/v1/<path>` (query or query_range) through curl.
+pub fn query(base: &str, path: &str, params: &[(&str, String)]) -> Result<Vec<Series>, String> {
+    flatten(&get_json(base, &format!("/api/v1/{path}"), params)?)
 }
 
 /// One instant query.

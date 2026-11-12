@@ -99,7 +99,7 @@ mod tests {
         let wide = text(&st, false, false, 140);
         assert_eq!(
             wide,
-            ["FLOW  inbox - | board - | queued - | running - | on a PR - | needs you - | done 24h - | drain -"]
+            ["FLOW  inbox - | board - | up next - | running - | on a PR - | needs you - | done 24h - | drain -"]
         );
         let narrow = text(&st, false, false, 40);
         assert!(

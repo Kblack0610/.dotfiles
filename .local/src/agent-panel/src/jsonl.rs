@@ -878,7 +878,11 @@ fn last_usage(text: &str) -> (u64, String) {
         .unwrap_or_default()
 }
 
-/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the plan
+/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), unless the
+/// session later landed a phase against another plan (`agent-land --plan`, `plans_landed`): it
+/// works the plan it lands, as when it copies its plan-mode file under a name of its own
+/// (2026-11-11, unity-core-playground-agent-82 landed every phase of a copy and read the 2/4
+/// plan-mode file, ar-201). Only a landing moves it, so editing another plan does not. Else the plan
 /// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
 /// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
 /// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
@@ -886,13 +890,40 @@ fn last_usage(text: &str) -> (u64, String) {
 /// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
+    const REATTACHED: &str = "\"type\":\"plan_file_reference\"";
+    let plans = crate::session::home().join(".claude/plans");
     if let Some(i) = text.rfind(KEY) {
-        let rest = &text[i + KEY.len()..];
-        if let Some(end) = rest.find('"') {
-            return rest[..end].to_string();
+        // A compaction re-attaches the plan-mode file (a plan_file_reference attachment): that
+        // is not the session choosing it again, so landings count from the last real entry.
+        let line_of = |at: usize| {
+            let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
+            &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
+        };
+        let chosen = text
+            .rmatch_indices(KEY)
+            .map(|(at, _)| at)
+            .find(|&at| !line_of(at).contains(REATTACHED))
+            .unwrap_or(i);
+        let rest = &text[chosen + KEY.len()..];
+        let mode = rest.find('"').map(|end| &rest[..end]);
+        // The same file through another account's plans dir (a link to ~/.claude/plans) keeps
+        // the path plan mode wrote.
+        // agent-land is rare in a transcript, so the per-line parse runs only when it is there.
+        let after = &text[chosen..];
+        let landed = if after.contains("agent-land") {
+            plans_landed(after).pop()
+        } else {
+            None
+        };
+        if let Some(name) = landed {
+            if mode.and_then(|m| m.rsplit('/').next()) != Some(name.as_str()) {
+                return plans.join(name).to_string_lossy().into_owned();
+            }
+        }
+        if let Some(m) = mode {
+            return m.to_string();
         }
     }
-    let plans = crate::session::home().join(".claude/plans");
     if let Some(name) = plans_written(text).pop() {
         return plans.join(name).to_string_lossy().into_owned();
     }
@@ -926,8 +957,17 @@ fn plan_file(text: &str) -> String {
 }
 
 /// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
-/// file_path, or a Bash command that writes one (see `bash_plan_writes`).
+/// file_path, or a Bash command that writes one (see `bash_plan_refs`).
 fn plans_written(text: &str) -> Vec<String> {
+    plans_touched(text, false)
+}
+
+/// The plans the session's own `agent-land --plan` calls named, oldest first.
+fn plans_landed(text: &str) -> Vec<String> {
+    plans_touched(text, true)
+}
+
+fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
     let mut out = Vec::new();
     for v in text
         .lines()
@@ -948,10 +988,10 @@ fn plans_written(text: &str) -> Vec<String> {
                     .unwrap_or("")
             };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                "Edit" | "Write" | "MultiEdit" => {
+                "Edit" | "Write" | "MultiEdit" if !lands_only => {
                     out.extend(plan_name(input("file_path")).map(str::to_string))
                 }
-                "Bash" => out.extend(bash_plan_writes(input("command"))),
+                "Bash" => out.extend(bash_plan_refs(input("command"), lands_only)),
                 _ => {}
             }
         }
@@ -961,9 +1001,13 @@ fn plans_written(text: &str) -> Vec<String> {
 
 /// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
 /// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
-/// to another command is not writing it.
-fn bash_plan_writes(cmd: &str) -> Vec<String> {
+/// to another command is not writing it. With `lands_only`, only the agent-land `--plan` ones.
+fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
+    if !cmd.contains("/plans/") {
+        return Vec::new();
+    }
+    let cmd = &without_heredoc_bodies(cmd);
     let mut out = Vec::new();
     for (i, _) in cmd.match_indices("/plans/") {
         let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
@@ -981,11 +1025,7 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
             .strip_suffix(['\'', '"'])
             .unwrap_or(&cmd[..start])
             .trim_end();
-        let words: Vec<&str> = before[segment_start(before)..]
-            .trim_start_matches([' ', '('])
-            .split_whitespace()
-            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
-            .collect();
+        let words = command_words(&before[segment_start(before)..]);
         let cmd_is = |name: &str| {
             words
                 .first()
@@ -994,12 +1034,113 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
         let sed_in_place = |w: &&str| {
             *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'))
         };
-        if before.ends_with('>')
-            || (cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan=")))
-            || cmd_is("tee")
-            || (cmd_is("sed") && words.iter().any(sed_in_place))
+        let lands =
+            cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan="));
+        if lands
+            || !lands_only
+                && (before.ends_with('>')
+                    || cmd_is("tee")
+                    || (cmd_is("sed") && words.iter().any(sed_in_place)))
         {
             out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The words of one shell command from its name on: leading `VAR=x` assignments and the
+/// wrappers that run the command after them (`timeout`, `env`, `nice`, `nohup`, with their
+/// options, an option's argument and timeout's duration) are dropped.
+fn command_words(segment: &str) -> Vec<&str> {
+    const WRAPPERS: &[&str] = &["timeout", "env", "nice", "nohup"];
+    // The wrapper options that take the next word: env -u/-C/-S, timeout -s/-k, nice -n.
+    const TAKES_ARG: &[&str] = &["-u", "-C", "-S", "-s", "-k", "-n"];
+    let mut words = segment
+        .trim_start_matches([' ', '('])
+        .split_whitespace()
+        .peekable();
+    while words
+        .next_if(|w| w.contains('=') && !w.starts_with('-'))
+        .is_some()
+    {}
+    while words.next_if(|w| WRAPPERS.contains(w)).is_some() {
+        while let Some(w) = words.next_if(|w| {
+            w.starts_with('-')
+                || w.starts_with(|c: char| c.is_ascii_digit())
+                || (w.contains('=') && !w.starts_with('-'))
+        }) {
+            if TAKES_ARG.contains(&w) {
+                words.next();
+            }
+        }
+    }
+    words.collect()
+}
+
+/// The command with each heredoc body dropped: its lines are data fed to a command (a script, a
+/// file's text), not shell, so a plan path in them is no write or landing. The marker line stays,
+/// with any redirect on it. A body whose terminator never comes is kept, so a `<<` the scan
+/// misreads cannot hide the rest of the command.
+fn without_heredoc_bodies(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut pending: std::collections::VecDeque<(String, bool)> = Default::default();
+    let mut body = String::new();
+    for line in cmd.split_inclusive('\n') {
+        if let Some((word, dash)) = pending.front() {
+            let text = line.trim_end_matches(['\n', '\r']);
+            let text = if *dash {
+                text.trim_start_matches('\t')
+            } else {
+                text
+            };
+            if text == word {
+                pending.pop_front();
+                if pending.is_empty() {
+                    body.clear();
+                }
+            } else {
+                body.push_str(line);
+            }
+            continue;
+        }
+        out.push_str(line);
+        pending.extend(heredoc_words(line));
+    }
+    out.push_str(&body);
+    out
+}
+
+/// The terminators of the heredocs a line opens, in order (`<<EOF`, `<<-'EOF'`, `<< "EOF"`,
+/// `<<\EOF`), each with whether it is `<<-` (tab-indented terminator). A `<<` inside quotes, a
+/// `<<<` here-string and a shift (`1<<3`) open none.
+fn heredoc_words(line: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let mut quote = None;
+    let mut skip_to = 0;
+    for (i, c) in line.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if line[i..].starts_with("<<<") => skip_to = i + 3,
+            None if line[i..].starts_with("<<") => {
+                skip_to = i + 2;
+                let rest = &line[i + 2..];
+                let dash = rest.starts_with('-');
+                let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+                let word: String = rest
+                    .trim_start_matches(['\'', '"', '\\'])
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                    out.push((word, dash));
+                }
+            }
+            None => {}
         }
     }
     out
@@ -1811,6 +1952,8 @@ mod tests {
                 .map(|(w, _)| *w)
         };
         assert!(kind("scripts/test/ci-gate.sh --pr 1") == Some(Wait::Gate));
+        // The playground's whole-nightly runner, a phase's proof run (2026-11-12 agent-6 read STALLED on it).
+        assert!(kind("agentctl-playground-night --only test > night.log 2>&1") == Some(Wait::Test));
         assert!(kind("gh pr checks 12 --watch") == Some(Wait::Gate));
         assert!(kind("timeout -k 60 10800 bash Logs/land3.sh 2>&1 | tail -25") == Some(Wait::Gate));
         assert!(kind("scripts/gate.sh && agent-land 12 --item x") == Some(Wait::Gate));
@@ -2184,6 +2327,46 @@ mod tests {
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
 
+        // A plan-mode session that copied its plan and landed against the copy works the copy
+        // (ar-201), and a compaction re-attaching the plan-mode file does not undo that; editing
+        // another plan after plan mode does not move it.
+        let mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/mode-file.md"}"#;
+        let copied = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/mode-file.md ~/.claude/plans/copy.md && agent-land 9 --item x --plan ~/.claude/plans/copy.md --phase 1"}}]}}"#;
+        let reattached = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude/plans/mode-file.md"}}"#;
+        let edited = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/sibling.md","old_string":"","new_string":""}}]}}"#;
+        let other_mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/other-mode.md"}"#;
+        for (name, lines, want) in [
+            (
+                "reattached-older",
+                vec![mode, other_mode, reattached],
+                "/h/.claude/plans/other-mode.md",
+            ),
+            ("landed-copy", vec![mode, copied], "/.claude/plans/copy.md"),
+            (
+                "compacted",
+                vec![mode, copied, reattached],
+                "/.claude/plans/copy.md",
+            ),
+            (
+                "landed-then-mode",
+                vec![copied, mode],
+                "/h/.claude/plans/mode-file.md",
+            ),
+            (
+                "edited-sibling",
+                vec![mode, edited],
+                "/h/.claude/plans/mode-file.md",
+            ),
+        ] {
+            let p = tmpfile(name, &lines);
+            assert!(
+                fleet_info(&p).plan_file.ends_with(want),
+                "{name}: {}",
+                fleet_info(&p).plan_file
+            );
+            fs::remove_file(&p).ok();
+        }
+
         // Named only there, the session has no plan of its own: not someone else's.
         let p = tmpfile(
             "preflight-only",
@@ -2252,14 +2435,61 @@ mod tests {
             ),
             ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
             ("cat > ~/notes/plans/a.md", vec![]),
+            // A wrapper runs the command after it; a heredoc body is data, its marker line is not.
+            (
+                "timeout 590 agent-land 9 --item x --plan ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cd ~/w; env A=1 nice -n 5 agent-land 9 --plan=~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "env -u FOO timeout -s KILL 5 agent-land 9 --plan ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            ("command -v agent-land --plan ~/.claude/plans/a.md", vec![]),
+            ("-x agent-land 9 --plan ~/.claude/plans/a.md", vec![]),
+            (
+                "cd ~/w; python3 - <<'EOF'\ns = \"x && agent-land 9 --plan ~/.claude/plans/b.md\"\nEOF\ngit status",
+                vec![],
+            ),
+            (
+                "cat > ~/.claude/plans/a.md <<-\"END\"\necho y > ~/.claude/plans/b.md\nEND\necho z >> ~/.claude/plans/c.md",
+                vec!["a.md", "c.md"],
+            ),
+            (
+                "jq . <<<x\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "python3 -c \"print(1<<3)\"\necho \"a <<EOF\"\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cat <<\\EOF\nagent-land 9 --plan ~/.claude/plans/b.md\nEOF\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "paste - - <<A 3<<B\necho y > ~/.claude/plans/b.md\nA\necho z > ~/.claude/plans/c.md\nB\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cat <<EOF\n  EOF\necho y > ~/.claude/plans/b.md\nEOF",
+                vec![],
+            ),
+            (
+                "echo \u{e9}\u{2014} <<EOF\necho y > ~/.claude/plans/b.md\nEOF",
+                vec![],
+            ),
         ] {
-            assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
+            assert_eq!(bash_plan_refs(cmd, false), want, "{cmd}");
         }
         let abs = format!(
             "cat > {}/.claude/plans/a.md",
             crate::session::home().display()
         );
-        assert_eq!(bash_plan_writes(&abs), ["a.md"]);
+        assert_eq!(bash_plan_refs(&abs, false), ["a.md"]);
     }
 
     #[test]

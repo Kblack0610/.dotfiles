@@ -16,7 +16,7 @@ A red is a watch tripped, a runner failed, a unit failed, or an error signature 
 
 Use it for one red, from evidence to a merged fix or a stated reason there is no fix. Started by a `red` queue item, or by a human asking why something tripped. A session with no red item of its own, asked about many tripped watches at once, coordinates them instead (section 7); a session holding a `red` item fixes that one red.
 
-Out of scope: why CI keeps failing across runs (`ci-failures`), the red checks on one PR (`/my:fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
+Out of scope: why CI keeps failing across runs (`ci-failures`), the red checks on one PR (`fix-ci`), the playground nightly (`playground-nightly-fix`, named by its route), adding or changing a watch (`sentinel`), and spend or pace trips, which are the human's decision (`alert` route).
 
 ## 1. Read the evidence
 
@@ -27,8 +27,8 @@ Start from what the red wrote down, not from the row title, which stays stable o
 | Watch | `check(watch): <name> tripped` | `~/.local/state/watch-companion/<name>.out` (redacted probe tail), `watch-companion-loop list --long <name>`, and the `what`, `why`, `where` and `action` fields of `~/.agent/watches/<name>.yaml` |
 | Runner | `fix(runner): <name> is` | `~/.config/agentctl/agents/<name>.conf`, then the `fleet-runners` skill |
 | Unit | `fix(unit): <name> failed` | `systemctl --user status <name>`, `journalctl --user -u <name> -n 50` |
-| Log error | `fix(logs): <name> error <sig>:` | the sample on the row, and that runner's `~/.local/log/<name>.log` |
-| Cleanup hold | `fix(hold): <name> went red` | the row names each cleanup merge the red could be (item, PR, SHA) and what went red: the failed bats files of main's first red run, or fleet-liveness, whose evidence is its watch row above |
+| Log error | `fix(logs): <name> error <sig>:` | the sample on the row, and that runner's `~/.local/state/agentctl/<name>.stderr.log`, each run's byte range in `runs.jsonl` `err` (what triage reads) |
+| Cleanup hold | `fix(hold): <name> went red` | the row names each cleanup merge the red could be (item, PR, SHA) and what went red: the failed bats files of main's first red run, or fleet-liveness, whose evidence is its watch row above; a liveness hold names only merges that changed the conf or a COMMAND file of a runner its probe names, so a red from a shared lib or another repo files no hold row, only its runner row |
 
 A watch's `action` field is the owner's own first step: do that before inventing one. If the route line names a skill, read it now at `~/.claude/skills/<skill>/SKILL.md`. It knows this cause better than this page does.
 
@@ -56,7 +56,7 @@ Never touch auth tokens, logs, sqlite or other runtime state, and never restart 
 
 ## 5. Prove it, review it, merge it
 
-Re-run the same probe or check from step 2 and put the before and after in the PR body. A fix that only takes effect after a merge or a deploy says what to re-run then; for a watch that is `watch-companion-loop recheck <name>` once it is live (merged and pulled into the main checkout, since stow links point there), so the red clears that minute and not on the watch's interval.
+Re-run the same probe or check from step 2 and put the before and after in the PR body. A fix that only takes effect after a merge or a deploy says what to re-run then; for a watch that is `watch-companion-loop resolve <name> --pr <owner/repo#N>` once it is live (merged and pulled into the main checkout, since stow links point there): it records the merge as the watch's watermark, so a windowed probe (a 24h or 7d count) counts only events after the fix, and rechecks, so the red clears that minute and not when the window ages out. A new event after the merge still trips it.
 
 A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet red too (`~/.config/fleet-dispatch/policy.md`). Nobody watches it merge, so it gets one more check than other work:
 
@@ -82,7 +82,7 @@ Only for a session with no `red` item of its own. The coordinator fixes nothing 
 2. **One running owner each.** Find the red's item first: the triage item (`check(watch): <name> tripped`) or any item in `~/.agent/queue/{queued,running,waiting,review}` naming the watch. Queue `red-<watch>` (`--tags red`, the `.out` evidence in the brief) only when none exists. A queued item that has not started gets `fleet-dispatch start --item <slug>`. The playground nightly is one row, owned by `playground-nightly-fix`. A red with no item means triage missed it: queue that routing fix too (`triage-routes`, `fleet-bench triage`).
 3. **An ETA per owner, written down.** Keep `~/.claude/plans/red-coordinator-<date>.md` with one row per red: owner, ETA, basis, Scored. The basis is measured: the start-to-finish times of recently closed `red` items in `~/.agent/queue/done/`, plus one probe interval, plus the run time of the CI run that proves it. `fleet-bench eta` is sized for plan phases, not red fixes. An item not yet started says "after start" with the measured duration. A red that waits outside the fleet (a quota reset, an upstream release, an ask) names what it waits for and when.
 4. **Hear each landing, never poll.** One `Monitor` running `inotifywait -m -r -e close_write,moved_to` on the state dir and on `~/.agent/queue/{review,done,waiting}` (`done/` has dated subdirectories, hence `-r`), filtered to `*.state` files whose first word changed and to the set's item slugs. Re-arm it when it expires.
-5. **Check each closed item against its probe.** Run `watch-companion-loop recheck <watch>` and read the printed state (exit 75 means another pass held the lock: run it again). Still `TRIP` means the fix missed: queue `red-<watch>-2` with the merged PR, the fresh evidence and "done = the recheck prints OK", and start it. After two misses, read the evidence yourself and put a diagnosis in the next brief.
+5. **Check each closed item against its probe.** Run `watch-companion-loop resolve <watch> --pr <its merged PR>` (the same watermark its fix session wrote, then a recheck) and read the printed state (exit 75 means another pass held the lock: run it again). Still `TRIP` means the fix missed: queue `red-<watch>-2` with the merged PR, the fresh evidence and "done = the recheck prints OK", and start it. After two misses, read the evidence yourself and put a diagnosis in the next brief.
 6. **Score and report.** At each landing fill the Scored column (cleared at, or late by how long) and tell the human what cleared, what slipped and why, and the new ETA. Report a slip when it happens.
 7. **Finish.** The coordinator winds down when every red reads OK or is parked: waiting on a named ask, reset or upstream release, with its date in the plan. Parked reds stay with their owners.
 

@@ -26,9 +26,9 @@ _test_pick_names() {
 # changed, or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`); a change to the shared harness (helpers, fixtures, vendor,
-# Makefile) picks every file.
+# Makefile, run-bats.sh) picks every file.
 test_picked() {
-  grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/Makefile$' <<<"$1" && return 0
+  grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
   grep -qxF "$2" <<<"$1" && return 0
   local text rel inc new more seen=$'\n'
   text="$(cat)" new=$text

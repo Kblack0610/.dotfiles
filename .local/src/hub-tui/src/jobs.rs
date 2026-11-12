@@ -11,8 +11,8 @@ use crate::fit::{cell, Cell, Table};
 use crate::fmt::{clock, dur, Palette};
 
 /// `Job::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const HEADER: [&str; 7] = [
-    "STATE", "SOURCE", "NAME", "STARTED", "TOOK", "RESULT", "DETAIL",
+const HEADER: [&str; 8] = [
+    "STATE", "SOURCE", "NAME", "STARTED", "TOOK", "RESULT", "HOST", "DETAIL",
 ];
 
 /// The log of one row, read in a worker. `back` counts lines up from the end: 0 follows the tail.
@@ -91,6 +91,7 @@ impl JobsView {
             p.dim(),
         ));
         let mut out = vec![Line::from(spans)];
+        out.extend(DataTable::legend::<Job>(p, 0));
         if !jobs.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", jobs.errors.join("; ")),
@@ -118,11 +119,11 @@ impl JobsView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![0, 2, 3, 4, 5, 1],
-            flex: Some(6),
+            keep: vec![0, 2, 3, 4, 5, 1, 6],
+            flex: Some(7),
             flexmin: 10,
             right: vec![4],
-            cap: vec![(2, 40), (5, 12)],
+            cap: vec![(2, 40), (5, 12), (6, 16)],
             mark: self.table.mark::<Job>(),
             ..Default::default()
         }
@@ -137,7 +138,7 @@ impl JobsView {
 fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
     let state = match j.state {
         State::Running => cell("run", p.good()),
-        State::Queued => cell("queue", p.warn()),
+        State::Queued => cell("waiting", p.warn()),
         State::Done => "done".into(),
     };
     let name = if j.runs > 1 {
@@ -168,6 +169,11 @@ fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
         j.started.map_or("-".into(), |t| clock(t, now)).into(),
         took.into(),
         result,
+        if j.host.is_empty() {
+            "-".into()
+        } else {
+            j.host.clone().into()
+        },
         if j.detail.is_empty() {
             "-".into()
         } else {
@@ -286,7 +292,7 @@ mod tests {
         );
         assert!(rows
             .iter()
-            .any(|r| r.contains("queue unity platform / e2e") && r.contains("wait 1m")));
+            .any(|r| r.contains("waiting unity platform / e2e") && r.contains("wait 1m")));
         assert!(rows
             .iter()
             .any(|r| r.contains("agentctl dream x3") && r.contains("1m success")));
@@ -356,11 +362,15 @@ mod tests {
             .map(plain)
             .collect();
         assert!(
-            st[0].starts_with("all 4  running 1  queued 1  done 2  failed 1"),
+            st[0].starts_with("all 4  running 1  waiting 1  done 2  failed 1"),
             "{st:?}"
         );
         assert!(st[0].ends_with("4 of 4 (last 1d0h)"), "{st:?}");
-        assert_eq!(st[1], "unread: k8s: prometheus down");
+        assert!(
+            st[1].starts_with("waiting: the job has not started"),
+            "{st:?}"
+        );
+        assert_eq!(st[2], "unread: k8s: prometheus down");
     }
 
     #[test]

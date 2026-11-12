@@ -1,8 +1,7 @@
 //! `notes inbox` — the capture → triage → drain loop for `~/.notes/inbox`.
 //!
 //! The inbox holds *dated human/agent captures only* (`/remember` writes
-//! `inbox/<date>.md`, `/daily:analysis` writes `inbox/<date>-analysis.md`,
-//! and `notes inbox add` appends from the terminal). Telemetry/runtime state
+//! `inbox/<date>.md`, and `notes inbox add` appends from the terminal). Telemetry/runtime state
 //! never belongs here — that lives under `~/.agent` or the XDG cache.
 //!
 //! - `list` (default) is the triage view: pending captures oldest-first.

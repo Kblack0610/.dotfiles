@@ -551,6 +551,23 @@ fake_proc() {
   assert_output --regexp '^orphan'
 }
 
+@test "classify: a CI pool job under ci.slice is ci, by runner slice, not an orphan (ar-1652)" {
+  export FLEET_PROC="$BATS_TEST_TMPDIR/proc"
+  # a docker-run Unity job: containerd-shim reparented to init, so the parent chain says nothing
+  fake_proc 90 1 containerd-shim "/ci.slice/ci-unity.slice/ci-unity-2.slice/docker-f303.scope"
+  fake_proc 91 90 Unity "/ci.slice/ci-unity.slice/ci-unity-2.slice/docker-f303.scope"
+  run classify 91
+  assert_output "$(printf 'ci\tci-unity-2.slice\t-')"
+  # a scope straight under ci.slice names the slice itself
+  fake_proc 95 1 dockerd-job "/ci.slice/docker-10f3.scope"
+  run classify 95
+  assert_output "$(printf 'ci\tci.slice\t-')"
+  # the same chain outside ci.slice is still an orphan
+  fake_proc 99 1 Unity "/system.slice/docker-abcd.scope"
+  run classify 99
+  assert_output --regexp '^orphan'
+}
+
 # rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and
 # classify with a fixed answer, so the selection is pinned without a hot machine.
 rows_with() {
@@ -615,4 +632,84 @@ rows_with() {
   assert_line --regexp '^60 +0\.5 '
   refute_output --regexp '^(50|51) '
   [ "${#lines[@]}" -eq 2 ]
+}
+
+# --- gate_line: the gate's throughput on one line, from the slots and the run ledger -----
+# gate_ledger: a worktree "wt-a" on branch feat/a (unmerged) with 5 runs in the last 2h, "wt-b"
+# on branch feat/b (squash-merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a killed run.
+gate_ledger() {
+  local now i; now="$(date +%s)"
+  WORKTREE_ROOT="$BATS_TEST_TMPDIR/worktrees"
+  local up="$BATS_TEST_TMPDIR/up"
+  git init -q -b main "$up"; git -C "$up" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git clone -q "$up" "$WORKTREE_ROOT/wt-a"; git -C "$WORKTREE_ROOT/wt-a" checkout -q -b feat/a
+  echo wip > "$WORKTREE_ROOT/wt-a/g"; git -C "$WORKTREE_ROOT/wt-a" add g
+  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q -m wip
+  git clone -q "$up" "$WORKTREE_ROOT/wt-b"; git -C "$WORKTREE_ROOT/wt-b" checkout -q -b feat/b
+  echo work > "$WORKTREE_ROOT/wt-b/f"; git -C "$WORKTREE_ROOT/wt-b" add f
+  git -C "$WORKTREE_ROOT/wt-b" -c user.name=t -c user.email=t@t commit -q -m "wip b"
+  echo work > "$up/f"; git -C "$up" add f; git -C "$up" -c user.name=t -c user.email=t@t commit -q -m "squash b (#1)"
+  git -C "$WORKTREE_ROOT/wt-b" fetch -q origin
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"; : > "$RUN_LEDGER"
+  for i in 1 2 3 4 5; do
+    printf '%s\t%s\t%s\tPlayMode\twt-a\tfeat/a\tr\n' $((now - 100 * i)) $((now - 100 * i - 60)) fail >> "$RUN_LEDGER"
+    printf '%s\t%s\t%s\tPlayMode\twt-b\tfeat/b\tr\n' $((now - 100 * i)) $((now - 100 * i - 60)) pass >> "$RUN_LEDGER"
+  done
+  for i in 1 2 3 4; do
+    printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 50 * i)) $((now - 50 * i - 60)) pass >> "$RUN_LEDGER"
+  done
+  printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 10800)) $((now - 10860)) pass >> "$RUN_LEDGER"
+  printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 20)) $((now - 80)) killed >> "$RUN_LEDGER"
+}
+
+@test "gate_line: slots busy and queued, the last 2h by result, and branches with 5+ runs and no merge" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  run gate_line
+  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+}
+
+@test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  rm -rf "$WORKTREE_ROOT/wt-a"
+  run gate_line
+  refute_output --partial 'not merged'
+  RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
+  run gate_line
+  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 0 fail, 0 pass"
+}
+
+@test "gate_line: a branch the worktree no longer has is not named, a conflicting one is" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  git -C "$WORKTREE_ROOT/wt-a" checkout -q -b other
+  git -C "$WORKTREE_ROOT/wt-a" branch -q -D feat/a
+  run gate_line
+  refute_output --partial 'not merged'
+  git -C "$WORKTREE_ROOT/wt-a" checkout -q -b feat/a
+  echo mine > "$WORKTREE_ROOT/wt-a/f"; git -C "$WORKTREE_ROOT/wt-a" add f
+  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q -m clash
+  git -C "$WORKTREE_ROOT/wt-a" fetch -q origin
+  git -C "$WORKTREE_ROOT/wt-a" update-ref refs/remotes/origin/main FETCH_HEAD
+  run gate_line
+  assert_output --partial 'not merged: feat/a x5'
+}
+
+@test "gate_line: no capacity file prints no gate line, and --gate runs it from main" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  run main --gate
+  assert_output --partial "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  rm "$SLOT_DIR/capacity"
+  run main --gate
+  assert_output ""
 }

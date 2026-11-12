@@ -17,14 +17,14 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part(), "bld-head": part(), "bld-facets": part(), "bld-chips": part(), "bld-body": part(), "tst-head": part(), "tst-facets": part(), "tst-chips": part(), "tst-body": part() };
+const parts = { "rel-head": part(), "rel-facets": part(), "rel-tiles": part(), "rel-body": part(), "rel-tail": part(), "relrun-head": part(), "relrun-facets": part(), "relrun-tiles": part(), "relrun-body": part() };
 const doc = { body: el(), getElementById: (id) => (id === "releases" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let body = {};
+let cl = {};
 let builds = {};
-let tests = {};
-let cases = {};
 let detail = {};
+let status = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -38,11 +38,11 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js", "releases.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx);
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js", "ci.js", "schedules.js", "releases.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx);
 const run = (src) => vm.runInContext(src, ctx);
 const relst = run("relst");
 const settled = () => new Promise((r) => setImmediate(r));
@@ -51,7 +51,7 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "", sort: "", dir: "", total: 2, shown: 2,
   states: [{ name: "all", n: 2 }, { name: "attention", n: 1 }, { name: "ok", n: 1 }],
-  columns: ["project", "live", "status", "channels", "last_deploy"].map(col),
+  columns: ["project", "stage", "live", "status", "channels", "released", "last_deploy"].map(col),
   facets: [],
 };
 const NOW = () => Math.round(Date.now() / 1e3);
@@ -72,12 +72,22 @@ const unread = {
   pinned_text: "-", live_text: "?", telemetry: [], drift_since: null, deploys: { source: "o/r", error: null, prev: null, last: null, history: [] },
 };
 const binks = {
-  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "2: 1 drift, 1 not read", unread: 1,
+  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
+  stage: "alpha", stage_text: "alpha: no alpha target deployed", stage_level: "warn", coverage_text: "prev 1/1, deployed 1/2 (1 none declared)",
+  builds: [
+    { tag: "binks-v3", workflow: "Release builds", state_text: "in progress 12m", level: "ok", live: true, started_text: "11-11 16:20", ended_text: "-", url: "https://github.com/o/binks/actions/runs/30" },
+    { tag: "binks-v2", workflow: "Steam (binks)", state_text: "cancelled", level: "ok", live: false, started_text: "11-05 10:00", ended_text: "11-05 10:01", url: "javascript:alert(1)" },
+  ],
+  line: "release", released_text: "v2 11-05", history: [
+    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "none merged", rows: [], rows_text: "none merged" },
+  ],
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
-  gaps: "1 channel not read: steam GetAppBetas failed (1)", rows: [binks], ...o,
+  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks],
+  blanks: ["none declared", "not recorded", "manual", "not read", "none merged"], ...o,
 });
 
 const target = (attrs, tr = null, ch = null) => ({
@@ -85,13 +95,25 @@ const target = (attrs, tr = null, ch = null) => ({
   closest: (sel) => (sel === "tr.jr" ? tr : sel === "tr.rc" ? ch : sel === "[data-ts]" && "ts" in attrs ? { dataset: attrs } : null),
 });
 const show = (d = data()) => {
-  run("st.tab = 'releases'; relCh = null");
+  run("st.tab = 'releases'; st.page = ''; relCh = null");
   Object.assign(relst, { data: d, err: null, sel: null });
   Object.assign(run("relcl"), { project: null, data: null, err: null });
   run("relst.render()");
 };
 const APP = { dataset: { key: "binks" } };
 const clickApp = () => fire("click", { type: "click", target: target({}, APP) });
+// The app's page as the router opens it (`#releases/apps/<name>`): the read asks for the app,
+// whose changelog is read once it lands.
+const PAGE = { app: binks, app_links: { project: "#projects/binks" } };
+const page = async (d = data(PAGE), name = "binks", log = changelog()) => {
+  run(`st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/${name}'; relCh = null; relOpened = null`);
+  Object.assign(run("relcl"), { project: null, data: null, err: null });
+  // The server echoes the app it was asked for (releases::Shown::asked).
+  [body, cl] = [{ asked: name, ...d }, log];
+  asked.length = 0;
+  await relst.refresh();
+  await settled();
+};
 const clickChannel = (id) => fire("click", { type: "click", target: target({}, null, { dataset: { ch: `binks|${id}` } }) });
 
 test("the head asks the tab's question, counts the apps, names what it could not read and says the snapshot's age", () => {
@@ -100,6 +122,7 @@ test("the head asks the tab's question, counts the apps, names what it could not
   assert.match(h, /What is building, and what is live where\?/);
   assert.match(h, /2 apps: 1 drift, 1 ok/);
   assert.match(h, /<div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
+  assert.match(h, /<div class="cline muted">coverage: prev 2\/2, deployed 1\/2<\/div>/);
   assert.match(h, /refreshed .* \(2m ago\)/);
   assert.doesNotMatch(h, /class="warn">refreshed/);
 });
@@ -116,36 +139,101 @@ test("no snapshot names the error instead of drawing a stale table", () => {
   assert.match(box.innerHTML, /No apps\./);
 });
 
-test("an app is one row: what is live, its word, its channels amber when one was not read, its last deploy", () => {
-  show();
+
+test("an app is one row: its stage in its own column, what is deployed, its channels amber when one was not read, blanks dimmed", () => {
+  show(data({ table: { ...table, links: [{ project: "#projects/binks" }] } }));
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td>binks<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">2: 1 drift, 1 not read<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /data-label="stage"><button class="thsort" data-tsort="stage"/, "the stage sorts and filters as a column");
+  assert.match(b, /data-label="deployed"><button class="thsort" data-tsort="live"/, "a deploy is not the app being live");
+  assert.match(b, /placeholder="search, or stage:alpha channel:prod status:drift"/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
-  assert.doesNotMatch(b, /binks-prod/, "channels wait for the app to open");
+  assert.doesNotMatch(b, /binks-prod/, "channels wait for the app's page");
+  show(data({ rows: [{ ...binks, stage: "", stage_level: "ok", released_text: "none declared", last_deploy_text: "not recorded", deploy_level: "" }] }));
+  assert.match(box.innerHTML, /<td>binks<\/td><td class="muted" title="alpha: no alpha target deployed">-<\/td>/, "no stage, a dash; no link, plain text");
+  assert.match(box.innerHTML, /<td class="muted">none declared<\/td><td class="muted">not recorded<\/td>/);
 });
 
-test("opening an app lists its headline env's channels, the other envs in a fold that starts open, and clicking again closes it", () => {
+test("a click on an app goes to its page, keeping the view for the way back; its name goes to its Projects card", () => {
   show();
-  body = changelog();
+  run("st.views.releases = 's=attention'");
+  loc.hash = "";
   clickApp();
+  assert.equal(loc.hash, "#releases/apps/binks?s=attention");
+  assert.doesNotMatch(box.innerHTML, /binks-prod/, "nothing opens inline");
+  loc.hash = "";
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "a" ? {} : sel === "tr.jr" ? APP : null) } });
+  assert.equal(loc.hash, "", "the name's link is the browser's");
+  run("st.views.releases = ''");
+});
+
+test("the router opens an app's page on the Apps inner tab", () => {
+  const r = run("route('#releases/apps/binks?s=ok')");
+  assert.deepEqual([r.tab, r.arg, r.page, r.query], ["releases", "apps", "apps/binks", "s=ok"]);
+});
+
+test("an app's page reads its app, heads it with the way back and its Projects card, and replaces the table", async () => {
+  run("st.views.releases = 's=attention'");
+  await page();
+  assert.deepEqual(asked, ["/api/releases?s=attention&app=binks", "/api/releases/changelog?project=binks"]);
   const b = box.innerHTML;
+  assert.match(b, /^<div class="seg fseg istrip" role="tablist">/, "the strip stays on top");
+  assert.match(b, /<div class="bhead"><span>Releases \/ <b>binks<\/b> <span class="bad">drift<\/span><\/span><span><a class="btn sm" href="#releases\/apps\?s=attention">All apps<\/a> <a class="btn sm" href="#projects\/binks">Project page<\/a><\/span><\/div>/);
+  assert.doesNotMatch(b, /rel-q|<tr class="jr"|relrun-head/, "no search bar, list or Release runs under a page");
+  assert.match(b, /<div class="cline"><b>Stage<\/b> <span class="warn">alpha: no alpha target deployed<\/span><\/div>/);
+  assert.match(b, /<b>Coverage<\/b> <span class="muted">prev 1\/1, deployed 1\/2 \(1 none declared\)<\/span>/);
+  run("st.views.releases = ''");
+});
+
+test("an app the snapshot does not have says so, with its read errors, not a blank page", async () => {
+  await page(data({ errors: ["release-state show: no snapshot yet"] }), "nope");
+  const b = box.innerHTML;
+  assert.match(b, /<div class="bhead"><span>Releases \/ nope<\/span><a class="btn sm" href="#releases\/apps">All apps<\/a><\/div>/);
+  assert.match(b, /release-state show: no snapshot yet/);
+  assert.match(b, /No such app: nope\./);
+  assert.ok(!asked.some((u) => u.includes("changelog")), "no changelog read for an app that is not there");
+});
+
+test("a page whose read is still on its way says reading, never another app's page or no such app", async () => {
+  await page();
+  run("st.page = 'apps/other'; relst.render()");
+  const b = box.innerHTML;
+  assert.match(b, /Releases \/ other<\/span>.*reading\.\.\./s);
+  assert.doesNotMatch(b, /No such app|binks-prod/, "neither a false 'no such app' nor binks' body under other's URL");
+  run("st.page = 'apps/binks'; relst.render()");
+});
+
+test("reopening an app's page reads its changelog again, so a tag that landed meanwhile shows", async () => {
+  await page();
+  run("st.page = ''");
+  [body] = [data()];
+  await relst.refresh();
+  await settled();
+  run("st.page = 'apps/binks'");
+  [body] = [{ asked: "binks", ...data(PAGE) }];
+  asked.length = 0;
+  await relst.refresh();
+  await settled();
+  assert.deepEqual(asked, ["/api/releases?app=binks", "/api/releases/changelog?project=binks"]);
+});
+
+test("an app's page lists its headline env's channels, the other envs in a fold that starts open", async () => {
+  await page();
+  const b = box.innerHTML;
+  assert.match(b, /<th data-role="glance" data-named>deployed<\/th>/);
   assert.match(b, /<tr class="rc" data-ch="binks\|binks-prod"><td>prod<\/td><td class="wrap">binks-prod<\/td><td class="bad">v1<\/td><td>v2<\/td><td class="bad">drift<\/td><td class="wrap muted">home-k3s<\/td><\/tr>/);
   assert.match(b, /<details class="cfold" data-k="rel-env:binks" open><summary><b>1 other channel<\/b> <span class="muted">beta 1 not read<\/span><\/summary>/);
   assert.match(b, /<td class="warn">not read<\/td><td class="wrap muted"><span class="warn">steam GetAppBetas failed<\/span>/);
   assert.ok(b.indexOf("binks-prod") < b.indexOf("rel-env:binks"), "the headline env is above the fold");
-  clickApp();
-  assert.doesNotMatch(box.innerHTML, /binks-prod/);
 });
 
-test("a fold of other envs the reader closed stays closed across a repaint", () => {
-  show();
-  run("REL_OPEN['rel-env:binks'] = false; relst.sel = 'binks'; relst.render()");
+test("a fold of other envs the reader closed stays closed across a repaint", async () => {
+  await page();
+  run("REL_OPEN['rel-env:binks'] = false; relst.render()");
   assert.match(box.innerHTML, /data-k="rel-env:binks"><summary>/);
   run("delete REL_OPEN['rel-env:binks']; relst.render()");
   assert.match(box.innerHTML, /data-k="rel-env:binks" open>/, "with no remembered state it is open");
-  run("relst.sel = null");
 });
-
 test("the strip is the first element of the page, before the first read and after it", () => {
   Object.assign(relst, { data: null, err: null, sel: null });
   run("st.tab = 'releases'; st.arg = ''; relst.render()");
@@ -158,10 +246,9 @@ test("the strip is the first element of the page, before the first read and afte
   assert.match(box.innerHTML, /^<div id="rel-head"><div class="seg fseg istrip" role="tablist">/, "read");
 });
 
-test("clicking a channel opens its versions, every watch and its deps, and clicking again closes it", () => {
-  show();
-  body = changelog();
-  clickApp();
+
+test("clicking a channel opens its versions, every watch and its deps, and clicking again closes it", async () => {
+  await page();
   clickChannel("binks-prod");
   const b = box.innerHTML;
   assert.match(b, /<b>Pinned<\/b> v2 <span class="muted">from manifest/);
@@ -173,33 +260,65 @@ test("clicking a channel opens its versions, every watch and its deps, and click
   assert.match(b, /<tr class="rcd"><td colspan="6">/);
   clickChannel("binks-prod");
   assert.doesNotMatch(box.innerHTML, /<b>Pinned/);
-  assert.match(box.innerHTML, /binks-prod/, "the app stays open");
+  assert.match(box.innerHTML, /binks-prod/, "the page stays open");
 });
 
 const changelog = (o = {}) => ({
   project: "binks", tag: "binks-v2", prev: "binks-v1", source: "merged PRs", range: "binks-v1..binks-v2",
   text: "- fix the **probe** (#7)", tags: ["binks-v3", "binks-v2", "binks-v1"], ...o,
 });
-const open = async (d = changelog()) => {
-  show();
-  body = d;
-  asked.length = 0;
-  clickApp();
-  await settled();
-};
 
-test("opening an app reads its newest changelog and draws it under a tag picker", async () => {
-  await open();
-  assert.deepEqual(asked, ["/api/releases/changelog?project=binks"]);
+test("an app's page reads its newest changelog and draws it under a tag picker", async () => {
+  await page();
   const b = box.innerHTML;
   assert.match(b, /<b>Changelog<\/b> <select class="rel-tag"[^>]*data-project="binks">/);
   assert.match(b, /<option>binks-v3<\/option><option selected>binks-v2<\/option><option>binks-v1<\/option>/);
   assert.match(b, /binks-v1\.\.binks-v2, from merged PRs/);
   assert.match(b, /fix the <strong>probe<\/strong> \(#7\)/);
+  asked.length = 0;
+  await relst.refresh();
+  await settled();
+  assert.deepEqual(asked, ["/api/releases?app=binks"], "a re-read keeps the changelog picked");
 });
 
-test("opening a channel inside the app does not read the changelog again", async () => {
-  await open();
+test("an app's page lists its releases newest first with when, the one before and where each reached", async () => {
+  await page();
+  const b = box.innerHTML;
+  assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
+  assert.match(b, /<th class="n" data-role="glance" data-named>released<\/th>/, "a date header aligns with its cells");
+  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">none merged<\/td><td class="wrap muted">none merged<\/td><\/tr>/);
+  assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
+  asked.length = 0;
+  const rh = { dataset: { project: "binks", tag: "binks-v1" } };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.rh" ? rh : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/changelog?project=binks&tag=binks-v1"]);
+  assert.match(box.innerHTML, /Releases \/ <b>binks<\/b>/, "the page stays open");
+});
+
+test("an app's page lists its build runs newest first, below its releases, and counts the one in progress", async () => {
+  await page();
+  const b = box.innerHTML;
+  assert.match(b, /<details class="cfold" data-k="rel-builds:binks" open><summary><b>Builds<\/b> <span class="muted">2 runs, 1 in progress<\/span><\/summary>/);
+  assert.match(b, /<th class="n" data-role="glance">started<\/th><th class="n">finished<\/th>/, "date headers align with their cells");
+  assert.match(b, /<tr><td>binks-v3<\/td><td>Release builds<\/td><td class="">in progress 12m<\/td><td class="n">11-11 16:20<\/td><td class="n muted">-<\/td><td><a href="https:\/\/github.com\/o\/binks\/actions\/runs\/30" target="_blank" rel="noopener">run<\/a><\/td><\/tr>/);
+  assert.match(b, /<tr><td>binks-v2<\/td><td>Steam \(binks\)<\/td><td class="">cancelled<\/td><td class="n">11-05 10:00<\/td><td class="n">11-05 10:01<\/td><td><\/td><\/tr>/, "a link that is not https is dropped");
+  assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("rel-builds:binks") && b.indexOf("rel-builds:binks") < b.indexOf("<b>Changelog</b>"));
+});
+
+test("an app no build run joined says so where its builds would be", async () => {
+  await page(data({ app: { ...binks, builds: [] } }));
+  assert.match(box.innerHTML, /<b>Builds<\/b> <span class="muted">no build run joined to a tag in the last 30 days<\/span>/);
+});
+
+test("an app with no tags read says so where its history would be", async () => {
+  await page(data({ app: { ...binks, history: [], line: "none" } }));
+  assert.match(box.innerHTML, /<b>Releases<\/b> <span class="muted">no tags read<\/span>/);
+});
+
+test("opening a channel inside the page does not read the changelog again", async () => {
+  await page();
   asked.length = 0;
   clickChannel("binks-prod");
   await settled();
@@ -207,33 +326,34 @@ test("opening a channel inside the app does not read the changelog again", async
 });
 
 test("picking another tag reads that tag, and a tag with nothing in it says so", async () => {
-  await open();
+  await page();
   asked.length = 0;
-  body = changelog({ tag: "binks-v1", prev: null, range: "binks-v1", text: "" });
+  cl = changelog({ tag: "binks-v1", prev: null, range: "binks-v1", text: "" });
   const select = { dataset: { project: "binks" }, value: "binks-v1" };
   fire("change", { type: "change", target: { closest: (sel) => (sel === "select.rel-tag" ? select : null) } });
   await settled();
   assert.deepEqual(asked, ["/api/releases/changelog?project=binks&tag=binks-v1"]);
   assert.match(box.innerHTML, /No merged PRs in binks-v1\./);
-  // A change on anything else is not a pick.
   asked.length = 0;
   fire("change", { type: "change", target: { closest: () => null } });
   await settled();
   assert.equal(asked.length, 0);
 });
 
-test("a changelog the collector refused is said in the app, not left reading", async () => {
-  show();
+test("a changelog the collector refused is said on the page, not left reading", async () => {
+  run("st.tab = 'releases'; st.arg = 'apps'; st.page = 'apps/binks'; relCh = null");
+  Object.assign(run("relcl"), { project: null, data: null, err: null });
+  Object.assign(relst, { data: { asked: "binks", ...data(PAGE) }, err: null });
   const real = ctx.fetch;
   ctx.fetch = async () => ({ ok: false, status: 400, statusText: "Bad Request", text: async () => "release-state: binks has no release tags", headers: { get: () => "text/plain" } });
-  clickApp();
+  run("loadChangelog('binks')");
   await settled();
   ctx.fetch = real;
   assert.match(box.innerHTML, /class="warn">Could not read releases \(HTTP 400\): release-state: binks has no release tags/);
 });
 
 test("a pick the collector refuses keeps the tag picker, so another tag can be tried", async () => {
-  await open();
+  await page();
   const real = ctx.fetch;
   ctx.fetch = async () => ({ ok: false, status: 502, statusText: "Bad Gateway", text: async () => "release-state: gone", headers: { get: () => "text/plain" } });
   const select = { dataset: { project: "binks" }, value: "binks-v1" };
@@ -245,220 +365,61 @@ test("a pick the collector refuses keeps the tag picker, so another tag can be t
   assert.doesNotMatch(box.innerHTML, /fix the/);
 });
 
+test("leaving the page for the table draws the list again", async () => {
+  await page();
+  run("st.page = ''; relst.render()");
+  assert.match(box.innerHTML, /<tr class="jr" data-key="binks">/);
+  assert.doesNotMatch(box.innerHTML, /All apps/);
+});
+
 const bcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
-const red = {
-  forge: "github.com", repo: "binks", id: 77, attempt: 2, workflow: "Tests", title: "fix the gate", branch: "agent-3/gate", event: "pull_request", sha: "abc", status: "completed",
-  conclusion: "failure", prs: [12], url: "https://github.com/o/binks/actions/runs/77", owner: "agent-3", state: "red", level: "bad", started: NOW() - 300, took: 125,
+const shipped = {
+  forge: "github.com", repo: "o/binks", id: 77, attempt: 1, workflow: "Deploy", title: "deploy v2", branch: "v2", event: "push", sha: "abc", status: "completed",
+  conclusion: "success", prs: [], url: "https://github.com/o/binks/actions/runs/77", owner: "", state: "green", level: "ok", started: NOW() - 300, took: 125, release: { project: "binks", tag: "v2" },
 };
 const bdata = (o = {}) => ({
-  at: NOW() - 60, summary: "2 runs in 30 days: 0 running, 0 queued, 1 red", stale_after: 1800, rows: [red], more: 0, errors: [],
-  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event", "title"].map(bcol), facets: [] },
+  at: NOW() - 60, summary: "1 run in 30 days: 0 running, 0 queued, 0 red", stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
+  table: { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
-const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
-const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: key } } : null) });
-const BKEY = "github.com|binks|77|2";
+const showRuns = (d = bdata()) => { show(); Object.assign(run("relRuns"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
 
-test("the Builds section sits under the apps with each run's owner and state", () => {
-  showBuilds();
+test("Release runs lists the runs tied to a release with the tag each ran on, and links every run on Infra", () => {
+  showRuns();
   const b = box.innerHTML;
-  assert.match(b, /<div data-tbl="b"><div id="bld-head"><h2 class="sec" id="sec-builds">Builds <span class="muted">2 runs in 30 days: 0 running, 0 queued, 1 red/);
-  assert.match(b, /<td class="bad">red<\/td><td>binks<\/td><td class="wrap">Tests<\/td>/);
-  assert.match(b, /<td class="muted">agent-3<\/td>/);
-  assert.ok(b.indexOf("sec-builds") > b.indexOf(`data-key="binks"`), "after the apps");
+  assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="muted">1 run in 30 days/);
+  assert.match(b, /<a href="#infra\/runs">Infra, CI<\/a>/);
+  assert.match(b, /<td class="muted">v2<\/td><\/tr>/);
+  assert.ok(b.indexOf("sec-runs") > b.indexOf(`data-key="binks"`), "after the apps");
+  showRuns(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));
+  assert.match(box.innerHTML, /No run tied to a release in 30 days\./);
 });
 
-test("a run with no owning session draws a dash, and an empty ledger says so", () => {
-  showBuilds(bdata({ rows: [{ ...red, owner: "" }] }));
-  assert.match(box.innerHTML, /<td class="muted">-<\/td>/);
-  showBuilds(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));
-  assert.match(box.innerHTML, /No runs in the ledger\./);
-});
-
-test("a ledger that is not being refreshed is amber", () => {
-  showBuilds(bdata({ at: NOW() - 7200 }));
-  assert.match(box.innerHTML, /class="warn">ledger older than 30m/);
-});
-
-test("opening a run reads its log then, and only then; clicking again closes it", async () => {
-  showBuilds();
-  asked.length = 0;
-  fire("click", { type: "click", target: brow(BKEY) });
-  await settled();
-  const q = "forge=github.com&repo=binks&run_id=77&attempt=2";
-  assert.deepEqual(asked, [`/api/builds/detail?${q}`, `/api/builds/log?${q}`]);
-  const b = box.innerHTML;
-  assert.match(b, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
-  assert.match(b, /<b>Run<\/b> github.com binks #77 attempt 2/);
-  assert.match(b, /<b>PRs<\/b> #12/);
-  fire("click", { type: "click", target: brow(BKEY) });
-  assert.doesNotMatch(box.innerHTML, /joblog/);
-});
-
-const job = (i, o = {}) => ({
-  name: `PlayMode ${i}`, class: "aws/on-demand", wait_text: "1m", took_text: "32m45", runner: "aws-burst-1-pool-2",
-  price: { usd: 0.2, basis: "on-demand", text: "$0.20 (1/5 of $1.855/h)" }, steps_text: "checkout 2s, PlayMode 32m40", ...o,
-});
-const rdetail = (o = {}) => ({
-  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
-  header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
-  coverage_text: "partial: the archive holds 2 of the run's jobs so far", tested_sha: "abc1234ff", workflow_sha: "def5678aa", attempts: [1, 2],
-  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
-});
-
-test("an opened run shows its header, every job with its price, the steps and the coverage", async () => {
-  detail = rdetail({ jobs: Array.from({ length: 130 }, (_, i) => job(i)) });
-  showBuilds();
-  fire("click", { type: "click", target: brow(BKEY) });
-  await settled();
-  const b = box.innerHTML;
-  assert.match(b, /<b>#77 Tests red 46m \$0.20 \+ no rate<\/b>/);
-  assert.match(b, /end to end 46m \| before first job 2m/);
-  assert.equal((b.match(/<td data-label="job"/g) || []).length, 130, "every job, none capped");
-  assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
-  assert.match(b, /<b>Steps<\/b>/);
-  assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
-  assert.match(b, /tested abc1234, workflow from def5678/);
-  assert.match(b, /<b>Attempts<\/b> 1, 2/);
-  fire("click", { type: "click", target: brow(BKEY) });
-  detail = rdetail();
-  fire("click", { type: "click", target: brow(BKEY) });
-  await settled();
-  assert.match(box.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
-  fire("click", { type: "click", target: brow(BKEY) });
-});
-
-test("the Run times fold prices each workflow and flags a month off the AWS actual", () => {
-  showBuilds(bdata({
-    times: [{ repo: "o/binks", workflow: "Tests", runs: 3, pass: 66, longest: 600, usual: { median: 300, p90: 500 } }],
-    costs: { times: ["$0.20 (3 priced)"], idle: ["aws-burst-1: powered 2.0h today $3.71, jobs $1.00, idle $2.71"], month: "month to date: jobs priced $4.00, AWS actual $10.00, off by 60%", month_off: true },
-  }));
-  const b = box.innerHTML;
-  assert.match(b, /<th>\$ per run<\/th>/);
-  assert.match(b, /<td class="n">\$0.20 \(3 priced\)<\/td>/);
-  assert.match(b, /aws-burst-1: powered 2.0h today/);
-  assert.match(b, /<div class="cline warn">month to date: jobs priced \$4.00/);
-});
-
-test("the Quarantine fold says each repo's line, links its nightly and colours each owner row by its end", () => {
-  showBuilds(bdata({
-    quarantine_level: "bad",
-    quarantine: [{ repo: "o/play", level: "bad", entries: 5, url: "https://github.com/o/play/actions/runs/9",
-      says: "play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass",
-      rows: [{ row: "ucp-1", entries: 2, ends: "2026-11-10", days_left: -1, level: "bad", left: "ended" }, { row: "ucp-2", entries: 3, ends: "2026-11-30", days_left: 19, level: "ok", left: "19d" }] }],
-  }));
-  const b = box.innerHTML;
-  assert.match(b, /data-k="bld-quar"[^>]*><summary><b>Quarantine<\/b> <span class="bad">5 entries in 1 repo<\/span>/);
-  assert.match(b, /<div class="cline bad">play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass <a href="https:\/\/github.com\/o\/play\/actions\/runs\/9"/);
-  assert.match(b, /<td>ucp-1<\/td><td class="n">2<\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td>/);
-  assert.match(b, /<td>ucp-2<\/td><td class="n">3<\/td><td>2026-11-30<\/td><td class="n ">19d<\/td>/);
-  assert.ok(b.indexOf("bld-quar") < b.indexOf("bld-body"), "in the head, above the runs");
-  showBuilds(bdata({ quarantine: [] }));
-  assert.doesNotMatch(box.innerHTML, /bld-quar/, "no repo with a quarantine draws no fold");
-});
-
-test("the Builds table sorts and filters under its own view keys", async () => {
-  showBuilds();
-  const patch = run("tblPatch")({ type: "input", target: { dataset: { tsearch: "" }, value: "repo:binks" } });
-  assert.deepEqual({ ...patch }, { q: "repo:binks" });
-  run("st.tab = 'releases'; st.views.releases = 'q=project%3Abinks&bq=repo%3Abinks&bsort=took'");
-  assert.equal(run("tblParams(st.views.releases, BUILDS_PRE).toString()"), "bq=repo%3Abinks&bsort=took");
-  assert.equal(run("tblParams(st.views.releases).toString()"), "q=project%3Abinks");
-  run("st.views.releases = ''");
-});
-
-test("a builds event re-reads the builds alone, and only while the tab is open", async () => {
+test("a builds event re-reads Release runs (scope=release, its own view keys) and the apps, whose build runs it changes, only while the tab is open", async () => {
   builds = bdata();
   body = data();
-  run("st.tab = 'releases'");
+  run("st.tab = 'releases'; st.views.releases = 'q=project%3Abinks&bq=repo%3Ao%2Fbinks'");
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
   await settled();
-  assert.deepEqual(asked, ["/api/builds", "/api/tests"]);
-  run("st.tab = 'home'");
+  assert.deepEqual(asked, ["/api/releases?q=project%3Abinks", "/api/builds?bq=repo%3Ao%2Fbinks&scope=release"]);
+  run("st.tab = 'home'; st.views.releases = ''");
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
   await settled();
   assert.equal(asked.length, 0);
 });
 
-const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
-const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
-const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "main", sha: "abc1234", title: "t", state: "red", level: "bad", started: NOW() - 600, prs: [], url: `https://github.com/o/binks/actions/runs/${id}`, ...o });
-const tdata = (o = {}) => ({
-  at: NOW() - 60, stale_after: 1800, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], run: pickRun(9),
-  summary: "main abc1234: 5 tests in 2 suites: 1 failed, 1 skipped, 3 passed", totals: { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 },
-  rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], more: 0, fold: null, note: null, errors: [],
-  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "skipped", "time"].map(tcol), facets: [] },
-  ...o,
-});
-const showTests = (d = tdata()) => { show(); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("relst.render()"); };
-const srow = (key) => ({ dataset: { skey: key }, closest: (sel) => (sel === "tr.sr" ? { dataset: { skey: key } } : null) });
-
-test("the Tests section sits under Builds with the run's totals, its picker and each suite", () => {
-  showBuilds();
-  showTests();
-  const b = box.innerHTML;
-  assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec" id="sec-tests">Tests <span class="muted">main abc1234: 5 tests in 2 suites: 1 failed/);
-  assert.ok(b.indexOf("sec-tests") > b.indexOf("sec-builds"), "after the Builds section");
-  assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
-  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
-  assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
-});
-
-test("a green run is one line that lists its suites through the passed chip", () => {
-  showTests(tdata({ rows: [], fold: "All green: 5 tests in 2 suites: 0 failed, 1 skipped, 4 passed" }));
-  assert.match(box.innerHTML, /<button class="btn sm" data-ts="passed"[^>]*>All green: 5 tests in 2 suites/);
-  assert.doesNotMatch(box.innerHTML, /<tr class="sr/);
-});
-
-test("a run with no artifacts says why, and no run at all says so", () => {
-  showTests(tdata({ rows: [], note: "this run uploaded no junit-* artifact", summary: "main abc1234: no results", table: { ...tdata().table, total: 0, shown: 0 } }));
-  assert.match(box.innerHTML, /<div class="panel muted">this run uploaded no junit-\* artifact/);
-  showTests(tdata({ run: null, runs: [], rows: [], summary: "no finished run of the tests workflow in the ledger" }));
-  assert.match(box.innerHTML, /No finished run of the tests workflow in the ledger\./);
-  assert.doesNotMatch(box.innerHTML, /<select data-twin="run"/);
-});
-
-test("opening a suite reads its tests then, failed first with a result filter, and again closes it", async () => {
-  showTests();
-  cases = { more: 0, cases: [{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }] };
+test("opening a release run reads its jobs and log inside the Releases page", async () => {
+  showRuns();
+  detail = { key: {}, title: "#77 Deploy green", header: "end to end 2m", coverage: "full", coverage_text: "full", attempts: [1], jobs: [], rates_error: null };
   asked.length = 0;
-  fire("click", { type: "click", target: srow("unit|a.bats") });
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: "github.com|o/binks|77|1" } } : null) } });
   await settled();
-  assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
-  let b = box.innerHTML;
-  assert.match(b, /<span class="bad">failed<\/span> fails here <span class="muted">0.20s<\/span><pre class="joblog">line 2: \[ 1 -gt 2 \] failed<\/pre>/);
-  assert.match(b, /data-cres="failed">failed <span class="n">1<\/span>/);
-  fire("click", { type: "click", target: { closest: (sel) => (sel === "[data-cres]" ? { dataset: { cres: "skipped" } } : null) } });
-  b = box.innerHTML;
-  assert.match(b, /skipped one/);
-  assert.doesNotMatch(b, /fails here|passes/);
-  fire("click", { type: "click", target: srow("unit|a.bats") });
-  assert.doesNotMatch(box.innerHTML, /skipped one/);
-});
-
-test("an opened suite is let go when the table is read for another run", async () => {
-  showTests();
-  run("tst.sel = 'unit|a.bats'; tst.cases = { key: 'unit|a.bats', run: 9, data: { cases: [], more: 0 } }");
-  tests = tdata({ run: pickRun(8, { state: "green" }) });
-  await run("tst.refresh()");
-  assert.equal(run("tst.sel"), null);
-  assert.equal(run("tst.cases"), null);
-  tests = {};
-});
-
-test("the Tests table sorts under its own keys and the run picker names the run in the URL", async () => {
-  showTests();
-  run("st.tab = 'releases'; st.views.releases = 'bq=x&tq=tier%3Aui&tsort=time&trun=8'");
-  assert.equal(run("tblParams(st.views.releases, TESTS_PRE).toString()"), "tq=tier%3Aui&tsort=time");
-  const pick = run("tblPatch")({ type: "change", target: { dataset: { twin: "run" }, value: "8" } });
-  assert.deepEqual({ ...pick }, { run: "8" });
-  assert.equal(run("tblSet('q=1', { run: '8' }, 't')"), "q=1&trun=8");
-  asked.length = 0;
-  await run("tst.refresh()");
-  assert.deepEqual(asked, ["/api/tests?tq=tier%3Aui&tsort=time&trun=8"]);
-  run("st.views.releases = ''");
+  assert.deepEqual(asked, ["/api/builds/detail?forge=github.com&repo=o%2Fbinks&run_id=77&attempt=1", "/api/builds/log?forge=github.com&repo=o%2Fbinks&run_id=77&attempt=1"]);
+  assert.match(box.innerHTML, /<b>Release<\/b> binks v2/);
+  assert.match(box.innerHTML, /<b>#77 Deploy green<\/b>/);
+  run("relRuns.sel = null; relRuns.log = null; relRuns.detail = null");
 });
 
 test("a new snapshot re-reads only while the tab is open", async () => {
@@ -489,34 +450,69 @@ test("showing the tab reads the view in the URL, which a Projects badge links to
 });
 
 
-// Inner tabs: Apps (the table and an opened app), Builds and Tests, over hub_core::layout's groups.
+// Inner tabs: Apps (the table and an opened app) and Release runs, over hub_core::layout's groups.
 const shownIn = (h, id) => !new RegExp(`data-in="${id}" hidden`).test(h) && new RegExp(`data-in="${id}"`).test(h);
-const relOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); showBuilds(); Object.assign(run("tst"), { data: tdata(), err: null }); run("relst.render()"); return box.innerHTML; };
+const relOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); showRuns(); return box.innerHTML; };
 
-test("Releases opens on Apps, and a URL naming Builds or Tests opens that one with the others hidden", () => {
+test("Releases opens on Apps, and a URL naming Release runs opens it with Apps hidden", () => {
   // An empty arg is the first inner tab (Apps); a section id is the inner tab holding it.
-  for (const [hash, arg] of [["#releases", ""], ["#releases/builds", "builds"], ["#releases/tests", "tests"], ["#releases/detail", "apps"], ["#releases/table", "apps"], ["#releases?q=project:binks", ""]]) {
+  for (const [hash, arg] of [["#releases", ""], ["#releases/runs", "runs"], ["#releases/detail", "apps"], ["#releases/table", "apps"], ["#releases?q=project:binks", ""]]) {
     assert.equal(ctx.route(hash).arg, arg, hash);
   }
+  // Builds and Tests moved to Infra's CI (layout::MOVED).
+  for (const hash of ["#releases/builds", "#releases/tests"]) assert.equal(ctx.route(hash).tab, "infra", hash);
   const apps = relOn("");
-  assert.ok(shownIn(apps, "apps") && !shownIn(apps, "builds") && !shownIn(apps, "tests"));
+  assert.ok(shownIn(apps, "apps") && !shownIn(apps, "runs"));
   assert.match(apps, /data-itab="apps" class="on" aria-selected="true"/);
-  const b = relOn("builds");
-  assert.ok(shownIn(b, "builds") && !shownIn(b, "apps") && !shownIn(b, "tests"));
-  const t = relOn("tests");
-  assert.ok(shownIn(t, "tests") && !shownIn(t, "builds"));
+  assert.doesNotMatch(apps, /data-itab="builds"|data-itab="tests"/);
+  const r = relOn("runs");
+  assert.ok(shownIn(r, "runs") && !shownIn(r, "apps"));
   run("st.arg = ''");
 });
 
-test("a count shows beside an inner tab needing a look: a bad app, a recent red build, a failed suite", () => {
+test("a count shows beside an inner tab needing a look: a bad app, a release run needing a look", () => {
   const h = relOn("");
   assert.doesNotMatch(h, />Apps <span class="pill/);
-  assert.match(h, />Tests <span class="pill warn">1<\/span>/);
-  assert.doesNotMatch(h, />Builds <span class="pill/, "a build without look set counts nothing");
+  assert.doesNotMatch(h, />Release runs <span class="pill/, "a run without look set counts nothing");
   Object.assign(relst.data, { look: true });
-  Object.assign(run("bld").data, { look: true });
+  Object.assign(run("relRuns").data, { look: true });
   run("relst.render()");
   assert.match(box.innerHTML, />Apps <span class="pill warn">1<\/span>/);
-  assert.match(box.innerHTML, />Builds <span class="pill warn">1<\/span>/);
+  assert.match(box.innerHTML, />Release runs <span class="pill warn">1<\/span>/);
   run("st.arg = ''");
+});
+
+test("an app's page leads with its status from /api/releases/app: banner, watches, checks, day bars, incidents, then its channels", async () => {
+  const at = NOW();
+  const day = (i, ok, fail, text) => ({ at: at - (89 - i) * 86400, ok, fail, text });
+  const days = Array.from({ length: 90 }, (_, i) => (i < 80 ? day(i, 0, 0, "No data") : i === 85 ? day(i, 287, 1, "99.65%") : day(i, 288, 0, "100%")));
+  status = {
+    app: "binks", groups: ["binks", "binks-chat", "binks-beta"], unchecked: ["binks", "binks-beta"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
+    context: [{ label: "Firing", text: "binks-chat-spend", link: "#alerts/binks-chat-spend", warn: true }],
+    checks: [{ name: "chat", group: "binks-chat", state: "Down", level: "bad", uptime: [["24h", "50%"], ["7d", "99.9%"]], days, latency: [[at - 7200, 120.5], [at - 3600, 80]], latency_text: "p50 80ms, p95 120ms" }],
+    incidents: [{ check: "chat", from: at - 600, to: null, fails: 3, text: "3 failed" }],
+    monitor: "https://status.example", errors: [], at,
+  };
+  run("st.views.releases = ''");
+  await page();
+  run("TABS.releases").show();
+  for (let i = 0; i < 4; i++) await settled();
+  assert.ok(asked.includes("/api/releases/app?app=binks"), asked.join(" "));
+  const h = box.innerHTML;
+  assert.match(h, /Partial outage: chat/);
+  assert.match(h, /<a href="#alerts\/binks-chat-spend">binks-chat-spend<\/a>/, "a firing watch links to Alerts");
+  assert.match(h, /Checks <span class="muted">binks-chat<\/span>/, "the heading names only the groups that report");
+  assert.match(h, /No Gatus check yet: binks, binks-beta/);
+  assert.equal(h.match(/class="cc"/g).length, 90 + 24, "90 day bars and 24 hourly latency columns");
+  assert.equal(h.match(/background:var\(--c-other\)/g).length, 80, "a day with no results is grey, never green");
+  assert.match(h, /data-tip="[^"]*: 99\.65%, 1 failed of 288"/);
+  assert.match(h, /<td class="bad">ongoing<\/td>/);
+  assert.ok(h.indexOf("Partial outage") < h.indexOf("data-named>deployed"), "the status leads, the channels follow");
+  Object.assign(run("apst"), { page: "apps/other", data: null, err: null });
+  run("relst.render()");
+  assert.match(box.innerHTML, /<h2 class="sec">Status<\/h2><div class="empty">reading\.\.\.<\/div>/, "no status read yet says reading, never Operational");
+  Object.assign(run("st"), { page: "", arg: "" });
+  status = {};
+  run("TABS.releases").show();
+  await settled();
 });

@@ -1,17 +1,18 @@
 //! The Releases page: every app from `hub_core::releases::read` on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), one row each with what is live
 //! where it matters most. The opened app's pane lists its headline env's channels, its other envs
-//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps, Builds,
-//! Tests, `hub_core::layout`), switched with Left/Right.
+//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps and Release
+//! runs, `hub_core::layout`), switched with Left/Right.
 
-use hub_core::builds::Builds;
+use hub_core::app_status::AppStatus;
+use hub_core::builds::{Builds, Scope};
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, wrap, Cell, Table};
+use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, Palette};
 use crate::projtab::wrapped;
 
@@ -25,30 +26,59 @@ pub(crate) fn alert(l: Level, p: Palette) -> Style {
 }
 
 /// `App::COLUMNS` in capitals, in its order, the sort mark placed by that index; `project` is
-/// drawn as APP. `channel` and `id` filter without a column: the pane says them.
-const HEADER: [&str; 5] = ["APP", "LIVE", "STATUS", "CHANNELS", "LAST DEPLOY"];
+/// drawn as APP and `live` as DEPLOYED (a deploy is not the app being live). `channel` and `id`
+/// filter without a column: the pane says them.
+const HEADER: [&str; 7] = [
+    "APP",
+    "STAGE",
+    "DEPLOYED",
+    "STATUS",
+    "CHANNELS",
+    "RELEASED",
+    "LAST DEPLOY",
+];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 9;
-/// APP and LIVE at 80 columns and at their widest: each takes half of whatever a wider terminal
-/// adds. CHANNELS holds `7: 2 not read, 4 ok, 1 released`.
+/// APP and DEPLOYED at 80 columns and at their widest: each takes half of whatever a wider
+/// terminal adds.
 const APP_FIT: (usize, usize) = (16, 26);
 const LIVE_FIT: (usize, usize) = (16, 28);
+/// `draft`, `alpha`: the ladder's longest word.
+const STAGE_CAP: usize = 5;
 const STATUS_CAP: usize = 10;
-const CHANNELS_CAP: usize = 31;
+/// `2 not read, 4 ok, 1 released`.
+const CHANNELS_CAP: usize = 28;
+/// `v1.19.0 10-27 15:02`; a longer build tag clips.
+const RELEASED_CAP: usize = 24;
 /// `10-26 15:02 fail`.
 const LAST_DEPLOY_CAP: usize = 16;
+/// How many releases the pane lists before it says how many more there are.
+const HISTORY_LINES: usize = 8;
 
-/// The changelog read for the opened app: whose it is, whether a worker is still on it (one at a
-/// time, so holding a key over many apps asks for the last one only), and what came back, None
-/// while it is being read.
-#[derive(Default)]
-pub struct ChangelogRead {
+/// How many of an opened app's build runs the pane lists; the web lists them all.
+const BUILD_LINES: usize = 6;
+
+/// A read for the opened app's pane (its changelog, its status): whose it is, whether a worker
+/// is still on it (one at a time, so holding a key over many apps asks for the last one only),
+/// what came back, None while it is being read, and when it came back.
+pub struct PaneRead<T> {
     pub project: String,
     pub busy: bool,
-    pub read: Option<Result<Changelog, String>>,
+    pub read: Option<Result<T, String>>,
+    pub at: Option<std::time::Instant>,
 }
 
-#[derive(Default)]
+impl<T> Default for PaneRead<T> {
+    fn default() -> Self {
+        PaneRead {
+            project: String::new(),
+            busy: false,
+            read: None,
+            at: None,
+        }
+    }
+}
+
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
@@ -57,11 +87,31 @@ pub struct ReleasesView {
     pub down: usize,
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
-    pub cl: ChangelogRead,
-    /// The Builds inner tab's table and pane.
-    pub builds: crate::builds::BuildsView,
+    pub cl: PaneRead<Changelog>,
+    /// The opened app's checks (`hub_core::app_status`), as the web's `#releases/apps/<app>`.
+    pub st: PaneRead<AppStatus>,
+    /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
+    pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
+    /// The app a page link named (`releases apps/<name>`), selected once the snapshot is read.
+    pub want: Option<RowId>,
+}
+
+impl Default for ReleasesView {
+    fn default() -> Self {
+        ReleasesView {
+            table: DataTable::default(),
+            open: false,
+            down: 0,
+            others: false,
+            cl: PaneRead::default(),
+            st: PaneRead::default(),
+            runs: crate::builds::BuildsView::of(Scope::Release),
+            inner: "",
+            want: None,
+        }
+    }
 }
 
 /// Releases' layout entry: its inner tabs.
@@ -70,26 +120,16 @@ pub fn tab() -> &'static layout::Tab {
 }
 
 /// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
-/// red build of the last day. The TUI reads no tests run, so Tests carries no count here.
+/// red release run of the last day (`b` is the builds read, cut here to `Scope::Release`).
 pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     let mut out = vec![];
     if s.needs_look() {
         out.push("table");
     }
-    if b.is_some_and(Builds::needs_look) {
-        out.push("builds");
+    if b.is_some_and(|b| b.needs_look(Scope::Release)) {
+        out.push("runs");
     }
     out
-}
-
-/// What the Tests inner tab says: the suites are read by agent-web alone.
-pub fn tests_note(p: Palette, w: usize) -> Vec<Line<'static>> {
-    let text = "The suites of the newest tests.yml run are on agent-web, Releases, Tests. The TUI does not read them.";
-    let words: Vec<&str> = text.split_whitespace().collect();
-    wrap(&words, " ", w.max(20))
-        .into_iter()
-        .map(|l| clip_line(Line::styled(l, p.dim()), w))
-        .collect()
 }
 
 /// The row a selection stands for, so a new snapshot keeps the same app selected.
@@ -146,8 +186,26 @@ impl ReleasesView {
         self.table.view.apply(&s.apps)
     }
 
-    /// Move the selection to the row with this id after a read, or keep the index in range.
+    /// An app's page (`links::Kind::App`): the whole table on the Apps inner tab, that app
+    /// selected now or once the snapshot is read, its pane open from the newest release.
+    pub fn open_app(&mut self, s: Option<&Releases>, id: &str) {
+        self.open_view(String::new());
+        self.inner = "apps";
+        self.open = true;
+        self.others = true;
+        self.cl.project.clear();
+        self.st.project.clear();
+        self.st.at = None;
+        self.want = Some(id.to_string());
+        if let Some(s) = s {
+            self.reselect(s, None);
+        }
+    }
+
+    /// Move the selection to the row with this id (or the app a page link named) after a read,
+    /// or keep the index in range.
     pub fn reselect(&mut self, s: &Releases, id: Option<RowId>) {
+        let id = self.want.take().or(id);
         let rows = self.shown(s);
         let at = id.and_then(|id| rows.iter().position(|a| a.project == id));
         self.table.keep(at, rows.len());
@@ -180,6 +238,9 @@ impl ReleasesView {
             out.push(Line::styled(s.gaps.clone(), p.warn()));
         }
         out.push(Line::from(spans));
+        if !s.coverage.is_empty() {
+            out.push(Line::styled(s.coverage.clone(), p.dim()));
+        }
         if !s.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", s.errors.join("; ")),
@@ -207,15 +268,17 @@ impl ReleasesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|a| row(a, p)).collect(),
-            // LAST DEPLOY goes first when it is narrow: a wide terminal has the room.
-            keep: vec![0, 2, 1, 3, 4],
+            // Columns drop from the end of `keep` when narrow: LAST DEPLOY (blank until a recorder writes), then RELEASED.
+            keep: vec![0, 3, 2, 1, 4, 5, 6],
             right: vec![],
             cap: vec![
                 (0, fit(APP_FIT)),
-                (1, fit(LIVE_FIT)),
-                (2, STATUS_CAP),
-                (3, CHANNELS_CAP),
-                (4, LAST_DEPLOY_CAP),
+                (1, STAGE_CAP),
+                (2, fit(LIVE_FIT)),
+                (3, STATUS_CAP),
+                (4, CHANNELS_CAP),
+                (5, RELEASED_CAP),
+                (6, LAST_DEPLOY_CAP),
             ],
             mark,
             ..Default::default()
@@ -240,9 +303,15 @@ fn row(a: &App, p: Palette) -> Vec<Cell> {
     };
     vec![
         a.project.clone().into(),
+        if a.stage.is_empty() {
+            cell("-".to_string(), p.dim())
+        } else {
+            tinted(&a.stage, a.stage_level)
+        },
         a.live_text.clone().into(),
         cell(a.status_text.clone(), level(a.level, p)),
         channels,
+        cell(a.released_text.clone(), p.dim()),
         tinted(&a.last_deploy_text, a.deploy_level),
     ]
 }
@@ -332,10 +401,12 @@ pub fn detail(
     now: i64,
     w: usize,
     cl: Option<&Result<Changelog, String>>,
+    st: Option<&Result<AppStatus, String>>,
 ) -> Vec<Line<'static>> {
-    let says = match a.live_text.as_str() {
-        "-" => a.status_text.clone(),
-        live => format!("{live}, {}", a.status_text),
+    let says = if hub_core::releases::blank(&a.live_text) {
+        a.status_text.clone()
+    } else {
+        format!("{}, {}", a.live_text, a.status_text)
     };
     let mut out = vec![
         clip_line(
@@ -349,7 +420,24 @@ pub fn detail(
             Line::styled(format!("  channels {}", a.channels_text), p.dim()),
             w,
         ),
+        clip_line(
+            Line::styled(
+                format!("  stage {}", a.stage_text),
+                match a.stage_level {
+                    Level::Ok => p.dim(),
+                    l => level(l, p),
+                },
+            ),
+            w,
+        ),
     ];
+    if !a.coverage_text.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("  coverage {}", a.coverage_text), p.dim()),
+            w,
+        ));
+    }
+    out.extend(status(st, p, now, w));
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
         out.extend(channel(r, p, now, w));
@@ -376,6 +464,68 @@ pub fn detail(
         }
     }
     let plain = Style::default();
+    // The releases, newest first: when each was tagged, the one before it, where it reached
+    // (hub_core::release_graph), as the web's history table says them.
+    if a.history.is_empty() {
+        out.extend(wrapped(
+            &format!("  {:<LABEL$} ", "Releases"),
+            "no tags read",
+            p.dim(),
+            p,
+            w,
+        ));
+    } else {
+        let kind = match a.line.as_str() {
+            "build" => "build tags (no release tag yet)",
+            _ => "release tags",
+        };
+        out.extend(wrapped(
+            &format!("  {:<LABEL$} ", "Releases"),
+            &format!("{} {kind}", a.history.len()),
+            p.dim(),
+            p,
+            w,
+        ));
+        for h in a.history.iter().take(HISTORY_LINES) {
+            let line = format!(
+                "    {}  {}  prev {}  reached {}  prs {}  rows {}",
+                h.tag, h.at_text, h.prev_text, h.reached_text, h.prs_text, h.rows_text
+            );
+            let style = if h.reached.is_empty() { p.dim() } else { plain };
+            out.push(clip_line(Line::styled(line, style), w));
+        }
+        if a.history.len() > HISTORY_LINES {
+            let more = a.history.len() - HISTORY_LINES;
+            out.push(Line::styled(
+                format!("    and {more} older; [ ] walks them in the changelog"),
+                p.dim(),
+            ));
+        }
+    }
+    // The build runs joined to its tags, newest first, as the web's Builds table says them.
+    let live = a.builds.iter().filter(|b| b.live).count();
+    out.extend(wrapped(
+        &format!("  {:<LABEL$} ", "Builds"),
+        &match (a.builds.len(), live) {
+            (0, _) => "no build run joined to a tag in the last 30 days".to_string(),
+            (n, 0) => format!("{n} run{}", if n == 1 { "" } else { "s" }),
+            (n, l) => format!("{n} run{}, {l} in progress", if n == 1 { "" } else { "s" }),
+        },
+        p.dim(),
+        p,
+        w,
+    ));
+    for b in a.builds.iter().take(BUILD_LINES) {
+        let line = format!(
+            "    {}  {}  {}  {} - {}",
+            b.tag, b.workflow, b.state_text, b.started_text, b.ended_text
+        );
+        out.push(clip_line(Line::styled(line, level(b.level, p)), w));
+    }
+    if a.builds.len() > BUILD_LINES {
+        let more = a.builds.len() - BUILD_LINES;
+        out.push(Line::styled(format!("    and {more} older"), p.dim()));
+    }
     let mut part = |label: &str, text: &str, style: Style| {
         out.extend(wrapped(&format!("  {label:<LABEL$} "), text, style, p, w));
     };
@@ -411,6 +561,94 @@ pub fn detail(
                 }
             }
         }
+    }
+    out
+}
+
+/// How many incidents the pane lists; the web lists `app_status::INCIDENTS_SHOWN`.
+const INCIDENT_LINES: usize = 5;
+
+/// The app's checks, as its web page says them: the banner, each check's uptime and latency over
+/// its last days (one mark a day: `|` all passed, `x` a failed result, `.` no result), then its
+/// recent incidents.
+fn status(
+    st: Option<&Result<AppStatus, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    let head = |text: String, style: Style| {
+        clip_line(
+            Line::from(vec![
+                Span::styled(format!("  {:<LABEL$} ", "Checks"), p.dim()),
+                Span::styled(text, style),
+            ]),
+            w,
+        )
+    };
+    let s = match st {
+        None => return vec![head("reading...".into(), p.dim())],
+        Some(Err(e)) => return vec![head(format!("not read: {e}"), p.warn())],
+        Some(Ok(s)) => s,
+    };
+    let checked = s.newest.map_or("no result yet".into(), |t| {
+        format!(
+            "checked {} ({} ago)",
+            clock(t, now),
+            crate::fmt::dur((now - t) as f64)
+        )
+    });
+    out.push(head(format!("{}, {checked}", s.banner), level(s.level, p)));
+    for part in &s.context {
+        let style = if part.warn { p.warn() } else { p.dim() };
+        out.push(clip_line(
+            Line::styled(format!("    {}  {}", part.label, part.text), style),
+            w,
+        ));
+    }
+    for e in &s.errors {
+        out.push(clip_line(Line::styled(format!("    {e}"), p.warn()), w));
+    }
+    for c in &s.checks {
+        let ups: Vec<String> = c.uptime.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("    {}  ", c.name), Style::default()),
+                Span::styled(c.state.clone(), level(c.level, p)),
+                Span::styled(format!("  {}  {}", ups.join("  "), c.latency_text), p.dim()),
+            ]),
+            w,
+        ));
+        let room = w.saturating_sub(6).min(c.days.len());
+        let marks: Vec<Span> = c.days[c.days.len() - room..]
+            .iter()
+            .map(|d| match (d.ok, d.fail) {
+                (_, f) if f > 0 => Span::styled("x", p.warn()),
+                (0, _) => Span::styled(".", p.dim()),
+                _ => Span::styled("|", level(Level::Ok, p)),
+            })
+            .collect();
+        out.push(Line::from([vec![Span::raw("    ")], marks].concat()));
+    }
+    if !s.unchecked.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!("    no Gatus check yet: {}", s.unchecked.join(", ")),
+                p.dim(),
+            ),
+            w,
+        ));
+    }
+    if s.incidents.is_empty() {
+        out.push(Line::styled("    no incidents in 7 days", p.dim()));
+    }
+    for i in s.incidents.iter().take(INCIDENT_LINES) {
+        let style = if i.to.is_none() { p.warn() } else { p.dim() };
+        out.push(clip_line(
+            Line::styled(format!("    {}  {}", i.check, i.text), style),
+            w,
+        ));
     }
     out
 }
@@ -457,7 +695,7 @@ mod tests {
             "generated_epoch": AT,
             "rows": [green, steam, row("kenneth-black-portfolio", "portfolio-preview-eu-west", "drift")],
         });
-        read(&Fake(raw.to_string()))
+        read(&Fake(raw.to_string()), &[])
     }
 
     fn app<'a>(s: &'a Releases, project: &str) -> &'a App {
@@ -473,7 +711,12 @@ mod tests {
         use hub_core::table::Row;
         let lower: Vec<String> = HEADER
             .iter()
-            .map(|h| h.to_lowercase().replace(' ', "_").replace("app", "project"))
+            .map(|h| {
+                h.to_lowercase()
+                    .replace(' ', "_")
+                    .replace("app", "project")
+                    .replace("deployed", "live")
+            })
             .collect();
         let all = App::COLUMNS;
         assert_eq!(lower, all[..HEADER.len()]);
@@ -484,7 +727,10 @@ mod tests {
     fn the_status_counts_apps_names_what_it_could_not_read_and_says_the_snapshots_age() {
         let (s, p) = (sample(), Palette::default());
         let st = ReleasesView::default().status(&s, p, AT + 120);
-        assert_eq!(text(&st[0]), "What is building, and what is live where?");
+        assert_eq!(
+            text(&st[0]),
+            "What is deployed where, and which builds made it?"
+        );
         assert!(
             text(&st[1]).starts_with("2 apps: 1 drift, 1 ok"),
             "{}",
@@ -529,7 +775,7 @@ mod tests {
         let s = sample();
         let t = ReleasesView::default().table(&s, Palette::default(), 80, false);
         let head = text(&t[0]);
-        for col in ["APP", "LIVE", "STATUS", "CHANNELS"] {
+        for col in ["APP", "STAGE", "DEPLOYED", "STATUS", "CHANNELS"] {
             assert!(head.contains(col), "{head}");
         }
         assert_eq!(t.len(), 3, "a header and one row per app, not per channel");
@@ -538,7 +784,7 @@ mod tests {
         assert!(
             binks.contains("v1.2.3 prod")
                 && binks.contains("ok")
-                && binks.contains("2: 1 not read, 1 ok"),
+                && binks.contains("1 not read, 1 ok"),
             "{binks}"
         );
         assert!(
@@ -565,11 +811,20 @@ mod tests {
     fn a_channel_not_read_tints_the_channels_cell_amber_and_drift_the_status_red() {
         let (s, p) = (sample(), Palette::default());
         let cells = row(app(&s, "binks"), p);
-        assert_eq!(cells[3].style, p.warn());
-        assert_eq!(cells[2].style, p.good());
+        assert_eq!(cells[4].style, p.warn());
+        assert_eq!(cells[3].style, p.good());
         let drift = row(app(&s, "kenneth-black-portfolio"), p);
-        assert_eq!(drift[2].style, p.bad());
-        assert_eq!(drift[3].style, Style::default());
+        assert_eq!(drift[3].style, p.bad());
+        assert_eq!(drift[4].style, Style::default());
+    }
+
+    #[test]
+    fn an_app_with_no_lab_stage_says_a_dim_dash_as_the_web_does() {
+        let (s, p) = (sample(), Palette::default());
+        let mut a = app(&s, "binks").clone();
+        a.stage = String::new();
+        let cells = row(&a, p);
+        assert_eq!((cells[1].text.as_str(), cells[1].style), ("-", p.dim()));
     }
 
     #[test]
@@ -601,10 +856,94 @@ mod tests {
         cl: Option<&Result<Changelog, String>>,
         w: usize,
     ) -> Vec<String> {
-        detail(a, others, Palette::default(), AT, w, cl)
+        detail(a, others, Palette::default(), AT, w, cl, None)
             .iter()
             .map(text)
             .collect()
+    }
+
+    #[test]
+    fn the_pane_says_the_apps_checks_as_its_web_page_does() {
+        use hub_core::app_status::{AppStatus, Check, Day, Incident};
+        let day = |ok, fail| Day {
+            at: AT,
+            ok,
+            fail,
+            text: String::new(),
+        };
+        let st = AppStatus {
+            app: "alpha".into(),
+            groups: vec!["alpha".into(), "alpha-beta".into()],
+            unchecked: vec!["alpha-beta".into()],
+            banner: "Partial outage: api".into(),
+            level: Level::Bad,
+            newest: Some(AT - 120),
+            context: vec![hub_core::session_page::Part::new("Firing", "alpha-spend").warn(true)],
+            checks: vec![Check {
+                name: "api".into(),
+                group: "alpha".into(),
+                state: "Down".into(),
+                level: Level::Bad,
+                uptime: vec![("24h".into(), "50%".into())],
+                days: vec![day(0, 0), day(288, 0), day(280, 8)],
+                latency: vec![],
+                latency_text: "p50 80ms, p95 120ms".into(),
+            }],
+            incidents: vec![Incident {
+                check: "api".into(),
+                from: AT - 600,
+                to: None,
+                fails: 3,
+                text: "down, ongoing".into(),
+            }],
+            monitor: None,
+            errors: vec![],
+            at: AT,
+        };
+        let s = sample();
+        let lines: Vec<String> = detail(
+            app(&s, "binks"),
+            false,
+            Palette::default(),
+            AT,
+            100,
+            None,
+            Some(&Ok(st)),
+        )
+        .iter()
+        .map(text)
+        .collect();
+        let all = lines.join("\n");
+        assert!(
+            all.contains("Checks    Partial outage: api, checked"),
+            "{all}"
+        );
+        assert!(
+            all.contains("api  Down  24h 50%  p50 80ms, p95 120ms"),
+            "{all}"
+        );
+        assert!(
+            all.contains("    .|x"),
+            "one mark a day, oldest first: {all}"
+        );
+        assert!(all.contains("no Gatus check yet: alpha-beta"), "{all}");
+        assert!(all.contains("    Firing  alpha-spend"), "{all}");
+        assert!(all.contains("api  down, ongoing"), "{all}");
+        let unread: Vec<String> = detail(
+            app(&s, "binks"),
+            false,
+            Palette::default(),
+            AT,
+            100,
+            None,
+            Some(&Err("CC_VM_SERVICE is not set".into())),
+        )
+        .iter()
+        .map(text)
+        .collect();
+        assert!(unread
+            .iter()
+            .any(|l| l.contains("not read: CC_VM_SERVICE is not set")));
     }
 
     #[test]
@@ -613,7 +952,8 @@ mod tests {
         let binks = app(&s, "binks");
         let shut = pane(binks, false, None, 80);
         assert_eq!(shut[0], "> binks  v1.2.3 prod, ok");
-        assert_eq!(shut[1], "  channels 2: 1 not read, 1 ok");
+        assert_eq!(shut[1], "  channels 1 not read, 1 ok");
+        assert_eq!(shut[2], "  stage not read");
         assert!(
             shut.iter().any(|l| l.starts_with("  prod binks-prod")),
             "{shut:?}"
@@ -699,6 +1039,92 @@ mod tests {
     }
 
     #[test]
+    fn the_pane_lists_the_releases_with_when_the_one_before_and_where_each_reached() {
+        use hub_core::release_graph::Shipment;
+        let s = sample();
+        let mut a = app(&s, "binks").clone();
+        assert!(pane(&a, false, None, 80)
+            .iter()
+            .any(|l| l.contains("Releases") && l.contains("no tags read")));
+        a.line = "build".into();
+        a.history = (0..10)
+            .map(|i| Shipment {
+                tag: format!("v0.5.0-binks{}", 10 - i),
+                at_text: "11-10".into(),
+                prev: (i < 9).then(|| format!("v0.5.0-binks{}", 9 - i)),
+                prev_text: if i < 9 {
+                    format!("v0.5.0-binks{}", 9 - i)
+                } else {
+                    "first tag".into()
+                },
+                reached_text: if i == 0 {
+                    "binks-steam-beta 11-10".into()
+                } else {
+                    "not recorded".into()
+                },
+                ..Default::default()
+            })
+            .collect();
+        let lines = pane(&a, false, None, 80);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("10 build tags (no release tag yet)")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(
+                "v0.5.0-binks10  11-10  prev v0.5.0-binks9  reached binks-steam-beta 11-10"
+            )),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("and 2 older")), "{lines:?}");
+        let at = |k: &str| lines.iter().position(|l| l.contains(k)).unwrap();
+        assert!(
+            at("Releases") < at("Changelog"),
+            "the history sits above the changelog"
+        );
+    }
+
+    #[test]
+    fn the_pane_lists_the_apps_build_runs_newest_first_and_counts_the_one_running() {
+        use hub_core::releases::AppBuild;
+        let s = sample();
+        let mut a = app(&s, "binks").clone();
+        assert!(pane(&a, false, None, 100)
+            .iter()
+            .any(|l| l.contains("Builds") && l.contains("no build run joined")));
+        let b = |tag: &str, state: &str, live: bool| AppBuild {
+            tag: tag.into(),
+            workflow: "Release builds".into(),
+            state_text: state.into(),
+            live,
+            started_text: "11-11 00:16".into(),
+            ended_text: if live { "-" } else { "11-11 02:33" }.into(),
+            ..Default::default()
+        };
+        a.builds = vec![b("v0.5.0-binks8", "in progress 4m", true)];
+        a.builds
+            .extend((0..7).map(|i| b(&format!("v0.5.0-binks{}", 7 - i), "success", false)));
+        let lines = pane(&a, false, None, 100);
+        assert!(
+            lines.iter().any(|l| l.contains("8 runs, 1 in progress")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l
+                    .contains("v0.5.0-binks7  Release builds  success  11-11 00:16 - 11-11 02:33")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("and 2 older")), "{lines:?}");
+        let at = |k: &str| lines.iter().position(|l| l.contains(k)).unwrap();
+        assert!(at("v0.5.0-binks8") < at("v0.5.0-binks7"), "newest first");
+        assert!(at("8 runs") < at("Changelog"));
+    }
+
+    #[test]
     fn a_changelog_still_being_read_or_refused_or_empty_says_so() {
         let s = sample();
         let a = app(&s, "binks");
@@ -737,6 +1163,7 @@ mod tests {
             state: state.into(),
             at: AT,
             url: Some("https://github.test/run/7".into()),
+            ..Default::default()
         };
         let at = s.apps.iter().position(|a| a.project == "binks").unwrap();
         s.apps[at].channels[0].deploys = Deploys {
@@ -752,7 +1179,7 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines.iter().any(|l| l.contains("v2 ok")), "{lines:?}");
-        let failed = detail(&s.apps[at], false, p, AT, 200, None)
+        let failed = detail(&s.apps[at], false, p, AT, 200, None, None)
             .into_iter()
             .find(|l| text(l).contains("v3 fail"))
             .unwrap();

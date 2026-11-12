@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # machine-mode: the one switch for how much of this workstation background work may use. What
-# these pin: each mode writes its numbers to all three parts; the ConfigMap keeps other hosts'
-# keys and a power override on this host; a dispatch hold is only ever machine-mode's own to
-# change; an unreachable cluster applies the local parts, exits 1 and says so; a machine with no
+# these pin: each mode writes its numbers to both local parts and the ConfigMap; the ConfigMap keeps other hosts'
+# keys and a power override on this host; machine-mode never sets or lifts a dispatch hold,
+# only reports one; an unreachable cluster applies the local parts, exits 1 and says so; a machine with no
 # pool runners refuses; the status reads what the runners actually do, not what was asked. The
 # clock: the real hours file covers the day once and names real modes; a new part's mode applies
 # once; a hand mode holds inside its part, and past a boundary while the human is here; each
@@ -54,53 +54,54 @@ pin() { jq -r --arg h "$HOST" '.data[$h]' "$FX/applied.json"; }
 state() { sed -n "s/^$1=//p" "$STATE"; }
 
 @test "with nothing set the mode is the last row and the numbers are today's" {
+  prom 0 2
   run "$MM"
   assert_success
   assert_line "mode: open"
   assert_line "level: mid"
-  assert_line "runners: 2 of 2 taking new jobs"
+  assert_line "runners: 0 of 2 taking new jobs"
   assert_line "local Unity runs: 2, plus 1 when there is room"
   assert_line "new agent sessions: as today"
 }
 
-@test "reserved pins 0 slots, one Unity run, and holds dispatch as machine-mode" {
+@test "reserved pins 0 slots, one Unity run, and the low level, and leaves dispatch running" {
   run "$MM" reserved
   assert_success
   assert_line "mode: reserved"
   assert_line "runners: 2 of 2 taking new jobs, moving to 0"
-  assert_line "new agent sessions: paused"
+  assert_line "level: low"
+  assert_line "new agent sessions: as today"
+  [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_SLOTS)" 1
   assert_equal "$(state UNITY_BURST_SLOTS)" 0
   assert_equal "$(state RUNNERS_PINNED)" yes
-  run grep -x 'by: machine-mode' "$AGENT_HOLD_DIR/dispatch"
-  assert_success
   run grep -q 'context test-ctx' "$FX/kubectl.log"
   assert_success
   run cat "$FX/pkill.log"
   assert_output "-RTMIN+10 waybar"
 }
 
-@test "leaving reserved releases its hold and restores the numbers" {
+@test "leaving reserved restores the numbers" {
   "$MM" reserved
   run "$MM" shared
   assert_success
-  assert_equal "$(pin)" '{"slots":1}'
+  assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_SLOTS)" 2
   assert_equal "$(state UNITY_BURST_SLOTS)" 0
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   "$MM" open
-  assert_equal "$(pin)" '{"slots":2}'
+  assert_equal "$(pin)" '{"slots":0}'
   assert_equal "$(state UNITY_BURST_SLOTS)" 1
 }
 
-@test "full is open's numbers at the high level, and one click from it is reserved" {
+@test "full is open's Unity numbers and one runner at the high level, and one click from it is reserved" {
   run "$MM" full
   assert_success
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":2}'
+  assert_equal "$(pin)" '{"slots":1}'
   assert_equal "$(state UNITY_SLOTS)" 2
   assert_equal "$(state UNITY_BURST_SLOTS)" 1
   # The level is the mode row's, never a second copy in the state file.
@@ -151,13 +152,6 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_success
 }
 
-@test "a reserved hold lifted by someone else is reported, not silently re-read as paused" {
-  "$MM" reserved
-  agent-hold release dispatch >/dev/null
-  run "$MM"
-  assert_line "new agent sessions: as today, the hold was lifted: run machine-mode reserved to pause again"
-}
-
 @test "an unreachable cluster applies the local parts, exits 1 and names what changed" {
   KUBE_FAIL=1 run "$MM" reserved
   assert_failure
@@ -165,7 +159,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_output --partial "0 was not applied: run machine-mode reserved again"
   assert_equal "$(state MACHINE_MODE)" reserved
   assert_equal "$(state RUNNERS_PINNED)" no
-  [ -e "$AGENT_HOLD_DIR/dispatch" ]
+  assert_equal "$(state UNITY_SLOTS)" 1
   run "$MM" reserved
   assert_success
   assert_equal "$(state RUNNERS_PINNED)" yes
@@ -193,9 +187,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 }
 
 @test "a mode above what is registered does not read as moving" {
-  prom 1 1
+  "$MM" full
+  prom 0 0
   run "$MM"
-  assert_line "runners: 1 of 1 taking new jobs"
+  assert_line "runners: 0 of 0 taking new jobs"
 }
 
 @test "an unknown mode changes nothing, and a regex is not a mode" {

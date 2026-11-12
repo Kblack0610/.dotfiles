@@ -13,16 +13,21 @@
 # goes back to queued: dispatch gives it a session, whose brief names the PR and the tier-3 gate. A
 # parked item with no session was ownerless_running on board-chain for days (#1598, ar-1583).
 # An earlier toggle PR still open stops the run, so one change waits for the human at a time.
-# Verdict: NOOP none needed, BLOCKED a PR is open and waits for review, FAILED otherwise.
+# Two cases are the human's, not a session's: transcripts that do not reach back the whole window
+# (skill-drift exit 3) open nothing, and a change hiding more than SKILL_TOGGLE_HIDE_CAP skills
+# opens its PR and parks the item in review for the human to merge (reap closes it on the merge).
+# Verdict: NOOP none needed, BLOCKED a PR is open and waits for review or the window is not
+# covered, FAILED otherwise.
 set -uo pipefail
-# The user manager's PATH has no ~/.local/bin, where skill-drift, agent-queue and agent-land live.
-PATH="$HOME/.local/bin:$PATH"
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-skill-toggle: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
 NAME="${AGENTCTL_NAME:-skill-toggle}"
 REPO="${DOTFILES:-$HOME/.dotfiles}"
 BRANCH_PREFIX=chore/skill-toggle-
 DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
+# Provisional: the largest nightly hide so far was 3 (#1581), medium confidence; revisit when a
+# capped PR the human merges unchanged shows the bar is too low.
+HIDE_CAP="${SKILL_TOGGLE_HIDE_CAP:-5}"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
 report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
@@ -39,13 +44,21 @@ fail() { undo; report FAILED "$1"; echo "agentctl-skill-toggle: $1" >&2; exit 1;
 # skill-drift by path beside this script, so a worktree run counts with the worktree's copy.
 DRIFT="$(dirname "$(readlink -f "$0")")/skill-drift"
 
+[[ "$HIDE_CAP" =~ ^[0-9]+$ ]] || fail "SKILL_TOGGLE_HIDE_CAP=$HIDE_CAP is not a whole number"
 git -C "$REPO" fetch -q origin main || fail "git fetch origin main failed in $REPO"
-base=$(mktemp) || fail "mktemp failed"
-trap 'rm -f "$base"' EXIT
+base='' err=''
+trap 'rm -f "$base" "$err"' EXIT
+base=$(mktemp) && err=$(mktemp) || fail "mktemp failed"
 git -C "$REPO" show origin/main:.claude/settings.json > "$base" || fail "origin/main has no .claude/settings.json"
 # The new file is written by jq, so one already in jq's format keeps the PR to skillOverrides.
 jq . "$base" | cmp -s - "$base" || fail "origin/main .claude/settings.json is not in jq's format; a rewrite would reformat all of it"
-plan=$(SKILL_SETTINGS="$base" "$DRIFT" --overrides --json) || fail "skill-drift --overrides failed"
+plan=$(SKILL_SETTINGS="$base" "$DRIFT" --overrides --json 2>"$err"); rc=$?
+if [ "$rc" = 3 ]; then
+    report BLOCKED "$(cat "$err")"
+    cat "$err" >&2
+    exit 0
+fi
+[ "$rc" = 0 ] || fail "skill-drift --overrides failed: $(cat "$err")"
 # A "|" separator, not a tab: whitespace IFS would collapse an empty hide list into restore's slot.
 IFS='|' read -r days max nh nr hide restore < <(jq -r '[.days, .max, (.hide | length), (.restore | length), (.hide | join(" ")), (.restore | join(" "))] | map(tostring) | join("|")' <<<"$plan")
 summary="hide $nh${hide:+ ($hide)}, restore $nr${restore:+ ($restore)}"
@@ -56,8 +69,9 @@ if [ -z "$hide$restore" ]; then
     exit 0
 fi
 title="chore(skills): name-only at ${max} sessions or fewer in ${days} days, hide $nh, restore $nr"
+capped=''; [ "$nh" -gt "$HIDE_CAP" ] && capped=1
 if [ "$DRY" = 1 ]; then
-    echo "skill-toggle: would open a PR: $title: $summary"
+    echo "skill-toggle: would open a PR${capped:+ for the human (hide $nh is past the cap of $HIDE_CAP)}: $title: $summary"
     exit 0
 fi
 
@@ -81,11 +95,15 @@ git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git workt
 made=1
 jq --argjson p "$plan" '.skillOverrides = $p.skillOverrides' "$wt/.claude/settings.json" > "$wt/.claude/settings.json.new" &&
     mv "$wt/.claude/settings.json.new" "$wt/.claude/settings.json" || fail "could not write $wt/.claude/settings.json"
+held=''
+[ -z "$capped" ] || held="
+Hiding $nh skills is past the cap of $HIDE_CAP (SKILL_TOGGLE_HIDE_CAP), so no session lands this: it waits for the human to review and merge it.
+"
 body="The nightly skill-usage toggle: skillOverrides keeps name-only on the skills used in ${max} or fewer sessions in ${days} days, and lists one again past $((max * 2)) (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill, a global doc or a runner routes to is never hidden.
 
 - Hidden: ${hide:-none}
 - Listed again: ${restore:-none}
-
+$held
 Item: $slug"
 git -C "$wt" commit -q -m "$title" -m "$summary" -- .claude/settings.json || fail "git commit failed in $wt"
 git -C "$wt" push -q -u origin "$branch" || fail "git push $branch failed"
@@ -97,6 +115,13 @@ git -C "$REPO" worktree remove "$wt" && git -C "$REPO" branch -q -D "$branch" ||
     echo "agentctl-skill-toggle: PR #$n is open, but $wt was not removed" >&2
 [ -n "$repo" ] && agent-queue set "$slug" "pr=$repo#$n" >/dev/null ||
     fail "PR #$n is open, but not recorded on $slug: land it with agent-land $n --item $slug"
+if [ -n "$capped" ]; then
+    agent-queue move "$slug" review >/dev/null ||
+        fail "PR #$n is open for the human, but $slug was not moved to review: agent-queue move $slug review"
+    report BLOCKED "PR #$n waits for the human, hide $nh is past the cap of $HIDE_CAP: $summary"
+    echo "skill-toggle: opened #$n for the human (hide $nh, cap $HIDE_CAP): $summary"
+    exit 0
+fi
 agent-queue move "$slug" queued >/dev/null ||
     fail "PR #$n is open, but $slug was not queued, so no session will land it: agent-queue move $slug queued"
 report BLOCKED "PR #$n is queued for a session to review and land: $summary"

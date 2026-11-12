@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# theme-switch writes nine files into the tracked tree. Three of them are the full
+# theme-switch writes eleven files into the tracked tree. Three of them are the full
 # RENDER of a tracked palette + template, and they used to be tracked themselves --
 # so theme-day.timer and theme-night.timer, firing at 07:00 and 19:00, dirtied the
 # repo twice a day for as long as they had existed. Every session inherited a
@@ -42,12 +42,6 @@ write_targets() {
 # Fails loudly rather than vacuously when git cannot answer at all: a check-ignore
 # that errors looks exactly like "not ignored" to a naive `if`, and this suite has
 # already been bitten once by a git call failing silently inside a container.
-# The file apply_hyprland actually patches, as the function itself declares it.
-hypr_target() {
-  sed -n '/^apply_hyprland()/,/^}/p' "$THEME_SWITCH" \
-    | grep -o 'DOTFILES/[^"]*' | head -1 | sed 's|^DOTFILES/||'
-}
-
 is_ignored() {
   cd "$REPO_ROOT" || return 2
   git rev-parse --git-dir >/dev/null 2>&1 || {
@@ -82,6 +76,13 @@ is_ignored() {
   assert_success
 }
 
+@test "hyprland's rendered theme.lua is ignored" {
+  # Hyprland requires it (conf/look-and-feel.lua), so like sketchybar's colors.sh it is
+  # also why the installers and the post-merge hook render it.
+  run is_ignored .config/hypr/conf/theme.lua
+  assert_success
+}
+
 @test "dunst's hand-authored dunstrc is tracked, not swept up with its drop-in" {
   # The drop-in sits under the same .config/dunst/ directory as the layout file it
   # overrides; an ignore rule one level too wide would untrack the layout too.
@@ -110,8 +111,8 @@ is_ignored() {
 
 @test "theme-switch's write targets are still the eleven that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
-  # switch; converting each to its tool's native include (hyprland `source =`, lazygit
-  # LG_CONFIG_FILE, an nvim palette module) is the unfinished half of the job.
+  # switch; converting each to its tool's native include (lazygit LG_CONFIG_FILE, an nvim
+  # palette module) is the unfinished half of the job.
   #
   # .termux/colors.properties is the exception to the binary below: it is generated in
   # full, yet must stay TRACKED. The phone never runs the switcher, so a desktop
@@ -121,7 +122,7 @@ is_ignored() {
   local expected
   expected="$(printf '%s\n' \
     .config/dunst/dunstrc.d/50-theme.conf \
-    .config/hypr/conf.d/look-and-feel.conf \
+    .config/hypr/conf/theme.lua \
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \
     .config/nvim/lua/kennethblack/init.lua \
@@ -156,31 +157,29 @@ is_ignored() {
   fi
 }
 
-# --- a write target must still contain what the patch matches ----------------
+# --- the generated module and its reader agree ------------------------------
 
-@test "hyprland's color target still contains the lines theme-switch patches" {
-  # The canary above proves the PATH is classified; it cannot prove the path still
-  # holds the pattern. hyprland.conf was split into conf.d/ and left holding only
-  # `source =` lines, so theme-switch's sed matched nothing while still printing
-  # "updated border + shadow colors" -- hyprland stayed on whichever theme was
-  # current at the split, through every timer flip, with no error anywhere.
-  # Existence is not identity, so the target is read back out of apply_hyprland
-  # rather than hardcoded here: a test that names the right file on its own would
-  # keep passing while the script pointed somewhere useless.
-  local target file
-  target="$(hypr_target)"
-  [ -n "$target" ]
-  file="$REPO_ROOT/$target"
-  [ -f "$file" ]
-  grep -qE 'col\.active_border = rgba\([0-9a-fA-F]{8}\) rgba\([0-9a-fA-F]{8}\) 45deg' "$file"
-  grep -qE 'col\.inactive_border = rgba\([0-9a-fA-F]{8}\)' "$file"
-  grep -qE '^[[:space:]]*color = rgba\([0-9a-fA-F]{8}\)' "$file"
+# The keys apply_hyprland writes into conf/theme.lua, read out of the function itself.
+hypr_written_keys() {
+  sed -n '/^apply_hyprland()/,/^}/p' "$THEME_SWITCH" | grep -oE '^ +[a-z0-9]+ += "\$\{THEME_' \
+    | awk '{ print $1 }' | sort -u
 }
 
-@test "the old monolithic hyprland.conf is no longer a color target" {
-  # Negative control for the test above: if look-and-feel.conf were reverted to a
-  # source-only stub the same way, the assertions would need to move again. This
-  # pins the fact that the top-level file is now purely an include list.
-  run grep -qE 'col\.(in)?active_border' "$REPO_ROOT/.config/hypr/hyprland.conf"
+# The theme.<key> fields conf/look-and-feel.lua reads (not the file name conf/theme.lua).
+hypr_read_keys() {
+  grep -oE '(^|[^/.a-z_])theme\.[a-z0-9]+' "$REPO_ROOT/.config/hypr/conf/look-and-feel.lua" | sed 's/^.*theme\.//' | sort -u
+}
+
+@test "hyprland's look-and-feel reads exactly the colors theme-switch writes" {
+  # The Lua config requires the generated module, so a key renamed on one side only
+  # is a nil color at load, not a silent no-op like the old sed patch was.
+  grep -q 'require, "conf.theme")' "$REPO_ROOT/.config/hypr/conf/look-and-feel.lua"
+  [ "$(hypr_written_keys | wc -l)" -eq 4 ]
+  assert_equal "$(hypr_read_keys)" "$(hypr_written_keys)"
+}
+
+@test "the key comparison above is not vacuous" {
+  # Negative control: a reader that drops a key must not compare equal.
+  run bash -c "$(declare -f hypr_written_keys hypr_read_keys); THEME_SWITCH='$THEME_SWITCH' REPO_ROOT='$REPO_ROOT'; [ \"\$(hypr_read_keys | grep -v shadow)\" = \"\$(hypr_written_keys)\" ]"
   assert_failure
 }

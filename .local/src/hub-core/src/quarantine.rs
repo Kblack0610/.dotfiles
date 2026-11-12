@@ -1,13 +1,18 @@
-//! The Builds section's Quarantine fold, both surfaces: for each repo whose base branch carries a
-//! test quarantine, its `quarantine.py report --json` (entries per owner row, the day each ends,
-//! days left) and the last nightly's KNOWN and now-passing counts. `schedules-sync` writes it
-//! beside the run ledger (`quarantine.json`) each pass; this only reads it. A repo with no
-//! quarantine has no lane, and no file means no fold.
+//! Infra's CI Tests, its Quarantine part, both surfaces: for each repo whose base branch carries a
+//! test quarantine, its `quarantine.py report --json` (entries per owner row and, when the report
+//! lists them, each quarantined test with its end and owner row) and the last nightly's KNOWN and
+//! now-passing counts. `schedules-sync` writes it beside the run ledger (`quarantine.json`) each
+//! pass, so it rides the builds read and its file event; this only reads it. A repo with no
+//! quarantine has no lane, and no file means no Quarantine table. The Tests suites read
+//! `Lane::tests` too: a failure of a test named there counts as quarantined, not failed.
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::builds::short_repo;
+use crate::links::{Kind, Link};
 use crate::releases::Level;
+use crate::table::{Row, Val};
 use crate::text::short_day;
 
 /// An entry this many days from its end is amber: time to fix it or extend it.
@@ -39,6 +44,23 @@ pub struct Report {
     pub entries: u64,
     /// Grouped by (end date, owner row), the soonest end first.
     pub rows: Vec<OwnerRow>,
+    /// Each quarantined test; absent from a report older than the list, so such a lane has no
+    /// per-test rows.
+    pub tests: Vec<Held>,
+}
+
+/// One quarantined test as the report lists it.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Held {
+    /// The NUnit fullname, as a results file names the test-case.
+    pub test: String,
+    pub ends: String,
+    /// The board row id that owns the fix (`ucp-1450`).
+    pub row: String,
+    /// The owner field as the quarantine file has it, the row id and its title.
+    pub owner: String,
+    pub days_left: i64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -53,7 +75,7 @@ pub struct OwnerRow {
     pub days_left: i64,
 }
 
-/// The last finished nightly's counts. The test names behind `now_passing` stay in the file.
+/// The last finished nightly's counts.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
 pub struct Nightly {
@@ -63,27 +85,41 @@ pub struct Nightly {
     pub known: u64,
     /// Quarantined tests that passed; None when the run kept no suite logs to count them from.
     pub now_passing: Option<u64>,
+    /// The full names behind `now_passing`.
+    pub now_passing_tests: Vec<String>,
+    /// Quarantined tests the run marked KNOWN (failed); None in a file written before
+    /// schedules-sync read them, so a test in neither list there cannot be told "not run".
+    pub known_tests: Option<Vec<String>>,
+}
+
+/// A day count's level: red once ended (its tests count as red again), amber within
+/// `SOON_DAYS` of its end.
+fn level_of(days_left: i64) -> Level {
+    if days_left <= 0 {
+        Level::Bad
+    } else if days_left <= SOON_DAYS {
+        Level::Warn
+    } else {
+        Level::Ok
+    }
+}
+
+/// Days left as a row draws them: `ended`, else `Nd`.
+fn left_of(days_left: i64) -> String {
+    if days_left <= 0 {
+        "ended".into()
+    } else {
+        format!("{days_left}d")
+    }
 }
 
 impl OwnerRow {
-    /// Red once ended (its tests count as red again), amber within `SOON_DAYS` of its end.
     pub fn level(&self) -> Level {
-        if self.days_left <= 0 {
-            Level::Bad
-        } else if self.days_left <= SOON_DAYS {
-            Level::Warn
-        } else {
-            Level::Ok
-        }
+        level_of(self.days_left)
     }
 
-    /// Its days left as a row draws them: `ended`, else `Nd`.
     pub fn left(&self) -> String {
-        if self.days_left <= 0 {
-            "ended".into()
-        } else {
-            format!("{}d", self.days_left)
-        }
+        left_of(self.days_left)
     }
 }
 
@@ -106,6 +142,28 @@ impl Lane {
         self.report.as_ref().map_or(&[], |r| &r.rows)
     }
 
+    /// Each quarantined test, when the report lists them.
+    pub fn tests(&self) -> &[Held] {
+        self.report.as_ref().map_or(&[], |r| &r.tests)
+    }
+
+    /// The names a run's failures are matched against: a test past its end is red again.
+    pub fn held(&self) -> HashSet<&str> {
+        self.tests()
+            .iter()
+            .filter(|t| t.days_left > 0)
+            .map(|t| t.test.as_str())
+            .collect()
+    }
+
+    /// The nightly the counts came from, when its URL is GitHub's.
+    pub fn url(&self) -> Option<&str> {
+        self.nightly
+            .as_ref()
+            .and_then(|n| n.url.as_deref())
+            .filter(|u| u.starts_with("https://"))
+    }
+
     /// Red when the last read failed, else its worst owner row's.
     pub fn level(&self) -> Level {
         if self.error.is_some() {
@@ -120,7 +178,7 @@ impl Lane {
 
     /// One line: the count and its nearest end, then the nightly.
     pub fn says(&self) -> String {
-        let name = short_repo(&self.repo);
+        let name = project_map::canonical(&self.repo);
         let mut out = match &self.report {
             Some(r) => format!(
                 "{name}: {} quarantined over {} owner rows",
@@ -164,6 +222,129 @@ impl Lane {
     }
 }
 
+/// One quarantined test: a row of Tests' Quarantine table.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Entry {
+    pub test: String,
+    pub repo: String,
+    pub row: String,
+    pub owner: String,
+    pub ends: String,
+    pub days_left: i64,
+    pub left: String,
+    pub level: Level,
+    /// `failing` when the last nightly marked it KNOWN, `now passing` when it passed it, `not
+    /// run` when it did neither (a UI mutes it), `unread` when no nightly kept the logs to tell.
+    /// A nightly read before KNOWN was recorded says `failing` for anything not passing.
+    pub nightly: String,
+}
+
+/// The last nightly's word sets: the tests it passed, and the ones it failed when they were read.
+struct Seen<'a> {
+    passing: HashSet<&'a str>,
+    failing: Option<HashSet<&'a str>>,
+}
+
+impl Entry {
+    fn of(lane: &Lane, t: &Held, seen: Option<&Seen>) -> Entry {
+        Entry {
+            test: t.test.clone(),
+            repo: project_map::canonical(&lane.repo),
+            row: t.row.clone(),
+            owner: t.owner.clone(),
+            ends: t.ends.clone(),
+            days_left: t.days_left,
+            left: left_of(t.days_left),
+            level: level_of(t.days_left),
+            nightly: match seen {
+                None => "unread",
+                Some(s) => match &s.failing {
+                    Some(f) if f.contains(t.test.as_str()) => "failing",
+                    _ if s.passing.contains(t.test.as_str()) => "now passing",
+                    Some(_) => "not run",
+                    None => "failing",
+                },
+            }
+            .into(),
+        }
+    }
+
+    /// The chip a row is under: `ended`, `ending` (within `SOON_DAYS`) or `held`.
+    pub fn chip(&self) -> &'static str {
+        match self.level {
+            Level::Bad => "ended",
+            Level::Warn => "ending",
+            Level::Ok => "held",
+        }
+    }
+}
+
+impl Row for Entry {
+    const COLUMNS: &'static [&'static str] = &["test", "repo", "row", "ends", "left", "nightly"];
+    const STATES: &'static [&'static str] = &["all", "ended", "ending", "held"];
+    const FACETS: &'static [&'static str] = &["repo", "row", "nightly"];
+    const LEAD: &'static str = "test";
+    const GLANCE: &'static [&'static str] = &["row", "left", "nightly"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| match s {
+            "" => Val::None,
+            s => Val::Text(s.to_string()),
+        };
+        match col {
+            "test" => text(&self.test),
+            "repo" => text(&self.repo),
+            "row" => text(&self.row),
+            "ends" => text(&self.ends),
+            "left" => Val::Num(self.days_left as f64),
+            "nightly" => text(&self.nightly),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, state: &str) -> bool {
+        state == "all" || self.chip() == state
+    }
+
+    /// The owner's title is searched too, not only its row id.
+    fn text(&self) -> String {
+        [&self.test, &self.repo, &self.owner, &self.nightly]
+            .map(|s| s.as_str())
+            .join("\n")
+            .to_lowercase()
+    }
+
+    /// The row opens the board at it, the repo its project.
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "row" if !self.row.is_empty() => Some(Link::to(Kind::Row, &self.row)),
+            "repo" => Some(Link::to(Kind::Project, &self.repo)),
+            _ => None,
+        }
+    }
+}
+
+/// Every lane's quarantined tests, the soonest end first, then by repo and name.
+pub fn entries(lanes: &[Lane]) -> Vec<Entry> {
+    let mut out: Vec<Entry> = vec![];
+    for l in lanes {
+        let seen = l
+            .nightly
+            .as_ref()
+            .filter(|n| n.now_passing.is_some())
+            .map(|n| Seen {
+                passing: n.now_passing_tests.iter().map(String::as_str).collect(),
+                failing: n
+                    .known_tests
+                    .as_ref()
+                    .map(|k| k.iter().map(String::as_str).collect()),
+            });
+        out.extend(l.tests().iter().map(|t| Entry::of(l, t, seen.as_ref())));
+    }
+    out.sort_by(|a, b| (a.days_left, &a.repo, &a.test).cmp(&(b.days_left, &b.repo, &b.test)));
+    out
+}
+
 /// The lanes in `text`, or why the file did not parse.
 pub fn parse(text: &str) -> Result<Vec<Lane>, String> {
     serde_json::from_str::<File>(text)
@@ -174,6 +355,7 @@ pub fn parse(text: &str) -> Result<Vec<Lane>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::View;
 
     fn row(row: &str, entries: u64, ends: &str, days_left: i64) -> OwnerRow {
         OwnerRow {
@@ -190,6 +372,7 @@ mod tests {
             report: Some(Report {
                 entries: rows.iter().map(|r| r.entries).sum(),
                 rows,
+                ..Default::default()
             }),
             nightly: Some(Nightly {
                 created_at: Some("2026-11-11T08:00:00Z".into()),
@@ -268,6 +451,99 @@ mod tests {
         );
         l.nightly = None;
         assert!(l.says().ends_with("no finished nightly with a summary"));
+    }
+
+    fn held(test: &str, row: &str, days_left: i64) -> Held {
+        Held {
+            test: test.into(),
+            ends: "2026-11-20".into(),
+            row: row.into(),
+            owner: format!("{row} fix(yard): stand the games up"),
+            days_left,
+        }
+    }
+
+    #[test]
+    fn each_quarantined_test_is_a_row_with_its_owner_its_end_and_the_nightlys_word() {
+        let text = r#"{"repos":[{"repo":"acme/yard","report":{"today":"2026-11-12","entries":3,
+            "rows":[{"row":"db-265","entries":3,"ends":"2026-11-20","days_left":8}],
+            "tests":[{"test":"P.Yard.Each(\"a\")","ends":"2026-11-20","row":"db-265","owner":"db-265 fix(yard): x","days_left":8}]},
+            "nightly":{"known":3,"now_passing":1,"now_passing_tests":["P.Yard.Each(\"a\")"]}}]}"#;
+        let lanes = parse(text).unwrap();
+        let e = entries(&lanes);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].test, "P.Yard.Each(\"a\")");
+        assert_eq!(e[0].repo, project_map::canonical("acme/yard"));
+        assert_eq!(
+            (e[0].left.as_str(), e[0].nightly.as_str()),
+            ("8d", "now passing")
+        );
+        assert_eq!(e[0].link("row"), Some(Link::to(Kind::Row, "db-265")));
+        assert!(lanes[0].held().contains("P.Yard.Each(\"a\")"));
+
+        let mut l = lane(vec![]);
+        l.report.as_mut().unwrap().tests = vec![
+            held("A.late", "ucp-3", 19),
+            held("A.gone", "ucp-1", -1),
+            held("A.soon", "", 2),
+        ];
+        l.nightly.as_mut().unwrap().now_passing_tests = vec!["A.late".into()];
+        let rows = entries(std::slice::from_ref(&l));
+        let order: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|r| (r.test.as_str(), r.left.as_str(), r.nightly.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("A.gone", "ended", "failing"),
+                ("A.soon", "2d", "failing"),
+                ("A.late", "19d", "now passing")
+            ],
+            "the soonest end first"
+        );
+        let levels: Vec<Level> = rows.iter().map(|r| r.level).collect();
+        assert_eq!(levels, [Level::Bad, Level::Warn, Level::Ok]);
+        assert_eq!(rows[1].link("row"), None, "no owner row, no link");
+        // an ended test is red again, so a run's failure of it is not held
+        assert!(!l.held().contains("A.gone") && l.held().contains("A.soon"));
+        let n = |st: &str| View::new::<Entry>("", st, "", "").apply(&rows).len();
+        assert_eq!((n("ended"), n("ending"), n("held")), (1, 1, 1));
+        assert_eq!(
+            View::new::<Entry>("nightly:failing", "", "", "")
+                .apply(&rows)
+                .len(),
+            2
+        );
+        assert_eq!(
+            View::new::<Entry>("stand", "", "", "").apply(&rows).len(),
+            3,
+            "the owner title is searched"
+        );
+        // with KNOWN read, a test in neither list did not run, and one in both failed somewhere
+        l.nightly.as_mut().unwrap().known_tests = Some(vec!["A.gone".into(), "A.late".into()]);
+        let words: Vec<String> = entries(std::slice::from_ref(&l))
+            .into_iter()
+            .map(|r| r.nightly)
+            .collect();
+        assert_eq!(words, ["failing", "not run", "failing"]);
+        l.nightly.as_mut().unwrap().known_tests = Some(vec![]);
+        let words: Vec<String> = entries(std::slice::from_ref(&l))
+            .into_iter()
+            .map(|r| r.nightly)
+            .collect();
+        assert_eq!(words, ["not run", "not run", "now passing"]);
+        // negative control: a nightly that kept no logs says unread, not failing
+        l.nightly.as_mut().unwrap().now_passing = None;
+        assert!(entries(&[l]).iter().all(|r| r.nightly == "unread"));
+    }
+
+    #[test]
+    fn a_report_without_a_test_list_has_no_rows_but_keeps_its_counts() {
+        let l = lane(vec![row("ucp-1", 4, "2026-11-30", 19)]);
+        assert!(entries(std::slice::from_ref(&l)).is_empty());
+        assert!(l.held().is_empty());
+        assert!(l.says().contains("4 quarantined"));
     }
 
     #[test]

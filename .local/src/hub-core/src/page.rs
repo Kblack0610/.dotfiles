@@ -1,6 +1,6 @@
 //! One project's page, read when its card is opened (dashboards rule 10), never for every card:
-//! its systems first (each with its progress, its features and their percents, and each
-//! feature's tasks one level deeper), the Flow line, what needs the human, the next stage's
+//! its systems first (each with its progress, its features and their percents; the tasks are
+//! the rows view's, never drawn here), the Flow line, what needs the human, the next stage's
 //! gaps, the shipped versions and the dev timeline. Every number is counted by its
 //! owner and this module only joins them and says the words, so agent-web and the hub TUI print
 //! the same lines: `fleet-bench epics` (the chain, `epics.rs`), `project-stage-check` (next stage
@@ -17,20 +17,8 @@ use crate::epics::{self, Chain, Epic};
 use crate::projects::Card;
 use crate::session_actions::Runner;
 
-/// Plans with no epic the Needs you list names one by one; the rest are one "+N more" line.
-pub const PLANS_SHOWN: usize = 5;
-
 /// Next stage's head at the top of the ladder.
 pub const NO_NEXT: &str = "no stage after this one";
-
-/// One task under an epic, as opening the epic lists it: `[x] db-131  feat: skin palette  s  pr 412`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Leaf {
-    /// The row's id, which a surface finds the row by to open it.
-    pub id: String,
-    pub line: String,
-    pub done: bool,
-}
 
 /// One epic as its system's line: `one project page  20%  [rows]  brief yes  plan 2 of 7 ...`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -39,8 +27,6 @@ pub struct EpicLine {
     pub line: String,
     /// Behind its frozen baseline, which a surface marks.
     pub behind: bool,
-    /// Its tasks, done and open, in sheet order: what opening it lists.
-    pub leaves: Vec<Leaf>,
 }
 
 /// A system's current wave (`lifecycle.md`, "What an epic is"): its first open feature epic in
@@ -60,6 +46,18 @@ pub struct Gate {
     pub stage: String,
     pub met: u32,
     pub total: u32,
+    pub fail: u32,
+    pub human: u32,
+}
+
+/// One kind of thing the chain asks of the human, as Needs you groups it: `verify` (epics whose
+/// rows all landed with no live proof) or `plan` (plans that name no epic). `says` is the
+/// group's line with its count; `items` are its lines, each kind's every one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct NeedGroup {
+    pub kind: String,
+    pub says: String,
+    pub items: Vec<String>,
 }
 
 /// A system: its progress and criteria, then its open epics; closed ones are a count.
@@ -78,6 +76,16 @@ pub struct System {
     pub wave: Option<Wave>,
     /// `+3 closed, 2 verified`, empty when none closed.
     pub closed: String,
+    /// The head's numbers, for a surface that draws them as columns: its criteria (None when the
+    /// project type does not list the system), its feature epics counted and done, its open
+    /// standard epics, the open rows under its open epics and how many of those epics run behind.
+    pub criteria_met: Option<u32>,
+    pub criteria_total: Option<u32>,
+    pub features: usize,
+    pub features_done: usize,
+    pub standing: usize,
+    pub open_rows: u32,
+    pub behind: usize,
 }
 
 /// One requirement of the next stage that is not met: FAIL, HUMAN or TODO.
@@ -94,8 +102,13 @@ pub struct Page {
     pub project: String,
     /// `ideas 19 | briefs 2 | ...`; None when the chain could not be read.
     pub flow_line: Option<String>,
-    /// Verify an epic whose rows all landed, then plans that name no epic, in that order.
-    pub needs: Vec<String>,
+    /// What needs the human, grouped by kind, each with its count and every item: the chain's
+    /// (`need_groups`), then the next stage's failing and human checks (kind `stage`).
+    pub need_groups: Vec<NeedGroup>,
+    /// The project's open feature epics as the Deliverables table, the TUI's Build inner tab
+    /// (agent-web reads `/api/deliverables?scope=` for its own, the same `deliverables::build`).
+    #[serde(skip)]
+    pub build: crate::deliverables::Deliverables,
     /// Build by system's head: `3 systems, 2 open epics (438 rows with no epic)`.
     pub systems_says: String,
     pub systems: Vec<System>,
@@ -111,6 +124,9 @@ pub struct Page {
     pub shipped: Vec<String>,
     /// The channels' one-line badge, linking to the Releases tab; None with no channels.
     pub releases: Option<crate::releases::Badge>,
+    /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
+    /// filtered to it; None when no watch does.
+    pub alerts: Option<crate::releases::Badge>,
     /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
     pub timeline: Option<crate::timeline::Timeline>,
     pub errors: Vec<String>,
@@ -171,27 +187,6 @@ pub fn is_standing(e: &Epic) -> bool {
         .is_some_and(|s| s.eq_ignore_ascii_case(&e.system))
 }
 
-/// One task's line: `[x] db-131  feat: skin palette  s  pr 412`, `[/]` for one started.
-fn leaf_line(r: &crate::epics::Row) -> String {
-    let mark = match r.state.as_str() {
-        "done" => 'x',
-        "doing" => '/',
-        _ => ' ',
-    };
-    let mut s = format!("[{mark}] {}  ", r.id);
-    if !r.kind.is_empty() && r.kind != "untyped" {
-        s += &format!("{}: ", r.kind);
-    }
-    s += &r.title;
-    if !r.size.is_empty() {
-        s += &format!("  {}", r.size);
-    }
-    if !r.prs.is_empty() {
-        s += &format!("  pr {}", r.prs.join(", "));
-    }
-    s
-}
-
 /// An epic's line on its system: title, percent, step, brief, plan phases, rows, PRs, ETA and track.
 pub fn epic_line(e: &Epic, now: i64) -> String {
     let mut s = e.title.clone();
@@ -234,10 +229,10 @@ pub fn epic_line(e: &Epic, now: i64) -> String {
     s
 }
 
-/// What the chain asks of the human: an epic to verify once every row landed, then each plan
-/// that names no epic (the first [`PLANS_SHOWN`], then a count).
-pub fn needs(c: &Chain) -> Vec<String> {
-    let mut out: Vec<String> = c
+/// What the chain asks of the human, by kind: the epics to verify once every row landed, then
+/// the plans that name no epic. A kind with nothing is left out.
+pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
+    let verify: Vec<String> = c
         .epics
         .iter()
         .filter(|e| e.step == "landed")
@@ -250,20 +245,67 @@ pub fn needs(c: &Chain) -> Vec<String> {
             )
         })
         .collect();
-    let plans = &c.unlinked.plans;
-    out.extend(plans.iter().take(PLANS_SHOWN).map(|p| {
-        format!(
-            "plan with no epic: {}",
-            crate::plans::named(&crate::plans::path(p))
-        )
-    }));
-    if plans.len() > PLANS_SHOWN {
-        out.push(format!(
-            "+{} more plans with no epic",
-            plans.len() - PLANS_SHOWN
-        ));
+    let plans: Vec<String> = c
+        .unlinked
+        .plans
+        .iter()
+        .map(|p| {
+            format!(
+                "plan with no epic: {}",
+                crate::plans::named(&crate::plans::path(p))
+            )
+        })
+        .collect();
+    let mut out = vec![];
+    if !verify.is_empty() {
+        out.push(NeedGroup {
+            kind: "verify".into(),
+            says: format!(
+                "{} epic{} landed with no live proof",
+                verify.len(),
+                plural(verify.len())
+            ),
+            items: verify,
+        });
+    }
+    if !plans.is_empty() {
+        out.push(NeedGroup {
+            kind: "plan".into(),
+            says: format!("{} plan{} with no epic", plans.len(), plural(plans.len())),
+            items: plans,
+        });
     }
     out
+}
+
+/// The next stage's checks that wait on a fix or the human, as one Needs you group; None when
+/// none do or the stage was not read.
+fn stage_group(p: &Page) -> Option<NeedGroup> {
+    let g = p.gate.as_ref().filter(|g| g.fail + g.human > 0)?;
+    Some(NeedGroup {
+        kind: "stage".into(),
+        says: format!(
+            "{} {} check{} failing, {} for a human",
+            g.fail,
+            g.stage,
+            plural(g.fail as usize),
+            g.human
+        ),
+        items: p
+            .next_rows
+            .iter()
+            .filter(|r| r.result == "FAIL" || r.result == "HUMAN")
+            .map(|r| format!("{} {}", r.result, r.requirement))
+            .collect(),
+    })
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
@@ -279,6 +321,8 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
         .map(|c| {
             let sys = System {
                 id: c.id.clone(),
+                criteria_met: Some(c.met),
+                criteria_total: Some(c.total),
                 ..Default::default()
             };
             (sys, format!("criteria {} of {}", c.met, c.total))
@@ -318,9 +362,12 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                 .iter()
                 .filter(|e| is_standing(e) && e.state == "open")
                 .count();
+            s.features = features.len();
+            s.features_done = features.iter().filter(|e| e.state != "open").count();
+            s.standing = standing;
             let mut parts = vec![];
             if !features.is_empty() {
-                let done = features.iter().filter(|e| e.state != "open").count();
+                let done = s.features_done;
                 let n = features.len();
                 parts.push(format!(
                     "{n} feature{}, {done} done",
@@ -344,17 +391,14 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                     id: e.id.clone(),
                     line: epic_line(e, now),
                     behind: e.track.as_deref() == Some("behind"),
-                    leaves: e
-                        .rows
-                        .iter()
-                        .map(|r| Leaf {
-                            id: r.id.clone(),
-                            line: leaf_line(r),
-                            done: r.state == "done",
-                        })
-                        .collect(),
                 })
                 .collect();
+            s.open_rows = es
+                .iter()
+                .filter(|e| e.state == "open")
+                .map(|e| e.open)
+                .sum();
+            s.behind = s.epics.iter().filter(|e| e.behind).count();
             let mut open_features = es.iter().filter(|e| e.state == "open" && !is_standing(e));
             s.wave = open_features.next().map(|e| Wave {
                 id: e.id.clone(),
@@ -440,8 +484,29 @@ fn stage_json<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Read and join the page for one project at `stage`. `now` is epoch seconds, for ETAs.
-pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
+/// Read and join the page for one project at `stage`. `now` is epoch seconds, for ETAs. The
+/// chain is a `fleet-bench epics` read over the whole fleet (its forecast places every queue
+/// item), most of the page's time, so it runs beside the page's other reads.
+pub fn read(runner: &(dyn Runner + Sync), name: &str, stage: &str, now: i64) -> Page {
+    std::thread::scope(|s| {
+        let chain = s.spawn(|| epics::chain(runner, name));
+        read_with(runner, name, stage, now, move || {
+            chain
+                .join()
+                .unwrap_or_else(|_| Err("fleet-bench epics: the read panicked".into()))
+        })
+    })
+}
+
+/// As `read`, with the chain from `chain`, called once the page's own reads are done: agent-web
+/// hands it the project's chain from the one `fleet-bench epics` read the Deliverables share.
+pub fn read_with(
+    runner: &dyn Runner,
+    name: &str,
+    stage: &str,
+    now: i64,
+    chain: impl FnOnce() -> Result<Chain, String>,
+) -> Page {
     let mut p = Page {
         project: name.to_string(),
         ..Default::default()
@@ -450,13 +515,6 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         p.errors.push(format!("refusing project name {name:?}"));
         return p;
     }
-    let chain = match epics::chain(runner, name) {
-        Ok(c) => Some(c),
-        Err(e) => {
-            p.errors.push(e);
-            None
-        }
-    };
     let criteria = match stage_json::<SystemsOut>(
         runner,
         &["project-stage-check", name, "--systems", "--json"],
@@ -487,21 +545,6 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
             None
         }
     };
-    if let Some(c) = &chain {
-        p.flow_line = Some(epics::flow_line(&c.flow));
-        p.needs = needs(c);
-        let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
-        p.systems = systems(c, &criteria, &in_open, now);
-    }
-    let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
-    p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
-    if let Some(n) = chain
-        .as_ref()
-        .map(|c| c.unlinked.rows.len())
-        .filter(|n| *n > 0)
-    {
-        p.systems_says += &format!(" ({n} rows with no epic)");
-    }
     let ladder: Vec<String> =
         match runner.run(&["notes".into(), "projects".into(), "--stages".into()]) {
             Ok(o) => o
@@ -538,6 +581,8 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                     stage: o.stage.clone(),
                     met: o.met,
                     total: o.total,
+                    fail: o.fail,
+                    human: o.human,
                 });
                 p.next_rows = o
                     .requirements
@@ -558,9 +603,29 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         vec![]
     });
     p.releases = crate::releases::badge(&channels);
+    p.alerts = crate::alerts::project_badge_here(name);
     let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
     p.timeline = timeline;
     p.errors.extend(errors);
+    let chain = chain().map_err(|e| p.errors.push(e)).ok();
+    if let Some(c) = &chain {
+        p.flow_line = Some(epics::flow_line(&c.flow));
+        p.need_groups = need_groups(c);
+        p.build =
+            crate::deliverables::build(std::slice::from_ref(c), *chrono::Local::now().offset());
+        let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
+        p.systems = systems(c, &criteria, &in_open, now);
+    }
+    p.need_groups.extend(stage_group(&p));
+    let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
+    p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
+    if let Some(n) = chain
+        .as_ref()
+        .map(|c| c.unlinked.rows.len())
+        .filter(|n| *n > 0)
+    {
+        p.systems_says += &format!(" ({n} rows with no epic)");
+    }
     p.shipped_says = match p.shipped.len() {
         0 => "none yet".into(),
         1 => "1 version".into(),
@@ -571,9 +636,20 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
 
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
 /// `notes projects --stats --json`. A name no lab project has is an error, never an empty page.
-pub fn named(runner: &dyn Runner, name: &str, now: i64) -> Result<Page, String> {
+pub fn named(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<Page, String> {
     let s = stats_of(runner, name)?;
     Ok(read(runner, name, &s.stage, now))
+}
+
+/// As `named`, with the chain from `chain` (see `read_with`).
+pub fn named_with(
+    runner: &dyn Runner,
+    name: &str,
+    now: i64,
+    chain: impl FnOnce() -> Result<Chain, String>,
+) -> Result<Page, String> {
+    let s = stats_of(runner, name)?;
+    Ok(read_with(runner, name, &s.stage, now, chain))
 }
 
 /// The `notes projects --stats --json` row of `name`; a name no lab project has is an error.
@@ -642,7 +718,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::Naiv
 /// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
-pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, String> {
+pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<String, String> {
     let s = stats_of(runner, name)?;
     let p = read(runner, name, &s.stage, now);
     let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
@@ -667,12 +743,12 @@ pub fn to_json(p: &Page) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     /// Answers by the command's first two words; records every argv it was given.
     struct Fake {
         answers: Vec<(&'static str, i32, String)>,
-        seen: RefCell<Vec<String>>,
+        seen: Mutex<Vec<String>>,
     }
     impl Runner for Fake {
         fn run(&self, argv: &[String]) -> Result<String, String> {
@@ -683,7 +759,7 @@ mod tests {
         }
         fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
             let line = argv.join(" ");
-            self.seen.borrow_mut().push(line.clone());
+            self.seen.lock().unwrap().push(line.clone());
             self.answers
                 .iter()
                 .find(|(k, ..)| line.starts_with(k))
@@ -758,8 +834,36 @@ mod tests {
                     r#"{"tags":[{"tag":"v0.1.0","at":1794000000}]}"#.into(),
                 ),
             ],
-            seen: RefCell::new(vec![]),
+            seen: Mutex::new(vec![]),
         }
+    }
+
+    #[test]
+    fn a_page_read_with_a_chain_in_hand_runs_no_fleet_bench_and_draws_the_same_page() {
+        let f = fake(0);
+        let whole = read(&f, "game", "alpha", NOW);
+        let f = fake(0);
+        let chains = epics::all(&f).unwrap();
+        f.seen.lock().unwrap().clear();
+        let given = read_with(&f, "game", "alpha", NOW, || epics::pick(&chains, "game"));
+        assert!(!f
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("fleet-bench")));
+        assert_eq!(given.flow_line, whole.flow_line);
+        assert_eq!(given.systems_says, whole.systems_says);
+        let none = read_with(&f, "game", "alpha", NOW, || epics::pick(&chains, "other"));
+        assert!(none.flow_line.is_none());
+        assert!(none
+            .errors
+            .iter()
+            .any(|e| e == "fleet-bench epics lists no project other"));
+        assert!(
+            none.next_says != "next stage  not read",
+            "the rest of the page still reads"
+        );
     }
 
     #[test]
@@ -771,18 +875,39 @@ mod tests {
             p.flow_line.as_deref(),
             Some("ideas 3 | briefs 1 | plans 1 | epics 3 | rows 5 | landed 1 | verified 1")
         );
+        // Grouped by kind with every item, the next stage's failing and human checks last.
+        let groups: Vec<(&str, &str, usize)> = p
+            .need_groups
+            .iter()
+            .map(|g| (g.kind.as_str(), g.says.as_str(), g.items.len()))
+            .collect();
         assert_eq!(
-            p.needs,
+            groups,
             vec![
-                "verify: Saves (4 of 4 rows landed, no live proof)",
-                "plan with no epic: a",
-                "plan with no epic: b",
-                "plan with no epic: c",
-                "plan with no epic: d",
-                "plan with no epic: e",
-                "+1 more plans with no epic",
+                ("verify", "1 epic landed with no live proof", 1),
+                ("plan", "6 plans with no epic", 6),
+                ("stage", "1 beta check failing, 1 for a human", 1),
             ]
         );
+        // The head's numbers as fields, so a table draws them without parsing the line.
+        let ui = &p.systems[0];
+        assert_eq!(
+            (
+                ui.criteria_met,
+                ui.criteria_total,
+                ui.features,
+                ui.features_done,
+                ui.standing
+            ),
+            (Some(5), Some(7), 3, 1, 1)
+        );
+        assert_eq!(
+            (ui.open_rows, ui.behind),
+            (3, 1),
+            "Menus 2, Saves 0, standard 1; Menus behind"
+        );
+        let none = &p.systems[2];
+        assert_eq!((none.criteria_met, none.criteria_total), (None, None));
         let heads: Vec<&str> = p.systems.iter().map(|s| s.head.as_str()).collect();
         assert_eq!(
             heads,
@@ -813,18 +938,6 @@ mod tests {
             ui.epics.iter().map(|e| e.behind).collect::<Vec<_>>(),
             vec![true, false, false]
         );
-        assert_eq!(
-            ui.epics[0]
-                .leaves
-                .iter()
-                .map(|l| (l.id.as_str(), l.line.as_str(), l.done))
-                .collect::<Vec<_>>(),
-            vec![
-                ("gm-3", "[x] gm-3  feat: Main menu  m  pr 101", true),
-                ("gm-4", "[ ] gm-4  Pause menu", false),
-                ("gm-8", "[/] gm-8  fix: Back key  s", false),
-            ]
-        );
         assert_eq!(ui.closed, "+2 closed, 2 verified");
         assert_eq!(
             p.systems[2].epics[0].line, "Odd  [epic]  brief no  plan no  rows 0 of 0  ETA overdue",
@@ -852,7 +965,7 @@ mod tests {
             vec!["v0.1.0: 20 rows closed; feat 9, fix 7, docs 4"]
         );
         assert_eq!(p.shipped_says, "1 version");
-        assert_eq!(p.releases.unwrap().says, "drift; channels 1: 1 drift");
+        assert_eq!(p.releases.unwrap().says, "drift; channels 1 drift");
         assert_eq!(p.timeline.unwrap().says, "7d: 1 tag");
     }
 
@@ -894,14 +1007,23 @@ mod tests {
         let f = fake(0);
         let p = read(&f, "game", "prod", NOW);
         assert_eq!(p.next_says, "no stage after this one");
-        assert!(!f.seen.borrow().iter().any(|l| l.contains("--stage ")));
+        assert!(!f
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("--stage ")));
         let f = Fake {
             answers: vec![("notes projects --stages", 0, "draft dev\n".into())],
-            seen: RefCell::new(vec![]),
+            seen: Mutex::new(vec![]),
         };
         let p = read(&f, "game", "draft", NOW);
         assert!(p.flow_line.is_none());
-        assert!(p.errors[0].contains("fleet-bench"), "{:?}", p.errors);
+        assert!(
+            p.errors.iter().any(|e| e.contains("fleet-bench")),
+            "{:?}",
+            p.errors
+        );
     }
 
     #[test]
@@ -940,7 +1062,9 @@ mod tests {
             Some(Gate {
                 stage: "beta".into(),
                 met: 4,
-                total: 12
+                total: 12,
+                fail: 1,
+                human: 1
             })
         );
     }
@@ -1051,7 +1175,7 @@ mod tests {
     fn a_name_that_could_be_a_flag_runs_nothing() {
         let f = fake(0);
         let p = read(&f, "--all", "alpha", NOW);
-        assert!(f.seen.borrow().is_empty());
+        assert!(f.seen.lock().unwrap().is_empty());
         assert_eq!(p.errors.len(), 1);
     }
 }

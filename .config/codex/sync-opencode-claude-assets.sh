@@ -13,9 +13,9 @@
 #              filename-derived agent name — both are dropped.
 #  - commands: frontmatter is sanitized to {description}. A `name:` key would
 #              override the path-derived name and collapse namespaced commands
-#              (kb/implement.md -> "implement") into collisions — dropped.
-#              Subdirectories are preserved: Claude's /kb:implement becomes
-#              OpenCode's /kb/implement.
+#              (a/b.md -> "b") into collisions — dropped.
+#              Subdirectories are preserved: Claude's /a:b becomes
+#              OpenCode's /a/b.
 #
 # Generated files are tracked in a manifest so re-runs clean up renames/removals
 # without touching natively-authored OpenCode agents/commands.

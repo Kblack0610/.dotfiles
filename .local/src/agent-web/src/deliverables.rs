@@ -4,23 +4,17 @@
 //! keeps the plain ones. The view narrows `rows` here and nowhere else: the head line, the
 //! coverage line and `table`'s total stay the whole fleet's.
 //!
-//! One `fleet-bench epics --json` read over every project takes about 10s and an epic moves in
-//! hours, so every open tab and keystroke shares one answer for `DELIVERABLES_SECS`.
+//! The rows are built from the one kept `fleet-bench epics` read (`crate::epics`), which the
+//! project pages share.
 
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::deliverables::{self, Deliverable, Deliverables};
-use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{off, ReadCache};
 use crate::{bad, ApiResult};
-
-const DELIVERABLES_SECS: u64 = 120;
-
-static LAST: ReadCache<Deliverables, DELIVERABLES_SECS> = ReadCache::new();
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -33,6 +27,18 @@ pub struct DeliverableQuery {
     sort: String,
     #[serde(rename = "ddir")]
     dir: String,
+    /// One project's epics only (`<profile>/<name>`, or the name), as its page's Build tab reads
+    /// them; empty is every project.
+    scope: String,
+}
+
+/// The chain of the `<profile>/<project>` that `scope` names; a bare name could be two profiles' projects, so it keeps nothing.
+fn scoped(chains: &[hub_core::epics::Chain], scope: &str) -> Vec<hub_core::epics::Chain> {
+    chains
+        .iter()
+        .filter(|c| format!("{}/{}", c.profile, c.project) == scope)
+        .cloned()
+        .collect()
 }
 
 /// The section as the page reads it: the kept rows by reference, every other field the reader's.
@@ -67,15 +73,17 @@ fn shown(all: &Deliverables, q: &DeliverableQuery) -> serde_json::Value {
     .unwrap_or_default()
 }
 
-/// A failed read is not cached: the next refresh tries again.
+/// A failed read is not kept: the next refresh tries again.
 pub async fn get(Query(q): Query<DeliverableQuery>) -> ApiResult<Json<serde_json::Value>> {
-    let read = async {
-        off(|| deliverables::read(&System))
-            .await
-            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?
-            .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+    let chains = crate::epics::chains()
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    let zone = *chrono::Local::now().offset();
+    let all = if q.scope.is_empty() {
+        deliverables::build(&chains, zone)
+    } else {
+        deliverables::build(&scoped(&chains, &q.scope), zone)
     };
-    let all = LAST.get((), read).await?;
     Ok(Json(shown(&all, &q)))
 }
 
@@ -129,5 +137,28 @@ mod tests {
         let Query(q) = Query::<DeliverableQuery>::try_from_uri(&uri).unwrap();
         assert_eq!((q.q.as_str(), q.s.as_str()), ("sys:ui", "behind"));
         assert_eq!((q.sort.as_str(), q.dir.as_str()), ("eta", "asc"));
+    }
+
+    #[test]
+    fn a_scope_keeps_one_project_by_profile_and_name() {
+        use hub_core::epics::Chain;
+        let c = |profile: &str, project: &str| Chain {
+            profile: profile.into(),
+            project: project.into(),
+            ..Default::default()
+        };
+        let chains = vec![c("bnb", "ucp"), c("personal", "dotfiles")];
+        let names = |s: &str| {
+            scoped(&chains, s)
+                .into_iter()
+                .map(|c| c.project)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("bnb/ucp"), vec!["ucp"]);
+        assert_eq!(names("personal/dotfiles"), vec!["dotfiles"]);
+        // A bare name could be two profiles' projects: it keeps nothing.
+        assert!(names("dotfiles").is_empty());
+        // NEGATIVE CONTROL: a profile that is not the project's keeps nothing.
+        assert!(names("personal/ucp").is_empty());
     }
 }

@@ -29,9 +29,17 @@ const WOFF2: &str = "font/woff2";
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -47,7 +55,9 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
@@ -302,10 +312,11 @@ mod tests {
 
     #[test]
     fn the_builds_headers_are_hub_cores_columns() {
-        // Rule 8: the Builds table draws the first columns hub_core::builds sorts and filters;
-        // `forge` and `event` are dropdowns and `title` the open row's heading.
+        // Rule 8: the CI run tables draw the first columns hub_core::builds sorts and filters;
+        // `forge` and `event` are dropdowns, `title` the open row's heading, and `id` and `pr`
+        // only a query's (a run's record `id:=`, a PR's runs `pr:=`).
         use hub_core::table::Row;
-        let js = include_str!("../static/releases.js");
+        let js = include_str!("../static/ci.js");
         let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
         let body = &js[at..at + js[at..].find('}').unwrap()];
         let keys: Vec<&str> = body
@@ -314,8 +325,11 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 3]);
-        assert_eq!(all[all.len() - 3..], ["forge", "event", "title"]);
+        assert_eq!(keys, all[..all.len() - 5]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
@@ -440,6 +454,76 @@ mod tests {
     }
 
     #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES (and the old
+        // words it still reads), so the router keeps the id of every page Link::href draws inside
+        // an inner tab, and of a saved link to one.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES
+            .iter()
+            .chain(hub_core::links::RETIRED_PAGES)
+        {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+    }
+
+    #[test]
+    fn moved_chips_are_the_layout() {
+        // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
+        // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
+        for (tab, old, table, chip) in hub_core::layout::MOVED_CHIPS {
+            let to = hub_core::layout::MOVED
+                .iter()
+                .find(|m| m.0 == *tab && m.1 == *old)
+                .expect("a moved chip is a moved section");
+            let pre = crate::infra::TABLES
+                .iter()
+                .find(|t| t.0 == *table)
+                .expect("the chip's table is on the page")
+                .1;
+            let want = format!(
+                r#""{tab}/{old}": ["{}", "{}", "{pre}s={chip}"]"#,
+                to.2, to.3
+            );
+            assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
+    }
+
+    #[test]
+    fn project_page_is_the_layout() {
+        // Rule 8 for an opened project: app.js's PROJECT_PAGE is hub_core::layout::PROJECT_PAGE.
+        let want: Vec<serde_json::Value> = hub_core::layout::PROJECT_PAGE
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const PROJECT_PAGE = "))
+            .expect("app.js has PROJECT_PAGE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
+        assert_eq!(got, serde_json::Value::Array(want));
+        // Every section a group names is an anchor projects.js draws.
+        let js = include_str!("../static/projects.js");
+        for i in hub_core::layout::PROJECT_PAGE {
+            for s in i.sections {
+                assert!(
+                    js.contains(&format!("\"{s}\"")),
+                    "projects.js never names {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn inner_tabs_are_the_layout() {
         // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
         let mut want = serde_json::Map::new();
@@ -452,10 +536,7 @@ mod tests {
                 .iter()
                 .map(|i| serde_json::json!([i.id, i.title, i.sections]))
                 .collect();
-            want.insert(
-                t.id.to_string(),
-                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
-            );
+            want.insert(t.id.to_string(), serde_json::json!({ "tabs": tabs }));
         }
         let line = APP_JS
             .lines()
@@ -468,12 +549,13 @@ mod tests {
         // section never shows under every inner tab or under none. Releases is checked per
         // inner tab below: its table and detail share one group.
         let pages = [
+            ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "log"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -488,6 +570,23 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Log's sections are index.html's `sec-` anchors, which log.js puts in their inner tab's
+        // group by id; one log.js draws (the day's history) it wraps where it draws it. The
+        // forecast is the TUI's alone, as `log_folds_are_the_layout` says.
+        let log_js = include_str!("../static/log.js");
+        assert!(
+            log_js.contains(r#"innerHide("log", el.id.slice(4), el)"#),
+            "log.js never puts Log's sections in their inner tabs"
+        );
+        let index = include_str!("index.html");
+        for s in hub_core::layout::resolve("log").expect("log").sections {
+            let id = format!("id=\"sec-{s}\"");
+            let drawn = log_js.contains(&format!("innerWrap(\"log\", \"{s}\", `<div {id}"));
+            assert!(
+                *s == "forecast" || index.contains(&id) || drawn,
+                "Log's {s} has no {id} in its inner tab's group"
+            );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
         let releases = include_str!("../static/releases.js");

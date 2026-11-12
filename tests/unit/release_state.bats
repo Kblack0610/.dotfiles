@@ -2,7 +2,8 @@
 # release-state: pinned is read from the fetched remote branch, live from the cluster, and a
 # failed probe says unknown. kubectl is a stub that prints $KUBE_IMAGE (or fails on
 # KUBE_FAIL=1); gh is a stub that prints $GH_REPLY (or fails on GH_FAIL=1); the "remote" is a bare
-# repo in the sandbox, so fetch is real git.
+# repo in the sandbox, so fetch is real git. The store probes sign and fetch through
+# .local/lib/store-auth.sh, which store_sales.bats shares, so a change to it picks both files.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -74,6 +75,7 @@ push_pin() {
 write_map() {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
+  "channels": { "_comment": "c", "alpha": "alpha", "preview": "alpha", "internal": "alpha", "beta": "beta", "prod": "prod" },
   "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "_comment": "a string value",
@@ -89,6 +91,21 @@ write_map() {
   }
 }
 EOF
+}
+
+# notes_stub <stats-json> - `notes` answers the ladder and each lab project's stage;
+# NOTES_FAIL=1 makes it answer nothing.
+notes_stub() {
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+[ "${NOTES_FAIL:-0}" = 1 ] && exit 1
+case "$*" in
+  "projects --stages") echo "draft dev alpha beta prod" ;;
+  "projects --stats --json") cat "$SANDBOX/stats.json" ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+  printf '%s' "$1" > "$SANDBOX/stats.json"
 }
 
 row() { jq -c --arg id "$1" '.rows[] | select(.id == $id)' "$RELEASE_STATE_DIR/state.json"; }
@@ -108,6 +125,18 @@ field() { row "$1" | jq -r "$2"; }
   assert_output --partial 'tag: v1.0.0'
   [ "$(field web-prod .pinned.value)" = v1.1.0 ]
   [ "$(field web-prod .status)" = ok ]
+}
+
+@test "a target with no branch reads origin's default branch even when origin/HEAD names another remote" {
+  # home-config's clone points origin/HEAD at forgejo/master; fetching "origin forgejo/master" failed.
+  git -C "$CLONE" remote add mirror "$ORIGIN"
+  git -C "$CLONE" fetch -q mirror
+  git -C "$CLONE" symbolic-ref refs/remotes/origin/HEAD refs/remotes/mirror/main
+  run "$RS" refresh
+  assert_success
+  [ "$(field web-preview .pinned.source)" = "infra:origin/main:apps/web/kustomization.yaml" ]
+  [ "$(field web-preview .pinned.value)" = pre-abc ]
+  [ "$(field web-preview .pinned.error)" = null ]
 }
 
 @test "live differing from pinned is drift, and check names it once past grace" {
@@ -171,19 +200,17 @@ field() { row "$1" | jq -r "$2"; }
   assert_output --partial 'FLOATING web web-prod'
 }
 
-@test "a declared telemetry watch with no definition fails check; a green one passes" {
+@test "a declared telemetry watch with no definition reads missing, and check leaves it to hub releases check" {
   write_map '"telemetry": ["web-health"]'
   "$RS" refresh >/dev/null
   [ "$(field web-prod '.telemetry[0].state')" = missing ]
   run "$RS" check
-  assert_failure
-  assert_output --partial 'TELEMETRY web web-prod: watch web-health is missing'
+  assert_success
+  refute_output --partial 'TELEMETRY'
   : > "$WATCH_DIR/web-health.yaml"
   echo OK > "$WATCH_STATE_DIR/web-health.state"
   "$RS" refresh >/dev/null
-  run "$RS" check
-  assert_success
-  assert_output 'ok'
+  [ "$(field web-prod '.telemetry[0].state')" = OK ]
 }
 
 @test "an app with no targets gets a release row: its tag, or unreleased" {
@@ -243,12 +270,13 @@ field() { row "$1" | jq -r "$2"; }
   "$RS" refresh >/dev/null
   run "$RS" show
   assert_success
-  [ "$(sed -n 3p <<<"$output" | awk '{print $NF, $(NF-3)}')" = "- drift" ]
+  sed -n 3p <<<"$output" | grep -Eq ' drift .*none declared$'
 }
 
 @test "doctor 4c names a malformed target and a duplicate id" {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
+  "channels": { "prod": "prod", "beta": "beta" },
   "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "infra": { "system": "none" },
@@ -263,8 +291,8 @@ EOF
   AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
   assert_failure
   assert_output --partial 'target "Bad Id": id must be lowercase'
-  assert_output --partial 'target "Bad Id": pinned needs {tag: true}, {deployed: true} or repo and path'
-  assert_output --partial 'target "dup": channel "staging" is not one of'
+  assert_output --partial 'target "Bad Id": pinned needs {tag: true}, {deployed: true}, {deployed: "manual", reason} or repo and path'
+  assert_output --partial 'target "dup": channel "staging" is not one of beta|prod'
   assert_output --partial 'target "dup": live needs k8s'
   assert_output --partial 'dep "ghost" is not a registered project'
   assert_output --partial 'deploy target id "dup" is used 2 times'
@@ -376,6 +404,108 @@ MD
   assert_output "$(printf 'web-v1.1.0\nweb-v1.0.0')"
 }
 
+@test "history: each project's tags newest first, with when, its commit and the release before it" {
+  ship "first (#1)" web-v1.0.0
+  ship "rc (#2)" web-v1.1.0-rc1
+  ship "second (#3)" web-v1.1.0
+  run "$RS" refresh web
+  assert_success
+  h() { jq -c ".releases.web$1" "$RELEASE_STATE_DIR/state.json"; }
+  [ "$(h .line)" = '"release"' ]
+  [ "$(h '.tags | map(.tag)')" = '["web-v1.1.0","web-v1.1.0-rc1","web-v1.0.0"]' ]
+  # The same range the changelog reads: a release skips its own candidate.
+  [ "$(h '.tags[0].prev')" = '"web-v1.0.0"' ]
+  [ "$(h '.tags[2].prev')" = null ]
+  [ "$(h '.tags[0].version')" = '"1.1.0"' ]
+  [ "$(h '.tags[0].sha' | tr -d '"')" = "$(git -C "$CLONE" rev-parse web-v1.1.0^{commit})" ]
+  [[ "$(h '.tags[0].at')" =~ ^[0-9]+$ ]]
+  # Each tag names the PRs in its range, and the line names the repo the PR store keys them by.
+  [ "$(h '.tags | map(.prs)')" = '[[3,2],[2],[1]]' ]
+  git -C "$CLONE" remote set-url origin git@github.com:acme/infra.git
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(h .repo)" = '"acme/infra"' ]
+  git -C "$CLONE" remote set-url origin https://git.example.com/acme/infra.git
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(h .repo)" = '"git.example.com/acme/infra"' ]
+  git -C "$CLONE" remote set-url origin "$ORIGIN"
+  # A subset refresh keeps the other projects' history.
+  [ "$(jq -r '.releases | has("shop")' "$RELEASE_STATE_DIR/state.json")" = false ]
+  "$RS" refresh >/dev/null 2>&1
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(jq -r '.releases | has("shop") and has("lonely")' "$RELEASE_STATE_DIR/state.json")" = true ]
+}
+
+@test "history and changelog: a project with no release tag reads its buildTags, and without them has none" {
+  ship "build one (#1)" v0.5.0-web1
+  ship "build two (#2)" v0.5.0-web2
+  ship "sibling build (#3)" v0.5.0-other1
+  # Negative control: per-build tags are not the release line, so with no buildTags there is none.
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -r '.releases.web.line' "$RELEASE_STATE_DIR/state.json")" = none ]
+  run "$RS" changelog web
+  assert_failure 2
+  assert_output --partial 'web has no release tags'
+  jq '.trackers.web.buildTags = ["v*-web*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -c '.releases.web | [.line, .glob, (.tags | map(.tag)), .tags[0].prev]' "$RELEASE_STATE_DIR/state.json")" = '["build","v*-web*",["v0.5.0-web2","v0.5.0-web1"],"v0.5.0-web1"]' ]
+  [ "$(cl web | jq -c '[.tag, .range, .text]')" = '["v0.5.0-web2","v0.5.0-web1..v0.5.0-web2","- build two (#2)"]' ]
+  # buildTags never own the version: a game keeps waiting for its own release family.
+  run bash -c ". '$PROJECT_NAME_LIB'; project_release_tag web"
+  assert_output ''
+}
+
+@test "project_tag_scope: a repo's own tagGlob loses a sibling's buildTags, so a build sits in one history" {
+  ship "release (#1)" v1.0.0
+  ship "game build (#2)" v0.5.0-web1
+  jq '.trackers.infra.tagGlob = "v*"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  tags() { bash -c ". '$PROJECT_NAME_LIB'; project_tag_scope infra && printf '%s|' \"\$_PTS_GLOB\" && git_tags \"\$_PTS_REPO\" infra \"\$_PTS_SCOPED\" \"\$_PTS_GLOB\" | paste -sd,"; }
+  # Negative control: with no sibling claiming it, the repo's v* lists the build.
+  run tags
+  assert_output 'v*|v1.0.0,v0.5.0-web1'
+  jq '.trackers.web.buildTags = ["v*-web*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run tags
+  assert_output 'v* !v*-web*|v1.0.0'
+  run "$RS" refresh
+  assert_success
+  [ "$(jq -c '.releases.web.tags | map(.tag)' "$RELEASE_STATE_DIR/state.json")" = '["v0.5.0-web1"]' ]
+}
+
+@test "history: several build families read newest first by date, not by name" {
+  # By version sort shapecity3 > barrage9 at the same base; by date barrage9 is the newest.
+  GIT_COMMITTER_DATE=@1700000000 ship "game build (#1)" v0.5.0-shapecity3
+  GIT_COMMITTER_DATE=@1700000100 ship "barrage build (#2)" v0.5.0-barrage9
+  jq '.trackers.web.buildTags = ["v*-shapecity*", "v*-barrage*"]' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$RS" refresh web
+  assert_success
+  [ "$(jq -c '.releases.web.tags | map(.tag)' "$RELEASE_STATE_DIR/state.json")" = '["v0.5.0-barrage9","v0.5.0-shapecity3"]' ]
+}
+
+@test "pinned: a gitops pin says when the file took its value and the value before it" {
+  run "$RS" refresh web
+  # The first pin has no value before it.
+  [ "$(field web-prod '.pinned | [.value, .prev] | @json')" = '["v1.0.0",null]' ]
+  [ "$(field web-prod .pinned.at)" = "$(git -C "$CLONE" log -1 --format=%ct)" ]
+  push_pin v1.1.0
+  run "$RS" refresh web
+  assert_success
+  [ "$(field web-prod '.pinned | [.value, .prev] | @json')" = '["v1.1.0","v1.0.0"]' ]
+  [ "$(field web-prod .pinned.at)" = "$(git -C "$SANDBOX/pusher" log -1 --format=%ct)" ]
+  # A later commit that only moves another line holding the same string is not when the pin moved.
+  set_at="$(git -C "$SANDBOX/pusher" log -1 --format=%ct)"
+  printf 'spec:\n  values:\n    image:\n      tag: v1.1.0\n    sidecar: v1.1.0\n' > "$SANDBOX/pusher/apps/web/helmrelease.yaml"
+  GIT_COMMITTER_DATE=@2000000000 git -C "$SANDBOX/pusher" commit -qam sidecar
+  sed -i 's/sidecar: v1.1.0/sidecar: v1.2.0/' "$SANDBOX/pusher/apps/web/helmrelease.yaml"
+  GIT_COMMITTER_DATE=@2000000100 git -C "$SANDBOX/pusher" commit -qam 'sidecar bump'
+  git -C "$SANDBOX/pusher" push -q origin main 2>/dev/null
+  run "$RS" refresh web
+  assert_success
+  [ "$(field web-prod '.pinned | [.value, .prev, .at] | @json')" = "[\"v1.1.0\",\"v1.0.0\",$set_at]" ]
+  # The kustomize pin reads its own history the same way.
+  [ "$(field web-preview '.pinned | [.value, .prev] | @json')" = '["pre-abc",null]' ]
+}
+
 @test "released: each commit's first tag on the line, none yet as null, an unknown commit as an error" {
   ship "first (#1)" web-v1.0.0
   ship "second (#2)" other-v9.0.0
@@ -431,9 +561,29 @@ MD
   [ "$(cl web web-v1.1.0 | jq -r .text)" = "- the web product" ]
 }
 
-# node <version> <state> <at> - one Deployment as the GraphQL answer carries it.
+@test "changelog: a product in a monorepo lists its own PRs, then the repo's others counted" {
+  jq '.trackers.web.path = "apps/web"' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  ship "first (#1)" web-v1.0.0
+  # Only engine work between two tags: none under the folder, so it says so and lists the rest.
+  ship "engine fix (#2)" wip-a; git -C "$CLONE" tag -d wip-a >/dev/null
+  ship "ci change (#3)" web-v1.1.0
+  [ "$(cl web web-v1.1.0 | jq -r .text)" = "$(printf -- 'No merged PR touches apps/web. 2 merged PRs elsewhere in the repo, touching nothing under apps/web:\n\n- ci change (#3)\n- engine fix (#2)')" ]
+  # Its own PR first, then the one elsewhere, counted once.
+  mkdir -p "$CLONE/apps/web"; echo x > "$CLONE/apps/web/f"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm "web feature (#4)"
+  ship "engine again (#5)" web-v1.2.0
+  [ "$(cl web web-v1.2.0 | jq -r .text)" = "$(printf -- '- web feature (#4)\n\n1 merged PR elsewhere in the repo, touching nothing under apps/web:\n\n- engine again (#5)')" ]
+  # Negative control: a project that is its whole repo has no elsewhere.
+  jq 'del(.trackers.web.path)' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  [ "$(cl web web-v1.2.0 | jq -r .text)" = "$(printf -- '- engine again (#5)\n- web feature (#4)')" ]
+}
+
+# node <version> <state> <at> [build] - one Deployment as the GraphQL answer carries it; a build
+# goes in the payload, which GraphQL returns as a JSON string.
 node() {
-  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$2" "$1" "$3"
+  local payload='""'
+  [ -z "${4:-}" ] || payload="\"{\\\"build\\\":\\\"$4\\\"}\""
+  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$2" "$1" "$3"
 }
 reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
 
@@ -456,6 +606,34 @@ EOF
   assert_output --partial 'target "b-steam-beta": live needs'
   assert_output --partial 'target "c-two-kinds": live names more than one kind'
   refute_output --partial 'target "a-'
+}
+
+@test "doctor 4c: channel words come from the registry channels map, each a stage at or above alpha" {
+  notes_stub '[]'
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  refute_output --partial 'channels'
+  # A rung below alpha, or one not on the ladder, is named.
+  jq '.channels.preview = "dev" | .channels.edge = "staging"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_failure
+  assert_output --partial 'channels.preview: "dev" is not a stage at or above alpha (draft|dev|alpha|beta|prod)'
+  assert_output --partial 'channels.edge: "staging" is not a stage at or above alpha'
+  # With no map, a registry with targets fails once, not once per target.
+  jq 'del(.channels)' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_failure
+  assert_output --partial 'registry has no channels map'
+  refute_output --partial 'is not one of'
+}
+
+@test "doctor 4c names a buildTags that is not a list of single globs" {
+  jq '.trackers.web.buildTags = ["v*-web*"] | .trackers.shop.buildTags = ["v*-a v*-b", ""] | .trackers.lonely.buildTags = "v*"' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial 'trackers.shop.buildTags has "v*-a v*-b": each entry is one glob'
+  assert_output --partial 'trackers.shop.buildTags has "":'
+  assert_output --partial 'trackers.lonely.buildTags is not a list of globs'
+  refute_output --partial 'trackers.web.buildTags'
 }
 
 @test "deploys: the target id names the environment in the project's github repo" {
@@ -499,7 +677,7 @@ EOF
   assert_success
   assert_equal "$(row shop-prod | jq -c '.deploys | [.error, .history, .prev, .last]')" '["gh api failed",[],null,null]'
   run "$RS" show shop
-  assert_line --regexp '^shop .*\?'
+  assert_line --regexp '^shop .* not read +not read +none declared$'
 }
 
 @test "deploys: an unreadable answer is an error, not an empty history" {
@@ -660,13 +838,13 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   assert_equal "$(row game-steam-beta | jq -c '[.live.error, .status]')" '["no branch beta on the app","unknown"]'
 }
 
-@test "store: a channel with no recorded upload is released, with live shown and the pin a dash" {
+@test "store: a channel with no recorded upload is released, with live shown and the pin not recorded" {
   store_setup
   unset GH_REPLY
   "$RS" refresh game
   assert_equal "$(row game-steam-beta | jq -c '[.pinned.value, .live.value, .status]')" '[null,"v0.5.0-g1","released"]'
   run "$RS" show game
-  assert_line --regexp '^game +beta game-steam-beta +- +v0\.5\.0-g1 +released'
+  assert_line --regexp '^game +beta game-steam-beta +not recorded +v0\.5\.0-g1 +released'
 }
 
 @test "store: unreadable deploy history is unknown, never the store's value called matching" {
@@ -777,4 +955,136 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   assert_equal "$(unb64url "$h" | jq -c '[.alg, .kid]')" '["ES256","KID1"]'
   assert_equal "$(unb64url "$c" | jq -c '[.iss, .aud]')" '["ISS1","appstoreconnect-v1"]'
   assert_equal "$(unb64url "$s" | wc -c)" 64
+}
+
+@test "deploys: each carries the commit it shipped and the build its payload names" {
+  reply "$(node v2 SUCCESS 2026-11-02T10:00:00Z 4321)" "$(node v1 SUCCESS 2026-11-01T10:00:00Z)" \
+    '{"createdAt":"2026-10-31T10:00:00Z","description":"v0","commitOid":"abcdef1234","payload":"not json","ref":{"name":"main"},"latestStatus":{"state":"SUCCESS","logUrl":"","createdAt":"2026-10-31T10:00:00Z"}}'
+  "$RS" refresh shop
+  assert_equal "$(row shop-prod | jq -c '[.deploys.history[] | [.sha, .build]]')" '[["abcdef1234","4321"],["abcdef1234",null],["abcdef1234",null]]'
+}
+
+@test "testflight: a recorded build number decides over the marketing version" {
+  store_setup
+  asc_key
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4321)"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -c '[.pinned.build, .status]')" '["4321","ok"]'
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -r .status)" drift
+}
+
+@test "store: a channel moved by hand is released, its pin reads manual with the reason" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual", "reason": "set in Steamworks"}' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -c '[.pinned.source, .pinned.reason, .live.value, .status]')" '["manual","set in Steamworks","v0.5.0-g1","released"]'
+  run "$RS" show game
+  assert_line --regexp '^game +beta game-steam-beta +manual +v0\.5\.0-g1 +released'
+}
+
+@test "doctor 4c wants a reason on a manual pin" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual"} | .trackers.game.targets[1].pinned = {"deployed": "manual", "reason": "by hand"}' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial 'target "game-steam-beta": {deployed: "manual"} needs a reason'
+  refute_output --partial 'target "game-play-internal"'
+}
+
+@test "doctor: a tag two projects of one repo list fails, a repo-only key does not count" {
+  git -C "$CODE" config user.email t@t; git -C "$CODE" config user.name t
+  git -C "$CODE" commit -q --allow-empty -m one
+  git -C "$CODE" tag v0.1.0; git -C "$CODE" tag game-v0.2.0
+  cat > "$PROJECT_MAP_FILE" <<EOF
+{
+  "paths": { "$CODE": "code" },
+  "trackers": {
+    "code": { "system": "none" },
+    "api": { "repo": "code", "tagGlob": "v*", "targets": [{"id": "api-prod", "channel": "prod", "pinned": {"tag": true}}] },
+    "game": { "repo": "code", "tagGlob": "game-v*", "lab": "game" }
+  }
+}
+EOF
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  refute_output --partial 'one tag, one project'
+  jq '.trackers.game.tagGlob = "v0.1*"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_output --partial "tag v0.1.0 in $CODE is listed by api and game: one tag, one project"
+  refute_output --partial 'tag game-v0.2.0'
+}
+
+@test "store: a channel moved by hand with no live probe is released, not unknown" {
+  store_setup
+  jq '.trackers.game.targets[0].pinned = {"deployed": "manual", "reason": "by hand"} | del(.trackers.game.targets[0].live)' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -r .status)" released
+}
+
+@test "testflight: a build drift restarts when the recorded build moves, and check names both builds" {
+  store_setup
+  asc_key
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
+  "$RS" refresh game
+  jq '(.rows[] | select(.id == "game-testflight") | .drift_since) = 1000' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"
+  "$RS" refresh game
+  assert_equal "$(row game-testflight | jq -r .drift_since)" 1000
+  run "$RS" check --grace 0
+  assert_output --partial 'DRIFT game game-testflight: pinned v0.5.0-g1 build 4400 live 0.5.0 (4321) build 4321'
+  reply "$(node v0.5.0-g1 SUCCESS 2026-11-03T10:00:00Z 4500)"
+  "$RS" refresh game
+  [ "$(row game-testflight | jq -r .drift_since)" -gt 1000 ]
+}
+
+@test "stages: a draft project deployed on any channel is fine, its rungs still named" {
+  notes_stub '[{"name": "web", "stage": "draft"}, {"name": "nolab", "stage": ""}]'
+  run "$RS" refresh
+  assert_success
+  run jq -c '.stages_error, .stages.web, .stages.shop' "$RELEASE_STATE_DIR/state.json"
+  assert_line --index 0 'null'
+  assert_line --index 1 '{"stage":"draft","rungs":["alpha","prod"],"needs":[]}'
+  # A project with no stage still has its rungs, for the gate that sets its first stage.
+  assert_line --index 2 '{"stage":null,"rungs":[],"needs":[]}'
+}
+
+@test "stages: a stage off the ladder or a channel the map does not name judges nothing" {
+  notes_stub '[{"name": "web", "stage": "gamma"}]'
+  jq '.trackers.web.targets[1].channel = "_comment"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web' "$RELEASE_STATE_DIR/state.json"
+  assert_output '{"stage":null,"rungs":["prod"],"needs":[]}'
+}
+
+@test "stages: a beta app names the rung nothing serves, and a target above it is no fault" {
+  notes_stub '[{"name": "web", "stage": "beta"}]'
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web | [.needs, has("ahead")]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[["beta"],false]'
+  # Negative control: at prod it still owes beta.
+  notes_stub '[{"name": "web", "stage": "prod"}]'
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web.needs' "$RELEASE_STATE_DIR/state.json"
+  assert_output '["beta"]'
+}
+
+@test "stages: a target not read serves no rung, and infra owes none" {
+  notes_stub '[{"name": "web", "stage": "alpha"}]'
+  KUBE_FAIL=1 "$RS" refresh >/dev/null
+  run jq -c '.stages.web | [.rungs, .needs]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[[],["alpha"]]'
+  jq '.trackers.web.type = "infra"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  KUBE_FAIL=1 "$RS" refresh >/dev/null
+  run jq -c '.stages.web.needs' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[]'
+}
+
+@test "stages: when notes cannot say, the snapshot says why and still writes its rows" {
+  notes_stub '[]'
+  NOTES_FAIL=1 run "$RS" refresh
+  assert_success
+  run jq -c '[.stages, .stages_error, (.rows | length > 0)]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[{},"notes projects --stages printed nothing",true]'
 }

@@ -528,3 +528,98 @@ spend_curl() {
   assert_failure 1
   assert_output 'last 1h: $150.4 (alert at $150)'
 }
+
+# -- export check: the one check behind the queue-cost-export watch --
+
+# qproc <pid> <session id> <age s> [item] [procStart]: a live claude with its sessions/<pid>.json, in a fake /proc;
+# an age or procStart of - leaves that field out of the json.
+qproc() {
+  local d="$SANDBOX/proc/$1" now; now=$(date +%s)
+  mkdir -p "$d" "$HOME/.claude/sessions"
+  printf '%s (claude) S %s777\n' "$1" "$(printf '0 %.0s' $(seq 18))" > "$d/stat"
+  printf 'PATH=/bin\0%s' "${4:+AGENT_QUEUE_ITEM=$4}" > "$d/environ"
+  jq -nc --argjson pid "$1" --arg sid "$2" --arg ps "${5:-777}" --arg age "$3" --argjson now "$now" \
+    '{pid:$pid, sessionId:$sid, procStart:$ps, startedAt:(($now - ($age | tonumber? // 0)) * 1000)}
+     | if $ps == "-" then del(.procStart) else . end | if $age == "-" then del(.startedAt) else . end' \
+    > "$HOME/.claude/sessions/$1.json"
+}
+# export_curl <session ids exporting> <fleet-dispatch series count>: Prometheus, answering by query.
+export_curl() {
+  local res; res=$(printf '%s\n' $1 | jq -Rsc 'split("\n") | map(select(. != "") | {metric:{session_id:.}, value:[0,"1"]})')
+  cat > "$SANDBOX/bin/curl" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *by_runner*) [ "$2" -gt 0 ] && echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"$2"]}]}}' || echo '{"status":"success","data":{"result":[]}}' ;;
+  *) echo '{"status":"success","data":{"result":$res}}' ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "export check: every queue session past 1h exporting, and a fleet-dispatch series, exits 0" {
+  qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 4000 ar-2
+  export_curl 'aaa-1 bbb-2' 2
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_success
+  assert_output '2 queue sessions past 1h, each exporting cost; the by_runner rule has a fleet-dispatch series'
+}
+
+@test "export check: a queue session past 1h with no cost series exits 1 and names it" {
+  qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 7200 ar-2
+  export_curl 'aaa-1' 1
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output 'no cost exported in the last 1h: ar-2 (session bbb-2, pid 102)'
+}
+
+@test "export check: queue sessions live but no fleet-dispatch series in the by_runner rule exits 1" {
+  qproc 101 aaa-1 7200 ar-1
+  export_curl 'aaa-1' 0
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'
+}
+
+@test "export check: young, non-queue, dead, zombie and reused-pid sessions are not asked about" {
+  qproc 101 a-0001 600 ar-1          # under 1h
+  qproc 102 a-0002 7200              # no AGENT_QUEUE_ITEM
+  qproc 103 a-0003 7200 ar-3 999    # procStart is not this process's
+  qproc 104 a-0004 7200 ar-4; sed -i 's/(claude) S/(claude) Z/' "$SANDBOX/proc/104/stat"
+  qproc 105 a-0005 7200 ar-5; rm -r "$SANDBOX/proc/105"
+  qproc 106 a-0006 7200 ar-6       # the control: the one that is asked about
+  qproc 107 a-0007 - ar-7          # no startedAt: its age is unknown, not 56 years
+  qproc 108 a-0008 7200 ar-8 -     # no procStart: still asked about, its fields do not shift
+  export_curl '' 1
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output "$(printf '%s\n' 'no cost exported in the last 1h: ar-6 (session a-0006, pid 106)' \
+    'no cost exported in the last 1h: ar-8 (session a-0008, pid 108)')"
+}
+
+@test "export check: the age is a parameter, and one sessions/ seen through two account dirs counts once" {
+  qproc 101 aaa-1 1000 ar-1
+  mkdir -p "$HOME/.claude-alt" && ln -s "$HOME/.claude/sessions" "$HOME/.claude-alt/sessions"
+  export_curl 'aaa-1' 1
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check 15m
+  assert_success
+  assert_output '1 queue sessions past 15m, each exporting cost; the by_runner rule has a fleet-dispatch series'
+}
+
+@test "export check: Prometheus unreadable or not a vector exits 2, so the watch trips instead of going blind" {
+  qproc 101 aaa-1 7200 ar-1
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 2
+  spend_curl '{"status":"success","data":{"result":"x"}}'
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 2
+  CC_PROM_URL='' AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 2
+}
+
+@test "export check: a bad verb or age is a usage error" {
+  run "$AU" export check hour
+  assert_failure 64
+  run "$AU" export list
+  assert_failure 64
+}

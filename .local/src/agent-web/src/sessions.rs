@@ -16,8 +16,8 @@ use crate::cache::{off, ReadCache};
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
 const CACHE_SECS: u64 = 15;
-/// `fleet-dispatch headroom` takes seconds on a loaded machine, and the state document it is
-/// shown beside moves once a minute.
+/// The header's sources (the last pass's headroom, the timers, the shepherd's stats) move once a
+/// minute at most.
 const CAPACITY_SECS: u64 = 60;
 
 /// The table view, the same keys the page keeps in its URL.

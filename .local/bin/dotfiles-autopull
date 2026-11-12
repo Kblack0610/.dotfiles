@@ -16,7 +16,9 @@
 # is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
 # line when it changed a link or failed). A merged Rust change is live only once its binary is rebuilt,
 # so every pass also runs `cargo build --release` for each Rust tool linked into ~/.local/bin and
-# restarts a running unit named after one whose binary is newer than the unit (agent-web).
+# restarts a running unit named after one whose binary is newer than the unit (agent-web). A
+# persistent agentctl runner is one long-lived process that keeps the code it parsed at start, so
+# every pass also restarts a running one whose script is newer than its unit (inbox-triage).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
 # every path exits 0, so no network or repo state can break a shell start or a landing.
@@ -35,6 +37,7 @@ DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agent-web from clean takes minutes
 BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
+CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -103,10 +106,10 @@ attach_skills() {
 # mtime <file> -> seconds since the epoch (GNU stat, else BSD stat)
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
-# restart_stale <bin> <binary>: a running user unit named <bin>.service that started before <binary>
-# was built still runs the old one, so restart it. One line when it restarted or failed.
+# restart_stale <unit> <file> <what>: a running user <unit> that started before <file> last changed
+# still runs the old <what>, so restart it. One line when it restarted or failed.
 restart_stale() {
-  local unit="$1.service" state started built
+  local unit="$1" state started built
   command -v systemctl >/dev/null 2>&1 || return 0
   state=$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)
   [ "$state" = active ] || return 0
@@ -115,9 +118,9 @@ restart_stale() {
   built=$(mtime "$2")
   [[ "$started" =~ ^[0-9]+$ && "$built" =~ ^[0-9]+$ ]] && [ "$built" -gt "$started" ] || return 0
   if systemctl --user restart "$unit" 2>/dev/null; then
-    say "~: restarted $unit on the new $1"
+    say "~: restarted $unit on the new $3"
   else
-    say "~: $unit runs an old $1 and its restart failed: systemctl --user restart $unit"
+    say "~: $unit runs an old $3 and its restart failed: systemctl --user restart $unit"
   fi
 }
 
@@ -156,7 +159,31 @@ attach_rust() {
         say "~: rebuilt $bin (cargo build --release)"
       fi
     fi
-    restart_stale "$bin" "$target"
+    restart_stale "$bin.service" "$target" "$bin"
+  done
+}
+
+# attach_runners -> one line per persistent agentctl runner it restarted. A KIND=persistent conf's
+# unit is agentctl@<name>.service, and the first word of its COMMAND is the script it runs ($HOME
+# expanded, links followed). A pull that changes that script leaves the running process on the old
+# functions, so a merged fix to the runner is not live until its restart: the route prompt of #1815
+# filed with the old one for hours (ar-1633). Like a Rust unit, one that is not running stays down.
+# Only the script itself is compared: a change to a library it sources goes live at its next start
+# (`agentctl restart <name>`). The conf is read as text, not sourced: the last KIND and COMMAND win,
+# as `source` would have them.
+attach_runners() {
+  local conf cmd script
+  for conf in "$CONF_DIR"/*.conf; do
+    [ -f "$conf" ] || continue
+    sed -n 's/^KIND=//p' "$conf" | tail -n 1 | grep -qE '^["'\'']?persistent["'\'']?([[:space:]]|$)' || continue
+    cmd=$(sed -n 's/^COMMAND=//p' "$conf" | tail -n 1)
+    # The first word before $HOME is expanded, so a $HOME with a space in it stays one path.
+    cmd=${cmd#[\"\']}
+    cmd=${cmd%%[ \"\']*}
+    cmd=${cmd/#'${HOME}'/"$HOME"}
+    cmd=${cmd/#'$HOME'/"$HOME"}
+    script=$(readlink -f "$cmd" 2>/dev/null) && [ -f "$script" ] || continue
+    restart_stale "agentctl@$(basename "$conf" .conf).service" "$script" "${script##*/}"
   done
 }
 
@@ -165,6 +192,7 @@ attach_all() {
   attach_missing
   attach_skills
   attach_rust
+  attach_runners
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is

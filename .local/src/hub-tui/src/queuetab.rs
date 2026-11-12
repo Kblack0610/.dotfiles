@@ -2,7 +2,8 @@
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
 //! agent-web's Queue tab. Its sections are `flow` (the pipeline line, `flowline`), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
-//! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
+//! detail, where `l` marks each record it names in turn (`Item::links`: session, project, row,
+//! each PR and its CI runs) and Enter on a marked one opens it; `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
 //! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
 //! snapshot each `fleet-dispatch run` writes, `as of` its time): `C` opens it, j/k carry on into
 //! its rows, and `p` starts the selected one through the Projects tab's Start (`fleet-dispatch
@@ -10,6 +11,7 @@
 
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
+use hub_core::links::Link;
 use hub_core::queue::{
     money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
 };
@@ -33,6 +35,8 @@ pub enum Ask {
     Bump(String, &'static str),
     /// Start a candidate: its label and the board write.
     Promote(String, Write),
+    /// Open a record the item names.
+    Follow(Link),
 }
 
 pub struct QueueView {
@@ -41,6 +45,9 @@ pub struct QueueView {
     pub table: DataTable,
     /// The selected row's detail replaces the table.
     pub detail: bool,
+    /// The detail's marked link (`l`): the item it was marked on and an index into its `links`;
+    /// Enter opens it. A refresh that puts another item under the selection drops the mark.
+    pub link: Option<(String, usize)>,
     pub cands_open: bool,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
@@ -63,6 +70,7 @@ impl Default for QueueView {
         QueueView {
             table: DataTable::default(),
             detail: false,
+            link: None,
             cands_open: true,
             line: LineView::default(),
             confirm: None,
@@ -125,6 +133,14 @@ impl QueueView {
         self.shown_cands(c).get(i)
     }
 
+    /// The marked link's index, when it was marked on this item.
+    fn mark(&self, i: &Item) -> Option<usize> {
+        self.link
+            .as_ref()
+            .filter(|(s, _)| *s == i.slug)
+            .map(|(_, at)| *at)
+    }
+
     /// A new read keeps the selection on the same slug when it is still shown, and otherwise
     /// in range of the rows and shown candidates.
     pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate], now: i64) {
@@ -163,7 +179,7 @@ impl QueueView {
         // `/ f s S x`, and every key while a query is being typed, are the shared table's.
         if !ctrl && (self.table.typing.is_some() || DataTable::owns(k.code)) {
             if self.table.key::<QueueRow>(k.code) == Took::View {
-                self.detail = false;
+                (self.detail, self.link) = (false, None);
             }
             return Ask::Done;
         }
@@ -173,6 +189,7 @@ impl QueueView {
             .table
             .moves(k, rows.len() + self.shown_cands(c).len(), page)
         {
+            self.link = None;
             return Ask::Done;
         }
         if ctrl {
@@ -180,9 +197,21 @@ impl QueueView {
         }
         let busy = || Some(Err("an action is still running".to_string()));
         let item = rows.get(self.table.sel).map(|r| r.item);
+        let links = item.filter(|_| self.detail).map_or(vec![], Item::links);
+        let mark = item.and_then(|i| self.mark(i));
         match k.code {
-            KeyCode::Enter if item.is_some() => self.detail = !self.detail,
-            KeyCode::Esc if self.detail => self.detail = false,
+            KeyCode::Char('l') if !links.is_empty() => {
+                let at = mark.map_or(0, |at| (at + 1) % links.len());
+                self.link = item.map(|i| (i.slug.clone(), at));
+            }
+            KeyCode::Enter if mark.is_some_and(|at| at < links.len()) => {
+                self.link = None;
+                return Ask::Follow(links[mark.unwrap_or_default()].link.clone());
+            }
+            KeyCode::Enter if item.is_some() => {
+                (self.detail, self.link) = (!self.detail, None);
+            }
+            KeyCode::Esc if self.detail => (self.detail, self.link) = (false, None),
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             KeyCode::Char('C') => {
                 self.cands_open = !self.cands_open;
@@ -277,8 +306,9 @@ fn state(i: &Item, p: Palette) -> Cell {
     }
 }
 
-const HEADER: [&str; 10] = [
-    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+/// hub-core `QueueRow::COLUMNS` in capitals: the sort mark is an index into that list.
+const HEADER: [&str; 11] = [
+    "STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR", "PLAN",
 ];
 
 fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
@@ -298,15 +328,16 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
     }
     vec![
         state(i, p),
+        title.into(),
+        or_dash(&Some(i.project.clone())).into(),
         mins(r.timing.in_state).into(),
         mins(r.timing.wait).into(),
         mins(r.timing.run).into(),
-        or_dash(&Some(i.project.clone())).into(),
         or_dash(&i.kind).into(),
         or_dash(&i.size).into(),
         or_dash(&i.account).into(),
         pr,
-        title.into(),
+        or_dash(&i.plan_label).into(),
     ]
 }
 
@@ -326,7 +357,14 @@ fn some(v: &Option<String>) -> Option<&str> {
 /// The selected row in full: every header, then the timeline queued -> ready -> started ->
 /// waiting -> finished -> merged with the minutes from the step before. The agent-queue log is
 /// `notes log --item <slug>`, named here and not read.
-fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+fn detail(
+    i: &Item,
+    t: Timing,
+    mark: Option<usize>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let mut out = vec![clip_line(
         Line::from(vec![
             Span::styled(i.slug.clone(), p.head()),
@@ -382,6 +420,22 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
             .filter(|(_, v)| !v.trim().is_empty())
             .map(|(k, v)| kv(k, v, p, w)),
     );
+    let links = i.links();
+    if !links.is_empty() {
+        out.push(Line::raw(""));
+        out.push(Line::styled("opens (l marks, Enter opens)", p.head()));
+        for (n, l) in links.iter().enumerate() {
+            let on = mark == Some(n);
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} {:<9}", if on { ">" } else { " " }, l.what),
+                    p.dim(),
+                ),
+                Span::styled(l.text.clone(), if on { p.head() } else { p.dim() }),
+            ]);
+            out.push(clip_line(line, w));
+        }
+    }
     out.push(Line::raw(""));
     out.push(Line::styled("timeline", p.head()));
     for st in i.timeline() {
@@ -421,12 +475,12 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
     Table {
         header: HEADER.to_vec(),
         rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7],
-        flex: Some(9),
+        keep: vec![0, 3, 2, 5, 9, 4, 6, 7, 8, 10],
+        flex: Some(1),
         flexmin: 20,
         flexkeep: true,
-        right: vec![1, 2, 3],
-        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14)],
+        right: vec![3, 4, 5],
+        cap: vec![(2, 18), (6, 8), (8, 10), (9, 14), (10, 20)],
         mark: v.table.mark::<QueueRow>(),
     }
     .fit(w, p.head())
@@ -462,11 +516,12 @@ pub fn page(
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
+    out.extend(DataTable::legend::<QueueRow>(p, w));
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
-        out.extend(detail(r.item, r.timing, p, now, w));
+        out.extend(detail(r.item, r.timing, v.mark(r.item), p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
             if all.is_empty() {
@@ -626,6 +681,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
     use hub_core::queue::Stats;
+    use hub_core::table::Row;
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(
@@ -727,14 +783,14 @@ pub(crate) mod tests {
         let q = fixture();
         let s = text(&q, &QueueView::default(), 160);
         let header = line(&s, "STATE");
-        let cols = [
-            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
-        ];
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
-            cols,
+            HEADER,
             "columns in order"
         );
+        // The sort mark is an index into hub-core's columns, so the header is them in capitals.
+        let core: Vec<String> = QueueRow::COLUMNS.iter().map(|c| c.to_uppercase()).collect();
+        assert_eq!(HEADER.to_vec(), core);
         let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
         let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
         assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
@@ -782,12 +838,15 @@ pub(crate) mod tests {
         };
         assert_eq!(
             heads(160),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE"]
+            [
+                "STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR",
+                "PLAN"
+            ]
         );
-        // ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
+        // PLAN, ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
         assert_eq!(
             heads(80),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "PR", "TITLE"],
+            ["STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "PR"],
             "{}",
             text(&q, &QueueView::default(), 80)
         );
@@ -834,9 +893,10 @@ pub(crate) mod tests {
         assert!(text(&q, &v, 160).contains("STATE ^") || text(&q, &v, 160).contains("STATE v"));
         press(&mut v, &q, &[], 'x');
         assert!(v.table.is_default());
-        press(&mut v, &q, &[], 's');
-        press(&mut v, &q, &[], 's');
-        assert_eq!(v.table.view.sort, "in");
+        for _ in 0..4 {
+            press(&mut v, &q, &[], 's');
+        }
+        assert_eq!(v.table.view.sort, "in", "state, title, project, then in");
         assert_eq!(
             slugs(&v, &q),
             ["pick-sides", "fix-menu", "night-sweep", "next-up", "landed"],
@@ -848,6 +908,47 @@ pub(crate) mod tests {
             ["next-up", "night-sweep", "fix-menu", "pick-sides", "landed"],
             "S flips it"
         );
+    }
+
+    #[test]
+    fn l_marks_each_record_an_opened_item_names_and_enter_opens_it() {
+        use hub_core::links::{Kind, Link};
+        let q = fixture();
+        let mut v = QueueView::default();
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "pick-sides");
+        assert_eq!(
+            press(&mut v, &q, &[], 'l'),
+            Ask::Pass,
+            "a closed row has no links to mark"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(v.detail);
+        let s = text(&q, &v, 160);
+        assert!(s.contains("opens (l marks, Enter opens)"), "{s}");
+        assert!(s.contains("  session  lab:game-agent-2"), "{s}");
+        press(&mut v, &q, &[], 'l');
+        assert!(text(&q, &v, 160).contains("> session  lab:game-agent-2"));
+        press(&mut v, &q, &[], 'l');
+        assert_eq!(
+            v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
+            Ask::Follow(Link::to(Kind::Project, "game"))
+        );
+        assert!(
+            v.detail && v.link.is_none(),
+            "the detail stays, the mark goes"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(
+            !v.detail,
+            "Enter with nothing marked closes the detail as before"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        press(&mut v, &q, &[], 'l');
+        // A refresh that puts another item under the selection: its mark is not this item's.
+        v.link.as_mut().unwrap().0 = "another-item".into();
+        assert!(!text(&q, &v, 160).contains("> session"));
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(!v.detail, "Enter follows no other item's mark");
     }
 
     #[test]

@@ -421,3 +421,47 @@ unit() {
   assert_line '~: build budget of 0s spent, agent-web not rebuilt'
   assert_not_called 'cargo build'
 }
+
+# runner <name> <kind> <mtime> -> an agentctl conf for <name> whose COMMAND runs ~/.local/bin/<name>,
+# a link to a script in the public checkout dated @<mtime>, as stow links one
+runner() {
+  mkdir -p "$PUB/.local/bin" "$HOME/.local/bin" "$AGENTCTL_CONF_DIR"
+  : >"$PUB/.local/bin/$1" && touch -d "@$3" "$PUB/.local/bin/$1"
+  ln -sfn "$PUB/.local/bin/$1" "$HOME/.local/bin/$1"
+  printf 'NAME=%s\nKIND=%s\nCOMMAND="$HOME/.local/bin/%s --watch"\n' "$1" "$2" "$1" >"$AGENTCTL_CONF_DIR/$1.conf"
+}
+
+@test "a persistent runner whose script changed after its unit started is restarted, a current one is not (ar-1633)" {
+  runner triage persistent 2000
+  runner watcher persistent 500
+  unit agentctl@triage active 1000
+  unit agentctl@watcher active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: restarted agentctl@triage.service on the new triage'
+  assert_called 'systemctl --user restart agentctl@triage.service'
+  assert_not_called 'systemctl --user restart agentctl@watcher.service'
+}
+
+@test "negative control: a oneshot runner, or a persistent one that is not running, is never restarted" {
+  runner nightly oneshot 2000
+  runner triage persistent 2000
+  unit agentctl@nightly active 1000
+  unit agentctl@triage inactive 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  refute_line --partial 'restarted'
+  assert_not_called 'systemctl --user restart'
+}
+
+@test "a quoted KIND, \${HOME} in a single-quoted COMMAND and a later COMMAND line read as agentctl's source would" {
+  runner triage persistent 2000
+  runner old persistent 2000
+  printf '%s\n' "NAME=triage" "KIND='persistent'" 'COMMAND="$HOME/.local/bin/old"' "COMMAND='\${HOME}/.local/bin/triage --watch'" >"$AGENTCTL_CONF_DIR/triage.conf"
+  rm "$AGENTCTL_CONF_DIR/old.conf"
+  unit agentctl@triage active 1000
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line '~: restarted agentctl@triage.service on the new triage'
+  refute_line --partial 'on the new old'
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # day-log: one record per local day of every merged PR, what is open, what waits on the
-# human and the fleet's telemetry. gh, fleet-bench, agent-usage, agent-hold, agent-queue and
+# human and the fleet's telemetry. The PR store (schedules-sync), fleet-bench, agent-usage, agent-hold, agent-queue and
 # ci-failures are stubs; the notes history and the ci-cost clone are real git repositories.
 
 setup() {
@@ -12,16 +12,22 @@ setup() {
   export DAYLOG_DIR="$HOME/.agent/daylog" DAYLOG_REFS_DIR="$HOME/refs"
   export DAYLOG_STATE="$SANDBOX/state.json" DAYLOG_WATCH_LOG="$SANDBOX/watch.log"
   export DAYLOG_GROUPS="$SANDBOX/groups" DAYLOG_OUTCOMES_DIR="$HOME/.agent/outcomes"
-  export DAYLOG_GH=gh-stub DAYLOG_BENCH_CMD=bench-stub DAYLOG_USAGE_CMD=usage-stub
+  export SCHEDULES_SYNC=ss-stub DAYLOG_AUTHOR=Kblack0610 DAYLOG_BENCH_CMD=bench-stub DAYLOG_USAGE_CMD=usage-stub
   export DAYLOG_HOLD_CMD=hold-stub DAYLOG_UNITY_CMD="echo 2"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
-  # gh-stub: logs every call; --merged-at serves $GHD/merged, --state=open $GHD/open,
-  # and a $GHD/fail file makes every call fail.
-  cat > "$SANDBOX/bin/gh-stub" <<EOF
+  # ss-stub: the PR store, logging every call; `prs all --state merged` serves $GHD/merged and
+  # --state open $GHD/open as store rows (author kblack0610 unless a row names one), unfiltered by
+  # time, so the day's window is day-log's own. $GHD/fail fails every call; $GHD/stale names a
+  # repo the store is stale for: rc 1, the rest still printed.
+  cat > "$SANDBOX/bin/ss-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$GHD/calls"
 [ -e "$GHD/fail" ] && exit 1
-case "\$*" in *--merged-at*) cat "$GHD/merged" ;; *--state=open*) cat "$GHD/open" ;; esac
+case "\$*" in *"--state merged"*) f="$GHD/merged" st=MERGED ;; *"--state open"*) f="$GHD/open" st=OPEN ;; *) exit 2 ;; esac
+jq -c --arg st "\$st" 'map({forge: "github", repo: (.repository.nameWithOwner // "o/\(.repository.name)"), number, title, url,
+  author: (.author // "kblack0610"), state: \$st, merged_at: (if \$st == "MERGED" then .closedAt else null end),
+  created_at: .createdAt, updated_at: .updatedAt, draft: (.isDraft // false)})' "\$f"
+[ ! -e "$GHD/stale" ] || { echo "\$(cat "$GHD/stale"): PRs last synced 2026-10-28T09:00:00Z, older than 30m" >&2; exit 1; }
 EOF
   cat > "$SANDBOX/bin/bench-stub" <<'EOF'
 #!/usr/bin/env bash
@@ -56,6 +62,10 @@ EOF
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
   echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"base":[4,1],"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
   echo 'O/game trunk' > "$DAYLOG_CI"
+  # hub-stub: hub ci pass serves $SANDBOX/pass, logs its args, and exits $SANDBOX/pass-rc
+  export DAYLOG_HUB_CMD=hub-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/hub-args" "$SANDBOX/pass" "$SANDBOX/pass-rc" > "$SANDBOX/bin/hub-stub"
+  echo '{"github:O/game":{"runs":9,"green":7,"pass":0.7778,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Lint":{"runs":1,"green":1,"pass":1.0}}},"github:O/other":{"runs":1,"green":0,"pass":0.0,"workflows":{}}}' > "$SANDBOX/pass"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
   sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
@@ -148,18 +158,44 @@ EOF
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
 
-@test "the day is the LOCAL day: 2026-10-28 in PDT searches 07:00Z to 06:59:59Z next day" {
+@test "the day is the LOCAL day: 2026-10-28 in PDT is 07:00Z to 06:59:59Z next day, read from the PR store" {
+  { pr game 1 'feat: before' 2026-10-28T06:59:59Z; pr game 2 'feat: first' 2026-10-28T07:00:00Z
+    pr game 3 'feat: last' 2026-10-29T06:59:59Z; pr game 4 'feat: after' 2026-10-29T07:00:00Z; } | merged
   run "$SUBJECT" snapshot --date 2026-10-28
   assert_success
-  run grep -o -- '--merged-at [^ ]*' "$GHD/calls"
-  assert_output '--merged-at 2026-10-28T07:00:00Z..2026-10-29T06:59:59Z'
+  run grep -c -- 'prs all --state merged --since 2026-10-28T07:00:00Z' "$GHD/calls"
+  assert_output 1
+  run rec -c '[.merged[].number]' 2026-10-28
+  assert_output '[2,3]'
 }
 
 @test "the day the clocks go back is 25 hours long" {
+  { pr game 1 'feat: last' 2026-11-02T07:59:59Z; pr game 2 'feat: after' 2026-11-02T08:00:00Z; } | merged
   DAYLOG_NOW=1793563200 run "$SUBJECT" snapshot --date 2026-11-01
   assert_success
-  run grep -o -- '--merged-at [^ ]*' "$GHD/calls"
-  assert_output '--merged-at 2026-11-01T07:00:00Z..2026-11-02T07:59:59Z'
+  run grep -c -- '--since 2026-11-01T07:00:00Z' "$GHD/calls"
+  assert_output 1
+  run rec -c '[.merged[].number]' 2026-11-01
+  assert_output '[1]'
+}
+
+@test "only the human's PRs list, matched on the gh login whatever its case; another author's are not" {
+  { pr game 1 'feat: mine' 2026-10-28T20:00:00Z; pr game 2 'feat: theirs' 2026-10-28T20:00:00Z | jq -c '. + {author: "colleague"}'; } | merged
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[.merged[].number]' 2026-10-28
+  assert_output '[1]'
+}
+
+@test "a repo the PR store is stale for is named, keeps the PRs the record had for it, and the rest still list" {
+  { pr game 1 'feat: x' 2026-10-28T20:00:00Z; pr tools 2 'fix: y' 2026-10-28T21:00:00Z; pr web 3 'fix: z' 2026-10-28T22:00:00Z; } | merged
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  pr game 1 'feat: x' 2026-10-28T20:00:00Z | merged
+  echo o/tools > "$GHD/stale"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[[.merged[] | [.repo, .number]], .unreadable]' 2026-10-28
+  assert_output '[[["game",1],["tools",2]],["PR store stale: o/tools"]]'
 }
 
 @test "a merged PR is grouped by its scope, a scope list shares a group, an unmapped scope is its own" {
@@ -176,9 +212,9 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
     '3	hovercraft	hovercraft	Games' '2	story	Raiders	Games' '1	raiders	Raiders	Games')"
 }
 
-@test "a PR carries the project its repo is registered as, an alias, or its name without the dot" {
+@test "a PR carries the project its repo is registered as, another spelling of it, or its name without the dot" {
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  echo '{"paths":{"/x/dev/game":"raiders-game"},"aliases":{"tool_attempt":"tools"}}' > "$PROJECT_MAP_FILE"
+  echo '{"paths":{"/x/dev/game":"raiders-game"},"trackers":{"tools":{"names":["tool_attempt"]}}}' > "$PROJECT_MAP_FILE"
   { pr game 1 'feat: a' 2026-10-28T20:00:00Z; pr tool_attempt 2 'feat: b' 2026-10-28T19:00:00Z
     pr .cfg 3 'feat: c' 2026-10-28T18:00:00Z; } | merged
   pr .cfg 4 'feat: d' 2026-10-28T18:00:00Z | jq -s 'map(. + {createdAt: .closedAt, updatedAt: .closedAt, isDraft: false})' > "$GHD/open"
@@ -226,7 +262,7 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   run "$SUBJECT" snapshot --date 2026-10-28
   assert_success
   run rec -c '[(.merged | length), .unreadable]' 2026-10-28
-  assert_output '[1,["gh merged","gh open"]]'
+  assert_output '[1,["PR store merged","PR store open"]]'
 }
 
 @test "negative control: without a previous record a blind pass has nothing to keep" {
@@ -236,13 +272,13 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output 0
 }
 
-@test "a past day keeps the live sections it last saw and does not ask gh what is open now" {
+@test "a past day keeps the live sections it last saw and does not ask the store what is open now" {
   echo '{"sessions":[{"target":"lab/game-agent-3:1","bucket":"NEEDS","reason":"a prompt","idle_min":5}],"main":[{"repo":"game","reason":"game red: Tests"}],"asks":[]}' > "$DAYLOG_STATE"
   DAYLOG_NOW=1793127600 "$SUBJECT" snapshot --date 2026-10-27    # noon on the 27th, live
   : > "$GHD/calls"
   run "$SUBJECT" snapshot --date 2026-10-27                       # now a past day
   assert_success
-  run grep -c -- --state=open "$GHD/calls"
+  run grep -c -- '--state open' "$GHD/calls"
   assert_output 0
   run rec -c '[.live, .waiting.main[0].repo, .waiting.needs[0].who, .bench.headline, .fleet.unity_runs]' 2026-10-27
   assert_output '[false,"game","game-agent-3","bench 24h: 2 sessions, 3 phases ticked",2]'
@@ -523,13 +559,14 @@ PROM
 
 @test "nightly: CI per repo from ci-failures and ci-cost lands in the record, and a later gather keeps it" {
   ci_clone
-  echo 'forgejo:fj.test/o/fj develop' >> "$DAYLOG_CI"   # ledger-only: never handed to the GitHub readers
+  printf 'forgejo:fj.test/o/fj develop\nprs-only:o/work main\n' >> "$DAYLOG_CI"   # never handed to the GitHub CI readers
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" nightly
   assert_success
-  run rec -c '.ci.repos["O/game"] | [.runs, .red, .red_rate, .main, .workflows.Tests, .workflows.Lint.pass_rate, .cost.hours.pool, .cost.quarantine.open]' 2026-10-27
-  assert_output '[10,2,0.2,{"runs":4,"red":1},{"runs":8,"red":2,"pass_rate":0.75},1.0,3.5,6]'
+  run rec -c '.ci.repos["O/game"] | [.runs, .red, .pass, .main, .workflows.Tests, .workflows.Lint.pass, .cost.hours.pool, .cost.quarantine.open]' 2026-10-27
+  assert_output '[10,2,{"runs":9,"green":7,"pass":0.7778},{"runs":4,"red":1},{"runs":8,"green":6,"pass":0.75},1.0,3.5,6]'
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
+  assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $(date -d '2026-10-27 00:00' +%s) --until $(date -d '2026-10-28 00:00' +%s)"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
   [ ! -e "$DAYLOG_CI_CACHE/2026-10-27" ]
@@ -538,6 +575,15 @@ PROM
   assert_output '10'
   run "$SUBJECT" show --date 2026-10-27
   assert_output --partial '- CI game: 2 red of 10 runs, 1 on main, gate wall p50 40 min, 3.5 runner-hours, 1 branches re-gated'
+}
+
+@test "nightly: a failed hub ci pass is named unreadable and leaves the pass out, the ci-failures counts stay" {
+  echo 1 > "$SANDBOX/pass-rc"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  run rec -c '.ci | [.repos["O/game"] | .runs, has("pass"), has("workflows")], [.unreadable[] | select(startswith("hub ci pass"))]' 2026-10-27
+  assert_output '[10,false,false]
+["hub ci pass: exit 1"]'
 }
 
 @test "nightly: ci-cost runs from the base branch's scripts/ tree, so a file it loads beside it is there" {
@@ -563,9 +609,12 @@ EOF
   ci_clone
   mkdir -p "$PROM_TEXTFILE_DIR"
   echo '{"totals":{"context":900,"sessions":4},"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3}},"by_account":{"bnb":{"sessions":4}}}' > "$SANDBOX/tokjson-2026-10-27"
+  # the ledger spells the repo in its own case; a workflow whose runs all cancelled has no pass
+  echo '{"github:o/GAME":{"runs":8,"green":6,"pass":0.75,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Docs":{"runs":0,"green":0,"pass":null}}}}' > "$SANDBOX/pass"
   "$SUBJECT" nightly
   run cat "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
   assert_line 'agent_ci_pass_rate{repo="O/game",workflow="Tests"} 0.75'
+  refute_line --partial 'workflow="Docs"'
   assert_line 'agent_ci_main_red{repo="O/game"} 1'
   assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
   assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
@@ -614,12 +663,12 @@ week_fixture() {
   mkdir -p "$DAYLOG_DIR"
   for d in 14 15 16 17 18 19 20; do
     day_record 2026-10-$d '.merged = [{}] | .agents.merged_prs = 1 | .work.queue = {done: 1, lead_minutes: {p50: 10}} | .work.board = {opened: 1, closed: 0, open_end: 3}
-      | .ci.repos["O/game"] = {runs: 10, red: 5, workflows: {Tests: {runs: 10, red: 5}}}'
+      | .ci.repos["O/game"] = {runs: 10, red: 5, pass: {runs: 10, green: 5}, workflows: {Tests: {runs: 10, green: 5}}}'
   done
   for d in 21 22 23 24 25 26 27; do
     day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
       | .work.stages = {stages: {\"NEEDS:ask\": {minutes: 10}}, prs: {open_to_merged: {p50: $d}}}
-      | .ci.repos[\"O/game\"] = {runs: 10, red: 1, workflows: {Tests: {runs: 10, red: 1}}}"
+      | .ci.repos[\"O/game\"] = {runs: 10, red: 1, pass: {runs: 10, green: 9}, workflows: {Tests: {runs: 10, green: 9}}}"
   done
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
@@ -641,12 +690,13 @@ EOF
   assert_equal "$(v '.metrics.merged | [.value, .prev, .delta, .pct]')" '[14,7,7,100.0]'
   assert_equal "$(v '.metrics["queue.lead_p50_min"] | [.value, .prev, .delta]')" '[4,10,-6]'
   assert_equal "$(v '.metrics["board.open"] | [.value, .prev]')" '[27,3]'
-  assert_equal "$(v '.metrics["ci.game.red_rate"] | [.value, .prev, .delta]')" '[0.1,0.5,-0.4]'
+  assert_equal "$(v '.metrics["ci.game.pass"] | [.value, .prev, .delta]')" '[0.9,0.5,0.4]'
   assert_equal "$(v '.metrics["ci.game.pass.Tests"] | [.value, .prev]')" '[0.9,0.5]'
   assert_equal "$(v '[.metrics["stages.ask_min"].value, .metrics["stages.pr_to_merge_p50_min"].value]')" '[70,24]'
-  day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1}'
+  day_record 2026-10-25 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 4}'   # gathered before hub ci pass: left out
+  day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1, pass: {runs: 4, green: 3}}'
   run "$SUBJECT" week --date 2026-10-27 --line
-  assert_output --partial 'dotfiles red 25%'
+  assert_output --partial 'dotfiles pass 75%'
 }
 
 @test "week: cost and sessions come from one read of the whole window, so a session is not counted once per day" {
@@ -681,7 +731,7 @@ EOF
 @test "week: the line and the table say what moved; with no date it reads the newest stored week" {
   week_fixture
   run "$SUBJECT" week --date 2026-10-27 --line
-  assert_output 'week to 2026-10-27 (7 of 7 days): 14 merged (+7), 14 queue items done (+7), board +14/-7, $70 (+$35), game red 10% (-40 pts)'
+  assert_output 'week to 2026-10-27 (7 of 7 days): 14 merged (+7), 14 queue items done (+7), board +14/-7, $70 (+$35), game pass 90% (+40 pts)'
   run "$SUBJECT" week --date 2026-10-27
   assert_line --index 0 '# What moved, 2026-10-21 to 2026-10-27'
   assert_output --partial '| merged | 14 | 7 | +7 (+100%) |'

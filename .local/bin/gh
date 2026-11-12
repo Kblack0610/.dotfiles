@@ -16,6 +16,12 @@
 set -u
 
 [ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
+# A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
+# first on PATH acts on the real repos with the real token otherwise: tests/playground-night.sh
+# started hd.yml and soak.yml on unity-core-playground main on 2026-11-12.
+acct_home=$(getent passwd "$(id -un)" | cut -d: -f6)
+[ -z "$acct_home" ] || [ "$(readlink -f "${HOME:-/}")" = "$(readlink -f "$acct_home")" ] \
+  || { echo "gh: HOME is ${HOME:-unset}, not $acct_home: a sandboxed caller never reaches GitHub" >&2; exit 3; }
 self=$(readlink -f "${BASH_SOURCE[0]}")
 real="${GH_REAL:-}"
 if [ -z "$real" ]; then

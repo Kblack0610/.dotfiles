@@ -22,11 +22,13 @@ fixture() {
   for t in "$@"; do printf '@test "%s" {\n  true\n}\n' "$t" >> "$SHARD_DIR/$f"; done
 }
 
-@test "every real file of each tier is in exactly one shard, for 1 to 4 shards" {
+@test "every real file of each tier is in exactly one shard, for 1 to the CI matrix's shard count" {
   unset SHARD_DIR SHARD_WEIGHTS
-  local tests="$BATS_TEST_DIRNAME/.."
+  local tests="$BATS_TEST_DIRNAME/.." top
   for tier in unit integ; do
-    for n in 1 2 3 4; do
+    top=$(matrix_shards "$tests/../.github/workflows/tests.yml" | awk -v t="$tier" '$1 == t { print $2 }')
+    [[ $top =~ ^[0-9]+$ ]] || fail "no $tier shard count read from tests.yml's matrix"
+    for ((n = 1; n <= top; n++)); do
       local all=()
       for ((i = 1; i <= n; i++)); do
         run --separate-stderr "$SUBJECT" "$tier" "$i/$n"
@@ -35,6 +37,31 @@ fixture() {
       done
       [ "$(printf '%s\n' "${all[@]}" | sort)" = "$(cd "$tests" && printf '%s\n' "$tier"/*.bats)" ]
     done
+  done
+}
+
+# matrix_shards <tests.yml>: each fast tier's matrix shards, "<tier> <n> <i i i...>", one tier a line
+matrix_shards() {
+  sed -nE 's/^ *- *\{ *tier: *([a-z]+), *shard: *([0-9]+)\/([0-9]+) *\}.*/\1 \3 \2/p' "$1" |
+    sort -k1,1 -k2,2n -k3,3n | awk '$1 != t || $2 != n { if (t != "") print l; t = $1; n = $2; l = $1 " " $2 } { l = l " " $3 } END { if (t != "") print l }'
+}
+
+@test "the CI matrix runs every shard of each fast tier: 1/n to n/n of one n, each once" {
+  local wf="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
+  # Two tiers, each listing exactly 1..n of its one n.
+  ok() { matrix_shards "$1" | awk '{ for (i = 3; i <= NF; i++) if ($i != i - 2) bad = 1; if (NF - 2 != $2) bad = 1; c++ } END { exit bad || c != 2 }'; }
+  ok "$wf"
+  # Negative controls, read from the matrix so a reshard keeps them: unit's last shard dropped,
+  # integ's first dropped, and unit's first given a count one short.
+  local un ni
+  un=$(matrix_shards "$wf" | awk '$1 == "unit" { print $2 }')
+  ni=$(matrix_shards "$wf" | awk '$1 == "integ" { print $2 }')
+  sed "/tier: unit, shard: $un\/$un}/d" "$wf" >"$BATS_TEST_TMPDIR/a.yml"
+  sed "/tier: integ, shard: 1\/$ni}/d" "$wf" >"$BATS_TEST_TMPDIR/b.yml"
+  sed "s#tier: unit, shard: 1/$un}#tier: unit, shard: 1/$((un - 1))}#" "$wf" >"$BATS_TEST_TMPDIR/c.yml"
+  for f in a b c; do
+    ! cmp -s "$wf" "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml: the control changed nothing"
+    ! ok "$BATS_TEST_TMPDIR/$f.yml" || fail "$f.yml passed"
   done
 }
 
