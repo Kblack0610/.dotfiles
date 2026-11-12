@@ -1315,8 +1315,8 @@ collect() {
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
-    # included: the session may close (bucket), but a nudge to close it is wrong while its window
-    # is the place the question was asked. askids are the ones still its own to wait on.
+    # included: the session may close (bucket), and the close verdict says whether its window must
+    # stay open for the answer (close rule 9). askids are the ones still its own to wait on.
     local ownids; ownids="$(asks_for "$sid")"
     ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
     askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
@@ -1749,8 +1749,9 @@ close_view() {
 # line. Exit 0 only on now. The /wind-down auto check reads it.
 close_self() {
   local row
-  row="$( [ -n "$1" ] && json_rows <<<"$1" | jq -c --arg s "$CLOSE_SELF" 'select(.session_id == $s)' | head -1)"
+  row="$(awk -F'\t' -v s="$CLOSE_SELF" '$3 == s {print; exit}' <<<"$1")"
   [ -n "$row" ] || { echo "fleet-sessions: no live session $CLOSE_SELF" >&2; return 2; }
+  row="$(json_rows <<<"$row")"
   jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$row"
   [ "$(jq -r .close.verdict <<<"$row")" = now ]
 }
@@ -1902,8 +1903,7 @@ main() {
     stages) shift; python3 "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-stages.py" --log "$LEDGER/watch.log" --state "$STATE_FILE" "$@"; return ;;
     close)
       if [ "${2:-}" = --self ]; then
-        CLOSE_SELF="${3:-${CLAUDE_CODE_SESSION_ID:-}}"
-        [ -n "$CLOSE_SELF" ] || { echo "fleet-sessions: close --self needs a session id (CLAUDE_CODE_SESSION_ID)" >&2; return 2; }
+        CLOSE_SELF="$(resolve_sid "${3:-self}")" || return 2
       else shift; close_view "$@"; return; fi ;;
     -h|--help) sed -n '2,29p' "$0"; return ;;
   esac

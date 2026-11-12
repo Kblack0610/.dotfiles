@@ -245,12 +245,9 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | if $ask and $v == "now" and (.nudged | not) then
           "nudge CLOSE: \(.target) \(.fact // "")"
-        elif $ask and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          empty
-        elif (.bucket | IN("DONE","CHAT")) and (.nudged | not) then
-          if $v == "now" then "nudge \(.bucket): \(.target) \(.fact // "")" else empty end
-        elif (.bucket | IN("LANDED","STALLED")) and (.nudged | not) then
-          "nudge \(.bucket): \(.target) \(.fact // "")"
+        elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+          if ($ask | not) and ($v == "now" or (.bucket | IN("LANDED","STALLED")))
+          then "nudge \(.bucket): \(.target) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
           "escalate \(.bucket): \(.target) \(.reason // "")"

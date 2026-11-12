@@ -3100,12 +3100,12 @@ verdict() {
   assert_failure 1
   assert_output "keep: busy"
   json_rows() { echo '{"session_id": "sid-45", "close": {"verdict": "now", "why": "only its own ask is open"}, "blockers": ["open ask Ab12"]}'; }
-  run close_self "x"
+  run close_self $'DONE\thub/d:45\tsid-45'
   assert_success
   assert_line --index 0 "now: only its own ask is open"
   assert_line --index 1 "blocker: open ask Ab12"
   CLOSE_SELF=sid-9
-  run --separate-stderr close_self "x"
+  run --separate-stderr close_self "$(age_row 45)"
   assert_failure 2
   [[ "$stderr" == *"no live session sid-9"* ]]
 }
