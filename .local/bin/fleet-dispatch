@@ -2119,7 +2119,7 @@ item_brief() {
     return 0
   fi
   if [ -n "$(resume_thread "$it" "$harness")" ]; then resume_brief "$it"; return; fi
-  case "$(jq -r 'select((.pr // "") != "") | if .pr_owner == "land" then (.land_tries // "" | if . == "" then "" else "land" end) else (.fix_tries // "" | if . == "" then "" else "fix" end) end' <<<"$it")" in
+  case "$(jq -r 'select((.pr // "") != "") | (.pr_owner // "fix") as $o | select((.[$o + "_tries"] // "") != "") | $o' <<<"$it")" in
   fix) fix_ci_brief "$it" "$harness"; return ;;
   land) land_brief "$it" "$harness"; return ;;
   esac
@@ -2266,7 +2266,7 @@ land_brief() {
   [[ "$pr" != */*#* ]] || { repo=" -R ${pr%#*}"; land_repo=" --repo ${pr%#*}"; }
   echo "This is agent-queue item $slug. Its PR $pr is open and green${head:+ at ${head:0:12}}, and the session that opened it has ended without merging it, so this session decides it: land it or close it (try $n of $DISPATCH_FIX_TRIES)."
   echo
-  echo "1. Read the PR (gh pr view ${pr##*#}$repo, its diff and checks), the item (agent-queue show $slug) and its board row. Give it one verdict as ~/.claude/skills/ingest-prs/SKILL.md defines them: LAND, FIX-THEN-LAND, or CLOSE when it is superseded, already on its base, or no longer wanted."
+  echo "1. Read the PR (gh pr view ${pr##*#}$repo, its diff and checks), the item (agent-queue show $slug) and its board row. Give it one verdict as ~/.claude/skills/ingest-prs/SKILL.md defines them: LAND, FIX-THEN-LAND, or CLOSE when it is superseded, already on its base, or no longer wanted. A draft, or a PR waiting on a human approval, is the human's call (below)."
   echo "2. LAND or FIX-THEN-LAND: work on the PR's own branch (gh pr checkout ${pr##*#}$repo; when another worktree has the branch, work in that one), merge its base in if it is behind, never a second PR. A tier-3 item (fleet-dispatch item-tier $slug prints 3) needs /code-review high and the line \"Review: /code-review high, <what it found and what you did>\" in the PR body first. Then run agent-land ${pr##*#}$land_repo --item $slug in the foreground."
   echo "3. CLOSE: close the PR with a one-line comment giving the reason (superseded by #<n>, on its base at <sha>, or why it is no longer wanted), never deleting the branch, and end: reap fails the item on its closed PR."
   if headless "$2"; then no_human "$slug"; else echo "If the verdict is the human's call (a product decision, or a repo that needs their approval to merge), file it with agent-ask post (options land and close, your recommendation in --recommend) and end: the item waits on the answer."; fi
@@ -2640,7 +2640,7 @@ own_parked_pr() {
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
   if [ -n "$human" ]; then
     [ "$human" != "$head" ] || return 0
-    tries=0 clear=(fix_human=)
+    tries=0 clear=(fix_human= fix_tries= land_tries=)
   fi
   if [ "$tries" -lt "$DISPATCH_FIX_TRIES" ]; then
     held="PR $pr $color at ${head:0:12}; $verb held by admission"
@@ -2649,6 +2649,9 @@ own_parked_pr() {
       [ "$note" = "$held" ] || { agent-queue set "$slug" "note=$held" >/dev/null; logline "queue item $slug: $held"; }
       return 0
     fi
+    # A tier-3 lander runs on claude: the Review line agent-land asks for comes from /code-review high,
+    # which a headless harness cannot run (the reason its first run was --pr-only).
+    [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || clear+=(agent=claude)
     agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
       "note=PR $pr $color at ${head:0:12}; $verb try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
     agent-queue move "$slug" queued --if review >/dev/null || return 0
@@ -2663,7 +2666,9 @@ own_parked_pr() {
   sheet=$project row=$(item_row "$it")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
   agent-queue set "$slug" "fix_human=$head" >/dev/null || return 0
-  if np "$prof" ptask "$sheet" add "fix(ci): PR $pr is $color at ${head:0:12} after $tries $verb tries; $([ "$owner" = fix ] && echo 'fix it' || echo 'land it') or close it (queue item $slug) #size/s" >/dev/null 2>&1
+  local title="fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it"
+  [ "$owner" = fix ] || title="chore(review): PR $pr is green at ${head:0:12} after $tries land tries; land it"
+  if np "$prof" ptask "$sheet" add "$title or close it (queue item $slug) #size/s" >/dev/null 2>&1
   then where="on the $sheet sheet"; else where="not filed: the $sheet sheet refused the row"; fi
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
   agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1

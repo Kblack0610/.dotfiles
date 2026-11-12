@@ -329,7 +329,7 @@ bucket_facts() {
 # handed_off <item> <pr> <dirty> <in_pr> -> exit 0 when this session's open PR is its parked
 # item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
 # dirty file, HEAD inside the PR. fleet-dispatch's reap owns that PR once the session ends
-# (fix_red_pr gives a red one a fix-ci session), so it is no longer the session's to finish.
+# (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
 handed_off() {
   [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ]
 }
@@ -1180,7 +1180,7 @@ parked_lines() {
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
 # review:<slug> is one this session parked in review/: its open PR is the item's, and
-# fleet-dispatch's reap owns it once the session ends (fix_red_pr gives a red one a fix-ci session),
+# fleet-dispatch's reap owns it once the session ends (own_parked_pr gives a red one a fix-ci session and a green one a lander),
 # so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
 # refused, and the reap, which waits for the session to end, never took over.
 item_of() {
