@@ -1,33 +1,33 @@
 ---
 name: go
-description: "Proceed at this checkpoint with your best-practice recommendation — record assumptions, don't ask. Optional scope: $ARGUMENTS"
+description: "Proceed at this checkpoint with your best-practice recommendation - record assumptions, don't ask. Optional scope: $ARGUMENTS"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate, TaskUpdate, TaskList]
 argument-hint: "[optional scope, e.g. 'until tests pass' or 'just this PR']"
 disable-model-invocation: true
 ---
 
-# Go — best-judgment passthrough (one-shot)
+# Go - best-judgment passthrough (one-shot)
 
-You are at a decision checkpoint — a question I'd normally answer, a plan awaiting
+You are at a decision checkpoint - a question I'd normally answer, a plan awaiting
 approval, or an ambiguous fork mid-task. **Don't ask me. Make the call and proceed.**
 This is the `kb-coordinator` operating posture (`~/.dotfiles/.claude/agents/kb-coordinator.md`)
 invoked on demand: resolve it yourself by recording an explicit assumption, then continue.
 
-**Scope:** `$ARGUMENTS` — if present, bound the autonomy to this (e.g. "just this PR",
+**Scope:** `$ARGUMENTS` - if present, bound the autonomy to this (e.g. "just this PR",
 "until tests pass"). If empty, this applies to the current checkpoint and its immediate
 next steps, then yield back at the next natural stopping point.
 
 ## Decision rule
 
 Choose the option that best balances, in order:
-**correctness → maintainability → scalability → simplicity** — *for this specific use case*,
+**correctness -> maintainability -> scalability -> simplicity** - *for this specific use case*,
 not in the abstract. Concretely:
 
 - If a recommended option was already presented (a plan, an AskUserQuestion option marked
   "Recommended", a default), **take it** unless something I've said contradicts it.
 - Prefer existing patterns, utilities, and conventions in this codebase over net-new code.
   Grep first; reuse before you write.
-- Don't gold-plate. Match the altitude of the surrounding work — the smallest change that
+- Don't gold-plate. Match the altitude of the surrounding work - the smallest change that
   fully solves it, no more.
 
 ## Proceed, don't ask
@@ -43,7 +43,7 @@ Stop and surface a proposal **only** for irreversible or outward-facing actions:
   overwriting un-backed-up state).
 - Never force push, on any branch, and never offer it: if pushed history is wrong, a new branch and a new PR.
 - Release tags, `deploy.sh`, widening a rollout, executing a rollback, satisfying any
-  human approval gate — the release-coordinator **Hard constraints** apply verbatim
+  human approval gate - the release-coordinator **Hard constraints** apply verbatim
   (`~/.claude/skills/release-coordinator/SKILL.md`); do not restate or weaken them.
 - Money, auth/secrets/tokens, anything sent to an external service or another person.
 
