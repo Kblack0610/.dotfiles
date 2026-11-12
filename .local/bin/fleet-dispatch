@@ -1661,7 +1661,8 @@ is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
 # critical (2026-11-12).
 harness_tier_why() {
   local max tier
-  max=$(jq -r --arg h "$1" '.harnesses[$h].max_tier // "none" | tostring' "$HARNESSES" 2>/dev/null) || max=unread
+  max=$(jq -r --arg h "$1" '.harnesses[$h] // {} | if has("max_tier") then .max_tier | tojson else "none" end' "$HARNESSES" 2>/dev/null) ||
+    { echo "$HARNESSES is unreadable, so its max_tier is unknown"; return 2; }
   [ "$max" != none ] || return 0
   [[ "$max" =~ ^[123]$ ]] || { echo "its max_tier in $HARNESSES is not 1, 2 or 3"; return 2; }
   ! is_canary "$2" || return 0

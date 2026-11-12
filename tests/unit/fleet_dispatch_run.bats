@@ -794,10 +794,12 @@ case "$1" in log) echo run-9 ;; classify)
   # Routed: the tier-2 item skips its nim trial pick and goes to the next fit.
   assert_output --partial 'started queue item fix-menu on codex (sol), routed by model-lane'
   assert_not_called 'opencode run'
-  # A max_tier that is no tier fails closed.
-  harness_set '.harnesses.nim.max_tier = "low"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial "queue item pin-nim has no source with room it may run on: nim: its max_tier in $DISPATCH_HARNESSES is not 1, 2 or 3"
+  # A max_tier that is no tier fails closed: a word, a quoted number, and false (no ceiling would be fail-open).
+  for bad in '"low"' '"1"' false; do
+    harness_set ".harnesses.nim.max_tier = $bad"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_output --partial "queue item pin-nim has no source with room it may run on: nim: its max_tier in $DISPATCH_HARNESSES is not 1, 2 or 3"
+  done
   assert_not_called 'opencode run'
   # Positive controls: the same pinned item as a tier-3 canary starts on nim (a canary opens no PR;
   # the queue's own canaries are tier 3 by their night tag), and so does a tier-1 item, so each
