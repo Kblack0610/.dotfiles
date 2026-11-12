@@ -187,7 +187,8 @@ pub fn actions(g: &Gathered, t: &DataTable, p: Palette, now: i64, w: usize) -> V
     out
 }
 
-/// The kept rundowns, newest first: when and its title; agent-web shows the body.
+/// The kept rundowns, newest first: when and its title, every one `Boards` kept (it reads at most
+/// `FOLD_ROWS`), then how many of `total` it left out; agent-web shows the body.
 pub fn rundowns(rs: &[Rundown], total: usize, p: Palette, w: usize) -> Vec<Line<'static>> {
     if rs.is_empty() {
         return vec![Line::styled(
@@ -197,7 +198,6 @@ pub fn rundowns(rs: &[Rundown], total: usize, p: Palette, w: usize) -> Vec<Line<
     }
     let mut out: Vec<Line<'static>> = rs
         .iter()
-        .take(FOLD_ROWS)
         .map(|r| {
             clip_line(
                 Line::from(vec![
@@ -208,7 +208,7 @@ pub fn rundowns(rs: &[Rundown], total: usize, p: Palette, w: usize) -> Vec<Line<
             )
         })
         .collect();
-    out.extend(older(total, FOLD_ROWS.min(rs.len()), p));
+    out.extend(older(total, rs.len(), p));
     out
 }
 

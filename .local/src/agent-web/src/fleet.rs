@@ -54,6 +54,8 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         v["table"] = serde_json::json!(table);
         v["table"]["shown"] = shown.len().into();
         v["hidden"] = hidden.into();
+        // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
+        v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
@@ -125,6 +127,7 @@ mod tests {
         let v = who_of(&render(fleet(), &q("shepherd", "")));
         assert_eq!(v["who"].as_array().unwrap().len(), 1);
         assert_eq!(v["hidden"], 1);
+        assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
         assert!(v["table"].is_object());
         assert_eq!(
             v["table"]["links"],
