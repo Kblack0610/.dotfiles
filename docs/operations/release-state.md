@@ -120,7 +120,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
-| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's) with no board row |
+| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date) with no board row, read from the queue items done since the date |
 | versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
@@ -201,7 +201,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
 | A prod row is `floating` and `release-drift` trips | Its manifest names `:latest` and no kustomization `images[]` entry pins a tag, so its deploy is a `rollout restart`. Find the tag that is live (the pod's `imageID` digest against the registry's tag digests), pin that tag in home-config, and make the deploy workflow bump the pin. Merging the pin rolls prod pods, so it is the human's call: binks-chat (2026-11-11, home-config#856, platform#1506) |
 | PREV and LAST DEPLOY say `not read` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
-| PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
+| PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly. A release that shipped before its workflow recorded gets one Deployment backfilled by hand, with the body the record step posts (ref = the shipped tag, description = version, payload.build, a success status whose log_url is the run that shipped it); never pin the target `manual` when a pipeline records |
 | A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
 | A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
 | A Steam row is `unknown` with `build <id> is not in the last 50 builds` | The branch has not moved in longer than `STEAM_BUILDS` covers. Raise that constant in `release-state` |
