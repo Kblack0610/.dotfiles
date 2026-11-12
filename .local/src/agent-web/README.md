@@ -86,7 +86,7 @@ A stop (SIGTERM, so every rebuild's restart) takes no new connection, ends the l
 cargo test && cargo clippy --all-targets -- -D warnings
 node --test ../../../tests/agent-web/md.test.mjs   # the markdown renderer; bats tests/unit/agent_web_md.bats runs the same
 node --test ../../../tests/agent-web/{queue,waiting,home,outbox,projects,focus,log,sessions}.test.mjs   # the cards, Home, the outbox, Projects, Daily, the Log and the Sessions list; bats tests/unit/agent_web_queue.bats runs them
-node ../../../tests/agent-web/phone/render.mjs   # every tab at phone width from fixtures, the nav menu, screenshots in ~/.cache/agent-web-phone/out; CI runs it when agent-web is picked; --control and --no-kit prove its checks
+node ../../../tests/agent-web/phone/render.mjs   # every tab at phone width from fixtures, the nav menu, every tab and a big project page under three screens at 1400x900, screenshots in ~/.cache/agent-web-phone/out; CI runs it when agent-web is picked; --control and --no-kit prove its checks
 ```
 
 To look at a change without touching the live service, run a second instance against a throwaway config dir with a hand-made session, then open `http://127.0.0.1:8799/#sessions` with the cookie `agent_web=dev`:
