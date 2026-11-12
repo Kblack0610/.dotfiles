@@ -311,11 +311,11 @@ pub const TABS: [Tab; 13] = [
 pub const FOLD_ROWS: usize = 50;
 
 /// A Log section whose rows stand taller than a line lists fewer than `FOLD_ROWS`, so its inner
-/// tab stays under three screens at 1400x900 on live data (render.mjs): Work's rows wrap to two
+/// tab stays under three screens at 1400x900 on live data (render.mjs): Work's rows wrap to three
 /// lines, a rundown is a card, and Judges holds two tables. Read 2026-11-12, when Work was
 /// 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. agent-web's `SECTION_ROWS`
 /// (static/ui.js) is this list; its assets test checks.
-pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
+pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 30), ("rundowns", 30), ("verdicts", 20)];
 
 /// How many rows a section lists before its `+N` line: its `SECTION_ROWS` entry, else `FOLD_ROWS`.
 pub fn fold_rows(section: &str) -> usize {

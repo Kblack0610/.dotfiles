@@ -184,7 +184,7 @@ const SECTION_ROWS = JSON.parse(readFileSync(new URL("../../../.local/src/agent-
 const WORK_TOTAL = 3235;
 const logWork = {
   table: table(WORK_TOTAL, ["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
-  rows: rows(SECTION_ROWS.work, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false })),
+  rows: rows(SECTION_ROWS.work, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false, plan: i % 3 ? null : `${SLUGS[i % SLUGS.length]}: ${TEXT[(i + 2) % TEXT.length].slice(0, 30)} P${1 + (i % 9)}`, ci: i % 7 ? null : pick(["CI pending", "draft"], i) })),
   more: WORK_TOTAL - SECTION_ROWS.work, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
 };
 
