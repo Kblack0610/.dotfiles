@@ -338,6 +338,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::home::Running>(),
         phone_table::<crate::proposals::Proposal>(),
         phone_table::<crate::queue::QueueRow<'static>>(),
+        phone_table::<crate::queue::Candidate>(),
         phone_table::<crate::tasks::Row>(),
         phone_table::<crate::projects::Card>(),
         phone_table::<crate::deliverables::Deliverable>(),

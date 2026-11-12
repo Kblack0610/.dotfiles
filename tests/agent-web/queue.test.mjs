@@ -18,7 +18,7 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-tiles": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-tiles": part(), "qt-body": part(), "q-list": part(), ...Object.fromEntries(["head", "facets", "tiles", "body", "tail", "fold", "sum"].map((k) => [`qc-${k}`, part()])) };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [], posted = [];
 let reply = {};
@@ -129,7 +129,7 @@ test("Queue search keeps focus, text and selection across queue, candidates and 
   });
   const search = { id: "qt-q", dataset: { tsearch: "" }, value: "title", selectionStart: 1, selectionEnd: 4, closest: () => null };
   doc.activeElement = search;
-  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0 }
+  reply = (url) => url.startsWith("/api/queue/candidates") ? cands()
     : url.startsWith("/api/queue/stats") ? { week: "updated stats" }
     : { ...data, items: [item("fresh")], table: { ...table, q: "title" } };
   try {
@@ -138,7 +138,7 @@ test("Queue search keeps focus, text and selection across queue, candidates and 
     assert.equal(run("st.views.queue"), "q=title");
     assert.equal(doc.activeElement, search, "the query response keeps focus");
     assert.match(parts["qt-body"].innerHTML, /title fresh/, "the query response repaints the rows");
-    for (const refresh of ["refreshQueue", "refreshCands", "refreshFlow"]) {
+    for (const refresh of ["refreshQueue", "qcd.refresh", "refreshFlow"]) {
       run(`${refresh}()`);
       await settle();
       assert.equal(doc.activeElement, search, `${refresh} keeps the original input focused`);
@@ -174,17 +174,75 @@ test("the Queue is one table with the server's chips and every header a sort but
   assert.match(h, /id="sec-candidates"/);
 });
 
-test("Candidates heads its row count; urgent rows blocked are a warn line, auto and the read time a fact in the filter card", () => {
+// The shape agent-web's /api/queue/candidates sends: hub_core::table's Summary over every
+// Candidate, the first page of rows, and how many more the view keeps.
+const cand = (n, o = {}) => ({ rank: n, key: `ar-${n}`, title: `cand ${n}`, project: "p", profile: "home", lane: "agent", text: `- [ ] cand ${n} #id/ar-${n}`, why: "focus", start_label: "auto", held: false, prio: 2, blocked: [], ...o });
+const cands = (o = {}) => ({
+  rows: [cand(1), cand(2, { project: "trader", prio: 0, blocked: ["no worker covers trader", "judge: skip, too big"] })], more: 39,
+  table: { q: "", state: "", sort: "", dir: "", total: 41, shown: 41, legend: "clear: a worker takes it",
+    states: [{ name: "all", n: 41 }, { name: "clear", n: 30 }, { name: "blocked", n: 11, tone: "warn" }],
+    columns: ["rank", "project", "key", "task", "start", "why", "blocked"].map((k) => col(k)),
+    facets: [{ key: "blocked", on: [], clear: "", values: [{ value: "judge: skip", n: 9, on: false, q: 'blocked:"judge: skip"' }] }],
+    links: [{ project: "#projects/p" }, { project: "#projects/trader" }] },
+  auto: 2, urgent_blocked: 1, uncovered: ["trader"], as_of: "10:20", ...o,
+});
+const drawCands = (d) => run(`qcd.data = ${JSON.stringify(d)}; qcd.err = null; qCandidates()`);
+
+test("Candidates is the shared table in its fold: the count heads it, urgent blocked a warn line, every header sorts", () => {
   load();
-  const cands = { rows: [{ key: "ar-1", title: "t", project: "p", why: "", start_label: "auto", reasons: [], blocked: [] }], total: 5, auto: 2, clear: 1, urgent_blocked: 1, as_of: "10:20", reasons: [] };
-  const h = run(`qst.cands = ${JSON.stringify(cands)}; qst.candErr = null; qCandidates()`);
-  assert.match(h, /<summary><h2 class="sec warn">Candidates <span class="n">5<\/span><\/h2><\/summary><div class="cline warn">1 urgent blocked<\/div>/);
-  assert.match(h, /<div class="cline muted"><b>auto<\/b> 2, <b>as of<\/b> 10:20<\/div><\/div>/);
-  const calm = run(`qst.cands = ${JSON.stringify({ ...cands, urgent_blocked: 0 })}; qCandidates()`);
-  assert.match(calm, /<h2 class="sec">Candidates <span class="n">5<\/span><\/h2>/);
-  assert.doesNotMatch(calm, /urgent/, "the control: no blocked urgent row, no line");
-  assert.match(run("qst.cands = null; qst.candErr = 'boom'; qCandidates()"), /<h2 class="sec bad">Candidates<\/h2><\/summary><div class="panel down">No candidates: boom<\/div>/);
-  run("qst.cands = null; qst.candErr = null");
+  try {
+    const h = drawCands(cands());
+    assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates" open><summary id="qc-sum"><h2 class="sec warn">Candidates <span class="n">41<\/span><\/h2><\/summary>/);
+    assert.match(h, /<div class="cline warn">1 urgent blocked<\/div>/);
+    assert.match(h, /<div class="cline warn">Worked on today, and no worker covers a row: trader<\/div>/);
+    assert.match(h, /<b>auto<\/b> 2, <b>as of<\/b> 10:20/);
+    assert.match(h, /<div data-tbl="c">.*id="qc-q"/s, "its bar sits in its own block, so its keys are c-prefixed");
+    assert.match(h, /<button class="tile t-warn" data-ts="blocked"><span class="tl">BLOCKED<\/span><span class="tv">11<\/span><\/button>/);
+    for (const c of ["rank", "project", "key", "task", "start", "why", "blocked"]) assert.match(h, new RegExp(`data-tsort="${c}"`), `${c} sorts`);
+    assert.match(h, /data-fkey="blocked"/, "each reason is a facet");
+    assert.match(h, /<a class="tl" href="#projects\/trader">trader<\/a>/);
+    assert.match(h, /<span class="cchip bad">judge: skip, too big<\/span>/);
+    assert.match(h, /data-promote="ar-2"/, "Promote names the row by its key");
+    assert.match(h, /<button class="btn sm" data-all="1">\+39 more<\/button>/);
+    const calm = drawCands(cands({ urgent_blocked: 0, table: { ...cands().table, total: 41, shown: 3 } }));
+    assert.match(calm, /<h2 class="sec">Candidates <span class="n">3 of 41<\/span><\/h2>/);
+    assert.doesNotMatch(calm, /urgent/, "the control: no blocked urgent row, no line");
+    assert.match(run("qcd.data = null; qcd.err = 'boom'; qCandidates()"), /<h2 class="sec bad">Candidates<\/h2><\/summary><div id="qc-fold"><div class="panel down">No candidates: boom<\/div>/);
+  } finally { run("qcd.data = null; qcd.err = null"); }
+});
+
+test("a Candidates search asks the server with its own keys, and +N more asks for every row", async () => {
+  load();
+  asked = [];
+  reply = (url) => (url.startsWith("/api/queue/candidates") ? cands() : data);
+  try {
+    run("qcd.data = null");
+    const search = { id: "qc-q", dataset: { tsearch: "" }, value: "trader", closest: (q) => (q === "[data-tbl]" ? { dataset: { tbl: "c" } } : null) };
+    fire("input", { type: "input", target: search });
+    await settle();
+    assert.equal(run("st.views.queue"), "cq=trader", "the queue's own keys stay bare");
+    assert.ok(asked.includes("/api/queue/candidates?cq=trader"), asked.join(" "));
+    assert.ok(!asked.some((u) => u.startsWith("/api/queue?")), "the queue is not re-read");
+    asked = [];
+    fire("click", { type: "click", target: { dataset: { all: "1" }, closest: search.closest } });
+    await settle();
+    assert.ok(asked.includes("/api/queue/candidates?cq=trader&call=1"), asked.join(" "));
+  } finally { reply = {}; run("st.views.queue = ''; qcd.data = null; qcd.all = false"); }
+});
+
+test("Promote starts the row its key names, wherever it sits", async () => {
+  load();
+  posted = [];
+  reply = (url) => (url.startsWith("/api/board") ? { out: "promoted ar-2" } : url.startsWith("/api/queue/candidates") ? cands() : data);
+  try {
+    run(`qcd.data = ${JSON.stringify(cands())}`);
+    fire("click", { type: "click", target: { id: "", dataset: { promote: "ar-2" }, closest: () => null } });
+    await settle();
+    const [p] = posted;
+    assert.match(p, /^\/api\/board /);
+    assert.deepEqual(JSON.parse(p.slice(p.indexOf(" ") + 1)), { verb: "start", profile: "home", project: "trader", lane: "agent", raw: "- [ ] cand 2 #id/ar-2" });
+    assert.equal(run("qcd.msg"), "promoted ar-2");
+  } finally { reply = {}; run("qcd.data = null; qcd.msg = ''"); }
 });
 
 test("Pipeline is said once: the worst step hues the head and is a warn line under it", () => {
@@ -328,7 +386,8 @@ test("the badge counts everything waiting on the human, whatever the view keeps"
 });
 
 test("the removed card, day-heading and tile code is gone", () => {
-  for (const n of ["qItem", "qDoneDays", "qTiles", "qSorted", "qChip", "qEta", "Q_SECTIONS", "Q_STATE"]) assert.equal(run(`typeof ${n}`), "undefined", n);
+  for (const k of ["cands", "candErr", "candReason", "candQ"]) assert.ok(!(k in run("qst")), `qst.${k}`);
+  for (const n of ["qItem", "qDoneDays", "qTiles", "qSorted", "qChip", "qEta", "Q_SECTIONS", "Q_STATE", "qCandShown", "qCandAll", "refreshCands", "CAND_SHOWN"]) assert.equal(run(`typeof ${n}`), "undefined", n);
 });
 
 test("a row opens its detail: every header, the stages with gaps, the task folded", () => {
