@@ -56,7 +56,7 @@ reason() {
 @test "negative control: a kill by name, a read-only pgrep -f and a broken or quoted phrase all pass" {
   for c in 'pkill -x foo' 'pkill foo' 'pkill -9 foo' 'pkill -x foo-fbar' 'pgrep -af claude' 'pgrep -f foo; git checkout -b kill-switch' \
     'pgrep -f x; ls kill/' 'rg -n "pkill[ ]-f" f' 'my-pkill -f x' 'ls -f; pkill -x foo' 'ls' \
-    'git commit -m "no pkill -f here"' $'cat <<EOF\npkill -f x\nEOF'; do
+    $'pkill foo\nrm -rf /tmp/x' $'pkill -x foo\nls -f' $'pgrep foo\nls -f\nkill 1' 'git commit -m "no pkill -f here"' $'cat <<EOF\npkill -f x\nEOF'; do
     run decision "$c"
     assert_output allow
   done
@@ -89,7 +89,8 @@ reason() {
 @test "staying on the local filesystem, non-recursive grep, and scoped roots are allowed" {
   for c in 'find / -xdev -name a' 'rg --one-file-system foo /' 'find -mount / -name a' 'grep foo /etc/hosts' \
            'rg foo /home/u/wt' 'find . -path /mnt -prune' 'ls /' 'echo / | wc' 'rg foo /mnt/nas/private/photos/2024' \
-           'find /mnt/nas/private/photos -name a' 'cat /mnt/nas/private/x | grep foo' 'grep -n foo ./a /tmp' 'git log --grep=x'; do
+           'find /mnt/nas/private/photos -name a' 'cat /mnt/nas/private/x | grep foo' 'grep -n foo ./a /tmp' 'git log --grep=x' \
+           'rg "/mnt" docs/' 'grep -rn "/" src' "rg -F '/' ."; do
     run decision "$c"
     assert_output allow
   done
@@ -106,12 +107,20 @@ reason() {
   done
 }
 
+@test "a long one-line command of search words stays fast: the row scans a bounded clause" {
+  local long c
+  long=$(printf 'find . -name x %.0s' $(seq 3000))
+  c=$(jq -nc --arg c "$long" '{tool_name:"Bash",cwd:"/home/u/wt",tool_input:{command:$c}}')
+  run timeout 5 python3 "$GUARD" <<<"$c"
+  assert_success
+  assert_output ""
+}
+
 @test "negative control: the same search as code, after a quoted or heredoc part, is still denied" {
   for c in 'git commit -m "msg" && find / -name x' \
            $'cat <<EOF\nnote\nEOF\nrg foo /mnt' \
            "bash -c 'find / -name x'" \
-           'find "/" -name x' \
-           "grep -rn 'a b' '/mnt'" \
+           $'rg foo \\\n  /' \
            'echo "$(find / -name x)"' \
            'eval "find / -name x"' \
            'ssh host "find / -name x"' \
