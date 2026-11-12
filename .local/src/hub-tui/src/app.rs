@@ -185,15 +185,16 @@ impl Tab {
     }
 }
 
-/// Log's folded sections, their keys and headings, in the page's order after Work, the day and its
-/// history (hub_core::layout's Log sections; `log_folds_are_the_layout` checks).
+/// Log's sections after Work, the day and its history, their keys and headings, in the page's
+/// order (hub_core::layout's Log sections; `log_folds_are_the_layout` checks). A key opens the
+/// inner tab holding its section.
 const FOLDS: [(&str, char, &str); 6] = [
     ("actions", 'a', "ACTIONS"),
     ("changes", 'c', "CHANGES"),
     ("rundowns", 's', "RUNDOWNS"),
     ("verdicts", 'v', "JUDGES' VERDICTS"),
-    ("forecast", 'f', "FORECAST"),
     ("ranked", 'w', "RANKED SESSIONS"),
+    ("forecast", 'f', "FORECAST"),
 ];
 
 /// A Log table's keys. Esc or Backspace with nothing to clear gives the keys back to Log; a key
@@ -218,6 +219,9 @@ const BUILD_LOG_MIN: usize = 6;
 /// Infra's layout entry: its pinned sections and inner tabs.
 fn infra_tab() -> &'static hub_core::layout::Tab {
     hub_core::layout::resolve("infra").expect("infra is a tab")
+}
+fn log_tab() -> &'static hub_core::layout::Tab {
+    hub_core::layout::resolve("log").expect("log is a tab")
 }
 /// The tabs that draw the CI runs ledger: Infra's CI runs and Releases' Release runs.
 fn reads_runs(t: Tab) -> bool {
@@ -555,8 +559,8 @@ pub struct App {
     pub log_days: bool,
     /// The day list's selected row, newest first.
     pub hist_sel: usize,
-    /// Log's open folds, by `FOLDS` name.
-    pub log_open: Vec<&'static str>,
+    /// Log's inner tab shown (`hub_core::layout`'s Log groups): only its sections are drawn and read.
+    pub log_inner: &'static str,
     /// Which of `ASK_FILTERS` the answer judge's verdict list shows.
     pub ask_filter: usize,
     /// Log's Work table; None until Log is first read.
@@ -699,12 +703,7 @@ impl App {
             day: None,
             log_days: false,
             hist_sel: 0,
-            // Every fold starts open but Ranked, which reads every transcript (dashboards rule 10).
-            log_open: FOLDS
-                .iter()
-                .map(|f| f.0)
-                .filter(|n| *n != "ranked")
-                .collect(),
+            log_inner: hub_core::layout::inner_tab(log_tab(), None).map_or("", |i| i.id),
             ask_filter: 0,
             actions: None,
             actions_table: DataTable::default(),
@@ -1003,12 +1002,13 @@ impl App {
         }
     }
 
-    /// Log reads Work and only what its open folds show (the day and changes come with the board
-    /// files).
-    fn read_log_folds(&mut self) {
-        self.read_work();
-        for name in self.log_open.clone() {
-            match name {
+    /// Log reads only what its shown inner tab draws (dashboards rule 10; the day, changes and
+    /// rundowns come with the board files).
+    fn read_log_tab(&mut self) {
+        let shown = hub_core::layout::inner_tab(log_tab(), Some(self.log_inner));
+        for name in shown.map_or(&[][..], |i| i.sections) {
+            match *name {
+                "work" => self.read_work(),
                 "actions" => self.read_actions(),
                 "verdicts" => self.read_fleet(),
                 "forecast" => self.read_forecast(),
@@ -1016,6 +1016,24 @@ impl App {
                 _ => {}
             }
         }
+    }
+
+    /// Whether Log shows the inner tab holding section `sec`.
+    fn log_shows(&self, sec: &str) -> bool {
+        crate::innertabs::named(log_tab(), sec) == Some(self.log_inner)
+    }
+
+    /// Show Log's inner tab `id` at its top, and read what it draws. The tables give their keys
+    /// back: they are on another page now.
+    fn log_go(&mut self, id: &'static str) {
+        if self.log_inner != id {
+            self.scroll = 0;
+        }
+        self.log_inner = id;
+        self.log_work = false;
+        self.log_actions = false;
+        self.log_days = false;
+        self.read_log_tab();
     }
 
     /// The Fleet tab reads agentctl's ledger and the dispatch and ask files, so it reads on
@@ -1615,7 +1633,7 @@ impl App {
                     self.read_pipeline();
                 }
                 if self.tab == Tab::Log {
-                    self.read_log_folds();
+                    self.read_log_tab();
                 }
                 if self.tab == Tab::Daily {
                     self.read_daily();
@@ -1631,7 +1649,7 @@ impl App {
                 self.read_jobs();
                 if self.tab == Tab::Fleet {
                     self.read_fleet_shown();
-                } else if self.tab == Tab::Log && self.log_open.contains(&"verdicts") {
+                } else if self.tab == Tab::Log && self.log_shows("verdicts") {
                     self.read_fleet();
                 }
             }
@@ -2124,7 +2142,7 @@ impl App {
                     self.read_fleet_shown();
                 }
                 if self.tab == Tab::Log {
-                    self.read_log_folds();
+                    self.read_log_tab();
                 }
                 if self.tab == Tab::Home {
                     self.night_at = None;
@@ -2332,6 +2350,11 @@ impl App {
                     hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
                 if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
                     self.open_section(sec);
+                } else if let (Tab::Log, Some(id)) =
+                    (self.tab, crate::innertabs::named(log_tab(), &q))
+                {
+                    // `hub --tab 'log judges'`: an inner tab's own name opens it at its top.
+                    self.log_go(id);
                 } else if let (Tab::Infra, Some(id)) =
                     (self.tab, crate::innertabs::named(infra_tab(), &q))
                 {
@@ -2439,12 +2462,12 @@ impl App {
                 self.infra_inner = id;
             }
         }
-        self.log_days = self.tab == Tab::Log && sec == "history";
-        if self.tab == Tab::Log && !self.log_open.contains(&sec) && FOLDS.iter().any(|f| f.0 == sec)
-        {
-            self.log_open.push(sec);
-            self.read_log_folds();
+        if self.tab == Tab::Log {
+            if let Some(id) = crate::innertabs::named(log_tab(), sec) {
+                self.log_go(id);
+            }
         }
+        self.log_days = self.tab == Tab::Log && sec == "history";
         if self.infra_open.is_none() && !self.log_days {
             self.seek = Some(sec);
         }
@@ -2470,7 +2493,7 @@ impl App {
         self.run_want = None;
         self.session_want = None;
         if t == Tab::Log {
-            self.read_log_folds();
+            self.read_log_tab();
         }
         if t == Tab::Sessions {
             self.read_forecast();
@@ -2766,8 +2789,8 @@ impl App {
     }
 
     /// Log's keys. With the day list open (h): j/k pick a day, Enter opens it, Esc, Backspace
-    /// or h go back. Otherwise h opens the day list, a `FOLDS` key opens or folds its section,
-    /// and the day's keys.
+    /// or h go back. Otherwise Left/Right step the inner tabs, h opens the day list, a `FOLDS`
+    /// key opens the inner tab holding its section, and the day's keys.
     fn log_key(&mut self, k: KeyEvent) -> bool {
         if self.log_days {
             if matches!(
@@ -2787,28 +2810,34 @@ impl App {
             return true;
         }
         match k.code {
+            KeyCode::Left | KeyCode::Right => {
+                let to = crate::innertabs::step(log_tab(), self.log_inner, k.code == KeyCode::Left);
+                self.log_go(to);
+            }
+            // `W` and `A` open Work's or Actions' inner tab and give its table the keys.
             KeyCode::Char('W') => {
-                self.log_actions = false;
+                self.log_go("work");
                 self.log_work = true;
-                self.seek = Some("work");
             }
-            // Work leads the tab, so Enter and `/` are its; `A` gives the keys to Actions,
-            // opening it when the reader folded it.
             KeyCode::Char('A') => {
-                if !self.log_open.contains(&"actions") {
-                    self.log_open.push("actions");
-                    self.read_log_folds();
-                }
-                self.log_work = false;
+                self.log_go("actions");
                 self.log_actions = true;
-                self.seek = Some("actions");
             }
-            KeyCode::Enter | KeyCode::Char('/') if !self.log_actions && !self.log_work => {
+            // Enter and `/` are the table of the inner tab shown, Work's or Actions'.
+            KeyCode::Enter | KeyCode::Char('/')
+                if !self.log_actions && !self.log_work && self.log_shows("work") =>
+            {
                 self.log_work = true;
-                self.seek = Some("work");
                 return k.code == KeyCode::Enter || self.work_key(k);
             }
+            KeyCode::Enter | KeyCode::Char('/')
+                if !self.log_actions && !self.log_work && self.log_shows("actions") =>
+            {
+                self.log_actions = true;
+                return k.code == KeyCode::Enter || self.actions_key(k);
+            }
             KeyCode::Char('h') => {
+                self.log_go("day");
                 self.log_days = true;
                 self.scroll = 0;
             }
@@ -2816,16 +2845,12 @@ impl App {
                 let Some(&(name, ..)) = FOLDS.iter().find(|f| f.1 == c) else {
                     return true;
                 };
-                if let Some(i) = self.log_open.iter().position(|n| *n == name) {
-                    self.log_open.remove(i);
-                    self.log_actions &= name != "actions";
-                } else {
-                    self.log_open.push(name);
-                    self.read_log_folds();
+                if let Some(id) = crate::innertabs::named(log_tab(), name) {
+                    self.log_go(id);
                     self.seek = Some(name);
                 }
             }
-            KeyCode::Char('V') if self.log_open.contains(&"verdicts") => {
+            KeyCode::Char('V') if self.log_shows("verdicts") => {
                 self.ask_filter = (self.ask_filter + 1) % ASK_FILTERS.len();
             }
             _ => return self.today_key(k),
@@ -3967,7 +3992,7 @@ impl App {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
             Tab::Log => format!(
-                "[ ] day{}  h days  Enter work  A actions  a c s v f w fold  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
+                "<-/-> view  [ ] day{}  h days  Enter table  W work  A actions  a c s v w f go to  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
@@ -4376,8 +4401,9 @@ impl App {
         l
     }
 
-    /// Log: Work, the day, then its history and each `FOLDS` section, a heading with its count when
-    /// it is known and, when open, its rows; the section names are hub_core::layout's.
+    /// Log: the inner tab strip, then the shown inner tab's sections in layout order (Work, the
+    /// day and its history, or a `FOLDS` section, a heading with its count when it is known and
+    /// its rows); the section names are hub_core::layout's.
     fn log_page(
         &self,
         b: &Boards,
@@ -4385,70 +4411,85 @@ impl App {
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let head = |t: String| crate::fit::clip_line(Line::styled(t, self.p.head()), w);
-        let pg = day::today(b.rec.as_ref(), self.p, now, w);
-        let mut l = self.work_lines(w);
-        l.push(Line::raw(""));
-        let base = l.len();
-        let mut at: Vec<(&'static str, usize)> = vec![("work", 0), ("day", base)];
-        at.extend(
-            pg.sections
-                .into_iter()
-                .filter(|s| *s > 0)
-                .map(|s| ("", s + base)),
-        );
-        l.extend(pg.lines);
-        l.push(Line::raw(""));
-        at.push(("history", l.len()));
-        l.push(head(format!(
-            "HISTORY ({})  h lists the days",
-            b.hist.len()
-        )));
-        for (name, key, title) in FOLDS {
+        let mut l = vec![crate::innertabs::strip(
+            log_tab(),
+            self.log_inner,
+            &[],
+            self.p,
+            w,
+        )];
+        let mut at: Vec<(&'static str, usize)> = vec![];
+        let shown = hub_core::layout::inner_tab(log_tab(), Some(self.log_inner));
+        for name in shown.map_or(&[][..], |i| i.sections) {
             l.push(Line::raw(""));
             at.push((name, l.len()));
-            let count = match name {
-                "actions" => self.actions.as_ref().map(|g| g.actions.len()),
-                "changes" => Some(b.watch.transitions.len()),
-                "rundowns" => Some(b.rundowns_total),
-                "ranked" => match &self.ranked {
-                    Some(Ok(r)) => Some(r.len()),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let count = count.map_or(String::new(), |n| format!(" ({n})"));
-            let open = self.log_open.contains(&name);
-            let verb = if open { "folds" } else { "opens" };
-            let filters = if open && name == "actions" {
-                ", Enter filters"
-            } else {
-                ""
-            };
-            l.push(head(format!("{title}{count}  {key} {verb} it{filters}")));
-            if !open {
-                continue;
+            match *name {
+                "work" => l.extend(self.work_lines(w)),
+                "day" => {
+                    let base = l.len();
+                    let pg = day::today(b.rec.as_ref(), self.p, now, w);
+                    at.extend(
+                        pg.sections
+                            .into_iter()
+                            .filter(|s| *s > 0)
+                            .map(|s| ("", s + base)),
+                    );
+                    l.extend(pg.lines);
+                }
+                "history" => l.push(head(format!(
+                    "HISTORY ({})  h lists the days",
+                    b.hist.len()
+                ))),
+                _ => l.extend(self.log_fold(name, b, now, w)),
             }
-            let reading =
-                |what: &str| vec![Line::styled(format!("  Reading {what}..."), self.p.dim())];
-            l.extend(match name {
-                "actions" => match &self.actions {
-                    None => reading("the actions"),
-                    Some(g) => logtab::actions(g, &self.actions_table, self.p, now, w),
-                },
-                "changes" => fleet::changes(&b.watch, self.p, now, w),
-                "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
-                "verdicts" => match &self.fleet {
-                    None => reading("the fleet"),
-                    Some(f) => fleettab::verdicts(f, ASK_FILTERS[self.ask_filter], self.p, now, w),
-                },
-                "forecast" => match &self.forecast {
-                    None => reading("fleet-bench forecast"),
-                    Some(f) => forecast::page(f, self.p, now, w),
-                },
-                _ => self.ranked_lines(w),
-            });
         }
         (l, at)
+    }
+
+    /// One of Log's `FOLDS` sections: its heading, with its count when it is known, and its rows.
+    fn log_fold(&self, name: &str, b: &Boards, now: i64, w: usize) -> Vec<Line<'static>> {
+        let Some(&(_, _, title)) = FOLDS.iter().find(|f| f.0 == name) else {
+            return vec![];
+        };
+        let count = match name {
+            "actions" => self.actions.as_ref().map(|g| g.actions.len()),
+            "changes" => Some(b.watch.transitions.len()),
+            "rundowns" => Some(b.rundowns_total),
+            "ranked" => match &self.ranked {
+                Some(Ok(r)) => Some(r.len()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let count = count.map_or(String::new(), |n| format!(" ({n})"));
+        let keys = match name {
+            "actions" => "  Enter filters",
+            "verdicts" => "  V filters",
+            _ => "",
+        };
+        let mut l = vec![crate::fit::clip_line(
+            Line::styled(format!("{title}{count}{keys}"), self.p.head()),
+            w,
+        )];
+        let reading = |what: &str| vec![Line::styled(format!("  Reading {what}..."), self.p.dim())];
+        l.extend(match name {
+            "actions" => match &self.actions {
+                None => reading("the actions"),
+                Some(g) => logtab::actions(g, &self.actions_table, self.p, now, w),
+            },
+            "changes" => fleet::changes(&b.watch, self.p, now, w),
+            "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
+            "verdicts" => match &self.fleet {
+                None => reading("the fleet"),
+                Some(f) => fleettab::verdicts(f, ASK_FILTERS[self.ask_filter], self.p, now, w),
+            },
+            "forecast" => match &self.forecast {
+                None => reading("fleet-bench forecast"),
+                Some(f) => forecast::page(f, self.p, now, w),
+            },
+            _ => self.ranked_lines(w),
+        });
+        l
     }
 
     pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
@@ -5390,26 +5431,35 @@ mod tests {
         assert!(!s.contains("FORECAST"), "the bands are Log's: {s}");
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
+        a.runner = Arc::new(Fake::default());
         a.forecast = Some(forecast::tests::fixture());
+        assert!(
+            !screen(&mut a, 200, 160).contains("FORECAST"),
+            "Work does not draw it"
+        );
+        a.handle(key('f'));
+        assert_eq!(a.log_inner, "ranked", "f opens the inner tab holding it");
         let s = screen(&mut a, 200, 160);
-        assert!(s.contains("FORECAST  f folds it"), "it starts open: {s}");
+        assert!(s.contains("FORECAST"), "{s}");
         assert!(s.contains("not draining (in 10.63/h, out 6.88/h)"), "{s}");
         assert!(s.contains("BURN-UP 24h"), "{s}");
-        a.handle(key('f'));
-        assert!(screen(&mut a, 200, 160).contains("FORECAST  f opens it"));
+        assert!(
+            s.find("RANKED SESSIONS") < s.find("FORECAST"),
+            "Ranked leads: {s}"
+        );
     }
 
     #[test]
-    fn the_ranked_sessions_are_a_log_fold_read_only_when_opened() {
+    fn the_ranked_sessions_are_read_only_when_their_inner_tab_opens() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         let s = screen(&mut a, 200, 80);
-        assert!(s.contains("RANKED SESSIONS  w opens it"), "{s}");
+        assert!(!s.contains("RANKED SESSIONS"), "{s}");
         assert!(
             fake.0.lock().unwrap().is_empty(),
-            "nothing is read while it is folded"
+            "nothing is read while another inner tab shows"
         );
         a.handle(key('w'));
         // The worker sends Ranked when the read ends: wait for that message, not a timer.
@@ -5437,43 +5487,54 @@ mod tests {
             ..Ranked::default()
         }])));
         let s = screen(&mut a, 200, 80);
-        assert!(s.contains("RANKED SESSIONS (1)  w folds it"), "{s}");
+        assert!(s.contains("RANKED SESSIONS (1)"), "{s}");
         assert!(s.contains(" 11  6f296b73  dotfiles"), "{s}");
         assert!(s.contains("agentctl-session-outcomes card <id>"), "{s}");
-        a.handle(key('w'));
-        assert!(screen(&mut a, 200, 80).contains("RANKED SESSIONS (1)  w opens it"));
     }
 
     #[test]
-    fn log_is_the_day_then_its_history_and_folds_in_layout_order() {
+    fn log_is_a_strip_of_inner_tabs_each_drawing_only_its_own_sections() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
-        let s = screen(&mut a, 160, 200);
-        let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        // Every fold starts open but Ranked, which reads every transcript.
-        let heads = [
-            "HISTORY (0)  h lists the days",
-            "ACTIONS  a folds it",
-            "CHANGES (",
-            "RUNDOWNS (0)  s folds it",
-            "JUDGES' VERDICTS  v folds it",
-            "FORECAST  f folds it",
-            "RANKED SESSIONS  w opens it",
+        a.runner = Arc::new(Fake::default());
+        // Each inner tab in strip order, the headings it draws, and one it must not.
+        let pages: [(&str, &[&str], &str); 7] = [
+            ("[Work]", &["WORK ("], "HISTORY ("),
+            ("[Day]", &["HISTORY (0)  h lists the days"], "WORK ("),
+            ("[Actions]", &["ACTIONS  Enter filters"], "CHANGES ("),
+            ("[Changes]", &["CHANGES ("], "ACTIONS"),
+            ("[Rundowns]", &["RUNDOWNS (0)"], "CHANGES ("),
+            ("[Judges]", &["JUDGES' VERDICTS  V filters"], "RUNDOWNS"),
+            ("[Ranked]", &["RANKED SESSIONS", "FORECAST"], "JUDGES"),
         ];
-        for w in heads.windows(2) {
-            assert!(at(w[0]) < at(w[1]), "{} is not above {}", w[0], w[1]);
+        for (open, heads, not) in pages {
+            let s = screen(&mut a, 160, 200);
+            let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            assert!(
+                s.contains(open) && s.find(open) < s.find(heads[0]),
+                "{open} leads: {s}"
+            );
+            assert!(
+                !first.contains("WORK ("),
+                "the strip is the first line: {s}"
+            );
+            for h in heads {
+                assert!(s.contains(h), "{open} lacks {h}: {s}");
+            }
+            assert!(!s.contains(not), "{open} draws {not}: {s}");
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
         }
-        // c folds the changes under their heading, and opens them again.
-        assert!(s.contains("c folds it"), "{s}");
-        a.handle(key('c'));
-        assert!(screen(&mut a, 160, 200).contains("c opens it"));
-        a.handle(key('c'));
-        assert!(screen(&mut a, 160, 200).contains("c folds it"));
-        // h swaps the day for the day list, Esc brings the day back.
+        assert_eq!(a.log_inner, "work", "Right wraps from Ranked to Work");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        assert_eq!(a.log_inner, "ranked", "Left wraps back");
+        // h opens the day list on Day, Esc brings the day back.
         a.handle(key('h'));
-        assert!(a.log_days);
+        assert!(a.log_days && a.log_inner == "day");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!a.log_days);
+        // c opens Changes at the section.
+        a.handle(key('c'));
+        assert_eq!(a.log_inner, "changes");
     }
 
     #[test]
@@ -5485,16 +5546,15 @@ mod tests {
     }
 
     #[test]
-    fn capital_v_steps_the_verdict_filter_only_while_the_fold_is_open() {
+    fn capital_v_steps_the_verdict_filter_only_while_judges_shows() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.tab = Tab::Log;
         let key =
             |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
-        a.log_open.clear();
         key(&mut a, 'V');
         assert_eq!(a.ask_filter, 0);
-        a.log_open.push("verdicts");
+        a.log_inner = "judges";
         key(&mut a, 'V');
         assert_eq!(ASK_FILTERS[a.ask_filter], "answered");
         for _ in 1..ASK_FILTERS.len() {
@@ -5520,21 +5580,16 @@ mod tests {
             actions: vec![at(2, "nudge"), at(1, "failed")],
             ..Default::default()
         });
-        a.log_open = vec![];
+        a.runner = Arc::new(Fake::default());
         a.handle(key('A'));
-        assert_eq!(
-            a.log_open,
-            ["actions"],
-            "A opens a folded Actions and gives it the keys"
+        assert!(
+            a.log_inner == "actions" && a.log_actions,
+            "A opens Actions and gives it the keys"
         );
         a.handle(key('f'));
         a.handle(key('f'));
         assert_eq!(a.actions_table.view.state, "failed");
-        assert_eq!(
-            a.log_open,
-            ["actions"],
-            "f is the chip, not the Forecast fold"
-        );
+        assert_eq!(a.log_inner, "actions", "f is the chip, not the Ranked tab");
         let s = screen(&mut a, 160, 60);
         assert!(s.contains("row failed") && !s.contains("row nudge"), "{s}");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
@@ -5544,11 +5599,13 @@ mod tests {
         );
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         a.handle(key('f'));
+        assert_eq!(a.log_inner, "ranked", "the keys went back to Log");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(
-            a.log_open.contains(&"forecast"),
-            "the keys went back to Log"
+            a.log_inner == "judges" && !a.log_actions && !a.log_work,
+            "Enter on Judges is no table's"
         );
-        a.log_open.retain(|n| *n != "forecast");
         a.handle(key('A'));
         a.handle(key('/'));
         a.handle(key('n'));
@@ -5563,18 +5620,21 @@ mod tests {
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         a.handle(key('3'));
         a.handle(key('2'));
-        a.handle(key('f'));
-        assert!(
-            a.log_open.contains(&"forecast"),
-            "leaving the tab left the table"
+        assert_eq!(
+            a.log_inner, "actions",
+            "coming back shows the inner tab it left"
         );
+        a.handle(key('f'));
+        assert_eq!(a.log_inner, "ranked", "leaving the tab left the table");
+        a.handle(key('a'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert!(a.log_actions, "Enter on Actions gives its table the keys");
     }
 
     #[test]
-    fn work_keeps_its_keys_with_actions_open_and_d_leaves_a_past_day() {
+    fn work_keeps_its_keys_and_d_leaves_a_past_day() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
-        a.log_open.push("actions");
         a.log_work = true;
         a.log_key(KeyEvent::from(KeyCode::Enter));
         assert!(a.log_work && !a.log_actions, "Enter stays in Work");
@@ -5589,7 +5649,7 @@ mod tests {
     fn logs_work_table_leads_takes_its_keys_and_steps_its_window() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
-        a.log_open.clear();
+        a.runner = Arc::new(Fake::default());
         assert!(screen(&mut a, 160, 60).contains("Reading the work..."));
         let today = chrono::Local::now().format("%Y-%m-%dT09:30").to_string();
         let row = |state, what: &str, when: String| hub_core::worklog::Work {
@@ -5616,15 +5676,12 @@ mod tests {
         assert!(s.contains("WORK (7d)  W filters it"), "{s}");
         assert!(s.contains("row broke") && !s.contains("row ancient"), "{s}");
         assert!(
-            s.find("WORK (7d)").unwrap() < s.find("HISTORY (").unwrap(),
-            "Work leads the page: {s}"
+            s.find("[Work]").unwrap() < s.find("WORK (7d)").unwrap() && !s.contains("HISTORY ("),
+            "Work leads the tab, under the strip, on a page of its own: {s}"
         );
         a.handle(key('W'));
         a.handle(key('f'));
-        assert!(
-            a.log_open.is_empty(),
-            "f is the chip, not the Forecast fold"
-        );
+        assert_eq!(a.log_inner, "work", "f is the chip, not the Ranked tab");
         assert_eq!(a.work_table.view.state, "done");
         a.handle(key('d'));
         a.handle(key('d'));
@@ -5636,35 +5693,44 @@ mod tests {
         assert!(a.work_table.is_default(), "the first Esc clears the view");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         a.handle(key('f'));
-        assert!(
-            a.log_open.contains(&"forecast"),
-            "the keys went back to Log"
-        );
+        assert_eq!(a.log_inner, "ranked", "the keys went back to Log");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
         a.handle(key('/'));
         a.handle(key('q'));
-        assert!(!a.quit, "/ is Work's query, with Actions open too");
+        assert!(!a.quit, "/ is Work's query on Work");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert_eq!(a.work_table.view.q, "q");
     }
 
     #[test]
-    fn hub_tab_actions_opens_logs_actions_fold() {
+    fn hub_tab_actions_opens_logs_actions_inner_tab() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.tab = Tab::Home;
-        a.log_open.clear();
         let (t, q) = crate::tabreq::parse("actions").unwrap();
         a.handle(Msg::Tab(t, q));
-        assert_eq!((a.tab, a.log_open.as_slice()), (Tab::Log, &["actions"][..]));
+        assert_eq!((a.tab, a.log_inner), (Tab::Log, "actions"));
         assert!(screen(&mut a, 160, 60).contains("Reading the actions..."));
         a.handle(Msg::Actions(Box::default()));
         let s = screen(&mut a, 160, 60);
-        assert!(s.contains("ACTIONS (0)  a folds it"), "{s}");
+        assert!(s.contains("ACTIONS (0)  Enter filters"), "{s}");
         assert!(s.contains("nothing in the last 24h"), "{s}");
-        // A retired day-list name opens the list itself.
+        // A retired day-list name opens the list itself, on Day.
         let (t, q) = crate::tabreq::parse("history").unwrap();
         a.handle(Msg::Tab(t, q));
-        assert!(a.log_days);
+        assert!(a.log_days && a.log_inner == "day");
+        // An inner tab's own name, and a section's, open that inner tab.
+        for (req, inner) in [
+            ("log judges", "judges"),
+            ("log verdicts", "judges"),
+            ("log forecast", "ranked"),
+            ("forecast", "ranked"),
+        ] {
+            a.runner = Arc::new(Fake::default());
+            let (t, q) = crate::tabreq::parse(req).unwrap();
+            a.handle(Msg::Tab(t, q));
+            assert_eq!(a.log_inner, inner, "{req}");
+        }
     }
 
     #[test]
@@ -7325,6 +7391,8 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
         a.forecast = Some(Forecast::read_with("hub-test-no-such-fleet-bench"));
+        a.runner = Arc::new(Fake::default());
+        a.handle(key('f'));
         let s = screen(&mut a, 160, 200);
         assert!(
             s.contains("No forecast: hub-test-no-such-fleet-bench"),

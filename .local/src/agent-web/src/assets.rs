@@ -553,7 +553,7 @@ mod tests {
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "log"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -568,6 +568,22 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Log's sections are index.html's `sec-` anchors (the day's history is log.js's), and
+        // log.js puts each one the layout groups in its inner tab's group by that id. The
+        // forecast is the TUI's alone, as `log_folds_are_the_layout` says.
+        let log_js = include_str!("../static/log.js");
+        assert!(
+            log_js.contains(r#"innerHide("log", s, $("sec-" + s))"#),
+            "log.js never puts Log's sections in their inner tabs"
+        );
+        let index = include_str!("index.html");
+        for s in hub_core::layout::resolve("log").expect("log").sections {
+            let id = format!("id=\"sec-{s}\"");
+            assert!(
+                *s == "forecast" || index.contains(&id) || log_js.contains(&id),
+                "Log's {s} has no {id} for its inner tab to hold"
+            );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
         let releases = include_str!("../static/releases.js");

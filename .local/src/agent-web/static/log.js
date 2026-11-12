@@ -140,15 +140,28 @@ $("log").addEventListener("click", (e) => {
   if (t.closest("[data-asks]")) { e.preventDefault(); setTab("home"); }
 });
 document.addEventListener("keydown", (e) => {
-  if (st.tab !== "log" || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select")) return;
+  if (!logShows("day") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select")) return;
   if (e.key === "[") stepDay(-1);
   else if (e.key === "]") stepDay(1);
   else if (e.key === "t") goDay(null);
 });
 
 // Any record written changes the history charts, so a log event refetches both.
-const logFeed = pushed("log", ["log"], refreshLog);
+const logFeed = pushed("log", ["log"], refreshLog, () => logShows("day"));
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS), one per record: the
+// strip first, each section in its inner tab's group. An inner tab reads its own sections' data
+// when it shows (dashboards rule 10), so opening Log reads Work alone.
+function logInner(id) {
+  if (id === "day") { syncDay(); renderLog(); logFeed.show(!lst.rec); }
+  for (const p of LOG_PARTS) if (homeOf("log", p.sec)[0] === id) p.show();
+}
 TABS.log = {
-  show() { syncDay(); renderLog(); logFeed.show(!lst.rec); for (const p of LOG_PARTS) p.show(); seekSection(); },
+  show() {
+    $("log-strip").innerHTML = innerStrip("log");
+    for (const [, , secs] of INNER_TABS.log.tabs) for (const s of secs) innerHide("log", s, $("sec-" + s));
+    logInner(innerOf("log", st.arg)[0]);
+    seekSection();
+  },
+  inner: logInner,
   onEvent(ev) { logFeed.onEvent(ev); for (const p of LOG_PARTS) p.onEvent(ev); },
 };

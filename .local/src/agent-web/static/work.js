@@ -47,8 +47,9 @@ function workTail(d) {
   return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on the <a href="#board">Board</a>.</div>`;
 }
 
-const workFeed = pushed("log", ["queue", "log"], wrk.refresh);
+const workFeed = pushed("log", ["queue", "log"], wrk.refresh, () => logShows("work"));
 LOG_PARTS.push({
+  sec: "work",
   show() {
     const fresh = wrk.read !== st.views.log;
     // A link or Back changed the view, and "+N more" was asked of the last one.

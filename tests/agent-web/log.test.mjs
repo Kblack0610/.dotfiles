@@ -10,11 +10,12 @@ import vm from "node:vm";
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 
 const el = () => new Proxy({}, {
-  get: (t, k) => (k in t ? t[k] : k === "classList" ? { add() {}, remove() {}, toggle() {} } : k === "dataset" ? {} : k === "style" ? {} : () => el()),
+  get: (t, k) => (k in t ? t[k] : k === "classList" ? { add() {}, remove() {}, toggle() {} } : k === "dataset" ? (t.dataset = {}) : k === "style" ? {} : k === "querySelectorAll" ? () => [] : () => el()),
   set: (t, k, v) => { t[k] = v; return true; },
 });
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const doc = { getElementById: (id) => (id === "log-day" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+const boxes = { "log-day": box };
+const doc = { getElementById: (id) => (boxes[id] ||= el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
   document: doc,
@@ -103,4 +104,27 @@ test("a session row leads with what its plan is called, and a phone sees phase, 
   const rows = [...html.matchAll(/<tr><td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
   assert.deepEqual(rows, ["ucp-145: first premium sets", "dotfiles:4"], "a session with no plan says its target");
   assert.match(html, /<td class="muted" title="lab\/unity-core-playground-agent-21:1">unity-..-playground-agent-21:1<\/td>/);
+});
+
+test("Log reads only the inner tab it shows, and an event for a hidden one waits until it opens", () => {
+  const reads = () => vm.runInContext("reads.join(' ')", ctx);
+  vm.runInContext(`
+    var reads = [];
+    showUrl = () => {};
+    for (const sec of ["work", "actions", "verdicts"]) {
+      const f = pushed("log", ["x"], () => reads.push(sec), () => logShows(sec));
+      LOG_PARTS.push({ sec, show() { f.show(); }, onEvent: f.onEvent });
+    }
+    st.tab = "log"; st.arg = "";
+    TABS.log.show();`, ctx);
+  assert.equal(reads(), "work", "opening Log reads Work alone");
+  vm.runInContext(`TABS.log.onEvent({ kind: "x" })`, ctx);
+  assert.equal(reads(), "work work", "an event re-reads the inner tab shown, not the hidden ones");
+  vm.runInContext(`innerGo("log", "judges")`, ctx);
+  assert.equal(reads(), "work work verdicts", "opening Judges reads the verdicts");
+  vm.runInContext(`innerGo("log", "work")`, ctx);
+  assert.equal(reads(), "work work verdicts", "Work was read and nothing changed since");
+  vm.runInContext(`TABS.log.onEvent({ kind: "x" }); innerGo("log", "judges")`, ctx);
+  assert.equal(reads(), "work work verdicts work verdicts", "the event while Judges was hidden is read when it opens");
+  assert.match(vm.runInContext(`$("log-strip").innerHTML`, ctx), /data-itab="work".*data-itab="judges".*data-itab="ranked"/);
 });

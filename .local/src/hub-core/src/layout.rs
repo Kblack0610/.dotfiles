@@ -57,11 +57,50 @@ pub const TABS: [Tab; 13] = [
         title: "Log",
         question: "What happened?",
         sections: &[
-            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
-            "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "ranked",
+            "forecast",
         ],
+        // One inner tab per record. The day's history is its day picker, so it rides with Day.
+        // The forecast sits with Ranked: both say how the week's sessions ran, and both are
+        // heavy reads (every transcript, fleet-bench) that run only when that tab is opened.
         pinned: &[],
-        inner: &[],
+        inner: &[
+            Inner {
+                id: "work",
+                title: "Work",
+                sections: &["work"],
+            },
+            Inner {
+                id: "day",
+                title: "Day",
+                sections: &["day", "history"],
+            },
+            Inner {
+                id: "actions",
+                title: "Actions",
+                sections: &["actions"],
+            },
+            Inner {
+                id: "changes",
+                title: "Changes",
+                sections: &["changes"],
+            },
+            Inner {
+                id: "rundowns",
+                title: "Rundowns",
+                sections: &["rundowns"],
+            },
+            Inner {
+                id: "judges",
+                title: "Judges",
+                sections: &["verdicts"],
+            },
+            Inner {
+                id: "ranked",
+                title: "Ranked",
+                sections: &["ranked", "forecast"],
+            },
+        ],
     },
     Tab {
         id: "queue",
@@ -690,6 +729,26 @@ mod tests {
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 3);
+    }
+
+    #[test]
+    fn log_is_one_inner_tab_per_record_and_old_links_open_theirs() {
+        let log = resolve("log").unwrap();
+        assert!(log.pinned.is_empty());
+        let titles: Vec<&str> = log.inner.iter().map(|i| i.title).collect();
+        assert_eq!(
+            titles,
+            ["Work", "Day", "Actions", "Changes", "Rundowns", "Judges", "Ranked"]
+        );
+        let at = |w: Option<&str>| inner_tab(log, w).map(|i| i.id);
+        assert_eq!(at(None), Some("work"));
+        assert_eq!(at(Some("history")), Some("day"));
+        assert_eq!(at(Some("verdicts")), Some("judges"));
+        assert_eq!(at(Some("judges")), Some("judges"));
+        assert_eq!(at(Some("forecast")), Some("ranked"));
+        assert_eq!(at(Some("actions")), Some("actions"));
+        // a retired name that is a Log section (`#actions`) lands on the inner tab holding it
+        assert_eq!(at(section("actions")), Some("actions"));
     }
 
     #[test]

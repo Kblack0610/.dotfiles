@@ -9,9 +9,12 @@ const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],[
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], parked: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
-// Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
-// file that owns each one's data adds {show, onEvent} here and paints its own container.
+// Log's sections past the day (Work, Actions, Changes, Rundowns, the judges' verdicts, Ranked): the
+// file that owns each one's data adds {sec, show, onEvent} here and paints its own container.
 const LOG_PARTS = [];
+// Whether Log shows the inner tab holding section `sec`: a Log part reads only then (dashboards
+// rule 10), and an event for a hidden one marks it stale for when its inner tab opens.
+const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", sec));
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
@@ -323,7 +326,7 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+const INNER_TABS = {"log":{"pinned":[],"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -433,6 +436,8 @@ function innerGo(tab, id) {
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
   stripMark(board, "itab", id);
+  // A tab that reads per inner tab (Log) reads the one now shown.
+  if (st.tab === tab && TABS[tab] && TABS[tab].inner) TABS[tab].inner(id);
 }
 // The strip: one button per inner tab, the open one marked, a count pill beside one whose
 // sections need a look (`flagged`: section ids) and only above zero.
