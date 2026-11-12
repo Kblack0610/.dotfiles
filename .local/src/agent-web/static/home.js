@@ -402,7 +402,7 @@ $("home").addEventListener("click", (e) => {
   // A Running row opens its session page, or its queue item when no session runs it.
   const run = e.target.closest("tr.jr[data-slug]");
   if (!run || t.closest("a")) return;
-  if (run.dataset.target) setTab("sessions", run.dataset.target); else setTab("queue", run.dataset.slug);
+  if (run.dataset.target) openSessionId(run.dataset.target); else setTab("queue", run.dataset.slug);
 });
 $("home").addEventListener("keydown", (e) => {
   const closing = e.target.closest && e.target.closest(".card[data-close]");

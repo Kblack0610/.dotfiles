@@ -2,7 +2,7 @@
 // Sessions' Sessions inner tab, with no session open: the overview tiles, the capacity header, the
 // table and the folds under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
 // through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
-// row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
+// row opens that session's conversation, `#sessions/sessions/<id>` (hub_core::links Kind::Session); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
 
 const sst = tblTab({
@@ -94,21 +94,21 @@ const sessionId = (a) => a.session || a.target;
 // A row is a link, so Back returns to the table as it was left.
 function sessionClick(r) {
   const a = sessionAgent(r), q = st.views.sessions;
-  location.hash = `#sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
+  location.hash = `#sessions/sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
 }
 
 // Open a session from another tab: the URL names it, and the tab opens what the URL names.
 function openAgent(a) {
-  setTab("sessions", sessionId(a));
+  openSessionId(sessionId(a));
 }
 
-// What `#sessions/<id>` names: its session on a pane here, else one with no pane (it ended, or
+// What `#sessions/sessions/<id>` names: its session on a pane here, else one with no pane (it ended, or
 // runs where this page cannot reach), which has its page and transcript and nothing to type into.
 async function openSession(id) {
   if (st.sel && (sessionId(st.sel) === id || st.sel.target === id)) return;
   if (!st.agents.length) {
     await refreshAgents();
-    if (st.arg !== id) return;
+    if (sessArg() !== id) return;
   }
   // An item's link names its session by the item (hub_core::queue Item::links), as session_page::find resolves it.
   const a = st.agents.find((x) => x.session === id || x.target === id) || st.agents.find((x) => (x.items || []).includes(id));
@@ -201,11 +201,12 @@ $("scroll").addEventListener("click", (e) => {
 // The inner tab shown: an inner id, or Sessions while a session's record is open.
 const sessInner = () => innerOf("sessions", st.arg)[0];
 const sessShows = (id) => st.tab === "sessions" && sessInner() === id;
-// The session `#sessions/<id>` names; "" on an inner tab.
-const sessArg = () => (st.arg && !INNER_TABS.sessions.tabs.some((t) => t[0] === st.arg) ? st.arg : "");
+// The session `#sessions/sessions/<id>` names; "" on an inner tab.
+const sessArg = () => pageId("sessions", "sessions");
 
 // fleet-state writes every minute and the shepherd on each pass; only the inner tab shown reads
-// its own (rule 10): a session's record reads the table's, for its side list and facts.
+// its own (rule 10), once when it first shows and again only after an event marked it stale: a
+// session's record, under the Sessions inner tab, reads the table's for its side list and facts.
 const watchFeed = pushed("sessions", ["watch"], refreshWatch, () => sessShows("sessions"));
 const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions, () => sessShows("sessions"));
 const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd, () => sessShows("shepherd"));
@@ -215,7 +216,7 @@ TABS.sessions = {
     this.inner(sessInner());
   },
   inner(id) {
-    if (id === "sessions") { sst.render(); watchFeed.show(!wst.data); tableFeed.show(true); }
+    if (id === "sessions") { sst.render(); watchFeed.show(!wst.data); tableFeed.show(!sst.data); }
     else if (id === "runners") runnersShow();
     else if (id === "shepherd") { renderShepherd(); shepFeed.show(!shst.data); }
   },

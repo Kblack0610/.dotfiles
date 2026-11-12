@@ -46,7 +46,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
-       hub tab fleet [RUNNER]
+       hub tab sessions [runners/RUNNER | sessions/ID | INNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub vitals [--json]
@@ -64,11 +64,12 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its rows, 'fleet RUNNER' that runner's page)
+          over its rows, 'sessions runners/RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
-          no card has opens every project's rows searched for it, as `/` would); fleet takes
-          a runner (`hub tab fleet inbox-triage` opens its page), sessions a session, queue an
+          no card has opens every project's rows searched for it, as `/` would); sessions takes
+          `runners/RUNNER` (`hub tab sessions runners/inbox-triage` opens its page, as the
+          retired `fleet RUNNER` does), `sessions/ID` a session or an inner tab, queue an
           item's slug, and board a row's `id:=ar-1`: what each link in hub_core::links opens
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it

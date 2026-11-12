@@ -2,7 +2,7 @@
 // The Schedules tab: everything scheduled and why, from /api/schedules (hub_core::schedules). The
 // table is the shared one (table.js): the server filters and sorts by the view in the URL. A row
 // opens its purpose, what runs inside it, what reads its result and its runs; an agentctl row
-// opens the runner's Fleet page instead, which already says all that.
+// opens the runner's page on Sessions' Runners instead, which already says all that.
 
 // Nothing here pushes to a browser, and a schedule changes by the hour.
 const SCHEDULES_REFRESH_MS = 60e3;

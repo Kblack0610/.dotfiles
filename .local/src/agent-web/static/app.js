@@ -338,7 +338,7 @@ const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]]
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"sessions":{"runners":"runners"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
+const ENTITY_PAGES = {"sessions":{"runners":"runners","sessions":"sessions"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
 // hub_core::links::RETIRED_TAB_PAGES: a retired tab whose `#tab/<id>` was a record's page, as
 // [tab, word] of that page now and the key prefix its table's view took there, so `#fleet/<runner>`
 // is `#sessions/runners/<runner>` and `#fleet?s=failed` is `#sessions/runners?rs=failed`.
@@ -347,6 +347,10 @@ const RETIRED_TAB_PAGES = {"fleet":["sessions","runners","r"]};
 // A runner's page (hub_core::links Kind::Runner), for a page that holds a runner's name and no
 // server link: Schedules' agentctl rows and Log's judge headers.
 const runnerHref = (name) => "#sessions/runners/" + encodeURIComponent(name);
+// Open a session's page (hub_core::links Kind::Session, `#sessions/sessions/<id>`) from any tab.
+function openSessionId(id) {
+  setTab("sessions", "sessions", undefined, "sessions/" + id);
+}
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
@@ -363,7 +367,10 @@ const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t
 const lastInner = {};
 // A tab whose arg also names a record (`#projects/<profile>/<name>`) keeps an arg that is not
 // one of its inner tabs: the record's page is under its first inner tab (projects.js).
-const RECORD_ARGS = ["projects", "sessions"];
+const RECORD_ARGS = ["projects"];
+// A record page an older link named with no word (`#sessions/<id>`, before a session's page sat
+// under `sessions/` so an id named like an inner tab still opens): any other arg is its id.
+const BARE_PAGES = { sessions: "sessions" };
 // A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
 // its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
 function innerRoute(r) {
@@ -379,7 +386,8 @@ function innerRoute(r) {
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
   if (g.tabs.some((t) => t[0] === want)) return { ...r, arg: want };
-  // Any other Sessions arg is a session's id (`#sessions/lab%2Fa%3A1`), the record it opens.
+  const bare = Object.hasOwn(BARE_PAGES, r.tab) && r.arg ? BARE_PAGES[r.tab] : "";
+  if (bare) return { ...r, arg: pages[bare], page: bare + "/" + r.arg };
   return { ...r, arg: RECORD_ARGS.includes(r.tab) ? r.arg : "" };
 }
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);

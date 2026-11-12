@@ -316,8 +316,17 @@ test("#fleet lands on Sessions' Runners, and #fleet/<runner> on that runner's pa
   // A Fleet section that moved before keeps its MOVED target.
   assert.deepEqual([r("#fleet/tokens").tab, r("#fleet/tokens").section], ["costs", "tokens"]);
   assert.deepEqual([r("#fleet/workers").tab, r("#fleet/workers").arg], ["sessions", "runners"]);
-  // Negative control: a Sessions arg that is no inner tab is still a session's id.
-  assert.deepEqual([r("#sessions/lab%2Fdotfiles-agent-11%3A1").arg, r("#sessions/lab%2Fdotfiles-agent-11%3A1").page], ["lab/dotfiles-agent-11:1", undefined]);
+  // `#fleet/<word>` is always that runner's page, even one named like a Sessions inner tab (rule 8;
+  // the hub's `hub tab 'fleet shepherd'` is tabreq.rs's test of the same).
+  for (const name of ["shepherd", "runners", "sessions"]) assert.deepEqual([r(`#fleet/${name}`).arg, r(`#fleet/${name}`).page], ["runners", `runners/${name}`], name);
+  // A record is under its page word, so an id named like an inner tab still opens its record.
+  assert.deepEqual([r("#sessions/runners/shepherd").arg, r("#sessions/runners/shepherd").page], ["runners", "runners/shepherd"]);
+  assert.deepEqual([r("#sessions/sessions/shepherd").arg, r("#sessions/sessions/shepherd").page], ["sessions", "sessions/shepherd"]);
+  assert.deepEqual([r("#sessions/sessions/lab%2Fa%3A1").arg, r("#sessions/sessions/lab%2Fa%3A1").page], ["sessions", "sessions/lab/a:1"]);
+  // A link from before the page word: a Sessions arg that is no inner tab is a session's id.
+  assert.deepEqual([r("#sessions/lab%2Fdotfiles-agent-11%3A1").arg, r("#sessions/lab%2Fdotfiles-agent-11%3A1").page], ["sessions", "sessions/lab/dotfiles-agent-11:1"]);
+  // Negative control: the bare inner name on the live tab is its inner tab.
+  assert.deepEqual([r("#sessions/shepherd").arg, r("#sessions/shepherd").page], ["shepherd", undefined]);
 });
 
 // The runner page, `#sessions/runners/<name>`: hub_core::fleet::runner's JSON, fetched only when it opens.
@@ -355,6 +364,27 @@ test("the Runners table is read only on its inner tab, and a runner page only wh
   assert.deepEqual(asked.filter((u) => u.startsWith("/api/fleet")), ["/api/fleet"]);
   assert.match(box.innerHTML, /<a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
   assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the table never reads a runner page");
+});
+
+test("the Runners timer ticks only while Runners shows: another inner tab clears it unread", async () => {
+  serve({});
+  const ticks = [];
+  let cleared = 0;
+  Object.assign(ctx, { setInterval: (f) => { ticks.push(f); return ticks.length; }, clearInterval: () => { cleared++; } });
+  ctx.setTab("sessions", "runners", "");
+  await flush();
+  assert.equal(ticks.length, 1, "Runners starts its timer");
+  ticks[0]();
+  await flush();
+  assert.equal(asked.filter((u) => u === "/api/fleet").length, 2, "a tick on Runners reads the table");
+  ctx.setTab("sessions", "shepherd", "");
+  await flush();
+  asked.length = 0;
+  ctx.document.hidden = true;
+  ticks[0]();
+  ctx.document.hidden = false;
+  assert.deepEqual([cleared, asked.filter((u) => u.startsWith("/api/fleet")).length, vm.runInContext("behind", ctx)], [1, 0, false], "off Runners the tick clears, reads nothing, marks nothing behind");
+  Object.assign(ctx, { setInterval: () => 0, clearInterval() {} });
 });
 
 test("a runner page draws its runs, status next, activity, 24h and 7d calls, extras and conf", async () => {

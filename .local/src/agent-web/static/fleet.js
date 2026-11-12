@@ -41,8 +41,8 @@ const refreshRunner = coalesce(async () => {
 
 // The rows re-read on their own events (runnersEvent); while Runners shows, they also re-read on
 // Infra's cadence, so the ages and a runner page's status move with no event. The timer lives
-// while Sessions is the tab (ui.js poll) and reads nothing on another inner tab.
-const pollFleet = poll("sessions", () => { if (runnersShown()) (runnerName() ? refreshRunner() : fst.refresh()); }, INFRA_REFRESH_MS);
+// only while Runners shows (ui.js poll), so another inner tab has no tick to mark it behind.
+const pollFleet = poll("sessions", () => (runnerName() ? refreshRunner() : fst.refresh()), INFRA_REFRESH_MS, runnersShown);
 
 const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${esc(s.slice(0, n - 2))}..</span>` : esc(s));
 
@@ -205,7 +205,7 @@ function runnerExtras(x) {
         `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
-      // Every watch, its state and owner are on Alerts; Fleet keeps the count, and a tripped one
+      // Every watch, its state and owner are on Alerts; Runners keeps the count, and a tripped one
       // is a warn line that sends you there.
       const trip = x.watches.filter((w) => w.state === "TRIP").length;
       return secHead("", "Watches", x.watches.length, trip ? "warn" : "") +

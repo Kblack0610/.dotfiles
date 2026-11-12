@@ -58,11 +58,9 @@ pub fn parse(s: &str) -> Option<Req> {
         return Some((Tab::parse(to.title)?, Some(sec.to_string())));
     }
     // Any other word on a retired tab that held pages (`fleet inbox-triage`) is that record's
-    // page where it lives now, unless it names one of the new tab's inner tabs or sections.
-    let inner = hub_core::layout::resolve(t).and_then(|l| crate::innertabs::named(l, asked));
-    if let Some((to, arg)) = hub_core::links::retired_tab_page(t, asked)
-        .filter(|_| inner.is_none())
-        .and_then(|l| l.tab_args())
+    // page where it lives now, as `#fleet/<runner>` is on the web: `fleet shepherd` is the
+    // runner named shepherd, never Sessions' Shepherd inner tab.
+    if let Some((to, arg)) = hub_core::links::retired_tab_page(t, asked).and_then(|l| l.tab_args())
     {
         return Some((Tab::parse(to)?, Some(arg)));
     }
@@ -205,14 +203,19 @@ mod tests {
             Some((Tab::Sessions, Some("fleet".into()))),
             "a moved name follows MOVED, never a runner named workers"
         );
-        assert_eq!(
-            parse("fleet runners"),
-            Some((Tab::Sessions, Some("runners".into()))),
-            "an inner tab's name is never a runner"
-        );
+        // `fleet <word>` is always that runner's page, as `#fleet/<word>` is on the web: a
+        // runner named like a Sessions inner tab still opens (rule 8).
+        for name in ["shepherd", "runners", "Sessions"] {
+            assert_eq!(
+                parse(&format!("fleet {name}")),
+                Some((Tab::Sessions, Some(format!("runners/{name}")))),
+                "{name}"
+            );
+        }
         assert_eq!(
             parse("sessions shepherd"),
-            Some((Tab::Sessions, Some("shepherd".into())))
+            Some((Tab::Sessions, Some("shepherd".into()))),
+            "on the live tab the word is its inner tab"
         );
         // Negative control: a word on a live tab is never a retired tab's page.
         assert_eq!(

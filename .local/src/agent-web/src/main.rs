@@ -1858,7 +1858,7 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
-        // A token snapshot is named by day, but it is Costs', never a Log or Fleet refresh.
+        // A token snapshot is named by day, but it is Costs', never a Log or Runners refresh.
         assert_eq!(
             classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),
             Some(COSTS_EVENT)

@@ -15,7 +15,8 @@ pub enum Kind {
     /// A tab's front (`#home`), for a fact whose home is a whole tab.
     Tab,
     Project,
-    /// A session, by its tmux target or session id (`#sessions/<id>` takes either).
+    /// A session, by its tmux target or session id (`#sessions/sessions/<id>` takes either), on
+    /// Sessions' Sessions inner tab, under a word so an id named like an inner tab still opens.
     Session,
     /// An agent-queue item, by its slug.
     Queue,
@@ -84,6 +85,12 @@ pub const PAGES: &[Page] = &[
         tab: "sessions",
         word: "runners",
         inner: "runners",
+    },
+    Page {
+        kind: Kind::Session,
+        tab: "sessions",
+        word: "sessions",
+        inner: "sessions",
     },
 ];
 
@@ -161,7 +168,6 @@ impl Link {
         match kind {
             Kind::Tab => format!("#{seg}"),
             Kind::Project => format!("#projects/{seg}"),
-            Kind::Session => format!("#sessions/{seg}"),
             Kind::Queue => format!("#queue/{seg}"),
             // `id:ar-1` alone would match `ar-10`.
             Kind::Row => format!("#projects/all?q=id:={seg}"),
@@ -173,7 +179,13 @@ impl Link {
                 format!("#schedules?q=name:={}", component(&format!("\"{id}\"")))
             }
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App | Kind::Runner => {
+            Kind::Machine
+            | Kind::Pool
+            | Kind::CiRun
+            | Kind::Job
+            | Kind::App
+            | Kind::Runner
+            | Kind::Session => {
                 unreachable!("in PAGES")
             }
         }
@@ -191,14 +203,19 @@ impl Link {
         Some(match kind {
             Kind::Tab => return crate::layout::resolve(id).map(|t| (t.id, String::new())),
             Kind::Project => ("projects", id.clone()),
-            Kind::Session => ("sessions", id.clone()),
             Kind::Queue => ("queue", id.clone()),
             Kind::Row => ("projects", format!("all id:={id}")),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
             Kind::Schedule => ("schedules", String::new()),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App | Kind::Runner => {
+            Kind::Machine
+            | Kind::Pool
+            | Kind::CiRun
+            | Kind::Job
+            | Kind::App
+            | Kind::Runner
+            | Kind::Session => {
                 unreachable!("in PAGES")
             }
         })
@@ -278,8 +295,8 @@ mod tests {
         assert_eq!(
             both(Kind::Session, "lab/dotfiles-agent-11:1"),
             (
-                "#sessions/lab%2Fdotfiles-agent-11%3A1".into(),
-                a("sessions", "lab/dotfiles-agent-11:1")
+                "#sessions/sessions/lab%2Fdotfiles-agent-11%3A1".into(),
+                a("sessions", "sessions/lab/dotfiles-agent-11:1")
             )
         );
         assert_eq!(

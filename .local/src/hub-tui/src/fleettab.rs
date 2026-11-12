@@ -34,8 +34,15 @@ pub fn shown<'a>(f: &'a Fleet, t: &DataTable) -> Vec<&'a Who> {
 }
 
 /// The Runners inner tab: the table of runners, the row j/k picked (`t.sel`) drawn reversed:
-/// Enter opens its page.
-pub fn page(f: &Fleet, t: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// Enter opens its page. Also the line that row is on, counted past every line above it (the
+/// errors, the heading, the legend and the chips, each as wrapped), so the app keeps it in view.
+pub fn page(
+    f: &Fleet,
+    t: &DataTable,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = vec![];
     for e in &f.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -58,8 +65,10 @@ pub fn page(f: &Fleet, t: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Lin
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
     out.extend(wrap_spans(t.status(&f.who, p), w));
+    // The table's head is its first line; the selected row is under it.
+    let sel = (!rows.is_empty()).then(|| out.len() + 1 + t.sel.min(rows.len() - 1));
     out.extend(who_table(&rows, t, p, now, w, f.who.is_empty()));
-    out
+    (out, sel)
 }
 
 /// The chip line broken between chips so every chip shows in a narrow pane; a chip's own
@@ -1165,6 +1174,7 @@ pub mod tests {
 
     fn lines(f: &Fleet, t: &DataTable, w: usize) -> Vec<String> {
         page(f, t, Palette { no_color: true }, NOW, w)
+            .0
             .iter()
             .map(plain)
             .collect()
@@ -1288,7 +1298,7 @@ pub mod tests {
         let p = Palette::default();
         let mut f = fixture();
         f.who[1] = who_row(2, "ask-judge", "held", "");
-        let out = page(&f, &DataTable::default(), p, NOW, 160);
+        let (out, _) = page(&f, &DataTable::default(), p, NOW, 160);
         let span = |word: &str| {
             out.iter()
                 .flat_map(|l| l.spans.iter())
@@ -1308,13 +1318,36 @@ pub mod tests {
             sel: 1,
             ..Default::default()
         };
-        let out = page(&f, &t, p, NOW, 160);
+        let (out, sel) = page(&f, &t, p, NOW, 160);
         let at = out
             .iter()
             .position(|l| plain(l).contains("idle-one"))
             .unwrap();
         assert_eq!(out[at].style, p.sel());
         assert_ne!(out[at - 1].style, p.sel());
+        assert_eq!(sel, Some(at), "the line it names is the reversed one");
+    }
+
+    #[test]
+    fn the_selected_line_counts_the_wrapped_legend_and_chips_above_the_rows() {
+        // A narrow pane wraps the legend and the chip line onto several lines each: the line the
+        // page names for the selection is still the reversed row's.
+        let p = Palette { no_color: true };
+        let mut f = fixture();
+        f.legend = (0..6)
+            .map(|i| format!("kind{i} means a long thing"))
+            .collect();
+        let t = DataTable {
+            sel: 2,
+            ..Default::default()
+        };
+        let (out, sel) = page(&f, &t, p, NOW, 40);
+        let at = sel.expect("rows");
+        assert_eq!(out[at].style, p.sel());
+        assert!(at > 6, "the wrapped legend sits above: {at}");
+        let mut none = DataTable::default();
+        none.view.q = "nothing-matches".into();
+        assert_eq!(page(&f, &none, p, NOW, 40).1, None, "no row, no line");
     }
 
     #[test]

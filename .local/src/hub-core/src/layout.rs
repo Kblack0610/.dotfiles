@@ -475,24 +475,22 @@ pub fn bar_digit(id: &str) -> Option<usize> {
         .map(|i| (i + 1) % 10)
 }
 
-/// A tab as the TUI's text names it: its bar digit and title (`8 Alerts`), or the title alone for
+/// A tab as the TUI's text names it: its bar digit and title (`7 Alerts`), or the title alone for
 /// a tab with no digit, so a badge or hint never names a stale key after a reorder.
 pub fn bar_label(id: &str) -> String {
     let title = resolve(id).map_or(id, |t| t.title);
     bar_digit(id).map_or(title.to_string(), |d| format!("{d} {title}"))
 }
 
-/// Where a section that moved off `tab` lives now: its new tab and section. `tab` is the name as
-/// asked, so a retired tab's own rows (`fleet tokens`) still match after the tab itself retired.
+/// Where a section that moved off `tab` lives now: its new tab and section. A row's tab and the
+/// one asked each resolve to the tab they mean (`RETIRED`), so a retired tab's rows (`fleet
+/// tokens`) still match after the tab itself retired.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
-    let (t, s) = (
-        tab.trim().to_ascii_lowercase(),
-        sec.trim().to_ascii_lowercase(),
-    );
-    let id = resolve(&t)?.id;
+    let id = resolve(tab)?.id;
+    let s = sec.trim().to_ascii_lowercase();
     MOVED
         .iter()
-        .find(|m| (m.0 == id || m.0 == t) && m.1 == s)
+        .find(|m| m.1 == s && resolve(m.0).is_some_and(|t| t.id == id))
         .and_then(|m| Some((resolve(m.2)?, m.3)))
 }
 
@@ -664,6 +662,16 @@ mod tests {
             "a runner is no section"
         );
         assert_eq!(moved("costs", "tokens"), None);
+        // Each row's old tab is a tab or a retired name, matched as the tab it means: a row whose
+        // tab resolves to nothing would never match.
+        for m in MOVED {
+            assert!(resolve(m.0).is_some(), "{} names no tab", m.0);
+        }
+        assert_eq!(
+            moved(" Fleet ", "Tokens").map(|(t, s)| (t.id, s)),
+            Some(("costs", "tokens")),
+            "a retired tab's row, any case"
+        );
         // Infra's old links (`#infra/red`, `hub tab infra fixes`) land on Alerts.
         for (old, new) in [
             ("red", "firing"),

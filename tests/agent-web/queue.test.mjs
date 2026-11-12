@@ -642,7 +642,7 @@ test("a row with a PR links it in the PR cell", () => {
 
 test("an opened item links its session, project, row, PR and the PR's CI runs; the project cell links too", () => {
   const links = [
-    { what: "session", text: "agent-3", href: "#fleet/session/w1" },
+    { what: "session", text: "agent-3", href: "#sessions/sessions/w1" },
     { what: "project", text: "dotfiles", href: "#projects/dotfiles" },
     { what: "row", text: "ar-1726", href: "#projects/agent-runtime?row=ar-1726" },
     { what: "pr", text: "o/r#7", href: "https://github.com/o/r/pull/7" },
@@ -652,7 +652,7 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
   assert.match(draw(), /<td><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td>/, "the project cell is its page");
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<div class="cline qlinks">session <a class="tl" href="#fleet\/session\/w1">agent-3<\/a>, project <a class="tl" href="#projects\/dotfiles">dotfiles<\/a>, row <a class="tl" href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a class="tl" href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
+  assert.match(h, /<div class="cline qlinks">session <a class="tl" href="#sessions\/sessions\/w1">agent-3<\/a>, project <a class="tl" href="#projects\/dotfiles">dotfiles<\/a>, row <a class="tl" href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a class="tl" href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
   fire("click", { type: "click", target: target({}, "w1") });
   load({ ...data, items: [item("w1")] });
   fire("click", { type: "click", target: target({}, "w1") });

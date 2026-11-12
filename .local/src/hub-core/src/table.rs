@@ -83,7 +83,7 @@ pub trait Row {
     /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
     /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
-    /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
+    /// A held runner on Runners is stopped (red) where a held Queue item only waits (amber).
     const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
@@ -420,7 +420,7 @@ pub struct Summary {
     pub facets: Vec<Facet>,
     /// Row i of the rows sent beside it: each column that names a record and that record's href
     /// ([`links`]). Absent when no row links anything. A surface that reshapes the rows after the
-    /// view (Fleet's folds) sends `links` of what it reshaped to.
+    /// view sends `links` of what it reshaped to.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<BTreeMap<&'static str, String>>,
     /// `Row::LEGEND` as one line ([`legend`]); absent when the table has none.

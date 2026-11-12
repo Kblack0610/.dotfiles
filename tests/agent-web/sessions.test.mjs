@@ -148,11 +148,11 @@ test("from 900px an open session lists the table's rows beside it, the open one 
 test("every row is a link to its page, keeping the table's view for Back", () => {
   setup();
   run(`location.hash = ""; sessionClick(sst.data.rows[0])`);
-  assert.equal(run("location.hash"), "#sessions/hub%2Fb%3A1-id", "a session on a pane, by its session id");
+  assert.equal(run("location.hash"), "#sessions/sessions/hub%2Fb%3A1-id", "a session on a pane, by its session id");
   run(`st.views.sessions = "q=pr%3Aopen"; sessionClick(sst.data.rows[2])`);
-  assert.equal(run("location.hash"), "#sessions/s9?q=pr%3Aopen", "an ended one, by its session id");
+  assert.equal(run("location.hash"), "#sessions/sessions/s9?q=pr%3Aopen", "an ended one, by its session id");
   run(`st.views.sessions = ""; sessionClick({ ...sst.data.rows[2], session_id: "" })`);
-  assert.equal(run("location.hash"), "#sessions/ucp-394", "no session id, by its row key");
+  assert.equal(run("location.hash"), "#sessions/sessions/ucp-394", "no session id, by its row key");
 });
 
 test("a transcript that answers after the view moved back to the page does not cover it", async () => {
@@ -301,11 +301,18 @@ test("each inner tab reads only its own feed while shown", async () => {
   run(`st.arg = "shepherd"; TABS.sessions.inner("shepherd")`);
   await new Promise(setImmediate);
   assert.equal(run("__asked.join()"), "/api/shepherd");
+  // A queue event while Shepherd shows reads no table; it marks the table to read when it shows.
+  run(`__asked.length = 0; st.tab = "sessions"; tableFeed.onEvent({ kind: "queue" })`);
+  await new Promise(setImmediate);
+  assert.doesNotMatch(run("__asked.join()"), /\/api\/sessions\/table/, "off its inner tab the table is not read");
   run(`__asked.length = 0; st.arg = "sessions"; TABS.sessions.inner("sessions")`);
   await new Promise(setImmediate);
   const read = run("__asked.join()");
-  assert.match(read, /\/api\/sessions\/table/, "the control: the Sessions inner tab reads its table");
+  assert.match(read, /\/api\/sessions\/table/, "the control: the Sessions inner tab reads its stale table");
   assert.doesNotMatch(read, /\/api\/(shepherd|fleet)/);
+  run(`__asked.length = 0; TABS.sessions.inner("sessions")`);
+  await new Promise(setImmediate);
+  assert.doesNotMatch(run("__asked.join()"), /\/api\/sessions\/table/, "shown again with nothing new, it is not read again");
   run(`api = __api`);
 });
 

@@ -174,7 +174,10 @@ mod tests {
         assert_eq!(v["errors"][0], "session outcomes: exit 1");
         assert_eq!(v["table"]["state"], "done today");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(v["open_rows"], TABLE_OPEN_ROWS, "the page's cap is the server's");
+        assert_eq!(
+            v["open_rows"], TABLE_OPEN_ROWS,
+            "the page's cap is the server's"
+        );
     }
 
     #[test]

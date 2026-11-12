@@ -523,6 +523,8 @@ pub struct App {
     /// Sessions' Runners table: `/` query, `f` state, `s`/`S` sort, `x` clear (datatable), and
     /// the row j/k pick and Enter opens, an index into `fleettab::shown`.
     pub fleet_table: DataTable,
+    /// A key moved the Runners selection: the next draw scrolls its row into view.
+    fleet_follow: bool,
     /// The Sessions inner tab shown (`hub_core::layout`'s Sessions groups): Sessions, Runners or
     /// Shepherd; only the shown one is read.
     pub sessions_inner: &'static str,
@@ -622,6 +624,8 @@ pub struct App {
     jobs_read: Read,
     feed_read: Read,
     boards_read: Read,
+    /// A board file changed while no page shown draws it (`boards_shown`): read it when one shows.
+    boards_stale: bool,
     forecast_read: Read,
     ranked_read: Read,
     reds_read: Read,
@@ -703,6 +707,7 @@ impl App {
             focus: None,
             daily_outbox: false,
             fleet_table: DataTable::default(),
+            fleet_follow: false,
             sessions_inner: hub_core::layout::inner_tab(sessions_tab(), None).map_or("", |i| i.id),
             shepherd: None,
             fleet_page: None,
@@ -753,6 +758,7 @@ impl App {
             jobs_read: Read::default(),
             feed_read: Read::default(),
             boards_read: Read::default(),
+            boards_stale: false,
             forecast_read: Read::default(),
             ranked_read: Read::default(),
             reds_read: Read::default(),
@@ -817,7 +823,35 @@ impl App {
         v
     }
 
+    /// Whether the page shown draws a Boards read: Home and Projects (the fleet state), Log (its
+    /// days, history and rundowns), and Sessions' Sessions inner tab (the table's states); Runners
+    /// and Shepherd read their own (rule 10).
+    fn boards_shown(&self) -> bool {
+        match self.tab {
+            Tab::Home | Tab::Projects | Tab::Log => true,
+            Tab::Sessions => self.sessions_inner == "sessions",
+            _ => false,
+        }
+    }
+
+    /// A board file changed: read it now when the page shown draws it, else once one does.
+    fn boards_changed(&mut self) {
+        if self.boards_shown() {
+            self.read_boards();
+        } else {
+            self.boards_stale = true;
+        }
+    }
+
+    /// The page now shown draws the boards: read them if a change came while none did.
+    fn boards_catch_up(&mut self) {
+        if self.boards_stale && self.boards_shown() {
+            self.read_boards();
+        }
+    }
+
     pub fn read_boards(&mut self) {
+        self.boards_stale = false;
         if self.boards_read.want() {
             let tx = self.tx.clone();
             let f = self.files.clone();
@@ -1307,6 +1341,7 @@ impl App {
         self.scroll = 0;
         self.seek = None;
         self.read_sessions_shown();
+        self.boards_catch_up();
     }
 
     /// Sessions' inner tab strip, the tab's first line.
@@ -1834,7 +1869,7 @@ impl App {
                 }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
-                    self.read_boards();
+                    self.boards_changed();
                     self.read_queue();
                     if home || self.tab == Tab::Releases {
                         self.read_releases();
@@ -1884,7 +1919,7 @@ impl App {
             Msg::ReleaseFile => {}
             Msg::BuildFile if reads_runs(self.tab) => self.read_builds(),
             Msg::BuildFile => {}
-            Msg::BoardFiles => self.read_boards(),
+            Msg::BoardFiles => self.boards_changed(),
             Msg::ProposalFiles => self.read_proposals(),
             Msg::SessionFiles if self.tab == Tab::Home => self.read_boards(),
             Msg::SessionFiles => {}
@@ -2518,7 +2553,7 @@ impl App {
         // The selection back in range of the rows for Enter: a re-read can leave fewer.
         self.fleet_table.clamp(rows);
         if self.fleet_table.moves(k, rows, self.page) {
-            self.keep_fleet_sel_visible();
+            self.fleet_follow = true;
             return true;
         }
         let sel = self.fleet_table.sel;
@@ -2536,21 +2571,8 @@ impl App {
             KeyCode::Esc if !self.fleet_table.is_default() => self.fleet_table.clear(),
             _ => return false,
         }
-        self.keep_fleet_sel_visible();
+        self.fleet_follow = true;
         true
-    }
-
-    /// The strip, the reader's errors, the heading, the status and the table head sit above the
-    /// first row.
-    fn keep_fleet_sel_visible(&mut self) {
-        let errors = self.fleet.as_ref().map_or(0, |f| f.errors.len());
-        let at = 4 + errors + self.fleet_table.sel;
-        let h = self.page.max(1);
-        if at < self.scroll {
-            self.scroll = at;
-        } else if at >= self.scroll + h {
-            self.scroll = at + 1 - h;
-        }
     }
 
     /// A request's query: the outbox on Daily, a section on Infra and Log, else a project name.
@@ -2643,6 +2665,7 @@ impl App {
                 self.sync_changelog();
             }
             Kind::Runner => self.open_runner(id),
+            Kind::Session => self.open_session(id),
             _ => {}
         }
     }
@@ -2718,6 +2741,7 @@ impl App {
         self.seek = None;
         self.run_want = None;
         self.session_want = None;
+        self.boards_catch_up();
         if t == Tab::Log {
             self.read_log_tab();
         }
@@ -4040,6 +4064,9 @@ impl App {
                 Tab::Home => Some((crate::datatable::ROW, &mut self.hv.follow)),
                 Tab::Alerts => Some((crate::datatable::ROW, &mut self.av.follow)),
                 Tab::Infra => Some((crate::datatable::ROW, &mut self.itab.follow)),
+                Tab::Sessions if self.sessions_inner == "runners" => {
+                    Some((crate::datatable::ROW, &mut self.fleet_follow))
+                }
                 _ => None,
             };
             if let Some((row, follow)) = pick {
@@ -4517,13 +4544,15 @@ impl App {
                         vec![],
                     ),
                     (None, None) => reading("the runners"),
-                    (None, Some(f)) => (
-                        fleettab::page(f, &self.fleet_table, self.p, now, w),
-                        vec![("fleet", 1)],
-                    ),
+                    (None, Some(f)) => {
+                        let (l, sel) = fleettab::page(f, &self.fleet_table, self.p, now, w);
+                        let row = sel.map(|at| (crate::datatable::ROW, at));
+                        (l, [("fleet", 0)].into_iter().chain(row).collect())
+                    }
                 };
+                // Every line the page names sits one lower, under the strip.
                 l.insert(0, self.sessions_strip(w));
-                (l, at)
+                (l, at.into_iter().map(|(s, i)| (s, i + 1)).collect())
             }
             // Shepherd: what the shepherd's pass owes and who holds its lease, under the strip.
             (Tab::Sessions, ..) if self.sessions_inner == "shepherd" => {
@@ -5392,6 +5421,34 @@ mod tests {
         assert_eq!(a.scroll, 10);
         a.handle(ctrl('u'));
         assert_eq!(a.scroll, 0);
+    }
+
+    #[test]
+    fn a_record_named_like_a_sessions_inner_tab_still_opens() {
+        // `hub tab 'fleet shepherd'` is the runner named shepherd (as `#fleet/shepherd` is on
+        // the web), and a session's page sits under its word, so one named shepherd opens too.
+        let mut a = app(Tab::Home);
+        a.fleet_runner_read.busy = true;
+        let (t, q) = crate::tabreq::parse("fleet shepherd").unwrap();
+        a.go(t);
+        a.open_query(q);
+        assert_eq!(
+            (a.tab, a.sessions_inner, a.fleet_page.as_deref()),
+            (Tab::Sessions, "runners", Some("shepherd"))
+        );
+        let (t, q) = crate::tabreq::parse("sessions sessions/shepherd").unwrap();
+        a.go(t);
+        a.open_query(q);
+        assert_eq!(
+            (a.sessions_inner, a.session_want.as_deref()),
+            ("sessions", Some("shepherd")),
+            "the session, wanted until the feed has it"
+        );
+        // Negative control: the bare word on the live tab is its inner tab.
+        let (t, q) = crate::tabreq::parse("sessions shepherd").unwrap();
+        a.go(t);
+        a.open_query(q);
+        assert_eq!(a.sessions_inner, "shepherd");
     }
 
     #[test]
@@ -7043,6 +7100,37 @@ mod tests {
     }
 
     #[test]
+    fn a_runner_picked_under_a_wrapped_legend_stays_on_screen() {
+        // The legend and the chips wrap onto several lines in a narrow pane; the row j and k
+        // pick is the one the page names, so it never scrolls out of view.
+        let mut f = fleettab::tests::fixture();
+        f.legend = (0..8)
+            .map(|i| format!("kind{i} means a long thing"))
+            .collect();
+        let one = f.who[0].clone();
+        f.who = (0..30)
+            .map(|i| hub_core::fleet::who::Who {
+                who: format!("runner-{i:02}"),
+                ..one.clone()
+            })
+            .collect();
+        let mut a = runners_app();
+        a.handle(Msg::Fleet(Box::new(f)));
+        let _ = screen(&mut a, 60, 16);
+        for _ in 0..29 {
+            press(&mut a, KeyCode::Char('j'));
+        }
+        let s = screen(&mut a, 60, 16);
+        assert_eq!(a.fleet_table.sel, 29);
+        assert!(s.contains("runner-29"), "{s}");
+        for _ in 0..29 {
+            press(&mut a, KeyCode::Char('k'));
+        }
+        let s = screen(&mut a, 60, 16);
+        assert!(s.contains("runner-00"), "{s}");
+    }
+
+    #[test]
     fn the_fleet_keys_query_the_table_and_esc_clears_them() {
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let ch = |c| key(KeyCode::Char(c));
@@ -8001,7 +8089,36 @@ mod tests {
         a.jobs_read.busy = true;
         a.fleet_read.busy = true;
         a.handle(Msg::Tick);
-        assert!(a.boards_read.busy, "the tick stands in for the watch");
+        assert!(
+            !a.boards_read.busy && a.boards_stale,
+            "on Runners the tick only marks the boards to read"
+        );
+        a.sessions_go("sessions");
+        assert!(a.boards_read.busy, "the tick stood in for the watch");
+    }
+
+    #[test]
+    fn a_board_file_change_reads_the_boards_only_where_they_are_drawn() {
+        // Sessions' Runners and Shepherd draw no board read (rule 10): a change waits for a page
+        // that does, which reads it once on showing.
+        let mut a = runners_app();
+        a.handle(Msg::BoardFiles);
+        assert!(!a.boards_read.busy && a.boards_stale, "Runners");
+        a.sessions_go("shepherd");
+        assert!(!a.boards_read.busy, "Shepherd");
+        a.sessions_go("sessions");
+        assert!(
+            a.boards_read.busy && !a.boards_stale,
+            "the Sessions inner tab reads it"
+        );
+        // Negative control: on Home a change is read at once.
+        let mut h = app(Tab::Home);
+        h.handle(Msg::BoardFiles);
+        assert!(h.boards_read.busy && !h.boards_stale);
+        let mut i = app(Tab::Infra);
+        i.handle(Msg::BoardFiles);
+        i.go(Tab::Log);
+        assert!(i.boards_read.busy, "a tab switch catches up");
     }
 
     fn infra_app() -> App {

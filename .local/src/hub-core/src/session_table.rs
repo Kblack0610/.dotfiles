@@ -32,6 +32,16 @@ pub fn is_machine(s: &Value) -> bool {
     shepherd || matches!(s["bucket"].as_str(), Some("NIGHTLY" | "SHARED"))
 }
 
+/// A session's tmux target as a row names it: `lab/dotfiles-agent-3:1` is `dotfiles-agent-3`,
+/// `hub/dotfiles:2` stays as it is past the world.
+pub fn name_of(target: &str) -> String {
+    match target.split_once('/') {
+        Some(("lab", rest)) => rest.strip_suffix(":1").unwrap_or(rest).to_string(),
+        Some((_, rest)) => rest.to_string(),
+        None => target.to_string(),
+    }
+}
+
 /// A session the header counts as live: a parked one is in the table but not at work.
 pub fn is_live(s: &Value) -> bool {
     s["bucket"].as_str() != Some("PARKED")
@@ -605,6 +615,14 @@ mod tests {
             cost: HashMap::from([("s1".to_string(), 1.2)]),
             errors: vec![],
         }
+    }
+
+    #[test]
+    fn a_target_is_named_without_its_world_and_a_lab_window_one() {
+        assert_eq!(name_of("lab/dotfiles-agent-3:1"), "dotfiles-agent-3");
+        assert_eq!(name_of("lab/dotfiles:3"), "dotfiles:3");
+        assert_eq!(name_of("hub/dotfiles:2"), "dotfiles:2");
+        assert_eq!(name_of("bare"), "bare");
     }
 
     #[test]
