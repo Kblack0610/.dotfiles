@@ -933,6 +933,60 @@ orphan_tree() {
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
+# -- orphans: the sweep over every Unity project --
+
+# orphan_project -- a Unity project outside $WT_ROOT (a main checkout or clone), whose editor
+# is gone and whose MCP server is left under the user manager.
+orphan_project() {
+  orphan_tree
+  P="$SANDBOX/dev/game"
+  mkdir -p "$P/ProjectSettings" "$P/Library/mcp-server/linux-x64"
+  rm -rf "$WT_PROC_ROOT/500"
+  fake_proc 500 "$P" "$P/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
+}
+
+@test "orphans ends a server whose editor is gone, outside the worktrees too" {
+  orphan_project
+  run cmd_orphans
+  assert_success
+  assert_output "ended 500  $P"
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "orphans -n names the server and signals nothing" {
+  orphan_project
+  run cmd_orphans -n
+  assert_success
+  assert_output "would end 500  $P"
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans leaves a server alone while its editor is open" {
+  orphan_project
+  wt_editor_open() { [ "$1" = "$P" ]; }
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans leaves a Library binary outside a Unity project alone" {
+  orphan_project
+  rm -r "$P/ProjectSettings"
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans fails, naming why, when a server outlives SIGTERM" {
+  orphan_project
+  touch "$SANDBOX/kill.ignored"
+  run cmd_orphans
+  assert_failure
+  assert_output --partial 'an orphan daemon outlived SIGTERM'
+}
+
 # -- done: kill, then reap, on the server --
 
 # done_from_inside <tree> -- `wt done` the way an agent runs it: from a shell in its own tree,
