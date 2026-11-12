@@ -34,6 +34,10 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 /// How far back `check` holds the stores to each other: the runs ledger's window.
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
 
+/// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
+/// next pass (`SCHEDULE='*:7/30'` in wave-roll.conf), so the grace is two of its cycles.
+const ROLL_GRACE_SECS: i64 = 2 * 1800;
+
 /// One tag of a project's line as the collector read it from git.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
@@ -1037,6 +1041,7 @@ impl<'a> Graph<'a> {
                 .filter(|t| t.at.is_some_and(|a| a >= links.since))
             {
                 if plain_version(&t.version)
+                    && t.at.is_some_and(|a| now - a >= ROLL_GRACE_SECS)
                     && !versions
                         .iter()
                         .any(|v| v.version.trim_start_matches('v') == t.version)
@@ -1962,7 +1967,7 @@ mod tests {
     #[test]
     fn the_link_checks_name_each_gap_from_the_day_they_are_held() {
         let since = 1_794_384_000; // 2026-11-11
-        let now = since + 1000;
+        let now = since + 5000;
         let ts = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339();
         let reg = Registry::parse(
             r#"{"trackers": {
@@ -2155,6 +2160,11 @@ mod tests {
                 "lib: tag glob lib-v* matches no tag, and the lab has 1 shipped version(s)",
             ]
         );
+        // A tag the roll has not had two passes to freeze is not missing its version yet.
+        assert!(!g
+            .check(&facts, since + 1000)
+            .iter()
+            .any(|l| l.contains("no lab version")));
         // Without the link facts or the sync record, only the checks over the stores remain.
         let bare = g.check(
             &Facts {

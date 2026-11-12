@@ -48,9 +48,9 @@ The workflow that deploys a target records one GitHub Deployment: `environment` 
 | `history` | The newest deployments, each `{version, state, at, url, sha, build}`; `state` is `ok`, `fail` or GitHub's word for one not finished, `sha` the Deployment's commit (the recorder's `ref`, the tag it shipped), `build` the store build number its payload carried (`{"build": "..."}`), else null |
 | `last` | The newest that finished, success or not: the LAST DEPLOY column. A failure makes the row amber |
 | `prev` | The version that succeeded before the newest success: the PREV column |
-| `error` | Why the read failed; PREV and LAST DEPLOY then say `?` |
+| `error` | Why the read failed; PREV and LAST DEPLOY then say `not read` |
 
-A target nothing records under, or a project whose repo is not on GitHub, has an empty history and `-` in both columns. The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. The platform records `pmp-api-prod` and `pmp-web-prod`: a success from `verify-flux-rollout.yml` once the pods are Ready, a failure from `deploy-production.yml`. Recording is one `record-deployment` action, in unity-core-playground, which the platform pins by commit; it never gates a deploy, and it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
+A target nothing records under, or a project whose repo is not on GitHub, has an empty history, and PREV and LAST DEPLOY say why: `none declared` when the project has no GitHub repo to record in, `not recorded` when its repo holds no Deployment under the target, `manual` for a channel moved by hand (see Blank cells). The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. The platform records `pmp-api-prod` and `pmp-web-prod`: a success from `verify-flux-rollout.yml` once the pods are Ready, a failure from `deploy-production.yml`. Recording is one `record-deployment` action, in unity-core-playground, which the platform pins by commit; it never gates a deploy, and it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
 
 ## Release history
 
@@ -183,7 +183,7 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 | `unknown` | A probe failed (fetch, kubectl, health); the row says which in `pinned.error` or `live.error`. The Releases tab draws it `not read` and counts it in the app's CHANNELS and the gap line, but it never sets the app's word |
 | `floating` | Pinned or live is `latest`, so no version can be named |
 | `ok` | Live equals pinned, the served SHA is the pinned tag's commit, or the store's build is the build the upload recorded |
-| `released` | Nothing to compare: a tag-only row (the newest tag, no live source), a store channel with no recorded upload (the store's value, pin `-`), or a channel moved by hand (pin `manual`) |
+| `released` | Nothing to compare: a tag-only row (the newest tag, no live source), a store channel with no recorded upload (the store's value, pin `not recorded`), or a channel moved by hand (pin `manual`) |
 | `unreleased` | An app with no release tag yet |
 
 The platform repo has a second drift reader by design: `release-drift.yml` and `mobile-release-drift.yml` post drift to the team's ntfy `ship` feed, which teammates outside the fleet read, and the mobile one also opens GitHub issues. They stay as the team's view; `release-state` and the `release-drift` Sentinel watch are the fleet's.
@@ -199,7 +199,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A row is `unknown` with `fetch failed` | The checkout's `origin` is unreachable (VPN, ssh agent). Fix the remote; the snapshot never reuses an older ref. When `origin` fetches by hand, check the row's source: a target with no `branch` reads `origin/HEAD`, and only the branch name after the remote is used, so a clone whose `origin/HEAD` points at `forgejo/master` still fetches `origin master` |
 | `agentctl@release-state` exits 2 with `jq: Argument list too long` and the snapshot stops moving | A JSON value passed to jq as `--argjson` grew past the kernel's 128 KB per-argument cap. Pass it through a file (`--slurpfile`) or stdin, never an argument |
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
-| PREV and LAST DEPLOY say `?` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
+| PREV and LAST DEPLOY say `not read` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
 | PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
 | A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
 | A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
