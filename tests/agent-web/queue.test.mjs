@@ -452,12 +452,16 @@ const loadAt = async (hash) => {
     console, document: d, window: { addEventListener() {} }, URLSearchParams,
     setInterval: () => 0, clearInterval() {}, setTimeout: () => 0,
     EventSource: function () { return { addEventListener() {}, close() {} }; },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    MutationObserver: function () { return { observe() {}, disconnect() {} }; },
     location: { pathname: "/", hash },
     history: { url: "", replaceState(a, b, u) { this.url = u; } },
     // Only the URLs count here: no reply ever lands, so nothing renders.
     fetch: (url) => { urls.push(url); return new Promise(() => {}); },
   });
-  for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), c, { filename: f });
+  // The page's own script order, since the listeners' order is what this checks.
+  const page = readFileSync(new URL("../src/index.html", dir), "utf8");
+  for (const [, f] of page.matchAll(/<script src="\/static\/([\w-]+\.js)/g)) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), c, { filename: f });
   ready.forEach((f) => f());
   await settle();
   return urls.filter((u) => /^\/api\/queue(\?|$)/.test(u));

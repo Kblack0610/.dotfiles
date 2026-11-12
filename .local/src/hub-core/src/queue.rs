@@ -478,8 +478,12 @@ impl Item {
     /// item's `links` lists each.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
         let mut refs = self.pr_refs();
-        let (label, url) = pr_link_of(refs.next()?)?;
-        match refs.count() {
+        let first = refs.next()?;
+        let (label, url) = pr_link_of(first)?;
+        let mut more: Vec<&str> = refs.filter(|r| *r != first).collect();
+        more.sort_unstable();
+        more.dedup();
+        match more.len() {
             0 => Some((label, url)),
             more => Some((format!("{label} +{more}"), url)),
         }
@@ -2045,6 +2049,15 @@ mod tests {
                 "home-config#875 +2".into(),
                 Some("https://github.com/kblack0610/home-config/pull/875".into())
             ))
+        );
+        // A ref written twice is one PR, not a second.
+        let twice = Item {
+            pr: Some("o/r#7, o/r#7 o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            twice.pr_link(),
+            Some(("r#7".into(), Some("https://github.com/o/r/pull/7".into())))
         );
         assert!(!bare.merged() && !bare.unproven());
         assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
