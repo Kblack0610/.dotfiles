@@ -321,9 +321,9 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
-// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
-// `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
+// assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
+const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -334,7 +334,7 @@ const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","runs":"
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
-// holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
+// holding it; a missing or unknown name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
   const g = INNER_TABS[tab];
   if (!g) return null;
@@ -456,8 +456,8 @@ function stripMark(root, attr, id) {
     b.tabIndex = on ? 0 : -1;
   });
 }
-// A section's html in its inner tab's group, hidden while another inner tab is open; a pinned
-// section, or a tab with no strip, is left as it is.
+// A section's html in its inner tab's group, hidden while another inner tab is open; a tab with
+// no strip leaves it as it is.
 function innerWrap(tab, section, html) {
   const home = homeOf(tab, section);
   if (!home || !html) return html;

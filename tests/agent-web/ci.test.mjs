@@ -422,7 +422,7 @@ test("Infra's strip counts runs needing a look on Runs, a red pipeline on Pipeli
 
 test("a run's workflow cell opens its record and its repo cell its project", () => {
   showBuilds(bdata({ table: { ...bdata().table, links: [{ workflow: "#infra/runs/binks%2F77", repo: "#projects/binks" }] } }));
-  assert.match(runs.innerHTML, /<td><a href="#projects\/binks">binks<\/a><\/td><td class="wrap"><a href="#infra\/runs\/binks%2F77">Tests<\/a><\/td>/);
+  assert.match(runs.innerHTML, /<td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="wrap"><a class="tl" href="#infra\/runs\/binks%2F77">Tests<\/a><\/td>/);
 });
 
 test("a run's page reads the run by its repo and id, shows its newest attempt with its jobs and log, and says so when the ledger has none", async () => {

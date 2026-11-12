@@ -211,6 +211,23 @@ const costs = {
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
   },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
+  // hub_core::spend_history: the 30-day chart, and the picked day's sessions (Burn per session).
+  history: {
+    why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-12 $1,312 vs 7d median $1,120 (+17%)", older: 0, missing: 1, stale: false,
+    note: "est. is the share priced from tokens",
+    rows: [{ kind: "month", period: "2026-11", total: "$14,210", days: 12, per_day: "$1,579", vs_prev: "+43%", est: "21%" }, { kind: "day", period: "11-12", total: "$1,312", days: 1, per_day: "$1,312", vs_prev: "+69%", est: "21%" }],
+    chart: rows(7, (i) => {
+      const key = `2026-11-${String(6 + i).padStart(2, "0")}`, usd = i === 2 ? null : 900 + i * 70;
+      return { key, label: key.slice(5), usd, measured: usd && usd * 0.8, estimated: usd && usd * 0.2, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` };
+    }),
+    months: [{ key: "2026-10", label: "10", usd: 34200, measured: 27000, estimated: 7200, tip: "2026-10: $34,200" }, { key: "2026-11", label: "11", usd: 14210, measured: 11200, estimated: 3010, tip: "2026-11: $14,210" }],
+  },
+  day: {
+    day: "2026-11-12", head: "2026-11-12: 6 sessions, $1,140 of the day's $1,312", why: null, more: 0, shown_usd: "$1,140",
+    rows: rows(6, (i) => ({ sid: `s${i}`, session: TEXT[i], project: pick(PROJECTS, i), origin: pick(["runner", "queue", "hand"], i), agent: i % 2 ? null : `agent-${i}`, harness: pick(["claude", "codex"], i), cost: 400 - i * 60, share: Math.round((400 - i * 60) / 13.12), est: i % 3 ? 0 : 30, days: 1 + i })),
+    table: table(6, ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"], ["all"], {}),
+    series: null,
+  },
   sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "outcomes rows", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),
   shown_usd: 300,

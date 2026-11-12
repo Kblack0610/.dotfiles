@@ -194,6 +194,8 @@ agent_bench_kpi_limit{kpi="runners_bad"} 2
 # TYPE agent_bench_kpi_past gauge
 agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
+# HELP agent_bench_kpi_subject The row behind a KPI that names one, as project:id; the value is always 1.
+# TYPE agent_bench_kpi_subject gauge
 # HELP agent_bench_vital The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.
 # TYPE agent_bench_vital gauge
 agent_bench_vital{question="you",kpi="human_answered_per_day"} 0
@@ -5318,6 +5320,14 @@ epics_fixture() {
   run "$SUBJECT" chain
   assert_success
   assert_line --regexp '^requested_unstarted_h: oldest is game:g-5, open since 2026-10-20 \([0-9]+h\)$'
+  # the same row is the gauge's subject, so Home's Outcome line can name it
+  source "$SUBJECT"
+  run bench_prom "$T0" '{"steps": []}'
+  assert_line 'agent_bench_kpi_subject{kpi="requested_unstarted_h",subject="game:g-5"} 1'
+  # the control: no #requested row open, no subject series
+  jq -cn '{rows: []}' > "$BJSON"
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'agent_bench_kpi_subject{'
 }
 
 @test "chain: routes_unresolved counts the watches and runners with no route line" {

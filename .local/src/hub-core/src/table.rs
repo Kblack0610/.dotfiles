@@ -343,6 +343,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::junit::Suite>(),
         phone_table::<crate::quarantine::Entry>(),
         phone_table::<crate::sections::Section>(),
+        phone_table::<crate::spend_history::SessRow>(),
         phone_table::<crate::worklog::Work>(),
         phone_table::<crate::machines::Machine>(),
         phone_table::<crate::machines::Pool>(),

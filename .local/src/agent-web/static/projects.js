@@ -130,19 +130,13 @@ function pOpened(c) {
   return html + `</div>` + stripHtml(PROJECT_PAGE, pst.inner, "ptab", [], counts);
 }
 
-// What needs the human: the page's groups, then the next stage's failing and human checks, which
-// link to Stage. Verify links nowhere: its epics include closed ones, which Build (open epics) lacks.
-function pNeedGroups(pg) {
-  const groups = pg.need_groups.map((g) => ({ ...g, go: null }));
-  const g = pg.gate, todo = pg.next_rows.filter((r) => r.result === "FAIL" || r.result === "HUMAN");
-  if (g && (g.fail || g.human)) {
-    groups.push({ kind: "stage", says: `${g.fail} ${g.stage} check${g.fail === 1 ? "" : "s"} failing, ${g.human} for a human`,
-      items: todo.map((r) => `${r.result} ${r.requirement}`), go: { pgo: "stage" } });
-  }
-  return groups;
-}
+// What needs the human, grouped by kind (hub_core::page::need_groups, the next stage's failing and
+// human checks last); a stage group links to Stage. Verify links nowhere: its epics include closed
+// ones, which Build (open epics) lacks.
+const P_NEED_GO = { stage: { pgo: "stage" } };
+const pNeedGroups = (pg) => pg.need_groups.map((g) => ({ ...g, go: P_NEED_GO[g.kind] || null }));
 const pNeedCount = (pg) => pNeedGroups(pg).reduce((n, g) => n + g.items.length, 0);
-// A link that moves the page to an inner tab, setting Build's view first when it names one.
+// A link that moves the page to an inner tab.
 const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}">${esc(text)}</a>`;
 const P_GO_TEXT = { stage: "open Stage" };
 
