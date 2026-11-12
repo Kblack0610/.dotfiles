@@ -18,14 +18,15 @@ const alst = tblTab({
   tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles source:sentinel state:no owner",
   open: () => alertsOpen,
   lead: () => innerStrip("alerts"),
-  head: (t) => alertsHead(t.data), wrap: (html) => innerWrap("alerts", "firing", alertsFold("firing", alertsFiringTitle(alst.data), html)),
+  head: (t) => alertsHead(t.data), wrap: (html) => innerWrap("alerts", "firing", alertsFold("firing", "Firing", alst.data?.counts?.firing, ALERT_HUE[alst.data?.level], html)),
   body: (t) => alertsBody(t.data), tail: (t) => alertsTail(t.data),
 });
 
-// A section as a fold, open unless the human folded it. The id is the `#alerts/<id>` anchor.
-function alertsFold(k, title, inner) {
+// A section as a fold, open unless the human folded it. The id is the `#alerts/<id>` anchor;
+// title, its count n and its level make the head.
+function alertsFold(k, title, n, level, inner) {
   const on = alertsOpen[k] ?? true;
-  return `<details class="sec-d" id="sec-${k}" data-k="${k}"${on ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${inner}</details>`;
+  return `<details class="sec-d" id="sec-${k}" data-k="${k}"${on ? " open" : ""}><summary>${secHead("", title, n, level)}</summary>${inner}</details>`;
 }
 
 const ALERT_HUE = { red: "bad", warn: "warn", ok: "ok", nodata: "" };
@@ -36,34 +37,26 @@ const alertState = (s) => (s === "error" || s === "no owner" || s === "unfixed" 
 // Source, what and where: one Alertmanager rule fires once per place, under one summary.
 const alertKey = (a) => `${a.source}|${a.what}|${a.place}`;
 
-function alertsFiringTitle(d) {
-  const c = d?.counts;
-  if (!c) return "Firing";
-  return `Firing <span class="muted">${c.firing}: ${c.tripped} trip, ${c.errors} error, ${c.no_owner} no owner, ${c.alertmanager} alertmanager${c.alertmanager_alerts !== c.alertmanager ? ` (${c.alertmanager_alerts} alerts)` : ""}</span>`;
-}
-
+// The inner tabs, the tab's level, then each source it could not read. When it was read is a fact
+// in Health's box.
 function alertsHead(d) {
-  const c = d.counts, lvl = d.level || "nodata";
-  let html = innerStrip("alerts", [], d.strip) + `<div class="bhead"><span>${cchip(ALERT_HUE[lvl], ALERT_LEVEL[lvl])} <span class="muted">read ${d.at ? clock(d.at * 1e3) : "-"}</span></span>` +
-    `<span class="muted">${c.fixes_open} open fixes, ${c.watches} watches</span></div>`;
+  const lvl = d.level || "nodata";
+  let html = innerStrip("alerts", [], d.strip) + `<div class="bhead"><span>${cchip(ALERT_HUE[lvl], ALERT_LEVEL[lvl])}</span></div>`;
   if (alst.err) html += `<div class="panel down">${esc(alst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  return html + innerWrap("alerts", "health", alertsFold("health", `Health <span class="muted">${alertsHealthWord(d.health)}</span>`, alertsHealthChips(d)));
+  const chips = d.health || [];
+  const worst = chips.some((c) => c.level === "red") ? "bad" : chips.some((c) => c.level !== "ok") ? "warn" : "";
+  return html + innerWrap("alerts", "health", alertsFold("health", "Health", chips.length || null, worst, alertsHealthChips(d)));
 }
 
 // Every domain with its hue, the not-green ones first, then why: each component that is not green.
-function alertsHealthWord(chips) {
-  const bad = (chips || []).filter((c) => c.level !== "ok").length;
-  return chips?.length ? (bad ? `${bad} not green of ${chips.length}` : `all green (${chips.length})`) : "no data";
-}
-
 function alertsHealthChips(d) {
-  const chips = d.health || [];
-  if (!chips.length) return `<div class="panel muted">No health: Prometheus did not answer.</div>`;
+  const chips = d.health || [], read = `<div class="cline"><b>read</b> ${d.at ? clock(d.at * 1e3) : "-"}</div>`;
+  if (!chips.length) return `<div class="panel muted">No health: Prometheus did not answer.${read}</div>`;
   const rank = { red: 0, warn: 1, nodata: 2, ok: 3 };
   const line = [...chips].sort((a, b) => rank[a.level] - rank[b.level]).map((c) => cchip(ALERT_HUE[c.level], `${esc(c.name)} ${HEALTH_WORD[c.level]}`)).join(" ");
   const why = (d.components || []).map((c) => `<div>${cchip(ALERT_HUE[c.level], HEALTH_WORD[c.level])} ${esc(c.domain)}/${esc(c.name)}</div>`).join("");
-  return `<div class="panel"><div class="cline">${line}</div>${why}</div>`;
+  return `<div class="panel"><div class="cline">${line}</div>${why}${read}</div>`;
 }
 
 function alertRow(a) {
@@ -122,12 +115,11 @@ function alertsFixRow(r) {
 
 function alertsFixes(d) {
   const r = d.fixes, failed = (d.errors || []).some((e) => e.startsWith("fleet-bench reds:"));
-  const title = `Fixes <span class="muted">${failed ? "read failed" : esc(r.summary || `${r.open.length} open`)}</span>`;
   const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(alertsFixRow).join("")}</div>` +
     (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
   const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${alertsOpen["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(alertsFixRow).join("")}</div></details>` : "";
-  const empty = failed ? "" : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
-  return innerWrap("alerts", "fixes", alertsFold("fixes", title, open + settled + empty));
+  const empty = failed ? `<div class="panel down">Could not read the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
+  return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : r.open.length, failed ? "bad" : "", open + settled + empty));
 }
 
 // History: Sentinel's pages of the window, newest first; every sender's are on Log's Actions.
@@ -137,7 +129,7 @@ function alertsHistory(d) {
     `<tr><td class="n">${stamp(a.at)}</td><td class="muted">${esc(a.verb)}</td><td class="wrap">${esc(a.text)}</td></tr>`).join("")}</table></div>` +
     (c.history_older ? `<div class="muted more">+${c.history_older} older on <a href="#log/actions">Log</a></div>` : "")
     : `<div class="panel muted">No alert paged this week.</div>`;
-  return innerWrap("alerts", "history", alertsFold("history", `History <span class="muted">${c.history + c.history_older} pages in 7 days</span>`, body));
+  return innerWrap("alerts", "history", alertsFold("history", "History", c.history + c.history_older, "", body));
 }
 
 // Watches: every one, tripped and failing first.
@@ -150,8 +142,8 @@ function alertsWatches(d) {
   const all = d.watches || [], look = all.filter((w) => w.state !== "OK"), ok = all.filter((w) => w.state === "OK");
   const folded = ok.length ? `<details class="sec-d" data-k="watches-ok"${alertsOpen["watches-ok"] ? " open" : ""}><summary class="muted fold">+${ok.length} ok</summary>${table(ok)}</details>` : "";
   const body = !all.length ? `<div class="panel muted">No watch defined.</div>` : (look.length ? table(look) : "") + folded;
-  const title = `Watches <span class="muted">${c.watches}: ${c.watches_tripped} tripped, ${c.watches_error} error, ${c.watches_ok} ok, ${c.watches_new} new</span>`;
-  return innerWrap("alerts", "watches", alertsFold("watches", title, body));
+  const bad = [c.watches_tripped && `${c.watches_tripped} tripped`, c.watches_error && `${c.watches_error} error`].filter(Boolean).join(", ");
+  return innerWrap("alerts", "watches", alertsFold("watches", "Watches", c.watches, bad ? "warn" : "", (bad ? `<div class="cline warn">${bad}</div>` : "") + body));
 }
 
 // The inner tabs after Firing, in the layout's order.
