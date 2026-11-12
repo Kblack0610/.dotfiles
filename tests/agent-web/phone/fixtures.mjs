@@ -188,15 +188,19 @@ const fleet = {
 // Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.
 const alertRows = rows(6, (i) => ({ sev: pick(["high", "normal", "low"], i), what: SLUGS[i], source: pick(["sentinel", "red_now", "infra"], i), since: ago(20 + i * 45),
   project: pick(PROJECTS, i), owner: i % 2 ? "-" : `${SLUGS[i]} fixing`, state: pick(["fixing", "no owner", "error"], i), slug: i % 2 ? undefined : SLUGS[i], about: TEXT[i], place: TEXT[i + 1], action: TEXT[i + 2] || "", evidence: "" }));
+// An Alertmanager rule firing in three places is one row with its alerts under it, each with its
+// own description, so the row has none (alerts::am_rows).
+const amPage = (i) => ({ sev: "normal", what: `CVEs in ${SLUGS[i]}`, project: "", source: "alertmanager", since: ago(90 + i), owner: "-", state: "firing", about: TEXT[i], place: `image=${SLUGS[i]}`, action: "routed to ntfy", evidence: "" });
+alertRows.push({ ...amPage(0), what: "HomelabCriticalVulnerability", about: "", place: "", pages: [0, 1, 2].map(amPage) });
 const alerts = {
   at: NOW, level: "red", health: [{ name: "k3s", level: "red" }, { name: "ci", level: "ok" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
   firing: alertRows, rows: alertRows,
-  table: table(6, ["sev", "what", "project", "source", "since", "owner", "state"], ["all", "trip", "error", "no owner"], { sev: ["high", "normal", "low"], source: ["sentinel", "red_now", "infra"], state: ["fixing", "no owner", "error"] }),
+  table: table(7, ["sev", "what", "project", "source", "since", "owner", "state"], ["all", "trip", "error", "no owner"], { sev: ["high", "normal", "low"], source: ["sentinel", "red_now", "infra"], state: ["fixing", "no owner", "error"] }),
   fixes: { open: [{ slug: SLUGS[0], red: TEXT[0], outcome: "fixing", queued: iso(ago(30)), pr: "", pr_url: "" }], settled: [], summary: "1 open" },
   history: rows(3, (i) => ({ at: ago(30 + i * 60), actor: "sentinel", verb: "tripped", text: `Sentinel: ${TEXT[i]}`, source: "agent-notify" })),
   watches: rows(4, (i) => ({ name: SLUGS[i], state: pick(["TRIP", "ERROR", "OK", "new"], i), severity: "high", since: ago(40), lastrun: ago(2), lasttrip: null, place: TEXT[i], what: "", action: "", evidence: "" })),
-  watches_folded: false,
-  counts: { firing: 6, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1 },
+  counts: { firing: 7, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1, alertmanager: 1, alertmanager_alerts: 3 },
+  strip: { firing: 7, fixes: 1, watches: 3 },
   errors: [],
 };
 

@@ -166,10 +166,31 @@ pub const TABS: [Tab; 13] = [
         group: "System",
         title: "Alerts",
         question: "What is firing, who owns it, and what fired lately?",
-        // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
-        // alert pages of the week, then every watch (folded while none is red).
-        sections: &["health", "firing", "fixes", "history", "watches"],
-        inner: &[],
+        // hub_core::alerts: one inner tab a question: the health chips and what fires with its
+        // fix's owner, the fixes, every watch, the week's pages.
+        sections: &["health", "firing", "fixes", "watches", "history"],
+        inner: &[
+            Inner {
+                id: "firing",
+                title: "Firing",
+                sections: &["health", "firing"],
+            },
+            Inner {
+                id: "fixes",
+                title: "Fixes",
+                sections: &["fixes"],
+            },
+            Inner {
+                id: "watches",
+                title: "Watches",
+                sections: &["watches"],
+            },
+            Inner {
+                id: "history",
+                title: "History",
+                sections: &["history"],
+            },
+        ],
     },
     Tab {
         id: "infra",
@@ -644,8 +665,14 @@ mod tests {
         let alerts = resolve("alerts").unwrap();
         assert_eq!(
             alerts.sections,
-            ["health", "firing", "fixes", "history", "watches"]
+            ["health", "firing", "fixes", "watches", "history"]
         );
+        // Health opens with Firing; every old `#alerts/<section>` opens its inner tab.
+        let at = |w: Option<&str>| inner_tab(alerts, w).map(|i| i.id);
+        assert_eq!(at(None), Some("firing"));
+        assert_eq!(at(Some("health")), Some("firing"));
+        assert_eq!(at(Some("watches")), Some("watches"));
+        assert_eq!(at(Some("history")), Some("history"));
         assert_eq!(section("fixes"), None, "a new section is no retired name");
         // The eleventh tab on the number row has no digit; the tenth is 0.
         assert_eq!(bar_digit("schedules"), Some(0));
