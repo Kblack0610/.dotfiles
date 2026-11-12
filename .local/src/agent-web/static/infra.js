@@ -555,6 +555,8 @@ function drawInfra() {
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
   if (infraPage()) { paint(el, strip + infraPageHtml()); return; }
+  // A run's own page stands in for CI's sections, as a machine's does for Machines.
+  if (ciRunId()) { $("ci-runs").hidden = $("ci-tests").hidden = true; paint(el, strip + runPage()); return; }
   if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
@@ -594,11 +596,12 @@ TABS.infra = {
   show() {
     const page = infraPage() ? st.page : "";
     if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
-    renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data);
+    showRunPage();
+    renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); tstFeed.show(!tst.data || tst.moved());
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
     if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
-    bldFeed.onEvent(ev); tstFeed.onEvent(ev);
+    bldFeed.onEvent(ev); tstFeed.onEvent(ev); runFeed.onEvent(ev);
   },
 };

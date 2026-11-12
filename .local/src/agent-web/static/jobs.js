@@ -8,11 +8,13 @@
 const JOBS_REFRESH_MS = 60e3;
 // Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
 const JOBS_OPEN = 200;
-// `hist` is the one job whose every run is listed instead of the folded list.
+// `#infra/jobs/<name>` (hub_core::links Kind::Job) lists every run of that one job instead of the
+// folded list; `hist` is the name the rows on hand were read for.
+const jobName = () => pageId("infra", "jobs");
 const jst = tblTab({
-  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:unity result:fail -name:dream",
-  state: { hist: null, log: null, all: false },
-  params: (p) => { if (jst.hist) p.set("name", jst.hist); },
+  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:unity result:fail host:workstation",
+  state: { hist: "", log: null, all: false },
+  params: (p) => { if (jobName()) p.set("name", jobName()); },
   head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
 });
 
@@ -26,19 +28,19 @@ function resultCell(j) {
   return `<td class="${cls}">${esc(j.result || "-")}</td>`;
 }
 
-function jobRow(j) {
-  const k = jobKey(j);
+function jobRow(j, n) {
+  const k = jobKey(j), L = tblLinks(jst.data.table, n);
   const dur = j.state === "queued" ? `wait ${secs(j.secs)}` : secs(j.secs);
-  const runs = j.runs > 1 ? ` <a href="#" class="muted" data-hist="${esc(j.name)}" title="every run of this job">${j.runs} runs</a>` : "";
+  const runs = j.runs > 1 && L.name ? ` <a href="${esc(L.name)}" class="muted" title="every run of this job">${j.runs} runs</a>` : "";
   const next = j.next ? ` <span class="muted">next ${when(j.next)}</span>` : "";
   const link = j.url ? ` <a href="${esc(j.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   return `<tr class="jr${k === jst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-key="${esc(k)}">` +
     `<td>${esc(j.state)}</td><td class="muted">${esc(j.source)}</td><td class="wrap">${esc(j.name)}${runs}${link}</td>` +
     `<td class="n">${when(j.started)}</td><td class="n">${dur}</td>${resultCell(j)}` +
-    `<td class="wrap muted">${esc(j.detail || "")}${next}</td></tr>`;
+    `<td class="muted">${tblLink(L.host, j.host)}</td><td class="wrap muted">${esc(j.detail || "")}${next}</td></tr>`;
 }
 
-const JOB_COLS = { state: ["state"], source: ["source"], name: ["name"], started: ["started", "n"], took: ["took", "n"], result: ["result"], detail: ["detail"] };
+const JOB_COLS = { state: ["state"], source: ["source"], name: ["name"], started: ["started", "n"], took: ["took", "n"], result: ["result"], host: ["host"], detail: ["detail"] };
 
 function jobsBody(d) {
   const t = d.table, shown = d.jobs || [];
@@ -52,7 +54,7 @@ function jobsBody(d) {
 
 function jobsHead(d) {
   const hours = Math.round((d.window_secs || 86400) / 3600);
-  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
+  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jobName() ? `<span>every run of <b>${esc(jobName())}</b> <a href="#infra/jobs">back to all</a></span>` : ""}` +
     ` <span class="muted">${d.table.shown} of ${d.table.total} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
   if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#infra/runs">${esc(d.ci.says)}</a></div>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
@@ -60,7 +62,7 @@ function jobsHead(d) {
   return html;
 }
 
-const jobsTail = () => `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>` +
+const jobsTail = () => `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; its N runs lists them all. Click a row for its log.</div>` +
   (jst.log ? `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>` : "");
 
 // A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
@@ -84,14 +86,17 @@ async function openLog(j) {
 
 $("jobs").addEventListener("click", (e) => {
   const t = e.target;
-  if (t.closest("a[target]")) return;
-  const h = t.closest("[data-hist]");
-  if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; jst.render(); jst.refresh(); return; }
+  if (t.closest("a")) return;
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
 
-// Shown and refreshed by TABS.infra (infra.js).
+// Shown and refreshed by TABS.infra (infra.js): another job's page drops the rows read for the last.
 const pollJobs = poll("infra", jst.refresh, JOBS_REFRESH_MS);
+function showJobs() {
+  if (jobName() !== jst.hist) Object.assign(jst, { hist: jobName(), data: null, sel: null, log: null, all: false });
+  jst.render();
+  pollJobs();
+}
