@@ -91,7 +91,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 
 ## Token usage tracking
 
-`agent-usage tokens snapshot` runs nightly as the first step of `day-log nightly` (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the two counted tools:
+`agent-usage tokens snapshot` runs nightly as the first step of `day-log nightly` (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the counted tools below:
 
 | Number | Owner |
 |--------|-------|
