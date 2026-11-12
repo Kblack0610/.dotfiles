@@ -125,6 +125,9 @@ impl Row for SessionRow {
     const FACETS: &'static [&'static str] = &["bucket", "project", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
+    /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("needs you", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -809,6 +812,12 @@ mod tests {
                 ("stalled", 0),
                 ("done today", 3)
             ]
+        );
+        let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
+        assert_eq!(
+            tone("needs you"),
+            Some(Some(crate::vocab::Level::Bad)),
+            "red like its NEEDS badge"
         );
         let v = View::new::<SessionRow>("", "Needs You", "", "");
         assert_eq!(v.apply(&r).len(), 1);

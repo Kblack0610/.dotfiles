@@ -1,18 +1,27 @@
 "use strict";
-// The Releases tab: every app, what is live where it matters most and its worst status, from
+// The Releases tab: every app, what is deployed where it matters most and its worst status, from
 // /api/releases (hub_core::releases). The table is the shared one (table.js): the server filters
-// and sorts by the view in the URL. An opened app lists its headline env's channels, the other
-// envs in a fold under them, then its changelog. A new snapshot pushes the `releases` event.
+// and sorts by the view in the URL. A row opens the app's page, `#releases/apps/<name>`
+// (links::Kind::App), in place of the table: its status (Gatus checks, uptime, incidents), its
+// headline env's channels, the other envs in a
+// fold under them, its releases, builds and changelog. A new snapshot pushes the `releases` event.
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
-// table and an opened app) and Release runs, the strip above them. CI runs and Tests are Infra's.
+// table or an app's page) and Release runs, the strip above them. CI runs and Tests are Infra's.
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
 // Which folds on the tab are open (an app's other envs, Release runs' folds), so a repaint keeps them as they were.
 const REL_OPEN = {};
+// The app whose page the URL has open, or "" on the table.
+const relPage = () => pageId("releases", "apps");
 const relst = tblTab({
-  tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
+  tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or stage:alpha channel:prod status:drift",
   open: () => REL_OPEN,
+  // The open page's app is read whatever the view hides; its changelog is read each time its
+  // page opens (a read with no app closes it), so a reopened app shows its newest tags.
+  params: (p) => { if (relPage()) p.set("app", relPage()); },
+  got: (t) => { const a = t.data?.app; if (!a) relOpened = null; else if (relOpened !== a.project) { relOpened = a.project; loadChangelog(a.project); } },
+  draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
   body: (t) => releasesBody(t.data),
@@ -24,19 +33,24 @@ const relst = tblTab({
 const relFlagged = () => [relst.data?.look && "table", relRuns.data?.look && "runs"].filter(Boolean);
 
 const relKey = (a) => a.project;
+// A cell whose words say the fact is absent (releases::BLANKS, sent as `blanks`) is dimmed.
+const relDim = (text, cls = "") => [cls, (relst.data?.blanks || []).includes(text) ? "muted" : ""].filter(Boolean).join(" ");
+// The app whose page last opened, so its changelog is read once per opening.
+let relOpened = null;
 // The channel whose detail is open inside an opened app, `project|id`.
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
+const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
-function releaseRow(a) {
-  const open = relKey(a) === relst.sel;
-  const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
-    `<td>${esc(a.project)}${a.stage ? ` <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage)}</span>` : ""}</td><td class="wrap">${esc(a.live_text)}</td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
-    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="muted">${esc(a.released_text)}</td>` +
-    `<td class="${levelClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
-  return open ? row + appDetail(a) : row;
+// One app; the name goes to its Projects card, the rest of the row to its page.
+function releaseRow(a, i) {
+  const project = tblLinks(relst.data?.table, i).project;
+  return `<tr class="jr" data-key="${esc(relKey(a))}"><td>${tblLink(project, a.project)}</td>` +
+    `<td class="${levelClass(a.stage_level) || "muted"}" title="${esc(a.stage_text)}">${esc(a.stage || "-")}</td>` +
+    `<td class="${relDim(a.live_text, "wrap")}">${esc(a.live_text)}</td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relDim(a.released_text)}">${esc(a.released_text)}</td>` +
+    `<td class="${relDim(a.last_deploy_text, levelClass(a.deploy_level))}">${esc(a.last_deploy_text)}</td></tr>`;
 }
 
 // One channel of an opened app; its own detail opens under it on a click.
@@ -49,11 +63,26 @@ function channelRow(r) {
   return open ? row + releaseDetail(r) : row;
 }
 
-const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
+const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>deployed</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
-// The opened app: its headline env's channels, the other envs in a fold that starts open, its
-// release history, then what the picked tag shipped.
+// An app's page: its header with the way back to the table and to its Projects card, its status
+// (appStatus), then its headline env's channels, the other envs in a fold that starts open, its release history, its
+// builds and what the picked tag shipped. An app the snapshot does not have says so.
+function appPage(d) {
+  const name = relPage(), view = st.views.releases;
+  const back = `<a class="btn sm" href="#releases/${ENTITY_PAGES.releases.apps}${view ? "?" + view : ""}">All apps</a>`;
+  const errs = [relst.err, ...(d?.errors || [])].filter(Boolean);
+  const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
+  // A read asked for another app (or none) is still the old page's: wait for this one's.
+  if (d?.asked !== name) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">reading...</div>`;
+  const a = d.app;
+  if (!a) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">No such app: ${esc(name)}.</div>`;
+  const project = d.app_links?.project ? ` <a class="btn sm" href="${esc(d.app_links.project)}">Project page</a>` : "";
+  return `<div class="bhead"><span>Releases / <b>${esc(a.project)}</b> <span class="${levelClass(a.level)}">${esc(a.status_text)}</span></span><span>${back}${project}</span></div>` +
+    `${down}${appStatus()}<h2 class="sec">Channels</h2><div class="panel">${appDetail(a)}</div>`;
+}
+
 function appDetail(a) {
   const lead = a.channels.slice(0, a.lead), rest = a.channels.slice(a.lead);
   const others = rest.length
@@ -61,9 +90,8 @@ function appDetail(a) {
     : "";
   const stage = `<div class="cline"><b>Stage</b> <span class="${levelClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>` +
     (a.coverage_text ? `<div class="cline"><b>Coverage</b> <span class="muted">${esc(a.coverage_text)}</span></div>` : "");
-  const page = `<div class="cline"><b>Status</b> <a href="#releases/apps/${encodeURIComponent(a.project)}">uptime, latency and incidents</a></div>`;
-  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${page}${chTable(lead)}${others}${releaseHistory(a)}${appBuilds(a)}` +
-    `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
+  return `<div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}${appBuilds(a)}` +
+    `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div>`;
 }
 
 // Which tags a history lists, as the collector named the line.
@@ -183,19 +211,17 @@ const relRuns = runsTable({
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
 const relRepaint = relst.repaint;
 relst.repaint = () => relRepaint() || relRuns.repaint();
-// An app's status page, `#releases/apps/<app>` (hub_core::links Kind::App, app_status), in place
-// of the Apps tab's table: a banner, the checks Gatus runs on it with their uptime, 90 days and
-// latency, and its incidents. Gatus results reach the board through Prometheus, which has no push,
-// so the open page re-reads on this cadence.
+// An app page's status (hub_core::app_status), above its channels: a banner, the checks Gatus runs
+// on it with their uptime, 90 days and latency, and its incidents. Gatus results reach the board
+// through Prometheus, which has no push, so the open page re-reads on this cadence.
 const APP_PAGE_REFRESH_MS = 60e3;
 // A day bar's colours by what the day saw (dayColor). A phone shows the newest 30 (app.css).
 const APP_DAY_COLOR = { none: "var(--c-other)", up: "var(--idle)", dip: "var(--busy)", down: "var(--wait)" };
-// The open page, by its hash (`apps/<app>`), and its last read.
+// The open page, by its hash (`apps/<app>`), and its last status read.
 const apst = { page: "", data: null, err: null };
-const appPage = () => pageId("releases", "apps");
 // A read that lands after another page opened is dropped; a failed one keeps the last read up.
 const refreshAppPage = coalesce(async () => {
-  const app = appPage(), page = st.page;
+  const app = relPage(), page = st.page;
   if (!app || apst.page !== page) return;
   let data = null, err = null;
   try { data = await api("/api/releases/app?app=" + encodeURIComponent(app)); } catch (e) { err = e.message; }
@@ -204,14 +230,7 @@ const refreshAppPage = coalesce(async () => {
   apst.err = err;
   if (st.page === page) relst.render();
 });
-const pollAppPage = poll("releases", () => { if (appPage()) refreshAppPage(); }, APP_PAGE_REFRESH_MS);
-// The page draws in place of the tables; the strip stays above it.
-const relRender = relst.render;
-relst.render = () => {
-  const el = $("releases");
-  if (!appPage()) return relRender();
-  if (el && st.tab === "releases") paint(el, innerStrip("releases", relFlagged()) + appPageHtml());
-};
+const pollAppPage = poll("releases", () => { if (relPage()) refreshAppPage(); }, APP_PAGE_REFRESH_MS);
 // A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
 function dayColor(d) {
   if (!d.ok && !d.fail) return APP_DAY_COLOR.none;
@@ -252,12 +271,12 @@ function appIncidents(list) {
     list.map((i) => `<tr><td>${esc(i.check)}</td><td>${stamp(i.from)}</td><td${i.to ? "" : ' class="bad"'}>${i.to ? stamp(i.to) : "ongoing"}</td><td>${esc(i.text)}</td></tr>`).join("") +
     `</table></div>`;
 }
-function appPageHtml() {
-  const app = appPage(), back = `<a class="btn sm" href="#releases/apps${st.views.releases ? "?" + st.views.releases : ""}">All apps</a>`;
+// The open app's status section: what its Gatus checks say, each check's card, then its incidents.
+function appStatus() {
   const d = apst.data;
-  if (!d) return `<div class="bhead"><span>${esc(app)}</span>${back}</div><div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "Loading..."}</div>`;
+  if (!d) return `<h2 class="sec">Status</h2><div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "reading..."}</div>`;
   const checked = d.newest ? `checked ${clock(d.newest * 1e3)} (${ago(d.newest)} ago)` : "no result yet";
-  let h = `<div class="bhead"><span><b>${esc(d.app)}</b> <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>` +
+  let h = `<h2 class="sec">Status <span class="muted">read ${clock(d.at * 1e3)}</span></h2>` +
     `<div class="panel"><div class="appbanner"><span class="chip" style="--c:${LEVEL_COLOR[d.level]}">${esc(d.banner)}</span> <span class="muted">${esc(checked)}</span>` +
     (d.monitor ? ` <a href="${esc(d.monitor)}" target="_blank" rel="noopener">Gatus</a>` : "") + `</div>` +
     d.context.map(pagePart).join("") + `</div>`;
@@ -269,7 +288,6 @@ function appPageHtml() {
   h += d.checks.length ? d.checks.map((c) => appCheck(c, d.at)).join("") : `<div class="panel muted">No check reports for ${esc(d.groups.join(" or "))} yet.</div>`;
   return h + `<h2 class="sec">Incidents <span class="muted">two failed results in a row, until two pass</span></h2>` + appIncidents(d.incidents);
 }
-
 $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 
 $("releases").addEventListener("click", (e) => {
@@ -279,13 +297,12 @@ $("releases").addEventListener("click", (e) => {
   if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }
   const ch = t.closest("tr.rc");
   if (ch) { relCh = relCh === ch.dataset.ch ? null : ch.dataset.ch; relst.render(); return; }
-  if (t.closest(".wdet")) return;
   const tr = t.closest("tr.jr");
   if (!tr) return;
-  relst.sel = relst.sel === tr.dataset.key ? null : tr.dataset.key;
+  // An in-app link: Back returns to the table as it was.
+  const view = st.views.releases;
   relCh = null;
-  if (relst.sel) loadChangelog(relst.sel);
-  else relst.render();
+  location.hash = `#releases/apps/${encodeURIComponent(tr.dataset.key)}${view ? "?" + view : ""}`;
 });
 
 $("releases").addEventListener("change", (e) => {
@@ -300,7 +317,7 @@ const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
   show() {
-    const page = appPage() ? st.page : "";
+    const page = relPage() ? st.page : "";
     if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
     relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
   },

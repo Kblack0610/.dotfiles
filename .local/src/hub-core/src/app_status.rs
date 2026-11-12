@@ -283,36 +283,13 @@ pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level
     ("Operational".into(), Level::Ok)
 }
 
-/// What is live and watched on the app's channels, each a link to the tab that owns it.
-pub fn context(app: &str, channels: &Result<Vec<Release>, String>) -> Vec<Part> {
-    let rows = match channels {
-        Ok(r) => r,
-        Err(e) => {
-            return vec![Part::new("Live", format!("not read: {e}"))
-                .link(Link::to(Kind::AppChannels, app))
-                .warn(true)]
-        }
+/// The watches on the app's channels and which are firing, each a link to Alerts. What is
+/// deployed is the app page's own channels, so it is not said again here.
+pub fn context(channels: &Result<Vec<Release>, String>) -> Vec<Part> {
+    let Ok(rows) = channels else {
+        return vec![];
     };
-    let channels_link = Link::to(Kind::AppChannels, app);
-    let mut out = match releases::app_of(rows) {
-        Some(a) => vec![
-            Part::new("Live", a.live_text)
-                .link(channels_link.clone())
-                .warn(a.level != Level::Ok),
-            Part::new(
-                "Channels",
-                format!(
-                    "{} channel{}: {}",
-                    rows.len(),
-                    if rows.len() == 1 { "" } else { "s" },
-                    releases::counts(rows.iter().map(|r| r.status.as_str()))
-                ),
-            )
-            .link(channels_link)
-            .warn(a.level != Level::Ok),
-        ],
-        None => vec![Part::new("Live", "no channel recorded").link(channels_link)],
-    };
+    let mut out = vec![];
     let mut watches: BTreeMap<&str, &str> = BTreeMap::new();
     for r in rows {
         for w in &r.telemetry {
@@ -506,7 +483,7 @@ pub fn build(
         banner,
         level,
         newest,
-        context: context(app, channels),
+        context: context(channels),
         checks,
         incidents: incidents_all,
         monitor: None,

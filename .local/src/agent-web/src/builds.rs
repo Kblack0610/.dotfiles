@@ -8,9 +8,7 @@
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, Scope, STALE_SECS};
 use hub_core::jobs::{self, now};
-use hub_core::quarantine::{Lane, OwnerRow};
 use hub_core::queue::Item;
-use hub_core::releases::Level;
 use hub_core::run_detail::Rates;
 use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
@@ -44,54 +42,12 @@ struct Shown<'a> {
     stale_after: i64,
     rows: Vec<&'a Run>,
     more: usize,
-    /// Each workflow's usual run time: the Run times fold, whatever the view.
-    times: &'a [builds::RunTime],
+    /// The scope's counts, whatever the view: Runners' `failed 24h` is `recent_red`.
+    counts: &'a builds::Counts,
     errors: &'a [String],
-    /// The Quarantine fold: a lane per repo whose base carries a quarantine, and its worst.
-    quarantine: Vec<Quarantined<'a>>,
-    quarantine_level: Level,
     /// `Builds::needs_look`: the count on the inner tab the runs are on.
     look: bool,
     table: Summary,
-}
-
-/// One repo's quarantine as the fold draws it: its line and colour, then each owner row's.
-#[derive(Serialize)]
-struct Quarantined<'a> {
-    repo: &'a str,
-    says: String,
-    level: Level,
-    entries: u64,
-    /// The nightly the counts came from.
-    url: Option<&'a str>,
-    rows: Vec<Owned<'a>>,
-}
-
-#[derive(Serialize)]
-struct Owned<'a> {
-    #[serde(flatten)]
-    row: &'a OwnerRow,
-    level: Level,
-    left: String,
-}
-
-fn quarantined(l: &Lane) -> Quarantined<'_> {
-    Quarantined {
-        repo: &l.repo,
-        says: l.says(),
-        level: l.level(),
-        entries: l.report.as_ref().map_or(0, |r| r.entries),
-        url: l.nightly.as_ref().and_then(|n| n.url.as_deref()),
-        rows: l
-            .rows()
-            .iter()
-            .map(|row| Owned {
-                row,
-                level: row.level(),
-                left: row.left(),
-            })
-            .collect(),
-    }
 }
 
 fn render(b: &Builds, q: &Query) -> String {
@@ -108,15 +64,8 @@ fn render(b: &Builds, q: &Query) -> String {
         stale_after: STALE_SECS,
         rows,
         more,
-        times: s.times,
+        counts: s.counts,
         errors: s.errors,
-        quarantine: s.quarantine.iter().map(quarantined).collect(),
-        quarantine_level: s
-            .quarantine
-            .iter()
-            .map(Lane::level)
-            .min()
-            .unwrap_or_default(),
         look: b.needs_look(scope),
         table,
     };
@@ -198,12 +147,6 @@ mod tests {
                 ..Default::default()
             },
             rows,
-            times: vec![builds::RunTime {
-                repo: "Org/app".into(),
-                workflow: "Tests".into(),
-                runs: 3,
-                ..Default::default()
-            }],
             errors: vec![],
             ..Default::default()
         }
@@ -224,14 +167,8 @@ mod tests {
             "3 runs in 30 days: 1 running, 0 queued, 1 red"
         );
         assert_eq!(v["stale_after"], STALE_SECS);
-        assert_eq!(
-            v["times"][0]["workflow"], "Tests",
-            "the Run times fold rides the same read"
-        );
-        assert!(
-            v.get("costs").is_none(),
-            "the Run times fold carries no money"
-        );
+        assert_eq!(v["counts"]["red"], 1, "the counts ride whatever the view");
+        assert!(v.get("times").is_none(), "the Run times fold is retired");
     }
 
     #[test]
@@ -257,7 +194,7 @@ mod tests {
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["release"]["tag"], "v1.0.0");
         assert_eq!(v["summary"], "1 run in 30 days: 0 running, 0 queued, 0 red");
-        assert!(v["times"].as_array().unwrap().is_empty());
+        assert_eq!(v["counts"]["total"], 1, "the scope's own counts");
         // negative control: the plain read keeps every run.
         assert_eq!(body(Query::default())["rows"].as_array().unwrap().len(), 3);
     }
@@ -284,47 +221,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&b, &Query::default())).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), builds::LIST_ROWS);
         assert_eq!(v["more"], 5);
-    }
-
-    #[test]
-    fn each_quarantine_lane_carries_its_line_colour_and_owner_rows() {
-        use hub_core::quarantine::{Nightly, Report};
-        let b = Builds {
-            quarantine: vec![Lane {
-                repo: "Org/play".into(),
-                report: Some(Report {
-                    entries: 3,
-                    rows: vec![OwnerRow {
-                        row: "ucp-1".into(),
-                        entries: 3,
-                        ends: "2026-11-12".into(),
-                        days_left: 1,
-                    }],
-                }),
-                nightly: Some(Nightly {
-                    url: Some("https://x/runs/9".into()),
-                    known: 2,
-                    now_passing: Some(1),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let v: serde_json::Value = serde_json::from_str(&render(&b, &Query::default())).unwrap();
-        let q = &v["quarantine"][0];
-        assert_eq!(q["level"], "warn");
-        assert_eq!(q["url"], "https://x/runs/9");
-        assert!(q["says"]
-            .as_str()
-            .unwrap()
-            .contains("2 known red, 1 now pass"));
-        assert_eq!(q["rows"][0]["row"], "ucp-1");
-        assert_eq!(q["rows"][0]["days_left"], 1);
-        assert_eq!(q["rows"][0]["level"], "warn");
-        assert_eq!(q["rows"][0]["left"], "1d");
-        assert_eq!(q["entries"], 3);
-        assert_eq!(v["quarantine_level"], "warn");
     }
 
     #[test]

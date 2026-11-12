@@ -247,7 +247,7 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue's admission: automated adds it held
-: "${BENCH_VITALS:=output=merged_prs flow=queue_net_24h,step_age_p90_queued quality=rework_candidate_7d,first_pass_share you=human_answered_per_day,buzzes_per_day cost=points_per_pr trust=ledger_coverage,loop_dark_7d outcome=requested_unstarted_h,landed_unverified}"   # the front page: question=kpi,kpi in order; every view reads this list
+: "${BENCH_VITALS:=you=human_answered_per_day,buzzes_per_day outcome=requested_unstarted_h,landed_unverified quality=rework_candidate_7d,first_pass_share cost=cost_per_merged_item}"   # the front page: question=kpi,kpi in order; every view reads this list. Only what the human acts on: flow lives in the FLOW strip, trust in kpi --check
 : "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
@@ -365,6 +365,11 @@ def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
   | [scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"];
 # the "<project>:<id>" board row a queue item works: its row, else the board: it came from
 def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
+# board rows -> the oldest open #requested agent row as {project, id, since, h}, ties by key so the
+# named row is stable; the one source of requested_unstarted_h and the row it names
+def oldest_request($t): [.[] | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
+  | sort_by([.since, .project, .id]) | first // empty
+  | {project, id, since, h: (($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)};
 def claimed: (.session_id // "") != "";
 def ran_gate: (.gate_runs // 0) > 0;
 def first_try: .gate_red == 0;
@@ -822,7 +827,7 @@ bench_prom() {
   kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
      --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(ci_window "$t") --argjson k "$kpis" \
-     --slurpfile ef <(effect_lines) --arg vitals "$BENCH_VITALS" "$JQ_LIB$IMPROVE_JQ$PROM_JQ$VITALS_JQ"'
+     --slurpfile ef <(effect_lines) --slurpfile or <(oldest_requested "$t") --arg vitals "$BENCH_VITALS" "$JQ_LIB$IMPROVE_JQ$PROM_JQ$VITALS_JQ"'
     def h: . / 60 * 100 | round / 100;
     ($w | map({key: .session_id, value: .project}) | from_entries) as $proj
     | ($w | map(.project) + ($s | map(.project)) | unique) as $ps
@@ -845,6 +850,8 @@ bench_prom() {
         $k | to_entries[] | [{kpi: .key}, .value.threshold]),
       gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
+      gauge("agent_bench_kpi_subject"; "The row behind a KPI that names one, as project:id; the value is always 1.";
+        $or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
       gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
         vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
       gauge("agent_bench_improve"; "Improvement claims live now, and verdicts of each kind, from effect.jsonl.";
@@ -1870,16 +1877,19 @@ board_links() {
          else map(select(.automation != false) | .done_old) | if any(. == null) then null else add // 0 end end)}' <<<"$feed"
 }
 
+# oldest_requested <now> -> the oldest open #requested agent row as {project, id, since, h}, the row
+# behind requested_unstarted_h; nothing when there is none or the board does not read
+oldest_requested() {
+  $BENCH_BOARD_CMD 2>/dev/null | jq -c --argjson t "$1" "$JQ_LIB"'.rows // [] | oldest_request($t)' 2>/dev/null
+}
+
 # chain_notes <now> <chain json>: the lines under the chain table that say which rows sit behind
 # its numbers, the lead time's raw value while its trust KPIs hold it at ? among them
 chain_notes() {
   local t=$1 stats lead held
   $BENCH_ITEMS_CMD 2>/dev/null | jq -rs "$JQ_LIB"'
     map(ownerless | .slug) | select(. != []) | "ownerless_running: \(join(", "))"' 2>/dev/null
-  $BENCH_BOARD_CMD 2>/dev/null | jq -r --argjson t "$t" '
-    [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
-    | sort_by(.since) | first // empty
-    | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
+  oldest_requested "$t" | jq -r '"requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(.h)h)"' 2>/dev/null
   board_links "$t" | jq -r 'def few: (.[0:8] | join(", ")) + (if length > 8 then ", \(length - 8) more" else "" end);
     (.orphans // [] | select(. != []) | "orphan_request_rows: " + (map("\(.project):\(.id) (\(.why))") | few)),
     (.blocked // [] | select(. != []) | sort_by(.at) | "next_up_blocked: skipped for a split over 24h ago, oldest first: " + (map("\(.project):\(.id) (\(.rule) \(.at[0:10]))") | few)),
@@ -1962,8 +1972,7 @@ chain_counts() {
       "epic_linked_share=\(n(if $b == null or $p == null then null
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
-      "requested_unstarted_h=\(n(if $b == null then null else [$agent[] | select(.requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
-        | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))",
+      "requested_unstarted_h=\(n(if $b == null then null else [$b | oldest_request($t) | .h] | first // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"')

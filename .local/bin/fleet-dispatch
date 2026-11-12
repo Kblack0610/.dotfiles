@@ -2237,18 +2237,18 @@ resume_brief() {
 }
 
 # fix_ci_brief <item json> <harness> -- the brief of an item fix_red_pr requeued: its work is already
-# its open PR, red at the head `fix_tries:` names, so the session owns that red through /my:fix-ci on
+# its open PR, red at the head `fix_tries:` names, so the session owns that red through the fix-ci skill on
 # the PR's own branch. It never merges: the PR goes back to where it was parked, and reap closes the
 # item once it merges.
 fix_ci_brief() {
   local slug pr n head repo=''
   IFS=$'\x1f' read -r slug pr n head < <(jq -r '(.fix_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // "")] | join("\u001f")' <<<"$1")
   [[ "$pr" != */*#* ]] || repo=" -R ${pr%#*}"
-  if headless "$2"; then printf 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR %s.\n' "$pr"
-  else printf '/my:fix-ci %s\n' "$pr"; fi
+  if headless "$2"; then printf 'Read ~/.claude/skills/fix-ci/SKILL.md and follow it for PR %s.\n' "$pr"
+  else printf '/fix-ci %s\n' "$pr"; fi
   echo
   echo "This is agent-queue item $slug. Its PR $pr is red${head:+ at ${head:0:12}} and the session that opened it has ended, so this session owns the red: fix-ci try $n of $DISPATCH_FIX_TRIES."
-  echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /my:fix-ci says, and push to that branch. Never open a second PR."
+  echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /fix-ci says, and push to that branch. Never open a second PR."
   echo "Do not merge, and touch no board or sheet row: when the checks are green, or fix-ci stops on a red it cannot fix and files its row, run agent-queue move $slug review and end. The PR's merge closes the item (fleet-dispatch reap)."
   if headless "$2"; then no_human "$slug"; else ask_rule; fi
 }
@@ -2602,7 +2602,7 @@ settle_item() {
 # fix_red_pr <slug> <session> <item json> <head oid> <ci> -- a review item whose session is gone and
 # whose PR checks finished red (ci FAIL) gets an owner, since nothing else restarts a parked PR: 16
 # of 20 were red on 2026-11-09. It goes back to queued/ (--if review) as a oneshot stamped
-# `fix_tries: <n> <head>`, so item_brief starts it on /my:fix-ci and the next pass starts it behind every gate a queued item
+# `fix_tries: <n> <head>`, so item_brief starts it on /fix-ci and the next pass starts it behind every gate a queued item
 # waits on (agent-hold, the weekly pace, load, the run gate); while agent-queue admission holds
 # automated adds it waits in review/. DISPATCH_FIX_TRIES tries, then one human-sheet row and a page, as fleet-bench triage_human does once TRIAGE_FIX_TRIES are spent,
 # stamped `fix_human: <head>`; a head that moves after that row (the human pushed) starts the count
@@ -4135,7 +4135,12 @@ cmd_run() {
     [ "$DRY" = 1 ] || return 0
   fi
   room=$(( room - STARTED ))
-  want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$room" ] || want=$room
+  # Promote to the low water, or to the units this pass can start if that is more. While the human
+  # is here only the present trickle starts board items, so room past it would sit in the queue and
+  # every drain under the low water would add another room-sized batch.
+  local can=$room
+  if human_here; then can=${PRESENT_LEFT:-$(present_left)}; [ "$can" -le "$room" ] || can=$room; fi
+  want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$can" ] || want=$can
   if [ -n "$only" ]; then
     want=0
     [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))

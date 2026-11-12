@@ -70,7 +70,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
   }));
   assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
-  assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
+  assert.match(html, /data-ts="Question"><span class="tl">QUESTION<\/span><span class="tv">1</);
   assert.match(html, /<th class="n"[^>]*><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
   assert.match(html, /data-tsort="waited"[^>]*>waited<\/button>/);
   const row = /<tr class="jr" data-need="ask:a1"><td class="n">1<\/td><td>Question<\/td><td>p<\/td><td class="n" title="(\d{4}-\d\d-\d\dT[^"]+Z)">1h 5m<\/td><td class="wrap muted">session, 2 phases<\/td><td class="wrap">Ship it\?<\/td><\/tr>/.exec(html);
@@ -228,7 +228,7 @@ test("a refresh repaints around the search box in use and leaves it alone", () =
   assert.equal(again, first, "the board with the box in it is not repainted");
   assert.match(parts["home-need-body"].innerHTML, /Second/);
   assert.match(parts["home-need-head"].innerHTML, /Needs you/);
-  assert.equal(typeof parts["home-need-chips"].innerHTML, "string");
+  assert.equal(typeof parts["home-need-tiles"].innerHTML, "string");
 });
 
 test("a reply being typed in an open card survives a refresh", () => {
@@ -265,20 +265,20 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
   assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
   assert.match(html, /id="home-run-q" data-tsearch placeholder="search, or project:dotfiles ci:fail epic:ar-1292"/);
-  assert.match(html, /data-ts="CI failing">CI failing <span class="n">1<\/span>/);
+  assert.match(html, /data-ts="CI failing"><span class="tl">CI FAILING<\/span><span class="tv">1</);
   assert.match(html, /data-tsort="eta"[^>]*>eta<\/button>/);
   const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
   assert.ok(row, html);
   const cells = row[1];
-  assert.match(cells, /<a href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
-  assert.match(cells, /<a href="#projects\/agent-runtime">agent-runtime<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
+  assert.match(cells, /<a class="tl" href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
+  assert.match(cells, /<a class="tl" href="#projects\/agent-runtime">agent-runtime<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
   assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
-  assert.match(cells, /<a href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
-  assert.match(cells, /<a class="ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
+  assert.match(cells, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
+  assert.match(cells, /<a class="tl ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
   // No session: the row has no target to open and empty cells say so.
-  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a href="#queue\/q-2">No session yet<\/a><\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
+  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
   // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
@@ -336,22 +336,22 @@ test("Home has no Numbers heading: the session counts head Running and the spend
   assert.doesNotMatch(none, /Spend|sessions<\/a>/, "the control: no spend and no counts, no lines for them");
 });
 
-const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Flow", all_ok: false, rows: [
-  { question: "Output", level: "ok", parts: ["1633 PRs merged in 7d"] },
-  { question: "Flow", level: "warn", parts: ["Queue -200 in 24h", "queued p90 53h, limit 12h"] },
+const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
+  { question: "Cost", level: "ok", parts: ["$12.54 per merged item"] },
+  { question: "Outcome", level: "warn", parts: ["Oldest request 340h, limit 72h", "12 unverified, limit 0"] },
 ], ...o });
 
 test("Vitals sits under Spend and above Needs you, a row per question, the off ones marked", () => {
   const html = draw(home({ spend: "claude $573 in 24h", vitals: vitals() }));
   assert.match(html, /Vitals <span class="muted">1 of 2 off target<\/span><\/h2>/);
-  assert.match(html, /<div class="cline vital"><b>Output<\/b> 1633 PRs merged in 7d<\/div>/);
-  assert.match(html, /<div class="cline vital warn"><b>Flow<\/b> Queue -200 in 24h; queued p90 53h, limit 12h<\/div>/);
+  assert.match(html, /<div class="cline vital"><b>Cost<\/b> \$12.54 per merged item<\/div>/);
+  assert.match(html, /<div class="cline vital warn"><b>Outcome<\/b> Oldest request 340h, limit 72h; 12 unverified, limit 0<\/div>/);
   assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
 });
 
 test("an unread vital is dim, so it never looks like a healthy row", () => {
-  const rows = [{ question: "Trust", level: "nodata", parts: ["Ledger ?"] }];
-  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Trust<\/b> Ledger \?<\/div>/);
+  const rows = [{ question: "Cost", level: "nodata", parts: ["? per merged item"] }];
+  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Cost<\/b> \? per merged item<\/div>/);
 });
 
 test("Vitals folds to its head when all are on target, and shows nothing until it is read", () => {

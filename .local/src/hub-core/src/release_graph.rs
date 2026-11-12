@@ -235,9 +235,6 @@ pub struct Facts<'a> {
     /// The runs ledger.
     pub runs: Option<&'a [Run]>,
     pub links: Option<&'a Links>,
-    /// Project -> its lab stage, and the ladder the stages climb, lowest first.
-    pub stages: HashMap<String, String>,
-    pub ladder: &'a [String],
     /// The PR store's sync record.
     pub synced: Option<&'a HashMap<String, Synced>>,
 }
@@ -969,25 +966,10 @@ impl<'a> Graph<'a> {
                 if declared.is_some_and(|d| d.contains_key(&wf.path)) {
                     continue;
                 }
-                let file = wf.path.rsplit('/').next().unwrap_or(&wf.path);
-                let early = trackers
-                    .iter()
-                    .filter(|(p, t)| t.get("repo").and_then(Value::as_str).unwrap_or(p) == key)
-                    .filter(|(p, _)| file.contains(p))
-                    .find_map(|(p, _)| {
-                        let s = f.stages.get(*p)?;
-                        below_alpha(s, f.ladder).then_some((*p, s.as_str()))
-                    });
-                out.push(match early {
-                    Some((p, s)) => format!(
-                        "{key} {}: deploys {p}, which is {s}: ahead of its stage",
-                        wf.path
-                    ),
-                    None => format!(
-                        "{key} {}: a deploy workflow no registry target maps to (add it to deployWorkflows)",
-                        wf.path
-                    ),
-                });
+                out.push(format!(
+                    "{key} {}: a deploy workflow no registry target maps to (add it to deployWorkflows)",
+                    wf.path
+                ));
             }
         }
         if let Some(runs) = f.runs {
@@ -1136,12 +1118,6 @@ fn plain_version(v: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A stage below `alpha` on the ladder (`draft`, `dev`): nothing of it should deploy yet.
-fn below_alpha(stage: &str, ladder: &[String]) -> bool {
-    let at = |s: &str| ladder.iter().position(|x| x == s);
-    matches!((at(stage), at("alpha")), (Some(s), Some(a)) if s < a)
-}
-
 /// `2026-11-11`: the day the links are held from.
 pub fn since_day(since: i64) -> String {
     chrono::DateTime::from_timestamp(since, 0)
@@ -1205,8 +1181,6 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
     let facts = Facts {
         runs: Some(&ledger.rows),
         links: Some(&snap.links),
-        stages: snap.stage_names(),
-        ladder: &snap.ladder,
         synced: synced.as_ref(),
     };
     (graph.check(&facts, now), errors)
@@ -2150,14 +2124,9 @@ mod tests {
             since,
             run_tags: &[],
         });
-        let ladder: Vec<String> = ["draft", "dev", "alpha", "beta", "prod"]
-            .map(String::from)
-            .into();
         let facts = Facts {
             runs: Some(&runs),
             links: Some(&links),
-            stages: HashMap::from([("early".to_string(), "draft".to_string())]),
-            ladder: &ladder,
             synced: Some(&synced),
         };
         assert_eq!(
@@ -2168,7 +2137,7 @@ mod tests {
                 "PR store: Acme/lib last synced 66m ago (over 30m)",
                 "PR store: Acme/x did not sync: HTTP 403",
                 "acme/app tag app-v1.3.0 is in the lines of app and early",
-                "app .github/workflows/deploy-early.yml: deploys early, which is draft: ahead of its stage",
+                "app .github/workflows/deploy-early.yml: a deploy workflow no registry target maps to (add it to deployWorkflows)",
                 "app .github/workflows/image.yml: a deploy workflow no registry target maps to (add it to deployWorkflows)",
                 "app app-prod: deployed: true and no Deployment recorded (record one, or declare it manual with a reason)",
                 "app app-prod: telemetry watch app-errors does not exist",

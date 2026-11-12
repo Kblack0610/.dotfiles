@@ -158,8 +158,7 @@ function renderPin() {
   const key = a.target + "|" + a.question.kind + "|" + a.question.text;
   if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
   el.dataset.key = key;
-  // The row kind hub-core's home::NeedKind::of_dialog gives the same dialog.
-  el.innerHTML = sessionCard(a, { choice: "ask", tool: "perm", plan: "plan" }[a.question.kind] || "turn", true);
+  el.innerHTML = sessionCard(a, dialogKind(a.question), true);
 }
 $("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
 $("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
@@ -322,16 +321,20 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
-// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
-// `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
-// hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
-// the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"},"releases":{"apps":"apps"}};
+// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
+// assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
+const INNER_TABS = {"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+// hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
+// Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
+const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
+// hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
+// `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
+// assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
-// holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
+// holding it; a missing or unknown name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
   const g = INNER_TABS[tab];
   if (!g) return null;
@@ -392,6 +395,9 @@ function seekSection() {
     return;
   }
   st.section = null;
+  // A section in a hidden pane of a record's page (a project's Stage) shows that pane first.
+  const pin = e.closest?.("[data-pin][hidden]");
+  if (pin && TABS[st.tab] && TABS[st.tab].pin) TABS[st.tab].pin(pin.dataset.pin);
   // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
   const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
   if (fold) fold.open = true;
@@ -427,24 +433,31 @@ function innerGo(tab, id) {
   const board = $(tab);
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
-  board.querySelectorAll("[data-itab]").forEach((b) => {
-    const on = b.dataset.itab === id;
+  stripMark(board, "itab", id);
+}
+// The strip: one button per inner tab, the open one marked, a count pill beside one whose
+// sections need a look (`flagged`: section ids, or `counts` by inner id) and only above zero.
+const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
+// A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
+// open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
+// comes from `flagged` (section ids) or from `counts` by id, and shows only above zero.
+function stripHtml(tabs, on, attr, flagged, counts) {
+  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs]) => {
+    const n = (counts && counts[id]) || secs.filter((s) => (flagged || []).includes(s)).length;
+    return `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
+  }).join("") + `</div>`;
+}
+// Mark strip button `id` open among the `attr` buttons inside `root`, for a strip that flips in place.
+function stripMark(root, attr, id) {
+  root.querySelectorAll(`[data-${attr}]`).forEach((b) => {
+    const on = b.dataset[attr] === id;
     b.classList.toggle("on", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
     b.tabIndex = on ? 0 : -1;
   });
 }
-// The strip: one button per inner tab, the open one marked, a count pill beside one whose
-// sections need a look (`flagged`: section ids) and only above zero.
-function innerStrip(tab, flagged) {
-  const on = innerOf(tab, st.arg)[0];
-  return `<div class="seg fseg istrip" role="tablist">` + INNER_TABS[tab].tabs.map(([id, title, secs]) => {
-    const n = secs.filter((s) => (flagged || []).includes(s)).length;
-    return `<button role="tab" data-itab="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
-  }).join("") + `</div>`;
-}
-// A section's html in its inner tab's group, hidden while another inner tab is open; a pinned
-// section, or a tab with no strip, is left as it is.
+// A section's html in its inner tab's group, hidden while another inner tab is open; a tab with
+// no strip leaves it as it is.
 function innerWrap(tab, section, html) {
   const home = homeOf(tab, section);
   if (!home || !html) return html;
@@ -460,19 +473,21 @@ function innerHide(tab, section, el) {
   el.dataset.in = home[0];
   el.hidden = !innerShown(tab, home);
 }
-// A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to the ends.
+// A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to
+// the ends. A project page's strip (data-ptab) is the same keys; its click is projects.js's.
 document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest("[data-itab]");
   if (b) innerGo(st.tab, b.dataset.itab);
 });
 document.addEventListener("keydown", (e) => {
-  const b = e.target.closest && e.target.closest("[data-itab]");
+  const b = e.target.closest && e.target.closest("[data-itab],[data-ptab]");
   if (!b) return;
-  const all = [...b.parentNode.querySelectorAll("[data-itab]")], i = all.indexOf(b);
+  const attr = b.dataset.itab ? "itab" : "ptab";
+  const all = [...b.parentNode.querySelectorAll(`[data-${attr}]`)], i = all.indexOf(b);
   const to = { ArrowRight: (i + 1) % all.length, ArrowLeft: (i + all.length - 1) % all.length, Home: 0, End: all.length - 1 }[e.key];
   if (to === undefined) return;
   e.preventDefault();
-  innerGo(st.tab, all[to].dataset.itab);
+  all[to].click();
   all[to].focus();
 });
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab

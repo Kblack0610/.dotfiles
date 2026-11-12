@@ -7,6 +7,7 @@
 //! nothing.
 
 use hub_core::deliverables::{Deliverable, Deliverables};
+use hub_core::layout::PROJECT_PAGE;
 use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
@@ -45,28 +46,31 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened card's sections are open; `F` folds them.
-    pub folds: bool,
-    /// The system open under Build by system (`z`), and its epic open to its tasks (`Z`).
-    pub sys: Option<String>,
-    pub epic: Option<String>,
+    /// The opened project's inner tab (`layout::PROJECT_PAGE`), Left/Right switch it.
+    pub inner: &'static str,
+    /// Overview's Needs you lists each group's items (`F`), not only its head.
+    pub needs: bool,
+    /// Overview's selected system row, which Enter opens Build filtered to.
+    pub sys: usize,
     /// The Deliverables table's search, chip and sort, and its selected row.
     pub dv: DataTable,
+    /// The opened project's Build table: its own view, so the list's Deliverables keep theirs.
+    pub bv: DataTable,
     /// The Deliverables table has the keys (`d`), not the project list.
     pub dfocus: bool,
 }
 
 impl Default for ProjView {
-    /// The card's sections start open (dashboards rule 4).
     fn default() -> ProjView {
         ProjView {
             table: DataTable::default(),
             open: false,
             want: None,
-            folds: true,
-            sys: None,
-            epic: None,
+            inner: OVERVIEW,
+            needs: false,
+            sys: 0,
             dv: DataTable::default(),
+            bv: DataTable::default(),
             dfocus: false,
         }
     }
@@ -89,13 +93,16 @@ impl ProjView {
         shown.get(self.at(shown.len())).copied()
     }
 
-    /// Open one project's rows, or with None every project's.
+    /// Open one project's page on Overview, or with None every project's rows.
     pub fn open(&mut self, tv: &mut TaskView, c: Option<&Card>) {
         tv.project = c.map(|c| (c.profile.clone(), c.name.clone()));
         tv.table.clear();
         tv.said = None;
         self.open = true;
-        self.fold_systems(tv);
+        self.inner = OVERVIEW;
+        self.needs = false;
+        self.sys = 0;
+        self.bv = DataTable::default();
     }
 
     /// Back to the list, the selection on the row it was on.
@@ -103,84 +110,82 @@ impl ProjView {
         self.open = false;
         tv.prompt = None;
         tv.said = None;
-        self.fold_systems(tv);
     }
 
-    /// Every system folded, and the rows no longer narrowed to an epic's.
-    fn fold_systems(&mut self, tv: &mut TaskView) {
-        self.sys = None;
-        self.close_epic(tv);
+    /// The rows are drawn and take the row keys: every project's, or a project's Rows inner tab.
+    pub fn rows_shown(&self, tv: &TaskView) -> bool {
+        tv.project.is_none() || self.inner == ROWS
     }
 
-    /// The open epic folded, and the rows back to the whole project's.
-    pub fn close_epic(&mut self, tv: &mut TaskView) {
-        self.epic = None;
-        if tv.only.take().is_some() {
-            tv.table.sel = 0;
-        }
-    }
-
-    /// `z`: open the next system that has epics, after the last one fold them all.
-    pub fn step_system(&mut self, tv: &mut TaskView, pg: &Page) {
-        let ids: Vec<&str> = pg
-            .systems
-            .iter()
-            .filter(|s| opens(s))
-            .map(|s| s.id.as_str())
-            .collect();
-        self.sys = next_of(&ids, self.sys.as_deref());
-        self.close_epic(tv);
-    }
-
-    /// `Z`: open the open system's next epic, its tasks listed and the rows below narrowed to its
-    /// open ones (every row key works on them); after the last one fold it. With no system open
-    /// it opens the first one with an open epic.
-    pub fn step_epic(&mut self, tv: &mut TaskView, pg: &Page) {
-        if self.sys.is_none() {
-            self.sys = pg
-                .systems
-                .iter()
-                .find(|s| !s.epics.is_empty())
-                .map(|s| s.id.clone());
-        }
-        let Some(sys) = pg.systems.iter().find(|s| Some(&s.id) == self.sys.as_ref()) else {
-            return;
-        };
-        let ids: Vec<&str> = sys.epics.iter().map(|e| e.id.as_str()).collect();
-        self.epic = next_of(&ids, self.epic.as_deref());
-        self.narrow(tv, pg);
-        tv.table.sel = 0;
-    }
-
-    /// The rows narrowed to the open epic's open tasks as `pg` has them, so a re-read page keeps
-    /// them current; an epic the page no longer has folds.
-    pub fn narrow(&mut self, tv: &mut TaskView, pg: &Page) {
-        let Some(want) = self.epic.clone() else {
-            tv.only = None;
-            return;
-        };
-        match pg
-            .systems
-            .iter()
-            .flat_map(|s| &s.epics)
-            .find(|e| e.id == want)
-        {
-            Some(e) => {
-                tv.only = Some(
-                    e.leaves
-                        .iter()
-                        .filter(|l| !l.done)
-                        .map(|l| l.id.clone())
-                        .collect(),
-                )
+    /// The opened project's keys that are not the rows': Left/Right switch the inner tab, and on
+    /// Overview j/k pick a system and Enter opens Build filtered to it, `F` lists each Needs you
+    /// group's items; on Build the shared table keys, Enter opens Rows searched to the epic.
+    /// False for a key it does not take.
+    pub fn page_key(
+        &mut self,
+        tv: &mut TaskView,
+        k: KeyEvent,
+        pg: Option<&Page>,
+        page: usize,
+    ) -> bool {
+        if let KeyCode::Left | KeyCode::Right = k.code {
+            if self.bv.typing.is_none() {
+                self.inner =
+                    crate::innertabs::step_of(&PROJECT_PAGE, self.inner, k.code == KeyCode::Left);
+                return true;
             }
-            None => self.close_epic(tv),
         }
+        let Some(pg) = pg else { return false };
+        match self.inner {
+            OVERVIEW => match k.code {
+                KeyCode::Char('F') => self.needs = !self.needs,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.sys = (self.sys + 1).min(pg.systems.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => self.sys = self.sys.saturating_sub(1),
+                // `no system` has no word to search by: Build opens on every epic.
+                KeyCode::Enter => {
+                    if let Some(s) = pg.systems.get(self.sys) {
+                        self.bv.clear();
+                        if !s.id.is_empty() {
+                            self.bv.view.q = format!("sys:{}", s.id);
+                        }
+                        self.inner = BUILD;
+                    }
+                }
+                _ => return false,
+            },
+            BUILD => {
+                let rows = self.bv.view.apply(&pg.build.rows);
+                if self.bv.key::<Deliverable>(k.code) != Took::No
+                    || self.bv.moves(k, rows.len(), page)
+                {
+                    return true;
+                }
+                match k.code {
+                    KeyCode::Enter => {
+                        if let Some(r) = rows.get(self.bv.sel.min(rows.len().saturating_sub(1))) {
+                            tv.table.clear();
+                            tv.table.view.q = format!("tag:=of/{}", r.id);
+                            self.inner = ROWS;
+                        }
+                    }
+                    KeyCode::Esc if !self.bv.is_default() => self.bv.clear(),
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// `hub tab projects <name>`: the project of that name, whatever the list's view keeps, else
-    /// every project's rows searched for it.
+    /// every project's rows searched for it. `<name>/<inner>` opens that inner tab.
     pub fn go(&mut self, tv: &mut TaskView, cards: &[Card], name: &str) {
+        let (name, inner) = match name.rsplit_once('/') {
+            Some((n, i)) if inner_id(i).is_some() => (n, inner_id(i)),
+            _ => (name, None),
+        };
         let named = |c: &Card| {
             c.name.eq_ignore_ascii_case(name)
                 || format!("{}/{}", c.profile, c.name).eq_ignore_ascii_case(name)
@@ -191,6 +196,9 @@ impl ProjView {
                     self.table.sel = i;
                 }
                 self.open(tv, Some(c));
+                if let Some(i) = inner {
+                    self.inner = i;
+                }
             }
             None => {
                 self.open(tv, None);
@@ -205,7 +213,7 @@ impl ProjView {
     }
 
     /// The Deliverables table's keys while it has them: the shared table keys and moves, Enter
-    /// opens the selected epic's project with its system and epic open, Esc clears the view and
+    /// opens the selected epic's project on Build with the epic selected, Esc clears the view and
     /// then gives the keys back to the list, as `d` does at once.
     pub fn dkey(
         &mut self,
@@ -225,11 +233,21 @@ impl ProjView {
                 let shown = self.dshown(d);
                 let want = shown.get(self.dv.sel.min(shown.len().saturating_sub(1)));
                 if let Some(r) = want.filter(|r| cards.iter().any(|c| same(c, r))) {
-                    let (key, sys, id) = (r.key(), r.system.clone(), r.id.clone());
+                    // Build is the same rows scoped to the project, in the same default order,
+                    // so the epic's place among its project's rows is its row there: selected by
+                    // id, never a search that also matches gm-10 for gm-1.
+                    let mine: Vec<Deliverable> = d
+                        .rows
+                        .iter()
+                        .filter(|x| x.profile == r.profile && x.project == r.project)
+                        .cloned()
+                        .collect();
+                    let (key, id) = (r.key(), r.id.clone());
                     self.dfocus = false;
                     self.go(tv, cards, &key);
-                    self.sys = Some(sys).filter(|s| !s.is_empty());
-                    self.epic = Some(id);
+                    self.inner = BUILD;
+                    let at = self.bv.view.apply(&mine).iter().position(|x| x.id == id);
+                    self.bv.sel = at.unwrap_or(0);
                 }
             }
             KeyCode::Esc if !self.dv.is_default() => self.dv.clear(),
@@ -275,19 +293,13 @@ fn warn_if(b: bool, p: Palette) -> ratatui::style::Style {
     }
 }
 
-/// A system has something to open: open epics, or a count of closed ones.
-fn opens(s: &System) -> bool {
-    !s.epics.is_empty() || !s.closed.is_empty()
-}
+const OVERVIEW: &str = "overview";
+const ROWS: &str = "rows";
+const BUILD: &str = "build";
 
-/// The id after `at` in `ids`, the first when `at` is None, None after the last: one key steps
-/// through them and then folds.
-fn next_of(ids: &[&str], at: Option<&str>) -> Option<String> {
-    let i = match at {
-        None => 0,
-        Some(a) => ids.iter().position(|i| *i == a).map_or(0, |i| i + 1),
-    };
-    ids.get(i).map(|s| s.to_string())
+/// The inner id `word` names, from `layout::PROJECT_PAGE`.
+fn inner_id(word: &str) -> Option<&'static str> {
+    PROJECT_PAGE.iter().find(|i| i.id == word).map(|i| i.id)
 }
 
 const BAR: usize = 20;
@@ -368,78 +380,223 @@ fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
     }
 }
 
-/// A folded section's head: `TITLE  what it holds`, then the key when it is folded.
-fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(format!("  {says}"), p.dim()),
-    ];
-    if !folds {
-        spans.push(Span::styled("  F opens it", p.dim()));
-    }
-    clip_line(Line::from(spans), w)
-}
-
-/// Build by system, always open: one line per system with its percent, features and criteria,
-/// a `+` on one that opens (`z`), its open epics with their percents under the open one, and the
-/// open epic's tasks under it (`Z`).
-fn system_lines(pg: &Page, pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let keys = if pg.systems.iter().any(opens) {
-        "  z opens a system, Z its epics"
-    } else {
-        ""
-    };
-    let mut out = vec![clip_line(
+/// A section's head: `TITLE  what it holds`, then its keys dim.
+fn sec_head(title: &str, says: &str, keys: &str, p: Palette, w: usize) -> Line<'static> {
+    clip_line(
         Line::from(vec![
-            Span::styled("BUILD BY SYSTEM", p.head()),
-            Span::styled(format!("  {}{keys}", pg.systems_says), p.dim()),
+            Span::styled(title.to_string(), p.head()),
+            Span::styled(format!("  {says}"), p.dim()),
+            Span::styled(keys.to_string(), p.dim()),
         ]),
         w,
-    )];
-    for s in &pg.systems {
-        let open = pv.sys.as_ref() == Some(&s.id);
-        let mark = match (opens(s), open) {
-            (false, _) => "    ",
-            (true, false) => "  + ",
-            (true, true) => "  - ",
-        };
-        out.extend(wrapped(mark, &s.head, Default::default(), p, w));
-        if !open {
-            continue;
+    )
+}
+
+/// The systems table's columns, agent-web's `P_SYS_HEAD`.
+const SYS_HEADER: [&str; 8] = [
+    "SYSTEM",
+    "DONE",
+    "FEATURES",
+    "STANDARD",
+    "OPEN ROWS",
+    "BEHIND",
+    "CRITERIA",
+    "CURRENT WAVE",
+];
+
+/// One system's cells, the same words as agent-web's systems row.
+fn sys_row(s: &System, p: Palette) -> Vec<Cell> {
+    let n = |v: usize| {
+        if v == 0 {
+            "-".to_string()
+        } else {
+            v.to_string()
         }
-        for e in &s.epics {
-            let open = pv.epic.as_ref() == Some(&e.id);
-            let mark = if open { "      - " } else { "      + " };
-            out.extend(wrapped(mark, &e.line, warn_if(e.behind, p), p, w));
-            if open {
-                for l in &e.leaves {
-                    let style = if l.done { p.dim() } else { Default::default() };
-                    out.extend(wrapped("          ", &l.line, style, p, w));
-                }
-                if e.leaves.is_empty() {
-                    out.extend(wrapped("          ", "no tasks yet", p.dim(), p, w));
-                }
+    };
+    let wave = s.wave.as_ref().map_or("-".to_string(), |v| {
+        let mut t = v.title.clone();
+        if let Some(pc) = v.percent {
+            t += &format!(" {pc}%");
+        }
+        if v.more > 0 {
+            t += &format!(" +{}", v.more);
+        }
+        t
+    });
+    vec![
+        if s.id.is_empty() {
+            "no system".to_string()
+        } else {
+            s.id.clone()
+        }
+        .into(),
+        s.percent
+            .map_or("-".to_string(), |pc| format!("{pc}%"))
+            .into(),
+        if s.features == 0 {
+            "-".to_string()
+        } else {
+            format!("{} of {}", s.features_done, s.features)
+        }
+        .into(),
+        n(s.standing).into(),
+        n(s.open_rows as usize).into(),
+        cell(n(s.behind), warn_if(s.behind > 0, p)),
+        match (s.criteria_met, s.criteria_total) {
+            (Some(m), Some(t)) => format!("{m} of {t}"),
+            _ => "-".to_string(),
+        }
+        .into(),
+        wave.into(),
+    ]
+}
+
+/// Overview: what needs the human (each group's head, its items with `F`), what is in flight,
+/// and one table row per system, the selected one marked; and the line it is on.
+fn overview(
+    c: &Card,
+    pg: &Page,
+    pv: &ProjView,
+    p: Palette,
+    w: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let n: usize = pg.need_groups.iter().map(|g| g.items.len()).sum();
+    let keys = match (n, pv.needs) {
+        (0, _) => "",
+        (_, false) => "  F lists them",
+        (_, true) => "  F folds them",
+    };
+    let says = if n == 0 {
+        "nothing".to_string()
+    } else {
+        n.to_string()
+    };
+    let mut out = vec![sec_head("NEEDS YOU", &says, keys, p, w)];
+    for g in &pg.need_groups {
+        let to = if g.kind == "stage" { "  (Stage)" } else { "" };
+        out.extend(wrapped("  ", &format!("{}{to}", g.says), p.warn(), p, w));
+        if pv.needs {
+            for i in &g.items {
+                out.extend(wrapped("      ", i, Default::default(), p, w));
             }
         }
-        if !s.closed.is_empty() {
-            out.extend(wrapped("        ", &s.closed, p.dim(), p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
+    for r in &c.running {
+        let mut t = r.title.clone();
+        if let Some(ph) = &r.phases {
+            t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
+            if let Some(n) = &ph.next {
+                t += &format!(": {n}");
+            }
+            t += ")";
         }
+        out.extend(wrapped("  running  ", &t, p.good(), p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head(
+        "SYSTEMS",
+        &pg.systems_says,
+        "  j/k pick, Enter opens Build filtered to it",
+        p,
+        w,
+    ));
+    if pg.systems.is_empty() {
+        out.push(Line::styled("  No systems.", p.dim()));
+        return (out, None);
+    }
+    let sel = pv.sys.min(pg.systems.len() - 1);
+    let mut t = Table {
+        header: SYS_HEADER.to_vec(),
+        rows: pg.systems.iter().map(|s| sys_row(s, p)).collect(),
+        keep: vec![0, 1, 4, 5, 7, 2, 6, 3],
+        right: vec![1, 2, 3, 4, 5, 6],
+        cap: vec![(7, 40)],
+        ..Default::default()
+    }
+    .fit(w, p.head());
+    let at = out.len() + sel + 1;
+    if let Some(l) = t.get_mut(sel + 1) {
+        l.style = p.sel();
+    }
+    out.append(&mut t);
+    (out, Some(at))
+}
+
+/// Stage: the next stage's checks not met, failing first, then a human's, then the rest.
+fn stage(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![sec_head("NEXT STAGE", &pg.next_says, "", p, w)];
+    let rank = |r: &str| match r {
+        "FAIL" => 0,
+        "HUMAN" => 1,
+        _ => 2,
+    };
+    let mut rows: Vec<_> = pg.next_rows.iter().collect();
+    rows.sort_by_key(|r| rank(&r.result));
+    for r in rows {
+        out.extend(wrapped(
+            &format!("  {:<6} ", r.result),
+            &format!("{} ({})", r.requirement, r.stage),
+            warn_if(r.result == "FAIL", p),
+            p,
+            w,
+        ));
     }
     out
 }
 
-/// The opened card, over its rows: the card, its goal and Flow, then Build by system (always
-/// open, [`system_lines`]), what needs the human (always open), then Next stage, Shipped,
-/// Timeline, In flight and the Agent note as folded heads with their counts, which `F` opens
-/// together. `page` is None while it is read.
+/// Activity: the shipped versions, the dev timeline and the agent's status note.
+fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![sec_head("SHIPPED", &pg.shipped_says, "", p, w)];
+    for s in &pg.shipped {
+        out.extend(wrapped("  ", s, Default::default(), p, w));
+    }
+    if let Some(t) = &pg.timeline {
+        out.push(Line::raw(""));
+        out.push(sec_head("TIMELINE", &t.says, "", p, w));
+        for n in &t.notes {
+            out.extend(wrapped("  ", n, p.dim(), p, w));
+        }
+        for l in &t.lines {
+            out.push(clip_line(
+                Line::styled(format!("  {}", l.line), crate::releases::alert(l.level, p)),
+                w,
+            ));
+        }
+        let shown = t.lines.len();
+        out.extend(crate::fmt::older(shown + t.older, shown, p));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head("AGENT NOTE", &projects::note_says(c), "", p, w));
+    if !c.status.is_empty() {
+        out.extend(wrapped("  ", &c.status, p.dim(), p, w));
+    }
+    out
+}
+
+/// The number beside an inner tab: Needs you's items on Overview, failing checks on Stage.
+fn inner_count(pg: Option<&Page>, id: &str) -> usize {
+    let Some(pg) = pg else { return 0 };
+    match id {
+        OVERVIEW => pg.need_groups.iter().map(|g| g.items.len()).sum(),
+        "stage" => pg.gate.as_ref().map_or(0, |g| g.fail as usize),
+        _ => 0,
+    }
+}
+
+/// The opened project, as agent-web's project page: a header (the card, its goal, the Flow
+/// line, releases, alerts and the next stage), the inner tab strip (`layout::PROJECT_PAGE`), then
+/// the inner tab shown; Rows draws nothing here, the app puts the rows under it. Task lines are
+/// never drawn: they are Rows. `page` is None while it is read. Returns the line the selection
+/// is on, for the app to keep in view.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
     pv: &ProjView,
     p: Palette,
     w: usize,
-) -> Vec<Line<'static>> {
-    let folds = pv.folds;
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = vec![head(c, p, w)];
     out.extend(bar_lines(c, p, w));
     let (goal, style) = if c.goal.is_empty() {
@@ -448,112 +605,72 @@ pub fn open_lines(
         (c.goal.as_str(), Default::default())
     };
     out.extend(wrapped("  goal     ", goal, style, p, w));
-    let Some(pg) = page else {
-        out.push(Line::styled("  reading the page...", p.dim()));
-        return out;
-    };
-    if let Some(f) = &pg.flow_line {
-        out.extend(wrapped("  flow     ", f, Default::default(), p, w));
-    }
-    if let Some(b) = &pg.releases {
-        out.extend(wrapped(
-            "  releases ",
-            &format!("{} (R opens)", b.says),
-            crate::releases::alert(b.level, p),
-            p,
-            w,
-        ));
-    }
-    if let Some(b) = &pg.alerts {
-        out.extend(wrapped(
-            "  alerts   ",
-            &format!("{} (A opens)", b.says),
-            crate::releases::alert(b.level, p),
-            p,
-            w,
-        ));
-    }
-    for e in &pg.errors {
-        out.extend(wrapped("  ", e, p.warn(), p, w));
-    }
-    out.push(Line::raw(""));
-    out.extend(system_lines(pg, pv, p, w));
-    out.push(clip_line(
-        Line::from(vec![
-            Span::styled("NEEDS YOU", p.head()),
-            Span::styled(
-                if pg.needs.is_empty() {
-                    "  nothing".to_string()
-                } else {
-                    format!("  {}", pg.needs.len())
-                },
-                p.dim(),
-            ),
-        ]),
-        w,
-    ));
-    for n in &pg.needs {
-        out.extend(wrapped("  ", n, p.warn(), p, w));
-    }
-    out.push(fold_head("NEXT STAGE", &pg.next_says, folds, p, w));
-    if folds {
-        for r in &pg.next_rows {
+    if let Some(pg) = page {
+        if let Some(f) = &pg.flow_line {
+            out.extend(wrapped("  flow     ", f, Default::default(), p, w));
+        }
+        if let Some(b) = &pg.releases {
             out.extend(wrapped(
-                &format!("  {:<6} ", r.result),
-                &format!("{} ({})", r.requirement, r.stage),
-                warn_if(r.result == "FAIL", p),
+                "  releases ",
+                &format!("{} (R opens)", b.says),
+                crate::releases::alert(b.level, p),
                 p,
                 w,
             ));
         }
-    }
-    out.push(fold_head("SHIPPED", &pg.shipped_says, folds, p, w));
-    if folds {
-        for s in &pg.shipped {
-            out.extend(wrapped("  ", s, Default::default(), p, w));
+        if let Some(b) = &pg.alerts {
+            out.extend(wrapped(
+                "  alerts   ",
+                &format!("{} (A opens)", b.says),
+                crate::releases::alert(b.level, p),
+                p,
+                w,
+            ));
+        }
+        let failing = pg.gate.as_ref().is_some_and(|g| g.fail > 0);
+        out.extend(wrapped(
+            "  next     ",
+            &pg.next_says,
+            warn_if(failing, p),
+            p,
+            w,
+        ));
+        for e in &pg.errors {
+            out.extend(wrapped("  ", e, p.warn(), p, w));
         }
     }
-    if let Some(t) = &pg.timeline {
-        out.push(fold_head("TIMELINE", &t.says, folds, p, w));
-        if folds {
-            for n in &t.notes {
-                out.extend(wrapped("  ", n, p.dim(), p, w));
-            }
-            for l in &t.lines {
-                out.push(clip_line(
-                    Line::styled(format!("  {}", l.line), crate::releases::alert(l.level, p)),
-                    w,
-                ));
-            }
-            let shown = t.lines.len();
-            out.extend(crate::fmt::older(shown + t.older, shown, p));
-        }
-    }
-    out.push(fold_head("IN FLIGHT", &projects::counts(c), folds, p, w));
-    if folds {
-        for r in &c.running {
-            let mut t = r.title.clone();
-            if let Some(ph) = &r.phases {
-                t += &format!(" (phase {} of {}", ph.done + 1, ph.total);
-                if let Some(n) = &ph.next {
-                    t += &format!(": {n}");
-                }
-                t += ")";
-            }
-            out.extend(wrapped("  running  ", &t, p.good(), p, w));
-        }
-    }
-    out.push(fold_head(
-        "AGENT NOTE",
-        &projects::note_says(c),
-        folds,
+    out.push(Line::raw(""));
+    out.push(crate::innertabs::strip_of(
+        &PROJECT_PAGE,
+        pv.inner,
+        |i| inner_count(page, i.id),
         p,
         w,
     ));
-    if folds && !c.status.is_empty() {
-        out.extend(wrapped("  ", &c.status, p.dim(), p, w));
+    out.push(Line::raw(""));
+    if pv.inner == ROWS {
+        return (out, None);
     }
-    out
+    let Some(pg) = page else {
+        out.push(Line::styled("  reading the page...", p.dim()));
+        return (out, None);
+    };
+    let top = out.len();
+    let (body, at) = match pv.inner {
+        OVERVIEW => overview(c, pg, pv, p, w),
+        BUILD => deliverables(
+            Some(Ok(&pg.build)),
+            &pv.bv,
+            true,
+            "  Enter opens the epic's rows",
+            p,
+            w,
+        ),
+        "stage" => (stage(pg, p, w), None),
+        _ => (activity(c, pg, p, w), None),
+    };
+    out.extend(body);
+    (out, at.map(|a| a + top))
 }
 
 /// One line of the list: `Card`'s columns, a blank word as `-`.
@@ -603,8 +720,10 @@ const DHEADER: [&str; 6] = ["PROJECT", "EPIC", "SYS", "DONE", "ETA", "TRACK"];
 /// and the line the selected row is on when `d` has the keys. A failed read says so, never an
 /// empty table.
 fn deliverables(
-    dl: Option<&Result<Deliverables, String>>,
-    pv: &ProjView,
+    dl: Option<Result<&Deliverables, &str>>,
+    dv: &DataTable,
+    focus: bool,
+    hint: &str,
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
@@ -626,14 +745,9 @@ fn deliverables(
             out.extend(wrapped("", e, p.warn(), p, w));
         }
         Some(Ok(d)) => {
-            let hint = if pv.dfocus {
-                "  Enter opens the epic's project, Esc back"
-            } else {
-                "  d browses them"
-            };
             out.push(head(&d.says, hint));
-            out.push(clip_line(Line::from(pv.dv.status(&d.rows, p)), w));
-            let shown = pv.dshown(d);
+            out.push(clip_line(Line::from(dv.status(&d.rows, p)), w));
+            let shown = dv.view.apply(&d.rows);
             if shown.is_empty() {
                 let none = if d.rows.is_empty() {
                     "No open feature epics."
@@ -642,8 +756,8 @@ fn deliverables(
                 };
                 out.push(Line::styled(none, p.dim()));
             } else {
-                let sel = pv.dv.sel.min(shown.len() - 1);
-                let top = if pv.dfocus {
+                let sel = dv.sel.min(shown.len() - 1);
+                let top = if focus {
                     (sel + 1).saturating_sub(DELIVERABLE_ROWS)
                 } else {
                     0
@@ -656,11 +770,11 @@ fn deliverables(
                     keep: vec![1, 0, 5, 3, 4, 2],
                     right: vec![3, 4],
                     cap: vec![(0, 16), (1, 44)],
-                    mark: pv.dv.mark::<Deliverable>(),
+                    mark: dv.mark::<Deliverable>(),
                     ..Default::default()
                 }
                 .fit(w, p.head());
-                if pv.dfocus {
+                if focus {
                     if let Some(l) = t.get_mut(sel - top + 1) {
                         l.style = p.sel();
                         at = Some(out.len() + sel - top + 1);
@@ -714,7 +828,13 @@ pub fn page(
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let (mut out, dat) = deliverables(dl, pv, p, w);
+    let hint = if pv.dfocus {
+        "  Enter opens the epic's project, Esc back"
+    } else {
+        "  d browses them"
+    };
+    let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
+    let (mut out, dat) = deliverables(dl, &pv.dv, pv.dfocus, hint, p, w);
     let (mut list, at) = list(pr, feed, pv, p, w);
     let at = if pv.dfocus {
         dat
@@ -871,7 +991,6 @@ pub(crate) mod tests {
             flow_line: Some(
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
-            needs: vec!["verify: Saves (4 of 4 rows landed, no live proof)".into()],
             systems: vec![
                 hub_core::page::System {
                     id: "ui".into(),
@@ -882,21 +1001,10 @@ pub(crate) mod tests {
                         line: "Menus  25%  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind"
                             .into(),
                         behind: true,
-                        leaves: vec![
-                            hub_core::page::Leaf {
-                                id: "gm-3".into(),
-                                line: "[x] gm-3  feat: Main menu  m  pr 101".into(),
-                                done: true,
-                            },
-                            hub_core::page::Leaf {
-                                id: "gm-4".into(),
-                                line: "[ ] gm-4  Pause menu".into(),
-                                done: false,
-                            },
-                        ],
                     }],
                     closed: "+1 closed, 1 verified".into(),
                     wave: None,
+                    ..Default::default()
                 },
                 hub_core::page::System {
                     id: "ci".into(),
@@ -914,6 +1022,11 @@ pub(crate) mod tests {
             }],
             shipped_says: "none yet".into(),
             shipped: vec![],
+            need_groups: vec![hub_core::page::NeedGroup {
+                kind: "verify".into(),
+                says: "1 epic landed with no live proof".into(),
+                items: vec!["Saves (4 of 4 rows landed)".into()],
+            }],
             timeline: Some(hub_core::timeline::Timeline {
                 says: "7d: 1 commit (1 red on CI)".into(),
                 lines: vec![hub_core::timeline::Line {
@@ -925,156 +1038,186 @@ pub(crate) mod tests {
                 notes: vec!["PRs: the origin is not GitHub".into()],
             }),
             errors: vec!["project-stage-check --systems: exited 2".into()],
+            build: Default::default(),
         }
     }
 
+    fn draw(c: &Card, pg: Option<&Page>, pv: &ProjView) -> Vec<String> {
+        open_lines(c, pg, pv, Palette { no_color: true }, 200)
+            .0
+            .iter()
+            .map(plain)
+            .collect()
+    }
+
     #[test]
-    fn the_opened_card_puts_needs_you_open_and_folds_the_rest_to_heads_with_counts() {
+    fn the_opened_card_is_a_header_an_inner_strip_and_overview_with_needs_you_first() {
         let pr = fixture();
-        let np = Palette { no_color: true };
-        let draw = |pg: Option<&Page>, folds: bool| -> Vec<String> {
-            let pv = ProjView {
-                folds,
-                ..Default::default()
-            };
-            open_lines(&pr.cards[0], pg, &pv, np, 200)
-                .iter()
-                .map(plain)
-                .collect()
-        };
-        let pg = a_page();
-        let l = draw(Some(&pg), false);
+        let mut pg = a_page();
+        pg.build.rows = vec![deliverable("garden", "gm-1", "Menus", "ui", "behind")];
+        let pv = ProjView::default();
+        let l = draw(&pr.cards[0], Some(&pg), &pv);
         assert_eq!(l[0], "GARDEN  personal, alpha");
         assert_eq!(l[2], "  goal     the human can see where each project is");
         assert!(l[3].starts_with("  flow     ideas 3 | briefs 1"), "{l:?}");
-        assert_eq!(l[4], "  project-stage-check --systems: exited 2");
+        assert!(l[4].starts_with("  next     beta  4 of 12 met"), "{l:?}");
+        assert_eq!(l[5], "  project-stage-check --systems: exited 2");
         assert_eq!(
-            l[6..].to_vec(),
-            [
-                "BUILD BY SYSTEM  2 systems, 1 open epics (2 rows with no epic)  z opens a system, Z its epics",
-                "  + ui  25%  1 feature, 0 done  criteria 5 of 7",
-                "    ci  criteria 1 of 2",
-                "NEEDS YOU  1",
-                "  verify: Saves (4 of 4 rows landed, no live proof)",
-                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  F opens it",
-                "SHIPPED  none yet  F opens it",
-                "TIMELINE  7d: 1 commit (1 red on CI)  F opens it",
-                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
-                "AGENT NOTE  model-written, 2026-11-05  F opens it",
-            ]
+            l[7],
+            "[Overview 1] Rows  Build  Stage  Activity   <- -> switch"
         );
+        let body = l[9..].join("\n");
+        assert!(
+            body.starts_with("NEEDS YOU  1  F lists them\n  1 epic landed with no live proof\n"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("Saves (4 of 4"),
+            "F lists the items:\n{body}"
+        );
+        assert!(body.contains("SYSTEMS  2 systems, 1 open epics"), "{body}");
+        assert!(
+            !body.contains("Menus"),
+            "no epic or task lines on Overview:\n{body}"
+        );
+        let open = draw(
+            &pr.cards[0],
+            Some(&pg),
+            &ProjView {
+                needs: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            open.iter().any(|l| l == "      Saves (4 of 4 rows landed)"),
+            "{open:?}"
+        );
+
         let mut watched = a_page();
         watched.alerts = Some(hub_core::releases::Badge {
             says: "2 watches, 1 firing".into(),
             level: hub_core::releases::Level::Bad,
         });
         assert!(
-            draw(Some(&watched), false)
+            draw(&pr.cards[0], Some(&watched), &pv)
                 .iter()
                 .any(|l| l == "  alerts   2 watches, 1 firing (A opens)"),
             "the count line leads to Alerts"
         );
-        let open = draw(Some(&pg), true).join("\n");
-        assert!(!open.contains("Menus"), "F opens the folds, not a system");
-        for s in [
-            "  FAIL   a soak test (beta)",
-            "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
-            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
-        ] {
-            assert!(open.contains(s), "{s} in {open}");
-        }
-        assert!(!open.contains("F opens it"));
-        let reading = draw(None, true);
-        assert_eq!(reading.last().unwrap(), "  reading the page...");
+        assert_eq!(
+            draw(&pr.cards[0], None, &pv).last().unwrap(),
+            "  reading the page..."
+        );
         let mut c = pr.cards[0].clone();
         c.goal.clear();
-        let l: Vec<String> = open_lines(&c, None, &ProjView::default(), np, 200)
-            .iter()
-            .map(plain)
-            .collect();
-        assert_eq!(l[2], "  goal     no goal set");
+        assert_eq!(draw(&c, None, &pv)[2], "  goal     no goal set");
     }
 
     #[test]
-    fn z_opens_each_system_with_epics_in_turn_and_capital_z_its_epics_and_their_tasks() {
+    fn each_inner_tab_draws_its_own_part_and_rows_leaves_the_body_to_the_rows() {
         let pr = fixture();
-        let np = Palette { no_color: true };
-        let pg = a_page();
+        let mut pg = a_page();
+        pg.build.rows = vec![deliverable("garden", "gm-1", "Menus", "ui", "behind")];
+        let at = |inner| {
+            draw(
+                &pr.cards[0],
+                Some(&pg),
+                &ProjView {
+                    inner,
+                    ..Default::default()
+                },
+            )
+            .join("\n")
+        };
+        let rows = at(ROWS);
+        assert!(rows.ends_with("<- -> switch\n"), "{rows}");
+        let build = at(BUILD);
+        assert!(
+            build.contains("Menus") && !build.contains("NEEDS YOU"),
+            "{build}"
+        );
+        let stage = at("stage");
+        assert!(
+            stage.contains("NEXT STAGE  beta") && stage.contains("  FAIL   a soak test (beta)"),
+            "{stage}"
+        );
+        let act = at("activity");
+        for s in [
+            "SHIPPED  none yet",
+            "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
+            "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
+        ] {
+            assert!(act.contains(s), "{s} in {act}");
+        }
+    }
+
+    #[test]
+    fn left_right_step_the_inner_tabs_and_enter_walks_overview_to_build_to_rows() {
+        let pr = fixture();
+        let mut pg = a_page();
+        pg.build.rows = vec![
+            deliverable("garden", "gm-1", "Menus", "ui", "behind"),
+            deliverable("garden", "gm-2", "Pipelines", "ci", ""),
+        ];
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[0]));
-        let draw = |pv: &ProjView| -> String {
-            open_lines(&pr.cards[0], Some(&pg), pv, np, 200)
-                .iter()
-                .map(plain)
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        pv.step_system(&mut tv, &pg);
-        assert_eq!(pv.sys.as_deref(), Some("ui"));
-        let s = draw(&pv);
+        assert_eq!(pv.inner, OVERVIEW);
         assert!(
-            s.contains(
-                "  - ui  25%  1 feature, 0 done  criteria 5 of 7\n      + Menus  25%  [rows]"
-            ),
-            "{s}"
+            !pv.rows_shown(&tv),
+            "the rows are an inner tab of an opened project"
         );
+        let k = |c| KeyEvent::from(c);
+        assert!(pv.page_key(&mut tv, k(KeyCode::Right), Some(&pg), 10));
+        assert!(pv.rows_shown(&tv));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), 10));
+        assert_eq!(
+            pv.inner, "activity",
+            "Left from the first wraps to the last"
+        );
+        pv.inner = OVERVIEW;
+
+        // j picks the second system; Enter opens Build filtered to it.
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
+        assert_eq!(pv.sys, 1, "j stops at the last system");
+        let (_, sel) = open_lines(
+            &pr.cards[0],
+            Some(&pg),
+            &pv,
+            Palette { no_color: true },
+            200,
+        );
+        let l = draw(&pr.cards[0], Some(&pg), &pv);
+        assert!(l[sel.unwrap()].starts_with("ci "), "{l:?}");
+        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
+        assert_eq!((pv.inner, pv.bv.view.q.as_str()), (BUILD, "sys:ci"));
         assert!(
-            s.contains("        +1 closed, 1 verified\n    ci  criteria"),
-            "{s}"
+            pv.dv.is_default(),
+            "the list's Deliverables keep their own view"
         );
-        assert!(!s.contains("gm-3"), "an epic's tasks wait for Z:\n{s}");
-        assert_eq!(tv.only, None);
+        let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
+        assert!(s.contains("Pipelines") && !s.contains("Menus"), "{s}");
 
-        tv.table.sel = 3;
-        pv.step_epic(&mut tv, &pg);
-        assert_eq!(pv.epic.as_deref(), Some("gm-1"));
-        assert_eq!(tv.only, Some(vec!["gm-4".to_string()]), "its open tasks");
-        assert_eq!(tv.table.sel, 0);
-        let s = draw(&pv);
+        // Esc clears Build's filter; Enter on an epic opens Rows searched to it.
+        assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10));
+        assert!(pv.bv.is_default());
         assert!(
-            s.contains("      - Menus  25%  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind\n          [x] gm-3  feat: Main menu  m  pr 101\n          [ ] gm-4  Pause menu"),
-            "{s}"
+            !pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10),
+            "then Esc goes back"
         );
+        assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
+        assert_eq!((pv.inner, tv.table.view.q.as_str()), (ROWS, "tag:=of/gm-1"));
 
-        // A re-read that drops the epic folds it and widens the rows.
-        let mut gone = a_page();
-        gone.systems[0].epics.clear();
-        pv.narrow(&mut tv, &gone);
-        assert_eq!((pv.epic.as_deref(), tv.only.as_ref()), (None, None));
-        pv.step_epic(&mut tv, &pg);
-        pv.step_epic(&mut tv, &pg);
-        assert_eq!(pv.epic, None, "after the last epic it folds");
-        assert_eq!(tv.only, None);
-
-        pv.step_system(&mut tv, &pg);
-        assert_eq!(pv.sys, None, "ci has nothing to open, so z folds after ui");
-        pv.step_epic(&mut tv, &pg);
-        assert_eq!(
-            (pv.sys.as_deref(), pv.epic.as_deref()),
-            (Some("ui"), Some("gm-1")),
-            "Z with no system open opens the first one's first epic"
-        );
-        pv.close(&mut tv);
-        assert_eq!(
-            (pv.sys.as_ref(), pv.epic.as_ref(), tv.only.as_ref()),
-            (None, None, None)
-        );
-
-        // Z skips a system that has only closed epics to count: there is nothing to narrow to.
-        let mut closed_first = a_page();
-        closed_first.systems.insert(
-            0,
-            hub_core::page::System {
-                id: "save".into(),
-                closed: "+2 closed, 2 verified".into(),
-                ..Default::default()
-            },
-        );
-        pv.step_epic(&mut tv, &closed_first);
-        assert_eq!(
-            (pv.sys.as_deref(), pv.epic.as_deref()),
-            (Some("ui"), Some("gm-1"))
-        );
+        // F lists Needs you's items on Overview; with no page read the keys wait.
+        pv.inner = OVERVIEW;
+        assert!(pv.page_key(&mut tv, k(KeyCode::Char('F')), Some(&pg), 10));
+        assert!(pv.needs);
+        assert!(!pv.page_key(&mut tv, k(KeyCode::Char('F')), None, 10));
+        pv.open(&mut tv, Some(&pr.cards[1]));
+        assert_eq!((pv.inner, pv.needs, pv.sys), (OVERVIEW, false, 0));
+        pv.go(&mut tv, &pr.cards, "garden/stage");
+        assert_eq!(pv.inner, "stage");
     }
 
     fn key(c: char) -> KeyEvent {
@@ -1334,7 +1477,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn d_gives_the_table_the_keys_and_enter_opens_the_epics_project_with_its_folds() {
+    fn d_gives_the_table_the_keys_and_enter_opens_the_epics_project_on_build() {
         let pr = fixture();
         let d = delivs();
         let mut tv = TaskView::default();
@@ -1371,7 +1514,8 @@ pub(crate) mod tests {
             20
         ));
         pv.dv.sel = 0;
-        // Enter: the project's rows open with the system and epic open
+        // Enter: the project opens on Build with the epic selected by id; g-10, which a search
+        // for g-1 also matches, stays a row of its own
         assert!(pv.dkey(
             &mut tv,
             key(KeyCode::Enter),
@@ -1381,10 +1525,23 @@ pub(crate) mod tests {
         ));
         assert!(pv.open && !pv.dfocus);
         assert_eq!(tv.project, Some(("personal".into(), "garden".into())));
+        assert_eq!((pv.inner, pv.bv.view.q.as_str(), pv.bv.sel), (BUILD, "", 0));
+        let mut d10 = d.clone().unwrap();
+        let g10 = deliverable("garden", "g-10", "after g-1", "gameplay", "behind");
+        d10.rows.insert(0, g10);
+        pv.close(&mut tv);
+        pv.dfocus = true;
+        pv.dv.sel = 0;
+        assert!(pv.dkey(&mut tv, key(KeyCode::Char('f')), &pr.cards, &d10, 20));
+        assert!(pv.dkey(&mut tv, key(KeyCode::Char('j')), &pr.cards, &d10, 20));
+        assert_eq!(pv.dshown(&d10)[pv.dv.sel].id, "g-1");
+        assert!(pv.dkey(&mut tv, key(KeyCode::Enter), &pr.cards, &d10, 20));
         assert_eq!(
-            (pv.sys.as_deref(), pv.epic.as_deref()),
-            (Some("gameplay"), Some("g-1"))
+            (pv.inner, pv.bv.sel),
+            (BUILD, 1),
+            "g-1 is garden's second row"
         );
+        pv.dv.clear();
         // Esc from the table: clear the view first, then back to the list
         pv.close(&mut tv);
         pv.dfocus = true;
@@ -1426,7 +1583,7 @@ pub(crate) mod tests {
             d.as_ref().unwrap(),
             20,
         );
-        assert!(!pv.open && pv.epic.is_none());
+        assert!(!pv.open);
     }
 
     #[test]

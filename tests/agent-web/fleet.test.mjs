@@ -19,7 +19,7 @@ const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll:
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part() };
+const parts = { "fleet-body": part(), "fleet-tiles": part(), "fleet-facets": part(), "fleet-head": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
@@ -128,13 +128,13 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="muted"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> lead<\/td>/);
-  assert.match(h, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<tr class="wr" data-href="#sessions\/lab%2Fdotfiles-agent-11%3A1">/);
   assert.match(h, /<td class="bad">failed<\/td>/);
   assert.match(h, /<td class="warn">needs you<\/td>/);
   assert.doesNotMatch(h, /data-fold="ask-judge"/, "only a row with children folds");
   assert.match(h, /2 sessions/);
-  assert.match(h, /<td class="muted"><a href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
+  assert.match(h, /<td class="muted"><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
   // A row the server sent no link for draws its text and opens nothing.
   f.data = { ...fleetData, table: table() };
   ctx.renderFleet();
@@ -148,7 +148,7 @@ test("a held runner reads red and the held chip counts it", () => {
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<td class="bad">held<\/td>/);
-  assert.match(h, /data-ts="held">held <span class="n">1<\/span>/);
+  assert.match(h, /data-ts="held"><span class="tl">HELD<\/span><span class="tv">1</);
 });
 
 test("the header draws every hub-core column and the bar is the shared one", () => {
@@ -170,10 +170,10 @@ test("KIND and FOR say what each row is and why it is deployed, under the lanes.
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
-  assert.match(h, /<td class="muted">observe<\/td><td><a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<td class="muted">observe<\/td><td><a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
   assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
-  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}">${k} <span class="n">`));
+  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}"><span class="tl">${k.toUpperCase()}</span><span class="tv">`));
   vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
   ctx.renderFleet();
   assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
@@ -272,7 +272,7 @@ test("a runner row links to its runner page, and the page is read only when open
   ctx.setTab("fleet", "", "");
   vm.runInContext("fst", ctx).data = fleetData;
   ctx.renderFleet();
-  assert.match(box.innerHTML, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(box.innerHTML, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the Fleet tab never reads a runner page");
   assert.equal(ctx.route("#fleet/inbox-triage").arg, "inbox-triage");
 });
@@ -338,7 +338,7 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   st.tab = "fleet";
   fs.data = judges;
   ctx.renderFleet();
-  assert.doesNotMatch(box.innerHTML, /class="tile"/, "the judges' tiles moved to their pages");
+  assert.doesNotMatch(box.innerHTML, /<div class="tile"/, "the judges' tiles moved to their pages");
   st.tab = "log";
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /<a href="#fleet\/dispatch-judge">Dispatch judge<\/a>/);

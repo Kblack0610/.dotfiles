@@ -18,9 +18,9 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-tiles": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
-let asked = [];
+let asked = [], posted = [];
 let reply = {};
 const ctx = vm.createContext({
   console,
@@ -32,9 +32,9 @@ const ctx = vm.createContext({
   setTimeout: () => 0,
   location: { pathname: "/", hash: "" },
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
-  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
+  fetch: async (url, o) => { asked.push(url); if (o && o.body) posted.push(`${url} ${o.body}`); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
@@ -162,9 +162,9 @@ const target = (attrs, row) => ({
 test("the Queue is one table with the server's chips and every header a sort button", () => {
   load();
   const h = draw();
-  assert.match(h, /<button class="on" data-ts="">all <span class="n">3<\/span><\/button>/, "no chip is every row");
-  assert.match(h, /<button class="" data-ts="needs you">needs you <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<button class="" data-ts="up next">up next <span class="n">1<\/span><\/button>/);
+  assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
+  assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
+  assert.match(h, /<button class="tile" data-ts="up next"><span class="tl">UP NEXT<\/span><span class="tv">1<\/span><\/button>/);
   for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title"]) {
     assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
   }
@@ -209,11 +209,11 @@ test("an item not started is ready or held, a held cell names its hold, and the 
   const h = draw();
   assert.match(h, /<td>ready<\/td>/);
   assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
-  assert.match(h, /<div class="muted fold tlegend">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/);
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/, "the legend is a fold under the table");
   assert.doesNotMatch(h, /<td>queued<\/td>/);
   // Negative control: a table with no legend draws no legend line.
   load();
-  assert.doesNotMatch(draw(), /tlegend/);
+  assert.doesNotMatch(draw(), /ready: starts/);
 });
 
 test("the page caps at the server's open_rows with +N older, one click lifts it", () => {
@@ -316,14 +316,44 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   load({ ...data, items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /Item <span class="muted">w1<\/span>/);
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="10"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);
   assert.match(h, /<dd>2h10<\/dd>/);
   assert.match(h, /do the thing/);
   fire("click", { type: "click", target: target({}, "w1") });
-  assert.doesNotMatch(parts["q-list"].innerHTML, /Item <span/, "the same row again shuts it");
+  assert.doesNotMatch(parts["q-list"].innerHTML, /wdet/, "the same row again shuts it");
+});
+
+test("an opened row past the cap still shows, with its detail", () => {
+  load({ ...data, open_rows: 1 }, { sel: "q1" });
+  const h = draw();
+  assert.match(h, /data-slug="q1">.*<tr class="wdet">/s);
+  assert.doesNotMatch(h, /data-all/, "nothing is left under the opened row");
+});
+
+test("a waiting row's detail carries its session's ask, answered in place; one with none says where to look", async () => {
+  run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1" }]; st.asks = [{ id: "A1", session: "sid-1", question: "Ship it?", options: ["yes", "no"], project: "dotfiles" }]`);
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  let h = draw();
+  assert.match(h, /<tr class="wdet">.*<div class="card need k-ask" data-id="A1">.*Ship it\?/s);
+  assert.doesNotMatch(h, /answer on Home|data-home/);
+  posted = []; asked = [];
+  reply = { ok: true };
+  const card = { dataset: { id: "A1" }, querySelector: () => null };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : sel === "[data-a]" ? { dataset: { a: "yes" } } : null) } });
+  await settle();
+  assert.ok(posted.some((u) => u.startsWith("/api/asks/answer") && u.includes('"answer":"yes"')), posted.join(" "));
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue")).length, 0, "an answer re-reads no queue: the asks read redraws the card");
+  fire("toggle", { target: { open: true, dataset: { k: "ask:A1" }, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : null) } });
+  assert.equal(run("askst.open['ask:A1']"), true, "a card's fold is kept where waiting.js draws it from");
+  assert.equal(run("qst.open['ask:A1']"), undefined);
+  run("st.asks = []");
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  h = draw();
+  assert.match(h, /Waiting on a prompt in its window/, "negative control: no ask, no card, and the line says where to look");
+  run("st.agents = []");
 });
 
 test("cancel and the priority select are for an active item only, cancel asks twice", async () => {
@@ -377,10 +407,10 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
     { what: "ci", text: "CI runs of o/r#7", href: "#infra/runs?bq=pr:=o%2Fr%237" },
   ];
   load({ ...data, items: [item("w1", { links })], table: { ...table, links: [{ project: "#projects/dotfiles" }] } });
-  assert.match(draw(), /<td><a href="#projects\/dotfiles">dotfiles<\/a><\/td>/, "the project cell is its page");
+  assert.match(draw(), /<td><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td>/, "the project cell is its page");
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<div class="cline qlinks">session <a href="#fleet\/session\/w1">agent-3<\/a>, project <a href="#projects\/dotfiles">dotfiles<\/a>, row <a href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
+  assert.match(h, /<div class="cline qlinks">session <a class="tl" href="#fleet\/session\/w1">agent-3<\/a>, project <a class="tl" href="#projects\/dotfiles">dotfiles<\/a>, row <a class="tl" href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a class="tl" href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
   fire("click", { type: "click", target: target({}, "w1") });
   load({ ...data, items: [item("w1")] });
   fire("click", { type: "click", target: target({}, "w1") });

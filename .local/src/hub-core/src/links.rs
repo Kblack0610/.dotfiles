@@ -33,10 +33,10 @@ pub enum Kind {
     Job,
     /// A PR's CI runs, by `owner/repo#N`: Infra's runs table filtered to that PR.
     PrRuns,
-    /// An app's status page (`hub_core::app_status`), by its project-map tracker key.
+    /// A Schedules row, by its name: the Schedules tab filtered to exactly that name.
+    Schedule,
+    /// An app on the Releases tab, by its project name: its channels, releases, builds, changelog.
     App,
-    /// An app's channels: the Releases table filtered to that project.
-    AppChannels,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -64,8 +64,8 @@ pub const PAGES: &[Page] = &[
     Page {
         kind: Kind::CiRun,
         tab: "infra",
-        word: "ci",
-        inner: "ci",
+        word: "runs",
+        inner: "runs",
     },
     Page {
         kind: Kind::Job,
@@ -81,11 +81,22 @@ pub const PAGES: &[Page] = &[
     },
 ];
 
-/// The page `hub tab '<tab> <word>/<id>'` names (`PAGES`), as `Link::tab_args` writes it.
+/// A page's old word, still read so a saved link or a `hub tab` habit lands on the page; nothing
+/// draws it. A run page was `#infra/ci/<repo>/<id>` until Runs got its own inner tab (2026-11-12).
+pub const RETIRED_PAGES: &[Page] = &[Page {
+    kind: Kind::CiRun,
+    tab: "infra",
+    word: "ci",
+    inner: "runs",
+}];
+
+/// The page `hub tab '<tab> <word>/<id>'` names (`PAGES`, or a `RETIRED_PAGES` word), as
+/// `Link::tab_args` writes it.
 pub fn page_of<'a>(tab: &str, arg: &'a str) -> Option<(Kind, &'a str)> {
     let (word, id) = arg.trim().split_once('/')?;
     let p = PAGES
         .iter()
+        .chain(RETIRED_PAGES)
         .find(|p| p.tab.eq_ignore_ascii_case(tab) && p.word.eq_ignore_ascii_case(word))?;
     Some((p.kind, id.trim())).filter(|(_, id)| !id.is_empty())
 }
@@ -134,7 +145,11 @@ impl Link {
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
-            Kind::AppChannels => format!("#releases?q=project:={seg}"),
+            // A cron row's name (`repo / Tests (all)`) holds spaces: quoted, it stays one term.
+            Kind::Schedule if id.chars().any(char::is_whitespace) => {
+                format!("#schedules?q=name:={}", component(&format!("\"{id}\"")))
+            }
+            Kind::Schedule => format!("#schedules?q=name:={seg}"),
             Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
                 unreachable!("in PAGES")
             }
@@ -159,7 +174,8 @@ impl Link {
             Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
-            Kind::AppChannels => ("releases", format!("project:={id}")),
+            // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
+            Kind::Schedule => ("schedules", String::new()),
             Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
                 unreachable!("in PAGES")
             }
@@ -208,7 +224,12 @@ mod tests {
             let (tab, arg) = Link::to(p.kind, "x1").tab_args().unwrap();
             assert_eq!(page_of(tab, &arg), Some((p.kind, "x1")), "{}", p.word);
         }
-        assert_eq!(page_of("Infra", " CI/4412 "), Some((Kind::CiRun, "4412")));
+        assert_eq!(
+            page_of("Infra", " CI/4412 "),
+            Some((Kind::CiRun, "4412")),
+            "a retired word"
+        );
+        assert_eq!(page_of("infra", "runs/4412"), Some((Kind::CiRun, "4412")));
         assert_eq!(page_of("infra", "ci/"), None, "no id, no page");
         assert_eq!(page_of("infra", "runs pr:=o/r#7"), None);
         assert_eq!(
@@ -268,19 +289,8 @@ mod tests {
             ("#infra/pools/unity".into(), a("infra", "pools/unity"))
         );
         assert_eq!(
-            both(Kind::App, "shop"),
-            ("#releases/apps/shop".into(), a("releases", "apps/shop"))
-        );
-        assert_eq!(
-            both(Kind::AppChannels, "binks"),
-            (
-                "#releases?q=project:=binks".into(),
-                a("releases", "project:=binks")
-            )
-        );
-        assert_eq!(
             both(Kind::CiRun, "4412"),
-            ("#infra/ci/4412".into(), a("infra", "ci/4412"))
+            ("#infra/runs/4412".into(), a("infra", "runs/4412"))
         );
         assert_eq!(
             both(Kind::Job, "agentctl-dream"),
@@ -294,6 +304,17 @@ mod tests {
             (
                 "#infra/runs?bq=pr:=Kblack0610%2F.dotfiles%231924".into(),
                 a("infra", "runs pr:=Kblack0610/.dotfiles#1924")
+            )
+        );
+        assert_eq!(
+            Link::to(Kind::Schedule, "yard / Tests (all)").href(),
+            "#schedules?q=name:=%22yard%20%2F%20Tests%20(all)%22"
+        );
+        assert_eq!(
+            both(Kind::Schedule, "playground-night"),
+            (
+                "#schedules?q=name:=playground-night".into(),
+                a("schedules", "")
             )
         );
     }
@@ -324,7 +345,7 @@ mod tests {
 
     #[test]
     fn every_page_is_on_a_tab_and_inner_tab_of_the_layout() {
-        for p in PAGES {
+        for p in PAGES.iter().chain(RETIRED_PAGES) {
             let tab = crate::layout::resolve(p.tab).unwrap_or_else(|| panic!("{}", p.tab));
             assert_eq!(tab.id, p.tab, "{} is a tab id, not a retired name", p.tab);
             assert!(
@@ -341,6 +362,7 @@ mod tests {
             Kind::Queue,
             Kind::Row,
             Kind::Runner,
+            Kind::Schedule,
         ] {
             let (tab, _) = Link::to(k, "x").tab_args().unwrap();
             assert!(crate::layout::resolve(tab).is_some(), "{k:?}: {tab}");

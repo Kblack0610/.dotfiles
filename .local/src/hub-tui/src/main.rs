@@ -26,6 +26,7 @@ mod jobs;
 mod logtab;
 mod machinetab;
 mod outboxtab;
+mod pipetab;
 mod pooltab;
 mod projtab;
 mod proptab;
@@ -730,6 +731,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if matches!(tab, None | Some(Tab::Infra)) {
         let (items, _) = hub_core::actions::queue_items();
         a.builds = Some(read_runs(&a, &items, hub_core::jobs::now()));
+        // Pipelines joins its sources to those runs; the live app sends them from read_builds.
+        let s = hub_core::pipelines::sources(&hub_core::session_actions::System);
+        a.handle(Msg::Pipes(Box::new(s)));
     }
     // The reds and the Alerts join are read off-thread in the live app; a printed page has no
     // next frame, so read them here or Alerts prints "reading".
@@ -740,7 +744,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.reds = Some(reds);
         // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
         failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
+        // `--tab 'alerts fixes'` prints that inner tab; with none named, every one prints.
         a.tab = Tab::Alerts;
+        a.av.all = section.is_none();
         a.open_query(section.clone());
     }
     if matches!(tab, None | Some(Tab::Infra)) {
