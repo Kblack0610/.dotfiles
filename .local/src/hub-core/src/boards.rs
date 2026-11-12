@@ -317,13 +317,15 @@ pub struct DayRow {
 }
 
 /// One day of CI time, summed over every repo whose `ci.repos.<repo>.cost` the record holds
-/// (`day-log` copies it from `scripts/ci-cost.py --json`). Hours are runner-hours.
+/// (`day-log` copies it from `scripts/ci-cost.py --json`); a cost with no pool hours is not a
+/// measurement. Hours are runner-hours.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct CiDay {
     /// Every job on the self-hosted pool.
     pub pool_h: f64,
     /// The share of `pool_h` spent gating PRs.
     pub gate_h: f64,
+    /// Runs on the pool, ci-cost's `runs` (not the repo's every workflow run).
     pub runs: u64,
     /// Median gate wall time in minutes, of the repo that gated the most; a median does not sum.
     pub gate_p50_min: Option<f64>,
@@ -334,14 +336,20 @@ fn ci_day(rec: &Value) -> Option<CiDay> {
         .as_object()?
         .values()
         .map(|r| &r["cost"])
-        .filter(|c| c.is_object())
+        .filter(|c| c["hours"]["pool"].is_number())
         .collect();
     if costs.is_empty() {
         return None;
     }
     // Rounded to the hundredth ci-cost writes, so a sum does not print float noise.
     let hours = |k: &str| {
-        (costs.iter().filter_map(|c| c["hours"][k].as_f64()).sum::<f64>() * 100.0).round() / 100.0
+        (costs
+            .iter()
+            .filter_map(|c| c["hours"][k].as_f64())
+            .sum::<f64>()
+            * 100.0)
+            .round()
+            / 100.0
     };
     let busiest = costs
         .iter()
@@ -1084,7 +1092,12 @@ mod tests {
         }}});
         assert_eq!(
             day_row("2026-11-11", &rec).ci,
-            Some(CiDay { pool_h: 186.6, gate_h: 161.02, runs: 204, gate_p50_min: Some(22.0) })
+            Some(CiDay {
+                pool_h: 186.6,
+                gate_h: 161.02,
+                runs: 204,
+                gate_p50_min: Some(22.0)
+            })
         );
         // Two measured repos: hours and runs add, the median is the busier gate's.
         let rec: Value = serde_json::json!({"ci": {"repos": {
@@ -1093,10 +1106,21 @@ mod tests {
         }}});
         assert_eq!(
             day_row("2026-11-11", &rec).ci,
-            Some(CiDay { pool_h: 11.5, gate_h: 5.0, runs: 7, gate_p50_min: Some(12.5) })
+            Some(CiDay {
+                pool_h: 11.5,
+                gate_h: 5.0,
+                runs: 7,
+                gate_p50_min: Some(12.5)
+            })
         );
-        // A live day before ci-cost ran has an empty ci section.
-        assert_eq!(day_row("2026-11-12", &serde_json::json!({"ci": {}})).ci, None);
+        // A live day before ci-cost ran has an empty ci section; a cost without pool hours
+        // is not a measured zero.
+        assert_eq!(
+            day_row("2026-11-12", &serde_json::json!({"ci": {}})).ci,
+            None
+        );
+        let partial = serde_json::json!({"ci": {"repos": {"a": {"cost": {"runs": 3}}}}});
+        assert_eq!(day_row("2026-11-12", &partial).ci, None);
     }
 
     #[test]

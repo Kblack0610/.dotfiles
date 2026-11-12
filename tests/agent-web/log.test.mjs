@@ -168,7 +168,7 @@ test("History charts CI hours per day from each day's ci, gate under the rest of
   ] };
   const html = vm.runInContext(`lst.rec = input.r; lst.hist = input.hist; renderLog(); $("log-day").innerHTML`, ctx);
   const ci = between(html, "CI hours per day", "Merged by hour");
-  assert.match(ci, /data-key="2026-11-11" data-tip="Wed 2026-11-11: 186.6 h on the pool, 161.0 h gating, 204 runs, gate p50 22 min"/);
+  assert.match(ci, /data-key="2026-11-11" data-tip="Wed 2026-11-11: 186.6 h on the pool, 161.0 h gating, 204 pool runs, gate p50 22 min"/);
   assert.match(ci, /data-key="2026-11-10" data-tip="Tue 2026-11-10: not measured"/);
   assert.match(ci, /<\/i>Gate<\/span>.*<\/i>Rest of the pool<\/span>/);
   ctx.input.hist = ctx.input.hist.slice(0, 1);

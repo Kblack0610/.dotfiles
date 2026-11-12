@@ -69,10 +69,10 @@ function ciChart(rows, lab, sel) {
     if (!c) return { ...col, tip: day + "not measured", segs: [] };
     return {
       ...col,
-      tip: day + `${h(c.pool_h)} on the pool, ${h(c.gate_h)} gating, ${c.runs} runs` + (c.gate_p50_min == null ? "" : `, gate p50 ${c.gate_p50_min} min`),
+      tip: day + `${h(c.pool_h)} on the pool, ${h(c.gate_h)} gating, ${c.runs} pool runs` + (c.gate_p50_min == null ? "" : `, gate p50 ${c.gate_p50_min} min`),
       segs: [{ v: c.gate_h, color: SLOTS[0] }, { v: Math.max(0, c.pool_h - c.gate_h), color: OTHER }],
     };
-  }), { sel, yfmt: (v) => Math.round(v) + " h" });
+  }), { sel, yfmt: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) + " h" });
   return `<div class="panel"><h3>CI hours per day ${legend([["Gate", SLOTS[0]], ["Rest of the pool", OTHER]])}</h3>${cols}</div>`;
 }
 
