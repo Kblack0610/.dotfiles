@@ -372,7 +372,16 @@ def fj(host, path):
     raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, rbw {FORGEJO_ENTRY} unread)"))
 
 
-def read_repos(exporter=None):
+def read_map():
+    """The project map, parsed; OSError when it is missing or not JSON."""
+    try:
+        with open(PROJECT_MAP) as f:
+            return json.load(f)
+    except ValueError as e:
+        raise OSError(f"{PROJECT_MAP}: {e}")
+
+
+def read_repos(exporter=None, pmap=None):
     """-> [(forge, owner/name, base, host)]: the exporter feed's `repos` on GitHub (host None) and
     `forgejo_repos` on the project map's `forges.forgejo` host, then the GitHub slug of each tracker
     with `prsOnly` (forge prs-only), a work or client repo only the PR store reads. A repo's base is
@@ -381,11 +390,7 @@ def read_repos(exporter=None):
     exporter = read_sync("exporter") if exporter is None else exporter
     if "repos" not in exporter:
         raise OSError(f"no CI repo list: the exporter feed has never answered ({SYNC})")
-    try:
-        with open(PROJECT_MAP) as f:
-            pmap = json.load(f)
-    except ValueError as e:
-        raise OSError(f"{PROJECT_MAP}: {e}")
+    pmap = read_map() if pmap is None else pmap
     trackers = [v for v in (pmap.get("trackers") or {}).values() if isinstance(v, dict)]
 
     def base(forge, repo):
@@ -403,9 +408,8 @@ def read_repos(exporter=None):
 
 def repo_list():
     """`repos`: the list with each tracker's clone, the `paths` entry of a tracker with `ciCost`."""
-    rows = read_repos()
-    with open(PROJECT_MAP) as f:
-        pmap = json.load(f)
+    pmap = read_map()
+    rows = read_repos(pmap=pmap)
     clone = {}
     for name, t in (pmap.get("trackers") or {}).items():
         if isinstance(t, dict) and t.get("ciCost") and t.get("github"):
@@ -968,7 +972,7 @@ def import_feed(entry, t):
                     runs.setdefault(r["repo"].lower(), []).append(r["run"])
             cursor = d.get("next", cursor)
             entry.update(epoch=d.get("epoch"), cursor=cursor, repos=d.get("repos", []),
-                         forgejo_repos=d.get("forgejo_repos", []), window_secs=d.get("window_secs", 86400))
+                         forgejo_repos=d.get("forgejo_repos", entry.get("forgejo_repos", [])), window_secs=d.get("window_secs", 86400))
             if not d.get("more"):
                 break
         entry.update(synced_at=iso(t), error=None)

@@ -19,7 +19,7 @@ setup() {
   # --state open $GHD/open as store rows (author kblack0610 unless a row names one), unfiltered by
   # time, so the day's window is day-log's own. $GHD/fail fails every call; $GHD/stale names a
   # repo the store is stale for: rc 1, the rest still printed. `repos` serves $SANDBOX/ci-repos, the
-# CI repo list, unlogged.
+  # CI repo list, unlogged.
   cat > "$SANDBOX/bin/ss-stub" <<EOF
 #!/usr/bin/env bash
 [ "\$1" = repos ] && exec cat "$SANDBOX/ci-repos"
