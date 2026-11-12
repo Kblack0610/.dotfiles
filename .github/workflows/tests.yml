@@ -354,9 +354,10 @@ jobs:
           make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
       # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
       # cell off screen, a pageerror, an "undefined" cell, a fixture table that no longer matches
-      # hub-core's columns, or a tab or project inner tab taller than three screens at 1400x900 fails it. It runs when agent-web is picked (hub-core and web-kit pick it,
-      # and so does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs
-      # its own chromium; the dump reuses the target the gate just built. About 25 s, the download included.
+      # hub-core's columns, or a tab, inner tab or project inner tab taller than three screens at
+      # 1400x900 fails it. It runs when agent-web is picked (hub-core and web-kit pick it, and so
+      # does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs its
+      # own chromium; the dump reuses the target the gate just built. About 30 s, plus the download.
       - name: Phone render harness
         env:
           PLAYWRIGHT_CORE: 1.62.1

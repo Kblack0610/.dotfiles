@@ -135,6 +135,15 @@ const infra = {
   ok: true, at: NOW, grafana: home.grafana, down: [],
   instant: { cc: [{ labels: { __name__: "cc:overall_status" }, value: 0 }, { labels: { __name__: "cc:asks_open" }, value: 2 },
     ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], finished: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_cores: [], withheld: [] },
+  // agent-web's infra.rs sends the CI board less its lists, and each list as its table's view.
+  ci: { hosts: 3, slots: 6, busy: 2, queued: 0, oldest: 0, done: { runs: 20, ok: 18, bad: 1, can: 1 }, red: [] },
+  tables: Object.fromEntries(Object.entries({
+    machines: ["machine", "where", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "pools", "running", "governor", "power", "up"],
+    pools: ["pool", "slots", "busy", "withheld", "waiting", "oldest", "done", "pass", "machines"],
+    runners: ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"],
+    queued: ["job", "pool", "ref", "n", "wait", "needs", "can"],
+    finished: ["repo", "workflow", "main", "branches", "runs", "failed", "cancelled"],
+  }).map(([name, cols]) => [name, { table: table(0, cols), rows: [] }])),
 };
 const jobs = {
   table: table(7, ["state", "source", "name", "started", "took", "result", "host", "detail"], ["all", "running", "queued", "done", "failed"], { source: ["forgejo", "github", "local"], result: ["ok", "failed"] }),
