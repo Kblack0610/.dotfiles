@@ -258,7 +258,7 @@ function pipBody(t) {
     const tr = `<tr class="pipr${open ? " sel" : ""}" data-pkey="${esc(pipKey(r))}">${keys.map((k) => PIP_CELLS[k](r, L)).join("")}</tr>`;
     return open ? tr + `<tr class="wdet"><td colspan="${keys.length}">${pipDetail(r, t.detail)}</td></tr>` : tr;
   };
-  return `<div class="panel scroll"><table class="tbl">${tblHead(v, PIP_COLS, PIP_PRE)}${rows.map(row).join("")}</table></div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(v, PIP_COLS)}${rows.map(row).join("")}</table></div>`;
 }
 
 // The opened pipeline: why it is in its state, then what /api/pipelines/detail says once read.

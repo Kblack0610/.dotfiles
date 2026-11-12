@@ -360,6 +360,9 @@ test("the Pipelines table states each pipeline with its why, its night's schedul
   showPipes();
   const b = pipes_.innerHTML;
   assert.match(b, /<div id="pip-head"><h2 class="sec bad" id="sec-pipelines">Pipelines <span class="n">2<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
+  // tblPatch reads data-tsort; the block's data-tbl is what keeps the sort on the l keys
+  assert.match(b, /<button class="thsort" data-tsort="/, "a header click is one the shared listener reads");
+  assert.doesNotMatch(b, /data-lsort/);
   assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a class="tl" href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
   assert.match(b, /<td class="wrap muted"><a class="tl" href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a class="tl" href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
   assert.match(b, /<td class="bad" title="[^"]+"><a class="tl" href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");
