@@ -85,7 +85,7 @@ const binks = {
 };
 const data = (o = {}) => ({
   at: NOW() - 120, stale_after: 3600, errors: [], table,
-  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks],
+  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "prev 2/2, deployed 1/2", rows: [binks],
   blanks: ["none declared", "not recorded", "manual", "not read", "none merged"], ...o,
 });
 
@@ -119,7 +119,7 @@ test("the head counts the apps, names what it could not read under it, and folds
   show();
   const h = box.innerHTML;
   assert.match(h, /<h2 class="sec warn">Releases <span class="n">\d+(?: of \d+)?<\/span><\/h2><div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
-  assert.match(h, /<details class="cfold" data-k="rel-coverage"><summary>Coverage<\/summary><div class="cline">coverage: prev 2\/2, deployed 1\/2<\/div><\/details>/);
+  assert.match(h, /<details class="cfold" data-k="rel-coverage"><summary>Coverage<\/summary><div class="cline">prev 2\/2, deployed 1\/2<\/div><\/details>/);
   assert.ok(h.indexOf("rel-coverage") > h.indexOf(`data-key="binks"`), "after the apps");
   // When the snapshot was taken is a tile after the state tiles (the Releases tblTab's tiles).
   const t = run("releasesTiles")(data());
