@@ -15,7 +15,7 @@ setup() {
 }
 
 # The conf's own values, and one the level must leave alone.
-TODAY='DISPATCH_PER_PASS 3 DISPATCH_NIGHT_MAX 6 DISPATCH_MAX_LOAD 1.5 CLAUDE_ACCT_PACE_SLACK_PCT 5 CLAUDE_ACCT_RESERVE_PCT 5 DISPATCH_TARGET_BURST 50'
+TODAY='DISPATCH_PER_PASS 3 DISPATCH_NIGHT_MAX 6 DISPATCH_MAX_LOAD 1.5 CLAUDE_ACCT_PACE_SLACK_PCT 5 CLAUDE_ACCT_RESERVE_PCT 5 DISPATCH_TARGET_AWAY 50'
 
 scale() { bash -c '. "$1"; shift; level_scale "$@"' _ "$LIB" "$@"; }
 mode() { echo "MACHINE_MODE=$1" > "$HOME/.agent/machine-mode.env"; }
