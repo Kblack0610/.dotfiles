@@ -463,11 +463,11 @@ PROJECT_PATHLESS_JQ='def pathless_repo:
 
 # project_dir_key <key> -> the key a session in <key>'s directory resolves to: its repo for a
 # key with a repo and no path, else <key> itself. agentctl-dream reads and promotes a lane's
-# lessons under it.
+# lessons under it. A registry jq cannot read answers <key>, with jq's error on stderr.
 project_dir_key() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 \
-    && jq -nr --arg k "$1" --slurpfile reg "$map_file" "$PROJECT_PATHLESS_JQ"' $k | pathless_repo // $k' 2>/dev/null \
+    && jq -nr --arg k "$1" --slurpfile reg "$map_file" "$PROJECT_PATHLESS_JQ"' $k | pathless_repo // $k' \
     || printf '%s\n' "$1"
 }
 
