@@ -36,8 +36,9 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
-# A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
-# `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
+# An urgent or high plan item starts its session at once (fleet-dispatch start --item), and so does an
+# urgent or high item `after:` one that closes ok; a low one waits for a dispatch pass, which starts the
+# queue in priority order. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
@@ -1081,6 +1082,7 @@ cmd_add() {
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
+  if [ "$priority" = low ]; then echo "agent-queue: $slug is low priority, so it stays queued for the next dispatch pass"; return 0; fi
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
   fleet-dispatch start --item "$slug" ||
@@ -1890,13 +1892,14 @@ phases_ticked() {
     | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null
 }
 
-# start_next <slug> -- the items `after:` this one start the moment it closes ok, unless another slug
+# start_next <slug> -- the urgent and high items `after:` this one start the moment it closes ok (a low
+# one waits for a dispatch pass, so it never jumps the queue's priority order), unless another slug
 # in their `after:` (or any other hold) still holds them. Each takes the
 # slot the closing session frees, so it waits for no dispatch pass and none of its load gates: a
 # plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it. One
 # whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
 start_next() {
-  local f s h next=() landed=() self
+  local f s h next=() landed=() low=() self
   self="$(realpath "${BASH_SOURCE[0]}")"
   while IFS= read -r f; do
     [ -n "$f" ] && waits_on "$f" "$1" || continue
@@ -1904,9 +1907,12 @@ start_next() {
     h="$(hold_reason "$f")"
     case "$h" in "after "*) continue ;; esac
     if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
-    elif [ -z "$h" ]; then next+=("$(fm_get "$f" slug)")
+    elif [ -n "$h" ]; then :
+    elif [ "$(fm_get "$f" priority)" = low ]; then low+=("$(fm_get "$f" slug)")
+    else next+=("$(fm_get "$f" slug)")
     fi
   done < <(items_in "$AQ_DIR/queued")
+  for s in "${low[@]}"; do echo "agent-queue: $s is low priority, so it stays queued for the next dispatch pass"; done
   [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0
   # The starter writes these items back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
