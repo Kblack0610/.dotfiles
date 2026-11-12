@@ -24,6 +24,7 @@ let body = {};
 let cl = {};
 let builds = {};
 let detail = {};
+let status = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -37,7 +38,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -50,7 +51,7 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "", sort: "", dir: "", total: 2, shown: 2,
   states: [{ name: "all", n: 2 }, { name: "attention", n: 1 }, { name: "ok", n: 1 }],
-  columns: ["project", "stage", "live", "status", "channels", "released", "last_deploy"].map(col),
+  columns: ["project", "stage", "live", "status", "checks", "channels", "released", "last_deploy"].map(col),
   facets: [],
 };
 const NOW = () => Math.round(Date.now() / 1e3);
@@ -71,7 +72,7 @@ const unread = {
   pinned_text: "-", live_text: "?", telemetry: [], drift_since: null, deploys: { source: "o/r", error: null, prev: null, last: null, history: [] },
 };
 const binks = {
-  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", channels_text: "1 drift, 1 not read", unread: 1,
+  project: "binks", live_text: "v1 prod", status: "drift", status_text: "drift", level: "bad", checks: { says: "Partial outage: chat", level: "bad" }, channels_text: "1 drift, 1 not read", unread: 1,
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
   stage: "alpha", stage_text: "alpha: no alpha target deployed", stage_level: "warn", coverage_text: "prev 1/1, deployed 1/2 (1 none declared)",
   builds: [
@@ -84,9 +85,9 @@ const binks = {
   ],
 };
 const data = (o = {}) => ({
-  at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
-  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks],
-  blanks: ["none declared", "not recorded", "manual", "not read", "none merged"], ...o,
+  at: NOW() - 120, stale_after: 3600, errors: [], table,
+  gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "prev 2/2, deployed 1/2", rows: [binks],
+  blanks: ["none declared", "not recorded", "manual", "not read", "none merged", "no check"], ...o,
 });
 
 const target = (attrs, tr = null, ch = null) => ({
@@ -115,26 +116,30 @@ const page = async (d = data(PAGE), name = "binks", log = changelog()) => {
 };
 const clickChannel = (id) => fire("click", { type: "click", target: target({}, null, { dataset: { ch: `binks|${id}` } }) });
 
-test("the head asks the tab's question, counts the apps, names what it could not read and says the snapshot's age", () => {
+test("the head counts the apps, names what it could not read under it, and folds the coverage shut at the bottom", () => {
   show();
   const h = box.innerHTML;
-  assert.match(h, /What is building, and what is live where\?/);
-  assert.match(h, /2 apps: 1 drift, 1 ok/);
-  assert.match(h, /<div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
-  assert.match(h, /<div class="cline muted">coverage: prev 2\/2, deployed 1\/2<\/div>/);
-  assert.match(h, /refreshed .* \(2m ago\)/);
-  assert.doesNotMatch(h, /class="warn">refreshed/);
+  assert.match(h, /<h2 class="sec warn">Releases <span class="n">\d+(?: of \d+)?<\/span><\/h2><div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
+  assert.match(h, /<details class="cfold" data-k="rel-coverage"><summary>Coverage<\/summary><div class="cline">prev 2\/2, deployed 1\/2<\/div><\/details>/);
+  assert.ok(h.indexOf("rel-coverage") > h.indexOf(`data-key="binks"`), "after the apps");
+  // When the snapshot was taken is a tile after the state tiles (the Releases tblTab's tiles).
+  const t = run("releasesTiles")(data());
+  assert.match(t, /^<div class="tile" style="--c:var\(--c-other\)"><span class="tl">REFRESHED<\/span><span class="tv">\d\d:\d\d<\/span><span class="ts1">2m ago<\/span>/);
 });
 
 test("a snapshot older than the collector's cadence is amber, and a full read draws no gap line", () => {
   show(data({ at: NOW() - 7200, gaps: "" }));
-  assert.match(box.innerHTML, /class="warn">refreshed/);
+  assert.match(box.innerHTML, /<h2 class="sec warn">Releases /, "a stale snapshot hues the head");
   assert.doesNotMatch(box.innerHTML, /not read:/);
+  assert.match(run("releasesTiles")(data({ at: NOW() - 7200 })), /--c:var\(--b-stalled\)/);
+  show(data({ gaps: "" }));
+  assert.match(box.innerHTML, /<h2 class="sec">Releases /, "fresh and fully read: a plain head");
 });
 
 test("no snapshot names the error instead of drawing a stale table", () => {
-  show(data({ at: 0, rows: [], gaps: "", summary: "not read", errors: ["release-state show: no snapshot yet"], table: { ...table, total: 0 } }));
+  show(data({ at: 0, rows: [], gaps: "", errors: ["release-state show: no snapshot yet"], table: { ...table, total: 0 } }));
   assert.match(box.innerHTML, /release-state show: no snapshot yet/);
+  assert.match(run("releasesTiles")(data({ at: 0 })), /<span class="tv">-<\/span><span class="ts1">no snapshot read<\/span>/);
   assert.match(box.innerHTML, /No apps\./);
 });
 
@@ -142,13 +147,15 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: its stage in its own column, what is deployed, its channels amber when one was not read, blanks dimmed", () => {
   show(data({ table: { ...table, links: [{ project: "#projects/binks" }] } }));
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="bad">Partial outage: chat<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /data-label="checks"><button class="thsort" data-tsort="checks"/, "the app's Gatus banner is a column of its own");
   assert.match(b, /data-label="stage"><button class="thsort" data-tsort="stage"/, "the stage sorts and filters as a column");
   assert.match(b, /data-label="deployed"><button class="thsort" data-tsort="live"/, "a deploy is not the app being live");
   assert.match(b, /placeholder="search, or stage:alpha channel:prod status:drift"/);
   assert.equal(b.match(/<tr class="jr"/g).length, 1, "one row per app, not one per channel");
   assert.doesNotMatch(b, /binks-prod/, "channels wait for the app's page");
-  show(data({ rows: [{ ...binks, stage: "", stage_level: "ok", released_text: "none declared", last_deploy_text: "not recorded", deploy_level: "" }] }));
+  show(data({ rows: [{ ...binks, stage: "", stage_level: "ok", checks: { says: "no check", level: "ok" }, released_text: "none declared", last_deploy_text: "not recorded", deploy_level: "" }] }));
+  assert.match(box.innerHTML, /<td class="muted">no check<\/td>/, "an app Gatus does not check is dimmed, never up");
   assert.match(box.innerHTML, /<td>binks<\/td><td class="muted" title="alpha: no alpha target deployed">-<\/td>/, "no stage, a dash; no link, plain text");
   assert.match(box.innerHTML, /<td class="muted">none declared<\/td><td class="muted">not recorded<\/td>/);
 });
@@ -377,17 +384,16 @@ const shipped = {
   conclusion: "success", prs: [], url: "https://github.com/o/binks/actions/runs/77", owner: "", state: "green", level: "ok", started: NOW() - 300, took: 125, release: { project: "binks", tag: "v2" },
 };
 const bdata = (o = {}) => ({
-  at: NOW() - 60, summary: "1 run in 30 days: 0 running, 0 queued, 0 red", stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
+  at: NOW() - 60, stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
   table: { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
 const showRuns = (d = bdata()) => { show(); Object.assign(run("relRuns"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
 
-test("Release runs lists the runs tied to a release with the tag each ran on, and links every run on Infra", () => {
+test("Release runs lists the runs tied to a release with the tag each ran on", () => {
   showRuns();
   const b = box.innerHTML;
-  assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="muted">1 run in 30 days/);
-  assert.match(b, /<a href="#infra\/runs">Infra, CI<\/a>/);
+  assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="n">1<\/span><\/h2><\/div>/);
   assert.match(b, /<td class="muted">v2<\/td><\/tr>/);
   assert.ok(b.indexOf("sec-runs") > b.indexOf(`data-key="binks"`), "after the apps");
   showRuns(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));
@@ -479,4 +485,39 @@ test("a count shows beside an inner tab needing a look: a bad app, a release run
   assert.match(box.innerHTML, />Apps <span class="pill warn">1<\/span>/);
   assert.match(box.innerHTML, />Release runs <span class="pill warn">1<\/span>/);
   run("st.arg = ''");
+});
+
+test("an app's page leads with its status from /api/releases/app: banner, watches, checks, day bars, incidents, then its channels", async () => {
+  const at = NOW();
+  const day = (i, ok, fail, text) => ({ at: at - (89 - i) * 86400, ok, fail, text });
+  const days = Array.from({ length: 90 }, (_, i) => (i < 80 ? day(i, 0, 0, "No data") : i === 85 ? day(i, 287, 1, "99.65%") : day(i, 288, 0, "100%")));
+  status = {
+    app: "binks", groups: ["binks", "binks-chat", "binks-beta"], unchecked: ["binks", "binks-beta"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
+    context: [{ label: "Firing", text: "binks-chat-spend", link: "#alerts/binks-chat-spend", warn: true }],
+    checks: [{ name: "chat", group: "binks-chat", state: "Down", level: "bad", uptime: [["24h", "50%"], ["7d", "99.9%"]], days, latency: [[at - 7200, 120.5], [at - 3600, 80]], latency_text: "p50 80ms, p95 120ms" }],
+    incidents: [{ check: "chat", from: at - 600, to: null, fails: 3, text: "3 failed" }],
+    monitor: "https://status.example", errors: [], at,
+  };
+  run("st.views.releases = ''");
+  await page();
+  run("TABS.releases").show();
+  for (let i = 0; i < 4; i++) await settled();
+  assert.ok(asked.includes("/api/releases/app?app=binks"), asked.join(" "));
+  const h = box.innerHTML;
+  assert.match(h, /Partial outage: chat/);
+  assert.match(h, /<a href="#alerts\/binks-chat-spend">binks-chat-spend<\/a>/, "a firing watch links to Alerts");
+  assert.match(h, /<h2 class="sec">Checks <span class="n">\d+<\/span><\/h2>/, "the head is its title and count; the groups with no check are the line under it");
+  assert.match(h, /No Gatus check yet: binks, binks-beta/);
+  assert.equal(h.match(/class="cc"/g).length, 90 + 24, "90 day bars and 24 hourly latency columns");
+  assert.equal(h.match(/background:var\(--c-other\)/g).length, 80, "a day with no results is grey, never green");
+  assert.match(h, /data-tip="[^"]*: 99\.65%, 1 failed of 288"/);
+  assert.match(h, /<td class="bad">ongoing<\/td>/);
+  assert.ok(h.indexOf("Partial outage") < h.indexOf("data-named>deployed"), "the status leads, the channels follow");
+  Object.assign(run("apst"), { page: "apps/other", data: null, err: null });
+  run("relst.render()");
+  assert.match(box.innerHTML, /<h2 class="sec">Status<\/h2><div class="empty">reading\.\.\.<\/div>/, "no status read yet says reading, never Operational");
+  Object.assign(run("st"), { page: "", arg: "" });
+  status = {};
+  run("TABS.releases").show();
+  await settled();
 });

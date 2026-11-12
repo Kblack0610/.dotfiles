@@ -65,10 +65,10 @@ const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) +
 // the Fleet verdicts); a table draws its states as tiles (tblTiles).
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
-// The state chips with their counts; the first keeps every row.
+// The state chips with their counts; the first is the view the table opens on (hub-core `Row::in_default`).
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
-// The table's overview: each state but `all` as a tile with its count, in its hue (hub-core's
+// The table's overview: each state but the first (the default view) as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
 // one in force clears it. `extra` is a tab's own tiles after them (Sessions' SPEND). A table with
 // no state but `all` and no extra draws none.
@@ -393,3 +393,6 @@ if (typeof MutationObserver !== "undefined") {
   new MutationObserver(tblStampAdded).observe(main, { childList: true, subtree: true });
   main.addEventListener("click", tblTap);
 }
+
+// A table's count for its section head: the total, or "shown of total" while a query narrows it.
+const tblCount = (t) => (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);

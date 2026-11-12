@@ -38,6 +38,8 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let out = serde_json::to_value(&f).map(|mut v| {
         v["who"] = serde_json::json!(rows);
         v["table"] = serde_json::json!(table);
+        // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
+        v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
@@ -88,6 +90,7 @@ mod tests {
         let v = read(&FleetQuery::default());
         assert_eq!(v["who"].as_array().unwrap().len(), 2);
         assert_eq!(v["table"]["shown"], 2);
+        assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
         assert_eq!(
             v["table"]["links"],
             serde_json::json!([{"who": "#sessions/runners/shepherd"}, {"who": "#sessions/runners/briefing"}])

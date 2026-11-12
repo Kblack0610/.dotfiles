@@ -41,7 +41,6 @@ pub struct DetailQuery {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    summary: &'a str,
     red: usize,
     rows: Vec<&'a Pipeline>,
     errors: &'a [String],
@@ -54,7 +53,6 @@ fn render(p: &Pipelines, q: &Query) -> String {
     table.links = hub_core::table::links(&rows);
     let out = Shown {
         at: p.at,
-        summary: &p.summary,
         red: p.red,
         rows,
         errors: &p.errors,
@@ -135,7 +133,6 @@ mod tests {
     fn the_body_is_the_rows_the_view_keeps_with_its_controls_and_links() {
         let v = body(Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 2);
-        assert_eq!(v["summary"], sample().summary);
         assert_eq!(v["red"], 1);
         assert_eq!(v["table"]["total"], 2);
         assert_eq!(v["table"]["links"][0]["last"], "#infra/runs/app%2F7");

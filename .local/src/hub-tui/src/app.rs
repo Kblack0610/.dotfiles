@@ -52,6 +52,9 @@ pub const PROM_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so the tick re-reads
 /// Red fixes only this often; entering Infra and `r` still read it at once.
 pub const REDS_REFRESH: Duration = Duration::from_secs(300);
+/// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
+/// the open app's checks this often, the web page's cadence.
+pub const APP_STATUS_REFRESH: Duration = Duration::from_secs(60);
 /// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
 /// Deliverables only this often; entering Projects and `r` still read it at once.
 pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
@@ -208,6 +211,9 @@ fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: 
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+/// How many rows Log's Work lists once it has the keys and scrolls; unfocused it lists
+/// `layout::FOLD_ROWS`. The TUI's own number: agent-web's page size is `layout::fold_rows("work")`.
+const WORK_FOCUSED_ROWS: usize = 200;
 /// Lines an opened run's log keeps under its detail, however many jobs the detail lists.
 const BUILD_LOG_MIN: usize = 6;
 
@@ -374,6 +380,8 @@ pub enum Msg {
     ReleaseFile,
     /// One project's changelog for the ask numbered first, or why it could not be read.
     Changelog(Result<Changelog, String>),
+    /// One app's checks (`hub_core::app_status`), for the project named.
+    AppStatus(String, Box<Result<hub_core::app_status::AppStatus, String>>),
     Builds(Box<Builds>),
     /// The Pipelines view's sources, read with the runs on Infra.
     Pipes(Box<hub_core::pipelines::Sources>),
@@ -922,7 +930,13 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             let items = self.queue_items();
             std::thread::spawn(move || {
-                let s = hub_core::releases::read(runner.as_ref(), &items);
+                let mut s = hub_core::releases::read(runner.as_ref(), &items);
+                let now = jobs::now();
+                s.with_checks(&hub_core::app_status::badges(
+                    runner.as_ref(),
+                    &s.check_groups(),
+                    now,
+                ));
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
@@ -949,16 +963,40 @@ impl App {
         });
     }
 
-    /// With the pane open, the changelog is the selected app's: read it when the
-    /// selection came to rest on another (a key, a re-sort, a new snapshot, an answer that landed).
+    /// With the pane open, the changelog and the checks are the selected app's: read each when
+    /// the selection came to rest on another (a key, a re-sort, a new snapshot, an answer that
+    /// landed), and the checks again each `APP_STATUS_REFRESH`, keeping the last read meanwhile.
     fn sync_changelog(&mut self) {
-        let other = self
-            .selected_release()
-            .is_some_and(|r| r.project != self.rv.cl.project);
-        if self.rv.open && other {
+        let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
+            return;
+        };
+        if !self.rv.open {
+            return;
+        }
+        if project != self.rv.cl.project {
             // Another app's pane starts open and at its top.
             self.rv.others = true;
             self.read_changelog(None);
+        }
+        let other = project != self.rv.st.project;
+        let due = self
+            .rv
+            .st
+            .at
+            .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        if (other || due) && !self.rv.st.busy {
+            self.rv.st.busy = true;
+            if other {
+                self.rv.st.project = project.clone();
+                self.rv.st.read = None;
+                self.rv.st.at = None;
+            }
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let now = chrono::Utc::now().timestamp();
+                let r = hub_core::app_status::read(runner.as_ref(), &project, now);
+                let _ = tx.send(Msg::AppStatus(project, Box::new(r)));
+            });
         }
     }
 
@@ -1610,7 +1648,9 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                let pg = hub_core::page::read(runner.as_ref(), &name, &stage, jobs::now());
+                let now = jobs::now();
+                let mut pg = hub_core::page::read(runner.as_ref(), &name, &stage, now);
+                pg.read_checks(runner.as_ref(), now);
                 let _ = tx.send(Msg::ProjPage(Box::new(pg)));
             });
         }
@@ -1619,7 +1659,10 @@ impl App {
     /// Read the open card's page here and now, for `--once`.
     pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
         if let Some((name, stage)) = self.open_card() {
-            self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
+            let now = jobs::now();
+            let mut pg = hub_core::page::read(runner, &name, &stage, now);
+            pg.read_checks(runner, now);
+            self.proj_page = Some(pg);
         }
     }
 
@@ -1742,7 +1785,12 @@ impl App {
             Msg::Tick => {
                 self.read_infra();
                 self.read_jobs();
-                if self.tab == Tab::Alerts
+                if self.tab == Tab::Releases {
+                    self.sync_changelog();
+                }
+                // Home's cards read each tab's reads at that tab's own cadence.
+                let home = self.tab == Tab::Home;
+                if (home || self.tab == Tab::Alerts)
                     && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
                 {
                     self.read_reds();
@@ -1754,7 +1802,7 @@ impl App {
                 {
                     self.read_deliverables();
                 }
-                if self.tab == Tab::Costs
+                if (home || self.tab == Tab::Costs)
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
                     self.read_costs();
@@ -1767,7 +1815,7 @@ impl App {
                 if self.watch_failed.is_some() {
                     self.read_boards();
                     self.read_queue();
-                    if self.tab == Tab::Releases {
+                    if home || self.tab == Tab::Releases {
                         self.read_releases();
                     }
                     if reads_runs(self.tab) {
@@ -1776,8 +1824,10 @@ impl App {
                 }
                 if self.tab == Tab::Sessions {
                     self.read_sessions_shown();
+                } else if home {
+                    self.read_sessions();
                 }
-                if self.tab == Tab::Schedules && self.schedules_due() {
+                if (home || self.tab == Tab::Schedules) && self.schedules_due() {
                     self.read_schedules();
                 }
                 if self.tab == Tab::Queue {
@@ -1792,8 +1842,9 @@ impl App {
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
-                if self.tab == Tab::Home {
+                if home {
                     self.read_home();
+                    self.read_cards();
                 }
             }
             Msg::Files => {
@@ -1806,7 +1857,9 @@ impl App {
             }
             Msg::TokenFiles if self.tab == Tab::Costs => self.read_costs(),
             Msg::TokenFiles => {}
-            Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
+            Msg::ReleaseFile if matches!(self.tab, Tab::Releases | Tab::Home) => {
+                self.read_releases()
+            }
             Msg::ReleaseFile => {}
             Msg::BuildFile if reads_runs(self.tab) => self.read_builds(),
             Msg::BuildFile => {}
@@ -1841,17 +1894,17 @@ impl App {
             Msg::Costs(c) => {
                 self.costs = Some(*c);
                 self.costs_at = Some(std::time::Instant::now());
-                if self.costs_read.done() && self.tab == Tab::Costs {
+                if self.costs_read.done() && matches!(self.tab, Tab::Costs | Tab::Home) {
                     self.read_costs();
                 }
             }
             Msg::Reds(r) => {
                 self.reds = Some(r);
                 self.reds_at = Some(std::time::Instant::now());
-                if self.reds_read.done() && self.tab == Tab::Alerts {
+                if self.reds_read.done() && matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_reds();
                 }
-                if self.tab == Tab::Alerts {
+                if matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_alerts();
                 }
             }
@@ -1863,7 +1916,7 @@ impl App {
                     .map(alertstab::row_id);
                 self.av.reselect(&a, id);
                 self.alerts = Some(*a);
-                if self.alerts_read.done() && self.tab == Tab::Alerts {
+                if self.alerts_read.done() && matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_alerts();
                 }
                 if self
@@ -1893,7 +1946,7 @@ impl App {
                 if let Some(s) = &self.schedules {
                     self.sv.reselect(s, id);
                 }
-                if self.schedules_read.done() && self.tab == Tab::Schedules {
+                if self.schedules_read.done() && matches!(self.tab, Tab::Schedules | Tab::Home) {
                     self.read_schedules();
                 }
             }
@@ -1905,13 +1958,21 @@ impl App {
                     self.rv.reselect(s, id);
                 }
                 self.sync_changelog();
-                if self.releases_read.done() && self.tab == Tab::Releases {
+                if self.releases_read.done() && matches!(self.tab, Tab::Releases | Tab::Home) {
                     self.read_releases();
                 }
             }
             Msg::Changelog(r) => {
                 self.rv.cl.busy = false;
                 self.rv.cl.read = Some(r);
+                self.sync_changelog();
+            }
+            Msg::AppStatus(project, r) => {
+                self.rv.st.busy = false;
+                if project == self.rv.st.project {
+                    self.rv.st.read = Some(*r);
+                    self.rv.st.at = Some(std::time::Instant::now());
+                }
                 self.sync_changelog();
             }
             Msg::Builds(b) => {
@@ -2009,7 +2070,7 @@ impl App {
                 if self.infra_page.is_some() {
                     self.read_infra_page();
                 }
-                if self.tab == Tab::Alerts {
+                if matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_alerts();
                 }
             }
@@ -2297,6 +2358,7 @@ impl App {
                 if self.tab == Tab::Home {
                     self.night_at = None;
                     self.read_home();
+                    self.read_home_cards();
                 }
                 if self.tab == Tab::Daily {
                     self.read_daily();
@@ -2668,6 +2730,7 @@ impl App {
         }
         if t == Tab::Home {
             self.read_home();
+            self.read_home_cards();
         }
     }
 
@@ -3143,8 +3206,8 @@ impl App {
     }
 
     /// Home's own keys. The page: Tab and BackTab move the keys between the Needs you and
-    /// Running tables, F queues a fix for Since last night's next bad area and a flow key opens
-    /// its chip, whichever has them. Needs you: its table keys (/ f s S x, Esc clears its view
+    /// Running tables and F queues a fix for Since last night's next bad area, whichever has
+    /// them. Needs you: its table keys (/ f s S x, Esc clears its view
     /// first) and Enter opens the proposals table. Running (`home_running_key`): its table keys,
     /// j/k pick a row and Enter opens it. The proposals table: the table keys, j/k, Enter the
     /// record, a accept, d reject; Esc steps back out.
@@ -3160,18 +3223,87 @@ impl App {
         )
     }
 
+    /// Home's status grid (hub_core::cards) over each tab's read as this App holds it: a card
+    /// says reading until its tab's read answers.
+    fn home_cards(&self, infra: Option<&Infra>) -> Vec<hub_core::cards::Card> {
+        let projects = self.projects.as_ref().map(|_| self.cards());
+        hub_core::cards::grid(&hub_core::cards::Reads {
+            sessions: self.controls.all().map(Ok),
+            queue: self.queue.as_ref().map(Ok),
+            pipeline: self.pipeline.as_ref(),
+            alerts: self.alerts.as_ref().map(Ok),
+            infra: infra.map(Ok),
+            costs: self.costs.as_ref().map(Ok),
+            releases: self.releases.as_ref().map(Ok),
+            schedules: self.schedules.as_ref().map(Ok),
+            projects: projects.as_ref().map(Ok),
+        })
+    }
+
+    /// The reads Home's cards map beside its own, each its tab's: on entering Home and on `r`.
+    /// A tab's tick cadence stays its own; the grid shows the last read until then.
+    fn read_home_cards(&mut self) {
+        self.read_sessions();
+        self.read_reds();
+        self.read_alerts();
+        self.read_costs();
+        self.read_schedules();
+        self.read_releases();
+        self.read_cards();
+    }
+
+    /// Every card's read here and now, for `--once`: what the App does not hold yet is read
+    /// side by side, so the printed page waits for the slowest read, not their sum.
+    pub fn read_home_cards_now(&mut self) {
+        if let Some(b) = &self.boards {
+            self.controls.read(Some(&b.watch.state), None);
+        }
+        let runner = self.runner.as_ref();
+        let (items, gather) = (self.queue_items(), self.gather);
+        let now = jobs::now();
+        std::thread::scope(|s| {
+            let sessions = s.spawn(|| {
+                use hub_core::session_table as table;
+                (gather(runner), table::feed(runner, &table::registry()))
+            });
+            let costs =
+                s.spawn(|| hub_core::costs::read(runner, &hub_core::costs::Paths::from_env(), now));
+            let schedules =
+                s.spawn(|| hub_core::schedules::read(&hub_core::fleet::Paths::from_env(), runner));
+            let releases = s.spawn(|| hub_core::releases::read(runner, &items));
+            let projects = s.spawn(|| projtab::load(runner));
+            // `--once` with no tab has read Alerts already; it is not read twice.
+            let alerts = self
+                .infra
+                .as_ref()
+                .filter(|_| self.alerts.is_none())
+                .map(|i| {
+                    s.spawn(move || {
+                        let reds = hub_core::reds::read(runner);
+                        (hub_core::alerts::read(i, reds.clone(), now), reds)
+                    })
+                });
+            if let Ok((snap, feed)) = sessions.join() {
+                self.controls.set(snap);
+                self.controls.read_feed(feed);
+            }
+            self.costs = costs.join().ok();
+            self.schedules = schedules.join().ok();
+            self.releases = releases.join().ok();
+            self.projects = projects.join().ok();
+            if let Some((a, reds)) = alerts.and_then(|h| h.join().ok()) {
+                self.alerts = Some(a);
+                self.reds = Some(reds);
+            }
+        });
+    }
+
     fn home_key(&mut self, k: KeyEvent) -> bool {
         if !self.prv.open {
             if !self.hv.typing() {
                 if k.code == KeyCode::Char('F') {
                     self.queue_fix();
                     return true;
-                }
-                if let KeyCode::Char(c) = k.code {
-                    if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
-                        self.open_flow(chip.1);
-                        return true;
-                    }
                 }
                 // With nothing running there is nothing to give the keys to: Tab turns the page.
                 if matches!(k.code, KeyCode::Tab | KeyCode::BackTab)
@@ -3310,30 +3442,6 @@ impl App {
             return true;
         }
         false
-    }
-
-    /// A flow chip's view: the Queue on its state chip, or the Projects tab for the board chip.
-    fn open_flow(&mut self, key: &str) {
-        let Some(to) = hub_core::flow::Strip::build(None)
-            .chips
-            .into_iter()
-            .find(|c| c.key == key)
-            .and_then(|c| c.to)
-        else {
-            return;
-        };
-        match to.tab {
-            "queue" => {
-                self.go(Tab::Queue);
-                self.qv.open("");
-                self.qv.table.view.state = to.state.into();
-            }
-            tab => {
-                if let Some(t) = Tab::parse(tab) {
-                    self.go(t);
-                }
-            }
-        }
     }
 
     /// Infra's own keys. The summary: Left/Right switch the inner tab, n/N jump between
@@ -4163,10 +4271,10 @@ impl App {
                 "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
-                "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  u w n e m b flow  F fix  {tabs} pages  r refresh  q quit"
+                "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  F fix  {tabs} pages  r refresh  q quit"
             ),
             Tab::Home => format!(
-                "/ query  f state  s/S sort  x clear  Tab Running  u w n e m b flow  F fix  {}{tabs} pages  j/k scroll  r refresh  o Grafana  q quit",
+                "/ query  f state  s/S sort  x clear  Tab Running  F fix  {}{tabs} pages  j/k scroll  r refresh  o Grafana  q quit",
                 if open_rows(&self.proposals).is_empty() { "" } else { "Enter proposals  " }
             ),
         }
@@ -4267,16 +4375,12 @@ impl App {
                     Some(open) => home.set_proposals(open),
                     None => home.proposals_unread = true,
                 }
-                if let Some(r) = &self.pipeline {
-                    home.set_pipeline(r);
-                }
                 let night = hometab::NightView {
                     night: self.night.as_ref(),
                     fixes: &self.fixes,
                 };
-                let graph = i.as_ref().is_some_and(|i| i.grafana.is_some());
-                let flow = (self.pipeline.is_none(), graph);
-                let (l, sel) = hometab::page(&home, &self.hv, &night, self.p, now, w, flow);
+                let grid = self.home_cards(i.as_ref());
+                let (l, sel) = hometab::page(&home, &grid, &self.hv, &night, self.p, now, w);
                 (
                     l,
                     sel.map_or(vec![], |at| vec![(crate::datatable::ROW, at)]),
@@ -4564,7 +4668,7 @@ impl App {
         };
         let today = chrono::Local::now().date_naive();
         let cap = if self.log_work {
-            hub_core::worklog::SHOWN
+            WORK_FOCUSED_ROWS
         } else {
             hub_core::layout::FOLD_ROWS
         };
@@ -4774,7 +4878,14 @@ impl App {
                 .read
                 .as_ref()
                 .filter(|_| self.rv.cl.project == r.project);
-            let lines = releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl);
+            let st = self
+                .rv
+                .st
+                .read
+                .as_ref()
+                .filter(|_| self.rv.st.project == r.project);
+            let lines =
+                releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl, st);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -5066,11 +5177,11 @@ mod tests {
             s.contains("Pick a side") && !s.contains("Fix the menu"),
             "{s}"
         );
-        // Any other word is the query, from the table's own view.
+        // Any other word is the query, over every state.
         a.open_query(Some("project:dotfiles".into()));
         assert_eq!(
             (a.qv.table.view.state.as_str(), a.qv.table.view.q.as_str()),
-            ("", "project:dotfiles")
+            ("all", "project:dotfiles")
         );
         let s = screen(&mut a, 140, 30);
         assert!(s.contains("Next") && !s.contains("Pick a side"), "{s}");
@@ -5132,22 +5243,6 @@ mod tests {
         assert!(t[2].starts_with("inbox -> BOARD"), "{t:?}");
     }
 
-    #[test]
-    fn a_flow_chip_key_on_home_opens_the_queue_on_its_filter() {
-        let mut a = app(Tab::Home);
-        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
-        a.handle(key('w'));
-        assert_eq!(a.tab, Tab::Queue);
-        assert_eq!(a.qv.table.view.state, "running");
-        a.handle(key('1'));
-        a.handle(key('b'));
-        assert_eq!(a.tab, Tab::Projects);
-        // Negative control: a key that is not a chip leaves Home where it is.
-        a.handle(key('1'));
-        a.handle(key('x'));
-        assert_eq!(a.tab, Tab::Home);
-    }
-
     /// A queue longer than any screen: `n` queued items, item-0 first.
     fn long_queue(n: usize) -> hub_core::queue::Queue {
         let jsonl: Vec<String> = (0..n)
@@ -5156,7 +5251,7 @@ mod tests {
         hub_core::queue::Queue {
             items: hub_core::queue::parse(&jsonl.join("\n")),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         }
     }
 
@@ -5863,7 +5958,9 @@ mod tests {
             when: Some(when),
             project: "notes".into(),
             what: what.into(),
+            plan: None,
             kind: None,
+            ci: None,
             pr: None,
             url: None,
             cost: None,
@@ -5982,7 +6079,7 @@ mod tests {
         let mut a = app(Tab::Home);
         assert!(screen(&mut a, 140, 30).contains("Prometheus: reading"));
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
-        let s = screen(&mut a, 140, 30);
+        let s = screen(&mut a, 140, 50);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
             lines[0].contains(
@@ -5990,9 +6087,11 @@ mod tests {
             ),
             "{s}"
         );
+        // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("FLOW  inbox - | board - | up next 1 ready, 1 held")
-                && s.contains("running 1 | on a PR 0 | needs you 1"),
+            s.contains("QUEUE  2 queued, 1 running")
+                && s.contains("Running 1  On a PR 0  Ready 1  Held 1")
+                && s.contains("SESSIONS  - reading"),
             "{s}"
         );
         assert!(
@@ -6005,7 +6104,9 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
+            s.contains(
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+            ),
             "{s}"
         );
         assert!(
@@ -6078,7 +6179,7 @@ mod tests {
         );
         assert!(screen(&mut a, 160, 40).contains("- CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        for _ in 0..5 {
+        for _ in 0..4 {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 160, 40);
@@ -6399,7 +6500,7 @@ mod tests {
         a.queue = Some(Queue {
             items: hub_core::queue::parse(jsonl),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         a
     }
@@ -6530,7 +6631,7 @@ mod tests {
         a.queue = Some(Queue {
             items: vec![],
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         assert!(!a.hints().starts_with("Running:"), "{}", a.hints());
         let before = a.scroll;
@@ -6581,7 +6682,7 @@ mod tests {
         for c in ['s', 'f', '/', 'u'] {
             key(&mut a, KeyCode::Char(c));
         }
-        // The flow key u is typed into the query, not taken as a chip.
+        // A letter is typed into the query, not taken as a key.
         assert_eq!(a.hv.needs.typing.as_deref(), Some("u"));
         key(&mut a, KeyCode::Enter);
         assert!(!a.prv.open && a.prv.table.is_default() && !a.hv.needs.is_default());
@@ -6690,10 +6791,13 @@ mod tests {
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        // cc:red_now is a need; the strip draws only what is not green.
+        // cc:red_now is a need; the Infra card counts the machines from the same read.
         assert!(at("NEEDS YOU (1)") < at("watch mac_studio_mlx"));
-        assert!(s.contains("ci NODATA") && s.contains("llm RED") && s.contains("1 green"));
-        assert!(!s.contains("k3s OK"), "{s}");
+        assert!(at("INFRA") < at("NEEDS YOU (1)"), "the cards lead: {s}");
+        assert!(
+            !s.contains("HEALTH") && !s.contains("ci NODATA"),
+            "health is Alerts': {s}"
+        );
         assert!(!s.contains("MACHINES"), "the machinery is Infra's: {s}");
         assert!(s.lines().last().unwrap().contains("r refresh"));
     }
@@ -6746,7 +6850,11 @@ mod tests {
         }
         assert_eq!((Tab::Alerts.digit(), Tab::Infra.digit()), ('7', '8'));
         assert_eq!(
-            (Tab::Schedules.digit(), Tab::Costs.digit(), Tab::by_digit('0')),
+            (
+                Tab::Schedules.digit(),
+                Tab::Costs.digit(),
+                Tab::by_digit('0')
+            ),
             ('9', '0', Some(Tab::Costs))
         );
         assert_eq!(Tab::Daily.digit(), ' ');
@@ -6936,7 +7044,10 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         assert_eq!((a.tab, a.sessions_inner), (Tab::Sessions, "runners"));
         let s = screen(&mut a, 160, 40);
-        assert!(s.contains("[Runners]") && s.contains("Reading the runners..."), "{s}");
+        assert!(
+            s.contains("[Runners]") && s.contains("Reading the runners..."),
+            "{s}"
+        );
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
         let bar = s.lines().next().unwrap();
@@ -6980,7 +7091,10 @@ mod tests {
         assert!(a.fleet_read.again, "showing Runners reads the fleet");
         a.fleet_read.again = false;
         a.handle(Msg::Files);
-        assert!(a.fleet_read.again, "an agentctl event re-reads it while shown");
+        assert!(
+            a.fleet_read.again,
+            "an agentctl event re-reads it while shown"
+        );
         a.handle(Msg::ShepherdFiles);
         assert!(!a.shepherd_read.again, "Shepherd is not shown");
         press(&mut a, KeyCode::Right);
@@ -6994,7 +7108,10 @@ mod tests {
         assert!(a.shepherd_read.again);
         a.handle(Msg::Shepherd(Box::default()));
         let s = screen(&mut a, 160, 20);
-        assert!(s.contains("[Shepherd]") && s.contains("Nothing due."), "{s}");
+        assert!(
+            s.contains("[Shepherd]") && s.contains("Nothing due."),
+            "{s}"
+        );
         // Right wraps to Sessions, Left goes back.
         press(&mut a, KeyCode::Right);
         assert_eq!(a.sessions_inner, "sessions");
@@ -7013,10 +7130,7 @@ mod tests {
         let mut a = app(Tab::Sessions);
         a.handle(Msg::Boards(Box::new(boards())));
         let s = screen(&mut a, 240, 40);
-        let head = s
-            .lines()
-            .find(|l| l.contains("STAGE"))
-            .unwrap_or_default();
+        let head = s.lines().find(|l| l.contains("STAGE")).unwrap_or_default();
         assert!(head.contains(" BY "), "{s}");
     }
 
@@ -7391,13 +7505,19 @@ mod tests {
     }
 
     /// `release-state`: two projects' channels, and for `changelog` the tags v3 v2 v1 with the one
-    /// asked for (the newest when none), every argv recorded.
+    /// asked for (the newest when none), every `changelog` argv recorded. The pane's app status
+    /// read (`release-state show`, then kubectl, which answers not read) is not what these count.
     #[derive(Default)]
     struct Rel(std::sync::Mutex<Vec<String>>);
 
     impl Runner for Rel {
         fn run(&self, argv: &[String]) -> Result<String, String> {
-            self.0.lock().unwrap().push(argv.join(" "));
+            if argv.first().map(String::as_str) != Some("release-state") {
+                return Err("no cluster in tests".into());
+            }
+            if argv.get(1).map(String::as_str) == Some("changelog") {
+                self.0.lock().unwrap().push(argv.join(" "));
+            }
             let row = |p: &str| {
                 serde_json::json!({"project": p, "id": format!("{p}-prod"), "channel": "prod",
                     "pinned": {"value": "v2", "source": "manifest"}, "status": "drift"})
@@ -7421,15 +7541,23 @@ mod tests {
         let rel = Arc::new(Rel::default());
         a.runner = rel.clone();
         a.releases = Some(hub_core::releases::read(rel.as_ref(), &[]));
-        rel.0.lock().unwrap().clear();
         (a, rel, rx)
     }
 
-    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(m @ Msg::Changelog(..)) => a.handle(m),
-            _ => panic!("no changelog answer"),
+    /// The next changelog answer; app status answers on the way are handled, not counted.
+    fn changelog(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) -> Msg {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(m @ Msg::Changelog(..)) => return m,
+                Ok(m @ Msg::AppStatus(..)) => a.handle(m),
+                _ => panic!("no changelog answer"),
+            }
         }
+    }
+
+    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        let m = changelog(a, rx);
+        a.handle(m);
     }
 
     #[test]
@@ -7451,7 +7579,12 @@ mod tests {
         answer(&mut a, &rx);
         assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
         press(&mut a, KeyCode::Char(']'));
-        assert!(rx.try_recv().is_err(), "nothing newer than the newest tag");
+        while let Ok(m) = rx.try_recv() {
+            assert!(
+                matches!(m, Msg::AppStatus(..)),
+                "nothing newer than the newest tag"
+            );
+        }
         let log = rel.0.lock().unwrap().clone();
         let cl = [
             "release-state changelog --json alpha",
@@ -7487,7 +7620,7 @@ mod tests {
         press(&mut a, KeyCode::Char('k'));
         press(&mut a, KeyCode::Char('j'));
         assert!(a.rv.cl.busy, "one worker, however many moves");
-        let alpha = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let alpha = changelog(&mut a, &rx);
         a.handle(alpha);
         assert_eq!(
             a.rv.cl.project, "beta",

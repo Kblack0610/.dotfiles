@@ -278,10 +278,10 @@ pub const TABS: [Tab; 12] = [
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
             "totals",
-            "sessions",
             "fleet",
             "spend",
             "table",
+            "sessions",
             "burn",
             "consumers",
             "tokens",
@@ -289,14 +289,15 @@ pub const TABS: [Tab; 12] = [
             "sections",
             "budget",
         ],
-        // The strip splits the four questions; Spend opens first, its tiles (the 24h fleet figure
-        // among them) then burn per session per day. Budget is cash (the bills we pay); the rest
-        // of the tab is list price.
+        // The strip splits the four questions; Spend opens first: its tiles (the 24h fleet figure
+        // among them), who spent it, the chart and period rows ($/session among them), the table,
+        // then the picked day's sessions last (human, 2026-11-12). Budget is cash (the bills we
+        // pay); the rest of the tab is list price.
         inner: &[
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "limits",
@@ -320,6 +321,24 @@ pub const TABS: [Tab; 12] = [
 /// A folded Log section lists at most this many rows, then "+N older". agent-web's `LOG_ROWS`
 /// (static/ui.js) is this number; its assets test checks.
 pub const FOLD_ROWS: usize = 50;
+
+/// A web page-height setting, not a TUI one: agent-web's Log lists this many rows of a section
+/// whose rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on
+/// live data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head
+/// stay near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when
+/// Work was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. The server sends each with its
+/// section's data (Work's page, the shepherd's `shown`, the fleet's `verdicts_shown`), so the
+/// page holds no copy. The TUI scrolls one-line rows with no `+N` key, so it keeps `FOLD_ROWS`.
+pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
+
+/// How many rows a section of agent-web's Log lists before its `+N` line: its `SECTION_ROWS`
+/// entry, else `FOLD_ROWS`.
+pub fn fold_rows(section: &str) -> usize {
+    SECTION_ROWS
+        .iter()
+        .find(|(s, _)| *s == section)
+        .map_or(FOLD_ROWS, |(_, n)| *n)
+}
 
 /// Retired tab names and the tab that took their place, so a bookmark, a waybar `on-click` or
 /// `hub --tab <old>` still lands somewhere. Keep a name here for good once it has shipped.
@@ -801,6 +820,17 @@ mod tests {
     }
 
     #[test]
+    fn a_tall_section_lists_fewer_rows_and_every_other_folds_at_fold_rows() {
+        let log = resolve("log").unwrap();
+        for (s, n) in SECTION_ROWS {
+            assert!(log.sections.contains(s), "{s} is no Log section");
+            assert!(*n < FOLD_ROWS, "{s} lists {n}, not fewer than FOLD_ROWS");
+            assert_eq!(fold_rows(s), *n);
+        }
+        assert_eq!(fold_rows("actions"), FOLD_ROWS);
+    }
+
+    #[test]
     fn log_is_one_inner_tab_per_record_and_old_links_open_theirs() {
         let log = resolve("log").unwrap();
         let titles: Vec<&str> = log.inner.iter().map(|i| i.title).collect();
@@ -862,7 +892,7 @@ mod tests {
             Inner {
                 id: "a",
                 title: "A",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "a",
@@ -892,7 +922,7 @@ mod tests {
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "models",

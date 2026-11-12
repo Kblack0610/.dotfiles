@@ -49,7 +49,7 @@ impl Cache {
     }
 
     /// The read, or why it panicked. A failed fixes read is shown and not kept.
-    async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
+    pub(crate) async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
         let fixes = self
             .0
             .get_if((), || reds::read(&System), Result::is_ok)

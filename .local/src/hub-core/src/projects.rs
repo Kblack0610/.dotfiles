@@ -464,7 +464,7 @@ pub fn build(
                 Some(k) => {
                     let c = &mut cards[k];
                     c.queued += 1;
-                    if i.hold.is_some() {
+                    if i.is_held() {
                         c.held += 1;
                     } else if let Some(m) = i.ready_min(now) {
                         c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));
@@ -566,7 +566,6 @@ pub fn to_json(p: &Projects) -> Value {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["summary"] = summary(c).into();
             j["counts"] = counts(c).into();
-            j["note_says"] = note_says(c).into();
             j["in_flight"] = c.in_flight().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
@@ -673,7 +672,6 @@ mod tests {
             .unwrap()
             .starts_with("v0.1.0 25% done (1 of 4 size points)"));
         assert_eq!(v["cards"][0]["in_flight"], false);
-        assert_eq!(v["cards"][0]["note_says"], "none");
         assert_eq!(
             v["cards"][0]["counts"],
             "0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox"

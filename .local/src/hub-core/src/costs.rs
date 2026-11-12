@@ -394,9 +394,7 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
 /// is an empty queue, not a hold, and a stale pass holds nothing.
 fn held(path: &std::path::Path) -> Option<String> {
-    let v = crate::capacity::headroom(path).ok()?;
-    v["held_kind"].as_str()?;
-    v["held"].as_str().map(String::from)
+    crate::capacity::Dispatch::read(path).held
 }
 
 /// The outcomes CLI's lines; one that does not parse is skipped, as every hub reader does.

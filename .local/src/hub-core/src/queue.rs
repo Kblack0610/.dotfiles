@@ -57,7 +57,7 @@ pub const SECTION_ALIASES: [(&str, &str); 5] = [
     ("waiting", "needs you"),
     ("running", "running"),
     ("review", "on a PR"),
-    ("queued", "up next"),
+    ("queued", "ready"),
     ("done", "done"),
 ];
 
@@ -181,6 +181,10 @@ pub struct Item {
         skip_serializing_if = "Option::is_none"
     )]
     pub work_min: Option<f64>,
+    /// `<plan name> P5`: a plan item's plan and phase, the column beside its title (`parse`
+    /// sets it); None for any other item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -313,13 +317,57 @@ impl Item {
             .filter(|(p, id)| !p.is_empty() && !id.is_empty())
     }
 
+    /// Whether a queued item is held: it has a hold line with words in it.
+    pub fn is_held(&self) -> bool {
+        said(&self.hold).is_some()
+    }
+
+    /// What a held item waits on, its kind and object (`after <slug> <slug>`, `ask <id>`, `pr
+    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`, `focus`),
+    /// from agent-queue's `hold` line (`hold_for`); None when it is not held.
+    pub fn held_on(&self) -> Option<String> {
+        let h = said(&self.hold)?;
+        let (word, rest) = h
+            .split_once([':', ' '])
+            .map_or((h, ""), |(w, r)| (w, r.trim()));
+        let first = rest
+            .split_whitespace()
+            .next()
+            .filter(|f| !f.starts_with('('));
+        Some(match (word, first) {
+            // `after a b`: every slug still live; `after a closed failed, dead: ...` names the one.
+            ("after", Some(_)) => {
+                let live: Vec<&str> = rest
+                    .split_whitespace()
+                    .take_while(|w| *w != "closed")
+                    .collect();
+                format!("after {}", live.join(" "))
+            }
+            ("ask", Some(f)) => format!("ask {}", f.split('=').next().unwrap_or(f)),
+            // `at:2026-11-13T02:30`: the year goes, the day stays, since a hold can run past today.
+            ("at", Some(f)) => {
+                let t = f.replacen('T', " ", 1);
+                format!("at {}", t.get(5..).filter(|_| t.len() > 10).unwrap_or(&t))
+            }
+            ("focus", _) | (_, None) => word.to_string(),
+            (w, Some(f)) => format!("{w} {f}"),
+        })
+    }
+
+    /// Who queued it, the first word of `from`: `human`, `board`, `shepherd`, `auto`, `canary`, `item`.
+    pub fn source(&self) -> Option<&str> {
+        said(&self.from).and_then(|f| f.split(':').next())
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
-    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    /// with each file path shortened to its name; either one [`crate::text::clean`] (no
+    /// `type(area):`, id or `#tag`) and capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
-        if self.title.trim().is_empty() {
+        let own = crate::text::clean(&self.title).text;
+        if own.is_empty() {
             headline(&self.task).0
         } else {
-            cap(self.title.trim(), TITLE_MAX)
+            cap(&own, TITLE_MAX)
         }
     }
 
@@ -328,13 +376,13 @@ impl Item {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
     }
 
-    /// `<plan name> P5: <phase words>`, a plan item's title as every view says it (`parse`
-    /// sets it): the plan by its heading (`plans::named`) in place of the file name
-    /// `agent-queue add --plan` titles it with. A one-phase item takes the label its words lead
-    /// with (`P9 live stage`) over its checklist place. An item with no `plan:` whose title has
-    /// that shape (one promoted from a board row) is named the same way when its plan file
-    /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
-    fn plan_title(&self) -> Option<String> {
+    /// A plan item's (`<plan name> P5`, `<phase words>`): its plan label and its title, as
+    /// every view says them (`parse` sets both): the plan by its heading (`plans::named`) in
+    /// place of the file name `agent-queue add --plan` titles it with. A one-phase item takes
+    /// the label its words lead with (`P9 live stage`) over its checklist place. An item with no
+    /// `plan:` whose title has that shape (one promoted from a board row) is named the same way
+    /// when its plan file exists. None for any other item.
+    fn plan_title(&self) -> Option<(String, String)> {
         use crate::plans::{base, legacy, named, own_label, path};
         // An item with no `title:` header is worded by its task, as `title()` words it.
         let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
@@ -357,10 +405,8 @@ impl Item {
             .then(|| own_label(words))
             .flatten()
             .unwrap_or((tag, words));
-        Some(cap(
-            &format!("{} {label}: {words}", named(&plan)),
-            TITLE_MAX,
-        ))
+        let words = cap(&crate::text::clean(words).text, TITLE_MAX);
+        Some((format!("{} {label}", named(&plan)), words))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
@@ -428,8 +474,19 @@ impl Item {
 
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
+    /// An item that landed one PR per repo names the first, `home-config#875 +2`; the opened
+    /// item's `links` lists each.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        pr_link_of(self.pr.as_deref()?)
+        let mut refs = self.pr_refs();
+        let first = refs.next()?;
+        let (label, url) = pr_link_of(first)?;
+        let mut more: Vec<&str> = refs.filter(|r| *r != first).collect();
+        more.sort_unstable();
+        more.dedup();
+        match more.len() {
+            0 => Some((label, url)),
+            more => Some((format!("{label} +{more}"), url)),
+        }
     }
 
     /// What the item names, each to its one page (`links`), which both surfaces list on the
@@ -816,14 +873,17 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
-/// Each item's `title` becomes the one every view shows: `plan_title` for a plan item, else
-/// `title()`.
+/// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
+/// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            i.title = i.plan_title().unwrap_or_else(|| i.title());
+            match i.plan_title() {
+                Some((label, words)) => (i.plan_label, i.title) = (Some(label), words),
+                None => i.title = i.title(),
+            }
             i
         })
         .collect()
@@ -868,11 +928,13 @@ pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
-/// What a Queue view shows: the items (`all`), the week's stats, and what could not be read.
+/// What a Queue view shows: the items (`all`), the week's stats, the last dispatch pass's
+/// verdict (the line over the table), and what could not be read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     pub items: Vec<Item>,
     pub stats: Option<Stats>,
+    pub dispatch: Option<crate::capacity::Dispatch>,
     pub errors: Vec<String>,
 }
 
@@ -886,7 +948,10 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
-        Queue::from_reads(list(runner, "all"), stats(runner))
+        Queue {
+            dispatch: Some(crate::capacity::Dispatch::now()),
+            ..Queue::from_reads(list(runner, "all"), stats(runner))
+        }
     }
 
     /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
@@ -914,10 +979,7 @@ impl Queue {
 
     /// The items not started, as `(ready, held)`: ready is queued with no hold.
     pub fn up_next(&self) -> (usize, usize) {
-        let held = self
-            .in_state(State::Queued)
-            .filter(|i| i.hold.is_some())
-            .count();
+        let held = self.in_state(State::Queued).filter(|i| i.is_held()).count();
         (self.count(State::Queued) - held, held)
     }
 
@@ -939,6 +1001,9 @@ impl Queue {
 pub struct QueueRow<'a> {
     pub item: &'a Item,
     pub timing: Timing,
+    /// Its place among the ready items in agent-queue's start order (1 starts next); None for
+    /// every other row, a held one included.
+    pub start: Option<usize>,
 }
 
 impl Queue {
@@ -952,9 +1017,14 @@ impl Queue {
             .map(|item| QueueRow {
                 item,
                 timing: item.timing(now),
+                start: None,
             })
             .collect();
         rows.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.within(b)));
+        // The sort keeps agent-queue's order among the ready (`within`), the order `next` starts from.
+        for (n, r) in rows.iter_mut().filter(|r| r.rank() == 3).enumerate() {
+            r.start = Some(n + 1);
+        }
         rows
     }
 }
@@ -962,7 +1032,7 @@ impl Queue {
 impl QueueRow<'_> {
     /// Where the row sits in the table's own order.
     fn rank(&self) -> u8 {
-        match (self.item.state, self.item.hold.is_some()) {
+        match (self.item.state, self.item.is_held()) {
             (State::Waiting, _) => 0,
             (State::Running, _) => 1,
             (State::Review, _) => 2,
@@ -994,16 +1064,28 @@ impl QueueRow<'_> {
 }
 
 impl crate::table::Row for QueueRow<'_> {
+    /// The title leads; `#` is the start order, so a sort on it reads what starts next.
     const COLUMNS: &'static [&'static str] = &[
-        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title",
+        "#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr",
+        "row", "kind", "size", "acct", "mode", "plan",
     ];
-    /// `all` first, because the first chip keeps every row; then the states in the order the
-    /// Queue sections list them.
-    const STATES: &'static [&'static str] =
-        &["all", "needs you", "running", "on a PR", "up next", "done"];
-    const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
+    /// `active` first, the view the table opens on: every item not done. Then the states in the
+    /// table's own order, done, and `all`.
+    const STATES: &'static [&'static str] = &[
+        "active",
+        "needs you",
+        "running",
+        "on a PR",
+        "ready",
+        "held",
+        "done",
+        "all",
+    ];
+    const FACETS: &'static [&'static str] = &[
+        "project", "priority", "state", "hold", "from", "kind", "acct", "plan",
+    ];
     const LEAD: &'static str = "title";
-    const GLANCE: &'static [&'static str] = &["state", "in", "project"];
+    const GLANCE: &'static [&'static str] = &["project", "priority", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
 
     fn val(&self, col: &str) -> crate::table::Val {
@@ -1012,12 +1094,13 @@ impl crate::table::Row for QueueRow<'_> {
         let num = |m: Option<i64>| m.map_or(Val::None, |m| Val::Num(m as f64));
         let i = self.item;
         match col {
+            "#" => self.start.map_or(Val::None, |n| Val::Num(n as f64)),
             "state" => Val::Text(
                 match i.state {
                     State::Waiting => "needs",
                     State::Running => "running",
                     State::Review => "on a PR",
-                    State::Queued if i.hold.is_some() => "held",
+                    State::Queued if i.is_held() => "held",
                     State::Queued => "ready",
                     State::Done => "done",
                 }
@@ -1027,43 +1110,93 @@ impl crate::table::Row for QueueRow<'_> {
             "wait" => num(self.timing.wait),
             "run" => num(self.timing.run),
             "project" => text(Some(i.project.trim()).filter(|p| !p.is_empty())),
+            "priority" => text(Some(i.priority.trim()).filter(|p| !p.is_empty())),
+            "hold" => text(i.held_on().as_deref()),
+            "from" => text(i.source()),
+            "row" => text(i.board_row().map(|(_, id)| id)),
             "kind" => text(said(&i.kind)),
             "size" => text(said(&i.size)),
             "acct" => text(said(&i.account)),
+            "mode" => text(Some(i.mode.trim()).filter(|m| !m.is_empty())),
             "pr" => text(said(&i.pr)),
+            "plan" => text(i.plan_label.as_deref()),
             "title" => Val::Text(i.title()),
             _ => Val::None,
         }
     }
 
-    /// The project opens its page (queue.js draws the PR cell from the item's own link).
+    /// A hold filters by its kind (`hold:after`), so the dropdown lists the few kinds, not each
+    /// blocking item; the cell and a bare word still have the whole of it.
+    fn vals(&self, col: &str) -> Vec<crate::table::Val> {
+        match col {
+            "hold" => vec![self
+                .item
+                .held_on()
+                .and_then(|h| h.split_whitespace().next().map(str::to_string))
+                .map_or(crate::table::Val::None, crate::table::Val::Text)],
+            _ => vec![self.val(col)],
+        }
+    }
+
+    /// `#` sorts 1 first on the first click, and priority urgent first, not by spelling.
+    fn rank(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        match col {
+            "#" => self.start.map_or(Val::None, |n| Val::Num(-(n as f64))),
+            "priority" => match self.item.priority.trim() {
+                "urgent" => Val::Num(3.0),
+                "high" => Val::Num(2.0),
+                "" => Val::None,
+                "low" => Val::Num(0.0),
+                _ => Val::Num(1.0),
+            },
+            c => self.val(c),
+        }
+    }
+
+    /// The project opens its page and the row its board row (queue.js draws the PR cell from
+    /// the item's own link).
     fn link(&self, col: &str) -> Option<Link> {
         match col {
             "project" => Some(self.item.project.trim())
                 .filter(|p| !p.is_empty())
                 .map(|p| Link::to(Kind::Project, p)),
+            "row" => self.item.board_row().map(|(_, id)| Link::to(Kind::Row, id)),
             _ => None,
         }
     }
 
-    fn in_state(&self, s: &str) -> bool {
-        let want = match s {
-            "needs you" => State::Waiting,
-            "running" => State::Running,
-            "on a PR" => State::Review,
-            "up next" => State::Queued,
-            "done" => State::Done,
-            _ => return false,
-        };
-        self.item.state == want
+    fn in_default(&self) -> bool {
+        self.item.state != State::Done
     }
 
-    /// A bare word also finds the slug, the tags and the task the title was cut from.
+    fn in_state(&self, s: &str) -> bool {
+        let i = self.item;
+        match s {
+            "needs you" => i.state == State::Waiting,
+            "running" => i.state == State::Running,
+            "on a PR" => i.state == State::Review,
+            "ready" => i.state == State::Queued && !i.is_held(),
+            "held" => i.state == State::Queued && i.is_held(),
+            "done" => i.state == State::Done,
+            "all" => true,
+            _ => false,
+        }
+    }
+
+    /// A bare word also finds the slug, the tags, the hold and the task the title was cut from.
     fn text(&self) -> String {
         let i = self.item;
-        [i.title.as_str(), &i.slug, &i.project, &i.tags, &i.task]
-            .join("\n")
-            .to_lowercase()
+        [
+            i.title.as_str(),
+            &i.slug,
+            &i.project,
+            &i.tags,
+            i.hold.as_deref().unwrap_or(""),
+            &i.task,
+        ]
+        .join("\n")
+        .to_lowercase()
     }
 }
 
@@ -1104,16 +1237,9 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The row's words: no checkbox, no `#tags`, no trailing `<!-- -->` comment, capped.
+    /// The row's words, [`crate::text::clean`] and capped.
     pub fn title(&self) -> String {
-        let t = self.text.trim_start();
-        let t = t.strip_prefix("- [").and_then(|r| r.get(2..)).unwrap_or(t);
-        let t = t.split("<!--").next().unwrap_or(t);
-        let words: Vec<&str> = t
-            .split_whitespace()
-            .filter(|w| !w.starts_with('#'))
-            .collect();
-        cap(&words.join(" "), TITLE_MAX)
+        cap(&crate::text::clean(&self.text).shown(), TITLE_MAX)
     }
 
     /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip
@@ -1525,6 +1651,7 @@ mod tests {
         let row = QueueRow {
             item: &i,
             timing: Timing::default(),
+            start: None,
         };
         use crate::table::Row;
         assert_eq!(
@@ -1614,18 +1741,20 @@ mod tests {
         // worklog's plan test covers the shapes; these are the cap and the untitled item.
         let bare = serde_json::json!({"slug": "p6", "state": "queued", "phases": "6",
             "plan": plan.to_str().unwrap(), "task": "Sixth thing. Read the plan."});
+        let bare = parse(&bare.to_string()).remove(0);
         assert_eq!(
-            parse(&bare.to_string()).remove(0).title(),
-            "Systems you can see P6: Sixth thing",
-            "an item with no title header names its phase by its task"
+            (bare.title(), bare.plan_label.as_deref()),
+            ("Sixth thing".into(), Some("Systems you can see P6")),
+            "an item with no title header is titled by its task, its plan and phase beside it"
         );
         let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
             "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
-        let long = parse(&long.to_string()).remove(0).title();
+        let long = parse(&long.to_string()).remove(0);
+        assert_eq!(long.plan_label.as_deref(), Some("Systems you can see P5"));
+        let long = long.title();
         assert!(
-            long.starts_with("Systems you can see P5: word")
-                && long.chars().count() <= TITLE_MAX + 3,
-            "a plan title is capped like any other: {long}"
+            long.starts_with("word") && long.chars().count() <= TITLE_MAX + 3,
+            "a plan title is capped like any other, its label not in it: {long}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1909,6 +2038,27 @@ mod tests {
         // An older item carries a bare number: a label, no link, and no merge recorded.
         let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
+        // One PR per repo: the first one's label and page, and how many more.
+        let many = Item {
+            pr: Some("kblack0610/home-config#875 Kblack0610/.dotfiles-private#844, o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            many.pr_link(),
+            Some((
+                "home-config#875 +2".into(),
+                Some("https://github.com/kblack0610/home-config/pull/875".into())
+            ))
+        );
+        // A ref written twice is one PR, not a second.
+        let twice = Item {
+            pr: Some("o/r#7, o/r#7 o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            twice.pr_link(),
+            Some(("r#7".into(), Some("https://github.com/o/r/pull/7".into())))
+        );
         assert!(!bare.merged() && !bare.unproven());
         assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
         assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
@@ -2222,16 +2372,20 @@ mod tests {
             "what needs the human comes first"
         );
         assert_eq!(
-            slugs(View::new::<QueueRow>("-acct:k1 hub", "", "", "")),
+            slugs(View::new::<QueueRow>("-acct:k1 hub", "all", "", "")),
             ["c"],
             "a bare word finds the task"
         );
         assert_eq!(
             slugs(View::new::<QueueRow>("", "", "run", "")),
-            ["d", "c", "a", "b"],
-            "run sorts biggest first (a tie keeps the table order), none last"
+            ["d", "a", "b"],
+            "run sorts biggest first (a tie keeps the table order), none last; done is a chip away"
         );
-        assert_eq!(slugs(View::new::<QueueRow>("", "up next", "", "")), ["b"]);
+        assert_eq!(
+            slugs(View::new::<QueueRow>("", "all", "run", "")),
+            ["d", "c", "a", "b"]
+        );
+        assert_eq!(slugs(View::new::<QueueRow>("", "ready", "", "")), ["b"]);
         let chips: Vec<(&str, usize)> = View::new::<QueueRow>("project:dotfiles", "", "", "")
             .states(&rows)
             .iter()
@@ -2240,12 +2394,14 @@ mod tests {
         assert_eq!(
             chips,
             [
-                ("all", 3),
+                ("active", 2),
                 ("needs you", 1),
                 ("running", 1),
                 ("on a PR", 0),
-                ("up next", 0),
-                ("done", 1)
+                ("ready", 0),
+                ("held", 0),
+                ("done", 1),
+                ("all", 3)
             ]
         );
         let kinds = View::new::<QueueRow>("project:dotfiles", "", "", "").facets(&rows);
@@ -2255,7 +2411,11 @@ mod tests {
             .iter()
             .map(|v| (v.value.as_str(), v.n))
             .collect();
-        assert_eq!(counts, [("feat", 1), ("fix", 2)]);
+        assert_eq!(
+            counts,
+            [("fix", 2)],
+            "the done feat is a chip away, so it counts there"
+        );
     }
     #[test]
     fn the_table_opens_in_exceptions_first_order() {
@@ -2281,7 +2441,7 @@ mod tests {
             ..Queue::default()
         };
         let rows = q.rows(at("2026-11-06T12:00:00Z"));
-        let order: Vec<&str> = View::default()
+        let order: Vec<&str> = View::new::<QueueRow>("", "all", "", "")
             .apply(&rows)
             .iter()
             .map(|r| r.item.slug.as_str())
@@ -2294,9 +2454,153 @@ mod tests {
     }
 
     #[test]
+    fn hash_is_the_start_order_of_the_ready_items_and_every_field_filters() {
+        use crate::table::{Row, Val, View};
+        let q = Queue {
+            items: parse(concat!(
+                // agent-queue's order: a held item at the head is skipped, as `next` skips it.
+                r#"{"slug":"wait","state":"queued","priority":"urgent","hold":"ask:pHqQtl=repro+location (pending)","from":"human","task":"t"}"#,
+                "\n",
+                r#"{"slug":"first","state":"queued","priority":"urgent","from":"board:apociseum:apo-120","row":"apociseum:apo-120","task":"apo-120: base UI screens"}"#,
+                "\n",
+                r#"{"slug":"second","state":"queued","priority":"high","from":"human","task":"Diversity p5"}"#,
+                "\n",
+                r#"{"slug":"later","state":"queued","priority":"low","hold":"at:2026-11-13T02:30","from":"auto","task":"t"}"#,
+                "\n",
+                r#"{"slug":"next-phase","state":"queued","priority":"high","hold":"after first-p1 closed cancelled, dead: cancel it","from":"item:x","task":"t"}"#,
+                "\n",
+                r#"{"slug":"focus","state":"queued","priority":"high","hold":"focus: only apociseum binks","from":"canary","task":"t"}"#,
+                "\n",
+                r#"{"slug":"pr","state":"queued","priority":"high","hold":"pr:o/r#7 not merged","task":"t"}"#,
+                "\n",
+                r#"{"slug":"night","state":"queued","priority":"low","hold":"night (01:00-06:00)","task":"t"}"#,
+                "\n",
+                r#"{"slug":"two","state":"queued","priority":"low","hold":"after a-p1 b-p2","task":"t"}"#,
+                "\n",
+                r#"{"slug":"nightly","state":"queued","priority":"low","hold":"nightly:tests (not run yet)","task":"t"}"#,
+                "\n",
+                r#"{"slug":"res","state":"queued","priority":"low","hold":"hold:mac-desktop (claimed by agent-3)","task":"t"}"#,
+                "\n",
+                // A blank hold line holds nothing: it is ready and has a place.
+                r#"{"slug":"blank","state":"queued","priority":"low","hold":"  ","task":"t"}"#,
+                "\n",
+                r#"{"slug":"run","state":"running","priority":"urgent","from":"human","task":"t"}"#,
+            )),
+            ..Queue::default()
+        };
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let get = |slug: &str, col: &str| {
+            let r = rows.iter().find(|r| r.item.slug == slug).unwrap();
+            match r.val(col) {
+                Val::Text(t) => t,
+                Val::Num(n) => n.to_string(),
+                Val::None => "-".into(),
+            }
+        };
+        let starts: Vec<(&str, Option<usize>)> = rows
+            .iter()
+            .map(|r| (r.item.slug.as_str(), r.start))
+            .filter(|(_, n)| n.is_some())
+            .collect();
+        assert_eq!(
+            starts,
+            [("first", Some(1)), ("second", Some(2)), ("blank", Some(3))]
+        );
+        assert_eq!(get("blank", "state"), "ready");
+        assert_eq!(
+            get("wait", "#"),
+            "-",
+            "a held item at the head gets no place"
+        );
+        assert_eq!(get("run", "#"), "-");
+        let by_hash: Vec<&str> = View::new::<QueueRow>("", "", "#", "")
+            .apply(&rows)
+            .iter()
+            .take(2)
+            .map(|r| r.item.slug.as_str())
+            .collect();
+        assert_eq!(
+            by_hash,
+            ["first", "second"],
+            "the first click on # reads what starts next"
+        );
+        let holds: Vec<String> = [
+            "wait",
+            "later",
+            "next-phase",
+            "focus",
+            "pr",
+            "night",
+            "two",
+            "nightly",
+            "res",
+            "first",
+        ]
+        .iter()
+        .map(|s| get(s, "hold"))
+        .collect();
+        assert_eq!(
+            holds,
+            [
+                "ask pHqQtl",
+                "at 11-13 02:30",
+                "after first-p1",
+                "focus",
+                "pr o/r#7",
+                "night",
+                "after a-p1 b-p2",
+                "nightly tests",
+                "hold mac-desktop",
+                "-"
+            ]
+        );
+        assert_eq!(get("first", "from"), "board");
+        assert_eq!(get("next-phase", "from"), "item");
+        assert_eq!(get("first", "row"), "apo-120");
+        assert_eq!(get("first", "title"), "base UI screens");
+        let first = rows.iter().find(|r| r.item.slug == "first").unwrap();
+        assert_eq!(first.link("row"), Some(Link::to(Kind::Row, "apo-120")));
+        let by_prio: Vec<&str> = View::new::<QueueRow>("", "", "priority", "")
+            .apply(&rows)
+            .iter()
+            .map(|r| r.item.priority.as_str())
+            .collect();
+        assert_eq!(by_prio.first(), Some(&"urgent"));
+        assert_eq!(by_prio.last(), Some(&"low"));
+        let slugs = |q: &str, s: &str| -> Vec<String> {
+            View::new::<QueueRow>(q, s, "", "")
+                .apply(&rows)
+                .iter()
+                .map(|r| r.item.slug.clone())
+                .collect()
+        };
+        assert_eq!(slugs("hold:after", ""), ["next-phase", "two"]);
+        assert_eq!(slugs("from:board priority:urgent", ""), ["first"]);
+        assert_eq!(slugs("", "held").len(), 9);
+        assert_eq!(
+            slugs("b-p2", ""),
+            ["two"],
+            "every slug an item waits on is in its hold"
+        );
+        assert_eq!(slugs("pHqQtl", ""), ["wait"], "a bare word reads the hold");
+        let facets = View::default().facets(&rows);
+        let keys: Vec<&str> = facets.iter().map(|f| f.key).collect();
+        assert_eq!(
+            keys,
+            ["project", "priority", "state", "hold", "from", "kind", "acct", "plan"]
+        );
+        let hold: Vec<&str> = facets[3].values.iter().map(|v| v.value.as_str()).collect();
+        assert_eq!(
+            hold,
+            ["after", "ask", "at", "focus", "hold", "night", "nightly", "pr"],
+            "the kinds, not each object"
+        );
+    }
+
+    #[test]
     fn an_old_section_id_opens_its_state_chip() {
         assert_eq!(section_chip("Waiting"), Some("needs you"));
-        assert_eq!(section_chip("queued"), Some("up next"));
+        assert_eq!(section_chip("queued"), Some("ready"));
         assert_eq!(section_chip("table"), None, "a live section is no alias");
         for (_, chip) in SECTION_ALIASES {
             assert!(<QueueRow as crate::table::Row>::STATES.contains(&chip));

@@ -1,6 +1,8 @@
 //! The Schedules tab: everything scheduled and why, from hub-core's `schedules`. The list is
 //! filtered and sorted here by `hub_core::table`, so the page only draws.
 
+use std::sync::Arc;
+
 use hub_core::fleet::Paths;
 use hub_core::schedules::{self, Schedule, Schedules};
 use hub_core::session_actions::System;
@@ -27,7 +29,6 @@ pub struct Query {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    summary: &'a str,
     rows: Vec<&'a Schedule>,
     errors: &'a [String],
     table: Summary,
@@ -41,7 +42,6 @@ fn render(s: &Schedules, q: &Query) -> String {
     let (rows, table) = view.summary(&s.rows);
     let out = Shown {
         at: s.at,
-        summary: &s.summary,
         rows,
         errors: &s.errors,
         table,
@@ -57,11 +57,13 @@ fn failed(e: String) -> String {
 impl Cache {
     /// The view `q` asks for, over the shared read and outside its lock.
     pub async fn get(&self, q: Query) -> String {
+        self.read().await.map_or_else(failed, |s| render(&s, &q))
+    }
+
+    /// The shared read, the tab's and Home's Schedules card's.
+    pub async fn read(&self) -> Result<Arc<Schedules>, String> {
         let read = off(|| schedules::read(&Paths::from_env(), &System));
-        self.0
-            .get((), read)
-            .await
-            .map_or_else(failed, |s| render(&s, &q))
+        self.0.get((), read).await
     }
 }
 
@@ -92,7 +94,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["name"], "app / Tests");
-        assert_eq!(v["summary"], "2 scheduled, 1 red");
         assert_eq!(v["table"]["total"], 2);
     }
 

@@ -15,10 +15,11 @@ const RUNNERS_PRE = "r";
 // The runner page open, "" on the table.
 const runnerName = () => pageId("sessions", "runners");
 const runnersShown = () => !st.sel && sessShows("runners");
-// said: the answer judge's filter on Log. A read also answers Log's verdicts and the open runner page.
+// said: the answer judge's filter on Log; dispatchAll, judgeAll: each verdict list past its first rows,
+// asked for by its own "+N older". A read also answers Log's verdicts and the open runner page.
 const fst = tblTab({
   tab: "sessions", id: "runners", el: "ov-runners", on: "scroll", pre: RUNNERS_PRE, api: "/api/fleet", hint: "search, or kind:lead state:failed -who:shepherd",
-  state: { said: "all" }, shown: () => runnersShown() && !runnerName(),
+  state: { said: "all", dispatchAll: false, judgeAll: false }, shown: () => runnersShown() && !runnerName(),
   head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
   after: () => { if (st.tab === "log") renderLogVerdicts(); else if (runnerName()) renderRunners(); },
 });
@@ -55,11 +56,11 @@ function evalTable(e) {
     `<tr><td colspan="6" class="muted">no verdicts under prompt ${esc(e.prompt_sha)}</td></tr>`}</table>`;
 }
 
-// What the runner is allowed and runs on: its role, model, prompt and effect.
+// What the runner is allowed and runs on: its role, model, prompt, effect and trigger.
 function registryLine(r) {
   const prompt = r.prompt ? `<span title="${esc(r.prompt)}">${esc(base(r.prompt))}</span> ${esc(r.calls.prompt_sha || (r.eval && r.eval.prompt_sha) || "")}` : "-";
   return `<div><b>${esc(r.role || "no role")}</b> <span class="muted" title="${esc(r.role_desc)}">${esc(r.caps || "")}</span>` +
-    ` &nbsp; model ${esc(r.model || "-")} &nbsp; prompt ${prompt} &nbsp; effect ${esc(r.effect || "-")}</div>`;
+    ` &nbsp; model ${esc(r.model || "-")} &nbsp; prompt ${prompt} &nbsp; effect ${esc(r.effect || "-")} &nbsp; trigger ${esc(r.trigger || "-")}</div>`;
 }
 
 // Calls newest first, each with its Langfuse trace.
@@ -86,8 +87,7 @@ function fleetBody(d) {
 
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  return `<div class="bhead"><span>runners <span class="muted">${d.table.shown} of ${d.table.total}, what each is doing and why; who spent what on <a href="#costs">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
-    pfold("fleet-legend", "Legend", `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>`) +
+  return pfold("fleet-legend", "Legend", `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>`) +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
@@ -103,11 +103,15 @@ function dispatchTiles(d) {
   return `<div class="tiles">${tiles}</div>`;
 }
 
-function dispatchList(d) {
-  const rows = d.recent.slice(0, LOG_ROWS).map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
+// A verdict list's first `cap` rows, or all of them when cap is null ("+N older" was asked for).
+const firstRows = (list, cap) => (cap == null ? list : list.slice(0, cap));
+
+function dispatchList(d, cap) {
+  const shown = firstRows(d.recent, cap);
+  const rows = shown.map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
     `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
-    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${esc(v.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>` + older(d.recent.length - LOG_ROWS);
+    `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${clamp2(esc(v.reason), v.reason)}</td></tr>`).join("");
+  return `<div class="panel scroll" data-list="dispatch">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}${tblMore(d.recent.length - shown.length)}</div>`;
 }
 
 // The runner whose page draws a judge's tiles is the one whose conf names that extras block
@@ -144,16 +148,22 @@ function judgeCells(j) {
 const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
 const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
 
-function judgeList(j) {
-  const shown = j.verdicts.filter((v) => askShown(v, fst.said));
+function judgeList(j, cap) {
+  const shown = j.verdicts.filter((v) => askShown(v, fst.said)), listed = firstRows(shown, cap);
   const seg = `<div class="seg fseg">` + ASK_FILTERS.map((f) =>
     chipBtn(f === fst.said, "data-said", f, f, j.verdicts.filter((v) => askShown(v, f)).length)).join("") + `</div>`;
-  const why = (x) => `${x.rule && x.rule !== x.type ? `<b>${esc(x.rule)}</b> ` : ""}${x.evidence ? `"${esc(x.evidence)}" ` : ""}${esc(x.reason)}`;
-  const rows = shown.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
-    `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
+  // Why, built once as its parts (the rule, the quoted evidence, the reason): the title is their
+  // text, the cell the same parts escaped, the rule in bold.
+  const whyCell = (x) => {
+    const parts = [x.rule && x.rule !== x.type ? x.rule : "", x.evidence ? `"${x.evidence}"` : "", x.reason || ""];
+    const html = parts.map((t, i) => (i === 0 && t ? `<b>${esc(t)}</b>` : esc(t)));
+    return clamp2(html.filter((_, i) => parts[i]).join(" "), parts.filter(Boolean).join(" "));
+  };
+  const rows = listed.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
+    `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${clamp2(esc(x.question), x.question)}</td><td class="wrap muted">${whyCell(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
   return `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>${seg}` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
+    `<div class="panel scroll" data-list="judge">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}${tblMore(shown.length - listed.length)}</div>`;
 }
 
 function renderRunners() {
@@ -177,23 +187,25 @@ const RUNNER_TIME_KEYS = ["updated", "next"];
 function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
-      return `<h2 class="sec">Dispatch judge <span class="muted">24h, with the week below; newest ${x.dispatch.recent.length} here, every verdict on <a href="#log">Log</a></span></h2>` +
-        dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
+      return secHead("", "Dispatch judge") +
+        dispatchTiles(x.dispatch) + dispatchList(x.dispatch, fst.dispatchAll ? null : LOG_ROWS);
     case "ask-judge":
-      return `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(x.judge.prompt || "none")}, its call against your answer; newest ${x.judge.verdicts.length} here, every verdict on <a href="#log">Log</a></span></h2>` +
-        judgeTiles(x.judge) + judgeCells(x.judge) + judgeList(x.judge);
+      return secHead("", "Answer judge") +
+        judgeTiles(x.judge) + judgeCells(x.judge) + judgeList(x.judge, fst.judgeAll ? null : LOG_ROWS);
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
       const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
-      return `<h2 class="sec">Intake <span class="muted">what it did with each line and why, from the ingest record; every step on <a href="#log">Log</a>, one line's path in <code>notes log --trace &lt;words&gt;</code></span></h2>` +
+      return secHead("", "Intake") +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
         `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
-      // Every watch, its state and owner are on Alerts; Fleet keeps the count that sends you there.
+      // Every watch, its state and owner are on Alerts; Fleet keeps the count, and a tripped one
+      // is a warn line that sends you there.
       const trip = x.watches.filter((w) => w.state === "TRIP").length;
-      return `<h2 class="sec">Watches <span class="muted"><a href="#alerts/watches">${x.watches.length} watches, ${trip} tripped</a></span></h2>`;
+      return secHead("", "Watches", x.watches.length, trip ? "warn" : "") +
+        (trip ? `<div class="cline warn"><a href="#alerts/watches">${trip} tripped</a></div>` : "");
     }
     default:
       return "";
@@ -207,7 +219,7 @@ function renderRunner(el) {
   const r = rst.data;
   if (!r) { paint(el, `<div class="bhead"><span>${esc(runnerName())}</span>${back}</div><div class="${rst.err ? "panel down" : "empty"}">${rst.err ? esc(rst.err) : "Loading..."}</div>`); return; }
   const g = r.registry, day = r.calls.day, week = r.calls.week;
-  let h = `<div class="bhead"><span>${esc(r.name)} <span class="muted">${esc(r.lane || "no lane")}, read ${clock(r.at * 1e3)}</span></span>${back}</div>`;
+  let h = `<div class="bhead"><span>${esc(r.name)} <span class="muted">${esc(r.lane || "no lane")}</span></span>${back}</div>`;
   if (r.errors.length) h += `<div class="panel down">${r.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   if (r.description) h += `<div class="muted">${esc(r.description)}</div>`;
   const state = r.state === "running" ? `since ${when(r.running_since)}` : r.enabled ? "" : "disabled in its conf";
@@ -220,7 +232,7 @@ function renderRunner(el) {
     `</div>`;
   if (detail) h += `<div>status: ${cut(detail, 160)}</div>`;
 
-  h += `<h2 class="sec">Runs <span class="muted">14 days of runs.jsonl, ${r.runs_total} runs, ${r.failed_total} failed; click a run for its log</span></h2>`;
+  h += secHead("", "Runs", r.runs_total, r.failed_total ? "warn" : "");
   if (r.days.some((x) => x.runs)) {
     h += `<div class="panel scroll"><table class="tbl"><tr><th></th>${r.days.map((x) => `<th class="n">${esc(x.day)}</th>`).join("")}</tr>` +
       `<tr><td>runs</td>${r.days.map((x) => `<td class="n">${x.runs || "-"}</td>`).join("")}</tr>` +
@@ -236,20 +248,20 @@ function renderRunner(el) {
 
   const status = Object.entries(r.status).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="wrap">${RUNNER_TIME_KEYS.includes(k) && /^\d+$/.test(v) ? when(+v) : esc(v)}</td></tr>`).join("");
   const act = r.activity.map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
-  h += `<h2 class="sec">Status and activity <span class="muted">its status file, then the newest activity.log lines</span></h2>` +
+  h += secHead("", "Status and activity") +
     `<div class="panel scroll">${status ? `<table class="tbl">${status}</table>` : `<div class="empty">No status file.</div>`}</div>` +
     (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` : "");
 
   const plus = r.calls.partial ? "+" : "";
   const trow = (l, t, p = "") => `<tr><td>${l}</td><td class="n">${t.calls}${p}</td><td class="n${t.errors ? " bad" : ""}">${t.errors}${p}</td><td class="n">${kTok(t.tokens)}${p}</td><td class="n">${usd(t.cost)}${t.cost == null ? "" : p}</td><td class="n">${secs(t.p50_ms && t.p50_ms / 1000)}</td></tr>`;
-  h += `<h2 class="sec">Calls <span class="muted">calls.jsonl${plus ? "; the week is a floor, its start is past the tail read" : ""}</span></h2>` +
+  h += secHead("", "Calls", null, day.errors ? "warn" : "") + (plus ? `<div class="cline warn">7d is a floor: the week starts past the tail read</div>` : "") +
     `<div class="panel scroll"><table class="tbl"><tr><th></th><th class="n">calls</th><th class="n">errors</th><th class="n">tokens</th><th class="n">$</th><th class="n">p50</th></tr>${trow("24h", day)}${trow("7d", week, plus)}</table>` +
     (r.calls.recent.length ? callsTable(r.calls.recent) : "") + `</div>`;
 
-  h += `<h2 class="sec">Registry <span class="muted">trigger ${esc(g.trigger)}</span></h2><div class="panel">${registryLine(g)}${g.eval ? evalTable(g.eval) : ""}</div>`;
+  h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable(g.eval) : ""}</div>`;
   h += runnerExtras(r.extras);
   const conf = r.conf.map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
-  h += `<h2 class="sec">Conf <span class="muted">~/.config/agentctl/agents/${esc(r.name)}.conf</span></h2><div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>`;
+  h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>`;
   paint(el, h);
 }
 
@@ -258,22 +270,29 @@ function renderRunner(el) {
 function renderLogVerdicts() {
   const el = $("log-verdicts"), d = fst.data;
   if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading."}</div>`; return; }
-  paint(el, `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
-    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="muted">newest ${d.judge.verdicts.length}</span></h3>${judgeList(d.judge)}`);
+  paint(el, `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch, fst.dispatchAll ? null : d.verdicts_shown)}` +
+    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="muted">newest ${d.judge.verdicts.length}</span></h3>${judgeList(d.judge, fst.judgeAll ? null : d.verdicts_shown)}`);
 }
 
-$("log-verdicts").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-said]");
-  if (!b) return;
-  fst.said = b.dataset.said;
-  renderLogVerdicts();
-});
+// A verdict list's "+N older" shows the rest of that list only; a new filter on the answer judge
+// starts its list at the first rows again. True when the click was one of these.
+function verdictsClick(e, render) {
+  const list = e.target.closest("[data-all]")?.closest("[data-list]");
+  if (list) { fst[list.dataset.list === "dispatch" ? "dispatchAll" : "judgeAll"] = true; render(); return true; }
+  const said = e.target.closest("[data-said]");
+  if (!said) return false;
+  fst.said = said.dataset.said;
+  fst.judgeAll = false;
+  render();
+  return true;
+}
+
+$("log-verdicts").addEventListener("click", (e) => verdictsClick(e, renderLogVerdicts));
 
 $("scroll").addEventListener("click", (e) => {
   const t = e.target;
   if (st.sel || !t.closest("#ov-runners")) return;
-  const said = t.closest("[data-said]");
-  if (said) { fst.said = said.dataset.said; renderRunners(); return; }
+  if (verdictsClick(e, renderRunners)) return;
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   if (t.closest("a, button, select, input")) return;

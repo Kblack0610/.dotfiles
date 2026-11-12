@@ -35,6 +35,16 @@ impl From<Option<f64>> for Val {
 }
 
 impl Val {
+    /// The cell as a surface draws it: text as written, a whole number without its `.0`.
+    pub fn shown(&self) -> Option<String> {
+        match self {
+            Val::Text(t) => Some(t.clone()),
+            Val::Num(n) if n.fract() == 0.0 => Some(format!("{n:.0}")),
+            Val::Num(n) => Some(n.to_string()),
+            Val::None => None,
+        }
+    }
+
     /// The lower-case text a `key:value` term matches by prefix.
     fn text(&self) -> Option<String> {
         match self {
@@ -58,7 +68,7 @@ impl Val {
 pub trait Row {
     /// The column keys in display order. Each is what the query, the sort and the URL name.
     const COLUMNS: &'static [&'static str];
-    /// The state chips; the first keeps every row.
+    /// The state chips; the first is the view a table opens on, and keeps the rows `in_default` does.
     const STATES: &'static [&'static str];
     /// The columns whose values the web offers as dropdowns, each value a `key:value` term.
     const FACETS: &'static [&'static str];
@@ -79,6 +89,11 @@ pub trait Row {
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
     fn in_state(&self, state: &str) -> bool;
+    /// Whether the first chip, the view the table opens on, keeps the row: every row, unless the
+    /// table opens on less (Queue's `active` leaves done out, one chip away).
+    fn in_default(&self) -> bool {
+        true
+    }
     /// What a bare word searches: every text column unless the table says otherwise.
     fn text(&self) -> String {
         Self::COLUMNS
@@ -122,6 +137,9 @@ impl<T: Row> Row for &T {
     }
     fn in_state(&self, state: &str) -> bool {
         (*self).in_state(state)
+    }
+    fn in_default(&self) -> bool {
+        (*self).in_default()
     }
     fn text(&self) -> String {
         (*self).text()
@@ -462,9 +480,14 @@ impl View {
     /// The rows the query and chip keep: in the sort, or in the table's own order without one.
     pub fn apply<'a, R: Row>(&self, rows: &'a [R]) -> Vec<&'a R> {
         let ts = terms::<R>(&self.q);
-        let kept = rows
-            .iter()
-            .filter(|r| keeps(&ts, *r) && (self.state.is_empty() || r.in_state(&self.state)));
+        let kept = rows.iter().filter(|r| {
+            keeps(&ts, *r)
+                && if self.state.is_empty() {
+                    r.in_default()
+                } else {
+                    r.in_state(&self.state)
+                }
+        });
         if self.sort.is_empty() {
             return kept.collect();
         }
@@ -493,7 +516,7 @@ impl View {
             .enumerate()
             .map(|(i, s)| {
                 let n = if i == 0 {
-                    kept.len()
+                    kept.iter().filter(|r| r.in_default()).count()
                 } else {
                     kept.iter().filter(|r| r.in_state(s)).count()
                 };

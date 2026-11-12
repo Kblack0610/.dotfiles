@@ -1093,6 +1093,58 @@ OUT
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
 }
 
+@test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
+  jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  grep -qP '^extra\tgame\tgm-4\t[0-9]+$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "profile outside dispatch unseen"
+  printf 'extra\tgame\tgm-4\t%s\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-4'
+  grep -qxF 'notes --profile extra ptask game --agent unstart gm-4' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "settled orphan still tracked"
+}
+
+@test "reap: a started legacy row without an id keeps its text key" {
+  row game agent 'legacy fix' '- [/] Legacy fix'
+  orphan_seen game 'legacy fix' 73
+  notes() {
+    if [ "$*" = 'board --json' ]; then
+      echo '{"rows":[{"profile":"bnb","project":"game","lane":"agent","id":null,"text":"Legacy fix","state":"doing"}]}'
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: legacy fix'
+  grep -qxF 'notes --profile bnb ptask game --agent unstart legacy fix' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "reap: unreadable or malformed board preserves orphan sightings and changes no rows" {
+  orphan_seen game gm-5 96
+  cp "$FLEET_DISPATCH_DIR/orphans.tsv" "$SANDBOX/seen"
+  notes() { return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": []}'; return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": null}'; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  ! grep -q ' unstart ' "$NOTES_FIXTURE/calls.log"
+}
+
 @test "reap: a done item's PR merged after its session closed it records merged: and closes the row on merge proof" {
   landed_item MERGED
   run cmd_reap

@@ -2,7 +2,8 @@
 // The Releases tab: every app, what is deployed where it matters most and its worst status, from
 // /api/releases (hub_core::releases). The table is the shared one (table.js): the server filters
 // and sorts by the view in the URL. A row opens the app's page, `#releases/apps/<name>`
-// (links::Kind::App), in place of the table: its headline env's channels, the other envs in a
+// (links::Kind::App), in place of the table: its status (Gatus checks, uptime, incidents), its
+// headline env's channels, the other envs in a
 // fold under them, its releases, builds and changelog. A new snapshot pushes the `releases` event.
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
 // table or an app's page) and Release runs, the strip above them. CI runs and Tests are Infra's.
@@ -23,7 +24,7 @@ const relst = tblTab({
   draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
-  body: (t) => releasesBody(t.data),
+  body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
   wrap: (html) => innerWrap("releases", "table", html),
   tail: () => innerWrap("releases", "runs", relRuns.block()),
 });
@@ -40,7 +41,7 @@ let relOpened = null;
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
+const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], checks: ["checks"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
 // One app; the name goes to its Projects card, the rest of the row to its page.
 function releaseRow(a, i) {
@@ -48,6 +49,7 @@ function releaseRow(a, i) {
   return `<tr class="jr" data-key="${esc(relKey(a))}"><td>${tblLink(project, a.project)}</td>` +
     `<td class="${levelClass(a.stage_level) || "muted"}" title="${esc(a.stage_text)}">${esc(a.stage || "-")}</td>` +
     `<td class="${relDim(a.live_text, "wrap")}">${esc(a.live_text)}</td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td class="${a.checks.says === "no check" ? "muted" : levelClass(a.checks.level)}">${esc(a.checks.says)}</td>` +
     `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relDim(a.released_text)}">${esc(a.released_text)}</td>` +
     `<td class="${relDim(a.last_deploy_text, levelClass(a.deploy_level))}">${esc(a.last_deploy_text)}</td></tr>`;
 }
@@ -65,8 +67,8 @@ function channelRow(r) {
 const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>deployed</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
-// An app's page: its header with the way back to the table and to its Projects card, then its
-// headline env's channels, the other envs in a fold that starts open, its release history, its
+// An app's page: its header with the way back to the table and to its Projects card, its status
+// (appStatus), then its headline env's channels, the other envs in a fold that starts open, its release history, its
 // builds and what the picked tag shipped. An app the snapshot does not have says so.
 function appPage(d) {
   const name = relPage(), view = st.views.releases;
@@ -79,7 +81,7 @@ function appPage(d) {
   if (!a) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">No such app: ${esc(name)}.</div>`;
   const project = d.app_links?.project ? ` <a class="btn sm" href="${esc(d.app_links.project)}">Project page</a>` : "";
   return `<div class="bhead"><span>Releases / <b>${esc(a.project)}</b> <span class="${levelClass(a.level)}">${esc(a.status_text)}</span></span><span>${back}${project}</span></div>` +
-    `${down}<div class="panel">${appDetail(a)}</div>`;
+    `${down}${appStatus()}${secHead("", "Channels")}<div class="panel">${appDetail(a)}</div>`;
 }
 
 function appDetail(a) {
@@ -182,18 +184,23 @@ function releaseDetail(r) {
     line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") + `</div></td></tr>`;
 }
 
+// The apps, then how full each history column is (Releases::coverage) in a fold that starts shut.
 function releasesBody(d) {
   const t = d.table, rows = d.rows || [];
-  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>`;
-  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>`;
+  const cover = d.coverage ? cfold("rel-coverage", "Coverage", `<div class="cline">${esc(d.coverage)}</div>`, REL_OPEN) : "";
+  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>${cover}`;
+  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>${cover}`;
 }
 
+// A snapshot older than the collector's cadence is stale.
+const relStale = (d) => d.at && Date.now() / 1e3 - d.at > d.stale_after;
+// When the snapshot was taken, after the apps' state tiles; amber once it is stale.
+const releasesTiles = (d) =>
+  tile("REFRESHED", d.at ? clock(d.at * 1e3) : "-", relStale(d) ? "var(--b-stalled)" : "var(--c-other)", d.at ? `${ago(d.at)} ago` : "no snapshot read");
+
 function releasesHead(d) {
-  const age = d.at ? Date.now() / 1e3 - d.at : 0, stale = d.at && age > d.stale_after;
-  const read = d.at ? `refreshed ${clock(d.at * 1e3)} (${ago(d.at)} ago)` : "no snapshot read";
-  let html = `<h2 class="sec">Releases <span class="muted">${esc(d.question || "")}</span></h2>` +
-    `<div class="cline">${esc(d.summary || "")} <span class="${stale ? "warn" : "muted"}">${esc(read)}</span></div>`;
-  if (d.coverage) html += `<div class="cline muted">${esc(d.coverage)}</div>`;
+  const t = d.table;
+  let html = secHead("", "Releases", t && tblCount(t), d.gaps || relStale(d) ? "warn" : "");
   if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -204,12 +211,88 @@ function releasesHead(d) {
 // It draws inside this tab's page, so its render is the tab's. Every run is Infra's CI runs.
 const relRuns = runsTable({
   tab: "releases", id: "relrun", el: "releases", scope: "release", title: "Release runs", folds: REL_OPEN,
-  lead: `<div class="cline muted">The runs that deployed or ran on a release tag; every run is on <a href="#infra/runs">Infra, CI</a>.</div>`,
   none: "No run tied to a release in 30 days.", render: () => relst.render(),
 });
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
 const relRepaint = relst.repaint;
 relst.repaint = () => relRepaint() || relRuns.repaint();
+// An app page's status (hub_core::app_status), above its channels: a banner, the checks Gatus runs
+// on it with their uptime, 90 days and latency, and its incidents. Gatus results reach the board
+// through Prometheus, which has no push, so the open page re-reads on this cadence.
+const APP_PAGE_REFRESH_MS = 60e3;
+// A day bar's colours by what the day saw (dayColor). A phone shows the newest 30 (app.css).
+const APP_DAY_COLOR = { none: "var(--c-other)", up: "var(--idle)", dip: "var(--busy)", down: "var(--wait)" };
+// The open page, by its hash (`apps/<app>`), and its last status read.
+const apst = { page: "", data: null, err: null };
+// A read that lands after another page opened is dropped; a failed one keeps the last read up.
+const refreshAppPage = coalesce(async () => {
+  const app = relPage(), page = st.page;
+  if (!app || apst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api("/api/releases/app?app=" + encodeURIComponent(app)); } catch (e) { err = e.message; }
+  if (apst.page !== page) return;
+  if (data) apst.data = data;
+  apst.err = err;
+  if (st.page === page) relst.render();
+});
+// The open app's page, or the table's CHECKS column, re-read each minute while it shows.
+const pollAppPage = poll("releases", () => (relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
+// A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
+function dayColor(d) {
+  if (!d.ok && !d.fail) return APP_DAY_COLOR.none;
+  if (!d.fail) return APP_DAY_COLOR.up;
+  return d.fail / (d.ok + d.fail) < 0.01 ? APP_DAY_COLOR.dip : APP_DAY_COLOR.down;
+}
+const dayLabel = (t) => new Date(t * 1e3).toLocaleDateString([], { month: "short", day: "numeric" });
+// Every bar the same height, its colour the day's word; the tip says the day and its uptime.
+const dayBars = (days) => `<div class="appdays">${columns(days.map((d) => ({
+  key: "d" + d.at, label: "", segs: [{ v: 1, color: dayColor(d) }],
+  tip: `${dayLabel(d.at)}: ${d.text}${d.fail ? `, ${d.fail} failed of ${d.ok + d.fail}` : ""}`,
+})), { height: 34, yfmt: () => "" })}<div class="appdx muted"><span class="appd90">${days.length} days ago</span><span class="appd30">30 days ago</span><span>today</span></div></div>`;
+// The last 24 whole hours' response time, one column an hour ending with the one before this, each
+// that hour's average result, keyed by its start (hub_core::app_status); an hour with none is empty.
+const LATENCY_HOURS = 24;
+function latencyBars(pts, now) {
+  if (!pts.length) return `<div class="muted">No response times in 24 hours.</div>`;
+  const last = Math.floor(now / 3600) * 3600 - 3600, hours = new Map();
+  for (const [t, ms] of pts) hours.set(Math.floor(t / 3600) * 3600, ms);
+  const cols = Array.from({ length: LATENCY_HOURS }, (_, i) => {
+    const h = last - (LATENCY_HOURS - 1 - i) * 3600, ms = hours.get(h);
+    return { key: "h" + h, label: i % 6 === 0 ? clock(h * 1e3) : "", segs: [{ v: ms || 0, color: "var(--c1)" }],
+      tip: `${clock(h * 1e3)}: ${ms === undefined ? "no result" : `average ${Math.round(ms)} ms`}` };
+  });
+  return columns(cols, { height: 70, yfmt: (v) => `${Math.round(v)} ms` });
+}
+function appCheck(c, now) {
+  const up = c.uptime.map(([w, v]) => `<span class="appup"><span class="muted">${esc(w)}</span> ${esc(v)}</span>`).join("");
+  return `<div class="panel appchk"><div class="bhead"><span><b>${esc(c.name)}</b> <span class="muted">${esc(c.group)}</span></span>` +
+    `<span class="chip sm" style="--c:${LEVEL_COLOR[c.level] || APP_DAY_COLOR.none}">${esc(c.state.toUpperCase())}</span></div>` +
+    `<div class="cline appups">${up}<span class="appup"><span class="muted">latency</span> ${esc(c.latency_text)}</span></div>` +
+    dayBars(c.days) + `<div class="cline muted">Response time, hourly average, 24 hours</div>` + latencyBars(c.latency, now) + `</div>`;
+}
+const LEVEL_COLOR = { ok: "var(--idle)", warn: "var(--busy)", bad: "var(--wait)" };
+function appIncidents(list) {
+  if (!list.length) return `<div class="panel muted">No incidents in 7 days.</div>`;
+  return `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">check</th><th data-role="glance">from</th><th data-role="glance">to</th><th>failed</th></tr>` +
+    list.map((i) => `<tr><td>${esc(i.check)}</td><td>${stamp(i.from)}</td><td${i.to ? "" : ' class="bad"'}>${i.to ? stamp(i.to) : "ongoing"}</td><td>${esc(i.fails)}</td></tr>`).join("") +
+    `</table></div>`;
+}
+// The open app's status section: what its Gatus checks say, each check's card, then its incidents.
+function appStatus() {
+  const d = apst.data;
+  if (!d) return secHead("", "Status") + `<div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "reading..."}</div>`;
+  const checked = d.newest ? `checked ${clock(d.newest * 1e3)} (${ago(d.newest)} ago)` : "no result yet";
+  let h = secHead("", "Status") +
+    `<div class="panel"><div class="appbanner"><span class="chip" style="--c:${LEVEL_COLOR[d.level]}">${esc(d.banner)}</span> <span class="muted">${esc(checked)}</span>` +
+    (d.monitor ? ` <a href="${esc(d.monitor)}" target="_blank" rel="noopener">Gatus</a>` : "") + `</div>` +
+    d.context.map(pagePart).join("") + pageRow("Read", clock(d.at * 1e3)) + `</div>`;
+  const errs = apst.err ? [`refresh failed, showing the last read: ${apst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  h += secHead("", "Checks", d.checks.length || null);
+  if (d.checks.length && d.unchecked.length) h += `<div class="cline muted">No Gatus check yet: ${esc(d.unchecked.join(", "))}</div>`;
+  h += d.checks.length ? d.checks.map((c) => appCheck(c, d.at)).join("") : `<div class="panel muted">No check reports for ${esc(d.groups.join(" or "))} yet.</div>`;
+  return h + secHead("", "Incidents", d.incidents.length || null) + appIncidents(d.incidents);
+}
 $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 
 $("releases").addEventListener("click", (e) => {
@@ -238,6 +321,10 @@ const relRunsFeed = pushed("releases", ["builds"], relRuns.refresh);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
-  show() { relFeed.show(true); relRunsFeed.show(true); ageReleases(); },
+  show() {
+    const page = relPage() ? st.page : "";
+    if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
+    relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
+  },
   onEvent(ev) { relFeed.onEvent(ev); relRunsFeed.onEvent(ev); },
 };

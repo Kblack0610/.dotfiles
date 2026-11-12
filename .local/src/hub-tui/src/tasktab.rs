@@ -612,7 +612,7 @@ pub(crate) mod tests {
             state: "open".into(),
             priority: prio.into(),
             text: text.into(),
-            title: tasks::title_and_rest(text, false).0,
+            title: hub_core::text::title(text).title,
             sheet: format!("/v/{profile}/{}/{lane}.md", project.unwrap_or_default()),
             raw: format!("- [ ] {text}"),
             ..Default::default()
@@ -687,7 +687,7 @@ pub(crate) mod tests {
             "{s}"
         );
         // Each section is named once, over its first row, then the closed rows with day and PR.
-        assert!(at("NOW (1)") < at("NEXT UP (1)") && at("BACKLOG (1)") < at("DONE (1)"));
+        assert!(at("NOW (1)") < at("NEXT UP (1)") && at("BACKLOG (1)") < at("DONE 11-03 (1)"));
         assert!(s.contains("11-03  pr 63"), "{s}");
         assert!(at("FOCUS  bnb 1 open, in the daily note") < at("PRIORITY"));
         assert!(
@@ -1009,7 +1009,7 @@ pub(crate) mod tests {
     fn one_project_wraps_its_rows_whole_and_t_tags_the_selected_one() {
         let mut f = fixture();
         f.rows[1].text = "fix the menu so the back button maps".into();
-        f.rows[1].title = tasks::title_and_rest(&f.rows[1].text, false).0;
+        f.rows[1].title = hub_core::text::title(&f.rows[1].text).title;
         f.rows[1].size = Some("m".into());
         let mut v = TaskView {
             project: Some(("bnb".into(), "demo".into())),
@@ -1018,7 +1018,9 @@ pub(crate) mod tests {
         assert_eq!(shown(&f, &v).len(), 4, "only bnb/demo's rows");
         let s = text(&f, &v, 60);
         assert!(s.contains("ROWS  4 of 4 rows"), "{s}");
-        assert!(!s.contains('~'), "nothing is clipped:\n{s}");
+        // The chip line (all .. done) clips under 66 columns; the table under it never does.
+        let table = &s[s.find("SECTION").unwrap()..];
+        assert!(!table.contains('~'), "no row is clipped:\n{s}");
         assert!(
             s.contains("the menu") && s.contains("maps"),
             "the title wraps whole:\n{s}"

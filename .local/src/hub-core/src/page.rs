@@ -8,7 +8,7 @@
 //! `project-timeline` (`timeline.rs`). A source that fails is named in `errors` and the rest of
 //! the page still shows.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -127,9 +127,41 @@ pub struct Page {
     /// `3 watches, 1 firing` over the watches that name this project, linking to the Alerts tab
     /// filtered to it; None when no watch does.
     pub alerts: Option<crate::releases::Badge>,
+    /// The app's Gatus checks as its status page's banner, linking to that page, set by
+    /// [`Page::read_checks`]; None for a project with no channels, `no check` for an app no
+    /// check covers.
+    pub checks: Option<crate::releases::Badge>,
+    /// The app's Gatus groups (`app_status::groups`), empty for a project with no channels.
+    #[serde(skip)]
+    pub check_groups: Vec<String>,
     /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
     pub timeline: Option<crate::timeline::Timeline>,
     pub errors: Vec<String>,
+}
+
+impl Page {
+    /// The checks badge from the app's Gatus groups, a VictoriaMetrics read kept out of [`read`]
+    /// as the Releases tab keeps it out of its own; a project with no channels costs no read.
+    pub fn read_checks(&mut self, runner: &(dyn Runner + Sync), now: i64) {
+        if let Some(groups) = self.check_read() {
+            self.with_checks(&crate::app_status::badges(runner, &groups, now));
+        }
+    }
+
+    /// What [`crate::app_status::badges`] is asked for this page: its app and groups, or None
+    /// for a project with no channels. agent-web reads it through its own keep.
+    pub fn check_read(&self) -> Option<Vec<(String, Vec<String>)>> {
+        (!self.check_groups.is_empty())
+            .then(|| vec![(self.project.clone(), self.check_groups.clone())])
+    }
+
+    /// The checks badge from a [`crate::app_status::badges`] read; a failed one is named.
+    pub fn with_checks(&mut self, read: &Result<HashMap<String, crate::releases::Badge>, String>) {
+        if let Err(e) = read {
+            self.errors.push(format!("app checks: {e}"));
+        }
+        self.checks = Some(crate::releases::check_badge(read, &self.project));
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -604,6 +636,9 @@ pub fn read_with(
     });
     p.releases = crate::releases::badge(&channels);
     p.alerts = crate::alerts::project_badge_here(name);
+    if !channels.is_empty() {
+        p.check_groups = crate::app_status::groups(name, &channels);
+    }
     let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
     p.timeline = timeline;
     p.errors.extend(errors);
@@ -1177,5 +1212,20 @@ mod tests {
         let p = read(&f, "--all", "alpha", NOW);
         assert!(f.seen.lock().unwrap().is_empty());
         assert_eq!(p.errors.len(), 1);
+    }
+
+    #[test]
+    fn an_app_page_carries_its_groups_and_its_checks_badge_names_a_failed_read() {
+        let mut p = read(&fake(0), "game", "alpha", NOW);
+        assert_eq!(p.check_groups, ["game"]);
+        assert_eq!(
+            p.checks, None,
+            "the page read itself never reads VictoriaMetrics"
+        );
+        p.with_checks(&Ok(HashMap::new()));
+        assert_eq!(p.checks.as_ref().unwrap().says, "no check");
+        p.with_checks(&Err("vm: refused".into()));
+        assert_eq!(p.checks.unwrap().says, "not read");
+        assert_eq!(p.errors.last().unwrap(), "app checks: vm: refused");
     }
 }

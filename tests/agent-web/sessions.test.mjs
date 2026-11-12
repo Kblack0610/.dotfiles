@@ -322,7 +322,7 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   run("sst.render()");
   assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
   ctx.renderLogRanked();
-  assert.match(boxes["log-ranked"].innerHTML, /<span class="muted">7d, by friction<\/span>/);
+  assert.doesNotMatch(boxes["log-ranked"].innerHTML, /by friction/, "no prose head: the summary is the title");
   assert.match(boxes["log-ranked"].innerHTML, /Loading\./, "nothing is read until the section opens");
   run(`ost.rows = __d.rows; ost.open = __d.rows[0].session_id; ost.cards[ost.open] = __d.card;`, { card: "fix the gate (6f296b73)\n  Time      work 2h05", rows: [
     { session_id: "6f296b73-b7a5", project: "dotfiles", title: "fix the gate\nmore", friction: 11, why: "9 nudges", cost_usd: 41.2, duration_s: 22200, prs_merged: 24, prs_open: 0, prs_closed_unmerged: 1 },
@@ -330,7 +330,6 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   ] });
   ctx.renderLogRanked();
   const html = boxes["log-ranked"].innerHTML;
-  assert.match(html, /2 worst, 7d, by friction/);
   assert.match(html, /<tr class="click" data-sid="6f296b73-b7a5"><td class="n">11<\/td><td>fix the gate <span class="muted">6f296b73<\/span>/);
   assert.match(html, /<td class="n">6h 10m<\/td><td class="n">\$41\.20<\/td><td class="n">24\/25<\/td>/);
   assert.match(html, /<pre class="joblog">fix the gate \(6f296b73\)\n  Time/);
@@ -349,4 +348,29 @@ test("an open session's facts are its fleet-state card, open until folded to one
   run("st.sel = st.agents[3]");
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);
+});
+
+test("Log's Rundowns list the server's shown rows, every card shut until opened, and +N older shows the rest", async () => {
+  const shst = vm.runInContext("shst", ctx), cap = 30;
+  Object.assign(shst, { data: null, err: null });
+  run('st.tab = "log"');
+  ctx.renderLogRundowns();
+  assert.match(boxes["log-rundowns"].innerHTML, /Loading/, "the first render, before any data, says Loading");
+  const rundowns = Array.from({ length: cap + 3 }, (_, i) => ({ file: `r${i}.md`, title: `rundown-${i}`, stamp: "2026-11-12 12:00 UTC", body: "a long sum-up" }));
+  const fetch0 = ctx.fetch;
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rundowns, shown: cap, stats: null, ledger: { due: [] } }) });
+  await run("refreshShepherd()");
+  ctx.fetch = fetch0;
+  run('st.tab = "log"');
+  ctx.renderLogRundowns();
+  const h = boxes["log-rundowns"].innerHTML;
+  assert.equal((h.match(/<details class="card rd"/g) || []).length, cap);
+  assert.doesNotMatch(h, /<details class="card rd" open/, "the newest starts shut too (dashboards rule 4)");
+  assert.match(h, />\+3 older</);
+  shst.all = true;
+  ctx.renderLogRundowns();
+  assert.match(boxes["log-rundowns"].innerHTML, new RegExp(`rundown-${cap + 2}<`));
+  assert.doesNotMatch(boxes["log-rundowns"].innerHTML, /older</);
+  Object.assign(shst, { all: false, data: null });
+  run('st.tab = "sessions"');
 });

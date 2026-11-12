@@ -17,6 +17,7 @@ mod board;
 mod briefing;
 mod builds;
 mod cache;
+mod cards;
 mod cli;
 mod cloud;
 mod costs;
@@ -91,6 +92,8 @@ struct AppState {
     infra: infra::Cache,
     machines: infra::Pages,
     pools: infra::Pages,
+    /// `#releases/apps/<app>`'s read (`hub_core::app_status`).
+    apps: infra::Pages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -133,6 +136,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         machines: infra::Pages::default(),
         pools: infra::Pages::default(),
+        apps: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -160,6 +164,7 @@ async fn main() -> Result<()> {
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
         .route("/api/home/proposals", get(proposals::list))
+        .route("/api/home/cards", get(cards::get))
         .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
@@ -175,6 +180,7 @@ async fn main() -> Result<()> {
         .route("/api/schedules", get(schedules_list))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
+        .route("/api/releases/app", get(releases_app))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
@@ -1298,7 +1304,6 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await
@@ -1335,6 +1340,17 @@ async fn infra_machine(
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
     let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
+#[derive(Deserialize)]
+struct AppQuery {
+    app: String,
+}
+
+/// One app's status page, read only when `#releases/apps/<app>` opens. An unknown name is a 404.
+async fn releases_app(State(s): State<Shared>, Query(q): Query<AppQuery>) -> ApiResult<Response> {
+    let json = s.apps.app(q.app).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1790,6 +1806,7 @@ mod tests {
             Some(r#"{"kind":"queue"}"#)
         );
         assert_eq!(classify(Path::new("/h/.agent/queue/.lock")), None);
+        assert_eq!(classify(Path::new("/h/.agent/queue/.gate")), None);
         assert_eq!(
             classify(Path::new("/h/.agent/queue/queued/.add.AbC123")),
             None

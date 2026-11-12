@@ -5,8 +5,8 @@
 //! from `fleet.rs`, which is the sessions' watch page. One runner's page (`runner_page`) is
 //! hub-core's `fleet::runner`, as agent-web's `#sessions/runners/<runner>`.
 
-use hub_core::fleet::runner::{Extras, Runner, Totals};
 use hub_core::boards::Due;
+use hub_core::fleet::runner::{Extras, Runner, Totals};
 use hub_core::fleet::who::Who;
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
 use ratatui::text::{Line, Span};
@@ -177,7 +177,14 @@ pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
             .iter()
             .map(|l| {
                 vec![
-                    cell(if l.role.is_empty() { "-".into() } else { l.role.clone() }, p.dim()),
+                    cell(
+                        if l.role.is_empty() {
+                            "-".into()
+                        } else {
+                            l.role.clone()
+                        },
+                        p.dim(),
+                    ),
                     match l.first_seen {
                         0 => "-".into(),
                         t => dur((now - t as i64) as f64).into(),
@@ -619,9 +626,9 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
 /// `[ ]` and Esc on a runner's page, for its first line.
 const PAGE_KEYS: &str = "[ ] runner  Esc all runners";
 
-/// One runner's page (`hub tab fleet <runner>`, Enter on a Workers row): summary first, then 14
+/// One runner's page (`hub tab 'sessions runners <runner>'`, Enter on a Runners row): summary first, then 14
 /// days of runs, its status and activity, 24h and 7d calls, the registry, the lane's extras block
-/// (`DETAIL=` in its conf) and the conf, as agent-web's `#fleet/<runner>`.
+/// (`DETAIL=` in its conf) and the conf, as agent-web's `#sessions/runners/<runner>`.
 pub fn runner_page(
     name: &str,
     r: Option<&Result<Runner, String>>,
@@ -1180,22 +1187,28 @@ pub mod tests {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }
         // The accounts and the token folds are Costs' now (coststab.rs, tokens.rs).
-        for gone in ["CLAUDE ACCOUNTS", "WHERE THE TOKENS GO", "WHAT LANGFUSE SEES"] {
+        for gone in [
+            "CLAUDE ACCOUNTS",
+            "WHERE THE TOKENS GO",
+            "WHAT LANGFUSE SEES",
+        ] {
             assert!(!s.contains(gone), "{gone:?} is still on Runners\n{s}");
         }
         // The sessions are the Sessions inner tab's, so the runners table has no session columns.
         let head = s.lines().find(|l| l.starts_with("KIND")).unwrap();
         for gone in ["PROJECT", "ACTIVITY"] {
-            assert!(!head.contains(gone), "{gone:?} is still a Runners column: {head}");
+            assert!(
+                !head.contains(gone),
+                "{gone:?} is still a Runners column: {head}"
+            );
         }
     }
 
     #[test]
     fn a_search_narrows_the_runners() {
         let f = fixture();
-        let names = |t: &DataTable| -> Vec<String> {
-            shown(&f, t).iter().map(|r| r.who.clone()).collect()
-        };
+        let names =
+            |t: &DataTable| -> Vec<String> { shown(&f, t).iter().map(|r| r.who.clone()).collect() };
         assert_eq!(
             names(&DataTable::default()),
             ["dream", "idle-one", "inbox-triage"]
@@ -1301,10 +1314,7 @@ pub mod tests {
         let mut t = DataTable::default();
         t.view.q = "nothing-matches".into();
         let l = lines(&fixture(), &t, 160);
-        assert!(
-            l.iter().any(|l| l.contains("No runner matches")),
-            "{l:#?}"
-        );
+        assert!(l.iter().any(|l| l.contains("No runner matches")), "{l:#?}");
     }
 
     #[test]

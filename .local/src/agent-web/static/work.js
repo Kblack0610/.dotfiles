@@ -5,7 +5,7 @@
 // the chart bars write it too), so a filtered view is a link.
 
 const WORK_WINDOWS = [["today", "Today"], ["", "7d"], ["30d", "30d"], ["all", "All"]];
-const WORK_COLS = { state: ["state"], when: ["when", "n"], project: ["project"], what: ["what"], kind: ["kind"], pr: ["pr"], cost: ["cost", "n"] };
+const WORK_COLS = { state: ["state"], when: ["when", "n"], project: ["project"], what: ["what"], plan: ["plan"], kind: ["kind"], ci: ["ci"], pr: ["pr"], cost: ["cost", "n"] };
 const WORK_COLOR = { failed: "var(--b-needs)", waiting: "var(--b-stalled)", active: "var(--b-working)", open: "var(--b-working)", done: "var(--b-done)", cancelled: "var(--b-parked)", queued: "var(--b-chat)" };
 
 const wrk = tblTab({
@@ -28,12 +28,12 @@ function workWhen(w, today) {
 const workPr = (r) => (r.unproven ? qProof(r) : !r.pr ? "" : r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.pr)}</a>` : esc(r.pr));
 
 const workRow = (r, today) => `<tr><td><span class="chip sm" style="--c:${WORK_COLOR[r.state] || "var(--b-chat)"}">${esc(r.state)}</span></td>` +
-  `<td class="n" title="${esc(r.when || "")}">${esc(workWhen(r.when, today))}</td><td>${esc(r.project)}</td><td class="wrap">${esc(r.what)}</td>` +
-  `<td class="muted">${esc(r.kind || "")}</td><td>${workPr(r)}</td><td class="n">${r.cost == null ? "" : usd(r.cost)}</td></tr>`;
+  `<td class="n" title="${esc(r.when || "")}">${esc(workWhen(r.when, today))}</td><td>${esc(r.project)}</td><td class="wrap">${clamp2(esc(r.what), r.what)}</td>` +
+  `<td class="muted">${r.plan ? clamp2(esc(r.plan), r.plan) : ""}</td><td class="muted">${esc(r.kind || "")}</td><td class="muted">${esc(r.ci || "")}</td><td>${workPr(r)}</td><td class="n">${r.cost == null ? "" : usd(r.cost)}</td></tr>`;
 
 function workHead(t) {
   const d = t.data, errs = [t.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
-  return `<div class="bhead"><span>done and not done, every project, ${d.table.shown} of ${d.table.total}</span></div>${errs}`;
+  return secHead("", "Work", tblCount(d.table)) + errs;
 }
 
 function workBody(d) {

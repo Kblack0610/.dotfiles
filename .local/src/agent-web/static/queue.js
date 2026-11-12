@@ -23,7 +23,7 @@ const qst = tblTab({
   tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    items: null, table: null, aliases: {}, needs: 0, openRows: 0, sel: "",
+    items: null, table: null, aliases: {}, needs: 0, openRows: 0, sel: "", dispatch: null,
     stats: null, projects: [], busy: false, msg: "", draft: null,
     cands: null, candErr: null, candMsg: "", promoting: null,
     // The Candidates filter: a reason chip ("" is every row) and the search words.
@@ -70,7 +70,7 @@ const refreshQueue = coalesce(async () => {
   try {
     const q = tblParams(st.views.queue).toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
-    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, err: null });
+    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, dispatch: d.dispatch || null, err: null });
   } catch (e) { qst.err = e.message; }
   // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
   if (st.tab === "queue" && st.arg) {
@@ -83,8 +83,8 @@ const refreshQueue = coalesce(async () => {
       // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
       st.arg = ""; qst.sel = arg; setQuery(st.views.queue);
     } else if (tblParams(st.views.queue).get("q") !== arg) {
-      // Not in this view: search for it once, and the read that answers opens it.
-      setQuery(tblSet(st.views.queue, { q: arg, s: "" })); refreshQueue();
+      // Not in this view: search for it once on every row (a done item too), and the read that answers opens it.
+      setQuery(tblSet(st.views.queue, { q: arg, s: "all" })); refreshQueue();
     } else st.arg = "";
   }
   qst.stats = await stats;
@@ -144,10 +144,12 @@ function qMin(m) {
   return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
 }
 
-// The table's columns: key -> [header, class].
+// The table's columns: key -> [header, class]. The title leads; `#` is the start order of the
+// ready items (hub-core `QueueRow::start`), so sorting on it reads what starts next.
 const Q_COLS = {
-  state: ["state"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], project: ["project"],
-  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], title: ["title"],
+  "#": ["#", "n"], title: ["title"], project: ["project"], priority: ["priority"], state: ["state"], hold: ["hold"],
+  from: ["from"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], pr: ["pr"], row: ["row"],
+  kind: ["kind"], size: ["size"], acct: ["acct"], mode: ["mode"], plan: ["plan"],
 };
 
 // The state cell: what the item is. A finish says how it ended.
@@ -171,15 +173,29 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
-// A row, and when it is the opened one its detail under it across every column.
+// What a held item waits on (hub-core `Item::held_on`), the whole hold on hover; an item it
+// waits after opens that item's row.
+function qHoldCell(i) {
+  if (!i.held_on) return `<td class="muted">-</td>`;
+  // `after a b`: each slug it waits on opens that item.
+  const m = /^after (.+)$/.exec(i.held_on);
+  const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.held_on);
+  return `<td title="${esc(i.hold || "")}">${text}</td>`;
+}
+
+// A row, and when it is the opened one its detail under it across every column. The title leads,
+// so a glance reads what each item is; its note is the muted second line (the Board's two-line cell).
 function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   const open = i.slug === qst.sel;
-  return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
+  const links = tblLinks(qst.table, n);
+  return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}"><td class="n">${i.start ?? ""}</td>` +
+    `<td class="btitle"><div class="bt">${esc(i.title || i.slug)}${qProof(i) ? " " + qProof(i) : ""}</div>${i.note ? `<div class="bsum muted" title="${esc(i.note)}">${esc(i.note)}</div>` : ""}</td>` +
+    `<td>${tblLink(links.project, i.project)}</td><td${i.priority === "urgent" ? ` class="warn"` : ""}>${dash(i.priority)}</td>${qState(i)}${qHoldCell(i)}<td>${dash(i.source)}</td>` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
-    `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
-    `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
+    `${qPrCell(i)}<td>${tblLink(links.row, i.row_id)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
+    `<td class="muted">${dash(i.mode)}</td><td class="muted">${dash(i.plan_label)}</td></tr>` +
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
@@ -266,14 +282,16 @@ function renderQueue() {
   qst.render();
 }
 
-// The fold's title says the worst step even while it is shut.
-function qFlowTitle() {
+// The worst step hues the head, so a phone's shut fold still says so, and is a line under it.
+// The fold line is the head itself, so the open fold does not say Pipeline twice.
+function qFlow() {
   const r = qfl.data?.line, n = r?.nodes[r.worst];
   const why = n?.stopped ? `${n.label} stopped` : n?.hot ? `${n.label} past its bound` : "";
-  return `Pipeline${why ? ` <span class="warn">${esc(why)}</span>` : ""}`;
+  return pfold("q-flow", secHead("flow", "Pipeline", null, why ? "warn" : null), (why ? `<div class="cline warn">${esc(why)}</div>` : "") + qStrip() + qFlowTail(), true);
 }
-const qFlow = () => pfold("q-flow", qFlowTitle(), `<h2 class="sec" id="sec-flow">Pipeline</h2>${qStrip()}${qFlowTail()}`);
-const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
+// The heading, then the last dispatch pass's verdict (hub-core `capacity::Dispatch`), amber when held.
+const qTableHead = () => secHead("table", "Queue", tblCount(qst.table)) +
+  (qst.dispatch ? `<div class="cline qdispatch${qst.dispatch.warn ? " warn" : ""}">${esc(qst.dispatch.line)}</div>` : "");
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
 const qCandAll = () => (qst.cands ? qst.cands.rows.concat(qst.cands.blocked_rows || []) : []);
@@ -314,13 +332,13 @@ function qCandBody() {
     (more > 0 ? `<div class="muted">+${more} more${qst.candQ.trim() ? " (the search reads the rows this page holds)" : ""}</div>` : "");
 }
 
-// The Candidates fold: counts in the heading; chips for each reason a row is blocked, with how
-// many it blocks; a search box; the projects worked on today that no worker covers; the rows.
+// The Candidates fold: the row count in the heading, urgent rows blocked a line under it; chips
+// for each reason a row is blocked, with how many it blocks; a search box with the auto count and
+// the read time; the projects worked on today that no worker covers; the rows.
 function qCandidates() {
   const k = "sec:candidates", open = secOpen(qst.open, k);
   const c = qst.cands;
-  const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}${c.as_of ? `, as of ${esc(c.as_of)}` : ""}`
-    : qst.candErr ? "unread" : "reading";
+  const level = qst.candErr ? "bad" : c?.urgent_blocked ? "warn" : null;
   let body;
   if (qst.candErr) body = `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
   else if (!c) body = `<div class="card muted">Reading candidates...</div>`;
@@ -331,12 +349,14 @@ function qCandidates() {
       ...(c.reasons || []).map((r) => chip(r.reason, `${r.reason} ${r.rows}`))].join(" ");
     const gap = (c.uncovered || []).length
       ? `<div class="cline warn">Worked on today, and no worker covers a row: ${c.uncovered.map(esc).join(", ")}</div>` : "";
-    body = `<div class="card qcfilter"><div class="opts"><input id="qc-q" placeholder="search task, project, why" value="${esc(qst.candQ)}">${chips}</div></div>` +
+    const facts = `<div class="cline muted"><b>auto</b> ${c.auto}${c.as_of ? `, <b>as of</b> ${esc(c.as_of)}` : ""}</div>`;
+    body = `<div class="card qcfilter"><div class="opts"><input id="qc-q" placeholder="search task, project, why" value="${esc(qst.candQ)}">${chips}</div>${facts}</div>` +
       `${gap}<div id="qc-body">${qCandBody()}</div>`;
   }
   const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
-  return `<details class="csec" id="sec-candidates" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
-    `<span class="muted">(${count})</span></h2></summary>${msg}${body}</details>`;
+  const urgent = c?.urgent_blocked ? `<div class="cline warn">${c.urgent_blocked} urgent blocked</div>` : "";
+  return `<details class="csec" id="sec-candidates" data-k="${k}"${open ? " open" : ""}><summary>${secHead("", "Candidates", c ? c.total : null, level)}</summary>` +
+    `${urgent}${msg}${body}</details>`;
 }
 
 async function qPromote(i) {
@@ -460,4 +480,7 @@ TABS.queue = {
     if (ev.kind === "resync") refreshFlow();
   },
 };
-refreshQueue();
+// The nav badge needs one read on any tab. It waits for app.js's route (whose listener runs first:
+// app.js loads before this file) so a linked view (`#queue?s=ready`) reads once, with its view,
+// and the Queue tab's own show() makes that read there.
+document.addEventListener("DOMContentLoaded", () => { if (st.tab !== "queue") refreshQueue(); });

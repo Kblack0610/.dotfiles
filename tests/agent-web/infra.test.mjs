@@ -61,9 +61,9 @@ test("Runners' head links the runs that failed in 24h to Runs' red chip, once th
   const was = bld.data;
   bld.data = { counts: { total: 9, running: 0, queued: 0, red: 2, recent_red: 2 } };
   const c = { hosts: 1, slots: 1, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], local: [] };
-  assert.match(section(c), /1 hosts, 1 slots, 0 busy, 0 waiting, <a href="#infra\/runs\?bs=red" [^>]*>failed 24h 2<\/a><\/span><\/h2>/);
+  assert.match(section(c), /^<h2 class="sec warn" id="sec-ci">Runners <span class="n">0<\/span><\/h2><div class="cline warn"><a href="#infra\/runs\?bs=red" [^>]*>2 failed in 24h<\/a><\/div>/);
   bld.data = { counts: { total: 9, running: 0, queued: 0, red: 0, recent_red: 0 } };
-  assert.match(section(c), /0 waiting; green: nothing waiting or failed in 24h<\/span>/);
+  assert.match(section(c), /^<h2 class="sec" id="sec-ci">Runners <span class="n">0<\/span><\/h2><div data-tbl/, "none failed: a plain head and no line");
   bld.data = was;
 });
 
@@ -81,7 +81,7 @@ const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], row
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
   const h = section(ci);
-  assert.match(h, /Runners <span class="muted">2 hosts, 3 slots, 1 busy, 1 waiting \(oldest 15m\)/);
+  assert.match(h, /^<h2 class="sec bad" id="sec-ci">Runners <span class="n">3<\/span><\/h2>/, "a job nobody can take hues the head red");
   assert.match(h, /<div class="panel down">[\s\S]*HD tests \(unity\) needs \[unity-full, hd-library\]: no online runner holds hd-library/);
   assert.match(h, /<td class="n warn">1h 57m!<\/td>/);
   assert.match(h, /<td class="bad">off<\/td>/);
@@ -119,12 +119,12 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   // The open inner tab shows; another one's sections are in the page, hidden.
   assert.match(main, /<div data-in="machines"><div class="tiles roomy">[\s\S]*<h2 class="sec" id="sec-machines">/);
   assert.match(main, /href="#alerts\/watches"/, "the watches tile opens Alerts' Watches");
-  assert.match(main, /<div data-in="runners" hidden><h2 class="sec" id="sec-ci">Runners /);
+  assert.match(main, /<div data-in="runners" hidden><h2 class="sec bad" id="sec-ci">Runners /);
   assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-waiting">/);
   assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-local">/);
   // The governor and cloud sections folded into Machines' columns (layout::MOVED); Pools joins Machines.
   for (const gone of ['id="sec-governor"', 'id="sec-cloud"']) assert.equal(at(gone), -1, `${gone} folded into Machines`);
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">/);
+  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">Pools <span class="n">0<\/span><\/h2>/);
   // Jobs is its own element (jobs.js paints it): it joins the Jobs group and hides here.
   assert.equal(els.jobs.dataset.in, "jobs");
   assert.equal(els.jobs.hidden, true);
@@ -134,7 +134,7 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   // Runs, Pipelines and Tests are ci.js's elements, each in its own group.
   for (const [id, inner] of [["ci-runs", "runs"], ["ci-pipelines", "pipelines"], ["ci-tests", "tests"]]) assert.equal(els[id].dataset.in, inner, id);
   run(`st.arg = "runners"; renderInfra()`);
-  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open>/);
+  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open><summary><h3 class="sec">Done today<\/h3><\/summary>/, "the fold's summary is its head alone");
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more"><summary/);
@@ -320,7 +320,10 @@ test("a pool page draws its parts, its machines and waiting jobs with their link
   assert.match(h, />nobody</);
   assert.match(h, /data-tip="[^"]*1\.0 busy of 3\.0 slots, 2 waiting at most"/);
   assert.match(h, /data-tip="[^"]*: no reading"/, "an hour with no sample says so");
-  assert.match(h, /30 readings/);
+  assert.match(h, /<h3 class="sec">7 days <span class="n">30 readings<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Machines <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Waiting <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<div class="bhead"><span>unity, 1\/3 busy, 2 waiting<\/span><a class="btn sm"/);
 });
 
 test("a failed pool refresh keeps the page on screen and says so", () => {

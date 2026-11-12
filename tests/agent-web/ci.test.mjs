@@ -57,7 +57,7 @@ const red = {
   conclusion: "failure", prs: [12], url: "https://github.com/o/binks/actions/runs/77", owner: "agent-3", state: "red", level: "bad", started: NOW() - 300, took: 125, release: null,
 };
 const bdata = (o = {}) => ({
-  at: NOW() - 60, summary: "2 runs in 30 days: 0 running, 0 queued, 1 red", stale_after: 1800, rows: [red], more: 0, errors: [],
+  at: NOW() - 60, stale_after: 1800, rows: [red], more: 0, errors: [],
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
@@ -84,7 +84,8 @@ const BKEY = "github.com|binks|77|2";
 test("the CI runs section lists each run's state, owner and the release it ran on", () => {
   showBuilds(bdata({ rows: [red, { ...red, id: 78, release: { project: "binks", tag: "v1.2.0" } }] }));
   const b = runs.innerHTML;
-  assert.match(b, /<div data-tbl="b"><div id="bld-head"><h2 class="sec" id="sec-runs">Runs <span class="muted">2 runs in 30 days: 0 running, 0 queued, 1 red/);
+  assert.match(b, /<div data-tbl="b"><div id="bld-head"><h2 class="sec" id="sec-runs">Runs <span class="n">1 of 2<\/span><\/h2>/, "the head is its title and the view's count");
+  assert.doesNotMatch(b, /ledger older/, "a fresh ledger draws no warn line");
   assert.match(b, /<td class="bad">red<\/td><td>binks<\/td><td class="wrap">Tests<\/td>/);
   assert.match(b, /<td class="muted">agent-3<\/td><td class="muted">-<\/td><\/tr>/, "no release draws a dash");
   assert.match(b, /<td class="muted">v1.2.0<\/td><\/tr>/);
@@ -99,7 +100,7 @@ test("a run with no owning session draws a dash, and an empty ledger says so", (
 
 test("a ledger that is not being refreshed is amber", () => {
   showBuilds(bdata({ at: NOW() - 7200 }));
-  assert.match(runs.innerHTML, /class="warn">ledger older than 30m/);
+  assert.match(runs.innerHTML, /<h2 class="sec warn" id="sec-runs">Runs <span class="n">1 of 2<\/span><\/h2><div class="cline warn">ledger older than 30m<\/div>/);
 });
 
 test("the runs draw only while Infra is the open tab", () => {
@@ -163,7 +164,7 @@ test("an opened run shows its header, every job with its price, the steps and th
 test("the runs carry no Run times fold, and their counts are Runners' failed 24h link to the red runs", () => {
   showBuilds(bdata({ counts: { total: 2, running: 0, queued: 0, red: 1, recent_red: 3 } }));
   assert.doesNotMatch(runs.innerHTML, /Run times/);
-  assert.equal(run("failed24h()"), ', <a href="#infra/runs?bs=red" title="the red runs, newest first">failed 24h 3</a>');
+  assert.equal(run("failed24h()"), '<div class="cline warn"><a href="#infra/runs?bs=red" title="the red runs, newest first">3 failed in 24h</a></div>');
   Object.assign(run("bld").data, { counts: { total: 2, running: 0, queued: 0, red: 0, recent_red: 0 } });
   assert.equal(run("failed24h()"), "", "none failed draws nothing");
 });
@@ -207,7 +208,7 @@ test("Infra shown before its reads answer says reading in Runs, Pipelines and Te
   try {
     run("TABS.infra.show()");
     // Before any read settles: each section already holds its heading and the word.
-    for (const [name, b] of [["Runs", runs], ["Pipelines", pipes_], ["Tests", tests_]]) assert.match(b.innerHTML, new RegExp(`${name} <span class="muted">reading\\.\\.\\.`), name);
+    for (const [name, b] of [["Runs", runs], ["Pipelines", pipes_], ["Tests", tests_]]) assert.match(b.innerHTML, new RegExp(`${name}</h2><div class="empty">Reading\\.\\.\\.`), name);
   } finally {
     await settled();
     run("st.tab = 'home'");
@@ -238,7 +239,10 @@ const srow = (key) => ({ dataset: { skey: key }, closest: (sel) => (sel === "tr.
 test("the Tests section draws the run's totals, its picker and each suite", () => {
   showTests();
   const b = tests_.innerHTML;
-  assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec" id="sec-tests">Tests <span class="muted">main abc1234: 5 tests in 2 suites: 1 failed/);
+  assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec bad" id="sec-tests">Tests <span class="n">2<\/span><\/h2>/, "a failed suite hues the head");
+  // The run's totals are a tile after the suites' state tiles (the Tests tblTab's tiles).
+  assert.match(run("testsTiles")(tdata()), /<span class="tl">TESTS<\/span><span class="tv">5<\/span><span class="ts1">1 failed, 1 skipped<\/span>/);
+  assert.equal(run("testsTiles")(tdata({ run: null })), "", "no run, no tile");
   assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
   assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">0<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
   assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
@@ -355,7 +359,7 @@ test("the Tests table sorts under its own keys and the run picker names the run 
 test("the Pipelines table states each pipeline with its why, its night's schedule link and its times", () => {
   showPipes();
   const b = pipes_.innerHTML;
-  assert.match(b, /<div id="pip-head"><h2 class="sec" id="sec-pipelines">Pipelines <span class="muted">2 pipelines in 1 repo: 1 red<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
+  assert.match(b, /<div id="pip-head"><h2 class="sec bad" id="sec-pipelines">Pipelines <span class="n">2<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
   assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a class="tl" href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
   assert.match(b, /<td class="wrap muted"><a class="tl" href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a class="tl" href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
   assert.match(b, /<td class="bad" title="[^"]+"><a class="tl" href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");
@@ -447,7 +451,7 @@ test("a run's page reads the run by its repo and id, shows its newest attempt wi
   assert.equal(asked[0], "/api/builds?bq=repo%3A%3Dbinks+id%3A%3D77", "a Forgejo run id is an index within its repo");
   assert.ok(asked.includes("/api/builds/log?forge=github.com&repo=binks&run_id=77&attempt=2"), "the newest attempt's log");
   let h = run("runPage()");
-  assert.match(h, /CI run <span class="muted">binks\/77<\/span> <a href="#infra\/runs">all runs<\/a>/);
+  assert.match(h, /<div class="bhead" id="sec-run"><span>CI runs \/ <b>binks\/77<\/b><\/span><a class="btn sm" href="#infra\/runs">All runs<\/a><\/div>/);
   assert.match(h, /<b>Run<\/b> github.com binks #77 attempt 2/);
   assert.match(h, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
   builds = bdata({ rows: [] });

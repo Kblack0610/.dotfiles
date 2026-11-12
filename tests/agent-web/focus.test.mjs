@@ -56,7 +56,7 @@ function draw(data, { raw = false, arg = "" } = {}) {
 
 test("today's lanes are cards, open but Done, with counts, and the rollup and other sections fold away", () => {
   const h = draw(day);
-  assert.match(h, /<div class="dtitle"><h2>2026-11-05<\/h2><span class="muted">2 open, 1 done<\/span><\/div>/);
+  assert.match(h, /<div class="dhead"><h2 class="sec">2026-11-05 <span class="n">2 open, 1 done<\/span><\/h2><div class="opts">/);
   assert.match(h, /<details class="dlane urgent" data-k="lane:Urgent" open><summary class="dlh"><span class="dln">Urgent<\/span><span class="dlc">2<\/span><\/summary>/);
   assert.match(h, /<div class="dlane empty high"><div class="dlh"><span class="dln">High<\/span><span class="dlc">0<\/span><span class="muted">nothing here<\/span>/);
   assert.match(h, /<details class="dlane done" data-k="lane:Done"><summary class="dlh"><span class="dln">Done<\/span><span class="dlc">1<\/span>/);
@@ -105,7 +105,7 @@ test("a note opened from a link is all sections, open, its untitled top drawn as
     focus: null,
     sections: [{ title: "", markdown: "One per line." }, { title: "Outbox", markdown: "- [ ] a line" }],
   }, { arg: "status/inbox" });
-  assert.match(h, /<h2><span title="\/n\/journal\/daily\/2026-11-05.md">outbox<\/span><\/h2>/);
+  assert.match(h, /<div class="dhead"><h2 class="sec">outbox<\/h2>/, "a note's head is its name; Raw shows its path");
   assert.doesNotMatch(h, /open, .* done/, "no Focus, no counts");
   assert.match(h, /<div class="md"><p>One per line\.<\/p><\/div><details class="cfold" data-k="sec:Outbox" open>/);
 });
@@ -142,7 +142,7 @@ test("Daily writes nothing to the outbox; #daily/outbox shows the outbox view in
   run(`st.tab = "daily"; st.arg = "outbox"; TABS.daily.show()`);
   assert.equal(box("d-note").hidden, true);
   assert.equal(box("outbox").hidden, false);
-  assert.match(box("outbox").innerHTML, /<h2>Outbox<\/h2><\/div><\/div><textarea/, "the nav has Daily and Inbox; the head is the name alone");
+  assert.match(box("outbox").innerHTML, /^<h2 class="sec">Outbox<\/h2><textarea/, "the nav has Daily and Inbox; the head is the name alone");
   assert.match(box("outbox").innerHTML, /<button class="btn primary" id="o-send">Send<\/button>/);
   run(`st.arg = ""; TABS.daily.show()`);
   assert.equal(box("d-note").hidden, false);

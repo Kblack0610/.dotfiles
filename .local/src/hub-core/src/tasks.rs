@@ -73,9 +73,9 @@ pub struct Row {
     pub due: Option<String>,
     /// The id its `#of/<id>` names.
     pub parent: Option<String>,
-    /// What a board leads the row with, a few words ([`title_and_rest`]); set by [`feed`].
+    /// What a board leads the row with, a few words ([`crate::text::title`]); set by [`feed`].
     pub title: String,
-    /// What the title leaves out of the text ([`title_and_rest`]); set by [`feed`].
+    /// What the title leaves out of the text ([`crate::text::title`]); set by [`feed`].
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
@@ -91,62 +91,6 @@ pub struct Row {
     /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
     /// `review`), set by `queue_states`.
     pub queue: Option<String>,
-}
-
-/// The most words a row's title keeps before it is cut.
-const TITLE_WORDS: usize = 8;
-/// Words past TITLE_WORDS a title may keep rather than cut: a summary of one word reads as noise.
-const TITLE_SLACK: usize = 3;
-
-/// A row's text as a few words a board leads with, and what the title leaves out: the summary
-/// line a board draws under it, empty when the title is all of it. The title is the text without
-/// its `type(area):` prefix (`typed`: notes parsed one into `type`) and any `#tag`, up to the
-/// first clause break (`: `, `, `, `; `, ` - `, ` (`) that leaves two words or more, at most
-/// [`TITLE_WORDS`] words (plus [`TITLE_SLACK`]); a cut title leaves the rest from the word it
-/// stopped at, so no word is lost. Counted from the text, never written by a model (dashboards
-/// rule 6), so it is the same on every surface and every read.
-pub fn title_and_rest(text: &str, typed: bool) -> (String, String) {
-    let text = text.trim();
-    let body = match text.split_once(": ") {
-        Some((_, rest)) if typed => rest,
-        _ => text,
-    };
-    let line = body
-        .split_whitespace()
-        // A tag is `#` and a letter (`#size/m`); `#1980` is a PR the summary keeps.
-        .filter(|w| {
-            !w.strip_prefix('#')
-                .is_some_and(|t| t.starts_with(|c: char| c.is_alphabetic()))
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let end = [": ", ", ", "; ", " - ", " ("]
-        .iter()
-        .filter_map(|p| {
-            line.match_indices(p)
-                .map(|(i, _)| i)
-                .find(|&i| line[..i].split_whitespace().count() >= 2)
-        })
-        .min()
-        .unwrap_or(line.len());
-    let words: Vec<&str> = line[..end].split_whitespace().collect();
-    // A tail of a few words reads better kept than moved alone to the summary.
-    let cut = words.len() > TITLE_WORDS + TITLE_SLACK;
-    let n = if cut { TITLE_WORDS } else { words.len() };
-    let title = words[..n].join(" ");
-    let title = title.trim_end_matches([',', ';', ':', '.']);
-    if cut {
-        let rest: Vec<&str> = line.split_whitespace().skip(TITLE_WORDS).collect();
-        return (format!("{title}..."), format!("...{}", rest.join(" ")));
-    }
-    let rest = line[end..].trim_start_matches([':', ',', ';', '-', ' ']);
-    // `Space Raiders (v0.3.2)`: a parenthesis that closes the line is the summary, unwrapped;
-    // one that closes mid-line stays as written.
-    let rest = match rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        Some(inner) if !inner.contains([')', '(']) => inner,
-        _ => rest,
-    };
-    (title.to_string(), rest.trim().to_string())
 }
 
 /// The sections in sheet order, then a row in none (a playtest check).
@@ -173,17 +117,29 @@ pub fn section_title(section: Option<&str>) -> &'static str {
 
 /// Each row's section cell on a board: `NEXT UP (10)` over the first row of a section and blank
 /// under it, the way the sheet reads, while the rows are in the sheet's order; under any other
-/// sort each row names its own. The hub and agent-web both draw these.
+/// sort each row names its own. Closed rows run by the day they closed (`DONE 11-07 (12)`, or
+/// `DONE no day` for a row ticked with no `done:` marker), so the Done chip reads as a day log;
+/// under another sort a closed row still names its day. The hub and agent-web both draw these.
 pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
-    fn of(r: &Row) -> Option<&str> {
-        r.section.as_deref()
+    /// A row's run: its section and, on a closed row, the day it closed (None: no marker).
+    fn of(r: &Row) -> (Option<&str>, Option<Option<&str>>) {
+        let day = (r.state == "done").then_some(r.closed.as_deref());
+        (r.section.as_deref(), day)
     }
     rows.iter()
         .enumerate()
         .map(|(i, r)| {
-            let title = section_title(r.section.as_deref());
+            let title = match of(r).1 {
+                Some(Some(d)) => format!(
+                    "{} {}",
+                    section_title(r.section.as_deref()),
+                    crate::text::short_day(d)
+                ),
+                Some(None) => format!("{} no day", section_title(r.section.as_deref())),
+                None => section_title(r.section.as_deref()).to_string(),
+            };
             if sorted {
-                return title.to_string();
+                return title;
             }
             if i > 0 && of(rows[i - 1]) == of(r) {
                 return String::new();
@@ -248,8 +204,14 @@ impl crate::table::Row for Row {
         "section", "title", "epic", "priority", "state", "when", "project", "lane", "id",
         "version", "size", "tier", "since", "text", "profile", "tag",
     ];
-    const STATES: &'static [&'static str] =
-        &["all", "in progress", "filed today", "urgent", "requested"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        "in progress",
+        "filed today",
+        "urgent",
+        "requested",
+        "done",
+    ];
     const FACETS: &'static [&'static str] =
         &["section", "epic", "project", "lane", "priority", "state"];
     const LEAD: &'static str = "title";
@@ -290,6 +252,8 @@ impl crate::table::Row for Row {
             // Asks of work still open: a closed row is Done's, not the chip's.
             "urgent" => self.state != "done" && self.priority == "urgent",
             "requested" => self.state != "done" && self.requested,
+            // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
+            "done" => self.state == "done",
             _ => false,
         }
     }
@@ -427,16 +391,18 @@ impl Feed {
             b.closed
                 .cmp(&a.closed)
                 .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.profile.cmp(&b.profile))
         });
         let mut rows = self.open_rows(scope);
         rows.extend(done);
         rows
     }
 
-    /// Give every row its [`title_and_rest`], and each row under an epic that epic's title.
+    /// Give every row its [`crate::text::title`], and each row under an epic that epic's title.
     pub fn titles(&mut self) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
-            (r.title, r.summary) = title_and_rest(&r.text, r.r#type.is_some());
+            let t = crate::text::title(&r.text);
+            (r.title, r.summary) = (t.title, t.summary);
             if r.title.is_empty() {
                 r.title = r.text.trim().to_string();
             }
@@ -918,6 +884,43 @@ mod tests {
         let closed: Vec<&Row> = closed.iter().collect();
         let on = |s: &str| View::new::<Row>("", s, "", "").apply(&closed).len();
         assert_eq!((on("urgent"), on("requested")), (0, 0));
+        // The Done chip is the reverse: closed rows only.
+        assert_eq!((shown("", "done"), on("done")), (0, 4));
+    }
+
+    #[test]
+    fn closed_rows_run_by_the_day_they_closed_then_by_project() {
+        let done = |project: &str, closed: Option<&str>| Row {
+            state: "done".into(),
+            section: Some("done".into()),
+            project: Some(project.into()),
+            closed: closed.map(Into::into),
+            text: project.into(),
+            ..Default::default()
+        };
+        let f = Feed {
+            rows: rows().rows,
+            done: vec![
+                done("old", None),
+                done("garden", Some("2026-11-05")),
+                done("demo", Some("2026-11-07")),
+                done("arena", Some("2026-11-07")),
+            ],
+            ..Default::default()
+        };
+        let all = f.board_rows(None);
+        let closed = &all[all.len() - 4..];
+        let names: Vec<&str> = closed.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(names, ["arena", "demo", "garden", "old"]);
+        assert_eq!(
+            section_labels(closed, false),
+            ["DONE 11-07 (2)", "", "DONE 11-05 (1)", "DONE no day (1)"]
+        );
+        // Under another sort each row names its own section and day, with no count.
+        assert_eq!(
+            section_labels(&[closed[0], closed[3]], true),
+            ["DONE 11-07", "DONE no day"]
+        );
     }
 
     #[test]
@@ -961,7 +964,10 @@ mod tests {
     #[test]
     fn a_title_is_the_few_words_before_the_first_clause() {
         // notes sets `type` on exactly these `type(area): ` rows.
-        let title = |t: &str| title_and_rest(t, t.split_once("): ").is_some());
+        let title = |t: &str| {
+            let t = crate::text::title(t);
+            (t.title, t.summary)
+        };
         // The board rows as they stand on unity-core-playground (2026-11-12).
         for (text, want) in [
             (
