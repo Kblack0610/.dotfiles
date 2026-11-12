@@ -10,6 +10,7 @@ const WORK_COLOR = { failed: "var(--b-needs)", waiting: "var(--b-stalled)", acti
 
 const wrk = tblTab({
   tab: "log", id: "work", el: "log-work", pre: "w", api: "/api/log/work", pages: true, wait: "Loading.",
+  shown: () => logShows("work"),
   hint: "search, or project:notes state:done when:2026-11-08",
   params: (p, t) => { if (workDay()) p.set("wday", workDay()); if (t.all) p.set("all", "1"); },
   days: () => ({ key: "day", on: workDay(), windows: WORK_WINDOWS, date: true }),
@@ -47,8 +48,9 @@ function workTail(d) {
   return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on the <a href="#board">Board</a>.</div>`;
 }
 
-const workFeed = pushed("log", ["queue", "log"], wrk.refresh);
+const workFeed = pushed("log", ["queue", "log"], wrk.refresh, () => logShows("work"));
 LOG_PARTS.push({
+  sec: "work",
   show() {
     const fresh = wrk.read !== st.views.log;
     // A link or Back changed the view, and "+N more" was asked of the last one.
