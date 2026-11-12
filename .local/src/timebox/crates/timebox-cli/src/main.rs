@@ -94,14 +94,16 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// Run a named cycle from config (`[cycles]`), switching op at each step. No name
-    /// lists the configured cycles.
-    Cycle {
-        name: Option<String>,
-        /// Play a sound at each step change
+    /// The task queue: the head runs with its own lap; a timeout runs it again until
+    /// `done`. No action lists it (`--json` for the panel). Positions are 1-based.
+    Queue {
+        #[command(subcommand)]
+        action: Option<QueueCmd>,
         #[arg(long)]
-        sound: bool,
+        json: bool,
     },
+    /// Finish the head task: it leaves the queue and the next one starts
+    Done,
     /// Turn an alert on or off at runtime (flips it when no state is given).
     /// `flash` covers the screen flash and the bar blink in a lap's last 10 seconds.
     Toggle {
@@ -112,6 +114,25 @@ enum Cmd {
     },
     /// Print the resolved config + paths
     Config,
+}
+
+#[derive(Subcommand)]
+enum QueueCmd {
+    /// Append a task, e.g. `queue add guitar 5m` (the op may have spaces)
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
+    },
+    /// Remove the task at position N
+    Rm { n: usize },
+    /// Move the task at position N to position TO
+    Mv { n: usize, to: usize },
+    /// Start working the queue (the head runs)
+    Go,
+    /// Replace the queue with a preset from config (`[presets]`). No name lists them.
+    Load { name: Option<String> },
+    /// Empty the queue (stops the head)
+    Clear,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -298,32 +319,74 @@ fn run(
             }
             Ok(0)
         }
-        Cmd::Cycle { name, sound } => {
-            let Some(name) = name else {
-                if cfg.cycles.is_empty() {
-                    eprintln!(
-                        "no cycles configured (add a [cycles] table to {})",
-                        cfg.source
-                    );
-                    return Ok(1);
+        Cmd::Queue { action, json } => {
+            let snd = sound_on(cfg, snap);
+            let evs = match action {
+                None => {
+                    if *json {
+                        println!("{}", queue_json(snap, now));
+                    } else {
+                        print_queue(snap, now);
+                    }
+                    return Ok(0);
                 }
-                for (n, steps) in &cfg.cycles {
-                    println!("{n}: {}", config::fmt_steps(steps));
+                Some(QueueCmd::Add { task }) => {
+                    let t = config::parse_task(&task.join(" ")).map_err(anyhow::Error::msg)?;
+                    snap.queue_add(now, t)
                 }
-                return Ok(0);
+                Some(QueueCmd::Rm { n }) => snap.queue_rm(now, pos(*n)?, snd),
+                Some(QueueCmd::Mv { n, to }) => snap.queue_mv(now, pos(*n)?, pos(*to)?, snd),
+                Some(QueueCmd::Go) => snap.queue_go(now, snd),
+                Some(QueueCmd::Clear) => snap.queue_clear(now),
+                Some(QueueCmd::Load { name: None }) => {
+                    if cfg.presets.is_empty() {
+                        eprintln!(
+                            "no presets configured (add a [presets] table to {})",
+                            cfg.source
+                        );
+                        return Ok(1);
+                    }
+                    for (n, tasks) in &cfg.presets {
+                        println!("{n}: {}", config::fmt_tasks(tasks));
+                    }
+                    return Ok(0);
+                }
+                Some(QueueCmd::Load { name: Some(name) }) => {
+                    let Some(tasks) = cfg.presets.get(name) else {
+                        eprintln!(
+                            "no preset '{name}' (configured: {})",
+                            cfg.presets.keys().cloned().collect::<Vec<_>>().join(", ")
+                        );
+                        return Ok(1);
+                    };
+                    snap.queue_load(now, name, tasks.clone())
+                }
             };
-            let Some(steps) = cfg.cycles.get(name) else {
-                eprintln!(
-                    "no cycle '{name}' (configured: {})",
-                    cfg.cycles.keys().cloned().collect::<Vec<_>>().join(", ")
-                );
+            if evs.is_empty() {
+                eprintln!("queue: nothing to do");
                 return Ok(1);
-            };
-            let evs = snap.start_cycle(now, name, steps.clone(), *sound || cfg.sound);
+            }
             persist(cfg, snap, &evs, dirty);
-            log.info("cycle", name);
-            println!("cycle {name}: {}", config::fmt_steps(steps));
-            print_status(snap, now);
+            log.info(
+                "queue",
+                &evs.iter()
+                    .map(|e| format!("{:?} {}", e.kind, e.op))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            print_queue(snap, now);
+            Ok(0)
+        }
+        Cmd::Done => {
+            let evs = snap.done(now, sound_on(cfg, snap));
+            if evs.is_empty() {
+                eprintln!("done: the queue is empty");
+                return Ok(1);
+            }
+            persist(cfg, snap, &evs, dirty);
+            log.info("done", &evs[0].op);
+            println!("done {}", evs[0].op);
+            print_queue(snap, now);
             Ok(0)
         }
         Cmd::Toggle { alert, state } => {
@@ -397,7 +460,6 @@ fn single(
         }
         return Ok(1);
     };
-    let before = snap.active_sw.clone();
     let evs = f(snap, &t);
     if evs.is_empty() {
         eprintln!("{verb}: {t} not in a state to {verb}");
@@ -407,11 +469,6 @@ fn single(
     log.info(verb, &t);
     println!("{verb} {t}");
     print_one(snap, &t, now);
-    // A lap inside a cycle moved to the next step: show where it went.
-    if let Some(next) = snap.active_sw.clone().filter(|_| snap.active_sw != before) {
-        println!("now {next}");
-        print_one(snap, &next, now);
-    }
     Ok(0)
 }
 
@@ -437,26 +494,83 @@ fn print_one(snap: &Snapshot, op: &str, now: DateTime<Local>) {
     }
 }
 
-fn cycle_line(snap: &Snapshot) -> Option<String> {
-    let c = snap.cycle.as_ref()?;
-    let next = c.next();
-    Some(format!(
-        "cycle {}: step {}/{}, next {} {}",
-        c.name,
-        c.idx % c.steps.len() + 1,
-        c.steps.len(),
-        next.op,
-        fmt_short(next.len_s)
-    ))
+/// A 1-based queue position from the CLI.
+fn pos(n: usize) -> Result<usize> {
+    n.checked_sub(1)
+        .ok_or_else(|| anyhow::anyhow!("positions start at 1"))
+}
+
+/// The head's countdown while the queue is on (None when off or paused).
+fn head_countdown(snap: &Snapshot, now: DateTime<Local>) -> Option<i64> {
+    let h = snap.queue.head()?;
+    if !snap.queue.active {
+        return None;
+    }
+    snap.stopwatches.get(&h.op)?.next_lap_countdown_s(now)
+}
+
+/// One line per task: `1  guitar  5m  running 3:12 left  x1`. The panel parses the
+/// leading position, so it stays first.
+fn queue_lines(snap: &Snapshot, now: DateTime<Local>) -> Vec<String> {
+    snap.queue
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut l = format!("{:<2} {:<16} {:>4}", i + 1, t.op, fmt_short(t.len_s));
+            if i == 0 && snap.queue.active {
+                let st = snap.stopwatches.get(&t.op).map(|s| s.state);
+                match (st, head_countdown(snap, now)) {
+                    (Some(RunState::Running), Some(cd)) => {
+                        l.push_str(&format!("  running {} left", fmt_hms(cd)))
+                    }
+                    (Some(RunState::Paused), _) => l.push_str("  paused"),
+                    _ => {}
+                }
+                let m = snap.queue_misses();
+                if m > 0 {
+                    l.push_str(&format!("  x{m} missed"));
+                }
+            }
+            l
+        })
+        .collect()
+}
+
+fn print_queue(snap: &Snapshot, now: DateTime<Local>) {
+    if snap.queue.tasks.is_empty() {
+        println!("queue empty");
+        return;
+    }
+    let state = if snap.queue.active {
+        "on"
+    } else {
+        "off (queue go starts it)"
+    };
+    match &snap.queue.preset {
+        Some(p) => println!("queue {state}, preset {p}"),
+        None => println!("queue {state}"),
+    }
+    for l in queue_lines(snap, now) {
+        println!("{l}");
+    }
+}
+
+fn queue_json(snap: &Snapshot, now: DateTime<Local>) -> String {
+    serde_json::json!({
+        "active": snap.queue.active,
+        "preset": snap.queue.preset,
+        "misses": snap.queue_misses(),
+        "countdown_s": head_countdown(snap, now),
+        "tasks": snap.queue.tasks,
+    })
+    .to_string()
 }
 
 fn print_status(snap: &Snapshot, now: DateTime<Local>) {
     if snap.stopwatches.is_empty() {
         println!("no stopwatches");
         return;
-    }
-    if let Some(l) = cycle_line(snap) {
-        println!("{l}");
     }
     for (op, sw) in &snap.stopwatches {
         let star = if snap.active_sw.as_deref() == Some(op) {
@@ -484,8 +598,18 @@ fn print_status(snap: &Snapshot, now: DateTime<Local>) {
 fn waybar_json(snap: &Snapshot, cfg: &config::Config, now: DateTime<Local>) -> String {
     let obj = match snap.display_op() {
         None => {
-            let text = format!("{}{}", cfg.icon, cfg.idle_text);
-            serde_json::json!({ "text": text, "tooltip": "timebox: idle (click to start)", "class": "inactive" })
+            let waiting = snap.queue.tasks.len();
+            let text = if waiting > 0 {
+                format!("{}{} +{waiting}", cfg.icon, cfg.idle_text)
+            } else {
+                format!("{}{}", cfg.icon, cfg.idle_text)
+            };
+            let tip = if waiting > 0 {
+                tooltip(cfg, snap, now)
+            } else {
+                "timebox: idle (click to open the queue)".to_string()
+            };
+            serde_json::json!({ "text": text, "tooltip": tip, "class": "inactive" })
         }
         Some(op) => {
             let sw = &snap.stopwatches[&op];
@@ -513,6 +637,22 @@ fn waybar_json(snap: &Snapshot, cfg: &config::Config, now: DateTime<Local>) -> S
                     (format!("{} {}", op, fmt_hms(sw.elapsed_s(now))), cls)
                 }
             };
+            // On the queue head: misses, then the tasks waiting behind it.
+            let mut body = body;
+            let mut class = class;
+            if snap.queue.active && snap.queue.head().map(|t| t.op.as_str()) == Some(op.as_str()) {
+                let m = snap.queue_misses();
+                if m > 0 {
+                    body.push_str(&format!(" x{m}"));
+                    if running && class != "final" {
+                        class = "overdue";
+                    }
+                }
+                let behind = snap.queue.tasks.len() - 1;
+                if behind > 0 {
+                    body.push_str(&format!(" (+{behind})"));
+                }
+            }
             let text = format!("{}{}", cfg.icon, body);
             serde_json::json!({ "text": text, "tooltip": tooltip(cfg, snap, now), "class": class })
         }
@@ -522,7 +662,17 @@ fn waybar_json(snap: &Snapshot, cfg: &config::Config, now: DateTime<Local>) -> S
 
 fn tooltip(cfg: &config::Config, snap: &Snapshot, now: DateTime<Local>) -> String {
     let mut lines = vec!["timebox".to_string()];
-    lines.extend(cycle_line(snap));
+    if !snap.queue.tasks.is_empty() {
+        lines.push(
+            if snap.queue.active {
+                "queue:"
+            } else {
+                "queue (off):"
+            }
+            .to_string(),
+        );
+        lines.extend(queue_lines(snap, now));
+    }
     for (op, sw) in &snap.stopwatches {
         let mut l = format!(
             "{}: {} {}",
@@ -593,21 +743,22 @@ fn fire_laps(
     evs: &[timebox_core::Event],
     log: &logging::Logger,
 ) {
-    let in_cycle = |e: &timebox_core::Event| e.meta.get("cycle").is_some();
     let sound_for = |op: &str| {
         snap.alerts
             .sound
             .unwrap_or_else(|| snap.stopwatches.get(op).map(|s| s.sound).unwrap_or(false))
     };
+    let head = snap
+        .queue
+        .head()
+        .filter(|_| snap.queue.active)
+        .map(|t| t.op.as_str());
     let mut msgs = Vec::new();
     let mut play = false;
 
-    // Plain laps, grouped by op: how many boundaries crossed and the latest lap index.
+    // Laps grouped by op: how many boundaries crossed and the latest lap index.
     let mut per_op: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    for e in evs
-        .iter()
-        .filter(|e| e.kind == EventKind::Lap && !in_cycle(e))
-    {
+    for e in evs.iter().filter(|e| e.kind == EventKind::Lap) {
         let entry = per_op.entry(e.op.clone()).or_insert((0, 0));
         entry.0 += 1;
         if let Some(i) = e.lap_index {
@@ -615,32 +766,17 @@ fn fire_laps(
         }
     }
     for (op, (count, idx)) in per_op {
-        msgs.push(if count > 1 {
+        msgs.push(if head == Some(op.as_str()) {
+            format!(
+                "time's up, again: {op} (x{} missed, timebox done clears it)",
+                snap.queue_misses()
+            )
+        } else if count > 1 {
             format!("missed {count} laps - switch now: {op} (lap {idx})")
         } else {
             format!("switch now: {op} (lap {idx})")
         });
         play |= sound_for(&op);
-    }
-
-    // Cycle steps: one message naming where the cycle is now.
-    let steps: Vec<_> = evs
-        .iter()
-        .filter(|e| e.kind == EventKind::Switch && in_cycle(e))
-        .collect();
-    if let Some(last) = steps.last() {
-        let name = last.meta["cycle"].as_str().unwrap_or("cycle");
-        let len = last.lap_len_s.map(fmt_short).unwrap_or_default();
-        msgs.push(if steps.len() > 1 {
-            format!(
-                "missed {} steps - now: {} {len} ({name})",
-                steps.len() - 1,
-                last.op
-            )
-        } else {
-            format!("switch to {} for {len} ({name})", last.op)
-        });
-        play |= sound_for(&last.op);
     }
 
     if msgs.is_empty() {

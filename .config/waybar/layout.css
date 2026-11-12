@@ -66,6 +66,12 @@
     }
 }
 
+/* A queue task that timed out without `timebox done` stays red, no blink, until it is cleared. */
+#custom-timebox.overdue {
+    background-color: #ff5555;
+    color: #1d1f21;
+}
+
 #custom-timebox.final {
     animation-name: timebox-blink;
     animation-duration: 0.5s;
