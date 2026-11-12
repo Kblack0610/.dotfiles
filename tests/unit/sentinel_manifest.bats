@@ -102,6 +102,9 @@ action: Check the rollout, then the ingress.
 EOF
 }
 
+# Drop a field so a test can write its own; a repeated key is refused, not overridden.
+without() { sed -i "/^$1:/d" "$M"; }
+
 @test "plain validate ignores the legibility fields entirely" {
   # The compatibility assertion, and the one that keeps the daemon quiet: every
   # manifest written before this schema existed must still pass the runtime check.
@@ -164,7 +167,7 @@ EOF
 @test "--strict rejects a field that is present but empty" {
   # `where:` with nothing after it parses as None. A key that exists but says nothing
   # is the documentation equivalent of a false green.
-  legible; echo 'where:' >> "$M"
+  legible; without where; echo 'where:' >> "$M"
   run "$SM" validate --strict "$M"
   assert_failure
   assert_output --partial "missing 'where'"
@@ -173,7 +176,7 @@ EOF
 @test "--strict rejects a multi-line field, which would break both renderers" {
   # A `|-` block keeps its newlines; that value lands in one table cell and one push
   # notification, and mangles both.
-  legible
+  legible; without action
   printf 'action: |-\n  first line\n  second line\n' >> "$M"
   run "$SM" validate --strict "$M"
   assert_failure
@@ -181,7 +184,7 @@ EOF
 }
 
 @test "--strict accepts a folded block scalar, the documented way to write a long one" {
-  legible
+  legible; without why
   printf 'why: >-\n  a reason long enough to want\n  wrapping in the source file\n' >> "$M"
   run "$SM" validate --strict "$M"
   assert_success
