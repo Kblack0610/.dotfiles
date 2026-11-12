@@ -446,7 +446,6 @@ fn vitals(args: Vec<String>) -> i32 {
     0
 }
 
-/// Epoch seconds, or an RFC 3339 time.
 /// The CI runs ledger, joined to the PR store, these queue items and the releases snapshot, as
 /// the live app's `read_builds` reads it.
 fn read_runs(a: &App, items: &[hub_core::queue::Item], now: i64) -> hub_core::builds::Builds {
@@ -457,6 +456,7 @@ fn read_runs(a: &App, items: &[hub_core::queue::Item], now: i64) -> hub_core::bu
     hub_core::builds::read(&a.files.builds, Some(join), now)
 }
 
+/// Epoch seconds, or an RFC 3339 time.
 fn parse_since(s: &str) -> Option<i64> {
     s.parse().ok().or_else(|| {
         chrono::DateTime::parse_from_rfc3339(s)

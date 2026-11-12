@@ -211,6 +211,10 @@ const BUILD_LOG_MIN: usize = 6;
 fn infra_tab() -> &'static hub_core::layout::Tab {
     hub_core::layout::resolve("infra").expect("infra is a tab")
 }
+/// The tabs that draw the CI runs ledger: Infra's CI runs and Releases' Release runs.
+fn reads_runs(t: Tab) -> bool {
+    matches!(t, Tab::Releases | Tab::Infra)
+}
 /// The footer while a table's query is being typed.
 const QUERY_HINT: &str = "type a query (word, key:value, -key:value), Enter applies, Esc cancels";
 
@@ -1515,7 +1519,7 @@ impl App {
                     if self.tab == Tab::Releases {
                         self.read_releases();
                     }
-                    if matches!(self.tab, Tab::Releases | Tab::Infra) {
+                    if reads_runs(self.tab) {
                         self.read_builds();
                     }
                 }
@@ -1557,7 +1561,7 @@ impl App {
             Msg::TokenFiles => {}
             Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
             Msg::ReleaseFile => {}
-            Msg::BuildFile if matches!(self.tab, Tab::Releases | Tab::Infra) => self.read_builds(),
+            Msg::BuildFile if reads_runs(self.tab) => self.read_builds(),
             Msg::BuildFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
@@ -1667,7 +1671,7 @@ impl App {
                 self.rv.runs.reselect(&rb, rel);
                 self.builds = Some(*b);
                 self.release_builds = Some(rb);
-                if self.builds_read.done() && matches!(self.tab, Tab::Releases | Tab::Infra) {
+                if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
             }
@@ -1997,7 +2001,7 @@ impl App {
                 if self.tab == Tab::Releases {
                     self.read_releases();
                 }
-                if matches!(self.tab, Tab::Releases | Tab::Infra) {
+                if reads_runs(self.tab) {
                     self.read_builds();
                 }
                 if self.tab == Tab::Costs {
@@ -2296,7 +2300,7 @@ impl App {
         if t == Tab::Releases {
             self.read_releases();
         }
-        if matches!(t, Tab::Releases | Tab::Infra) {
+        if reads_runs(t) {
             self.read_builds();
         }
         if t == Tab::Costs {
@@ -3403,7 +3407,7 @@ impl App {
         if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
         } else if self.tab == Tab::Infra && self.infra_runs {
-            self.draw_ci_runs(f, body);
+            self.draw_runs(f, body, "Runs");
         } else if self.tab == Tab::Schedules {
             self.draw_schedules(f, body);
         } else if self.tab == Tab::Releases {
@@ -4186,9 +4190,6 @@ impl App {
     }
 
     /// Infra's CI runs table, opened from its Runs section.
-    fn draw_ci_runs(&mut self, f: &mut Frame, area: Rect) {
-        self.draw_runs(f, area, "Runs");
-    }
 
     /// The tab's runs table (`runs`) under its `title`, with the opened run's detail and log, or
     /// Run times, in a pane under it.

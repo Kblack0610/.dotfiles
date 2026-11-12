@@ -13,7 +13,6 @@ const RUNS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests 
 // Which folds are open on Infra's CI tables (Run times, Quarantine, a run's steps), so a repaint keeps them.
 const CI_OPEN = {};
 const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], usual: ["usual", "n"], eta: ["eta", "n"], owner: ["owner"], release: ["release"] };
-const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
 // A workflow's usual time as "median/p90", "-" below the runs a median needs.
 const usualText = (u) => (u ? `${secs(u.median)}/${secs(u.p90)}` : "-");
 // A running run's expected end, or once passed how far past it (a past clock reads as on time).

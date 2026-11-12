@@ -463,7 +463,7 @@ const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 TABS.infra = {
   // The Jobs section (jobs.js) reads its own source on its own timer; CI's runs and Tests (ci.js)
   // read on show and again on each new ledger line.
-  show() { renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(true); tstFeed.show(true); },
+  show() { renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data); },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
     if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
