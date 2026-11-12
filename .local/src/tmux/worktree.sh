@@ -12,7 +12,7 @@
 #                     Inside tmux it lands you in the new session AT ONCE; the fetch and
 #                     checkout then run in that session's first pane, where you can watch
 #                     them (and read any error), and the pane becomes your shell.
-#                     The session goes on its repo's world (worlds.sh), and you hop there,
+#                     The session goes on the agent world (worlds.sh), and you hop there,
 #                     whichever world you pressed the key in. --server opens it on that
 #                     tmux server instead; --detach opens it without going there. Together
 #                     they let a caller with no tmux of its own (fleet-dispatch, from a
@@ -886,19 +886,19 @@ wt_lock() {
   ln -s "$$" "$lock" 2>/dev/null
 }
 
-# wt_to_repo_world <dir> [<session>] -- send this run's sessions to the world their repo belongs
-# to (world_route of <dir>: the main repo's world, so the human's starts land in hub or work),
-# from whichever world the key was pressed in, or from no tmux at all. A <session> that is
-# already live on some server stays there: a dispatched worktree lives on the agent world, and
-# a second session on the same directory would be a second Claude in it. An explicit --server
-# still wins. Inside tmux the client has to cross servers too, which WT_HOP tells wt_focus.
+# wt_to_agent_world [<session>] -- send this run's sessions to the agent world (`@agents`, lab),
+# from whichever world the key was pressed in, or from no tmux at all: every worktree session
+# lives there, the human's and the dispatched ones alike, and only main checkouts sit in hub.
+# A <session> already live on some server stays there: a second session on the same directory
+# would be a second Claude in it. An explicit --server still wins. Inside tmux the client has to
+# cross servers too, which WT_HOP tells wt_focus.
 WT_HOP=0
-wt_to_repo_world() {
-  local dir="$1" session="${2:-}" world=''
+wt_to_agent_world() {
+  local session="${1:-}" world=''
   [ -z "$WT_SERVER" ] || return 0
   [ -z "$session" ] || world="$(wt_session_server "$session")"
-  [ -n "$world" ] || read -r world _ <<< "$(world_route "$dir")"
-  [ -n "$world" ] && [ "$world" != here ] && [ "$world" != "$(wt_current_server)" ] || return 0
+  [ -n "$world" ] || world="$(world_agents)"
+  [ -n "$world" ] && [ "$world" != "$(wt_current_server)" ] || return 0
   WT_SERVER="$world"
   panel_in_tmux && WT_HOP=1
   return 0
@@ -973,7 +973,7 @@ cmd_new() {
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
-  wt_to_repo_world "$main"
+  wt_to_agent_world
 
   lock="$WT_LOCK_DIR/new-$repo.lock"
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
@@ -1105,7 +1105,7 @@ wt_land() {
   local path="$1" name
   [ -d "$path" ] || panel_die "no such worktree: $path"
   name="$(basename "$path")"
-  wt_to_repo_world "$path" "$name"
+  wt_to_agent_world "$name"
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   wt_focus "$name"
 }

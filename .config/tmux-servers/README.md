@@ -10,25 +10,24 @@ A world is a tmux server on its own socket. The `.conf` files here are the only 
 | Any other repo nothing claims | hub | `@repos` in `hub.conf` |
 | The shepherd's pass | hub | window `hub:shepherd`, owned by `fleet-shepherd run`, not declared in `hub.conf`: each pass replaces the last in that pane, so a run makes no window there; it closes any other pane a pass ran in and renames any other `shepherd` window, so there is never a second one |
 | Game checkouts, unity-core-playground first | hub | named in `hub.conf`, or the bare `@repos` |
-| A worktree the human starts (Prefix+F, `wt new`, `wt pick`), `<repo>-agent-N` | the world of its main repo | `world_route` follows the repo: hub for these, a work world for a work repo |
-| A worktree `fleet-dispatch` starts | lab | it names `--server`, the world `@agents` points at in `lab.conf` |
+| Every worktree session, `<repo>-agent-N`: Prefix+F, `wt new`, `wt pick`, and `fleet-dispatch` | lab | `@agents` in `lab.conf`; only main checkouts sit in hub (2026-11-12, the human: "all agent sessions go to lab, just main dirs go to hub") |
 
-Lab declares no repo and has no landing page, so `tmx root lab` resumes the dispatched session you were last in. `@agents` is not a routing rule: it only names that dispatch world.
+Lab declares no repo and has no landing page, so `tmx root lab` resumes the worktree session you were last in.
 
 The first matching rule wins:
 
 1. A directory a manifest names: that world, under the manifest's session name.
-2. Anywhere inside a linked worktree: the world of its main repo (a manifest name, else `@repos`), under the worktree's own name.
+2. Anywhere inside a linked worktree: the `@agents` world, whichever repo it was cut from, under the worktree's own name.
 3. Any other directory: the deepest enclosing `@repos <dir>`, else the bare `@repos`.
 4. Nothing matched: `here`, the caller's own world.
 
-A repo's world reaches its worktrees: `dotfiles` and a `dotfiles-agent-3` the human started are both on hub. A dispatched `dotfiles-agent-4` is on lab, because the dispatcher names its server.
+A repo's world does not reach its worktrees: `dotfiles` is on hub, and every `dotfiles-agent-N`, started by hand or dispatched, is on lab.
 
 ## Add a repo
 
 - Its own session in a world: add `<name> <dir>` to that world's `.conf`. Prefix `?` to keep it from booting with the world.
 - A whole directory of repos: add `@repos <dir>` to the world that owns them.
-- Nothing to do for a home, config or game repo, or for a worktree: it follows its repo.
+- Nothing to do for a home, config or game repo (the bare `@repos` takes it), or for a worktree (lab).
 
 Check a directory with `tmux-world route <dir>`. It reads the manifests only, so the answer is the same whether the world is up or not.
 
@@ -39,7 +38,7 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 | Opener | How it routes |
 |---|---|
 | Prefix+f, `sessionizer.sh <dir>` | `world_route` |
-| Prefix+F, `wt new`, `wt pick` | the repo's world, inside tmux or out; a session already live on another server stays there; `--server` overrides |
+| Prefix+F, `wt new`, `wt pick` | `@agents` (lab), inside tmux or out; a session already live on another server stays there; `--server` overrides |
 | `tmx ensure <world> <session>`, `tmx goto <world> <session>` | the world that declares the session, whichever was named |
 | `fleet-dispatch start` | `@agents` (lab); `--server` is for `--resume` only, to put a session back where it was |
 | `agent-queue add --running` | records its session on any world when it is a worktree session (`<repo>-agent-N`); a checkout session such as hub:dotfiles holds many conversations and records none |
@@ -56,4 +55,5 @@ An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and th
 | `tmux-world: command not found` after a pull | the link in `~/.local/bin` is per file | `dotfiles-deploy --apply` |
 | A work repo opens on hub | the catch-all took it | add `@repos <dir>` to the work world's manifest |
 | A `shepherd` server or session still up | left from when passes had their own world (2026-11-04 to 2026-11-05) | `tmux -L shepherd kill-server` and `tmux -L hub kill-session -t =shepherd` once no pass there is talking to you; nothing reads them, and Prefix o goes to `hub:shepherd` |
-| A playground or platform session still up on lab after the 2026-11-11 world split | those repos are declared on hub now, so `tmx ensure` or Prefix+f makes a second one there | close the lab one (`tmux -L lab kill-session -t =<name>`) once nothing in it is live |
+| A playground or platform main-checkout session still up on lab after the 2026-11-11 world split | those repos are declared on hub now, so `tmx ensure` or Prefix+f makes a second one there | close the lab one (`tmux -L lab kill-session -t =<name>`) once nothing in it is live |
+| A `<repo>-agent-N` you started by hand still on hub | started between 2026-11-11 and 2026-11-12, when hand-started worktrees followed their repo | leave it: `wt pick` and Prefix+R keep a live session where it is; the next one lands on lab |
