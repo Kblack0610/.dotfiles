@@ -5,14 +5,19 @@
 // a Queue row counts its own and links there. Answering a session's card types the answer into
 // its pane.
 
-// Which folds are open, by data-k: a section (`sec:<name>`) or a card's details.
-const askst = { open: {} };
+// Which folds are open, by data-k: a section (`sec:<name>`) or a card's details. `sending` holds
+// the answer in flight per card key (`ask:<id>`, `ses:<target>`), so a redraw mid-send keeps the
+// card locked and saying what it sent.
+const askst = { open: {}, sending: {} };
 
-const refreshAsks = coalesce(async () => {
-  st.asks = await api("/api/asks");
+function drawAsks() {
   renderBadge();
   if (st.tab === "home") renderHome();
   if (st.tab === "queue") qst.render();
+}
+const refreshAsks = coalesce(async () => {
+  st.asks = await api("/api/asks");
+  drawAsks();
 });
 
 const asking = () => st.agents.filter((a) => a.question);
@@ -62,7 +67,7 @@ function sessionCard(a, k, here = false) {
   const open = here ? "" : `<button class="btn sm" data-open>Open session</button>`;
   const lead = q.kind === "plan" ? `<div class="opts">${opts}${open}</div>${body}<div class="opts">${reply}</div>`
     : `${body}<div class="opts">${opts}${open}${reply}</div>`;
-  return `<div class="card need k-${k}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}<div class="err"></div></div>`;
+  return `<div class="card need k-${k}${sendingCls(`ses:${a.target}`)}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}${statusLine(`ses:${a.target}`)}</div>`;
 }
 
 // The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card: what
@@ -139,8 +144,8 @@ function askCard(a, held = "") {
   const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
   const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],
     ["judge", a.judge], ["rule", a.rule], ["reason", a.reason], ["answered by", a.answered_by], ["answer note", a.answer_note]]) + log, askst.open);
-  return `<div class="card need k-ask" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
-    `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}<div class="err"></div></div>`;
+  return `<div class="card need k-ask${sendingCls(`ask:${a.id}`)}" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
+    `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}${statusLine(`ask:${a.id}`)}</div>`;
 }
 
 // A session card answers through the session's own pane, so the answer lands in that
@@ -164,19 +169,64 @@ async function answerSession(card, e) {
   card.querySelector("[data-free]").value = "";
 }
 
-// A click inside a session card or an ask card, on Home or a queue row.
+// A card from the click to the server's reply: locked (app.css .card.sending), its status line
+// saying what went out, so a slow answer never reads as a dead click. A failure unlocks it and
+// says why; a sent ask leaves the list at once, as the server has already closed it.
+const sendingCls = (key) => (askst.sending[key] ? " sending" : "");
+const statusLine = (key) => askst.sending[key]
+  ? `<div class="cstat" role="status"><span class="spin"></span>Sending ${esc(askst.sending[key])}...</div><div class="err"></div>`
+  : `<div class="cstat" role="status"></div><div class="err"></div>`;
+// Every drawn card for `key` (a session's card can show on Home and pinned in its conversation),
+// found afresh, since a redraw mid-send replaces the clicked one.
+const cardKey = (c) => (c.dataset.t ? `ses:${c.dataset.t}` : `ask:${c.dataset.id}`);
+const cardsFor = (key) => [...document.querySelectorAll(".card[data-t], .card[data-id]")].filter((c) => cardKey(c) === key);
+function markSending(key, what, error = "") {
+  if (what) askst.sending[key] = what; else delete askst.sending[key];
+  for (const card of cardsFor(key)) {
+    card.classList.toggle("sending", !!what);
+    card.setAttribute("aria-busy", what ? "true" : "false");
+    const s = card.querySelector(".cstat"), x = card.querySelector(".err");
+    if (s) s.innerHTML = what ? `<span class="spin"></span>Sending ${esc(what)}...` : "";
+    if (x) x.textContent = error;
+    // Typing stays out too: a reply input is cleared once its send returns.
+    for (const i of card.querySelectorAll("input")) i.readOnly = !!what;
+  }
+}
+const quoted = (t) => `"${t.length > 40 ? `${t.slice(0, 40)}...` : t}"`;
+
+// What a click inside a session card sends, as its status line names it; empty sends nothing.
+function sessionSend(card, e) {
+  if (e.target.dataset.k) return `option ${e.target.dataset.k}`;
+  if (e.target.dataset.reply === undefined) return "";
+  const text = card.querySelector("[data-free]").value.trim();
+  return text ? quoted(text) : "";
+}
+
+// A click inside a session card or an ask card, on Home or a queue row. A card already sending
+// takes no second answer.
 async function answerCard(card, e) {
+  const key = cardKey(card);
+  if (askst.sending[key]) return;
   if (card.dataset.t) {
-    try { await answerSession(card, e); card.querySelector(".err").textContent = ""; }
-    catch (err) { card.querySelector(".err").textContent = err.message; }
+    const what = e.target.dataset.open !== undefined ? "" : sessionSend(card, e);
+    if (what) markSending(key, what);
+    try { await answerSession(card, e); if (what) markSending(key, ""); }
+    catch (x) { markSending(key, "", x.message); }
     return;
   }
   const opt = e.target.closest("[data-a]");
   let answer = opt && opt.dataset.a;
   if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
   if (!answer || !answer.trim()) return;
-  try { await post("/api/asks/answer", { id: card.dataset.id, answer }); refreshAsks(); }
-  catch (err) { card.querySelector(".err").textContent = err.message; }
+  const id = card.dataset.id;
+  markSending(key, quoted(answer.trim()));
+  try { await post("/api/asks/answer", { id, answer }); }
+  catch (x) { markSending(key, "", x.message); return; }
+  // Answered: drop it here rather than wait on a refetch that may be queued behind another.
+  delete askst.sending[key];
+  st.asks = st.asks.filter((a) => a.id !== id);
+  drawAsks();
+  refreshAsks();
 }
 
 function answerOnEnter(e) {

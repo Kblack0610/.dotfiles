@@ -641,3 +641,43 @@ test("a row that leaves Needs you closes, so its id never comes back open", asyn
     assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; vm.runInContext("hst.open = new Set()", ctx); }
 });
+
+test("an opened sheet row closes from its card: a refresh keeps the form, the row is read fresh by id, then the board's write", async () => {
+  const sheet = (id) => ({ kind: "sheet", need: "todo", project: "p", text: "sheet row", id, score: { human: true, holds: "", priority: "urgent", value: 1 } });
+  const needs = [sheet("t-1"), sheet("a row with no id")];
+  const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
+  assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
+  assert.match(html, /data-tab="board">Open the board/);
+  assert.equal((html.match(/data-closego/g) || []).length, 1);
+  // What was picked and typed is Home's state, so the next draw shows it again.
+  vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+  assert.match(draw(home({ needs }), [], [], ["sheet:t-1"]), /value="done:proof" selected.*value="pr:9"/s);
+  const sent = [];
+  const reply = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  const row = { id: "t-1", project: "p", state: "open", profile: "personal", lane: "human", raw: "- [ ] sheet row #urgent" };
+  const before = ctx.fetch;
+  let rows = [row, { ...row, project: "other" }];
+  ctx.fetch = async (path, o) => {
+    if (path.startsWith("/api/board?")) { sent.push(["read", path]); return reply({ rows }); }
+    if (path === "/api/board") { sent.push(["write", JSON.parse(o.body)]); return reply({ out: "dropped" }); }
+    return reply(path === "/api/briefing" ? { error: "off" } : home({ needs }));
+  };
+  const close = () => vm.runInContext(`closeSheetRow("t-1", "p")`, ctx);
+  try {
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: " " }`, ctx);
+    await close();
+    assert.equal(vm.runInContext(`hst.close["t-1"].err`, ctx), "Say why it is dropped.");
+    assert.equal(sent.length, 0);
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: "stale" }`, ctx);
+    await close();
+    assert.deepEqual(sent, [["read", "/api/board?q=id%3A%3Dt-1"],
+      ["write", { verb: "drop", why: "stale", profile: "personal", project: "p", lane: "human", raw: "- [ ] sheet row #urgent" }]]);
+    assert.equal(vm.runInContext(`"t-1" in hst.close`, ctx), false);
+    rows = [{ ...row, state: "done" }];
+    vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+    await close();
+    assert.match(vm.runInContext(`hst.close["t-1"].err`, ctx), /t-1 is not open on the p sheet any more/);
+    assert.equal(vm.runInContext(`hst.close["t-1"].busy`, ctx), false);
+    assert.equal(sent.filter(([k]) => k === "write").length, 1);
+  } finally { ctx.fetch = before; vm.runInContext(`hst.close = {}`, ctx); }
+});
