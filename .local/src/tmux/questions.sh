@@ -25,7 +25,9 @@
 #   count             how many rows rows prints less the parked ones, one number: the pending asks
 #                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
 #                     never disagree
-#   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
+#   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler).
+#                     The panel's enter is `key submit`: it puts "sending ..." on screen and runs
+#                     `key enter`, the send itself, in the background
 #   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
 #   (no verb)         open the panel
@@ -207,6 +209,12 @@ rows_count() {
 # ~...~, so a ~ in a question is dropped from the footer, never parsed as an action.
 st_read() { [ -n "$QUESTIONS_STATE" ] && cat "$QUESTIONS_STATE" 2>/dev/null; }
 st_write() { [ -n "$QUESTIONS_STATE" ] && printf '%s\n' "$*" >"$QUESTIONS_STATE"; }
+# The busy marker beside the state: while a send is on its way it holds what is being sent, the
+# card shows it, and every key says so instead of acting, so a second enter sends nothing.
+# submit writes it; enter, the send, removes it when it is through.
+busy_read() { [ -n "$QUESTIONS_STATE" ] && cat "$QUESTIONS_STATE.busy" 2>/dev/null; }
+busy_write() { [ -n "$QUESTIONS_STATE" ] && printf '%s\n' "$*" >"$QUESTIONS_STATE.busy"; }
+busy_clear() { [ -n "$QUESTIONS_STATE" ] && rm -f "$QUESTIONS_STATE.busy"; }
 tilde() { printf '%s' "${1//\~/}"; }
 footer() { printf 'change-footer~%s~' "$(tilde "$(fit "$1")")"; }
 
@@ -345,8 +353,13 @@ dialog_send() {
 }
 
 cmd_key() {
-  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid="" seen=""
+  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid="" seen="" busy
   read -r mode opt sid seen <<<"$(st_read)"
+  busy="$(busy_read)"
+  if [ -n "$busy" ] && [ "$k" != enter ]; then
+    case "$k" in focus | fit) ;; *) footer "$busy . wait for it" ;; esac
+    return 0
+  fi
   case "$k" in
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
@@ -430,34 +443,62 @@ cmd_key() {
       ;;
     esac
     ;;
-  enter)
-    local err
+  submit)
+    # The panel's enter: say what is being sent, in the footer and the card, at once, and send it
+    # in the background (bg-transform), so fzf stays responsive and the busy marker refuses a
+    # second enter. Nothing armed, or nothing typed, is enter's own message, sent at once.
+    local what=""
     case "$mode" in
     armed)
-      if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
-      ask_load "$sid"
-      if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
-        after "sent \"${A_OPTS[opt - 1]}\" to $A_WHO"
-      else st_write ""; footer "not sent: ${err:-agent-ask answer failed}"; fi
+      if [[ "$sid" == @* ]]; then what="sending $opt \"$seen\" to ${sid#@}"
+      else ask_load "$sid"; what="sending \"${A_OPTS[opt - 1]}\" to $A_WHO"; fi
       ;;
-    typing)
-      [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
-      if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
-      if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "sent your answer"
-      else footer "not sent: ${err:-agent-ask answer failed}"; fi
-      ;;
-    drop)
-      if err="$("$QUESTIONS_ASK" cancel "$sid" dropped by the human 2>&1 >/dev/null)"; then after "dropped $sid"
-      else st_write ""; footer "not dropped: ${err:-agent-ask cancel failed}"; fi
-      ;;
-    park | unpark)
-      if err="$("$QUESTIONS_ASK" "$mode" "$sid" 2>&1)"; then after "${err:-${mode}ed $sid}"
-      else st_write ""; footer "not ${mode}ed: ${err:-agent-ask $mode failed}"; fi
-      ;;
-    *) footer "press a number, t, d or p first . $QUESTIONS_KEYS" ;;
+    typing) [ -z "$q" ] || what="sending your answer" ;;
+    drop) what="dropping $sid" ;;
+    park) what="parking $sid" ;;
+    unpark) what="unparking $sid" ;;
     esac
+    [ -n "$what" ] || { key_enter; return 0; }
+    busy_write "$what ..."
+    footer "$what ..."
+    printf '+preview(cat %q)+bg-transform(%q key enter {1} {q})' "$QUESTIONS_STATE.busy" "$SELF"
+    ;;
+  enter)
+    # The send. From submit the card still says sending, so it is drawn again.
+    [ -z "$busy" ] || printf 'refresh-preview+'
+    key_enter
+    busy_clear
     ;;
   *) panel_die "unknown key: $k" ;;
+  esac
+}
+
+# key_enter: send the armed choice. It reads cmd_key's mode, opt, sid, seen and q.
+key_enter() {
+  local err
+  case "$mode" in
+  armed)
+    if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
+    ask_load "$sid"
+    if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
+      after "sent \"${A_OPTS[opt - 1]}\" to $A_WHO"
+    else st_write ""; footer "not sent: ${err:-agent-ask answer failed}"; fi
+    ;;
+  typing)
+    [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
+    if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
+    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "sent your answer"
+    else footer "not sent: ${err:-agent-ask answer failed}"; fi
+    ;;
+  drop)
+    if err="$("$QUESTIONS_ASK" cancel "$sid" dropped by the human 2>&1 >/dev/null)"; then after "dropped $sid"
+    else st_write ""; footer "not dropped: ${err:-agent-ask cancel failed}"; fi
+    ;;
+  park | unpark)
+    if err="$("$QUESTIONS_ASK" "$mode" "$sid" 2>&1)"; then after "${err:-${mode}ed $sid}"
+    else st_write ""; footer "not ${mode}ed: ${err:-agent-ask $mode failed}"; fi
+    ;;
+  *) footer "press a number, t, d or p first . $QUESTIONS_KEYS" ;;
   esac
 }
 
@@ -473,7 +514,7 @@ cmd_pick() {
   QUESTIONS_PARKED="$(mktemp)"
   rows="$(mktemp)"
   export QUESTIONS_STATE QUESTIONS_PARKED
-  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_PARKED" "$rows" "$rows.all"' EXIT
+  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_STATE.busy" "$QUESTIONS_PARKED" "$rows" "$rows.all"' EXIT
   cmd_rows >"$rows.all"
   parked_filter <"$rows.all" >"$rows"
   for k in 1 2 3 4 5 6 7 8 9 d p P t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
@@ -489,7 +530,7 @@ cmd_pick() {
     --footer="$QUESTIONS_KEYS" \
     --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $me card {1}" \
     "${binds[@]}" \
-    --bind="enter:transform($me key enter {1} {q})" \
+    --bind="enter:transform($me key submit {1} {q})" \
     --bind="esc:transform($me key esc {1})" \
     --bind="focus:transform($me key focus {1})" \
     --bind="start,resize:transform($me key fit)" >/dev/null
