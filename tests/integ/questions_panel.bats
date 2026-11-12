@@ -514,8 +514,11 @@ transcript() {
   assert_output --partial 'parked asks shown'
   run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live $parked "
-  run "$Q" key P "$live"
+  # A choice armed on the parked ask does not survive P hiding it: a later enter sends nothing.
+  echo "armed 1 $parked" >"$QUESTIONS_STATE"
+  run "$Q" key P "$parked"
   assert_output --partial 'parked asks hidden'
+  assert_equal "$(cat "$QUESTIONS_STATE")" ''
   run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
   # The status bar count never counted parked asks, hidden or not.

@@ -170,12 +170,14 @@ cmd_rows() {
 }
 # parked_shown: true outside the panel, and in it once P showed the parked asks.
 parked_shown() { [ -z "$QUESTIONS_PARKED" ] || [ "$(cat "$QUESTIONS_PARKED" 2>/dev/null)" = show ]; }
-# parked_filter: the rows on stdin less the parked asks while the panel hides them (a parked
-# row's tag is park, as rows_count reads it).
+# PARK_ROW: the awk rule that sets park=1 on a parked ask's row, one row per record with its lines
+# joined by \037 (an ask row, not an @ dialog, whose first line's tag is park). parked_filter and
+# rows_count both read it, so the hidden rows and the header's parked count cannot disagree.
+PARK_ROW='{ t = $0; sub(/\037.*/, "", t); gsub(/\033\[[0-9;]*m/, "", t); park = !/^@/ && t ~ /^[^\t]*\tpark / }'
+# parked_filter: the rows on stdin less the parked asks while the panel hides them.
 parked_filter() {
   if parked_shown; then cat; return 0; fi
-  tr '\n\000' '\037\n' | awk '{ t = $0; sub(/\037.*/, "", t); gsub(/\033\[[0-9;]*m/, "", t) }
-    !/^@/ && t ~ /^[^\t]*\tpark / { next } { print }' | tr '\n\037' '\000\n'
+  tr '\n\000' '\037\n' | awk "$PARK_ROW"' park { next } { print }' | tr '\n\037' '\000\n'
 }
 # cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
 # without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows
@@ -193,8 +195,8 @@ cmd_count() {
 # rows_count: "<asks> <plans> <questions> <prompts> <parked>" in what cmd_rows printed (a row is
 # NUL-ended; a dialog's id starts with @ and its first line names its kind; a parked ask's tag is park).
 rows_count() {
-  tr '\n\000' '\037\n' | awk '{ split($0, L, "\037"); t = L[1]; gsub(/\033\[[0-9;]*m/, "", t) }
-    !/^@/ && t ~ /^[^\t]*\tpark / { k++; next }
+  tr '\n\000' '\037\n' | awk "$PARK_ROW"'{ split($0, L, "\037") }
+    park { k++; next }
     !/^@/ { a++; next } L[1] ~ /plan waiting for approval/ { p++; next }
     L[1] ~ /question waiting for an answer/ { q++; next } { o++ }
     END { print a + 0, p + 0, q + 0, o + 0, k + 0 }'
@@ -378,6 +380,8 @@ cmd_key() {
   P)
     if [ "$mode" = typing ]; then printf 'put(P)'; return 0; fi
     [ -n "$QUESTIONS_PARKED" ] || return 0
+    # A choice armed on a row P is about to hide must not ride a later enter.
+    st_write ""
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
     printf 'reload(%s rows)+' "$(printf '%q' "$SELF")"
     header_count
