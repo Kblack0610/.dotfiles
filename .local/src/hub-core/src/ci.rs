@@ -33,8 +33,8 @@ pub struct Slot {
     pub slot: String,
     /// The runner pool (`cc:pool_*`'s label), `unity-local` for a local gate.
     pub pool: String,
-    /// `busy`, `idle`, `withheld` (the governor holds it back), `off` (offline or missing) or
-    /// `standby` (its host is powered off by the governor).
+    /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
+    /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
     pub state: String,
     pub job: String,
     pub repo: String,
@@ -54,7 +54,7 @@ pub struct Slot {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Fit {
     pub host: String,
-    /// `idle`, `busy`, `withheld` or `standby`.
+    /// `idle`, `busy`, `lent`, `withheld` or `standby`.
     pub state: String,
 }
 
@@ -157,6 +157,8 @@ struct Runner<'a> {
     host: String,
     labels: Vec<String>,
     held: bool,
+    /// Held because its pair is using its cores: to `tests` or `build` (`Infra::lent`).
+    lent: Option<&'a str>,
 }
 
 fn lower(csv: &str) -> Vec<String> {
@@ -179,6 +181,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
         .iter()
         .map(|s| s.label("name"))
         .collect();
+    let lent = infra.lent();
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
     for s in infra.get("runners") {
         let e = by.entry(s.label("name")).or_insert(s);
@@ -192,6 +195,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
             host: crate::infra::host(&alias, s.label("host")),
             labels: lower(s.label("labels")),
             held: held.contains(n),
+            lent: lent.get(n).copied().filter(|_| held.contains(n)),
         })
         .collect()
 }
@@ -282,6 +286,8 @@ pub fn build(infra: &Infra) -> Ci {
     let mut rows: Vec<Slot> = vec![];
     // Slots with no job to say, by host and state: they fold into one row per state.
     let mut quiet: BTreeMap<(String, &str, &str), Vec<String>> = BTreeMap::new();
+    // Whom a lent run of slots is lent to, by host and pool.
+    let mut lent_to: HashMap<(String, &str), &str> = HashMap::new();
     for r in &all {
         let s = r.s;
         let host = r.host.clone();
@@ -318,10 +324,16 @@ pub fn build(infra: &Infra) -> Ci {
                     note: String::new(),
                 });
             }
-            "idle" if r.held => quiet
-                .entry((host, pool, "withheld"))
-                .or_default()
-                .push(slot),
+            "idle" if r.held => {
+                let state = match r.lent {
+                    Some(to) => {
+                        lent_to.insert((host.clone(), pool), to);
+                        "lent"
+                    }
+                    None => "withheld",
+                };
+                quiet.entry((host, pool, state)).or_default().push(slot)
+            }
             "idle" => {
                 ci.slots += 1;
                 quiet.entry((host, pool, "idle")).or_default().push(slot);
@@ -372,6 +384,10 @@ pub fn build(infra: &Infra) -> Ci {
                 "governor {}",
                 off.get(host.as_str()).copied().unwrap_or("off")
             ),
+            "lent" => match lent_to.get(&(host.clone(), pool)) {
+                Some(&"build") => "lent to the build that shares its cores".into(),
+                _ => "cores lent to tests until a build waits".into(),
+            },
             "withheld" => "the governor holds it back".into(),
             _ => String::new(),
         };
@@ -391,7 +407,7 @@ pub fn build(infra: &Infra) -> Ci {
             .count()
     };
     let order = |s: &str| {
-        ["busy", "idle", "withheld", "standby", "off"]
+        ["busy", "idle", "lent", "withheld", "standby", "off"]
             .iter()
             .position(|x| *x == s)
     };
@@ -487,7 +503,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
 fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> {
     let mut by: BTreeMap<&str, &str> = BTreeMap::new();
     let rank = |s: &str| {
-        ["idle", "busy", "withheld", "standby"]
+        ["idle", "busy", "lent", "withheld", "standby"]
             .iter()
             .position(|x| *x == s)
             .unwrap_or(9)
@@ -495,6 +511,7 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
         let state = match r.s.label("state") {
             "running" => "busy",
+            "idle" if r.held && r.lent.is_some() => "lent",
             "idle" if r.held => "withheld",
             "idle" => "idle",
             _ if off.contains_key(r.s.label("host")) => "standby",
@@ -671,7 +688,7 @@ impl Row for Slot {
         "host", "slot", "state", "pool", "ran", "usual", "job", "ref",
     ];
     const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "withheld", "standby", "off", "late"];
+        &["all", "busy", "idle", "lent", "withheld", "standby", "off", "late"];
     const FACETS: &'static [&'static str] = &["host", "state", "pool"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "host";
@@ -1048,6 +1065,38 @@ mod tests {
         assert_eq!(ci.slots, 5);
         let idle = ci.rows.iter().find(|r| r.state == "idle").unwrap();
         assert_eq!(idle.slot, "2-4");
+    }
+
+    #[test]
+    fn a_slot_lent_to_its_pair_reads_lent_and_one_held_for_load_still_withheld() {
+        let mut i = board();
+        i.instant.insert(
+            "withheld",
+            series(vec![
+                (json!({"name": "aws-unity-pool-1"}), "1"),
+                (json!({"name": "aws-unity-pool-2"}), "1"),
+            ]),
+        );
+        // A lent row for a runner that is not withheld (the governor a cycle behind) is ignored.
+        i.instant.insert(
+            "lent",
+            series(vec![
+                (json!({"name": "aws-unity-pool-1", "to": "tests"}), "1"),
+                (json!({"name": "aws-unity-pool-3", "to": "tests"}), "1"),
+            ]),
+        );
+        let ci = build(&i);
+        let row = |state: &str| ci.rows.iter().find(|r| r.state == state).unwrap();
+        assert_eq!(
+            (row("lent").slot.as_str(), row("lent").note.as_str()),
+            ("1", "cores lent to tests until a build waits")
+        );
+        assert_eq!(
+            (row("withheld").slot.as_str(), row("withheld").note.as_str()),
+            ("2", "the governor holds it back")
+        );
+        assert_eq!(row("idle").slot, "3-4");
+        assert_eq!(ci.slots, 4);
     }
 
     #[test]

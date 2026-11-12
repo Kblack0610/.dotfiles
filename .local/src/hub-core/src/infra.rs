@@ -53,6 +53,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
+        // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
+        // shown as lent, with `to` tests or build.
+        ("lent", format!("{W} (ci_governor_lent) == 1")),
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
@@ -95,6 +98,7 @@ pub const OPTIONAL: &[&str] = &[
     "cores",
     "runner_cores",
     "withheld",
+    "lent",
     "power",
     "disk",
     "governor",
@@ -262,6 +266,16 @@ impl Infra {
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The withheld runners the governor says are lent to their pair, by name, with whom to:
+    /// `tests` (a build slot whose test slots run CI) or `build`. Any other withheld runner is
+    /// held back for load, a pin, a drain or no work.
+    pub fn lent(&self) -> HashMap<&str, &str> {
+        self.get("lent")
+            .iter()
+            .map(|s| (s.label("name"), s.label("to")))
+            .collect()
     }
 
     /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
@@ -468,6 +482,7 @@ mod tests {
                 "cores",
                 "runner_cores",
                 "withheld",
+                "lent",
                 "power",
                 "disk",
                 "governor",

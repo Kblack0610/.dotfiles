@@ -91,7 +91,8 @@ pub struct Machine {
     pub core_busy: Vec<f64>,
     /// The cores each CI runner's job is using, the busiest first.
     pub runner_cores: Vec<(String, f64)>,
-    /// Busy of slots per pool there: `unity 1/2`, `unity withheld 0/1`, `unity-local 1/1+1`.
+    /// Busy of slots per pool there: `unity 1/2`, `unity withheld 0/1`, `unity-build lent 0/3`,
+    /// `unity-local 1/1+1`.
     pub pools: Vec<String>,
     /// The pools alone, what the pool facet offers.
     pub pool_names: Vec<String>,
@@ -125,7 +126,11 @@ pub struct Pool {
     pub pool: String,
     pub slots: Option<f64>,
     pub busy: Option<f64>,
+    /// Held back for load, a pin, a drain or no work (`cc:pool_withheld`).
     pub withheld: Option<f64>,
+    /// Held back because its pair is using its cores, normal work (`cc:pool_lent`): the pool
+    /// page says it, the pools table leaves it out (the machine row's `<pool> lent` shows it).
+    pub lent: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
@@ -430,6 +435,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         .iter()
         .map(|s| s.label("name"))
         .collect();
+    let lent = infra.lent();
     let mut per: BTreeMap<(String, usize, String), (u32, u32)> = BTreeMap::new();
     let mut names: BTreeMap<String, BTreeSet<(usize, String)>> = BTreeMap::new();
     let mut busy_cores: HashMap<&str, f64> = HashMap::new();
@@ -468,7 +474,9 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
             .entry(h.clone())
             .or_default()
             .insert((r, pool.clone()));
-        let name = if is_held {
+        let name = if is_held && lent.contains_key(s.label("name")) {
+            format!("{pool} lent")
+        } else if is_held {
             format!("{pool} withheld")
         } else {
             pool
@@ -617,6 +625,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             slots: get("cc:pool_slots", &p),
             busy: get("cc:pool_busy", &p),
             withheld: get("cc:pool_withheld", &p),
+            lent: get("cc:pool_lent", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
@@ -803,6 +812,16 @@ pub(crate) mod tests {
         );
         assert_eq!(ws.pool_names, ["unity", "unity-local"]);
         assert_eq!(ws.governor.as_ref().unwrap().says(), "live, withhold");
+        // The same held slot, lent to its pair, reads lent; its pool still counts no slot for it.
+        let mut f = fleet();
+        f.instant.insert(
+            "lent",
+            series(vec![json!({"name": "ws-unity-2", "to": "tests", "v": "1"})]),
+        );
+        let (ms, _) = build(&f);
+        let ws = machine(&ms, "workstation");
+        assert_eq!(ws.pools, ["unity 1/1", "unity lent 0/1", "unity-local 1/1+1"]);
+        assert_eq!((ws.busy, ws.slots), (2, 2));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
     }
