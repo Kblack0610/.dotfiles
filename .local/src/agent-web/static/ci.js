@@ -66,7 +66,7 @@ function runsTable(o) {
 
   // The whole block, once it has been read.
   t.block = () => {
-    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : `<h2 class="sec" id="sec-runs">${o.title} <span class="muted">reading...</span></h2>`;
+    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : `<h2 class="sec">${o.title} <span class="muted">reading...</span></h2>`;
     if (!t.data.table) return `<div id="${id}-head">${head(t.data)}</div>`;
     const b = tblBodyFirst(t.data.table, () => body(t.data));
     return `<div data-tbl="${RUNS_PRE}"><div id="${id}-head">${head(t.data)}</div>${tblBar(id, t.data.table, RUNS_HINT)}<div id="${id}-body">${b}</div></div>`;
@@ -344,12 +344,12 @@ function suiteDetail(r) {
     const all = c.data.cases, n = (x) => (x === "all" ? all.length : all.filter((t) => t.result === x).length);
     const chips = TEST_RESULTS.map((x) => chipBtn(x === "all" ? !tst.res : tst.res === x, "data-cres", x === "all" ? "" : x, x, n(x))).join("");
     const list = all.filter((t) => !tst.res || t.result === tst.res);
-    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${esc(t.name)} <span class="muted">${testTime(t.time)}</span>` +
+    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${dotted(t.name)} <span class="muted">${testTime(t.time)}</span>` +
       (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
     inner = `<div class="seg fseg">${chips}</div>` + (lines || `<div class="muted">No ${esc(tst.res)} tests.</div>`) +
       (c.data.more > 0 ? `<div class="muted">${c.data.more} more not shown; search for a test's name to find it.</div>` : "");
   }
-  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${esc(r.suite)}</div>${inner}</div></td></tr>`;
+  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${dotted(r.suite)}</div>${inner}</div></td></tr>`;
 }
 
 function testsBody(d) {

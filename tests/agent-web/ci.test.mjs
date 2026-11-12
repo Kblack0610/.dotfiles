@@ -204,11 +204,14 @@ test("a builds event re-reads the runs, the pipelines and the tests, and only wh
 test("Infra shown before its reads answer says reading in Runs, Pipelines and Tests, never a blank tab", async () => {
   run("bld.data = null; bld.err = null; pip.data = null; pip.err = null; tst.data = null; tst.err = null; st.tab = 'infra'");
   for (const b of [runs, pipes_, tests_]) b.innerHTML = "";
-  run("TABS.infra.show()");
-  // Before any read settles: each section already holds its heading and the word.
-  for (const [name, b] of [["Runs", runs], ["Pipelines", pipes_], ["Tests", tests_]]) assert.match(b.innerHTML, new RegExp(`${name} <span class="muted">reading\\.\\.\\.`), name);
-  await settled();
-  run("st.tab = 'home'");
+  try {
+    run("TABS.infra.show()");
+    // Before any read settles: each section already holds its heading and the word.
+    for (const [name, b] of [["Runs", runs], ["Pipelines", pipes_], ["Tests", tests_]]) assert.match(b.innerHTML, new RegExp(`${name} <span class="muted">reading\\.\\.\\.`), name);
+  } finally {
+    await settled();
+    run("st.tab = 'home'");
+  }
 });
 
 const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
