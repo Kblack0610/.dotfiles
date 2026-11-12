@@ -55,6 +55,7 @@ The `Check` cell is one of three things:
 | alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet |
 | alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` |
 | alpha | game, app | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill | not yet |
+| alpha | game, app | A go-to-market entry: the product in the marketing `channels.yaml` with its shape, pitch, channels and posting modes, and a page that collects wishlists or signups (a Steam Coming Soon page for a game). Why: on 2026-11-11 three Steam games with builds had no Coming Soon page or wishlists, so Next Fest prep started 8 weeks before registration closed | not yet: `channels.yaml` lands with mkt-17 |
 | beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
 | beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
 | beta | base | A Sentinel health watch | not yet |
@@ -64,9 +65,11 @@ The `Check` cell is one of three things:
 | beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet |
 | beta | game, app | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure: a registry target on the `beta` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("beta")'` |
 | beta | game, app | A version tag: versioned releases start here | `[ -n "$(project_release_version "$NAME")" ]` |
+| beta | game, app | Marketing running with its releases: each version tag gets a drafts batch, and outreach has started (creators and curators for a game; launch sites, directories and partners for an app). An app with regulated data reaches out only inside its compliance review: no ad pixels on regulated pages, ads only after `compliance` | not yet: the drafter lands with mkt-18 |
 | prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet |
 | prod | base | Approval of the public publish | human |
 | prod | game, app | Live on a public channel (a store, Steam `default`, the prod cluster): a registry target on the `prod` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("prod")'` |
+| prod | game, app | Its marketing numbers kept: this product's rows in the marketing scorecard (`marketing/docs/metrics.md`) under 30 days old, so channels with no results get dropped | not yet: the scorecard lands with mkt-20 |
 
 Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their alpha means deployed by stow or Flux from main, and beta and prod mean others depend on it, so a health watch and a runbook.
 
