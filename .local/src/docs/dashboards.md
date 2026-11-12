@@ -1,6 +1,6 @@
 # Dashboard standards
 
-How we build and change a dashboard: the `hub` TUI (`../hub-tui`), agent-web (`../agent-web`), the waybar chips, Grafana boards in home-config, and any new one in any repo. Read this before adding a tab, a section, a tile or a new dashboard. The agent runtime's own invariants are in `standards.md` beside this file.
+How we build and change a dashboard: the `hub` TUI (`../hub-tui`), agent-web (`../agent-web`), the waybar chips, Grafana boards in home-config, and any new one in any repo. Read this before adding a tab, a section, a tile or a new dashboard. How it looks (surface, type, pills, table density) is `ui.md` beside this file. The agent runtime's own invariants are in `standards.md` beside this file.
 
 ## Rules
 
