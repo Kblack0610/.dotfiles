@@ -75,7 +75,7 @@ const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : 
 function tblTiles(t, extra = "") {
   const tiles = t.states.slice(1).map((c) => {
     const on = c.name === t.state;
-    const cls = `tile${on ? " on" : ""}${c.n ? "" : " zero"}${c.tone && c.tone !== "none" ? ` t-${c.tone}` : ""}`;
+    const cls = `tile${on ? " on" : ""}${c.n ? "" : " zero"}${c.tone ? ` t-${c.tone}` : ""}`;
     return `<button class="${cls}" data-ts="${on ? "" : esc(c.name)}"${c.means ? ` title="${esc(c.means)}"` : ""}><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
   }).join("");
   return tiles || extra ? `<div class="tiles stiles">${tiles}${extra}</div>` : "";
@@ -183,7 +183,8 @@ function tblTab(o) {
   const part = (k, f) => (f ? `<div id="${id}-${k}">${f(t)}</div>` : "");
   const open = () => o.open && o.open();
   const days = () => (o.days ? tblDays(o.days(t)) : "");
-  const tiles = (v) => tblTiles(v, o.tiles ? o.tiles(t) : "");
+  const extra = () => (o.tiles ? o.tiles(t) : "");
+  const tiles = (v) => tblTiles(v, extra());
   const facets = (v) => tblFacets(v) + days();
   const around = () => { if (o.head) paint($(id + "-head"), o.head(t), open()); if (o.tail) paint($(id + "-tail"), o.tail(t), open()); };
   t.refresh = o.refresh || coalesce(async () => {
@@ -217,7 +218,7 @@ function tblTab(o) {
     around();
   };
   const wrap = o.wrap || ((html) => html);
-  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.tiles ? o.tiles(t) : "", days()) + body) + part("tail", o.tail); };
+  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, extra(), days()) + body) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;

@@ -31,7 +31,7 @@ const TONE = { failed: "bad", red: "bad", attention: "warn", "needs you": "warn"
 function table(n, columns, states = ["all"], facets = {}) {
   return {
     q: "", state: states[0], sort: "", dir: "desc", total: n, shown: n,
-    states: states.map((name, i) => ({ name, n: i ? Math.max(1, n - i) : n, tone: (i && TONE[name]) || "none" })),
+    states: states.map((name, i) => ({ name, n: i ? Math.max(1, n - i) : n, tone: i ? TONE[name] : undefined })),
     columns: columns.map(col),
     facets: Object.entries(facets).map(([k, v]) => facet(k, v)),
   };

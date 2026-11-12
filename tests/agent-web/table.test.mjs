@@ -399,7 +399,7 @@ test("a menu kept open on one tab never opens the same column on another, and ke
 });
 
 test("the head is the state tiles, hued and explained by the server, over one search bar; a table with one state draws no tiles", () => {
-  const t = { ...summary, state: "stuck", legend: "stuck: no progress in 2h", states: [{ name: "all", n: 3, tone: "none" }, { name: "stuck", n: 1, tone: "bad", means: "no progress in 2h" }, { name: "free", n: 0, tone: "none" }] };
+  const t = { ...summary, state: "stuck", legend: "stuck: no progress in 2h", states: [{ name: "all", n: 3 }, { name: "stuck", n: 1, tone: "bad", means: "no progress in 2h" }, { name: "free", n: 0 }] };
   ctx.t = t;
   const h = run(`tblBar("tt", t, "search", "<i>extra</i>")`);
   assert.doesNotMatch(h, /fseg|bfilter|tlegend/, "no chip row, no search card, no legend line");

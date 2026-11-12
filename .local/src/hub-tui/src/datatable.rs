@@ -8,7 +8,6 @@
 
 use hub_core::links::Link;
 use hub_core::table::{Dir, Row, View};
-use hub_core::vocab::Tone;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -220,12 +219,7 @@ impl DataTable {
                 self.view.state == c.name
             };
             let text = format!("{}{} {}", if i == 0 { "" } else { "  " }, c.name, c.n);
-            let hue = match c.tone {
-                Tone::Ok => p.good(),
-                Tone::Warn => p.warn(),
-                Tone::Bad => p.bad(),
-                Tone::None => Style::new(),
-            };
+            let hue = c.tone.map_or_else(Style::new, |l| crate::releases::level(l, p));
             out.push(Span::styled(
                 text,
                 if on { hue.patch(p.head()) } else { hue },

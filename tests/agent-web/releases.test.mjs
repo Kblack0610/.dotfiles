@@ -17,7 +17,7 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part(), "relrun-head": part(), "relrun-facets": part(), "relrun-chips": part(), "relrun-body": part() };
+const parts = { "rel-head": part(), "rel-facets": part(), "rel-tiles": part(), "rel-body": part(), "rel-tail": part(), "relrun-head": part(), "relrun-facets": part(), "relrun-tiles": part(), "relrun-body": part() };
 const doc = { body: el(), getElementById: (id) => (id === "releases" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let body = {};

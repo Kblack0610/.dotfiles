@@ -69,12 +69,12 @@ pub trait Row {
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
     const GLANCE: &'static [&'static str] = &[];
-    /// What a state word the rows show means, one `(word, meaning)` per state, drawn under the
-    /// chips on both surfaces (`hub_core::vocab`). Empty draws none.
+    /// What a state word the rows show means, one `(word, meaning)` per state (`hub_core::vocab`):
+    /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
-    /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, tone)` each:
+    /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
     /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
-    const TONES: &'static [(&'static str, crate::vocab::Tone)] = &[];
+    const TONES: &'static [(&'static str, crate::releases::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -115,7 +115,7 @@ impl<T: Row> Row for &T {
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
-    const TONES: &'static [(&'static str, crate::vocab::Tone)] = T::TONES;
+    const TONES: &'static [(&'static str, crate::releases::Level)] = T::TONES;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -279,7 +279,8 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
 pub struct Chip {
     pub name: &'static str,
     pub n: usize,
-    pub tone: crate::vocab::Tone,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<crate::releases::Level>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub means: Option<&'static str>,
 }
@@ -401,7 +402,7 @@ pub struct Summary {
     pub legend: Option<String>,
 }
 
-/// `ready: starts when ...; held: waits on ...`, the line both surfaces draw under the chips.
+/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))
@@ -495,14 +496,7 @@ impl View {
                 Chip {
                     name: s,
                     n,
-                    tone: if n > 0 && i > 0 {
-                        R::TONES
-                            .iter()
-                            .find(|(w, _)| w == s)
-                            .map_or_else(|| crate::vocab::tone(s), |(_, t)| *t)
-                    } else {
-                        crate::vocab::Tone::None
-                    },
+                    tone: if n > 0 { crate::vocab::tone(R::TONES, s) } else { None },
                     means: R::LEGEND.iter().find(|(w, _)| w == s).map(|(_, m)| *m),
                 }
             })

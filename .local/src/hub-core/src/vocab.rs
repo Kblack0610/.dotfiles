@@ -5,7 +5,8 @@
 //! CI job are `waiting`.
 
 pub use agent_panel::vocab::Vocab;
-use serde::Serialize;
+
+use crate::releases::Level;
 
 /// An agent-queue item that has not started (`queue::State::Queued`), the Queue table's STATE.
 pub const QUEUE: &[(&str, &str)] = &[
@@ -17,10 +18,7 @@ pub const QUEUE: &[(&str, &str)] = &[
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
-pub const JOBS: &[(&str, &str)] = &[(
-    "waiting",
-    "the job has not started; TOOK says how long it has waited",
-)];
+pub const JOBS: &[(&str, &str)] = &[("waiting", "the job has not started; TOOK says how long it has waited")];
 
 /// A GitHub Actions job no runner has taken yet (`ci::Queued`), the CI Waiting table's rows.
 pub const CI: &[(&str, &str)] = &[
@@ -28,61 +26,47 @@ pub const CI: &[(&str, &str)] = &[
         "waiting",
         "a CI job waiting for a runner with every label in NEEDS; CAN RUN ON is who holds them",
     ),
-    (
-        "stuck",
-        "the chip for a job no online runner holds those labels for",
-    ),
+    ("stuck", "the chip for a job no online runner holds those labels for"),
 ];
 
-/// The hue a state word wears on a chip or tile (dashboards.md rule 5): green ok, amber needs
-/// attention, red broken; every other word is plain. Both surfaces read it from `table::Chip`.
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Tone {
-    #[default]
-    None,
-    Ok,
-    Warn,
-    Bad,
-}
-
-/// Each state word with a hue, matched without case. A word not here is plain.
-const TONES: &[(&str, Tone)] = &[
-    ("ok", Tone::Ok),
-    ("green", Tone::Ok),
-    ("success", Tone::Ok),
-    ("passed", Tone::Ok),
-    ("on track", Tone::Ok),
-    ("done", Tone::Ok),
-    ("done today", Tone::Ok),
-    ("attention", Tone::Warn),
-    ("needs you", Tone::Warn),
-    ("stalled", Tone::Warn),
-    ("held", Tone::Warn),
-    ("behind", Tone::Warn),
-    ("mismatch", Tone::Warn),
-    ("no owner", Tone::Warn),
-    ("blocked", Tone::Warn),
-    ("no reading", Tone::Warn),
-    ("no session", Tone::Warn),
-    ("late", Tone::Warn),
-    ("red", Tone::Bad),
-    ("failed", Tone::Bad),
-    ("failure", Tone::Bad),
-    ("failing", Tone::Bad),
-    ("ci failing", Tone::Bad),
-    ("error", Tone::Bad),
-    ("trip", Tone::Bad),
-    ("stuck", Tone::Bad),
-    ("overdue", Tone::Bad),
+/// Each state word with a hue on a chip or tile (dashboards.md rule 5: green ok, amber needs
+/// attention, red broken), matched without case. A word not here is plain. Both surfaces read it
+/// from `table::Chip::tone`.
+const TONES: &[(&str, Level)] = &[
+    ("ok", Level::Ok),
+    ("green", Level::Ok),
+    ("success", Level::Ok),
+    ("passed", Level::Ok),
+    ("on track", Level::Ok),
+    ("done", Level::Ok),
+    ("done today", Level::Ok),
+    ("attention", Level::Warn),
+    ("needs you", Level::Warn),
+    ("stalled", Level::Warn),
+    ("held", Level::Warn),
+    ("behind", Level::Warn),
+    ("mismatch", Level::Warn),
+    ("no owner", Level::Warn),
+    ("blocked", Level::Warn),
+    ("no reading", Level::Warn),
+    ("no session", Level::Warn),
+    ("late", Level::Warn),
+    ("red", Level::Bad),
+    ("failed", Level::Bad),
+    ("failure", Level::Bad),
+    ("failing", Level::Bad),
+    ("ci failing", Level::Bad),
+    ("error", Level::Bad),
+    ("trip", Level::Bad),
+    ("stuck", Level::Bad),
+    ("overdue", Level::Bad),
 ];
 
-/// The hue of one state word ([`TONES`]).
-pub fn tone(word: &str) -> Tone {
-    TONES
-        .iter()
-        .find(|(w, _)| w.eq_ignore_ascii_case(word))
-        .map_or(Tone::None, |(_, t)| *t)
+/// The hue of one state word: a table's own `overrides` first (`table::Row::TONES`), then
+/// [`TONES`]; `None` is plain.
+pub fn tone(overrides: &[(&str, Level)], word: &str) -> Option<Level> {
+    let find = |t: &[(&str, Level)]| t.iter().find(|(w, _)| w.eq_ignore_ascii_case(word)).map(|(_, l)| *l);
+    find(overrides).or_else(|| find(TONES))
 }
 
 #[cfg(test)]
@@ -138,10 +122,7 @@ mod tests {
     fn a_ci_job_waits_for_a_runner_and_a_table_without_words_sends_no_legend() {
         let rows = vec![Queued::default()];
         let (_, s) = View::new::<Queued>("", "", "", "").summary(&rows);
-        assert!(s
-            .legend
-            .unwrap()
-            .starts_with("waiting: a CI job waiting for a runner"));
+        assert!(s.legend.unwrap().starts_with("waiting: a CI job waiting for a runner"));
         // Negative control: the runners table defines no state word and sends no `legend` key.
         let (_, s) = View::new::<Slot>("", "", "", "").summary(&[Slot::default()]);
         assert_eq!(s.legend, None);
@@ -151,40 +132,24 @@ mod tests {
 
     #[test]
     fn a_state_chip_wears_its_words_hue_only_while_it_holds_a_row_and_says_what_it_means() {
-        use super::{tone, Tone};
-        assert_eq!(tone("red"), Tone::Bad);
-        assert_eq!(tone("CI failing"), Tone::Bad);
-        assert_eq!(tone("needs you"), Tone::Warn);
-        assert_eq!(tone("ok"), Tone::Ok);
-        assert_eq!(tone("running"), Tone::None);
-        let rows = vec![Queued {
-            stuck: true,
-            ..Queued::default()
-        }];
+        use super::{tone, Level};
+        assert_eq!(tone(&[], "red"), Some(Level::Bad));
+        assert_eq!(tone(&[], "CI failing"), Some(Level::Bad));
+        assert_eq!(tone(&[], "needs you"), Some(Level::Warn));
+        assert_eq!(tone(&[], "ok"), Some(Level::Ok));
+        assert_eq!(tone(&[], "running"), None);
+        assert_eq!(tone(&[("Held", Level::Bad)], "held"), Some(Level::Bad), "a table's own hue wins, matched without case");
+        let rows = vec![Queued { stuck: true, ..Queued::default() }];
         let (_, s) = View::new::<Queued>("", "", "", "").summary(&rows);
-        let json = serde_json::to_value(&s.states).unwrap();
+        let chip = |n: &str| s.states.iter().find(|c| c.name == n).unwrap();
         // `all` is plain; `stuck` holds the one row with no runner, so it is red and carries its
         // legend line; `free` holds none, so it is plain whatever its word.
-        assert_eq!(json[0]["tone"], "none");
-        assert!(json[0].get("means").is_none(), "{json}");
-        let stuck = json
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == "stuck")
-            .unwrap();
-        assert_eq!(stuck["n"], 1, "{json}");
-        assert_eq!(stuck["tone"], "bad");
-        assert!(stuck["means"]
-            .as_str()
-            .unwrap()
-            .starts_with("the chip for a job"));
-        let free = json
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == "free")
-            .unwrap();
-        assert_eq!(free["tone"], "none");
+        assert_eq!((chip("all").tone, chip("all").means), (None, None));
+        assert_eq!((chip("stuck").n, chip("stuck").tone), (1, Some(Level::Bad)));
+        assert!(chip("stuck").means.unwrap().starts_with("the chip for a job"));
+        assert_eq!(chip("free").tone, None);
+        // On the wire a plain chip sends neither key.
+        let json = serde_json::to_value(chip("all")).unwrap();
+        assert!(json.get("tone").is_none() && json.get("means").is_none(), "{json}");
     }
 }
