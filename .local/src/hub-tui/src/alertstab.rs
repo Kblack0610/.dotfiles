@@ -1,18 +1,21 @@
-//! The Alerts page: `hub_core::alerts`, the same join agent-web's Alerts tab draws. Health, what
-//! is firing on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
-//! clear) with the selected row's watch opened under it, the fixes, the alert pages of the week
-//! and every watch, folded to its count while none is red. A source that could not be read is an
-//! error line, never an empty (green) section.
+//! The Alerts page: `hub_core::alerts`, the same join agent-web's Alerts tab draws. The inner
+//! tabs' strip (`hub_core::layout`: Firing, Fixes, Watches, History, each with its count), Health
+//! pinned under it, then the inner tab shown: what is firing on the shared data table
+//! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear) with the selected row opened
+//! under it (an Alertmanager rule's row lists its alerts), the fixes, every watch, or the alert
+//! pages of the week. A source that could not be read is an error line, never an empty (green)
+//! section.
 
 use hub_core::alerts::{Alert, Alerts};
 use hub_core::home::Level;
-use hub_core::layout::FOLD_ROWS;
+use hub_core::layout::{self, Tab, FOLD_ROWS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
+use crate::innertabs;
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
 const HEADER: [&str; 7] = [
@@ -27,8 +30,12 @@ pub struct AlertsView {
     pub table: DataTable,
     /// Whether the selected row is opened under it.
     pub open: bool,
-    /// The reader's fold of Watches flipped by `w`: None keeps `Alerts::watches_folded`.
-    pub watches: Option<bool>,
+    /// The inner tab shown (a `layout::Inner` id of Alerts); "" is the first, Firing.
+    pub inner: &'static str,
+    /// Every inner tab one after another: a printed `hub --tab alerts` that names none.
+    pub all: bool,
+    /// The ok watches shown under the ones needing a look (`w`); folded to their count by default.
+    pub ok_watches: bool,
     /// The selection moved since the last draw, so the draw keeps it in view.
     pub follow: bool,
 }
@@ -39,6 +46,11 @@ pub type RowId = (String, String, String);
 /// Source, what and where: one Alertmanager rule fires once per place, under one summary.
 pub fn row_id(a: &Alert) -> RowId {
     (a.source.clone(), a.what.clone(), a.place.clone())
+}
+
+/// Alerts' layout entry: its pinned section and inner tabs.
+pub fn tab() -> &'static Tab {
+    layout::resolve("alerts").expect("alerts is a layout tab")
 }
 
 fn status(l: Level) -> Option<f64> {
@@ -74,11 +86,13 @@ impl AlertsView {
         self.table.keep(at, rows.len());
     }
 
-    fn watches_open(&self, a: &Alerts) -> bool {
-        self.watches.unwrap_or(!a.watches_folded)
+    /// The inner tab shown.
+    pub fn on(&self) -> &'static str {
+        layout::inner_tab(tab(), Some(self.inner)).map_or("", |i| i.id)
     }
 
-    /// The page as lines, and where each section starts (`hub_core::layout`'s Alerts order),
+    /// The page as lines, and where each section starts: the strip, the pinned sections, then
+    /// the inner tab's (every inner tab's with `all`), in `hub_core::layout`'s Alerts order,
     /// with `ROW` for the selected firing row.
     pub fn page(
         &self,
@@ -94,7 +108,9 @@ impl AlertsView {
             Level::Nodata => (p.status(None).0, "NO DATA"),
         };
         let c = &a.counts;
-        let mut l = vec![clip_line(
+        let strip = |id: &str| a.strip.get(id).copied().unwrap_or(0);
+        let mut l = vec![innertabs::strip_by(tab(), self.on(), strip, p, w)];
+        l.push(clip_line(
             Line::from(vec![
                 Span::styled("ALERTS  ", p.head()),
                 Span::styled(format!(" {word} "), style),
@@ -109,7 +125,7 @@ impl AlertsView {
                 ),
             ]),
             w,
-        )];
+        ));
         for e in &a.errors {
             l.push(clip_line(Line::styled(format!("  {e}"), p.bad()), w));
         }
@@ -119,15 +135,29 @@ impl AlertsView {
             at.push((name, l.len()));
             l.extend(lines);
         };
-        put("health", health(a, p, w), &mut l);
-        let (firing, row) = self.firing(a, p, now, w);
-        let start = l.len() + 1;
-        put("firing", firing, &mut l);
-        put("fixes", fixes(a, p, now, w), &mut l);
-        put("history", history(a, p, now, w), &mut l);
-        put("watches", self.watch_lines(a, p, now, w), &mut l);
+        let t = tab();
+        let shown = layout::inner_tab(t, Some(self.on())).map_or(&[][..], |i| i.sections);
+        let mut row = None;
+        for &sec in t.sections {
+            if !(t.pinned.contains(&sec) || self.all || shown.contains(&sec)) {
+                continue;
+            }
+            let lines = match sec {
+                "health" => health(a, p, w),
+                "firing" => {
+                    let (lines, r) = self.firing(a, p, now, w);
+                    row = r.map(|r| l.len() + 1 + r);
+                    lines
+                }
+                "fixes" => fixes(a, p, now, w),
+                "watches" => watch_lines(a, self.ok_watches, p, now, w),
+                "history" => history(a, p, now, w),
+                _ => continue,
+            };
+            put(sec, lines, &mut l);
+        }
         if let Some(r) = row {
-            at.push((ROW, start + r));
+            at.push((ROW, r));
         }
         (l, at)
     }
@@ -142,14 +172,21 @@ impl AlertsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Option<usize>) {
         let c = &a.counts;
+        let rules = match c.alertmanager_rules {
+            0 => String::new(),
+            n => format!(" in {n} rules"),
+        };
         let mut out = vec![
-            heading(
-                "FIRING",
-                format!(
-                    "  {}: {} trip, {} error, {} no owner, {} alertmanager",
-                    c.firing, c.tripped, c.errors, c.no_owner, c.alertmanager
+            clip_line(
+                heading(
+                    "FIRING",
+                    format!(
+                        "  {}: {} trip, {} error, {} no owner, {} alertmanager{rules}",
+                        c.firing, c.tripped, c.errors, c.no_owner, c.alertmanager
+                    ),
+                    p,
                 ),
-                p,
+                w,
             ),
             clip_line(Line::from(self.table.status(&a.firing, p)), w),
         ];
@@ -189,58 +226,62 @@ impl AlertsView {
                 l.style = p.sel();
             }
             if self.open {
-                table.splice(end..end, detail(rows[self.table.sel], p, w));
+                table.splice(end..end, detail(rows[self.table.sel], p, now, w));
             }
         }
         let first = out.len();
         out.extend(table);
         (out, sel.map(|i| first + i))
     }
+}
 
-    /// WATCHES: every watch, tripped and failing first; its count alone while none is red,
-    /// until `w` opens it.
-    fn watch_lines(&self, a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-        let c = &a.counts;
-        let mut out = vec![clip_line(
-            heading(
-                "WATCHES",
-                format!(
-                    "  {}: {} tripped, {} error, {} ok, {} new",
-                    c.watches, c.watches_tripped, c.watches_error, c.watches_ok, c.watches_new
-                ),
-                p,
+/// WATCHES: the watches needing a look, then the ok ones folded to their count until `w` shows
+/// them, as agent-web folds them.
+fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let c = &a.counts;
+    let mut out = vec![clip_line(
+        heading(
+            "WATCHES",
+            format!(
+                "  {}: {} tripped, {} error, {} ok, {} new",
+                c.watches, c.watches_tripped, c.watches_error, c.watches_ok, c.watches_new
             ),
-            w,
-        )];
-        if a.watches.is_empty() {
-            out.push(Line::styled("  No watch defined.", p.dim()));
-            return out;
-        }
-        if !self.watches_open(a) {
-            out.push(Line::styled("  w shows every watch", p.dim()));
-            return out;
-        }
-        let at = |t: Option<i64>| t.map_or("-".into(), |t| clock(t, now));
-        let rows = a
-            .watches
-            .iter()
-            .map(|x| {
-                let style = match x.state.as_str() {
-                    "TRIP" | "ERROR" => p.bad(),
-                    "OK" => p.good(),
-                    _ => p.dim(),
-                };
-                vec![
-                    x.name.clone().into(),
-                    cell(x.state.clone(), style),
-                    cell(x.severity.clone(), p.dim()),
-                    cell(dash(&x.project), p.dim()),
-                    at(x.since).into(),
-                    at(x.lastrun).into(),
-                    cell(x.place.clone(), p.dim()),
-                ]
-            })
-            .collect();
+            p,
+        ),
+        w,
+    )];
+    if a.watches.is_empty() {
+        out.push(Line::styled("  No watch defined.", p.dim()));
+        return out;
+    }
+    let at = |t: Option<i64>| t.map_or("-".into(), |t| clock(t, now));
+    let folded = if ok {
+        0
+    } else {
+        a.watches.iter().filter(|x| x.state == "OK").count()
+    };
+    let rows: Vec<Vec<Cell>> = a
+        .watches
+        .iter()
+        .filter(|x| ok || x.state != "OK")
+        .map(|x| {
+            let style = match x.state.as_str() {
+                "TRIP" | "ERROR" => p.bad(),
+                "OK" => p.good(),
+                _ => p.dim(),
+            };
+            vec![
+                x.name.clone().into(),
+                cell(x.state.clone(), style),
+                cell(x.severity.clone(), p.dim()),
+                cell(dash(&x.project), p.dim()),
+                at(x.since).into(),
+                at(x.lastrun).into(),
+                cell(x.place.clone(), p.dim()),
+            ]
+        })
+        .collect();
+    if !rows.is_empty() {
         out.extend(
             Table {
                 header: vec![
@@ -254,8 +295,14 @@ impl AlertsView {
             }
             .fit(w, p.head()),
         );
-        out
     }
+    if folded > 0 {
+        out.push(Line::styled(
+            format!("  +{folded} ok (w shows them)"),
+            p.dim(),
+        ));
+    }
+    out
 }
 
 /// A project cell: its name, or `-` for a fleet-wide watch.
@@ -276,7 +323,11 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
     };
     vec![
         cell(r.sev.clone(), sev),
-        r.what.clone().into(),
+        if r.pages.is_empty() {
+            r.what.clone().into()
+        } else {
+            format!("{} ({} alerts)", r.what, r.pages.len()).into()
+        },
         cell(dash(&r.project), p.dim()),
         cell(r.source.clone(), p.dim()),
         r.since
@@ -289,7 +340,10 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
 
 /// An opened row: what the watch checks, where, what to do, its fix and how to reach it, then
 /// its last probe output; a row no watch file describes says so.
-pub fn detail(r: &Alert, p: Palette, w: usize) -> Vec<Line<'static>> {
+pub fn detail(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    if !r.pages.is_empty() {
+        return pages(r, p, now, w);
+    }
     let mut out = vec![];
     let width = w.saturating_sub(LABEL + 5).max(20);
     let mut part = |label: &str, text: &str| {
@@ -326,6 +380,30 @@ pub fn detail(r: &Alert, p: Palette, w: usize) -> Vec<Line<'static>> {
                 ),
                 p.dim(),
             ),
+            w,
+        ));
+    }
+    out
+}
+
+/// An Alertmanager rule's opened row: what to do, then each of its alerts, worst first, with
+/// where it fires and since when.
+fn pages(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled(format!("    {:<LABEL$} ", "What to do"), p.dim()),
+            Span::raw(r.action.clone()),
+        ]),
+        w,
+    )];
+    for x in &r.pages {
+        let since = x.since.map_or("-".into(), |t| hub_core::text::age(now - t));
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("      {:<8} {:>4}  ", x.sev, since), p.dim()),
+                Span::raw(format!("{}  ", x.what)),
+                Span::styled(x.place.clone(), p.dim()),
+            ]),
             w,
         ));
     }
@@ -524,6 +602,14 @@ pub(crate) mod tests {
         lines.iter().map(plain).collect::<Vec<_>>().join("\n")
     }
 
+    /// A view drawing every inner tab, as a printed `hub --tab alerts` does.
+    fn every() -> AlertsView {
+        AlertsView {
+            all: true,
+            ..Default::default()
+        }
+    }
+
     fn page(v: &AlertsView, a: &Alerts, w: usize) -> (String, Vec<(&'static str, usize)>) {
         let (l, at) = v.page(a, Palette { no_color: true }, NOW, w);
         (text(&l), at)
@@ -539,7 +625,11 @@ pub(crate) mod tests {
     #[test]
     fn the_sections_come_in_the_layouts_order_each_at_its_heading() {
         let a = sample();
-        let (s, at) = page(&AlertsView::default(), &a, 160);
+        let all = AlertsView {
+            all: true,
+            ..Default::default()
+        };
+        let (s, at) = page(&all, &a, 160);
         let lines: Vec<&str> = s.lines().collect();
         let want = hub_core::layout::resolve("alerts").unwrap().sections;
         let names: Vec<&str> = at.iter().map(|x| x.0).filter(|n| *n != ROW).collect();
@@ -550,7 +640,72 @@ pub(crate) mod tests {
                 "{name} at {i}: {s}"
             );
         }
-        assert!(lines[0].starts_with("ALERTS   FIRING"), "{s}");
+        assert!(lines[1].starts_with("ALERTS   FIRING"), "{s}");
+        // Each heading once, so a section is never drawn twice.
+        for name in want {
+            let head = name.to_uppercase();
+            let n = lines.iter().filter(|l| l.starts_with(&head)).count();
+            assert_eq!(n, 1, "{head}: {s}");
+        }
+    }
+
+    #[test]
+    fn the_strip_leads_with_each_inner_tabs_count_and_shows_health_then_the_one_open() {
+        let a = sample();
+        let mut v = AlertsView::default();
+        let (s, at) = page(&v, &a, 160);
+        let first = s.lines().next().unwrap();
+        let n = |id: &str| a.strip[id];
+        assert!(
+            first.starts_with(&format!(
+                "[Firing {}] Fixes {}  Watches {}  History",
+                n("firing"),
+                n("fixes"),
+                n("watches")
+            )),
+            "{first}"
+        );
+        let names: Vec<&str> = at.iter().map(|x| x.0).filter(|n| *n != ROW).collect();
+        assert_eq!(names, ["health", "firing"]);
+        v.inner = "history";
+        let (s, at) = page(&v, &a, 160);
+        let names: Vec<&str> = at.iter().map(|x| x.0).collect();
+        assert_eq!(names, ["health", "history"], "no selected row off Firing");
+        assert!(s.lines().next().unwrap().contains("[History]"), "{s}");
+        assert!(!s.contains("SOURCE"), "{s}");
+    }
+
+    #[test]
+    fn a_rule_row_names_its_alert_count_and_opens_to_each_alert() {
+        let mut a = sample();
+        let am = |place: &str, sev: &str| Alert {
+            sev: sev.into(),
+            what: format!("CVEs in {place}"),
+            source: "alertmanager".into(),
+            place: format!("image={place}"),
+            since: Some(NOW - 7200),
+            action: "routed to ntfy".into(),
+            ..Default::default()
+        };
+        a.firing.insert(
+            0,
+            Alert {
+                what: "HomelabCriticalVulnerability".into(),
+                pages: vec![am("api", "high"), am("web", "normal")],
+                ..am("api", "high")
+            },
+        );
+        let v = AlertsView {
+            open: true,
+            ..Default::default()
+        };
+        let (s, _) = page(&v, &a, 160);
+        assert!(s.contains("HomelabCriticalVulnerability (2 alerts)"), "{s}");
+        assert!(s.contains("What to do     routed to ntfy"), "{s}");
+        assert!(s.contains("high       2h  CVEs in api  image=api"), "{s}");
+        assert!(s.contains("CVEs in web  image=web"), "{s}");
+        // Negative control: a single alert's row opens to what its watch says.
+        assert!(!s.contains("playground-nightly ("), "{s}");
     }
 
     #[test]
@@ -688,7 +843,7 @@ pub(crate) mod tests {
             Ok(String::new()),
             NOW,
         );
-        let (s, _) = page(&AlertsView::default(), &a, 160);
+        let (s, _) = page(&every(), &a, 160);
         assert!(s.contains("  watches: no such dir"), "{s}");
         assert!(
             s.contains("FIXES  read failed\n  fleet-bench reds: exit 1"),
@@ -696,7 +851,7 @@ pub(crate) mod tests {
         );
         assert!(!s.contains("No red was queued"), "{s}");
         // Negative control: read, the same section is the list.
-        let (s, _) = page(&AlertsView::default(), &sample(), 160);
+        let (s, _) = page(&every(), &sample(), 160);
         assert!(!s.contains("read failed"), "{s}");
     }
 
@@ -737,8 +892,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn watches_fold_to_their_count_while_none_is_red_and_w_opens_them() {
-        let mut a = hub_core::alerts::join(
+    fn watches_list_the_ones_needing_a_look_and_fold_the_ok_ones_until_w() {
+        let a = hub_core::alerts::join(
             &crate::board::tests::fixture(),
             Ok(vec![watch("disk", "OK"), watch("dream", "OK")]),
             Ok(Reds::default()),
@@ -746,17 +901,26 @@ pub(crate) mod tests {
             NOW,
         );
         let mut v = AlertsView::default();
+        assert!(!page(&v, &a, 160).0.contains("WATCHES"), "on Firing");
+        v.inner = "watches";
         let (s, _) = page(&v, &a, 160);
         assert!(
-            s.contains("WATCHES  2: 0 tripped, 0 error, 2 ok, 0 new\n  w shows every watch"),
+            s.contains("WATCHES  2: 0 tripped, 0 error, 2 ok, 0 new\n  +2 ok (w shows them)"),
             "{s}"
         );
         assert!(!s.contains("LAST RUN"), "{s}");
-        v.watches = Some(true);
-        assert!(page(&v, &a, 160).0.contains("LAST RUN"));
-        // One red: open on its own.
-        a.watches_folded = false;
-        assert!(page(&AlertsView::default(), &a, 160).0.contains("LAST RUN"));
+        assert!(s.lines().next().unwrap().contains("[Watches]"), "{s}");
+        v.ok_watches = true;
+        let s = page(&v, &a, 160).0;
+        assert!(s.contains("LAST RUN") && s.contains("dream"), "{s}");
+        assert!(!s.contains("+2 ok"), "{s}");
+        // The ones needing a look are the table and put their count on the strip; ok ones fold.
+        v.ok_watches = false;
+        let s = page(&v, &sample(), 160).0;
+        assert!(s.lines().next().unwrap().contains("[Watches 2]"), "{s}");
+        let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
+        assert!(at("playground-nightly") < at("+1 ok (w shows them)"), "{s}");
+        assert!(!s.contains("disk"), "{s}");
     }
 
     #[test]
@@ -773,7 +937,7 @@ pub(crate) mod tests {
         }];
         a.counts.history = 1;
         a.counts.history_older = 3;
-        let (s, _) = page(&AlertsView::default(), &a, 160);
+        let (s, _) = page(&every(), &a, 160);
         assert!(s.contains("HISTORY  4 pages in 7 days"), "{s}");
         assert!(s.contains("tripped Sentinel: playground-nightly"), "{s}");
         assert!(s.contains("  +3 older on 2 Log, Actions"), "{s}");
@@ -784,7 +948,7 @@ pub(crate) mod tests {
         let a = sample();
         let v = AlertsView {
             open: true,
-            watches: Some(true),
+            all: true,
             ..Default::default()
         };
         let (s, _) = page(&v, &a, 60);

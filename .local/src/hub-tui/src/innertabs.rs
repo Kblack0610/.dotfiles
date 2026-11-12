@@ -32,9 +32,32 @@ pub fn step(tab: &Tab, on: &str, back: bool) -> &'static str {
 /// sections need a look) so it reads at a glance, the rest plain; a count beside one with sections
 /// needing a look (`flagged`, `layout::inner_count`), and the keys that switch.
 pub fn strip(tab: &Tab, on: &str, flagged: &[&str], p: Palette, w: usize) -> Line<'static> {
+    strip_by(
+        tab,
+        on,
+        |id| {
+            tab.inner
+                .iter()
+                .find(|i| i.id == id)
+                .map_or(0, |i| layout::inner_count(i, flagged))
+        },
+        p,
+        w,
+    )
+}
+
+/// The strip with each inner tab's count read by its id, for a tab whose reader counts what
+/// needs a look (Alerts' `strip`, the counts agent-web's strip shows).
+pub fn strip_by(
+    tab: &Tab,
+    on: &str,
+    count: impl Fn(&str) -> usize,
+    p: Palette,
+    w: usize,
+) -> Line<'static> {
     let mut s = vec![];
     for i in tab.inner {
-        let n = layout::inner_count(i, flagged);
+        let n = count(i.id);
         let label = if n > 0 {
             format!("{} {n}", i.title)
         } else {

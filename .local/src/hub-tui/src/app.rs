@@ -1069,7 +1069,7 @@ impl App {
             let tx = self.tx.clone();
             let firing = (self.alerts.as_ref())
                 .filter(|_| page.reads_alerts())
-                .map(|a| a.firing.clone());
+                .map(|a| a.pages());
             let jobs = self.files.builds.jobs.clone();
             let page = page.unread();
             std::thread::spawn(move || {
@@ -2437,10 +2437,15 @@ impl App {
             "runs" if self.tab == Tab::Infra => Some(Opened::Runs),
             _ => None,
         };
+        // A section on another inner tab switches to it; a pinned one keeps the one shown.
         if self.tab == Tab::Infra {
-            // A section on another inner tab switches to it; a pinned one keeps the one shown.
             if let Some(id) = crate::innertabs::named(infra_tab(), sec) {
                 self.infra_inner = id;
+            }
+        }
+        if self.tab == Tab::Alerts {
+            if let Some(id) = crate::innertabs::named(alertstab::tab(), sec) {
+                self.av.inner = id;
             }
         }
         self.log_days = self.tab == Tab::Log && sec == "history";
@@ -3344,15 +3349,42 @@ impl App {
 
     /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
     /// which already says all the pane would.
-    /// The Alerts tab's keys: the firing table's (/ f s S x; a new view shuts the opened row),
-    /// j/k and the page keys move its selection, Enter opens the row's watch under it, `o` its
-    /// fix PR, `i` its queue item, `w` folds Watches, n/N step the sections. Esc shuts the row,
-    /// then clears the view, then is the global Esc.
+    /// The Alerts tab's keys: Left/Right switch the inner tab, n/N step the sections, `w` shows
+    /// or folds the ok watches (on Watches). On
+    /// Firing, the table's (/ f s S x; a new view shuts the opened row), j/k and the page keys
+    /// move its selection, Enter opens the row under it, `o` its fix PR, `i` its queue item; Esc
+    /// shuts the row, then clears the view, then is the global Esc. The other inner tabs scroll.
     fn alerts_key(&mut self, k: KeyEvent) -> bool {
         if k.modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return false;
+        }
+        let typing = self.av.table.typing.is_some();
+        match k.code {
+            KeyCode::Left | KeyCode::Right if !typing => {
+                let back = k.code == KeyCode::Left;
+                self.av.inner = crate::innertabs::step(alertstab::tab(), self.av.on(), back);
+                self.scroll = 0;
+                self.av.follow = true;
+                return true;
+            }
+            KeyCode::Char('n') if !typing => {
+                self.next_section(true);
+                return true;
+            }
+            KeyCode::Char('N') if !typing => {
+                self.next_section(false);
+                return true;
+            }
+            // `w` shows or folds the ok watches, on Watches.
+            KeyCode::Char('w') if !typing => {
+                self.av.ok_watches = !self.av.ok_watches || self.av.on() != "watches";
+                self.av.inner = "watches";
+                return true;
+            }
+            _ if self.av.on() != "firing" => return false,
+            _ => {}
         }
         match self.av.table.key::<Alert>(k.code) {
             Took::No => {}
@@ -3399,18 +3431,6 @@ impl App {
                 }
                 None => return false,
             },
-            KeyCode::Char('w') => {
-                let open = self
-                    .alerts
-                    .as_ref()
-                    .is_some_and(|a| self.av.watches.unwrap_or(!a.watches_folded));
-                self.av.watches = Some(!open);
-                if !open {
-                    self.seek = Some("watches");
-                }
-            }
-            KeyCode::Char('n') => self.next_section(true),
-            KeyCode::Char('N') => self.next_section(false),
             _ => return false,
         }
         true
@@ -3861,8 +3881,11 @@ impl App {
                 "a accept  d reject  Enter record  / query  f state  s sort  S asc/desc  x clear  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Alerts if self.av.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Alerts if self.av.on() == "firing" => format!(
+                "<-/-> view  j/k move  Enter open  o fix PR  i its item  w ok watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Alerts => format!(
-                "j/k move  Enter open  o fix PR  i its item  w watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  j/k PgUp/PgDn scroll  w ok watches  n/N section  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.infra_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
                 "Esc {}  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
@@ -7437,7 +7460,9 @@ mod tests {
             at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch mac_studio_mlx"),
             "{s}"
         );
-        assert!(at("watch mac_studio_mlx") < at("FIXES  read failed"), "{s}");
+        assert!(!s.contains("FIXES"), "Fixes is its own inner tab: {s}");
+        a.av.inner = "fixes";
+        assert!(screen(&mut a, 160, 80).contains("FIXES  read failed"));
         assert!(
             s.contains("fleet-bench reds: reds: cannot read the queue"),
             "{s}"
@@ -7589,7 +7614,7 @@ mod tests {
     }
 
     #[test]
-    fn the_alerts_keys_move_open_filter_fold_and_follow_a_fix_to_its_queue_item() {
+    fn the_alerts_keys_switch_inner_tabs_move_open_filter_and_follow_a_fix_to_its_queue_item() {
         let mut a = app(Tab::Alerts);
         a.alerts = Some(crate::alertstab::tests::sample());
         let enter = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter)));
@@ -7613,10 +7638,46 @@ mod tests {
         a.handle(esc());
         assert!(a.av.table.is_default());
         assert!(!a.alerts_key(KeyEvent::from(KeyCode::Esc)));
-        // w folds Watches, which opened on its own with one tripped.
-        assert!(screen(&mut a, 160, 80).contains("LAST RUN"));
-        a.handle(key('w'));
+        // Right shows Watches in place of the firing table, whose keys rest there; Left is back.
         assert!(!screen(&mut a, 160, 80).contains("LAST RUN"));
+        a.scroll = 5;
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
+        assert_eq!((a.av.on(), a.scroll), ("watches", 0));
+        let s = screen(&mut a, 160, 80);
+        assert!(s.contains("LAST RUN") && !s.contains("SOURCE"), "{s}");
+        assert!(
+            s.contains("+1 ok (w shows them)") && !s.contains("disk"),
+            "{s}"
+        );
+        a.handle(key('w'));
+        assert!(
+            screen(&mut a, 160, 80).contains("disk"),
+            "w shows the ok watches"
+        );
+        a.handle(key('w'));
+        assert!(
+            !screen(&mut a, 160, 80).contains("disk"),
+            "and folds them again"
+        );
+        assert!(
+            !a.alerts_key(KeyEvent::from(KeyCode::Char('f'))),
+            "no table here"
+        );
+        assert!(a.hints().contains("<-/-> view") && !a.hints().contains("Enter open"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        assert_eq!(a.av.on(), "firing");
+        // A section word opens the inner tab holding it, as `hub --tab 'alerts history'` does.
+        a.open_query(Some("history".into()));
+        assert_eq!((a.av.on(), a.seek), ("history", Some("history")));
+        a.open_query(Some("health".into()));
+        assert_eq!(
+            a.av.on(),
+            "history",
+            "pinned Health keeps the inner tab shown"
+        );
+        a.av.inner = "firing";
         // i takes the selected row's fix to its queue item; a row with no fix keeps the key.
         a.av.table.sel = 0;
         a.handle(key('i'));

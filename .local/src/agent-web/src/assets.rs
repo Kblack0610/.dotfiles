@@ -548,6 +548,7 @@ mod tests {
         // section never shows under every inner tab or under none. Releases is checked per
         // inner tab below: its table and detail share one group.
         let pages = [
+            ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
