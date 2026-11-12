@@ -28,7 +28,7 @@ const COSTS_REFRESH_MS = INFRA_REFRESH_MS;
 
 // A column key as its header, the TUI's words (coststab.rs `header`); [text, class].
 const COST_COLS = {
-  session: ["session"], tool: ["tool"], kind: ["kind"], project: ["project"], harness: ["harness"],
+  session: ["session"], tool: ["tool"], skill: ["skill"], kind: ["kind"], project: ["project"], harness: ["harness"],
   model: ["model"], runner: ["runner"], sessions: ["sess", "n"], calls: ["calls", "n"], tokens: ["tokens", "n"],
   cost: ["cost", "n"], share: ["share of table", "n"], landed: ["landed", "n"], redo: ["redo", "n"], reverts: ["rev", "n"],
   per_pr: ["$/PR", "n"], src: ["src"], pr: ["PR"], at: ["updated", "n"],

@@ -190,7 +190,7 @@ pub const TABS: [Tab; 13] = [
         pinned: &[],
         inner: &[],
     },
-    // Every dollar figure the other tabs showed is here, cut seven ways; they keep a one-line
+    // Every dollar figure the other tabs showed is here, cut eight ways; they keep a one-line
     // badge that links in.
     Tab {
         id: "costs",

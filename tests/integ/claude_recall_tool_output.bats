@@ -147,3 +147,63 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   run "$RECALL" tool-output --by tool,tool
   assert_failure 2
 }
+
+# Skill spans: a human prompt closes one; a Skill call or a loaded body (a typed /skill) opens one;
+# an Agent call's subagent inherits the span it was made in; a forked skill's subagent is the
+# skill's and its caller stays in the span before. Negative controls: a SKILL.md Read opens
+# nothing, a task notification closes nothing, an unlinked subagent is in no skill.
+skill_fixture() {
+  local R="$BATS_TEST_TMPDIR/skills" cwd='"cwd":"/home/u/proj"' ts='"timestamp":"2026-10-20T10:00:00Z"'
+  mkdir -p "$R/p/s2/subagents"
+  a() { echo "{\"type\":\"assistant\",$cwd,$ts,\"message\":{\"id\":\"$1\",\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":$2,\"output_tokens\":1},\"content\":[${3:-}]}}"; }
+  h() { echo "{\"type\":\"user\",$cwd,$ts,\"turnOrigin\":\"$1\",\"message\":{\"content\":\"$2\"}}"; }
+  body() { echo "{\"type\":\"user\",$cwd,$ts,\"isMeta\":true,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Base directory for this skill: /x/skills/$1\\n\\n# $1\"}]}}"; }
+  res() { echo "{\"type\":\"user\",$cwd,$ts,\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":\"$2\"}]}${3:+,\"toolUseResult\":{\"agentId\":\"$3\"}}}"; }
+  {
+    h human "fix the bug"
+    a m1 10 '{"type":"tool_use","id":"rd","name":"Read","input":{"file_path":"/x/skills/rigor/SKILL.md"}}'
+    res rd "# rigor"
+    a m2 20 '{"type":"tool_use","id":"sk1","name":"Skill","input":{"skill":"wind-down"}}'
+    res sk1 "Launching skill: wind-down"
+    body wind-down
+    a m3 30 '{"type":"tool_use","id":"ag1","name":"Agent","input":{"subagent_type":"Explore"}}'
+    res ag1 "done" abc
+    h task_notification "<task-notification>x</task-notification>"
+    a m4 40
+    h human "next thing"
+    a m5 50
+    h human '<command-message>fleet-lead</command-message>\n<command-name>/fleet-lead</command-name>'
+    body fleet-lead
+    a m6 60 '{"type":"tool_use","id":"sk2","name":"Skill","input":{"skill":"code-review"}}'
+    res sk2 'Skill \"code-review\" launched (forked execution, running in the background).' def
+    a m7 70
+  } > "$R/p/s2.jsonl"
+  a ma 100 > "$R/p/s2/subagents/agent-abc.jsonl"
+  a md 200 > "$R/p/s2/subagents/agent-def.jsonl"
+  a mz 400 > "$R/p/s2/subagents/agent-zzz.jsonl"
+  export CLAUDE_TRANSCRIPTS="$R"
+}
+
+@test "by skill: spans open at a Skill call or body, close at a human prompt, follow subagents" {
+  skill_fixture
+  run jq -c '[.rows[] | [.key, .spans, .sessions, .turns, .cache_read_input_tokens]]' <<<"$(out --by skill)"
+  assert_output '[["(no skill)",0,1,4,480],["code-review",1,1,1,200],["wind-down",1,1,3,170],["fleet-lead",1,1,2,130]]'
+}
+
+@test "by session,skill: one row per session and skill, summing to the totals" {
+  skill_fixture
+  o="$(out --by session,skill)"
+  run jq -c '[.rows[] | .key] | sort' <<<"$o"
+  assert_output '[["s2","(no skill)"],["s2","code-review"],["s2","fleet-lead"],["s2","wind-down"]]'
+  run jq -c '[([.rows[].turns] | add), .totals.turns]' <<<"$o"
+  assert_output '[10,10]'
+}
+
+@test "by skill negative control: no skill row without a skill cut, and --by skill is accepted" {
+  skill_fixture
+  run jq -c '[.rows[].key]' <<<"$(out --by tool)"
+  refute_output --partial "wind-down"
+  run "$RECALL" tool-output --since 2026-10-01 --by skill
+  assert_success
+  assert_output --partial "fleet-lead"
+}
