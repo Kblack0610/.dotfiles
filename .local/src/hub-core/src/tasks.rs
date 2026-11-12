@@ -113,7 +113,11 @@ pub fn title_and_rest(text: &str, typed: bool) -> (String, String) {
     };
     let line = body
         .split_whitespace()
-        .filter(|w| !w.starts_with('#'))
+        // A tag is `#` and a letter (`#size/m`); `#1980` is a PR the summary keeps.
+        .filter(|w| {
+            !w.strip_prefix('#')
+                .is_some_and(|t| t.starts_with(|c: char| c.is_alphabetic()))
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let end = [": ", ", ", "; ", " - ", " ("]
@@ -433,6 +437,9 @@ impl Feed {
     pub fn titles(&mut self) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
             (r.title, r.summary) = title_and_rest(&r.text, r.r#type.is_some());
+            if r.title.is_empty() {
+                r.title = r.text.trim().to_string();
+            }
         }
         let by: std::collections::HashMap<(String, String), String> = self
             .rows
@@ -989,6 +996,10 @@ mod tests {
                 "Ship the trailer for DodginBalls",
             ),
             ("the two sheets: merge them", "the two sheets"),
+            (
+                "bump the slot #urgent past #1980",
+                "bump the slot past #1980",
+            ),
             // A playtest check's head is its own word, not a type.
             (
                 "headset: menu text readable at 1.5 m, quests list Active",

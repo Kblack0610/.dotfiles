@@ -403,7 +403,7 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     vec![
         cell(section, p.head()),
         title.into(),
-        or_dash(r.epic.as_deref()),
+        or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
         state,
         or_dash((!when.is_empty()).then_some(when.as_str())),

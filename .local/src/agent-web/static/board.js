@@ -95,7 +95,7 @@ function bRow(r, i) {
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
-    r.epic ? "epic " + bEpic(r, i) : "",
+    r.epic || r.parent ? "epic " + bEpic(r, i) : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (r.state === "done") {
@@ -151,8 +151,9 @@ function bRow(r, i) {
 const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
-// The row's epic as a link to that row, or "" when it is under none.
-const bEpic = (r, i) => r.epic ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : "";
+// The row's epic as a link to that row, its parent's id when that row is not on the board,
+// or "" when it is under none.
+const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic || r.parent) : "";
 
 // One line of the table, and the opened record under it. The title cell holds the row's area,
 // its title and what the title leaves out (hub_core::tasks::title_and_rest); the epic cell opens
