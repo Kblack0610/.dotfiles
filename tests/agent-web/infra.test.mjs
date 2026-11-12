@@ -190,3 +190,79 @@ test("the Cloud card's month is a link to Costs, Budget; AWS's stops and emails 
   assert.doesNotMatch(h, /READ FAILED/);
   assert.match(run(`budgetLines(${JSON.stringify({ ...g, budget_ok: 0 })})`), /READ FAILED/);
 });
+
+// A machine page as GET /api/infra/machine sends it (hub_core::machine_page plus agent-web's
+// tables), the few fields each test reads.
+const machinePage = (o = {}) => ({
+  host: "aws-burst-1", at: 1700000000, head: "aws-burst-1, cloud, stopped", errors: [],
+  parts: [{ label: "Now", text: "no reading: the governor has it stopped", link: null, warn: true },
+    { label: "Grafana", text: "its fleet board", link: "https://g.example/d/kb-fleet?var-host=aws-burst-1", warn: false }],
+  machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, share: [], running: [], history: null,
+  tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]) }, ...o,
+});
+const drawMachine = (page, d, err) => {
+  run(`st.tab = "infra"; st.page = ${JSON.stringify(page)}`);
+  Object.assign(run("mst"), { host: page.slice("machines/".length), data: d, err: err || null });
+  return run("machinePage()");
+};
+
+test("a machine page for a name no machine has says so, from the server's 404", () => {
+  const h = drawMachine("machines/nope", null, "Could not read infra (HTTP 404): no machine named nope. Retry, or check the agent-web log.");
+  assert.match(h, /<div class="panel down">[^<]*no machine named nope/);
+  assert.match(h, /href="#infra\/machines">All machines<\/a>/);
+});
+
+test("a machine page with no reading says why, in amber, and holds the governor's buttons", () => {
+  const h = drawMachine("machines/aws-burst-1", machinePage());
+  assert.match(h, /<span class="pgv capwarn">no reading: the governor has it stopped<\/span>/);
+  assert.match(h, /href="https:\/\/g\.example\/d\/kb-fleet\?var-host=aws-burst-1" target="_blank"/);
+  assert.match(h, /data-cloud="aws-burst-1:on" data-hours="2">On 2h</);
+  assert.match(h, /No core reading/);
+  assert.match(h, /Nothing firing names it\./);
+});
+
+test("the Machines table's power cell has no buttons: they are the machine page's", () => {
+  const h = run(`powerCell({ power: { host: "aws-burst-1", state: "stopped", hours: 1, max: 8, rule: "r", reason: "", usd_per_hour: null } })`);
+  assert.doesNotMatch(h, /data-cloud|7 days/);
+});
+
+test("a machine page draws its share, its 7 days and its recent jobs with their links", () => {
+  const hours = [{ at: 1700000000, cpu: 0.5, pools: { unity: 6 }, seen: 1 }, { at: 1700003600, cpu: null, pools: {}, seen: 0 }];
+  const recent = tbl([{ run_id: 7, repo: "o/r", job: "Tests", runner: "ws-1", conclusion: "failure", started: 1700000000, took: 600, url: "https://gh/j/7" }], ["started", "job", "conclusion", "took"]);
+  recent.table.links = [{ started: "#infra/ci/7", job: "https://gh/j/7" }];
+  const d = machinePage({ cores: 24, head: "workstation, local, up", machine: {},
+    share: [{ what: "unity", cores: 6, link: "#infra/pools/unity" }, { what: "other", cores: 6, link: null }, { what: "idle", cores: 12, link: null }],
+    history: { step: 120, readings: 1, hours, down: [], power: null },
+    tables: { down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no reading" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]) } });
+  const h = drawMachine("machines/workstation", d);
+  assert.match(h, /<a href="#infra\/pools\/unity">unity<\/a> 6\.0, other 6\.0, idle 12\.0 <span class="muted">of 24 cores/);
+  assert.doesNotMatch(h, /data-cloud/, "no power, no buttons");
+  assert.match(h, /data-tip="[^"]*no reading"/, "an hour with no sample says so");
+  assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
+  assert.match(h, /<a href="#infra\/ci\/7">/);
+  assert.match(h, /<td class="bad">failure<\/td>/);
+});
+
+test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {
+  const h = drawMachine("machines/aws-burst-1", machinePage(), "Could not read infra (HTTP 502)");
+  assert.match(h, /refresh failed, showing the last read: Could not read infra \(HTTP 502\)/);
+  assert.match(h, /data-cloud="aws-burst-1:on"/, "the page is still drawn");
+  run(`Object.assign(cst, { host: "aws-burst-2", msg: "aws-burst-2: on sent" })`);
+  assert.doesNotMatch(drawMachine("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
+  run(`cst.host = "aws-burst-1"`);
+  assert.match(drawMachine("machines/aws-burst-1", machinePage()), /aws-burst-2: on sent/);
+  run(`Object.assign(cst, { host: "", msg: "" })`);
+});
+
+test("a pool has one colour in the share bar and the 7-day chart", () => {
+  const hours = [{ at: 1700000000, cpu: 0.9, pools: { alpha: 2, unity: 6 }, seen: 1 }];
+  const d = machinePage({ cores: 24, machine: {},
+    share: [{ what: "unity", cores: 6, link: null }, { what: "alpha", cores: 2, link: null }, { what: "idle", cores: 16, link: null }],
+    history: { step: 120, readings: 1, hours, down: [], power: null } });
+  const colors = run(`poolColors(${JSON.stringify(d)})`);
+  assert.deepEqual(Object.keys(colors), ["alpha", "unity"]);
+  const h = drawMachine("machines/workstation", d);
+  const bar = h.match(/title="unity: 6\.0 cores"/) && h.match(/<i style="flex:6\.00;background:([^"]+)"/)[1];
+  assert.equal(bar, colors.unity, "the share bar's unity is the chart's unity");
+  assert.match(h, new RegExp(`<span class="chip sm" style="--c:${colors.unity.replace(/[()]/g, "\\$&")}">unity</span>`));
+});

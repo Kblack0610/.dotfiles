@@ -1,6 +1,6 @@
 "use strict";
 // The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
-// verdict and cloud power, then the pools), CI (slots, queued, failed and finished runs) and Jobs
+// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), CI (slots, queued, failed and finished runs) and Jobs
 // (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
 // Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
@@ -15,9 +15,8 @@ const ist = { data: null, err: null, open: {} };
 const refreshInfra = coalesce(async () => {
   const view = new URLSearchParams(Object.values(INFRA_TABLES).flatMap((pre) => [...tblParams(st.views.infra, pre)])).toString();
   try { ist.data = await api("/api/infra" + (view ? "?" + view : "")); ist.err = null; } catch (e) { ist.err = e.message; }
-  // An opened history re-reads with the board, so its last state and today's hours stay current
-  // and a failed read retries.
-  for (const h of Object.keys(cst.hist)) loadHist(h);
+  // An open machine page re-reads with the board, so its numbers move and a failed read retries.
+  if (machineHost()) refreshMachine();
   if (st.tab === "infra") renderInfra();
 });
 
@@ -104,27 +103,16 @@ function governorCell(g) {
 }
 
 // A cloud host's power, which the governor starts for a deep queue: its state, today's hours
-// against the cap, where its rule stands, and buttons that hold it on or off for a while or hand
-// it back. POST /api/cloud-runner writes the governor's override ConfigMap; the pod sees the change
-// within about two minutes.
-const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
+// against the cap and where its rule stands. Its buttons are on the machine's page.
 const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
-// The button armed by a first click ("host:action"), the last answer, and each opened history.
-const cst = { armed: "", msg: "", hist: {} };
-// Rows of an opened history shown before "+N older".
-const HIST_ROWS = 30;
 const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc((state || "?").toUpperCase())}</span>`;
 
 function powerCell(m) {
   const p = m.power;
   if (!p) return td("muted", "-");
-  const btns = CLOUD_ACTS.map(([a, n, label]) => {
-    const k = `${p.host}:${a}`;
-    return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
-  }).join(" ");
   const last = p.changed_at ? `last ${p.changed} ${when(p.changed_at)}${p.reason ? ` (${p.reason})` : ""}` : p.reason;
   const cost = p.usd_per_hour != null ? ` ~${usd(p.hours * p.usd_per_hour)}` : "";
-  return `<td class="wrap" title="${esc(last || "")}">${powerChip(p.state)} ${p.hours.toFixed(1)}/${p.max ?? "?"} h${cost} <span class="muted">${esc(p.rule)}</span><div>${btns} <button class="btn sm" data-hist="${esc(p.host)}">${cst.hist[p.host] ? "Hide 7 days" : "7 days"}</button></div></td>`;
+  return `<td class="wrap" title="${esc(last || "")}">${powerChip(p.state)} ${p.hours.toFixed(1)}/${p.max ?? "?"} h${cost} <span class="muted">${esc(p.rule)}</span></td>`;
 }
 
 // Each table's cells by column, in the order the summary's columns come (hub_core Row::COLUMNS);
@@ -206,15 +194,14 @@ const FIN_CELLS = {
   cancelled: (f) => td("n", f.all.can),
 };
 
-// One table's rows from the read: `cap` rows until its "+N more", and `after` a row drawn under
-// one (a cloud host's opened history).
+// One table's rows from the read: `cap` rows until its "+N more".
 function infraBody(name, labels, cells, empty, o = {}) {
   const d = ist.data.tables[name], t = d.table, rows = d.rows;
   if (!rows.length) return `<div class="panel"><div class="empty">${t.total ? "No row matches." : empty}</div></div>`;
   const keys = t.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
   const cap = o.cap && !INFRA_T[name].all ? o.cap : rows.length, shown = rows.slice(0, cap);
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${shown.map((r, i) =>
-    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>${o.after ? o.after(r, keys.length) : ""}`).join("")}</table>${tblMore(rows.length - shown.length, "more")}</div>`;
+    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table>${tblMore(rows.length - shown.length, "more")}</div>`;
 }
 
 const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
@@ -224,7 +211,7 @@ const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
   body: () => infraBody(name, labels, cells, empty, o),
 });
 const INFRA_T = {
-  machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports.", { after: (m, n) => (m.power ? histRow(m.power.host, n) : "") }),
+  machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search, or machines:razer-laptop", "No pool reports."),
   runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
   queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing queued."),
@@ -360,36 +347,134 @@ function budgetLines(g) {
   return month + (lines ? `<div class="muted">${lines}. Each day stops at its hour cap.</div>` : "");
 }
 
-// An opened host's last days (GET /api/cloud-runner/history, hub_core::power_history): hours per
-// UTC day, counted from the governor's 2-minute power samples, then each start and stop, newest
-// first. Read when opened, then on the board's refresh while it stays open; a row under the
-// machine's, across the table.
-function histRow(host, span) {
-  const o = cst.hist[host];
-  if (!o) return "";
-  let body;
-  if (o.err) body = `<div class="err">${esc(o.err)}</div>`;
-  else if (!o.data) body = `<div class="muted">Loading...</div>`;
-  else {
-    const d = o.data, ch = [...d.changes].reverse(), shown = o.all ? ch : ch.slice(0, HIST_ROWS);
-    const days = d.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
-    const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
-    const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="${esc(host)}">+${ch.length - shown.length} older</button>` : "";
-    body = `<div>Run per UTC day: ${days || "no samples"} <span class="muted">(counted from ${d.step / 60}-minute samples of the governor's power state)</span></div><table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>${more}`;
-  }
-  return `<tr><td colspan="${span}">${body}</td></tr>`;
+// `#infra/machines/<host>` (GET /api/infra/machine, hub_core::machine_page, which the hub's page
+// draws too): its parts, the cores each pool uses there, what runs there, the governor and its
+// buttons, its last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
+const mst = { host: "", data: null, err: null, all: false };
+const machineHost = () => (st.tab === "infra" && st.page.startsWith("machines/") ? st.page.slice("machines/".length) : "");
+const refreshMachine = coalesce(async () => {
+  const host = machineHost();
+  if (!host) return;
+  try { mst.data = await api("/api/infra/machine?host=" + encodeURIComponent(host)); mst.err = null; } catch (e) { if (mst.data && mst.data.host !== host) mst.data = null; mst.err = e.message; }
+  if (machineHost() === host) renderInfra();
+});
+// Power changes shown before "+N older".
+const HIST_ROWS = 30;
+
+// Each pool one slot colour on the whole page (share bar and chart), by name.
+function poolColors(d) {
+  const names = new Set(d.share.filter((s) => s.what !== "idle" && s.what !== "other").map((s) => s.what));
+  if (d.history) d.history.hours.forEach((x) => Object.keys(x.pools).forEach((p) => names.add(p)));
+  return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-async function loadHist(host) {
-  const o = cst.hist[host];
-  try { o.data = await api(`/api/cloud-runner/history?host=${encodeURIComponent(host)}`); o.err = null; }
-  catch (e) { o.err = `${host}: ${e.message}`; }
-  if (st.tab === "infra") renderInfra();
+// Each pool its colour, other the muted one, idle the empty track.
+function shareBar(d, colors) {
+  if (!d.share.length) return `<div class="muted">No core reading: no runner and no CPU series.</div>`;
+  const color = (s) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : colors[s.what]);
+  const bar = d.share.map((s) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
+  const words = d.share.map((s) => `${tblLink(s.link, s.what)} ${s.cores.toFixed(1)}`).join(", ");
+  return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
+}
+
+// One column per hour: the pools' cores as a share of the machine, then the rest of its CPU.
+function historyChart(h, cores, colors) {
+  const pools = [...new Set(h.hours.flatMap((x) => Object.keys(x.pools)))].sort();
+  const cols = h.hours.map((x) => {
+    const at = new Date(x.at * 1e3);
+    const segs = pools.map((p) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: colors[p] }));
+    const ci = segs.reduce((a, s) => a + s.v, 0);
+    if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
+    const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
+    const tip = x.cpu == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
+    return { key: String(x.at), label: at.getHours() === 0 ? at.toLocaleDateString([], { weekday: "short" }) : "", tip, segs };
+  });
+  const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
+  return `${columns(cols, { height: 120, yfmt: pct })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`;
+}
+
+const DOWN_COLS = { from: ["from"], to: ["to"], took: ["took", "n"], why: ["why"] };
+const DOWN_CELLS = {
+  from: (r) => td("", stamp(r.from)),
+  to: (r) => td(r.open ? "warn" : "", r.open ? "now" : stamp(r.to)),
+  took: (r) => td("n", secs(r.to - r.from)),
+  why: (r) => td("muted", esc(r.why)),
+};
+const RECENT_COLS = { started: ["started"], repo: ["repo"], job: ["job"], runner: ["runner"], conclusion: ["conclusion"], took: ["took", "n"] };
+const RECENT_CELLS = {
+  started: (r, l) => td("", tblLink(l.started, r.started ? stamp(r.started) : "-")),
+  repo: (r) => td("muted", esc(r.repo)),
+  job: (r, l) => td("wrap", tblLink(l.job, r.job)),
+  runner: (r) => td("muted", esc(r.runner)),
+  conclusion: (r) => td(r.conclusion === "failure" ? "bad" : r.conclusion === "success" ? "" : "muted", esc(r.conclusion || "running")),
+  took: (r) => td("n", secs(r.took)),
+};
+const PAGE_ALERT_COLS = { sev: ["sev"], what: ["what"], source: ["source"], since: ["since", "n"], state: ["state"] };
+const PAGE_ALERT_CELLS = {
+  sev: (a) => td("warn", esc(a.sev)),
+  what: (a, l) => td("wrap", tblLink(l.what, a.what)),
+  source: (a) => td("muted", esc(a.source)),
+  since: (a) => td("n", a.since ? stamp(a.since) : "-"),
+  state: (a) => td("muted", esc(a.state)),
+};
+// A page table: the rows in hub_core's order with their links, with no view of its own.
+function pageTable(d, labels, cells, empty) {
+  if (!d || !d.rows.length) return `<div class="empty">${empty}</div>`;
+  const keys = d.table.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
+  const role = Object.fromEntries(d.table.columns.map((c) => [c.key, c.role || ""]));
+  const head = keys.map((k) => `<th${labels[k][1] ? ` class="${labels[k][1]}"` : ""} data-role="${role[k]}" data-label="${esc(labels[k][0])}">${esc(labels[k][0])}</th>`).join("");
+  return `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${d.rows.map((r, i) => `<tr>${keys.map((k) => cells[k](r, tblLinks(d.table, i))).join("")}</tr>`).join("")}</table></div>`;
+}
+
+function powerHistory(p) {
+  const ch = [...p.changes].reverse(), shown = mst.all ? ch : ch.slice(0, HIST_ROWS);
+  const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
+  const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
+  const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
+  return `<h3 class="sec">Power <span class="muted">run per UTC day, counted from ${p.step / 60}-minute samples of the governor's power state</span></h3><div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+}
+
+// The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
+// POST /api/cloud-runner writes the governor's override ConfigMap; the pod sees the change within
+// about two minutes.
+const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
+// The button armed by a first click ("host:action") and the last answer.
+const cst = { armed: "", msg: "", host: "" };
+function cloudButtons(p) {
+  const btns = CLOUD_ACTS.map(([a, n, label]) => {
+    const k = `${p.host}:${a}`;
+    return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
+  }).join(" ");
+  return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
+}
+
+function machinePage() {
+  const back = `<a class="btn sm" href="#infra/machines${st.views.infra ? "?" + st.views.infra : ""}">All machines</a>`;
+  const d = mst.data;
+  if (!d) return `<div class="bhead"><span>${esc(mst.host)}</span>${back}</div><div class="${mst.err ? "panel down" : "empty"}">${mst.err ? esc(mst.err) : "Loading..."}</div>`;
+  const colors = poolColors(d);
+  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
+  const errs = mst.err ? [`refresh failed, showing the last read: ${mst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  h += `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
+  const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
+  h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
+  const hist = d.history;
+  if (hist) {
+    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores, colors)}`;
+    h += `<h3 class="sec">Downtime <span class="muted">stretches with no CPU reading, newest first</span></h3>${pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.")}`;
+    if (hist.power) h += powerHistory(hist.power);
+  }
+  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.tables.recent.rows.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
+  h += `<h3 class="sec">Alerts <span class="muted">firing now and naming it</span></h3>${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
+  return h;
 }
 
 async function cloudAct(key, hours) {
   const i = key.lastIndexOf(":"), host = key.slice(0, i), action = key.slice(i + 1);
   cst.armed = "";
+  cst.host = host;
   try { await post("/api/cloud-runner", { host, action, hours }); cst.msg = `${host}: ${action} sent; the governor reads it within about 2 minutes.`; }
   catch (e) { cst.msg = `${host}: ${e.message}`; }
   renderInfra();
@@ -399,15 +484,7 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
-  const hb = e.target.closest("[data-hist]");
-  if (hb) {
-    const h = hb.dataset.hist;
-    if (cst.hist[h]) delete cst.hist[h]; else { cst.hist[h] = { data: null, err: null, all: false }; loadHist(h); }
-    renderInfra();
-    return;
-  }
-  const ha = e.target.closest("[data-hist-all]");
-  if (ha) { const o = cst.hist[ha.dataset.histAll]; if (o) o.all = true; renderInfra(); return; }
+  if (e.target.closest("[data-hist-all]")) { mst.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;
@@ -427,6 +504,7 @@ function drawInfra() {
   innerHide("infra", "tests", $("ci-tests"));
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
+  if (machineHost()) { paint(el, strip + machinePage()); return; }
   if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
@@ -438,7 +516,7 @@ function drawInfra() {
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2>${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}<div class="err">${esc(cst.msg)}</div>`);
+  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2>${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
   html += innerWrap("infra", "pools", `<h2 class="sec" id="sec-pools">Pools <span class="muted">each pool's slots and the last day of its queue</span></h2>${INFRA_T.pools.html()}`);
   html += innerWrap("infra", "ci", ciSection(inst, t1, d.ci));
   paint(el, html, ist.open);
@@ -463,7 +541,11 @@ const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 TABS.infra = {
   // The Jobs section (jobs.js) reads its own source on its own timer; CI's runs and Tests (ci.js)
   // read on show and again on each new ledger line.
-  show() { renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data); },
+  show() {
+    const h = machineHost();
+    if (h !== mst.host) { Object.assign(mst, { host: h, data: null, err: null, all: false }); if (h) refreshMachine(); }
+    renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data);
+  },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
     if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }

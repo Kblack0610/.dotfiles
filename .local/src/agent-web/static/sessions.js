@@ -167,13 +167,6 @@ $("side").addEventListener("click", (e) => {
   if (r) sessionClick(r);
 });
 
-const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
-
-function pagePart(p) {
-  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
-  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
-}
-
 // The Details view. The parts are hub-core's; what is drawn here is the card for a session still in
 // the state document, and the folds, each open until the reader folds it.
 function pageHtml(p) {
