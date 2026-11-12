@@ -483,22 +483,22 @@ pub fn build(
     out
 }
 
-/// A card's one-line progress, the same words on both surfaces:
-/// `v0.0.1 53% (314 of 590 by size), 7d 103, 28d 239, ETA 33d`.
+/// A card's one-line progress, the same words on both surfaces, every number named:
+/// `v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d`.
 pub fn summary(c: &Card) -> String {
     let p = &c.progress;
     let mut s = c.version.clone().unwrap_or_else(|| "no version".into());
     match c.percent {
         Some(pc) => {
             s += &format!(
-                " {pc}% ({} of {} by size)",
+                " {pc}% done ({} of {} size points)",
                 p.done_weight,
                 p.done_weight + p.open_weight
             )
         }
         None => s += " no rows",
     }
-    s += &format!(", 7d {}, 28d {}", p.closed_7d, p.closed_28d);
+    s += &format!(", closed {} in 7d, {} in 28d", p.closed_7d, p.closed_28d);
     s += &match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
@@ -671,7 +671,7 @@ mod tests {
         assert!(v["cards"][0]["summary"]
             .as_str()
             .unwrap()
-            .starts_with("v0.1.0 25% (1 of 4 by size)"));
+            .starts_with("v0.1.0 25% done (1 of 4 size points)"));
         assert_eq!(v["cards"][0]["in_flight"], false);
         assert_eq!(v["cards"][0]["note_says"], "none");
         assert_eq!(
@@ -922,7 +922,7 @@ mod tests {
         c.eta_days = eta_days(&c.progress);
         assert_eq!(
             summary(&c),
-            "v0.0.1 53% (314 of 590 by size), 7d 103, 28d 239, ETA 33d"
+            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d"
         );
         c.eta_days = None;
         assert!(summary(&c).ends_with("no ETA (no closes in 28d)"));
