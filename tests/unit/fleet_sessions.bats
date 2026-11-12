@@ -889,12 +889,33 @@ MD
   mark sid-4 'DONE clean, no plan file'
   mark sid-5 'DONE clean, no plan file'
   mark sid-6 'STALLED PR #9 CI red @feat/x'
-  release_done "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
+  release_left "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
   run nudged sid-4 'DONE clean, no plan file'
   assert_success
   run nudged sid-5 'DONE clean, no plan file'
   assert_failure
   run nudged sid-6 'STALLED PR #9 CI red @feat/x'
+  assert_success
+}
+
+@test "a NEEDS fact is one key across branch and head, and leaving NEEDS releases its escalation (ar-233)" {
+  # an escalation written in the old shape, with the branch and head, still matches
+  escalate sid-7 'NEEDS 1 pending ask(s) @feat/x@0123456789ab'
+  run escalated sid-7 'NEEDS 1 pending ask(s)'
+  assert_success
+  run escalated sid-7 'NEEDS 1 pending ask(s) @feat/y'
+  assert_success
+  run escalated sid-7 'NEEDS waiting on a prompt or permission'
+  assert_failure
+  # still NEEDS: kept; left NEEDS: released, and the nudged fact beside it is kept
+  mark sid-8 'STALLED PR #9 CI red @feat/x'
+  escalate sid-8 'NEEDS 1 pending ask(s)'
+  release_left "$(printf 'NEEDS\tt1\tsid-7\nWORKING\tt2\tsid-8\n')"
+  run escalated sid-7 'NEEDS 1 pending ask(s)'
+  assert_success
+  run escalated sid-8 'NEEDS 1 pending ask(s)'
+  assert_failure
+  run nudged sid-8 'STALLED PR #9 CI red @feat/x'
   assert_success
 }
 
@@ -1099,6 +1120,36 @@ SH
   [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
   [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s) @feat/x' ]
   [ "$(jq -r .escalated <<<"$output")" = true ]
+}
+
+@test "end to end: a pending ask pages once across a branch switch and a push, and the next ask pages again (ar-233)" {
+  landed_fixture
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  id="$(basename "$(find "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" -name '*.md' | head -1)" .md)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 "$(jq -r .fact <<<"$output")"
+
+  # the session carries on onto a new branch with an open PR, then pushes to it
+  git -C "$SANDBOX/wt" checkout -q -b feat/y
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  printf 'feat/y\t876\tOPEN\tPENDING\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.branch) \(.pr)"' <<<"$output")" = 'NEEDS feat/y 876' ]
+  [ "$(jq -r .escalated <<<"$output")" = true ]
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m push
+  printf 'feat/y\t876\tOPEN\tPENDING\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .escalated <<<"$output")" = true ]
+
+  # answered, the session leaves NEEDS on the next tick; its next ask is a new page
+  "$AGENT_ASK" answer "$id" yes >/dev/null
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -r '.sessions[0].bucket' "$XDG_STATE_HOME/fleet/state.json")" = WORKING ]
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'and the docs?' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  [ "$(jq -r .escalated <<<"$output")" = false ]
 }
 
 @test "end to end: a nightly red after a merge names the merging session as owner" {

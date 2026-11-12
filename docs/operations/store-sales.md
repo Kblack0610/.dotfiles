@@ -26,7 +26,7 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | rbw entry (password field, one line) | Contents | Scope |
 |---|---|---|
 | `store_sales_asc` | `{"key_id", "issuer_id", "p8", "vendor_number"}`, `p8` the `.p8` file in base64 | App Store Connect API key with the Sales role. The vendor number is on Payments and Financial Reports |
-| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_rev_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial |
+| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 
 ## Troubleshooting
 
@@ -38,5 +38,6 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | App Store `HTTP 400: Invalid vendor number` | `vendor_number` in the rbw entry is wrong |
 | App Store `HTTP 404` without "no sales" | The day's report is not out yet. Apple publishes Americas daily reports by 5am Pacific |
 | App Store "no sales yesterday" | Apple answered "There were no sales for the date specified" |
-| Google Play `no sales/salesreport_YYYYMM.zip in the bucket yet` | No sale this month yet, or the first report of the month is not published yet |
-| Google Play `HTTP 403` | The service account lacks "View financial data" in Play Console, Users and permissions |
+| Google Play `no sales/salesreport_YYYYMM.zip in the bucket yet` | No sale this month yet, or the month's first report is not out. It also shows when `bucket` in the rbw entry is wrong, because GCS answers 404 for a bucket that does not exist: compare it with the URI in Play Console. An account with no paid app or in-app product has no sales report at all |
+| Google Play `HTTP 403` in the first two days after the invite | Google takes about a day to apply a Play Console invite to the reports bucket, sometimes longer. Wait, then run `store-sales` again |
+| Google Play `HTTP 403` after two days | The service account's grants are short. Check Play Console, Users and permissions: it needs "View financial data", and guides say reading the bucket also takes "View app information and download bulk reports (read-only)". GCP IAM roles on the bucket are reported not to help |

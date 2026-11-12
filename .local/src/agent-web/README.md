@@ -85,6 +85,7 @@ A stop (SIGTERM, so every rebuild's restart) takes no new connection, ends the l
 cargo test && cargo clippy --all-targets -- -D warnings
 node --test ../../../tests/agent-web/md.test.mjs   # the markdown renderer; bats tests/unit/agent_web_md.bats runs the same
 node --test ../../../tests/agent-web/{queue,waiting,home,outbox,projects,focus,log,sessions}.test.mjs   # the cards, Home, the outbox, Projects, Daily, the Log and the Sessions list; bats tests/unit/agent_web_queue.bats runs them
+node ../../../tests/agent-web/phone/render.mjs   # every tab at phone width from fixtures, the nav menu, screenshots in ~/.cache/agent-web-phone/out; CI runs it when agent-web is picked; --control and --no-kit prove its checks
 ```
 
 To look at a change without touching the live service, run a second instance against a throwaway config dir with a hand-made session, then open `http://127.0.0.1:8799/#sessions` with the cookie `agent_web=dev`:
@@ -107,3 +108,4 @@ The static files are compiled in, so restart the instance after editing one.
 | --- | --- | --- |
 | A tab says `agent-web did not answer /api/...` | No answer came back: agent-web was restarting or down, or the connection broke | `journalctl --user -u agent-web -n 200 \| grep 'agent-web: '`: a `dropped before it answered` line with the browser's `ua` says the request was cut, a `failed` line carries the handler's error, a `slow` line the time; no line at all means the request never reached agent-web (check the ingress logs in home-config `apps/agents`) |
 | Header says "live updates off"; the log has `cannot watch ...: OS file watch limit reached` | The user's inotify watches (`fs.inotify.max_user_watches`) are used up by another program. On 2026-11-03 it was Unity's ILPP runner watching a Unity project checkout whose `.git` held 1.5M empty LFS dirs. Raising the limit does not help: a recursive watcher takes the new room too | Find the holder: for each pid, count the `inotify` lines in `/proc/<pid>/fdinfo/<fd>` of its `anon_inode:inotify` fds. Free watches at the source; agent-web picks them up on its next retry, no restart |
+| `render.mjs` fails with `fixture columns [...] match no hub-core table; nearest (lead X) lacks [...]` | A hub-core table gained or lost a column and `tests/agent-web/phone/fixtures.mjs` still has the old list, so its rows get no phone roles (the lead check would read `widest-text`) | Add the named columns to that fixture's `table(...)` list in hub-core's COLUMNS order, and the row field the page draws for each (an `undefined` cell names a missing one) |

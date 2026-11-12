@@ -349,8 +349,32 @@ jobs:
         run: |
           crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
           [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
           make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
+      # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
+      # cell off screen, a pageerror, an "undefined" cell or a fixture table that no longer matches
+      # hub-core's columns fails it. It runs when agent-web is picked (hub-core and web-kit pick it,
+      # and so does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs
+      # its own chromium; the dump reuses the target the gate just built. About 25 s, the download included.
+      - name: Phone render harness
+        env:
+          PLAYWRIGHT_CORE: 1.62.1
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.local/src/agent-web/target
+        run: |
+          grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          node_dir=~/.cache/agent-web-phone/node
+          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
+          node "$node_dir/node_modules/playwright-core/cli.js" install chromium
+          node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
+      - name: Phone screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-web-phone
+          path: ${{ runner.temp }}/phone
+          if-no-files-found: ignore
+          retention-days: 7
       # Right after the gate and on a red too: a red main must not leave every later run cold.
       - name: Save cargo
         if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}

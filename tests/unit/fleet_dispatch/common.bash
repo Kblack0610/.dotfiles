@@ -689,6 +689,8 @@ harness_ready() {
       {kind: "secrets", match: "\\b(secrets?|rbw|sops)\\b", why: "secrets"},
       {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
       {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
+      {kind: "host-ops", match: "\\b(drain(s|ed|ing)?\\b.*\\b(runners?|hosts?)|(runners?|hosts?)\\b.*\\bdrain(s|ed|ing)?|(de|un)-?regist(er|ers|ered|ering|ration)\\b.*\\brunners?|runners?\\b.*\\b(de|un)-?regist(er|ers|ered|ering|ration)|runners? (registration|token)s?|regist(er|ers|ered|ering|ration) (of )?(the |a |its |their )?(self-hosted |org |github )?runners?|systemctl( +-[^ ]+)* +(stop|disable|mask|kill|restart|reboot|poweroff|halt))\\b", why: "live host ops"},
+      {mode: "fleet-worker", why: "no match, so never read by route"},
       {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
