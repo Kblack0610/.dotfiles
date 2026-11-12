@@ -755,6 +755,24 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(str::to_string))
 }
 
+/// The done tag for `date`, e.g. `#d261112`: the stamp `notes backlog` gives a checked item it
+/// moves under `## Done`. Always `YYMMDD`, never the short form: a Done line is kept for months,
+/// so the nearest-`today` read of `MMDD` would put an old one in the wrong year.
+pub fn done_tag(date: NaiveDate) -> String {
+    format!("#d{}", date.format(LONG_FMT))
+}
+
+/// True when `tag` (bare, no `#`) is a done tag.
+pub fn is_done_tag(tag: &str) -> bool {
+    tag.strip_prefix('d')
+        .is_some_and(|d| d.len() == 6 && valid_date_digits(d))
+}
+
+/// True when `line` carries a done tag.
+pub fn has_done_tag(line: &str) -> bool {
+    cut_tags(line, is_done_tag).1.is_some()
+}
+
 /// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
 /// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
 /// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
