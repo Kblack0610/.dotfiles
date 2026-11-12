@@ -123,7 +123,7 @@ function pOpened(c) {
     if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
     if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
     if (pg.alerts) html += `<div class="cline">alerts: <a class="${pg.alerts.level === "ok" ? "" : pg.alerts.level}" href="#alerts?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.alerts.says)}</a></div>`;
-    html += `<div class="cline">next stage: <a href="#" data-pgo="stage"${pg.gate && pg.gate.fail ? ` class="bad"` : ""}>${esc(pg.next_says)}</a></div>`;
+    html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
   const counts = pg ? { overview: pNeedCount(pg), stage: pg.gate ? pg.gate.fail : 0 } : {};
@@ -143,7 +143,7 @@ function pNeedGroups(pg) {
 }
 const pNeedCount = (pg) => pNeedGroups(pg).reduce((n, g) => n + g.items.length, 0);
 // A link that moves the page to an inner tab, setting Build's view first when it names one.
-const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}"${go.ds ? ` data-ds="${esc(go.ds)}"` : ""}${go.dq ? ` data-dq="${esc(go.dq)}"` : ""}>${esc(text)}</a>`;
+const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}">${esc(text)}</a>`;
 const P_GO_TEXT = { stage: "open Stage" };
 
 // Overview: what needs the human (each kind one shut fold of its items, with the inner tab that
@@ -200,7 +200,8 @@ function pActivity(c, pg) {
 // reading or why it failed.
 function pPanes(c) {
   const got = pst.page[c.name], pg = got && got.data;
-  const wait = got && got.err ? `<div class="panel down">${esc(got.err)}</div>` : `<div class="muted">Reading the page...</div>`;
+  // A failed read is the header's to say, once.
+  const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) +
     pin("rows", pSec("p-rows", "Rows", `${c.progress.open} open; select one for its actions`)),
@@ -279,9 +280,9 @@ function pShow() {
 
 // A click moves the tab: the URL names what is open and the old view's query goes with it, and
 // so do cards read under it. A deep link is the other way in, and keeps its own (pDeep).
-function pGo(key, inner) {
+function pGo(key, inner, query) {
   st.arg = key === null ? "" : key + (inner && inner !== "overview" ? "/" + inner : "");
-  setQuery("");
+  setQuery(query || "");
   if (key === null) {
     pst.open = null; bst.feed = null; dst.data = null;
     if (pst.viewed) pst.data = null;
@@ -319,7 +320,6 @@ $("projects").addEventListener("click", (e) => {
   const go = e.target.closest("[data-pgo]");
   if (go) {
     e.preventDefault();
-    if (go.dataset.ds != null || go.dataset.dq != null) setQuery(tblSet(st.views.projects, { s: go.dataset.ds, q: go.dataset.dq }, "d"));
     pInner(go.dataset.pgo);
     return;
   }
@@ -343,8 +343,7 @@ function pOpenAt(o) {
     refreshBoard();
     return;
   }
-  pGo(o.dataset.open, epic ? "build" : "overview");
-  if (epic) { setQuery(tblSet(st.views.projects, { q: epic }, "d")); dst.refresh(); }
+  pGo(o.dataset.open, epic ? "build" : "overview", epic ? tblSet("", { q: epic }, "d") : "");
 }
 for (const id of ["p-deliv", "p-cards", "p-pane"]) $(id).addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
@@ -359,7 +358,7 @@ TABS.projects = {
   // Back on the tab, what was open stays open and the URL names it again.
   show() { bMount("p-board"); if (pst.open && !st.arg) st.arg = pArg(); pDeep(); renderProjects(); refreshProjects(); refreshBoard(); dst.refresh(); },
   // A section on another inner tab of the opened page (an outline click) shows that tab first.
-  pin: (id) => pInner(id),
+  pin: (id) => { if (pst.open) pInner(id); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
     if (["watch", "queue", "resync"].includes(ev.kind)) { refreshProjects(); dst.refresh(); }

@@ -32,15 +32,11 @@ pub struct DeliverableQuery {
     scope: String,
 }
 
-/// The chains `scope` keeps: all when it is empty, else the project it names.
+/// The chain of the `<profile>/<project>` that `scope` names; a bare name could be two profiles' projects, so it keeps nothing.
 fn scoped(chains: &[hub_core::epics::Chain], scope: &str) -> Vec<hub_core::epics::Chain> {
     chains
         .iter()
-        .filter(|c| {
-            scope.is_empty()
-                || c.project == scope
-                || format!("{}/{}", c.profile, c.project) == scope
-        })
+        .filter(|c| format!("{}/{}", c.profile, c.project) == scope)
         .cloned()
         .collect()
 }
@@ -82,7 +78,12 @@ pub async fn get(Query(q): Query<DeliverableQuery>) -> ApiResult<Json<serde_json
     let chains = crate::epics::chains()
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
-    let all = deliverables::build(&scoped(&chains, &q.scope), *chrono::Local::now().offset());
+    let zone = *chrono::Local::now().offset();
+    let all = if q.scope.is_empty() {
+        deliverables::build(&chains, zone)
+    } else {
+        deliverables::build(&scoped(&chains, &q.scope), zone)
+    };
     Ok(Json(shown(&all, &q)))
 }
 
@@ -139,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scope_keeps_one_project_by_name_or_profile_and_name() {
+    fn a_scope_keeps_one_project_by_profile_and_name() {
         use hub_core::epics::Chain;
         let c = |profile: &str, project: &str| Chain {
             profile: profile.into(),
@@ -153,9 +154,10 @@ mod tests {
                 .map(|c| c.project)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(""), vec!["ucp", "dotfiles"]);
         assert_eq!(names("bnb/ucp"), vec!["ucp"]);
-        assert_eq!(names("dotfiles"), vec!["dotfiles"]);
+        assert_eq!(names("personal/dotfiles"), vec!["dotfiles"]);
+        // A bare name could be two profiles' projects: it keeps nothing.
+        assert!(names("dotfiles").is_empty());
         // NEGATIVE CONTROL: a profile that is not the project's keeps nothing.
         assert!(names("personal/ucp").is_empty());
     }

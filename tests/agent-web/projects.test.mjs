@@ -200,7 +200,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(head, /v0\.1\.0 25% done \(1 of 4 size points\), closed 1 in 7d, 1 in 28d, ETA 4d/, "every number is named");
   assert.match(head, /flow: ideas 3 \| briefs 1/);
   assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
-  assert.match(head, /next stage: <a href="#" data-pgo="stage" class="bad">beta  4 of 12 met, 1 failing/);
+  assert.match(head, /<div class="cline warn">next stage: <a href="#" data-pgo="stage">beta  4 of 12 met, 1 failing/);
   // The strip: Overview open, its count what needs the human (1 verify, 2 plans, 2 checks), Stage's the failing checks.
   assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="build"[^>]*>Build<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
   const over = pinOf(pane, "overview");
