@@ -303,7 +303,7 @@ JQ_EVAL="$JQ_EPOCH"'
      | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
          "plan-dispatched": "dispatched", "priority-kept": "kept"}[$sc]) as $lb
      | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
-        truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (override or none)",
+        truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (kept or another option; none is not scored)",
                  "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
                  "triage-untouched": "the ingest record: a filed row is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
                  "plan-dispatched": "the ingest record and the queue: a planned row is right when it starts before anyone re-splits it",

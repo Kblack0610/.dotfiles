@@ -1411,11 +1411,13 @@ ASK-JUDGE-END'
     fake_judge "$(score "$c")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
-    assert_line 'judge_level: critical'; assert_line 'judge_level_raised: true'; assert_line 'judge: human'
+    # critical is derived, not a floor: raised marks only a floor name
+    assert_line 'judge_level: critical'; assert_line 'judge_level_raised: false'; assert_line 'judge: human'
   done
   assert_line 'judge_level_evidence: q not'
   run "$AGENT_ASK" trace "$id" --json
-  assert_output --partial 'level critical (the judge rated it lower)'
+  assert_output --partial 'level critical'
+  refute_output --partial 'raised by a floor name'
 }
 
 @test "judge: a reply without an impact level, or with one the judge may not give, is no verdict" {
@@ -1443,6 +1445,8 @@ ASK-JUDGE-END'
   run "$AGENT_ASK" show "$id"
   assert_line 'kind: question'; assert_line 'judge: take-recommend'
   assert_line 'judge_level: fleet'; assert_line 'judge_level_evidence: the ask names CLAUDE.md'; assert_line 'judge_level_raised: true'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_output --partial 'level fleet (raised by a floor name)'
   # negative control: the same ask naming no floor keeps the judge's rating
   id="$("$AGENT_ASK" post --project demo --context 'the repo rules say landing is authorized' --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
   "$AGENT_ASK" judge "$id"
@@ -1466,6 +1470,14 @@ ASK-JUDGE-END'
   run "$AGENT_ASK" show "$id"
   assert_line 'kind: question'
   assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # a question posted before the floor existed is held to it when judged again
+  rm "$BATS_TEST_TMPDIR/judge.calls"
+  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a 'trim the hard stops?')"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'; assert_line 'judge_rule: gate'; refute_line --partial 'judge_level'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
 }
 
 # ── live answers ─────────────────────────────────────────────────────────────
@@ -1592,9 +1604,9 @@ live_answer_file() {
 @test "override: a type demotes when precision over its last live answers falls under the bar, once it has the minimum" {
   export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
   local d="$HOME/.agent/asks/demo" i
-  # An old override outside the window of 5, then four good answers.
+  # An old override outside the window of 5, then four kept answers.
   live_answer_file 1 1 wait
-  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" kept; done
   # The sixth is overridden: the window is answers 2-6, 4 of 5 is 80%, under 85.
   printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\n' > "$d/L00006.md"
   "$AGENT_ASK" settle-session sid-9 answered "wait"
@@ -1608,6 +1620,12 @@ live_answer_file() {
   export AGENT_ASK_DEMOTE_PRECISION=75
   "$AGENT_ASK" settle-session sid-9 answered "wait"
   run "$AGENT_ASK" show L00006; assert_line 'judge_override: wait'
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # silence is not a review: with 2-5 unreviewed the window is answers 1 and 6, under the minimum
+  rm "$HOME/.local/state/agent-ask/demoted" 2>/dev/null || true
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
   # under the minimum nothing demotes, even at 0%: the window counts only these two
   rm "$d"/L0000[1-4].md

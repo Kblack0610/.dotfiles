@@ -57,7 +57,7 @@ An ask naming any of these is about the judge's own authority, so `agent-ask` po
 
 ### Fleet floor
 
-An ask naming any of these, or any name above, is `fleet` at least.
+An ask naming any of these is `fleet` at least.
 
 - `CLAUDE.md`
 - `AGENTS.md`

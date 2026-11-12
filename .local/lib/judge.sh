@@ -65,9 +65,8 @@ judge_floor_hit() {
 # `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
 # counts its worst item: a human criterion on any decision, a needed one missing on any decision,
-# and the widest impact. `rated` is the level the judge gave, `level` what it is: `critical` when
-# external holds or reversible fails on any decision, both hard stops already; `level_evidence`
-# the quote behind it.
+# and the widest impact. `level` is that, or `critical` when external holds or reversible fails
+# on any decision, both hard stops already; `level_evidence` the quote behind it.
 judge_derive() {
   jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
     ($human | split(" ")) as $human
@@ -86,7 +85,7 @@ judge_derive() {
     | {rule: ($by // .type), answerable: ($by == null), type, met: ([$all[] | select(holds(.))] | join(" ")),
        evidence: ([$d[] | select($by == null or (.[$by].met == (($human | index($by)) != null)))
                    | .[$by // "grounded"].evidence | select(. != "")] | first // ""),
-       rated: $top.impact.level, level: (if $critical then "critical" else $top.impact.level end),
+       level: (if $critical then "critical" else $top.impact.level end),
        level_evidence: (if $critical then
            ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
              | select(. != "")] | first // "")
