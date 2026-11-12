@@ -2450,8 +2450,20 @@ J
   # An item with no title is read by its task's first line, the headline every log uses.
   refused '{"slug":"x","project":"game","mode":"oneshot","task":"\n  kubectl apply the ingress\nmore"}' \
     "codex: runs headless, and this is deploy work (excluded in $MATRIX); claude: no account has room"
-  # Negative controls: a near miss (product, not prod), the same tag off the Unity stack, and plain work route to codex.
+  # Live host ops: the 2026-11-10 Codex item that drained and deregistered 4 runners (its task's first line), deregister, systemctl.
+  refused '{"slug":"x","project":"game","mode":"oneshot","task":"fix(ci): razer-laptop runners run 3-5x slow. Find the host cause or drain it."}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"deregister the razer runners from the org"}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"sudo systemctl --user restart the runner units on asus"}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  # Negative controls: near misses (product, not prod; a drain with no host or runner; systemctl status; unregister with no runner; the word null, which the
+  # kind-less mode entries would match if they read as a "null" pattern), the same tag off the Unity stack, and plain work route to codex.
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"fix(mem0): drain lines end in a backslash"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"show systemctl status of the runner in the panel"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"unregister the service worker on logout"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"a null kind prints as null in the menu"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"open the editor pane","tags":"requested"}' \
     '{"slug":"x","project":"arena","mode":"oneshot","title":"fix the menu sides"}'; do
     route "$it" "$v" || fail "refused ($ROUTE_WHY): $it"
