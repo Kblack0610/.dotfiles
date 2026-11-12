@@ -159,6 +159,7 @@ mod tests {
             verb: "tripped".into(),
             text: text.into(),
             priority: None,
+            failed: false,
             reference: None,
             source: "agent-notify".into(),
         };
