@@ -90,7 +90,7 @@ reason() {
   for c in 'find / -xdev -name a' 'rg --one-file-system foo /' 'find -mount / -name a' 'grep foo /etc/hosts' \
            'rg foo /home/u/wt' 'find . -path /mnt -prune' 'ls /' 'echo / | wc' 'rg foo /mnt/nas/private/photos/2024' \
            'find /mnt/nas/private/photos -name a' 'cat /mnt/nas/private/x | grep foo' 'grep -n foo ./a /tmp' 'git log --grep=x' \
-           'rg "/mnt" docs/' 'grep -rn "/" src' "rg -F '/' ."; do
+           'rg "/mnt" ./src' 'grep -rn "/" src' "rg -F '/' ."; do
     run decision "$c"
     assert_output allow
   done
