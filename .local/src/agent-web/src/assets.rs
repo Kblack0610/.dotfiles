@@ -441,6 +441,24 @@ mod tests {
     }
 
     #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
+        // keeps the id of every page Link::href draws inside an inner tab.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+    }
+
+    #[test]
     fn inner_tabs_are_the_layout() {
         // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
         let mut want = serde_json::Map::new();
