@@ -12,9 +12,9 @@ pub struct Inner {
 }
 
 /// One tab: its id (the `#name` URL and `hub --tab name`), title, the question it answers, and
-/// its section ids in order. A tab with inner tabs lists its `pinned` sections (always shown,
-/// above the strip) and then each inner tab's sections, so `sections` is those, concatenated:
-/// the section ids never change when a tab gains a strip, and every old link still lands.
+/// its section ids in order. A tab with inner tabs lists each inner tab's sections in turn, so
+/// `sections` is those, concatenated: the section ids never change when a tab gains a strip, and
+/// every old link still lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tab {
     pub id: &'static str,
@@ -24,7 +24,6 @@ pub struct Tab {
     pub title: &'static str,
     pub question: &'static str,
     pub sections: &'static [&'static str],
-    pub pinned: &'static [&'static str],
     pub inner: &'static [Inner],
 }
 
@@ -36,7 +35,6 @@ pub const TABS: [Tab; 13] = [
         title: "Home",
         question: "What needs me, and is everything OK?",
         sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
-        pinned: &[],
         inner: &[],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
@@ -48,7 +46,6 @@ pub const TABS: [Tab; 13] = [
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -60,7 +57,6 @@ pub const TABS: [Tab; 13] = [
             "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
             "ranked",
         ],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -69,7 +65,6 @@ pub const TABS: [Tab; 13] = [
         title: "Queue",
         question: "What will agents do next?",
         sections: &["flow", "table", "candidates"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -78,7 +73,6 @@ pub const TABS: [Tab; 13] = [
         title: "Sessions",
         question: "What is each agent doing?",
         sections: &["shepherd", "sessions", "detail"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -87,7 +81,6 @@ pub const TABS: [Tab; 13] = [
         title: "Fleet",
         question: "Who is working, and on what?",
         sections: &["workers"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -96,7 +89,6 @@ pub const TABS: [Tab; 13] = [
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -105,7 +97,6 @@ pub const TABS: [Tab; 13] = [
         title: "Board",
         question: "What is on every project's board?",
         sections: &["rows"],
-        pinned: &[],
         inner: &[],
     },
     // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
@@ -118,7 +109,6 @@ pub const TABS: [Tab; 13] = [
         sections: &["table", "detail", "runs"],
         // Two questions: what is deployed where (the apps and an opened one), and the runs that
         // built and shipped a release.
-        pinned: &[],
         inner: &[
             Inner {
                 id: "apps",
@@ -140,7 +130,6 @@ pub const TABS: [Tab; 13] = [
         // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
         // alert pages of the week, then every watch (folded while none is red).
         sections: &["health", "firing", "fixes", "history", "watches"],
-        pinned: &[],
         inner: &[],
     },
     Tab {
@@ -153,7 +142,6 @@ pub const TABS: [Tab; 13] = [
         // cloud power are columns of the machine they act on. CI is the runners, their queue and
         // finished runs, every run of 30 days with its run times and the quarantine
         // (`hub_core::builds`), and the declared test workflows' suites (`hub_core::junit`).
-        pinned: &[],
         inner: &[
             Inner {
                 id: "machines",
@@ -178,7 +166,6 @@ pub const TABS: [Tab; 13] = [
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
-        pinned: &[],
         inner: &[],
     },
     // Every dollar figure the other tabs showed is here, cut eight ways; they keep a one-line
@@ -190,31 +177,31 @@ pub const TABS: [Tab; 13] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
+            "totals",
+            "sessions",
             "fleet",
+            "spend",
+            "table",
             "burn",
             "consumers",
-            "sessions",
-            "spend",
-            "totals",
-            "table",
             "tokens",
             "langfuse",
             "sections",
             "budget",
         ],
-        // The 24h fleet figure stays above the strip; the strip splits the four questions. Budget
-        // is cash (the bills we pay); the 24h figure and the rest of the tab are list price.
-        pinned: &["fleet"],
+        // The strip splits the four questions; Spend opens first, its tiles (the 24h fleet figure
+        // among them) then burn per session per day. Budget is cash (the bills we pay); the rest
+        // of the tab is list price.
         inner: &[
+            Inner {
+                id: "spend",
+                title: "Spend",
+                sections: &["totals", "sessions", "fleet", "spend", "table"],
+            },
             Inner {
                 id: "limits",
                 title: "Limits",
                 sections: &["burn", "consumers"],
-            },
-            Inner {
-                id: "spend",
-                title: "Spend",
-                sections: &["sessions", "spend", "totals", "table"],
             },
             Inner {
                 id: "models",
@@ -395,7 +382,7 @@ pub fn section(name: &str) -> Option<&'static str> {
 }
 
 /// The inner tab a request word opens on `tab`: a section id (an old link) opens the inner tab
-/// holding it, an inner tab's id opens it, and a missing, unknown or pinned word opens the
+/// holding it, an inner tab's id opens it, and a missing or unknown word opens the
 /// first. None when the tab has no inner tabs.
 pub fn inner_tab(tab: &Tab, name: Option<&str>) -> Option<&'static Inner> {
     let n = name.unwrap_or_default().trim().to_ascii_lowercase();
@@ -416,25 +403,20 @@ pub fn inner_count(inner: &Inner, flagged: &[&str]) -> usize {
         .count()
 }
 
-/// Why a tab's groups are not sound: `sections` must be its pinned sections then each inner
-/// tab's, in that order, which puts every section in exactly one place.
+/// Why a tab's groups are not sound: `sections` must be each inner tab's, in that order, which
+/// puts every section in exactly one place.
 pub fn groups_check(tab: &Tab) -> Result<(), String> {
     if tab.inner.is_empty() {
-        return if tab.pinned.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("{} pins sections but has no inner tabs", tab.id))
-        };
+        return Ok(());
     }
     let grouped: Vec<&str> = tab
-        .pinned
+        .inner
         .iter()
-        .copied()
-        .chain(tab.inner.iter().flat_map(|i| i.sections.iter().copied()))
+        .flat_map(|i| i.sections.iter().copied())
         .collect();
     if grouped != tab.sections {
         return Err(format!(
-            "{}: pinned and inner sections {grouped:?} are not its sections {:?}",
+            "{}: inner sections {grouped:?} are not its sections {:?}",
             tab.id, tab.sections
         ));
     }
@@ -684,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn every_section_is_pinned_or_in_exactly_one_inner_tab() {
+    fn every_section_is_in_exactly_one_inner_tab() {
         for t in &TABS {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
@@ -693,9 +675,8 @@ mod tests {
     }
 
     #[test]
-    fn infra_pins_nothing_and_old_links_open_their_inner_tab() {
+    fn infra_old_links_open_their_inner_tab() {
         let infra = resolve("infra").unwrap();
-        assert!(infra.pinned.is_empty());
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
         assert_eq!(at(None), Some("machines"));
         assert_eq!(at(Some("pools")), Some("machines"));
@@ -728,23 +709,51 @@ mod tests {
             Inner {
                 id: "a",
                 title: "A",
-                sections: &["fleet", "burn", "spend", "totals"],
+                sections: &["totals", "sessions", "fleet", "spend", "table"],
             },
             Inner {
                 id: "a",
                 title: "A",
-                sections: &["table", "tokens", "langfuse", "sections"],
+                sections: &[
+                    "burn",
+                    "consumers",
+                    "tokens",
+                    "langfuse",
+                    "sections",
+                    "budget",
+                ],
             },
         ];
         assert!(groups_check(&Tab {
-            pinned: &[],
             inner: DUP,
             ..costs
         })
         .is_err());
+        // Out of order is not sound either: Limits before Spend, which `sections` lists first.
+        const ORDER: &[Inner] = &[
+            Inner {
+                id: "limits",
+                title: "Limits",
+                sections: &["burn", "consumers"],
+            },
+            Inner {
+                id: "spend",
+                title: "Spend",
+                sections: &["totals", "sessions", "fleet", "spend", "table"],
+            },
+            Inner {
+                id: "models",
+                title: "Models",
+                sections: &["tokens", "langfuse", "sections"],
+            },
+            Inner {
+                id: "budget",
+                title: "Budget",
+                sections: &["budget"],
+            },
+        ];
         assert!(groups_check(&Tab {
-            pinned: &["fleet"],
-            inner: &[],
+            inner: ORDER,
             ..costs
         })
         .is_err());
@@ -757,10 +766,12 @@ mod tests {
         // the URL's inner tab opens
         assert_eq!(at(Some("models")), Some("models"));
         assert_eq!(at(Some(" Spend ")), Some("spend"));
-        // a missing, unknown or pinned word falls to the first
-        assert_eq!(at(None), Some("limits"));
-        assert_eq!(at(Some("nope")), Some("limits"));
-        assert_eq!(at(Some("fleet")), Some("limits"));
+        // a missing or unknown word falls to the first, Spend
+        assert_eq!(at(None), Some("spend"));
+        assert_eq!(at(Some("nope")), Some("spend"));
+        // the fleet figure and burn per session are Spend's
+        assert_eq!(at(Some("fleet")), Some("spend"));
+        assert_eq!(at(Some("sessions")), Some("spend"));
         // an old section link opens the inner tab now holding it
         assert_eq!(at(Some("burn")), Some("limits"));
         assert_eq!(at(Some("langfuse")), Some("models"));
