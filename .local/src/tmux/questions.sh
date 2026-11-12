@@ -92,21 +92,25 @@ cmd_rows() {
   # ages go blank rather than shift onto the wrong rows.
   epochs="$(cut -f12 <<<"$list" | date -f - +%s 2>/dev/null)" || epochs=""
   [ "$(grep -c . <<<"$epochs")" = "$(grep -c . <<<"$list")" ] || epochs="$(sed 's/.*//' <<<"$list")"
+  # The same for parked_until (filled only on a parked ask), so a parked row sorts and reads in
+  # seconds like the rest. An unparked row reads @0, so every row keeps its line.
+  backs="$(awk -F'\t' '{ print $27 == "" ? "@0" : $27 }' <<<"$list" | date -f - +%s 2>/dev/null)" || backs=""
+  [ "$(grep -c . <<<"$backs")" = "$(grep -c . <<<"$list")" ] || backs="$(sed 's/.*//' <<<"$list")"
   # One slug per project named (a row with no project goes by its session's name; a prompt
   # row always does).
   names="$({ awk -F'\t' 'NF { n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) } print n }' <<<"$list"
     awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
-  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs"); } |
+  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
-      function age(e,   d) {
-        if (e == "") return ""
-        d = now - e; if (d < 0) d = 0
+      function span(d) {
+        if (d < 0) d = 0
         if (d < 3600) return int(d / 60) "m"
         if (d < 86400) return int(d / 3600) "h"
         return int(d / 86400) "d"
       }
+      function age(e) { return e == "" ? "" : span(now - e) }
       function slug(n,   i, r) {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
@@ -139,11 +143,12 @@ cmd_rows() {
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
         M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
-        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $NF, $1)
-        A[NR] = age($NF); Q[NR] = $6
+        # The last two fields are the created and the parked_until epochs pasted on above.
+        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $(NF - 1), $1)
+        A[NR] = age($(NF - 1)); Q[NR] = $6
         # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
-        # first, and its age column says the day it comes back.
-        if ($27 != "") { M[NR] = 3; L[NR] = sprintf("4\t%s\t%s\t", $27, $1); A[NR] = substr($27, 6, 5) }
+        # first, and its age column says how long until it comes back.
+        if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("4\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
         S[NR] = (T[$16] != "") ? faint T[$16] off : ""
       }
       # The name column is as wide as its longest name, up to 12. The second line starts under
@@ -157,7 +162,7 @@ cmd_rows() {
           print ""
         }
       }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
-    sort -t "$PANEL_TAB" -k1,1n -k2,2 | cut -f3- | tr '\n\037' '\000\n'
+    sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
 # cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
 # without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows

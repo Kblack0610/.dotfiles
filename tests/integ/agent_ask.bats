@@ -799,11 +799,35 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_failure 2
   run "$AGENT_ASK" park "$id" --until 'not a date at all'
   assert_failure 2
+  run "$AGENT_ASK" park "$id" --until
+  assert_failure 2
+  assert_output --partial '--until needs a date'
+  printf 'PARK_DAYS="normal=abc"\n' > "$BATS_TEST_TMPDIR/bad.conf"
+  AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/bad.conf" run "$AGENT_ASK" park "$id"
+  assert_failure 2
+  assert_output --partial 'not a whole number of days'
   run "$AGENT_ASK" park "$done" --until '+1 day'
   assert_failure 1
   assert_output --partial 'only a pending ask parks'
   run "$AGENT_ASK" show "$id"
   refute_line --partial 'parked_until:'
+}
+
+@test "settle-session leaves a parked ask on other talk in its session, and a named option still answers it" {
+  local id other
+  id="$(CLAUDE_CODE_SESSION_ID=sid-p "$AGENT_ASK" post --project demo --options 'worn=it is on|later=not yet' 'wear the headset?')"
+  "$AGENT_ASK" park "$id" --until '+2 days' 2>/dev/null
+  "$AGENT_ASK" settle-session sid-p answered "can you also fix the lint?"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # Negative control: the same reply cancels an ask that is not parked.
+  other="$(CLAUDE_CODE_SESSION_ID=sid-q "$AGENT_ASK" post --project demo --options 'worn=it is on|later=not yet' 'wear it now?')"
+  "$AGENT_ASK" settle-session sid-q answered "can you also fix the lint?"
+  run "$AGENT_ASK" show "$other"
+  assert_line 'status: cancelled'
+  "$AGENT_ASK" settle-session sid-p answered "worn"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'; assert_line 'answer: worn'
 }
 
 @test "park drops a judge arm, sweep passes a parked ask by, and answering it still closes it" {

@@ -478,12 +478,14 @@ transcript() {
   live="$(ask demo agent-1 'a=the first|b=the second' 'live?')"
   parked="$(ask demo agent-2 'a=the first|b=the second' 'wear the headset?')"
   created "$parked" 2026-11-01T10:00:00-0800
-  "$AGENT_ASK" park "$parked" --until '2099-03-04 12:00 UTC' 2>/dev/null
+  "$AGENT_ASK" park "$parked" --until '+3 days +5 minutes' 2>/dev/null
   run rows
   assert_success
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live $parked "
   assert_line --index 1 --partial $'\tpark demo:2'
-  assert_line --index 1 --partial '03-04'
+  # Its age column says how long until it is back, as wide as an age, so the question lines up.
+  assert_line --index 1 --partial 'park demo:2  3d  wear the headset?'
+  assert_equal "$(cut -f2 <<<"${lines[1]}" | grep -bo 'wear' | cut -d: -f1)" "$(cut -f2 <<<"${lines[0]}" | grep -bo 'live' | cut -d: -f1)"
   . "$Q"
   assert_equal "$("$Q" rows | rows_count)" '1 0 0 0 1'
   assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked'

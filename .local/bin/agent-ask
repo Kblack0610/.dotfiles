@@ -39,7 +39,7 @@
 #                                       run its `resume` command (via ask-resume).
 #                                       --by human (default) | judge | shepherd -> answered_by
 #   agent-ask cancel <id> [reason...]   flip to cancelled
-#   agent-ask count [project|--all]     number of pending asks (for badges)
+#   agent-ask count [project|--all]     number of pending asks, parked ones left out (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
 #   agent-ask mark-resumed <id>         stamp `resumed_at`; the answer is consumed
 #   agent-ask recommend <id> <option> [why...]
@@ -591,7 +591,7 @@ cmd_list() {
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
   #      answer_note, assume_at, resume, parked_until  (append new columns at the end only;
-#      parked_until is filled only while the ask is parked, so no reader compares it with the clock)
+  #      parked_until is filled only while the ask is parked, so no reader compares it with the clock)
   # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
   # 368 asks. A key's first `key: ` line wins, as in `field`.
   local files=()
@@ -1333,12 +1333,15 @@ cmd_settle_session() {
     review_judge_answer "$f" "$text" "in session"
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
-    if [ -z "$opts" ] && ! not_an_answer "$full"; then
-      set_field "$f" answer_note "in session: $text"
-      record_answer "$f" human "in session: ${text:-(no text)}"
-    elif [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
+    if [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
       record_answer "$f" human "$pick"
+    elif is_parked "$f"; then
+      # Parked: only a named option settles it; other talk in the session leaves it until its date.
+      continue
+    elif [ -z "$opts" ] && ! not_an_answer "$full"; then
+      set_field "$f" answer_note "in session: $text"
+      record_answer "$f" human "in session: ${text:-(no text)}"
     elif queue_waits "$(field "$f" id)"; then
       continue
     else
@@ -1432,10 +1435,11 @@ ask_priority() {
   echo "${p:-normal}"
 }
 cmd_park() {
-  local id="" until="" f at
+  local id="" until="" f at days
   while [ $# -gt 0 ]; do
     case "$1" in
-      --until) until="${2:-}"; shift; shift ;;
+      --until) [ $# -ge 2 ] && [ -n "$2" ] || { echo "agent-ask park: --until needs a date" >&2; return 2; }
+        until="$2"; shift 2 ;;
       *) id="$1"; shift ;;
     esac
   done
@@ -1447,7 +1451,9 @@ cmd_park() {
     at="$(now_utc "$until" 2>/dev/null)" || { echo "agent-ask park: '$until' is not a date" >&2; return 2; }
     [[ "$at" > "$(now_utc)" ]] || { echo "agent-ask park: $until is not in the future" >&2; return 2; }
   else
-    at="$(now_utc "+$(park_days "$(ask_priority "$f")") days")"
+    days="$(park_days "$(ask_priority "$f")")"
+    [[ "$days" =~ ^[0-9]+$ ]] && [ "$days" -gt 0 ] || { echo "agent-ask park: PARK_DAYS gives '$days', not a whole number of days ($AGENT_ASK_PARK_CONF)" >&2; return 2; }
+    at="$(now_utc "+$days days")"
   fi
   # A parked ask is out of the judge's way too: an arm would answer it while the human is away.
   drop_arm "$f"
