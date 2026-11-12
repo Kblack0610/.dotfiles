@@ -192,7 +192,8 @@ so_project_of() {
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
 # subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
-# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID:
+# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID: `litellm`
+# and `go` reach the gateway (GATEWAY_PROVIDERS in agent-usage-burn.py; a new one goes there too), and
 # `lazer` went to Lazer direct, which the gateway's lazer-pool never sees. No DB is no rows; a schema
 # it cannot read is rc 1.
 so_opencode_rows() {

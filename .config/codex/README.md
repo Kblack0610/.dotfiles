@@ -10,7 +10,7 @@
 | Skills | `~/.claude/skills` (stow) | `~/.codex/skills/<name>`, one link per Claude skill (`sync-codex-home.sh`) | reads `~/.claude/skills` itself |
 | Agents and commands | `~/.claude/agents`, `~/.claude/commands` | none: Codex has no agent definitions or command files | mirrored by `sync-opencode-claude-assets.sh` |
 | Session preflight | SessionStart hook | SessionStart hook in `~/.codex/hooks.json` | `plugins/preflight.ts` (private repo) |
-| Shell guards (block-poll, block-pip, block-pkill-f, forge-guard, checkout-guard, block-root-search) | PreToolUse hooks | PreToolUse `Bash` hooks in `~/.codex/hooks.json` | none |
+| Shell guards (block-poll, block-pip, hand_methods, forge-guard, checkout-guard) | PreToolUse hooks | PreToolUse `Bash` hooks in `~/.codex/hooks.json` | none |
 | Queue item close check | Stop checks | Stop hook `codex-item-stop.sh`: a fleet run whose item is still running with no PR gets one more turn to close it | none |
 | Stop test gate (stop-checks.d: tests, lint, cargo) | Stop hook `pre-stop-checks.sh` | the same script with `--checks-only`, before `codex-item-stop.sh`: a red check blocks the stop; the post phase (session register, asks, wind-down) is Claude's only | none |
 | Command denies | `permissions.deny` in settings.json | the same list, twice over: `~/.codex/rules/claude-deny.rules` (`sync-codex-home.sh`), one execpolicy `forbidden` rule per whole-word `Bash(...)` deny, which binds even under `--dangerously-bypass-approvals-and-sandbox` and with hooks untrusted; and the PreToolUse hook `deny-list-guard.py`, which applies every entry with Claude's glob meaning, so the `# narrowed:` and `# skipped:` ones bind too | none |

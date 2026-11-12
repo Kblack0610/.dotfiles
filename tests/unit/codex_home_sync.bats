@@ -73,7 +73,7 @@ J
 
 @test "hooks: a Codex run gets the Claude shell guards and the Stop check that it closed its queue item" {
   run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$PUB/.config/codex/hooks.json"
-  for g in block-pkill-f.sh forge-guard.py checkout-guard.py deny-list-guard.py block-pip.sh block-root-search.sh block-poll.py; do
+  for g in hand_methods.py forge-guard.py checkout-guard.py deny-list-guard.py block-pip.sh block-poll.py; do
     assert_output --partial "/.claude/hooks/$g"
   done
   run jq -r '.hooks.Stop[].hooks[].command' "$PUB/.config/codex/hooks.json"
