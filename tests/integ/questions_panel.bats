@@ -307,6 +307,50 @@ plan_dialog() {
   assert_output --partial 'press a number, t, d or p first'
 }
 
+@test "the panel's enter says sending at once, sends in the background, and every key waits until it is through" {
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  "$Q" key 2 "$id" >/dev/null
+  run "$Q" key submit "$id"
+  assert_success
+  assert_output --partial 'change-footer~sending "later" to demo:1 ...~'
+  assert_output --partial "+preview(cat $QUESTIONS_STATE.busy)"
+  assert_output --partial 'key enter {1} {q})'
+  assert_output --regexp '\+bg-transform\('
+  assert_equal "$(cat "$QUESTIONS_STATE.busy")" 'sending "later" to demo:1 ...'
+  assert_equal "$(status_of "$id")" pending
+  # While it is on its way a second enter, a number, d and esc only say so.
+  local k
+  for k in submit 1 d esc; do
+    run "$Q" key "$k" "$id"
+    assert_output 'change-footer~sending "later" to demo:1 ... . wait for it . ctrl-c closes~'
+  done
+  run "$Q" key focus "$id"
+  assert_output ''
+  # The send itself: the card is drawn again, the marker goes, the keys work again.
+  run "$Q" key enter "$id"
+  assert_output --regexp '^refresh-preview\+'
+  assert_output --partial 'no questions waiting'
+  assert_equal "$(status_of "$id")" answered
+  [ ! -e "$QUESTIONS_STATE.busy" ]
+  run "$Q" key submit "$id"
+  assert_output --partial 'press a number, t, d or p first'
+  refute_output --partial bg-transform
+}
+
+@test "the panel's enter with nothing typed, or a failed send, keeps no busy marker (negative control)" {
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  "$Q" key t "$id" >/dev/null
+  run "$Q" key submit "$id" ''
+  assert_output --partial 'type an answer first'
+  [ ! -e "$QUESTIONS_STATE.busy" ]
+  run "$Q" key submit "$id" 'after lunch'
+  assert_output --partial 'sending your answer ...'
+  QUESTIONS_ASK=false run "$Q" key enter "$id" 'after lunch'
+  assert_output --partial 'not sent'
+  [ ! -e "$QUESTIONS_STATE.busy" ]
+  assert_equal "$(status_of "$id")" pending
+}
+
 @test "esc after a number sends nothing, and esc with nothing armed closes" {
   local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   "$Q" key 1 "$id" >/dev/null

@@ -823,7 +823,7 @@ forgejo_outcome() {
   touch "$GHD/unsynced"
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
-  assert_output --partial '1 PRs left out: their repos are not in the run ledger (day-log-ci)'
+  assert_output --partial '1 PRs left out: their repos are not in the run ledger (schedules-sync repos)'
 }
 
 # sections_map: o/r has sections, its gate is the Tests workflow
@@ -852,7 +852,7 @@ gate_runs_of() {
   touch "$GHD/unsynced"
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
-  assert_output --partial '1 PRs left out: their repos are not in the run ledger (day-log-ci)'
+  assert_output --partial '1 PRs left out: their repos are not in the run ledger (schedules-sync repos)'
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
   # the ledger is asked up to the merge, so a run that ends just before it is in the count
   grep -q -- "^schedules-sync runs o/r --branch b7 --until $(iso $((T0 - 3600)))$" "$GHD/calls.log"
@@ -2400,6 +2400,7 @@ hold_setup() {
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
+[ "$1" = repos ] && exec cat "$D/repos"   # the watched list; none: hold_ledger falls back to the repo and main
 [ -e "$D/down" ] && exit 1
 [ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
@@ -2437,10 +2438,10 @@ failed() {
   for f; do printf 'fast tier\tFast tier\t2026-11-06T17:49:03Z #  in test file %s, line 60)\n' "$f"; done > "$GHD/log.$id"
 }
 
-@test "hold: a repo day-log-ci lists on Forgejo with another base is read under that name and base" {
+@test "hold: a repo schedules-sync lists on Forgejo with another base is read under that name and base" {
   hold_setup
-  export SCHEDULES_REPOS="$SANDBOX/day-log-ci"
-  printf '# watched\nforgejo:git.example.test/O/R master\n' > "$SCHEDULES_REPOS"
+  echo '[{"forge":"github","repo":"O/other","base":"trunk","host":null,"clone":null},
+    {"forge":"forgejo","repo":"O/R","base":"master","host":"git.example.test","clone":null}]' > "$GHD/repos"
   sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
   cleanup hit -7200 5 aaa11111 .local/bin/tool
   ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201

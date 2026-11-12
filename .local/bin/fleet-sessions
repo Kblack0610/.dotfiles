@@ -651,7 +651,7 @@ blind_row() { : > "$CACHE/blind_row"; }
 # on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) reads its host/owner/repo,
 # and one the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass),
 # as has a GitHub mirror of a Forgejo-canonical repo (forge_canonical: its PRs are on Forgejo); any
-# other GitHub repo it does not list is unreadable (day-log-ci is the list).
+# other GitHub repo it does not list is unreadable (`schedules-sync repos` is the list).
 prs_for() {
   local dir="$1" key host repo out rc=0
   key="$CACHE/$(repo_slug "$dir")" || return 0

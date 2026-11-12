@@ -302,18 +302,14 @@ def enrich(a):
 # --- CI, a finished day ----------------------------------------------------
 
 def ci_repos():
-    """[(owner/name, base branch, clone or None)] of the GitHub repos in DAYLOG_CI. A
-    `forgejo:` repo is left out: ci-failures reads a red run's jobs and logs from GitHub, and
-    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same. A `prs-only:`
-    repo is left out too: only the PR store reads it."""
-    out = []
-    with open(ENV["DAYLOG_CI"]) as f:
-        for line in f:
-            cols = line.split("#")[0].strip().split(None, 2)  # a clone's path may hold a space
-            if cols and not cols[0].startswith(("forgejo:", "prs-only:")):
-                out.append((cols[0].removeprefix("github:"), cols[1],
-                            os.path.expanduser(cols[2]) if len(cols) > 2 else None))
-    return out
+    """[(owner/name, base branch, clone or None)] of the GitHub repos `schedules-sync repos`
+    lists. A forgejo repo is left out: ci-failures reads a red run's jobs and logs from GitHub,
+    and ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same. A prs-only
+    repo is left out too: only the PR store reads it. OSError when the list is unreadable."""
+    got, err = run_json(shlex.split(ENV.get("SCHEDULES_SYNC", "schedules-sync")) + ["repos"])
+    if got is None:
+        raise OSError(err)
+    return [(r["repo"], r["base"], r.get("clone")) for r in got if r.get("forge") == "github"]
 
 
 def stamp(epoch):
@@ -371,7 +367,7 @@ def ci(a):
     try:
         repos = ci_repos()
     except OSError as e:
-        out["unreadable"].append(f"{ENV.get('DAYLOG_CI')}: {e.strerror}")
+        out["unreadable"].append(f"schedules-sync repos: {e}")
         repos = []
     start, end = day_bounds(a.day)
     passes, err = ci_pass(start, end) if repos else ({}, None)
