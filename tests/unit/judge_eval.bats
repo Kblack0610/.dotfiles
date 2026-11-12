@@ -391,17 +391,22 @@ SH
     ev tagged p-legacy "$(ago '-4 days')" by=inbox-triage 'why=+#high'
     ev tagged p-retag "$(ago '-5 days')" by=inbox-priority 'why=+#high'; ev tagged p-retag "$(ago '-5 days +1 hour')" by=inbox-priority 'why=+#low'
     ev tagged p-young "$(ago '-1 hour')" by=inbox-priority 'why=+#urgent'
+    # a human change before the next pass still counts against the first; the same priority again is no change
+    ev tagged p-over "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-over "$(ago '-3 days +1 hour')" by=human 'why=+#urgent'
+    ev tagged p-over "$(ago '-3 days +2 hours')" by=inbox-priority 'why=+#low'
+    ev tagged p-same "$(ago '-3 days')" by=inbox-priority 'why=+#high'; ev tagged p-same "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#high +#size/m'
     ev tagged p-other "$(ago '-3 days')" by=inbox-triage 'why=+#size/m'
     # a triaged row the pass then prioritised stays untouched for the triager
     ev filed t-prio "$(ago '-3 days')"; ev tagged t-prio "$(ago '-3 days +3 hours')" by=inbox-priority 'why=+#low'
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-priority --json
   assert_success
-  # tp: p-kept, p-size, p-legacy, p-retag (its second tag), t-prio; fp: p-moved; pending: p-young; p-other is no priority
-  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer])), (.rules | map([.rule, .tp, .fp]) | sort)' <<<"$output"
-  assert_line '[7,5,1,1]'
-  assert_line '[["p-moved","+#urgent by human"]]'
-  assert_line '[["high",2,0],["low",3,1],["urgent",0,0]]'
+  # tp: p-kept, p-size, p-legacy, p-retag (its second tag), t-prio, p-over (its second), p-same; fp: p-moved, p-over (its first)
+  # pending: p-young; p-other is no priority
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort), (.rules | map([.rule, .tp, .fp]) | sort)' <<<"$output"
+  assert_line '[10,7,2,1]'
+  assert_line '[["p-moved","+#urgent by human"],["p-over","+#urgent by human"]]'
+  assert_line '[["high",3,0],["low",4,2],["urgent",0,0]]'
   run "$JUDGE_EVAL" inbox-triage --json
   assert_equal "$(jq -c '.agents[0].total | [.tp, .fp]' <<<"$output")" '[1,0]'
 }

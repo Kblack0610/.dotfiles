@@ -183,21 +183,25 @@ JQ_EVAL="$JQ_EPOCH"'
       | bykey(.p)) as $kids
    # A re-tag that only changes the priority is a call of the priority pass, scored on its own lane,
    # so it touches nothing the triager or planner wrote.
-   | def prio_only: .action == "tagged" and ((.why // "") | split(" ") | map(select(length > 0))
-       | length > 0 and all(.[]; test("^[+-]#(urgent|high|low)$")));
+   | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|low)$")));
+   def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
+       | ($w | length) > 0 and ($w | length) == (prios | length));
    ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (prio_only | not))) | bykey(.id)) as $touch
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
    # priority-only re-tag from before the pass named itself), right when nobody else changes the
-   # priority of the row for the settle window. A later pass on the row inside the window supersedes it.
+   # priority of the row for the settle window. A later pass on the row inside the window supersedes
+   # it, unless someone changed the priority before that pass ran.
    | def prio_pass: .action == "tagged" and ((.by // "") == "inbox-priority" or ((.by // "") == "inbox-triage" and prio_only));
-   ($ev | map(select(.action == "tagged" and ((.why // "") | test("(^| )[+-]#(urgent|high|low)( |$)")))) | bykey(.id)) as $prioev
+   ($ev | map(select(.action == "tagged" and (prios | length > 0))) | bykey(.id)) as $prioev
    | [$ev[] | select(prio_pass) | . as $s
-      | (($s.why // "") | [scan("\\+#(urgent|high|low)")[0]] | last) as $set
+      | ([prios[] | select(startswith("+")) | ltrimstr("+#")] | last) as $set
       | select($set != null)
       | ($prioev[$s.id] // []) as $later
       | ([$later[] | select(.e > $s.e and prio_pass) | .e] | min) as $next
-      | select($next == null or $next > ($s.e + $settle))
-      | ([$later[] | select(.e > $s.e and .e <= ($s.e + $settle) and (prio_pass | not))] | first) as $t
+      | (if $next != null and $next <= ($s.e + $settle) then $next else $s.e + $settle end) as $end
+      | ([$later[] | select(.e > $s.e and .e <= $end and (prio_pass | not)
+           and (prios | any(. == "-#\($set)" or (startswith("+") and . != "+#\($set)"))))] | first) as $t
+      | select($t != null or $end == $s.e + $settle)
       | {agent: $by["priority-kept"], id: $s.id, project: (if ($s.to // "") == "" then $s.from else $s.to end),
          question: ($s.text // ""), rule: $set, kind: "answer", want: $set,
          human: (if $t == null then "" else ($t.why // "") + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end),
