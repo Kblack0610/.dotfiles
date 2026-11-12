@@ -114,9 +114,9 @@ pub const TABS: [Tab; 13] = [
         id: "releases",
         group: "Projects",
         title: "Releases",
-        question: "What is live where, and which builds made it?",
+        question: "What is deployed where, and which builds made it?",
         sections: &["table", "detail", "runs"],
-        // Two questions: what is live where (the apps and an opened one), and the runs that
+        // Two questions: what is deployed where (the apps and an opened one), and the runs that
         // built and shipped a release.
         pinned: &[],
         inner: &[
