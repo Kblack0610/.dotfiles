@@ -1,5 +1,5 @@
 //! Money made: one `Source` per store or broker, each read by its collector and said as one
-//! line in the briefing's Money section. App stores come from `store-sales <day>`
+//! line in the briefing's Money section. The app stores and Steam come from `store-sales <day>`
 //! (docs/operations/store-sales.md). A source that could not be read carries its reason and no
 //! amount, so it is said as not read, never as $0.
 
@@ -20,7 +20,8 @@ pub struct Amount {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     pub name: String,
-    /// What the amount is: `proceeds` (after the store's cut) or `charged` (what buyers paid).
+    /// What the amount is: `proceeds` (after the store's cut), `charged` (what buyers paid) or
+    /// `net` (Steam: after refunds and tax, before Valve's cut).
     #[serde(default)]
     pub basis: String,
     /// None when the source could not be read; empty when it was and nothing sold.
@@ -40,7 +41,7 @@ struct Report {
     sources: Vec<Source>,
 }
 
-/// The app stores' sales on `day` (`YYYY-MM-DD`), or why `store-sales` could not run.
+/// The stores' sales on `day` (`YYYY-MM-DD`), or why `store-sales` could not run.
 pub fn apps(runner: &dyn Runner, day: &str) -> Result<Vec<Source>, String> {
     let raw = runner
         .run(&["store-sales".to_string(), day.to_string()])
@@ -190,14 +191,15 @@ mod tests {
     }
 
     #[test]
-    fn the_report_parses_both_shapes() {
+    fn the_report_parses_every_shape() {
         struct Fake;
         impl Runner for Fake {
             fn run(&self, argv: &[String]) -> Result<String, String> {
                 assert_eq!(argv, ["store-sales", "2026-11-09"]);
                 Ok(r#"{"date":"2026-11-09","sources":[
                     {"name":"App Store","basis":"proceeds","made":[{"currency":"USD","amount":2.1}],"sales":3,"titles":["Shape City"]},
-                    {"name":"Google Play","basis":"charged","error":"no rbw entry store_sales_play"}]}"#
+                    {"name":"Google Play","basis":"charged","error":"no rbw entry store_sales_play"},
+                    {"name":"Steam","basis":"net","made":[{"currency":"USD","amount":17.98}],"sales":2,"titles":["Apociseum"]}]}"#
                     .into())
             }
         }
@@ -210,5 +212,6 @@ mod tests {
             line(&v[1]),
             "Google Play: not read, no rbw entry store_sales_play."
         );
+        assert_eq!(line(&v[2]), "Steam: $17.98 net from 2 sales (Apociseum).");
     }
 }

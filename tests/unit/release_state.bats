@@ -2,7 +2,8 @@
 # release-state: pinned is read from the fetched remote branch, live from the cluster, and a
 # failed probe says unknown. kubectl is a stub that prints $KUBE_IMAGE (or fails on
 # KUBE_FAIL=1); gh is a stub that prints $GH_REPLY (or fails on GH_FAIL=1); the "remote" is a bare
-# repo in the sandbox, so fetch is real git.
+# repo in the sandbox, so fetch is real git. The store probes sign and fetch through
+# .local/lib/store-auth.sh, which store_sales.bats shares, so a change to it picks both files.
 
 setup() {
   load '../vendor/bats-support/load'
