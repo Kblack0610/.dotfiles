@@ -6,7 +6,8 @@
 # painted by their pass rate on the board's lines (red under 70%, amber under 90%), each
 # pool's queue, oldest wait, finished jobs and pass rate, then one row per machine: where it
 # is, busy/slots, and busy/slots per pool, busiest first. Below that, any runner that is down
-# and the jobs running past LONG_RUN_SECS. A runner the governor withholds is counted apart
+# (not one on a cloud host the governor has powered off: that host reads "off") and the jobs
+# running past LONG_RUN_SECS. A runner the governor withholds is counted apart
 # (`unity withheld 1/2`), so a machine reads what it is meant to run. A local row is busy of
 # its open slots; its burst slots, which open only while the machine has room, are named in
 # a legend line instead of the cell. The per-job list is the board's CI tab, not this hover.
@@ -45,6 +46,11 @@ runners="$(prom_q "$W (github_runner_state)")" || fail "cannot read $PROM_URL"
 withheld="$(prom_q "$W (github_runner_withheld) == 1")" || fail "cannot read $PROM_URL"
 declare -A WITHHELD=()
 while read -r name; do [ -n "$name" ] && WITHHELD[$name]=1; done < <(jq -r '.data.result[].metric.name' <<< "$withheld")
+# A cloud host the governor holds in any power state but running has its runners offline by
+# design (standby, a cap, the budget), so they are not DOWN.
+powered_off="$(prom_q "$W (ci_governor_power_state{state!=\"running\"}) == 1")" || fail "cannot read $PROM_URL"
+declare -A POWERED_OFF=()
+while read -r h; do [ -n "$h" ] && POWERED_OFF[$h]=1; done < <(jq -r '.data.result[].metric.host' <<< "$powered_off")
 
 # name/key -> value, key = pool, host, component or site. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
@@ -137,7 +143,7 @@ while IFS='|' read -r h p state name site repo pr secs; do
       [ -z "$w" ] || p+=" withheld"
       ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1))
       [ -n "$w" ] || ((HS[$h]++)) ;;
-    offline | missing) DOWN[$h/$state]=$((${DOWN[$h/$state]:-0} + 1)) ;;
+    offline | missing) [ -n "${POWERED_OFF[$h]:-}" ] || DOWN[$h/$state]=$((${DOWN[$h/$state]:-0} + 1)) ;;
   esac
 done < <(jq -r '.data.result[]
     | [.metric.host, .metric.pool, .metric.state, .metric.name, .metric.site, .metric.repo,
