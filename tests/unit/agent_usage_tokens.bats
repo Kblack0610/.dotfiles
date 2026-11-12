@@ -320,6 +320,57 @@ gw_day() { lf_day "$1" "{\"gateway\":{\"calls\":100,\"errors\":$2,\"by_error\":$
   assert_success
 }
 
+# A resolve watermark after the snapshot's day began: only the live window since the fix counts.
+gw_live() {
+  printf '#!/bin/sh\necho "$*" > "%s/lf-args"\nprintf %%s %s\n' "$BATS_TEST_TMPDIR" "'$1'" > "$BATS_TEST_TMPDIR/lf"
+  chmod +x "$BATS_TEST_TMPDIR/lf"
+  export TOKENS_LANGFUSE_CMD="$BATS_TEST_TMPDIR/lf"
+}
+
+@test "check --gateway-errors: a fix after the snapshot's day began reads only the window since the fix" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  gw_live '{"gateway":{"calls":50,"errors":2,"by_error":{"HTTPException":2}}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output 'since the fix at 2026-01-01 12:00: no BadRequestError in the gateway errors (2 errors in 50 calls)'
+  run cat "$BATS_TEST_TMPDIR/lf-args"
+  assert_output --partial '--since 2026-01-01T12:00:00+00:00 --until '
+  gw_live '{"gateway":{"calls":50,"errors":3,"by_error":{"BadRequestError":3}}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output 'since the fix at 2026-01-01 12:00: gateway BadRequestError x3 (0 other errors, not listed)'
+}
+
+@test "check --gateway-errors: no watermark, or one before the snapshot's day, keeps the snapshot verdict (negative control)" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  gw_live '{"gateway":{"calls":50,"errors":0,"by_error":{}}}'
+  SENTINEL_SINCE=0 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output --partial '2026-01-01: gateway BadRequestError x8'
+  SENTINEL_SINCE=1767139200 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  [ ! -e "$BATS_TEST_TMPDIR/lf-args" ]
+}
+
+@test "check --gateway-errors: an unreadable live window is exit 2, never a quiet pass" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8}'
+  gw_live 'null'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  assert_output --partial 'since the fix at 2026-01-01 12:00: no gateway figures'
+  gw_live '{"gateway":{"calls":50,"errors":30000,"by_error":{"HTTPException":20000},"truncated":true}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  assert_output --partial 'truncated'
+}
+
+@test "check --gateway-errors: a watermark that is not an epoch is ignored, never a crash that reads as a trip" {
+  gw_day 2026-01-01 3 '{"HTTPException":3}'
+  SENTINEL_SINCE=abc run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output '2026-01-01: no BadRequestError in the gateway errors (3 errors in 100 calls)'
+}
+
 @test "check --gateway-errors: a zero minimum or an empty class list falls back instead of tripping or crashing" {
   gw_day 2026-01-01 3 '{"HTTPException":3}'
   TOKENS_GATEWAY_MIN=0 run "$AU" tokens check --gateway-errors
