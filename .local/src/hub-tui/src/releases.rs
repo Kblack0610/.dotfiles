@@ -242,7 +242,7 @@ impl ReleasesView {
         }
         out.push(Line::from(spans));
         if !s.coverage.is_empty() {
-            out.push(Line::styled(s.coverage.clone(), p.dim()));
+            out.push(Line::styled(format!("coverage: {}", s.coverage), p.dim()));
         }
         if !s.errors.is_empty() {
             out.push(Line::styled(

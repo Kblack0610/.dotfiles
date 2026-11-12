@@ -174,9 +174,32 @@ test("the Queue is one table with the server's chips and every header a sort but
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
   assert.match(h, /id="sec-flow"/);
-  assert.match(h, /id="sec-table"/);
+  assert.match(h, /<h2 class="sec" id="sec-table">Queue <span class="n">3 of 4<\/span><\/h2>/);
   assert.match(h, /id="sec-candidates"/);
-  assert.match(h, /3 of 4/);
+});
+
+test("Candidates heads its row count; urgent rows blocked are a warn line, auto and the read time a fact in the filter card", () => {
+  load(data, { open: { "sec:candidates": true } });
+  const cands = { rows: [{ key: "ar-1", title: "t", project: "p", why: "", start_label: "auto", reasons: [], blocked: [] }], total: 5, auto: 2, clear: 1, urgent_blocked: 1, as_of: "10:20", reasons: [] };
+  const h = run(`qst.cands = ${JSON.stringify(cands)}; qst.candErr = null; qCandidates()`);
+  assert.match(h, /<summary><h2 class="sec warn">Candidates <span class="n">5<\/span><\/h2><\/summary><div class="cline warn">1 urgent blocked<\/div>/);
+  assert.match(h, /<div class="cline muted"><b>auto<\/b> 2, <b>as of<\/b> 10:20<\/div><\/div>/);
+  const calm = run(`qst.cands = ${JSON.stringify({ ...cands, urgent_blocked: 0 })}; qCandidates()`);
+  assert.match(calm, /<h2 class="sec">Candidates <span class="n">5<\/span><\/h2>/);
+  assert.doesNotMatch(calm, /urgent/, "the control: no blocked urgent row, no line");
+  assert.match(run("qst.cands = null; qst.candErr = 'boom'; qCandidates()"), /<h2 class="sec bad">Candidates<\/h2><\/summary><div class="panel down">No candidates: boom<\/div>/);
+  run("qst.cands = null; qst.candErr = null");
+});
+
+test("Pipeline is said once: the worst step hues the head and is a warn line under it", () => {
+  load();
+  try {
+    const h = run(`qfl.data = ${JSON.stringify({ line: rail() })}; qfl.err = null; qfl.node = ""; qFlow()`);
+    assert.equal(h.match(/Pipeline/g).length, 1, h);
+    assert.match(h, /<summary><h2 class="sec warn" id="sec-flow">Pipeline<\/h2><\/summary><div class="cline warn">queued stopped<\/div>/);
+    const calm = run(`qfl.data = ${JSON.stringify({ line: rail({ nodes: { queued: { hot: false, stopped: false } } }) })}; qFlow()`);
+    assert.match(calm, /<summary><h2 class="sec" id="sec-flow">Pipeline<\/h2><\/summary><div class="flow">/, "the control: nothing past its bound, no line");
+  } finally { run("qfl.data = null"); }
 });
 
 test("a sorted header says its direction, and the number columns are n", () => {
@@ -308,15 +331,15 @@ test("shut, Candidates is a heading from the queue read: no rows drawn and no ca
   asked = [];
   reply = (url) => url.startsWith("/api/queue/projects") ? [] : data;
   const h = draw();
-  assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates"><summary><h2 class="sec">Candidates <span class="muted">\(120, 40 auto, <span class="qbad">3 urgent blocked<\/span>, as of 10:20\)<\/span><\/h2><\/summary><\/details>/);
+  assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates"><summary><h2 class="sec warn">Candidates <span class="n">120<\/span><\/h2><\/summary><div class="cline warn">3 urgent blocked<\/div><\/details>/);
   assert.doesNotMatch(h, /qc-q|qc-body/, "a shut fold builds no rows, chips or search box");
   run("TABS.queue.show()");
   await settle(); await settle();
   assert.ok(asked.includes("/api/queue"), asked.join(" "));
   assert.ok(!asked.some((u) => u.startsWith("/api/queue/candidates")), `show reads no candidates while shut: ${asked.join(" ")}`);
-  // Negative control: no snapshot says so instead of a zero.
+  // Negative control: no snapshot draws no count, never a zero.
   load();
-  assert.match(draw(), /Candidates <span class="muted">\(no snapshot\)/);
+  assert.match(draw(), /<h2 class="sec">Candidates<\/h2><\/summary><\/details>/);
   reply = {};
 });
 
@@ -517,4 +540,36 @@ test("a row carries its start place, hold, source and board row, and the head sa
   assert.match(h, /<div class="cline qdispatch warn">Dispatch held: load 31 is over the pace\. It could start 0 of 1 runnable\.<\/div>/);
   load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
   assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);
+});
+
+// A page opened on a linked Queue view reads /api/queue once, with that view; any other tab still
+// reads it once for the nav badge. Each case loads the scripts into a fresh context and fires the
+// page's DOMContentLoaded listeners in the order the scripts added them.
+const loadAt = async (hash) => {
+  const ready = [], urls = [];
+  const d = { ...doc, addEventListener: (ev, f) => { if (ev === "DOMContentLoaded") ready.push(f); } };
+  const c = vm.createContext({
+    console, document: d, window: { addEventListener() {} }, URLSearchParams,
+    setInterval: () => 0, clearInterval() {}, setTimeout: () => 0,
+    EventSource: function () { return { addEventListener() {}, close() {} }; },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    MutationObserver: function () { return { observe() {}, disconnect() {} }; },
+    location: { pathname: "/", hash },
+    history: { url: "", replaceState(a, b, u) { this.url = u; } },
+    // Only the URLs count here: no reply ever lands, so nothing renders.
+    fetch: (url) => { urls.push(url); return new Promise(() => {}); },
+  });
+  // The page's own script order, since the listeners' order is what this checks.
+  const page = readFileSync(new URL("../src/index.html", dir), "utf8");
+  for (const [, f] of page.matchAll(/<script src="\/static\/([\w-]+\.js)/g)) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), c, { filename: f });
+  ready.forEach((f) => f());
+  await settle();
+  return urls.filter((u) => /^\/api\/queue(\?|$)/.test(u));
+};
+
+test("a linked Queue view reads once with its view, and another tab reads once for the badge", async () => {
+  const linked = await loadAt("#queue?s=ready");
+  assert.equal(linked.length, 1, linked.join(" "));
+  assert.match(linked[0], /s=ready/);
+  assert.equal((await loadAt("#board")).length, 1);
 });

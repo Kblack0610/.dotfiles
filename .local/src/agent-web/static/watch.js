@@ -158,8 +158,10 @@ function overviewFolds() {
     const keep = lanes.filter((l) => wst.ended || !l.gone);
     const ended = lanes.length - lanes.filter((l) => !l.gone).length;
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
-    html += `<div class="bhead"><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
-    html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
+    // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
+    const unread = (state.unreadable || []).length ? `<div class="cline warn">could not read ${esc(state.unreadable.join(", "))}</div>` : "";
+    html += fold("lanes", `Last ${WATCH_HOURS}h`, unread + `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
+      `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
   }
   return html + shepherdOverview();
@@ -188,7 +190,7 @@ function renderLogRanked() {
         return `<tr class="click" data-sid="${esc(r.session_id)}"><td class="n">${r.friction}</td><td>${esc(r.title.split("\n")[0].slice(0, 60))} <span class="muted">${esc(r.session_id.slice(0, 8))}</span></td><td>${esc(r.project)}</td>` +
           `<td class="n">${r.duration_s == null ? "-" : dur(r.duration_s / 60)}</td><td class="n">${r.cost_usd == null ? "-" : "$" + r.cost_usd.toFixed(2)}</td><td class="n">${r.prs_merged}/${prs}</td><td class="wrap">${esc(r.why)}</td></tr>${card}`;
       }).join("")}</table></div>`;
-  $("log-ranked").innerHTML = `<div class="bhead"><span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span></div>${body}`;
+  $("log-ranked").innerHTML = body;
 }
 $("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows && logShows("ranked")) loadRanked(); });
 $("log-ranked").addEventListener("click", (e) => {
@@ -201,7 +203,8 @@ $("log-ranked").addEventListener("click", (e) => {
 LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
 // An overview section, open until the reader folds it; the fold is remembered across re-renders by its key.
-const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${secOpen(wst.open, k) ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
+// title is text.
+const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${secOpen(wst.open, k) ? " open" : ""}><summary>${secHead("", title)}</summary>${body}</details>`;
 
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;

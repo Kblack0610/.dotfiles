@@ -26,7 +26,7 @@ const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
 
 // One run table. `o.tab` and `o.el` are where it draws; `o.render` is the tab's own render when
 // it draws inside the tab's page (Releases), else it paints `o.el`. `o.scope` is the read's cut,
-// `o.title` its heading, `o.lead` a line under it, `o.folds` the map its folds keep their state in.
+// `o.title` its heading, `o.folds` the map its folds keep their state in.
 function runsTable(o) {
   const folds = o.folds || CI_OPEN, id = o.id;
   const t = tblTab({
@@ -56,9 +56,9 @@ function runsTable(o) {
   }
 
   function head(d) {
-    const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after;
-    let html = `<h2 class="sec" id="sec-runs">${o.title} <span class="muted">${esc(d.summary || "")}</span>` +
-      (stale ? ` <span class="warn">ledger older than ${dur(d.stale_after / 60)}</span>` : "") + `</h2>` + (o.lead || "");
+    const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after, v = d.table;
+    let html = secHead("runs", o.title, v && tblCount(v), stale ? "warn" : "");
+    if (stale) html += `<div class="cline warn">ledger older than ${dur(d.stale_after / 60)}</div>`;
     if (t.err) html += `<div class="panel down">${esc(t.err)}</div>`;
     if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
     return html;
@@ -66,7 +66,7 @@ function runsTable(o) {
 
   // The whole block, once it has been read.
   t.block = () => {
-    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : `<h2 class="sec">${o.title} <span class="muted">reading...</span></h2>`;
+    if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : secHead("", o.title) + `<div class="empty">Reading...</div>`;
     if (!t.data.table) return `<div id="${id}-head">${head(t.data)}</div>`;
     const b = tblBodyFirst(t.data.table, () => body(t.data));
     return `<div data-tbl="${RUNS_PRE}"><div id="${id}-head">${head(t.data)}</div>${tblBar(id, t.data.table, RUNS_HINT)}<div id="${id}-body">${b}</div></div>`;
@@ -153,7 +153,7 @@ function showRunPage() {
 }
 function runPage() {
   const id = ciRunId();
-  const h = `<h2 class="sec" id="sec-run">CI run <span class="muted">${esc(id)}</span> <a href="#infra/runs">all runs</a></h2>`;
+  const h = `<div class="bhead" id="sec-run"><span>CI runs / <b>${esc(id)}</b></span><a class="btn sm" href="#infra/runs">All runs</a></div>`;
   if (runst.err) return h + `<div class="panel down">${esc(runst.err)}</div>`;
   if (!runst.data) return h + `<div class="empty">Loading...</div>`;
   if (!runst.run) return h + `<div class="panel">No CI run ${esc(id)} in the ledger's 30 days.</div>`;
@@ -239,11 +239,11 @@ const pip = tblTab({
   // An opened row whose pipeline the new read lacks closes.
   got: (t) => { if (t.sel && !(t.data.rows || []).some((r) => pipKey(r) === t.sel)) { t.sel = null; t.detail = null; } },
 });
-pip.block = () => (pip.data ? pip.html() : pip.err ? `<div class="panel down">${esc(pip.err)}</div>` : `<h2 class="sec" id="sec-pipelines">Pipelines <span class="muted">reading...</span></h2>`);
+pip.block = () => (pip.data ? pip.html() : pip.err ? `<div class="panel down">${esc(pip.err)}</div>` : secHead("pipelines", "Pipelines") + `<div class="empty">Reading...</div>`);
 
 function pipHead(t) {
   const d = t.data;
-  let html = `<h2 class="sec" id="sec-pipelines">Pipelines <span class="muted">${esc(d.summary || "")}</span></h2>`;
+  let html = secHead("pipelines", "Pipelines", d.table && tblCount(d.table), d.red ? "bad" : "");
   if (t.err) html += `<div class="panel down">${esc(t.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -312,7 +312,7 @@ const tst = tblTab({
     for (const k of ["trepo", "trun"]) if (v.get(k)) p.set(k, v.get(k));
     for (const [k, v] of tblParams(st.views.infra, QTN_PRE)) p.set(k, v);
   },
-  head: (t) => testsHead(t.data), body: (t) => testsBody(t.data),
+  head: (t) => testsHead(t.data), body: (t) => testsBody(t.data), tiles: (t) => testsTiles(t.data),
   render: () => ciPaint("ci-tests", tst, qtn),
   after: () => renderInfra(),
   // An opened suite belongs to the run it was read from: another run shows none open.
@@ -373,8 +373,15 @@ function testsPicker(d) {
   return `<div class="cline"><select data-twin="repo" data-tclear="run" aria-label="repo">${repos}</select> <select data-twin="run" aria-label="CI run">${opts}</select>${link}</div>`;
 }
 
+// The run's tests over every suite, after the suites' state tiles; none before a run has results.
+const testsTiles = (d) => {
+  const n = d.totals;
+  return d.run && n && n.tests ? tile("TESTS", n.tests, n.failed ? "var(--b-needs)" : "var(--b-done)", `${n.failed} failed, ${n.skipped} skipped`) : "";
+};
+
 function testsHead(d) {
-  let html = `<h2 class="sec" id="sec-tests">Tests <span class="muted">${esc(d.summary || "")}</span></h2>` + testsPicker(d);
+  const v = d.table;
+  let html = secHead("tests", "Tests", v && d.run ? tblCount(v) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
   if (tst.err) html += `<div class="panel down">${esc(tst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -397,7 +404,7 @@ const qtn = tblTab({
 function qtnHead(q) {
   const lane = (l) => `<div class="cline ${levelClass(l.level)}">${esc(l.says)}` +
     (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>`;
-  return `<h2 class="sec" id="sec-quarantine">Quarantine</h2>` + (q.error ? `<div class="panel down">${esc(q.error)}</div>` : "") +
+  return secHead("quarantine", "Quarantine") + (q.error ? `<div class="panel down">${esc(q.error)}</div>` : "") +
     q.lanes.map(lane).join("");
 }
 
@@ -422,10 +429,10 @@ const qtnBlock = (d) => {
 // The Tests block, once it has been read. The first look at a run waits on GitHub for its
 // artifacts, so the heading shows before the rows do.
 tst.block = () => {
-  if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
+  if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : secHead("tests", "Tests") + `<div class="empty">Reading...</div>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>` + qtnBlock(tst.data);
   const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
-  return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
+  return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT, testsTiles(tst.data))}` +
     `<div id="tst-body">${body}</div></div>` + qtnBlock(tst.data);
 };
 

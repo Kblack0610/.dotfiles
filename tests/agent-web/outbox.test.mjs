@@ -103,8 +103,8 @@ test("Handled today says what was done to each line, newest first, and left line
       { ts: "2026-11-05T14:01:00-08:00", action: "filed", to: "dodginballs", text: "fix(audio): gun shot late", id: "db-51" },
     ],
   });
-  assert.match(h, /Handled today <span class="muted">1 filed, 1 left/);
+  assert.match(h, /^<h2 class="sec">Handled today <span class="n">2<\/span><\/h2>/, "the head counts the steps; each row says what was done");
   assert.match(h, /<li class="warn"><span class="muted">13:40<\/span> left: maybe tidy &lt;stuff&gt; <span class="muted">\(why: too vague\)/);
   assert.match(h, /14:01<\/span> filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
-  assert.match(run("handledHtml(input)", { counts: "", handled: [] }), /Nothing handled yet today\./);
+  assert.match(run("handledHtml(input)", { counts: "", handled: [] }), /^<h2 class="sec">Handled today<\/h2><div class="muted">Nothing handled yet today\./);
 });
