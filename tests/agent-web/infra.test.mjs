@@ -259,7 +259,7 @@ const poolPage = (o = {}) => ({
   pool: "unity", at: 1700000000, head: "unity, 1/3 busy, 2 waiting", errors: [],
   parts: [{ label: "Waiting", text: "2 jobs, the oldest 15m; 1 no online runner can take", link: null, warn: true },
     { label: "Grafana", text: "the CI runners board", link: "https://g.example/d/kb-ci-runners", warn: false }],
-  row: {}, history: null, tables: { machines: tbl([], ["machine"]), waiting: tbl([], ["job"]) }, ...o,
+  history: null, tables: { machines: tbl([], ["machine"]), waiting: tbl([], ["job"]) }, ...o,
 });
 const drawPool = (name, d, err) => {
   run(`st.tab = "infra"; st.page = ${JSON.stringify("pools/" + name)}`);

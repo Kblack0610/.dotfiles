@@ -23,8 +23,8 @@ const POWER_ROWS: usize = 10;
 /// Width of a share bar.
 const SHARE_BAR: usize = 30;
 
-/// The CPU chart's rows, one character a bucket of hours.
-const BLOCKS: [char; 9] = [
+/// The CPU chart's rows, one character a bucket of hours; a pool's page draws with them too.
+pub(crate) const BLOCKS: [char; 9] = [
     ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
     '\u{2588}',
 ];
@@ -100,7 +100,7 @@ pub fn page(
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
 
-fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<'static> {
+pub(crate) fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<'static> {
     Line::from(vec![
         Span::styled(title.to_string(), p.head()),
         Span::styled(format!("  {}", rest.into()), p.dim()),

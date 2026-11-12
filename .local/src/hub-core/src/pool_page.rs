@@ -1,12 +1,11 @@
 //! One runner pool's page on both surfaces (`#infra/pools/<pool>`): its Pools row as labelled
-//! parts, the governor's admitted bounds for it, the machines with a slot in it, the CI jobs
+//! parts, the machines with a slot in it (each with its governor verdict), the CI jobs
 //! waiting for it, and its busy, slots and waiting over the last `DAYS` days. hub-core reads it;
 //! agent-web and the TUI only draw it, as they draw a machine's page (`machine_page`).
 //!
 //! | part    | series                                                                          |
 //! |---------|---------------------------------------------------------------------------------|
 //! | history | `cc:pool_{busy,slots,waiting}{pool}`; the local gates (`unity-local`) sum `cc:host_local_{busy,open_slots,queued}` over the machines, a busy gate past the open slots still a slot, as `machines::pools` counts them |
-//! | bounds  | the governor's `ci_governor_pool_admitted_{min,max}{pool}` (home-config apps/ci-runner-governor `pool_min_admitted`, `pool_max_admitted`) |
 
 use serde::Serialize;
 
@@ -58,7 +57,6 @@ pub struct PoolPage {
     pub at: u64,
     /// The header line: `unity, 1/3 busy, 2 waiting`.
     pub head: String,
-    pub row: Pool,
     pub parts: Vec<Part>,
     /// The machines with a slot in it, in the Machines table's order.
     pub machines: Vec<Machine>,
@@ -119,7 +117,6 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
             n(p.slots),
             n(p.waiting)
         ),
-        row: p.clone(),
         parts: parts(infra, p, &machines, &waiting),
         machines,
         waiting,
@@ -128,23 +125,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
     }
 }
 
-/// The governor's bounds for `pool`, when it governs it: the fewest and most runners it keeps
-/// admitted.
-fn bounds(infra: &Infra, pool: &str) -> (Option<f64>, Option<f64>) {
-    let get = |name: &str| {
-        infra
-            .get("governor")
-            .iter()
-            .find(|s| s.label("__name__") == name && s.label("pool") == pool)
-            .and_then(|s| s.value)
-    };
-    (
-        get("ci_governor_pool_admitted_min"),
-        get("ci_governor_pool_admitted_max"),
-    )
-}
-
-/// Its row as labelled parts: Slots, Waiting, Last 24h, Governor, Grafana.
+/// Its row as labelled parts: Slots, Waiting, Last 24h, Grafana.
 fn parts(infra: &Infra, p: &Pool, machines: &[Machine], waiting: &[Queued]) -> Vec<Part> {
     let has = |v: Option<f64>| v.is_some_and(|x| x > 0.0);
     let n = |v: f64| format!("{v:.0}");
@@ -186,24 +167,6 @@ fn parts(infra: &Infra, p: &Pool, machines: &[Machine], waiting: &[Queued]) -> V
         }
         out.push(Part::new("Last 24h", t).warn(p.pass.is_some_and(|r| r < 0.8)));
     }
-    let (lo, hi) = bounds(infra, &p.pool);
-    if lo.is_some() || hi.is_some() {
-        let admitted: Option<f64> = machines
-            .iter()
-            .filter_map(|m| m.governor.as_ref()?.admitted)
-            .reduce(|a, b| a + b);
-        let range = format!(
-            "keeps {} to {} admitted",
-            lo.map_or("?".into(), n),
-            hi.map_or("?".into(), n)
-        );
-        let t = match admitted {
-            Some(a) => format!("admits {} now, {range}", n(a)),
-            None => range,
-        };
-        let low = matches!((admitted, lo), (Some(a), Some(l)) if a < l);
-        out.push(Part::new("Governor", t).warn(low));
-    }
     if let Some(g) = infra.grafana.as_deref() {
         out.push(
             Part::new("Grafana", "the CI runners board").link(Link::Url(format!("{g}/d/{BOARD}"))),
@@ -243,15 +206,23 @@ pub fn history(pool: &str, now: u64) -> Result<PoolHistory, String> {
     let qs = queries(pool)?;
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
+    // The three are independent, so they are asked at once: the page waits for the slowest.
+    let read = std::thread::scope(|sc| {
+        qs.map(|(name, q)| (name, sc.spawn(|| host_history::range(&base, q, from, now))))
+            .map(|(name, h)| {
+                (
+                    name,
+                    h.join().unwrap_or_else(|_| Err("the read panicked".into())),
+                )
+            })
+    });
     let mut errors = vec![];
-    let mut got: [Vec<Series>; 3] = Default::default();
-    for (i, (name, q)) in qs.into_iter().enumerate() {
-        match host_history::range(&base, q, from, now) {
-            Ok(s) => got[i] = s,
-            Err(e) => errors.push(format!("{name}: {e}")),
-        }
-    }
-    let [busy, slots, waiting] = got;
+    let [busy, slots, waiting] = read.map(|(name, r)| {
+        r.unwrap_or_else(|e| {
+            errors.push(format!("{name}: {e}"));
+            vec![]
+        })
+    });
     let mut h = fold(pool, &busy, &slots, &waiting, from, now);
     h.errors = errors;
     Ok(h)
@@ -307,19 +278,13 @@ pub fn fold(
 mod tests {
     use super::*;
     use crate::machines::build as machines;
-    use crate::machines::tests::{fleet, series};
+    use crate::machines::tests::fleet;
     use crate::table::{Row, View};
-    use serde_json::json;
     use std::collections::BTreeMap;
 
     fn infra() -> Infra {
         let mut i = fleet();
         i.grafana = Some("https://grafana.example".into());
-        i.instant.get_mut("governor").unwrap().extend(series(vec![
-            json!({"__name__": "ci_governor_admitted", "host": "cachyos-x8664-main", "v": "1"}),
-            json!({"__name__": "ci_governor_pool_admitted_min", "pool": "unity", "v": "2"}),
-            json!({"__name__": "ci_governor_pool_admitted_max", "pool": "unity", "v": "24"}),
-        ]));
         i.ci = crate::ci::build(&i);
         i.ci.queue = vec![
             Queued {
@@ -384,17 +349,6 @@ mod tests {
             Some(Link::Url("https://grafana.example/d/kb-ci-runners".into()))
         );
         assert_eq!(p.errors, ["history: prometheus down"]);
-    }
-
-    #[test]
-    fn the_governor_part_is_its_bounds_and_what_it_admits_and_only_where_it_governs() {
-        let i = infra();
-        let gov = page(&i, "unity");
-        let g = part(&gov, "Governor").unwrap();
-        // One admitted runner on the workstation, under the floor of two.
-        assert_eq!(g.text, "admits 1 now, keeps 2 to 24 admitted");
-        assert!(g.warn);
-        assert!(part(&page(&i, "macos"), "Governor").is_none());
     }
 
     #[test]

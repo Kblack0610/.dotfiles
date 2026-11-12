@@ -65,9 +65,8 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
-        // acts for real; its queue and health; the AWS budget's month it reads hourly; and the
-        // fewest and most runners it keeps admitted in the pool it governs.
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+|pool_admitted_(min|max))"}"#.into()),
+        // acts for real; its queue and health; and the AWS budget's month it reads hourly.
+        ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
         // Done today: when runs finished, and which failed. An absent metric is an empty answer,
         // so the tab says "no data" rather than an error until the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),

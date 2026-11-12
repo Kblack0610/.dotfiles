@@ -129,22 +129,41 @@ pub struct Pages(ReadCache<String, CACHE_SECS, String>);
 /// order), not also as the page's own fields.
 fn page_json(p: &MachinePage) -> String {
     let none = ViewQuery::new();
-    let mut tables = Map::new();
-    tables.insert("recent".into(), shown(&p.recent, &none, ""));
     let down = p.history.as_ref().map_or(&[][..], |h| h.down.as_slice());
-    tables.insert("down".into(), shown(down, &none, ""));
-    tables.insert("alerts".into(), shown(&p.alerts, &none, ""));
+    with_tables(
+        p,
+        [
+            ("recent", shown(&p.recent, &none, "")),
+            ("down", shown(down, &none, "")),
+            ("alerts", shown(&p.alerts, &none, "")),
+        ],
+        |o| {
+            if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
+                h.remove("down");
+            }
+        },
+    )
+}
+
+/// A page as JSON with each of `tables` in place of its own field of that name, and `also`
+/// for any other field a table replaces.
+fn with_tables<const N: usize>(
+    p: &impl Serialize,
+    tables: [(&str, Value); N],
+    also: impl FnOnce(&mut Map<String, Value>),
+) -> String {
     let mut v = match serde_json::to_value(p) {
         Ok(v) => v,
         Err(e) => return json!({"error": e.to_string()}).to_string(),
     };
     if let Some(o) = v.as_object_mut() {
-        o.remove("recent");
-        o.remove("alerts");
-        if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
-            h.remove("down");
+        also(o);
+        let mut t = Map::new();
+        for (k, rows) in tables {
+            o.remove(k);
+            t.insert(k.into(), rows);
         }
-        o.insert("tables".into(), Value::Object(tables));
+        o.insert("tables".into(), Value::Object(t));
     }
     v.to_string()
 }
@@ -183,19 +202,14 @@ pub struct PoolPages(ReadCache<String, CACHE_SECS, String>);
 /// The page, its machines and waiting jobs sent once, as tables (`shown`, in their own order).
 fn pool_json(p: &PoolPage) -> String {
     let none = ViewQuery::new();
-    let mut tables = Map::new();
-    tables.insert("machines".into(), shown(&p.machines, &none, ""));
-    tables.insert("waiting".into(), shown(&p.waiting, &none, ""));
-    let mut v = match serde_json::to_value(p) {
-        Ok(v) => v,
-        Err(e) => return json!({"error": e.to_string()}).to_string(),
-    };
-    if let Some(o) = v.as_object_mut() {
-        o.remove("machines");
-        o.remove("waiting");
-        o.insert("tables".into(), Value::Object(tables));
-    }
-    v.to_string()
+    with_tables(
+        p,
+        [
+            ("machines", shown(&p.machines, &none, "")),
+            ("waiting", shown(&p.waiting, &none, "")),
+        ],
+        |_| {},
+    )
 }
 
 impl PoolPages {

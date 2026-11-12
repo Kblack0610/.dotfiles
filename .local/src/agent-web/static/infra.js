@@ -379,17 +379,19 @@ function shareBar(d, colors) {
   return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
 }
 
+// An hourly chart's column label: the weekday at midnight, else none.
+const dayTick = (at) => { const d = new Date(at * 1e3); return d.getHours() === 0 ? d.toLocaleDateString([], { weekday: "short" }) : ""; };
+
 // One column per hour: the pools' cores as a share of the machine, then the rest of its CPU.
 function historyChart(h, cores, colors) {
   const pools = [...new Set(h.hours.flatMap((x) => Object.keys(x.pools)))].sort();
   const cols = h.hours.map((x) => {
-    const at = new Date(x.at * 1e3);
     const segs = pools.map((p) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: colors[p] }));
     const ci = segs.reduce((a, s) => a + s.v, 0);
     if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
     const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
     const tip = x.cpu == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
-    return { key: String(x.at), label: at.getHours() === 0 ? at.toLocaleDateString([], { weekday: "short" }) : "", tip, segs };
+    return { key: String(x.at), label: dayTick(x.at), tip, segs };
   });
   const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
   return `${columns(cols, { height: 120, yfmt: pct })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`;
@@ -474,7 +476,7 @@ function machinePage() {
 }
 
 // `#infra/pools/<pool>` (GET /api/infra/pool, hub_core::pool_page, which the hub's page draws
-// too): its parts and the governor's bounds, the machines with a slot in it, the CI jobs waiting
+// too): its parts, the machines with a slot in it, the CI jobs waiting
 // for it, and its busy, slots and waiting over 7 days.
 const poolst = { name: "", data: null, err: null };
 const poolName = () => (st.tab === "infra" && st.page.startsWith("pools/") ? st.page.slice("pools/".length) : "");
@@ -487,12 +489,11 @@ const refreshPool = coalesce(async () => {
 
 // One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
 function poolChart(h) {
-  const label = (x) => { const at = new Date(x.at * 1e3); return at.getHours() === 0 ? at.toLocaleDateString([], { weekday: "short" }) : ""; };
   const n = (v) => (v == null ? "?" : v.toFixed(1));
   const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
-  const slots = h.hours.map((x) => ({ key: String(x.at), label: label(x), tip: tip(x),
+  const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
     segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
-  const wait = h.hours.map((x) => ({ key: String(x.at), label: label(x), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
+  const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
   const key = [["busy", SLOTS[0]], ["idle", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
   return `${columns(slots, { height: 120 })}<div class="muted">${key} slots, hourly means of ${h.step / 60}-minute samples</div>`
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;

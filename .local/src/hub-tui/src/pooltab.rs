@@ -11,15 +11,10 @@ use ratatui::text::{Line, Span};
 use crate::controls::page_field;
 use crate::fit::clip_line;
 use crate::fmt::{clock, Palette};
+use crate::machinetab::{heading, BLOCKS};
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all pools  o Grafana]";
-
-/// The charts' rows, one character a bucket of hours.
-const BLOCKS: [char; 9] = [
-    ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
-    '\u{2588}',
-];
 
 /// The Grafana board the page links, for `o`.
 pub fn grafana(page: &PoolPage) -> Option<String> {
@@ -64,19 +59,18 @@ pub fn page(
     for part in &page.parts {
         out.push(page_field(part, p, w));
     }
-    let (machines, waiting) =
-        crate::infratables::page_tables(&page.machines, &page.waiting, p, now, w);
     out.push(Line::raw(""));
-    out.extend(machines);
-    out.push(Line::raw(""));
-    out.extend(waiting);
+    out.extend(crate::infratables::page_tables(
+        &page.machines,
+        &page.waiting,
+        p,
+        now,
+        w,
+    ));
     out.push(Line::raw(""));
     match &page.history {
         Some(h) => out.extend(history(h, p, now, w)),
-        None => out.push(Line::from(vec![
-            Span::styled(format!("{DAYS} DAYS"), p.head()),
-            Span::styled("  not read", p.dim()),
-        ])),
+        None => out.push(heading(&format!("{DAYS} DAYS"), "not read", p)),
     }
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
@@ -85,17 +79,15 @@ pub fn page(
 /// hour with no reading a `.`.
 fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let days = (h.to.saturating_sub(h.from) / 86_400).max(1);
-    let mut out = vec![Line::from(vec![
-        Span::styled(format!("{days} DAYS"), p.head()),
-        Span::styled(
-            format!(
-                "  by hour from {}, {} readings",
-                clock(h.from as i64, now),
-                h.readings
-            ),
-            p.dim(),
+    let mut out = vec![heading(
+        &format!("{days} DAYS"),
+        format!(
+            "by hour from {}, {} readings",
+            clock(h.from as i64, now),
+            h.readings
         ),
-    ])];
+        p,
+    )];
     if h.hours.is_empty() {
         out.push(Line::styled("  no reading in the window", p.dim()));
         return out;
