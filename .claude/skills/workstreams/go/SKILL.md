@@ -3,6 +3,8 @@ name: go
 description: >-
   Decide and proceed instead of asking: best-practice pick, logged assumptions, stop only at hard gates. `/go` covers this checkpoint; `/go all` or `/go <scope>` holds it for the whole task. Use for "go", "just decide", "stay autonomous". End to end with landing: one-shot.
 argument-hint: "[all | scope, e.g. 'until CI is green']"
+disable-model-invocation: true
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate, TaskUpdate, TaskList]
 metadata:
   category: workstreams
   tags: [autonomy, decisions, session]
@@ -11,7 +13,7 @@ metadata:
 
 # go
 
-You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode.
+You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode. The human grants it by typing `/go`; the model never loads it on its own initiative, and `one-shot` reads this file by path.
 
 ## Scope and triggers
 
