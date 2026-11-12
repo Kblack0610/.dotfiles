@@ -60,6 +60,18 @@ pub struct Gate {
     pub stage: String,
     pub met: u32,
     pub total: u32,
+    pub fail: u32,
+    pub human: u32,
+}
+
+/// One kind of thing the chain asks of the human, as Needs you groups it: `verify` (epics whose
+/// rows all landed with no live proof) or `plan` (plans that name no epic). `says` is the
+/// group's line with its count; `items` are its lines, each kind's every one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct NeedGroup {
+    pub kind: String,
+    pub says: String,
+    pub items: Vec<String>,
 }
 
 /// A system: its progress and criteria, then its open epics; closed ones are a count.
@@ -78,6 +90,16 @@ pub struct System {
     pub wave: Option<Wave>,
     /// `+3 closed, 2 verified`, empty when none closed.
     pub closed: String,
+    /// The head's numbers, for a surface that draws them as columns: its criteria (None when the
+    /// project type does not list the system), its feature epics counted and done, its open
+    /// standard epics, the open rows under its open epics and how many of those epics run behind.
+    pub criteria_met: Option<u32>,
+    pub criteria_total: Option<u32>,
+    pub features: usize,
+    pub features_done: usize,
+    pub standing: usize,
+    pub open_rows: u32,
+    pub behind: usize,
 }
 
 /// One requirement of the next stage that is not met: FAIL, HUMAN or TODO.
@@ -96,6 +118,8 @@ pub struct Page {
     pub flow_line: Option<String>,
     /// Verify an epic whose rows all landed, then plans that name no epic, in that order.
     pub needs: Vec<String>,
+    /// The same asks grouped by kind, each with its count and every item (`need_groups`).
+    pub need_groups: Vec<NeedGroup>,
     /// Build by system's head: `3 systems, 2 open epics (438 rows with no epic)`.
     pub systems_says: String,
     pub systems: Vec<System>,
@@ -237,10 +261,10 @@ pub fn epic_line(e: &Epic, now: i64) -> String {
     s
 }
 
-/// What the chain asks of the human: an epic to verify once every row landed, then each plan
-/// that names no epic (the first [`PLANS_SHOWN`], then a count).
-pub fn needs(c: &Chain) -> Vec<String> {
-    let mut out: Vec<String> = c
+/// What the chain asks of the human, by kind: the epics to verify once every row landed, then
+/// the plans that name no epic. A kind with nothing is left out.
+pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
+    let verify: Vec<String> = c
         .epics
         .iter()
         .filter(|e| e.step == "landed")
@@ -253,18 +277,59 @@ pub fn needs(c: &Chain) -> Vec<String> {
             )
         })
         .collect();
-    let plans = &c.unlinked.plans;
-    out.extend(plans.iter().take(PLANS_SHOWN).map(|p| {
-        format!(
-            "plan with no epic: {}",
-            crate::plans::named(&crate::plans::path(p))
-        )
-    }));
-    if plans.len() > PLANS_SHOWN {
-        out.push(format!(
-            "+{} more plans with no epic",
-            plans.len() - PLANS_SHOWN
-        ));
+    let plans: Vec<String> = c
+        .unlinked
+        .plans
+        .iter()
+        .map(|p| {
+            format!(
+                "plan with no epic: {}",
+                crate::plans::named(&crate::plans::path(p))
+            )
+        })
+        .collect();
+    let mut out = vec![];
+    if !verify.is_empty() {
+        out.push(NeedGroup {
+            kind: "verify".into(),
+            says: format!(
+                "{} epic{} landed with no live proof",
+                verify.len(),
+                plural(verify.len())
+            ),
+            items: verify,
+        });
+    }
+    if !plans.is_empty() {
+        out.push(NeedGroup {
+            kind: "plan".into(),
+            says: format!("{} plan{} with no epic", plans.len(), plural(plans.len())),
+            items: plans,
+        });
+    }
+    out
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+/// `need_groups` as the TUI's flat list: every epic to verify, then the first [`PLANS_SHOWN`]
+/// plans with no epic and a count of the rest.
+pub fn needs(c: &Chain) -> Vec<String> {
+    let mut out = vec![];
+    for g in need_groups(c) {
+        if g.kind == "plan" && g.items.len() > PLANS_SHOWN {
+            let more = g.items.len() - PLANS_SHOWN;
+            out.extend(g.items.into_iter().take(PLANS_SHOWN));
+            out.push(format!("+{more} more plans with no epic"));
+        } else {
+            out.extend(g.items);
+        }
     }
     out
 }
@@ -282,6 +347,8 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
         .map(|c| {
             let sys = System {
                 id: c.id.clone(),
+                criteria_met: Some(c.met),
+                criteria_total: Some(c.total),
                 ..Default::default()
             };
             (sys, format!("criteria {} of {}", c.met, c.total))
@@ -321,9 +388,12 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                 .iter()
                 .filter(|e| is_standing(e) && e.state == "open")
                 .count();
+            s.features = features.len();
+            s.features_done = features.iter().filter(|e| e.state != "open").count();
+            s.standing = standing;
             let mut parts = vec![];
             if !features.is_empty() {
-                let done = features.iter().filter(|e| e.state != "open").count();
+                let done = s.features_done;
                 let n = features.len();
                 parts.push(format!(
                     "{n} feature{}, {done} done",
@@ -358,6 +428,12 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                         .collect(),
                 })
                 .collect();
+            s.open_rows = es
+                .iter()
+                .filter(|e| e.state == "open")
+                .map(|e| e.open)
+                .sum();
+            s.behind = s.epics.iter().filter(|e| e.behind).count();
             let mut open_features = es.iter().filter(|e| e.state == "open" && !is_standing(e));
             s.wave = open_features.next().map(|e| Wave {
                 id: e.id.clone(),
@@ -540,6 +616,8 @@ pub fn read_with(
                     stage: o.stage.clone(),
                     met: o.met,
                     total: o.total,
+                    fail: o.fail,
+                    human: o.human,
                 });
                 p.next_rows = o
                     .requirements
@@ -568,6 +646,7 @@ pub fn read_with(
     if let Some(c) = &chain {
         p.flow_line = Some(epics::flow_line(&c.flow));
         p.needs = needs(c);
+        p.need_groups = need_groups(c);
         let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
         p.systems = systems(c, &criteria, &in_open, now);
     }
@@ -841,6 +920,38 @@ mod tests {
                 "+1 more plans with no epic",
             ]
         );
+        // Grouped, every item is kept: the TUI's flat list caps plans, the groups do not.
+        let groups: Vec<(&str, &str, usize)> = p
+            .need_groups
+            .iter()
+            .map(|g| (g.kind.as_str(), g.says.as_str(), g.items.len()))
+            .collect();
+        assert_eq!(
+            groups,
+            vec![
+                ("verify", "1 epic landed with no live proof", 1),
+                ("plan", "6 plans with no epic", 6),
+            ]
+        );
+        // The head's numbers as fields, so a table draws them without parsing the line.
+        let ui = &p.systems[0];
+        assert_eq!(
+            (
+                ui.criteria_met,
+                ui.criteria_total,
+                ui.features,
+                ui.features_done,
+                ui.standing
+            ),
+            (Some(5), Some(7), 3, 1, 1)
+        );
+        assert_eq!(
+            (ui.open_rows, ui.behind),
+            (3, 1),
+            "Menus 2, Saves 0, standard 1; Menus behind"
+        );
+        let none = &p.systems[2];
+        assert_eq!((none.criteria_met, none.criteria_total), (None, None));
         let heads: Vec<&str> = p.systems.iter().map(|s| s.head.as_str()).collect();
         assert_eq!(
             heads,
@@ -1007,7 +1118,9 @@ mod tests {
             Some(Gate {
                 stage: "beta".into(),
                 met: 4,
-                total: 12
+                total: 12,
+                fail: 1,
+                human: 1
             })
         );
     }

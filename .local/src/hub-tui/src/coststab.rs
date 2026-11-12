@@ -1747,8 +1747,8 @@ mod tests {
         );
         assert!(screen.contains("unattributed $91"), "{screen}");
         assert!(
-            !screen.contains("FLEET COST") || at("FLEET COST 24H") < head,
-            "the 24h figure stays pinned above"
+            !screen.contains("FLEET 24H"),
+            "the fleet figure is on Spend, not Budget"
         );
         // negative control: three hours old says STALE and needs a look for it
         let stale = screen_of(&with_budget(3 * 3600), &on("budget"), 80);
