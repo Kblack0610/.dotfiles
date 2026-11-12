@@ -16,7 +16,7 @@ setup() {
   echo 'ask policy v2' > "$HOME/ask-policy.md"; echo 'dispatch policy v1' > "$HOME/dispatch-policy.md"
   printf 'PROMPT="%s"\nDELAY_RULES=fast=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
   printf 'PROMPT="%s"\nSCORE=dispatch-queue\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
-  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  echo 'SCORE=sweep-untouched' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
   echo 'SCORE=plan-dispatched' > "$AGENTCTL_CONF_DIR/inbox-plan.conf"
   echo 'SCORE=priority-kept' > "$AGENTCTL_CONF_DIR/inbox-priority.conf"
@@ -307,6 +307,7 @@ ask_fixture() {
 }
 
 @test "nothing to score reads as no verdicts, and an unknown lane is a usage error" {
+  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/demo-runner.conf"
   run "$JUDGE_EVAL"
   assert_success
   assert_line '  no verdicts in scope'
@@ -390,7 +391,7 @@ SH
   run "$JUDGE_EVAL" --json
   assert_success
   assert_equal "$(jq -c '[.agents[] | [.agent, .score]]' <<<"$output")" \
-    '[["ask-judge","ask-answers"],["ask-sweep","unrecorded"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-priority","priority-kept"],["inbox-triage","triage-untouched"]]'
+    '[["ask-judge","ask-answers"],["ask-sweep","sweep-untouched"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-priority","priority-kept"],["inbox-triage","triage-untouched"]]'
   echo 'SCORE=no-such-source' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   run "$JUDGE_EVAL" shepherd
   assert_success
@@ -448,6 +449,39 @@ SH
   assert_equal "$(jq -c '.agents[0].total | [.tp, .fp]' <<<"$output")" '[1,0]'
 }
 
+@test "ask-sweep: a row its model filed is right when nothing touches it for 48h; plan rows and rows from before its prompt are not counted" {
+  echo v1 > "$HOME/sweep-policy.md"
+  printf 'PROMPT="%s"\nSCORE=sweep-untouched\n' "$HOME/sweep-policy.md" > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  # the prompt ran 10 days ago, then an older one 7 days ago, then the current one again from 6 days ago;
+  # a call with no readable time is ignored
+  local sha at; sha="$(git hash-object "$HOME/sweep-policy.md")"
+  for at in '-10 days|'"$sha" '-7 days|an-older-prompt' '-6 days|'"$sha" '|'"$sha"; do
+    call s1 ask-sweep "${at#*|}" 8000 0.2 | jq -c --arg at "$([ -n "${at%%|*}" ] && date -d "${at%%|*}" +%Y-%m-%dT%H:%M:%S%z)" '.at = $at'
+  done >> "$AGENTCTL_CALLS"
+  {
+    ev added s-kept "$(ago '-3 days')" by=human 'text=fix x; asked 11-08 "make it so" #requested'
+    ev added s-dropped "$(ago '-3 days')" by=ab12cd34 'text=fix y; asked 11-08 "y please" #requested'
+    ev dropped s-dropped "$(ago '-3 days +4 hours')" by=human
+    ev added s-young "$(ago '-1 hour')" 'text=fix z; asked 11-11 "z" #requested'
+    ev added s-old "$(ago '-8 days')" 'text=fix w; asked 11-03 "w" #requested'
+    ev added s-between "$(ago '-6 days -12 hours')" 'text=fix v; asked 11-05 "v" #requested'
+    ev added s-child "$(ago '-3 days')" 'text=fix x part; asked 11-08 "make it so" #of/s-kept'
+    ev added s-plan "$(ago '-3 days')" 'text=chore(plan): finish foo #requested'
+  } > "$INGEST"
+  run "$JUDGE_EVAL" ask-sweep --json
+  assert_success
+  # tp: s-kept; fp: s-dropped; pending: s-young; s-old and s-between are under an older prompt,
+  # s-plan no model wrote, s-child the planner split
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]))' <<<"$output"
+  assert_line '[3,1,1,1]'
+  assert_line '[["s-dropped","dropped by human"]]'
+  run "$JUDGE_EVAL" ask-sweep --json --any-prompt
+  assert_equal "$(jq -c '.agents[0].total | [.verdicts, .tp]' <<<"$output")" '[5,3]'
+  # none of them is the triager's
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].total.verdicts' <<<"$output")" 0
+}
+
 @test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at the bar" {
   local i
   for i in $(seq 1 30); do ev filed "t-$i" "$(ago '-3 days')"; ev dropped "t-$i" "$(ago '-3 days +1 hour')" by=ab12cd34; done > "$INGEST"
@@ -467,6 +501,7 @@ SH
   run "$JUDGE_EVAL" inbox-triage --json
   assert_equal "$(jq -c '.agents[0].score_7d | [.n, .value, .text, .title]' <<<"$output")" '[29,null,"n<30","7d, 0 of 29 right, 0 pending, triage-untouched; a percent at 30 rows"]'
   # a lane with no counted outcome has no score word
+  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   run "$JUDGE_EVAL" ask-sweep --json
   assert_equal "$(jq -c '.agents[0].score_7d | [.text, .title]' <<<"$output")" '["-","unrecorded: no counted outcome"]'
 }
