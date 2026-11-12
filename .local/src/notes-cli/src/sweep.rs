@@ -134,6 +134,16 @@ enum Layout {
     Tasks,
 }
 
+/// Put a top-level `row` in bucket `i`, after the group break pending there (see [`bucket`]).
+/// Returns `i`, the lane the row landed in.
+fn land(open: &mut [Vec<String>], pending: &mut [bool], i: usize, row: String) -> usize {
+    if std::mem::take(&mut pending[i]) && !open[i].is_empty() {
+        open[i].push(String::new());
+    }
+    open[i].push(row);
+    i
+}
+
 /// Sort one list body into buckets. Shared by both layouts.
 fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
     let default = match layout {
@@ -146,12 +156,28 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
     let mut cur_lane: Option<usize> = None;
     // Where the last top-level line went, so its indented children follow it.
     let mut last: Option<Bucket> = None;
+    // Group breaks (Focus only): a blank after a row marks a break in the lane it sits in (its
+    // heading, else the lane of the open row above it), kept before the NEXT row that lands in
+    // that lane when one is already there. So the break survives the row beside it being
+    // checked off or re-tagged away, never opens a lane or goes to Done, and a blank between a
+    // row and its indented note is no break (human, 2026-11-12:
+    // "sometimes I need to still organize a group").
+    let mut pending = vec![false; LANES + 1];
+    let mut last_open: Option<usize> = None;
 
     for l in body {
         let t = l.trim();
+        if t.is_empty() && layout == Layout::Focus {
+            if let Some(i) = last_open.map(|o| cur_lane.unwrap_or(o)) {
+                pending[i] = true;
+            }
+            continue;
+        }
         if is_scaffold(l, layout) {
             cur_lane = scaffold_lane(l);
             last = None;
+            last_open = None;
+            pending.fill(false);
             continue;
         }
         // An indented line belongs to the task above it: a wrapped continuation, or a
@@ -159,6 +185,7 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
         // top of the list.
         if !t.is_empty() && l.starts_with(char::is_whitespace) {
             if let Some(b) = last {
+                pending.fill(false);
                 match b {
                     Bucket::Open(i) => open[i].push((*l).to_string()),
                     Bucket::Done => done.push((*l).to_string()),
@@ -191,20 +218,21 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
                     // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
                     let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
-                    open[i].push(if tag {
+                    let row = if tag {
                         md::add_tag(l, md::PRIORITIES[i].1)
                     } else {
                         l.to_string()
-                    });
+                    };
+                    last_open = Some(land(&mut open, &mut pending, i, row));
                     last = Some(Bucket::Open(i));
                     continue;
                 }
             };
-            open[i].push(l.to_string());
+            last_open = Some(land(&mut open, &mut pending, i, l.to_string()));
             last = Some(Bucket::Open(i));
         } else if !t.is_empty() {
             // a stray prose line stays above the lists
-            open[LANES].push(l.to_string());
+            last_open = Some(land(&mut open, &mut pending, LANES, l.to_string()));
             last = Some(Bucket::Open(LANES));
         }
     }
@@ -319,6 +347,21 @@ mod tests {
             out.find("done child").unwrap() < done,
             "child stays put:\n{out}"
         );
+    }
+
+    // A blank after a row is a group break the human made, kept in its lane before the next
+    // row that lands there: it survives the row above it being checked off (b) or the row below
+    // it re-tagged away (c), a run collapses to one, none opens a lane (u) or goes to Done, a
+    // blank before an indented note is no break, and a re-sweep changes nothing.
+    // tests/integ/notes_save_sweep.bats ("a save keeps the blank lines that group a lane")
+    // runs the same input through markdown.lua.
+    #[test]
+    fn golden_blank_lines_group_rows_inside_a_lane() {
+        let note = "## Focus\n### High\n- [ ] h1 #high\n### Low\n- [ ] a #low\n- [x] b #low\n\n- [ ] c #urgent\n- [ ] d #low\n\n    its note\n- [ ] e #low\n\n\n- [ ] f #low\n### Urgent\n\n- [ ] u #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n";
+        let out = focus(note);
+        assert_eq!(out, expected);
+        assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
     }
 
     // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
