@@ -289,6 +289,16 @@ impl Item {
         Some((now - from).num_minutes().max(0))
     }
 
+    /// The words of its `pr:` field, each a PR ref (`owner/repo#N`, `#N` or `N`), split on
+    /// spaces or commas.
+    pub fn pr_refs(&self) -> impl Iterator<Item = &str> {
+        self.pr
+            .as_deref()
+            .unwrap_or("")
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|w| !w.is_empty())
+    }
+
     /// The board row the item works as (project, id): its `row:`, else the row it was promoted
     /// from (`from: board:<project>:<id>`), the same order as agent-queue's `item_row`.
     pub fn board_row(&self) -> Option<(&str, &str)> {

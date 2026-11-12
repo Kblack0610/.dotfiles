@@ -1,14 +1,35 @@
-//! The joins between the release stores, computed in this one place for both surfaces (and,
-//! later, the validator): the collector writes raw facts only (`release-state refresh`'s
-//! `releases` tag history, each channel's Deployments and pin), and a link between two of them
-//! is never stored, so it cannot drift from the facts it joins. Today: release -> the channels
-//! it reached, by the Deployment's version, then its commit. The relationship model:
-//! docs/operations/release-state.md, "Relationships".
+//! The joins between the release stores, computed in this one place for both surfaces and for
+//! `hub releases check`. The collectors write raw facts only: `release-state refresh` (each
+//! project's tag history with the PRs each tag holds, each channel's Deployments and pin),
+//! schedules-sync (the runs ledger and the PR store), agent-queue (each item's PRs, row and
+//! session) and fleet-sessions (who sits on which branch). A link between two of them is never
+//! stored, so it cannot drift from the facts it joins. The joins (the Links table of
+//! docs/operations/release-state.md, "Relationships"):
+//!
+//! - release -> channels: a Deployment's version, else its commit; or the pin ([`reached`]).
+//! - run -> release: the Deployment whose URL names the run, else a run on the tag itself.
+//! - run -> PR: a run on a PR's merge commit, else on its branch while it was open.
+//! - PR -> item -> row and session: the item whose `pr:` names it.
+//! - run -> owner: the live session on its branch, else the session of its PR's item.
 
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use project_map::Registry;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::builds::{self, Run};
 use crate::pipeline::stamp;
-use crate::releases::{Deploy, Release};
+use crate::queue::{self, Item};
+use crate::releases::{self, Deploy, Release};
+use crate::session_actions::Runner;
+
+/// Branches that belong to no session or PR: a session sitting on one is not what ran it.
+pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
+
+/// How far back `check` holds the stores to each other: the runs ledger's window.
+const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
 
 /// One tag of a project's line as the collector read it from git.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -23,6 +44,8 @@ pub struct Tag {
     pub at: Option<i64>,
     /// The release before it on its own history, the changelog's range start.
     pub prev: Option<String>,
+    /// The PRs merged in prev..tag, by number in the line's `repo`.
+    pub prs: Vec<u64>,
 }
 
 /// A project's tag history: `release` is its own release family, `build` its per-build tags
@@ -32,6 +55,8 @@ pub struct Tag {
 pub struct Line {
     pub line: String,
     pub glob: Option<String>,
+    /// The checkout's origin as the PR store keys it: `owner/repo`, `host/owner/repo` off GitHub.
+    pub repo: Option<String>,
     pub error: Option<String>,
     pub tags: Vec<Tag>,
 }
@@ -45,6 +70,8 @@ pub struct Reached {
     pub at: Option<i64>,
     /// `deploy` (a GitHub Deployment) or `pin` (the file a gitops target reads).
     pub how: String,
+    /// The run that made the Deployment, its page; None for a pin or a Deployment with no URL.
+    pub run: Option<String>,
 }
 
 /// One release of an app with what it is joined to, newest first: the opened app's history.
@@ -56,10 +83,562 @@ pub struct Shipment {
     pub at: Option<i64>,
     pub prev: Option<String>,
     pub reached: Vec<Reached>,
+    pub prs: Vec<u64>,
+    /// The board rows its PRs' items worked (`agent-runtime:ar-1655`).
+    pub rows: Vec<String>,
     /// The RELEASED cell: `11-10 22:07`, `-` when git gave no date.
     pub at_text: String,
     /// The REACHED cell: `beta 11-10, testflight (pin)`, `not recorded` when no channel says so.
     pub reached_text: String,
+    /// The PRS cell: `#12, #13`, `-` with none.
+    pub prs_text: String,
+    /// The ROWS cell: `ar-1655, ar-1660`, `-` with none.
+    pub rows_text: String,
+}
+
+/// The release a run made or ran for.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct RunRelease {
+    pub project: String,
+    pub tag: String,
+}
+
+/// One PR as the PR store (`schedules-sync prs`, ~/.agent/prs) keeps it.
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Pr {
+    pub forge: String,
+    /// `owner/repo`, `host/owner/repo` off GitHub.
+    pub repo: String,
+    pub number: u64,
+    /// None for a PR the forge gave no head branch for.
+    pub branch: Option<String>,
+    /// `OPEN`, `MERGED` or `CLOSED`.
+    pub state: String,
+    pub title: String,
+    pub created_at: Option<String>,
+    pub closed_at: Option<String>,
+    pub merged_at: Option<String>,
+    pub merge_sha: Option<String>,
+    pub url: String,
+}
+
+/// Where the PR store lives: what schedules-sync writes, `SCHEDULES_PRS_DIR` or ~/.agent/prs.
+pub fn prs_dir() -> PathBuf {
+    std::env::var_os("SCHEDULES_PRS_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".agent/prs")
+        })
+}
+
+/// Every PR in the store, one per repo and number (the later line wins), and a line per file
+/// or row that did not read.
+pub fn read_prs(dir: &Path) -> (Vec<Pr>, Vec<String>) {
+    let mut errors = vec![];
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                vec![],
+                vec![format!(
+                    "PR store {}: {e} (schedules-sync prs writes it)",
+                    dir.display()
+                )],
+            )
+        }
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    files.sort();
+    let mut by: HashMap<(String, u64), Pr> = HashMap::new();
+    for f in files {
+        let text = match std::fs::read_to_string(&f) {
+            Ok(t) => t,
+            Err(e) => {
+                errors.push(format!("{}: {e}", f.display()));
+                continue;
+            }
+        };
+        let mut bad = 0;
+        for l in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<Pr>(l) {
+                Ok(p) if p.number > 0 => {
+                    by.insert((repo_key(&p.repo), p.number), p);
+                }
+                _ => bad += 1,
+            }
+        }
+        if bad > 0 {
+            errors.push(format!("{}: {bad} unreadable line(s) skipped", f.display()));
+        }
+    }
+    let mut prs: Vec<Pr> = by.into_values().collect();
+    prs.sort_by(|a, b| (&a.repo, a.number).cmp(&(&b.repo, b.number)));
+    (prs, errors)
+}
+
+/// The key two stores agree on for one repo: its owner and name, lower-cased, whatever host or
+/// URL form the store wrote (`git.example.com/acme/infra` is `acme/infra`).
+pub fn repo_key(repo: &str) -> String {
+    let r = repo.trim().trim_end_matches('/').trim_end_matches(".git");
+    let mut segs = r.rsplit('/').filter(|s| !s.is_empty());
+    match (segs.next(), segs.next()) {
+        (Some(name), Some(owner)) => format!("{owner}/{name}").to_lowercase(),
+        (Some(name), None) => name.to_lowercase(),
+        _ => String::new(),
+    }
+}
+
+/// One PR ref as an item or a marker writes it: `owner/repo#N`, a forge URL to the PR, or a bare
+/// `N` / `#N`, which names no repo.
+pub fn pr_ref(s: &str) -> Option<(Option<String>, u64)> {
+    let s = s.trim().trim_start_matches("pr:");
+    if s.starts_with("https://") || s.starts_with("http://") {
+        let segs: Vec<&str> = s.trim_end_matches('/').split('/').collect();
+        let at = segs.iter().rposition(|x| *x == "pull" || *x == "pulls")?;
+        let n = segs.get(at + 1)?.parse().ok()?;
+        let repo = segs.get(at.checked_sub(2)?..at)?.join("/");
+        return Some((Some(repo_key(&repo)), n));
+    }
+    match s.rsplit_once('#') {
+        Some((repo, n)) if !repo.is_empty() => Some((Some(repo_key(repo)), n.parse().ok()?)),
+        _ => Some((None, s.trim_start_matches('#').parse().ok()?)),
+    }
+}
+
+/// The repo and run id a run's page names: `.../<owner>/<repo>/actions/runs/<id>[/...]`.
+fn run_of(url: &str) -> Option<(String, u64)> {
+    let segs: Vec<&str> = url.split('/').collect();
+    let at = segs.iter().position(|x| *x == "actions")?;
+    if segs.get(at + 1) != Some(&"runs") {
+        return None;
+    }
+    let id = segs.get(at + 2)?.parse().ok()?;
+    let repo = segs.get(at.checked_sub(2)?..at)?.join("/");
+    Some((repo_key(&repo), id))
+}
+
+/// The sessions on each branch, from `state.json`'s live sessions. A branch every session shares
+/// (`main`) is no one's, and a branch no session sits on is absent, so a hand-pushed one shows `-`.
+pub fn live(state: &Value) -> HashMap<String, String> {
+    let mut by_branch: HashMap<String, Vec<String>> = HashMap::new();
+    for s in state["sessions"].as_array().into_iter().flatten() {
+        let (branch, target) = (
+            s["branch"].as_str().unwrap_or_default(),
+            s["target"].as_str().unwrap_or_default(),
+        );
+        if branch.is_empty() || SHARED_BRANCHES.contains(&branch) || target.is_empty() {
+            continue;
+        }
+        let name = crate::fleet::who::name_of(target);
+        let names = by_branch.entry(branch.to_string()).or_default();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    by_branch
+        .into_iter()
+        .map(|(b, n)| (b, n.join(", ")))
+        .collect()
+}
+
+/// The facts the joins read, borrowed from whoever read them. A surface that has no use for one
+/// passes it empty: the joins over it then find nothing, never a wrong link.
+pub struct Inputs<'a> {
+    pub lines: &'a HashMap<String, Line>,
+    pub channels: &'a [Release],
+    pub items: &'a [Item],
+    pub prs: &'a [Pr],
+    /// Branch -> the live sessions on it ([`live`]).
+    pub live: &'a HashMap<String, String>,
+    /// Resolves a bare `pr:N` through its project's one repo.
+    pub registry: Option<&'a Registry>,
+}
+
+/// An item `pr:` ref that names no repo, on a project with no one repo to read it through.
+struct Bare {
+    slug: String,
+    project: String,
+    repos: usize,
+}
+
+/// The joins over one read of the stores.
+pub struct Graph<'a> {
+    i: Inputs<'a>,
+    pr_at: HashSet<(String, u64)>,
+    on_branch: HashMap<(String, String), Vec<usize>>,
+    merged_as: HashMap<(String, String), usize>,
+    item_of: HashMap<(String, u64), usize>,
+    item_refs: Vec<(usize, String, u64)>,
+    bare: Vec<Bare>,
+    deployed_by: HashMap<(String, u64), RunRelease>,
+    tag_in: HashMap<(String, String), String>,
+}
+
+impl<'a> Graph<'a> {
+    pub fn new(i: Inputs<'a>) -> Graph<'a> {
+        let mut g = Graph {
+            pr_at: HashSet::new(),
+            on_branch: HashMap::new(),
+            merged_as: HashMap::new(),
+            item_of: HashMap::new(),
+            item_refs: vec![],
+            bare: vec![],
+            deployed_by: HashMap::new(),
+            tag_in: HashMap::new(),
+            i,
+        };
+        for (n, p) in g.i.prs.iter().enumerate() {
+            let repo = repo_key(&p.repo);
+            g.pr_at.insert((repo.clone(), p.number));
+            if let Some(b) = p.branch.as_deref().filter(|b| !b.is_empty()) {
+                g.on_branch
+                    .entry((repo.clone(), b.to_string()))
+                    .or_default()
+                    .push(n);
+            }
+            if let Some(sha) = p.merge_sha.as_deref().filter(|s| !s.is_empty()) {
+                g.merged_as.insert((repo, sha.to_string()), n);
+            }
+        }
+        for (n, it) in g.i.items.iter().enumerate() {
+            for word in it.pr_refs() {
+                let Some((repo, num)) = pr_ref(word) else {
+                    continue;
+                };
+                let repo = match repo {
+                    Some(r) => r,
+                    None => {
+                        // One repo mirrored on two forges is still one repo.
+                        let mut repos: Vec<String> = g
+                            .i
+                            .registry
+                            .map_or(vec![], |r| r.repos(&it.project))
+                            .iter()
+                            .map(|r| repo_key(r))
+                            .collect();
+                        repos.dedup();
+                        if let [one] = &repos[..] {
+                            one.clone()
+                        } else {
+                            g.bare.push(Bare {
+                                slug: it.slug.clone(),
+                                project: it.project.clone(),
+                                repos: repos.len(),
+                            });
+                            continue;
+                        }
+                    }
+                };
+                // A PR two items name is the one that landed it: the item that says merged.
+                let key = (repo.clone(), num);
+                let keep = g
+                    .item_of
+                    .get(&key)
+                    .is_some_and(|&o| g.i.items[o].merged.is_some() && it.merged.is_none());
+                if !keep {
+                    g.item_of.insert(key, n);
+                }
+                g.item_refs.push((n, repo, num));
+            }
+        }
+        for (project, line) in g.i.lines {
+            let Some(repo) = line.repo.as_deref().map(repo_key) else {
+                continue;
+            };
+            for t in &line.tags {
+                g.tag_in
+                    .insert((repo.clone(), t.tag.clone()), project.clone());
+            }
+        }
+        for r in g.i.channels {
+            let line = g.i.lines.get(&r.project);
+            for d in &r.deploys.history {
+                let Some(run) = d.url.as_deref().and_then(run_of) else {
+                    continue;
+                };
+                let tag = line
+                    .and_then(|l| l.tags.iter().find(|t| shipped(d, t, &l.tags)))
+                    .map_or_else(|| d.version.clone(), |t| t.tag.clone());
+                g.deployed_by.insert(
+                    run,
+                    RunRelease {
+                        project: r.project.clone(),
+                        tag,
+                    },
+                );
+            }
+        }
+        g
+    }
+
+    /// run -> PR: the PR merged as the run's commit, else the one on its branch that had not
+    /// closed when the run started (the oldest, when a branch was reused). A shared branch is
+    /// no PR's.
+    pub fn run_prs(&self, r: &Run) -> Vec<u64> {
+        let repo = repo_key(&r.repo);
+        if let Some(&n) = self.merged_as.get(&(repo.clone(), r.sha.clone())) {
+            return vec![self.i.prs[n].number];
+        }
+        if r.branch.is_empty() || SHARED_BRANCHES.contains(&r.branch.as_str()) {
+            return vec![];
+        }
+        let created = crate::fleet::ts(&r.created_at).unwrap_or(0);
+        let ts = |s: &Option<String>| s.as_deref().and_then(crate::fleet::ts);
+        self.on_branch
+            .get(&(repo, r.branch.clone()))
+            .into_iter()
+            .flatten()
+            .map(|&n| &self.i.prs[n])
+            .filter(|p| ts(&p.closed_at).is_none_or(|c| c >= created))
+            .min_by_key(|p| ts(&p.created_at).unwrap_or(i64::MAX))
+            .map(|p| vec![p.number])
+            .unwrap_or_default()
+    }
+
+    /// The item that names PR `n` of `repo`.
+    fn item(&self, repo: &str, n: u64) -> Option<&Item> {
+        self.item_of
+            .get(&(repo_key(repo), n))
+            .map(|&i| &self.i.items[i])
+    }
+
+    /// run -> owner: the live session on its branch, else the session of its PR's item.
+    pub fn owner(&self, r: &Run, prs: &[u64]) -> String {
+        if let Some(o) = self.i.live.get(&r.branch) {
+            return o.clone();
+        }
+        let mut names: Vec<String> = vec![];
+        for n in prs {
+            let s = self.item(&r.repo, *n).and_then(|it| it.session.as_deref());
+            let name = s.map(|s| crate::home::tmux_name(s).to_string());
+            if let Some(name) = name.filter(|x| !x.is_empty() && !names.contains(x)) {
+                names.push(name);
+            }
+        }
+        names.join(", ")
+    }
+
+    /// run -> release: the Deployment whose URL names the run, else a run on one of the line's
+    /// tags (a tag push).
+    pub fn release(&self, r: &Run) -> Option<RunRelease> {
+        let repo = repo_key(&r.repo);
+        if let Some(x) = self.deployed_by.get(&(repo.clone(), r.id)) {
+            return Some(x.clone());
+        }
+        self.tag_in
+            .get(&(repo, r.branch.clone()))
+            .map(|p| RunRelease {
+                project: p.clone(),
+                tag: r.branch.clone(),
+            })
+    }
+
+    /// Each run's PRs, owner and release.
+    pub fn join(&self, runs: &mut [Run]) {
+        for r in runs {
+            r.prs = self.run_prs(r);
+            r.owner = self.owner(r, &r.prs);
+            r.release = self.release(r);
+        }
+    }
+
+    /// release -> rows: the board rows of the items that name the tag's PRs.
+    fn rows(&self, repo: Option<&str>, prs: &[u64]) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for n in prs {
+            let row = repo
+                .and_then(|r| self.item(r, *n))
+                .and_then(|it| it.board_row())
+                .map(|(p, id)| format!("{p}:{id}"));
+            if let Some(row) = row.filter(|r| !out.contains(r)) {
+                out.push(row);
+            }
+        }
+        out
+    }
+
+    /// `project`'s history (see [`history`]), each release joined to its PRs' rows.
+    pub fn history(&self, project: &str, channels: &[Release], now: i64) -> Vec<Shipment> {
+        let Some(line) = self.i.lines.get(project) else {
+            return vec![];
+        };
+        let mut h = history(line, channels, now);
+        for s in &mut h {
+            s.rows = self.rows(line.repo.as_deref(), &s.prs);
+            s.rows_text = cell(s.rows.iter().map(|r| {
+                r.split_once(':')
+                    .map_or(r.as_str(), |(_, id)| id)
+                    .to_string()
+            }));
+        }
+        h
+    }
+
+    /// Where the stores disagree, one line each, sorted: what `hub releases check` prints. A PR
+    /// an item or a tag names that the store lacks (in a repo the store holds, inside the
+    /// ledger's window), a bare `pr:N` on a project with no one repo, and a Deployment naming a
+    /// run of a repo the ledger holds that the ledger lacks. `runs` is the ledger; None skips
+    /// that check.
+    pub fn check(&self, runs: Option<&[Run]>, now: i64) -> Vec<String> {
+        let since = now - CHECK_SECS;
+        let held: HashSet<String> = self.i.prs.iter().map(|p| repo_key(&p.repo)).collect();
+        let mut out: Vec<String> = vec![];
+        for (n, repo, num) in &self.item_refs {
+            let it = &self.i.items[*n];
+            let recent = it
+                .finished
+                .as_deref()
+                .and_then(crate::fleet::ts)
+                .is_some_and(|f| f >= since);
+            if recent && held.contains(repo) && !self.pr_at.contains(&(repo.clone(), *num)) {
+                out.push(format!(
+                    "item {}: {repo}#{num} is not in the PR store",
+                    it.slug
+                ));
+            }
+        }
+        let mut bare: HashMap<(&str, usize), Vec<&str>> = HashMap::new();
+        for b in &self.bare {
+            let slugs = bare.entry((&b.project, b.repos)).or_default();
+            if !slugs.contains(&b.slug.as_str()) {
+                slugs.push(&b.slug);
+            }
+        }
+        for ((project, repos), slugs) in bare {
+            let what = if repos == 0 {
+                "no repo"
+            } else {
+                "several repos"
+            };
+            out.push(format!(
+                "{project}: {} item(s) name a bare pr:N and {project} has {what} to read it in ({}{})",
+                slugs.len(),
+                slugs.iter().take(3).copied().collect::<Vec<_>>().join(", "),
+                if slugs.len() > 3 { ", ..." } else { "" }
+            ));
+        }
+        for (project, line) in self.i.lines {
+            let Some(repo) = line.repo.as_deref().map(repo_key) else {
+                continue;
+            };
+            if !held.contains(&repo) {
+                continue;
+            }
+            for t in line
+                .tags
+                .iter()
+                .filter(|t| t.at.is_some_and(|a| a >= since))
+            {
+                for n in t
+                    .prs
+                    .iter()
+                    .filter(|n| !self.pr_at.contains(&(repo.clone(), **n)))
+                {
+                    out.push(format!(
+                        "{project} {}: {repo}#{n} is not in the PR store",
+                        t.tag
+                    ));
+                }
+            }
+        }
+        if let Some(runs) = runs {
+            let ran: HashSet<(String, u64)> =
+                runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
+            let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
+            for r in self.i.channels {
+                for d in r.deploys.history.iter().filter(|d| d.at >= since) {
+                    let Some(run) = d.url.as_deref().and_then(run_of) else {
+                        continue;
+                    };
+                    if repos.contains(run.0.as_str()) && !ran.contains(&run) {
+                        out.push(format!(
+                            "{} {}: deploy {} names run {}#{} the runs ledger lacks",
+                            r.project, r.id, d.version, run.0, run.1
+                        ));
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+/// The checks of `hub releases check`, as two lists: where the stores disagree (`Graph::check`)
+/// and which store could not be read. A store not read is an error, never a clean check: its
+/// facts would be missing from the comparison.
+pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
+    let mut errors = vec![];
+    let snap = releases::snapshot(runner).unwrap_or_else(|e| {
+        errors.push(e);
+        Default::default()
+    });
+    let items = queue::list(runner, "all").unwrap_or_else(|e| {
+        errors.push(format!("agent-queue list: {e}"));
+        vec![]
+    });
+    let (prs, e) = read_prs(&prs_dir());
+    errors.extend(e);
+    let ledger = builds::read(&builds::Paths::from_env(), None, now);
+    // The ledger's read reads the PR store too: one line per fault.
+    for e in ledger.errors {
+        if !errors.contains(&e) {
+            errors.push(e);
+        }
+    }
+    let registry = project_map::cached();
+    let none = HashMap::new();
+    let graph = Graph::new(Inputs {
+        lines: &snap.releases,
+        channels: &snap.rows,
+        items: &items,
+        prs: &prs,
+        live: &none,
+        registry: registry.as_deref(),
+    });
+    (graph.check(Some(&ledger.rows), now), errors)
+}
+
+/// `#12, #13, #14 +2`: a cell that lists at most three, `-` with none.
+fn cell(xs: impl Iterator<Item = String>) -> String {
+    let xs: Vec<String> = xs.collect();
+    match xs.len() {
+        0 => "-".into(),
+        n if n <= 3 => xs.join(", "),
+        n => format!("{} +{}", xs[..3].join(", "), n - 3),
+    }
+}
+
+/// Each dependency with the version its prod channel pins (a channel of another env when it has
+/// no prod one): `unity-core v0.5.0, audio`.
+pub fn deps_text(deps: &[String], channels: &[Release]) -> String {
+    if deps.is_empty() {
+        return "-".into();
+    }
+    let pin = |d: &str| {
+        let of = |prod: bool| {
+            channels
+                .iter()
+                .find(|r| r.project == d && (r.channel == "prod") == prod)
+        };
+        of(true)
+            .or_else(|| of(false))
+            .and_then(|r| r.pinned.value.clone())
+            .filter(|v| !v.is_empty())
+    };
+    deps.iter()
+        .map(|d| match pin(d) {
+            Some(p) => format!("{d} {p}"),
+            None => d.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Whether a channel's version string names this tag: the tag itself, or its version with or
@@ -96,23 +675,23 @@ pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
             .history
             .iter()
             .filter(|d| d.state == "ok" && shipped(d, t, line))
-            .map(|d| d.at)
-            .min();
+            .min_by_key(|d| d.at);
         let hit = match deployed {
-            Some(at) => Some((Some(at), "deploy")),
+            Some(d) => Some((Some(d.at), "deploy", d.url.clone())),
             None if r.pinned.value.as_deref().is_some_and(|v| names(v, t))
                 && r.pinned.at.is_some() =>
             {
-                Some((r.pinned.at, "pin"))
+                Some((r.pinned.at, "pin", None))
             }
             None => None,
         };
-        if let Some((at, how)) = hit {
+        if let Some((at, how, run)) = hit {
             out.push(Reached {
                 id: r.id.clone(),
                 channel: r.channel.clone(),
                 at,
                 how: how.into(),
+                run,
             });
         }
     }
@@ -120,7 +699,8 @@ pub fn reached(t: &Tag, line: &[Tag], channels: &[Release]) -> Vec<Reached> {
     out
 }
 
-/// An app's history: every tag the collector kept, each joined to the channels it reached.
+/// An app's history: every tag the collector kept, each joined to the channels it reached and
+/// carrying the PRs it holds. Its rows are [`Graph::history`]'s join.
 pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
     line.tags
         .iter()
@@ -150,6 +730,10 @@ pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
                 at_text: t.at.map_or("-".into(), |a| stamp(a, now)),
                 reached,
                 reached_text,
+                prs: t.prs.clone(),
+                prs_text: cell(t.prs.iter().map(|n| format!("#{n}"))),
+                rows: vec![],
+                rows_text: "-".into(),
             }
         })
         .collect()
@@ -159,6 +743,7 @@ pub fn history(line: &Line, channels: &[Release], now: i64) -> Vec<Shipment> {
 mod tests {
     use super::*;
     use crate::releases::{Deploy, Deploys, Side};
+    use std::collections::HashMap;
 
     fn tag(t: &str, v: &str, at: i64) -> Tag {
         Tag {
@@ -271,5 +856,349 @@ mod tests {
         assert!(reached(&rel, &line, std::slice::from_ref(&steam)).is_empty());
         steam.deploys.history = vec![deploy("20834411", "abc", 200)];
         assert!(reached(&rel, &line, &[steam]).is_empty());
+    }
+
+    fn pr(
+        repo: &str,
+        n: u64,
+        branch: &str,
+        created: &str,
+        closed: Option<&str>,
+        merge: Option<&str>,
+    ) -> Pr {
+        Pr {
+            repo: repo.into(),
+            number: n,
+            branch: Some(branch.into()),
+            created_at: Some(created.into()),
+            closed_at: closed.map(String::from),
+            merge_sha: merge.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    fn item(slug: &str, project: &str, pr: &str, session: &str, row: &str) -> Item {
+        Item {
+            slug: slug.into(),
+            project: project.into(),
+            pr: Some(pr.into()),
+            session: Some(session.into()),
+            row: Some(row.into()),
+            merged: Some("abc".into()),
+            finished: Some("2026-11-10T12:00:00Z".into()),
+            ..Default::default()
+        }
+    }
+
+    fn run(repo: &str, id: u64, branch: &str, sha: &str, created: &str) -> Run {
+        Run {
+            repo: repo.into(),
+            id,
+            branch: branch.into(),
+            sha: sha.into(),
+            created_at: created.into(),
+            ..Default::default()
+        }
+    }
+
+    fn registry() -> Registry {
+        Registry::parse(
+            r#"{"trackers": {"app": {"github": "Acme/app"},
+                "infra": {"forgejo": "acme/infra"},
+                "multi": {"github": "Acme/one", "forgejo": "acme/two"},
+                "mirror": {"github": "Acme/mirror", "forgejo": "acme/mirror"}}}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn refs_and_repos_read_one_key_whatever_the_form() {
+        assert_eq!(repo_key("git.example.com/acme/infra"), "acme/infra");
+        assert_eq!(repo_key("Kblack0610/.dotfiles"), "kblack0610/.dotfiles");
+        assert_eq!(pr_ref("Acme/app#12"), Some((Some("acme/app".into()), 12)));
+        assert_eq!(
+            pr_ref("https://git.example.com/acme/infra/pulls/7"),
+            Some((Some("acme/infra".into()), 7))
+        );
+        assert_eq!(pr_ref("pr:#9"), Some((None, 9)));
+        // negative control: no number is no ref.
+        assert_eq!(pr_ref("Acme/app#x"), None);
+        assert_eq!(pr_ref("soon"), None);
+        assert_eq!(
+            run_of("https://github.com/Acme/app/actions/runs/42/job/1"),
+            Some(("acme/app".into(), 42))
+        );
+        assert_eq!(run_of("https://github.com/Acme/app/pull/42"), None);
+    }
+
+    #[test]
+    fn a_run_is_its_merge_commits_pr_else_the_open_one_on_its_branch() {
+        let prs = vec![
+            // The branch was used before: that PR closed before the run, so it is not this run's.
+            pr(
+                "Acme/app",
+                1,
+                "feat/a",
+                "2026-11-01T00:00:00Z",
+                Some("2026-11-02T00:00:00Z"),
+                None,
+            ),
+            pr("Acme/app", 2, "feat/a", "2026-11-05T00:00:00Z", None, None),
+            pr(
+                "Acme/app",
+                3,
+                "feat/b",
+                "2026-11-05T00:00:00Z",
+                Some("2026-11-06T00:00:00Z"),
+                Some("m3"),
+            ),
+            // Same branch name, another repo: never joins.
+            pr(
+                "Acme/other",
+                4,
+                "feat/a",
+                "2026-11-04T00:00:00Z",
+                None,
+                None,
+            ),
+        ];
+        let reg = registry();
+        let (lines, live) = (HashMap::new(), HashMap::new());
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &[],
+            prs: &prs,
+            live: &live,
+            registry: Some(&reg),
+        });
+        let t = "2026-11-05T01:00:00Z";
+        assert_eq!(g.run_prs(&run("acme/app", 1, "feat/a", "s1", t)), [2]);
+        // A push to main on PR 3's merge commit is PR 3's; any other main run is no PR's.
+        assert_eq!(g.run_prs(&run("Acme/app", 2, "main", "m3", t)), [3]);
+        assert!(g.run_prs(&run("Acme/app", 3, "main", "m9", t)).is_empty());
+        assert!(g
+            .run_prs(&run("Acme/app", 4, "feat/none", "s4", t))
+            .is_empty());
+    }
+
+    #[test]
+    fn an_owner_is_the_live_session_else_the_session_whose_item_landed_the_pr() {
+        let prs = vec![
+            pr(
+                "Acme/app",
+                7,
+                "feat/a",
+                "2026-11-05T00:00:00Z",
+                None,
+                Some("m7"),
+            ),
+            pr(
+                "git.example.com/acme/infra",
+                8,
+                "fix/x",
+                "2026-11-05T00:00:00Z",
+                None,
+                None,
+            ),
+        ];
+        let items = vec![
+            item(
+                "a",
+                "app",
+                "Acme/app#7",
+                "lab:app-agent-1",
+                "agent-runtime:ar-1",
+            ),
+            // A bare ref reads through the project's one repo.
+            item("b", "infra", "8", "lab:infra-agent-2", "home:h-2"),
+        ];
+        let reg = registry();
+        let lines = HashMap::new();
+        let mut live = HashMap::new();
+        let g = |live: &HashMap<String, String>| {
+            let mut runs = vec![
+                run("Acme/app", 1, "main", "m7", "2026-11-06T00:00:00Z"),
+                run("acme/infra", 2, "fix/x", "s", "2026-11-06T00:00:00Z"),
+                run("Acme/app", 3, "feat/z", "s", "2026-11-06T00:00:00Z"),
+            ];
+            Graph::new(Inputs {
+                lines: &lines,
+                channels: &[],
+                items: &items,
+                prs: &prs,
+                live,
+                registry: Some(&reg),
+            })
+            .join(&mut runs);
+            runs.iter().map(|r| r.owner.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(g(&live), ["app-agent-1", "infra-agent-2", ""]);
+        // A session sitting on the branch wins over the item.
+        live.insert("fix/x".to_string(), "hand-1".to_string());
+        assert_eq!(g(&live), ["app-agent-1", "hand-1", ""]);
+    }
+
+    #[test]
+    fn a_run_is_the_release_its_deploy_names_else_the_tag_it_ran_on() {
+        let mut t = tag("app-v1.2.0", "1.2.0", 100);
+        t.prs = vec![7];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                line: "release".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![t],
+                ..Default::default()
+            },
+        );
+        let mut ch = channel("web", vec![("v1.2.0", "ok", 300)], None);
+        ch.deploys.history[0].url = Some("https://github.com/Acme/app/actions/runs/55".into());
+        let chans = vec![ch];
+        let items = vec![item(
+            "a",
+            "app",
+            "Acme/app#7",
+            "lab:s",
+            "agent-runtime:ar-1",
+        )];
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items: &items,
+            prs: &[],
+            live: &live,
+            registry: None,
+        });
+        let rel = |r: &Run| g.release(r).map(|x| format!("{} {}", x.project, x.tag));
+        assert_eq!(
+            rel(&run("Acme/app", 55, "main", "x", "")).as_deref(),
+            Some("app app-v1.2.0")
+        );
+        assert_eq!(
+            rel(&run("Acme/app", 9, "app-v1.2.0", "x", "")).as_deref(),
+            Some("app app-v1.2.0")
+        );
+        // negative control: the same run id in another repo, and a branch that is no tag.
+        assert_eq!(rel(&run("Acme/other", 55, "main", "x", "")), None);
+        assert_eq!(rel(&run("Acme/app", 9, "feat/a", "x", "")), None);
+        // release -> deploy run, PRs and rows on the history.
+        let h = g.history("app", &chans, 1000);
+        assert_eq!(
+            h[0].reached[0].run.as_deref(),
+            Some("https://github.com/Acme/app/actions/runs/55")
+        );
+        assert_eq!(
+            (h[0].prs_text.as_str(), h[0].rows_text.as_str()),
+            ("#7", "ar-1")
+        );
+    }
+
+    #[test]
+    fn check_names_each_store_that_disagrees_and_nothing_it_cannot_judge() {
+        let now = 2_000_000_000;
+        let mut t = tag("app-v1.2.0", "1.2.0", now - 100);
+        t.prs = vec![7, 9];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                repo: Some("Acme/app".into()),
+                tags: vec![t],
+                ..Default::default()
+            },
+        );
+        let mut ch = channel(
+            "web",
+            vec![("v1.2.0", "ok", now - 50), ("v1.1.0", "ok", now - 60)],
+            None,
+        );
+        ch.project = "app".into();
+        ch.deploys.history[0].url = Some("https://github.com/Acme/app/actions/runs/55".into());
+        ch.deploys.history[1].url = Some("https://github.com/Acme/app/actions/runs/56".into());
+        let prs = vec![pr(
+            "Acme/app",
+            7,
+            "feat/a",
+            "2026-11-05T00:00:00Z",
+            None,
+            None,
+        )];
+        let mut items = vec![
+            item("a", "app", "Acme/app#7 Acme/app#8", "lab:s", "r:1"),
+            // Two bare refs on one item are one item.
+            item("b", "multi", "#3 #4", "lab:s", "r:2"),
+            // One repo on two forges reads a bare ref through it.
+            item("d", "mirror", "#5", "lab:s", "r:4"),
+            // A repo the store does not hold is not judged.
+            item("c", "app", "Elsewhere/x#1", "lab:s", "r:3"),
+        ];
+        for it in &mut items {
+            it.finished = Some(
+                chrono::DateTime::from_timestamp(now - 10, 0)
+                    .unwrap()
+                    .to_rfc3339(),
+            );
+        }
+        let reg = registry();
+        let live = HashMap::new();
+        let chans = vec![ch];
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items: &items,
+            prs: &prs,
+            live: &live,
+            registry: Some(&reg),
+        });
+        let runs = vec![run("Acme/app", 55, "main", "x", "")];
+        assert_eq!(
+            g.check(Some(&runs), now),
+            [
+                "app app-v1.2.0: acme/app#9 is not in the PR store",
+                "app web: deploy v1.1.0 names run acme/app#56 the runs ledger lacks",
+                "item a: acme/app#8 is not in the PR store",
+                "multi: 1 item(s) name a bare pr:N and multi has several repos to read it in (b)",
+            ]
+        );
+        // With every fact in place, nothing.
+        let mut whole = prs.clone();
+        whole.push(pr("Acme/app", 8, "x", "2026-11-05T00:00:00Z", None, None));
+        whole.push(pr("Acme/app", 9, "y", "2026-11-05T00:00:00Z", None, None));
+        let items = &items[..1];
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items,
+            prs: &whole,
+            live: &live,
+            registry: Some(&reg),
+        });
+        let runs = vec![
+            run("Acme/app", 55, "main", "x", ""),
+            run("Acme/app", 56, "main", "x", ""),
+        ];
+        assert!(g.check(Some(&runs), now).is_empty());
+    }
+
+    #[test]
+    fn the_store_keeps_one_row_per_pr_the_last_written() {
+        let d = std::env::temp_dir().join(format!("hub-prs-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("Acme__app.jsonl"),
+            "{\"repo\":\"Acme/app\",\"number\":1,\"state\":\"OPEN\"}\n{\"repo\":\"Acme/app\",\"number\":1,\"state\":\"MERGED\"}\nnot json\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("sync.json"), "{}").unwrap();
+        let (prs, errors) = read_prs(&d);
+        let (_, missing) = read_prs(&d.join("nope"));
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].state, "MERGED");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(missing[0].contains("schedules-sync prs writes it"));
     }
 }

@@ -28,7 +28,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | Field | Meaning |
 |---|---|
 | `id` | Unique across the registry, lowercase and `-`. Also the GitHub Deployments environment its deploy workflow records under |
-| `channel` | `prod`, `beta`, `alpha`, `preview` or `internal` |
+| `channel` | A key of the registry's top-level `channels` map (`alpha`, `preview`, `internal`, `beta`, `prod`), which names the stage rung each serves (`alpha` and above; `~/.local/src/docs/stages.md`, The ladder). `project-map-doctor` 4c checks both |
 | `where` | Free text for the UI: the cluster or store |
 | `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store, with that Deployment's `build` when it recorded one), `{"deployed": "manual", "reason": "..."}` (a channel moved by hand, such as Steam `default` set live in Steamworks: nothing records its deploys, so the pin reads `manual`, the row is `released` with live alone, and the doctor wants the reason), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
 | `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
@@ -58,10 +58,24 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 |---|---|
 | `line` | `release` (the project's own release family: its `tagGlob`, else the monorepo `name-v*` ladder or `v*`), `build` (the registry's `buildTags` globs, read only while the project has no release tag), or `none` |
 | `glob` | The glob or globs the tags were listed with |
-| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start |
+| `repo` | The checkout's origin as the PR store names it: `owner/repo`, a non-GitHub host as `host/owner/repo`; null with no checkout or origin |
+| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev, prs}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the `(#N)` merge subjects in `prev..tag` (the changelog's own read, at most `HISTORY_PRS`, 500) |
 | `error` | Why the read failed: `no checkout`. History reads the local tags and never fetches, so a tag the checkout has not fetched is simply absent |
 
 `buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog: `project_version_owner` and the version roll never read them, so a build tag never becomes the game's version (see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
+
+## Stage facts
+
+`refresh` also writes a top-level `stages` map: for each registry project visible on this machine, what its lab stage (`notes projects --stats --json`) asks of its deploys. It is computed from the merged rows, so a refresh of one project still judges every project on all its channels:
+
+| Field | Meaning |
+|---|---|
+| `stage` | The lab stage, `null` when the sheet names none on the ladder (then `needs` and `ahead` are empty) |
+| `rungs` | The rungs its live (read, non-implicit) targets serve, low to high, through the `channels` map; a channel the map does not name serves none |
+| `needs` | The rungs from `alpha` up to the stage that no live target serves; empty for `infra`, which deploys by stow or Flux |
+| `ahead` | The target ids live on a rung above the stage: at `draft` and `dev`, every live target |
+
+When `notes` cannot answer, `stages` is `{}` and `stages_error` says why; the Releases tab shows that as an error, never as every app having no stage. The stage gate's deploy rows in `stages.md` read `rungs` against the stage being checked, so a project setting its first stage is judged too, and the Releases tab shows each app's stage with `needs` and `ahead` (`draft: CI only, no deploy expected`, `draft: live above it: bnb-studios-prod`).
 
 ## Relationships
 
@@ -74,15 +88,23 @@ The collector writes raw facts only, and every link between two of them is compu
 | Gitops pin, when it moved, what it held before | the manifest in the gitops repo | `git log -S` on the pinned file |
 | PRs a release carried | the merge subjects in `prev..tag` | `changelog` |
 
-PRs have one store of their own, not yet read by `refresh`: `~/.agent/prs/<owner>__<repo>.jsonl` (a Forgejo repo `<host>__<owner>__<repo>`), one row per PR with its canonical repo (`owner/repo`, Forgejo `host/owner/repo`), number, head branch, base, state, `merged_at` (UTC), merge sha, title and author. `schedules-sync` writes it on every pass for each repo in `~/.config/agentctl/day-log-ci`, where a `prs-only:` line names a work or client repo read for its PRs alone (GitHub's first page ETag-conditional, Forgejo paged by update), and `agent-land` refreshes the landed repo with `schedules-sync sync-prs` after a merge. Every PR list is read with `schedules-sync prs <repo|all>` (exit 1 when the store is older than 30 minutes, 3 for a repo it does not list), never a script's own `gh pr list`; a single PR checked at land time (`agent-land`, `agent-queue` `pr_state`, `fleet-dispatch reap`) stays a live read. A run's PRs are not stored on the run: that link is a join against this store.
+PRs have one store of their own, read by the graph (never by `refresh`): `~/.agent/prs/<owner>__<repo>.jsonl` (a Forgejo repo `<host>__<owner>__<repo>`), one row per PR with its canonical repo (`owner/repo`, Forgejo `host/owner/repo`), number, head branch, base, state, `merged_at` (UTC), merge sha, title and author. `schedules-sync` writes it on every pass for each repo in `~/.config/agentctl/day-log-ci`, where a `prs-only:` line names a work or client repo read for its PRs alone (GitHub's first page ETag-conditional, Forgejo paged by update), and `agent-land` refreshes the landed repo with `schedules-sync sync-prs` after a merge. Every PR list is read with `schedules-sync prs <repo|all>` (exit 1 when the store is older than 30 minutes, 3 for a repo it does not list), never a script's own `gh pr list`; a single PR checked at land time (`agent-land`, `agent-queue` `pr_state`, `fleet-dispatch reap`) stays a live read. A run's PRs are not stored on the run: that link is a join against this store. A missing store is an error line on Builds, never a blank.
 
 | Link | Join | Computed in |
 |---|---|---|
 | release -> previous release | tag ancestry | `git-release.sh` (`git_prev_tag`) |
-| release -> PRs | `(#N)` subjects in `prev..tag` | `git-release.sh` (the changelog) |
+| release -> PRs | `(#N)` subjects in `prev..tag` | `git-release.sh` (the changelog), written as each tag's `prs` |
 | release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; then a Deployment whose version names no tag of the line, by its commit; the earliest successful deploy per channel | `hub_core::release_graph::reached` |
+| run -> PRs | the PR whose merge sha is the run's commit; else, off a shared branch (`main`, `master`, `develop`), the PRs on the run's head branch in its repo not closed before the run started | `Graph::run_prs` |
+| run -> release | the Deployment whose URL names the run (`.../actions/runs/<id>`); else a run on a tag of the line | `Graph::release` |
+| run -> owner | the live session on the run's branch; else the session of the queue item that names one of the run's PRs | `Graph::owner` |
+| PR -> queue item -> row | an item's `pr:` refs (`owner/repo#N`, a bare `N` read in the item's project's one repo), the item that merged it first; its `row:` | `Graph::new` |
+| release -> rows | each of its PRs' items' rows | `Graph::history` |
+| dependency -> pinned version | the dependency's prod channel pin, else another channel's | `release_graph::deps_text` |
 
-An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, and where each reached (`not recorded` when no channel says so); a release opens its changelog. The RELEASED column is the newest tag and its date.
+`hub releases --json` prints the Releases read with every join, the graph's one output for shell tools (fleet-bench's lead time reads each tag's first deploy from it). `hub releases check` prints one line per place the stores disagree inside the ledger's 30 days: a PR an item or a tag names that the PR store lacks (in a repo the store holds), a bare `pr:N` on a project with no single repo, a Deployment naming a run of a ledger repo that the ledger lacks; it exits 1 when it prints a line or a store could not be read. `agent-land` closes a row with proof `pr:<owner>/<repo>#N`, so the join needs no project lookup.
+
+An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, where each reached (`not recorded` when no channel says so), its PRs and their board rows (`-` when none); a release opens its changelog. The RELEASED column is the newest tag and its date.
 
 ## Project identity
 
@@ -155,3 +177,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | An app's release history says `no tags read` | The project has no release tag and no `buildTags`, or the checkout has not fetched its tags. `release-state show --json \| jq '.releases["<p>"]'` gives the glob and any error |
 | `changelog` says `<tag> is not a release tag of <project>` | The tag is not on the project's line (a candidate of another product, or not fetched). `release-state changelog --list <project>` shows the ones it offers; fetch the checkout if a new tag is missing |
 | A version shows the merged PRs list | The tag has no `CHANGELOG.md` section for it. Add one under a heading holding the version and it is used from the next tag on (the file is read at the tag, then at the branch tip) |
+| A release's ROWS says `-` while PRS lists PRs | No queue item names those PRs: the work predates the queue, or its item recorded a bare `pr:N` in a project with several repos. `hub releases check` names the second |
+| A run's OWNER is `-` | No session sits on its branch and no item names its PR, or the PR store does not hold the PR yet (`schedules-sync` polls every 10 minutes; `hub releases check` names an item PR the store lacks) |
+| An app's stage says `live above it: <target>` | A target is live on a rung its lab stage has not reached (a draft site live in prod). Either raise the stage through its gate (`notes projects --stage <p> --set <s>`, which runs `project-stage-check`) or remove the target and its deploy pipeline. Stage moves are the human's |
+| An app's stage says `no alpha target live` | Its stage needs a rung nothing serves: no target on that channel, or the target's probe failed (`unknown` serves no rung). Declare the target, or fix the probe |

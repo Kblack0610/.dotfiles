@@ -34,7 +34,7 @@ const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channel
 function releaseRow(a) {
   const open = relKey(a) === relst.sel;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
-    `<td>${esc(a.project)}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td>${esc(a.project)}${a.stage ? ` <span class="${relClass(a.stage_level) || "muted"}">${esc(a.stage)}</span>` : ""}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
     `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="muted">${esc(a.released_text)}</td>` +
     `<td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
   return open ? row + appDetail(a) : row;
@@ -60,23 +60,25 @@ function appDetail(a) {
   const others = rest.length
     ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
-  return `<tr class="wdet"><td colspan="6"><div class="sdet">${chTable(lead)}${others}${releaseHistory(a)}` +
+  const stage = `<div class="cline"><b>Stage</b> <span class="${relClass(a.stage_level) || "muted"}">${esc(a.stage_text)}</span></div>`;
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${stage}${chTable(lead)}${others}${releaseHistory(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 
 // Which tags a history lists, as the collector named the line.
 const LINE_SAYS = { release: "release tags", build: "build tags (no release tag yet)" };
 
-// The opened app's releases, newest first: when each was tagged, the one before it, and the
-// channels it reached (hub_core::release_graph). A click shows that tag's changelog below.
+// The opened app's releases, newest first: when each was tagged, the one before it, the
+// channels it reached, its PRs and their board rows (hub_core::release_graph). A click shows that tag's changelog below.
 function releaseHistory(a) {
   const h = a.history || [];
   if (!h.length) return `<div class="cline"><b>Releases</b> <span class="muted">no tags read</span></div>`;
   const shown = relcl.project === a.project ? relcl.data?.tag : null;
   const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
     `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
-    `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td></tr>`).join("");
-  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th></tr>${rows}</table></div>`;
+    `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td>` +
+    `<td class="wrap${s.prs.length ? "" : " muted"}">${esc(s.prs_text)}</td><td class="wrap${s.rows.length ? "" : " muted"}">${esc(s.rows_text)}</td></tr>`).join("");
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
   return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
 }
 
@@ -214,9 +216,7 @@ function runJobs(o) {
   const jobs = (d.jobs || []).length
     ? `<table class="tbl rdjobs">${head}${d.jobs.map(job).join("")}</table>` : "";
   const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
-  const shas = d.tested_sha && d.workflow_sha && d.tested_sha !== d.workflow_sha
-    ? `tested ${esc(d.tested_sha.slice(0, 7))}, workflow from ${esc(d.workflow_sha.slice(0, 7))}` : "";
-  const cover = `<div class="cline">${esc(d.coverage_text)}</div>` + (shas ? `<div class="cline">${shas}</div>` : "") +
+  const cover = `<div class="cline">${esc(d.coverage_text)}</div>` +
     ((d.attempts || []).length > 1 ? `<div class="cline"><b>Attempts</b> ${d.attempts.join(", ")}</div>` : "");
   return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
     (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "") + jobs +

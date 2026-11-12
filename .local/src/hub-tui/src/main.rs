@@ -53,6 +53,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub projects --json
        hub projects --page NAME | --status NAME
        hub board --json
+       hub releases --json | check
        hub tabs
   TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
           that lands on its new tab, on the section it became when it became one
@@ -91,6 +92,14 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
           forecast day and queue state, one head line per project and the words beside each
           sheet row (what nvim draws as virtual text over a project sheet)
+  releases --json
+          the Releases tab's read as JSON: every app with its channels and its release history
+          (each tag's PRs, board rows and the deploys it reached, hub_core::release_graph);
+          fleet-bench reads it. Exits 1 when a source could not be read
+  releases check
+          one line per place the stores disagree: a PR an item or a tag names that the PR store
+          lacks, a bare pr:N on a project with no one repo, a deploy naming a run the runs ledger
+          lacks. Exits 1 when it prints a line or a store could not be read
   actions what the fleet's machinery did since WHEN (epoch seconds or RFC 3339): counts per
           actor and the escalations, trips and failed runs, or {actions, counts, errors} with
           --json. Exits 1 when a ledger could not be read.";
@@ -176,6 +185,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
         std::process::exit(needs(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("releases") {
+        it.next();
+        std::process::exit(releases_cmd(it.cloned().collect()));
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -372,6 +385,41 @@ fn phone(args: Vec<String>) -> i32 {
     0
 }
 
+/// `hub releases --json`: the Releases tab's read, joined to the queue. `hub releases check`:
+/// one line per place the stores disagree. Either exits 1 when a source could not be read; check
+/// also exits 1 when a line is printed.
+fn releases_cmd(args: Vec<String>) -> i32 {
+    let sys = hub_core::session_actions::System;
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--json"] => {
+            let (items, queue_error) = hub_core::actions::queue_items();
+            let mut r = hub_core::releases::read(&sys, &items);
+            r.errors.extend(queue_error);
+            match serde_json::to_string(&r) {
+                Ok(s) => println!("{s}"),
+                Err(e) => die(&format!("hub releases --json: {e}")),
+            }
+            i32::from(!r.errors.is_empty())
+        }
+        ["check"] => {
+            let (problems, errors) = hub_core::release_graph::audit(&sys, hub_core::jobs::now());
+            for p in &problems {
+                println!("{p}");
+            }
+            for e in &errors {
+                eprintln!("hub releases check: {e}");
+            }
+            i32::from(!problems.is_empty() || !errors.is_empty())
+        }
+        _ => die(USAGE),
+    }
+}
+
 /// `hub vitals`: the one-line summary, then a row per question, for tmux, waybar and the briefing;
 /// `--json` is the same read whole. Exit 1 when Prometheus did not answer.
 fn vitals(args: Vec<String>) -> i32 {
@@ -553,12 +601,20 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         return 0;
     }
     if tab == Some(Tab::Releases) {
-        let s = hub_core::releases::read(&hub_core::session_actions::System);
+        let sys = hub_core::session_actions::System;
+        let (items, queue_error) = hub_core::actions::queue_items();
+        let mut s = hub_core::releases::read(&sys, &items);
         let now = hub_core::jobs::now();
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
-        let b = hub_core::builds::read(&a.files.builds, now);
+        let join = hub_core::builds::Join {
+            runner: &sys,
+            items: &items,
+        };
+        let mut b = hub_core::builds::read(&a.files.builds, Some(join), now);
+        s.errors.extend(queue_error.clone());
+        b.errors.extend(queue_error);
         let on = a.rv.on();
         let mut lines = vec![innertabs::strip(
             releases::tab(),

@@ -9,15 +9,15 @@ How mature a project is, what it must have at each stage, and which check proves
 
 ## The ladder
 
-The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel.
+The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel. A project deploys no higher than its stage: a draft or dev project has no deploy target, and an alpha one nothing on a beta or prod channel. Each registry target's `channel` maps to the rung it serves in the `project-map.json` `channels` map (the Registry channels column); `release-state` turns that into each project's served rungs, and the Requirements rows below read them.
 
-| Stage | Means | Who uses it | Where it runs | What the tooling does |
-| --- | --- | --- | --- | --- |
-| `draft` | A concept with its type standard and target load named, already scaffolded on the shared stack | the human | CI only | Hidden behind `d` in the `Prefix+p` popup; fleet-dispatch skips it |
-| `dev` | Built to its type standard, CI green, the core loop or flow being built | the human and agents | CI artifacts | fleet-dispatch starts agent sessions on its rows |
-| `alpha` | Works start to finish and deploys itself to a private target on every merge | the human and the team | home-k3s preview, Play internal, Steam `development`, TestFlight internal, Forgejo registry, Quest sideload | Releases on its cadence (see Versions) |
-| `beta` | Versioned releases to outside testers, rollback proven, load tested | testers | TestFlight external, Play closed, Steam `beta`, a public preview URL | As alpha; STATUS goes STALE after 14 days |
-| `prod` | Public, watched, with runbooks | the public | stores, Steam `default`, the prod cluster | As beta, plus the doctor FAILs it without a shipped tag |
+| Stage | Means | Who uses it | Where it runs | Registry channels | What the tooling does |
+| --- | --- | --- | --- | --- | --- |
+| `draft` | A concept with its type standard and target load named, already scaffolded on the shared stack | the human | CI only | none | Hidden behind `d` in the `Prefix+p` popup; fleet-dispatch skips it |
+| `dev` | Built to its type standard, CI green, the core loop or flow being built | the human and agents | CI artifacts | none | fleet-dispatch starts agent sessions on its rows |
+| `alpha` | Works start to finish and deploys itself to a private target on every merge | the human and the team | home-k3s preview, Play internal, Steam `development`, TestFlight internal, Forgejo registry, Quest sideload | `alpha`, `preview`, `internal` | Releases on its cadence (see Versions) |
+| `beta` | Versioned releases to outside testers, rollback proven, load tested | testers | TestFlight external, Play closed, Steam `beta`, a public preview URL | `beta` | As alpha; STATUS goes STALE after 14 days |
+| `prod` | Public, watched, with runbooks | the public | stores, Steam `default`, the prod cluster | `prod` | As beta, plus the doctor FAILs it without a shipped tag |
 
 A project with no stage sorts between dev and draft and is dispatched like a draft. The doctor WARNs on it.
 
@@ -32,13 +32,14 @@ Enforced from: 2026-11-19
 Before that date a FAIL is reported and blocks nothing, so a row that turns out too strict can be fixed before it stops real work.
 
 The `Check` cell is one of three things:
-- a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT` and `LAB` set and `project-name.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no repo it runs from an empty directory, so a repo file reads as missing rather than matching a lab file. A repo the map names but this machine has not cloned is not judged (exit 2). Exit 0 is PASS. It reads local files and git only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
+- a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT`, `LAB` and `STAGE` (the stage being checked, so a row judges a move up the same as today's stage) set, and `project-name.sh` and `lab-feed.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no repo it runs from an empty directory, so a repo file reads as missing rather than matching a lab file. A repo the map names but this machine has not cloned is not judged (exit 2). Exit 0 is PASS. It reads local files, git and the `release-state` snapshot only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
 - `human`: only the human can attest it, so the gate lists it and never fails on it.
 - anything else: no predicate yet. The gate lists it as TODO with this text, which names what checks it today, if anything.
 
 | Stage | Applies | Requirement | Check |
 | --- | --- | --- | --- |
 | draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
+| draft | base | Deploys no higher than its stage: no target live on a channel above it | `r="$(release-state show --json \| jq -er --arg n "$NAME" '.stages[$n] \| objects \| .rungs[-1] // "none"')" && { [ "$r" = none ] \|\| lab_stage_at_least "$STAGE" "$r"; }` |
 | draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
 | draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
@@ -52,7 +53,9 @@ The `Check` cell is one of three things:
 | alpha | base | `docs/overview.md` (what it is, its features, status) and `docs/operations/deploy.md` | `[ -f docs/overview.md ] && [ -f docs/operations/deploy.md ]` |
 | alpha | game | Plays start to finish; `perf-round` numbers recorded; a multiplayer smoke if networked | human |
 | alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet |
+| alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` |
 | alpha | game, app | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill | not yet |
+| alpha | game, app | A go-to-market entry in the marketing lab project's `docs/channels.yaml`: shape, pitch, channels and posting mode per channel | not yet: needs a `channels.yaml` validator |
 | beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
 | beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
 | beta | base | A Sentinel health watch | not yet |
@@ -60,11 +63,14 @@ The `Check` cell is one of three things:
 | beta | game | Content rating done (`content-rating`) | not yet |
 | beta | game | A finished playtest on this version | human |
 | beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet |
-| beta | game, app | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure | not yet |
-| prod | game, app | A shipped version tag | `[ -n "$(project_release_version "$NAME")" ]` |
+| beta | game, app | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure: a registry target on the `beta` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("beta")'` |
+| beta | game, app | A version tag: versioned releases start here | `[ -n "$(project_release_version "$NAME")" ]` |
+| beta | game, app | A public page that collects wishlists or signups (a Steam Coming Soon page for a game), live early enough to build an audience before launch and before any Steam festival deadline | not yet: needs a store-page probe |
+| beta | game, app | Each version tag gets a marketing drafts batch, and outreach has started (creators and curators for a game; launch sites, directories and partners for an app). An app with regulated data does this inside the compliance check of the beta app row | not yet: needs the marketing drafter |
 | prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet |
 | prod | base | Approval of the public publish | human |
-| prod | game | Live on Steam `default` or a public store channel | not yet |
+| prod | game, app | Live on a public channel (a store, Steam `default`, the prod cluster): a registry target on the `prod` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("prod")'` |
+| prod | game, app | The product's rows in the marketing lab project's `docs/metrics.md` scorecard dated within the last 30 days | not yet: needs the marketing scorecard |
 
 Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their alpha means deployed by stow or Flux from main, and beta and prod mean others depend on it, so a health watch and a runbook.
 

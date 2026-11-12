@@ -363,7 +363,7 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
     sort(&mut out.jobs);
     // The CI line belongs to the whole list: a source filter or one job's history has none.
     if opts.name.is_none() && opts.sources.len() == Source::ALL.len() {
-        let builds = crate::builds::read(&paths.builds, at);
+        let builds = crate::builds::read(&paths.builds, None, at);
         out.ci = Some(builds.counts);
         out.errors
             .extend(builds.errors.into_iter().map(|e| format!("ci: {e}")));
