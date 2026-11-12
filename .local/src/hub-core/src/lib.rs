@@ -37,6 +37,7 @@ pub mod page;
 pub mod pager;
 pub mod phone;
 pub mod pipeline;
+pub mod pipelines;
 pub mod plans;
 pub mod pool_page;
 pub mod projects;
