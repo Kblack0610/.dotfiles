@@ -40,12 +40,16 @@ function phasesText(a) {
 st.approving = null;
 function approveButtons(a) {
   if (!a || !(a.actions || []).includes("approve-plan")) return "";
-  const t = esc(a.target);
-  return st.approving === a.target
+  const t = esc(a.target), err = st.approveErr[a.target] ? `<span class="err">${esc(st.approveErr[a.target])}</span>` : "";
+  // A sent approval draws busy on every surface (Home, the pinned card, a Queue item) until the
+  // session list says the dialog is gone, so a slow approve never reads as a dead click.
+  if (askst.sending[`ses:${a.target}`]) return `<button class="btn sm primary" disabled><span class="spin"></span>Approving...</button>`;
+  return err + (st.approving === a.target
     ? `<button class="btn sm primary" data-approve-go="${t}">Yes, approve the plan</button><button class="btn sm" data-approve-no>Cancel</button>`
-    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
+    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`);
 }
 function rerenderApprove() {
+  sst.render();
   if (st.tab === "home") renderHome();
   if (st.tab === "queue") qst.render();
 }
@@ -57,14 +61,15 @@ document.addEventListener("click", async (e) => {
   const t = b.dataset.approveGo;
   st.approving = null;
   if (!t) { rerenderApprove(); return; }
-  // The card locks and says it is approving until the server replies (waiting.js markSending).
   const key = `ses:${t}`;
   if (askst.sending[key]) return;
+  delete st.approveErr[t];
+  askst.sending[key] = "the plan approval";
   rerenderApprove();
-  markSending(key, "the plan approval");
-  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); markSending(key, ""); }
-  catch (x) { markSending(key, "", x.message); }
-  refreshAgents();
+  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); await refreshAgents(); }
+  catch (x) { st.approveErr[t] = x.message; }
+  delete askst.sending[key];
+  rerenderApprove();
 }, true);
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
@@ -75,6 +80,8 @@ const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpar
   stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
 const actLabel = (n) => ACT_LABEL[n] || n;
 st.act = { confirm: null, busy: false, msg: "", err: false };
+// Why the last Approve plan failed, by session target, shown beside its button.
+st.approveErr = {};
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 

@@ -161,32 +161,53 @@ test("a card mid-send draws locked, saying what it sent, and a redraw keeps it s
 });
 
 test("answering an ask locks its card until the server replies, takes no second click, and a failure unlocks it with why", async () => {
-  const cls = new Set(), attrs = {}, stat = { innerHTML: "" }, err = { textContent: "" };
+  const cls = new Set(), attrs = {}, stat = { innerHTML: "" }, err = { textContent: "" }, reply = { readOnly: false };
   const card = { dataset: { id: "a1" }, classList: { toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) },
-    setAttribute: (k, v) => { attrs[k] = v; }, querySelector: (q) => (q === ".cstat" ? stat : q === ".err" ? err : null) };
-  const opt = { dataset: { a: "yes" } };
-  const click = { target: { dataset: {}, closest: () => opt } };
+    setAttribute: (k, v) => { attrs[k] = v; }, querySelectorAll: () => [reply],
+    querySelector: (q) => (q === ".cstat" ? stat : q === ".err" ? err : null) };
+  const click = { target: { dataset: {}, closest: () => ({ dataset: { a: "yes" } }) } };
   let posts = 0, release;
   const fetch0 = ctx.fetch;
-  doc.querySelectorAll = () => [card];
   ctx.fetch = (path) => (path === "/api/asks/answer"
     ? (posts++, new Promise((res) => { release = res; }))
-    : Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }));
+    : Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [ask({ id: "a2" })] }));
+  doc.querySelectorAll = () => [card];
   ctx.card = card; ctx.click = click;
-  const first = vm.runInContext("answerCard(card, click)", ctx);
-  assert.ok(cls.has("sending"));
-  assert.equal(attrs["aria-busy"], "true");
-  assert.match(stat.innerHTML, /Sending &quot;yes&quot;\.\.\./);
-  await vm.runInContext("answerCard(card, click)", ctx);
-  assert.equal(posts, 1, "a second click while sending posts nothing");
-  release({ ok: false, status: 400, statusText: "Bad Request", headers: { get: () => "text/plain" }, text: async () => "no ask 'a1'", json: async () => ({}) });
-  await first;
-  assert.ok(!cls.has("sending"));
-  assert.equal(attrs["aria-busy"], "false");
-  assert.equal(stat.innerHTML, "");
-  assert.match(err.textContent, /no ask 'a1'/, "the failure says why");
-  doc.querySelectorAll = () => [];
-  ctx.fetch = fetch0;
+  try {
+    const first = vm.runInContext("answerCard(card, click)", ctx);
+    assert.ok(cls.has("sending"));
+    assert.equal(attrs["aria-busy"], "true");
+    assert.ok(reply.readOnly, "the reply input takes no typing while sending");
+    assert.match(stat.innerHTML, /Sending &quot;yes&quot;\.\.\./);
+    await vm.runInContext("answerCard(card, click)", ctx);
+    assert.equal(posts, 1, "a second click while sending posts nothing");
+    release({ ok: false, status: 400, statusText: "Bad Request", headers: { get: () => "text/plain" }, text: async () => "no ask 'a1'" });
+    await first;
+    assert.ok(!cls.has("sending"));
+    assert.equal(attrs["aria-busy"], "false");
+    assert.ok(!reply.readOnly);
+    assert.equal(stat.innerHTML, "");
+    assert.match(err.textContent, /no ask 'a1'/, "the failure says why");
+
+    run("st.tab = \"sessions\"; st.asks = [input.a, input.b]", { a: ask(), b: ask({ id: "a2" }) });
+    const ok = vm.runInContext("answerCard(card, click)", ctx);
+    release({ ok: true, status: 204, headers: { get: () => "" } });
+    await ok;
+    assert.equal(run("st.asks.map((a) => a.id).join()"), "a2", "an answered ask leaves the list without waiting on a refetch");
+    assert.equal(run('askst.sending["ask:a1"]'), undefined);
+  } finally {
+    doc.querySelectorAll = () => [];
+    ctx.fetch = fetch0;
+  }
+});
+
+test("a sent plan approval draws its button busy, and a failed one shows why beside it", () => {
+  const a = agent({ actions: ["approve-plan"] });
+  run('askst.sending["ses:lab:w-1"] = "the plan approval"', {});
+  assert.match(run("approveButtons(input)", a), /^<button class="btn sm primary" disabled><span class="spin"><\/span>Approving\.\.\.<\/button>$/);
+  run('delete askst.sending["ses:lab:w-1"]; st.approveErr["lab:w-1"] = "Could not send"', {});
+  assert.match(run("approveButtons(input)", a), /^<span class="err">Could not send<\/span><button class="btn sm primary" data-approve="lab:w-1">Approve plan<\/button>$/);
+  run('delete st.approveErr["lab:w-1"]', {});
 });
 
 test("the page's scripts share one global scope with no top-level name declared twice", () => {
