@@ -23,10 +23,6 @@ pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "finish
 /// Finished rows drawn before `+N more`, as on the web.
 const FINISHED_ROWS: usize = 25;
 
-/// The page section that marks the selected row's line, so the page keeps it in view; no
-/// section for n/N.
-pub const ROW: &str = "row";
-
 /// Each table's view, and which one has the keys.
 #[derive(Debug, Default)]
 pub struct InfraTables {
