@@ -755,6 +755,28 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[null,[40]]'
 }
 
+@test "feed runs: a run the ledger holds open since before the feed's window is read by id and closes; a fresh open one is not" {
+  game_files
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z in_progress null)" \
+    "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)"
+  gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z completed success | serve 'repos/o/game/actions/runs/20'
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/runs/2[01]$' "$GHD/calls"
+  assert_output 0   # served this pass by the feed: not asked
+  feed 1 e1 1 false ''
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/runs/20$' "$GHD/calls"
+  assert_output 1
+  run grep -c 'actions/runs/21$' "$GHD/calls"
+  assert_output 0
+  run "$SUBJECT" runs o/game
+  run jq -c 'map([.id, .status])' <<<"$output"
+  assert_output '[[20,"completed"],[21,"in_progress"]]'
+}
+
 @test "feed runs: an exporter repo's runs come from the feed alone, and its scheduled runs reach the state; a repo it does not collect is polled" {
   game_files
   R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z in_progress null)"

@@ -378,8 +378,8 @@ def ci(a):
     if passes is None:
         out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
     # main: the base branch's runs and its reds (runs that counted, less the green), one read per base
-    on_base = {}
-    for base in dict.fromkeys(b for _, b, _ in repos):
+    on_base = dict.fromkeys(b for _, b, _ in repos)
+    for base in on_base if passes is not None else ():  # a hub that failed once is named once
         on_base[base], err = ci_pass(start, end, base)
         if on_base[base] is None:
             out["unreadable"].append(f"hub ci pass --branch {base}: {err}")

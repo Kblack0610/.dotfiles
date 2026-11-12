@@ -101,10 +101,10 @@ the cursor, epoch, repos and last error are in sync.json's "exporter", and a new
 covered by asking GitHub. The feed's `runs` (each of its repos' runs each time its state moves)
 go to the run ledger, and are those repos' only run source: a pass reads actions/runs only for
 a GitHub repo the exporter does not collect (and for every one while no feed has ever named its
-repos). Their scheduled runs for the state file are the feed's `event: schedule` runs, and their
-freshness is the feed's: while it fails, each such repo keeps its last state with `error` set.
-The feed agreed with the actions/runs poll row for row over 830 runs before the poll stopped
-(2026-11-12). Job detail for every other GitHub repo, and for an exporter repo's runs older than its
+repos), and a run the ledger holds open since before the feed's window is read by id. Their
+scheduled runs for the state file are the feed's `event: schedule` runs, and their freshness is
+the feed's: while it fails, each such repo keeps what the feed served before failing, with
+`error` set. Job detail for every other GitHub repo, and for an exporter repo's runs older than its
 window, is read per attempt from actions/runs/<id>/attempts/<n>/jobs, every page, newest run
 first, at most SCHEDULES_JOB_CALLS (40) gh calls a pass for the last day's runs and
 SCHEDULES_BACKFILL_CALLS (20) for older ones. A run's failed jobs come from here.
@@ -948,12 +948,12 @@ def feed_get(cursor):
 
 
 def import_feed(entry, t):
-    """The exporter's records since entry's cursor -> (job records, [(repo, GitHub run)]). `entry` (sync.json "exporter")
+    """The exporter's records since entry's cursor -> (job records, {lowered repo: [GitHub run]}). `entry` (sync.json "exporter")
     keeps the cursor, the epoch it belongs to and the repos the exporter collects for; a new
     epoch (the exporter restarted) reads its window from 0. A failure keeps the last cursor and
     repos and sets error: those repos' runs then wait as pending, never read from GitHub here."""
     cursor = entry.get("cursor", 0) if entry.get("epoch") else 0
-    out, runs = [], []
+    out, runs = [], {}
     try:
         for _ in range(FEED_PAGES):
             d = feed_get(cursor)
@@ -964,7 +964,9 @@ def import_feed(entry, t):
                 run = r.get("run") or {}
                 out.append(job_record(r["forge"], r["repo"], r["run_id"], r["attempt"], run.get("created_at"),
                                       "exporter", bool(r.get("complete")), r.get("jobs", []), t))
-            runs += [(r["repo"], r["run"]) for r in d.get("runs", []) if r.get("repo") and r.get("run")]
+            for r in d.get("runs", []):
+                if r.get("repo") and r.get("run"):
+                    runs.setdefault(r["repo"].lower(), []).append(r["run"])
             cursor = d.get("next", cursor)
             entry.update(epoch=d.get("epoch"), cursor=cursor, repos=d.get("repos", []),
                          window_secs=d.get("window_secs", 86400))
@@ -975,6 +977,16 @@ def import_feed(entry, t):
         print(f"schedules-sync: {e.detail}", file=sys.stderr)
         entry["error"] = str(e)
     return out, runs
+
+
+def stale_open(repo, last, fed, exporter, t):
+    """An exporter repo's runs the ledger holds open since before the feed's window, each read by
+    id from GitHub: the feed only serves a run whose state moved in its window, so this is how such
+    a run closes. A run GitHub no longer has is left as it is."""
+    edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
+    old = [r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower()
+           and r.get("status") != "completed" and r["id"] not in fed and (when(r.get("created_at")) or t) < edge]
+    return [got for r in old if (got := gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))]
 
 
 def fetch_jobs(repo, run, budget):
@@ -1553,7 +1565,8 @@ def main(argv):
                 rows.extend(forgejo_rows(host, repo, entry, opened.get((forge, repo)), t, last))
             elif forge == "github":
                 if repo.lower() in owned:  # the feed's alone: never read from GitHub here
-                    got, etag = [run for r, run in fed_runs if r.lower() == repo.lower()], None
+                    got, etag = fed_runs.get(repo.lower(), []), None
+                    got = got + stale_open(repo, last, {r["id"] for r in got}, exporter, t)
                 else:
                     since = [opened[(forge, repo)]] if (forge, repo) in opened else []
                     since += [parse_iso(r["created_at"]) for w in (p or {}).get("workflows", [])
