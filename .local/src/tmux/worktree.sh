@@ -359,8 +359,14 @@ wt_submodule_worktrees() {
 
 # wt_editor_open <path> -- true when a Unity editor has <path> open. An editor holds no tmux
 # pane, so the session checks miss it, and deleting a project under it loses its scene edits.
-# Hub-launched editors run as unityhub-unity-editor-* with a lowercase -projectpath.
+# Hub-launched editors run as unityhub-unity-editor-* with a lowercase -projectpath. An editor's
+# working directory is its project, so one opened through a symlink or a differently spelled
+# path counts too.
 wt_editor_open() {
+  local pid
+  for pid in $(wt_pids_inside "$1"); do
+    case "$(cat "${WT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null)" in Unity* | unityhub-unity*) return 0 ;; esac
+  done
   ps -eo comm=,args= 2>/dev/null |
     awk -v p="$1" '
       $1 !~ /^(Unity|unityhub-unity)/ { next }
@@ -1402,7 +1408,7 @@ cmd_gc() {
 # reap ends one only in a landed tree, so the main checkout, a clone or an unlanded tree kept
 # theirs. A dir counts as a project when it has ProjectSettings/. The unity-orphan-gc runner
 # runs this on a cadence: nothing signals the exit of a process that is not our child.
-# rc 1 when a daemon outlived SIGTERM.
+# rc 1 when a daemon outlived SIGTERM, named by pid and project.
 cmd_orphans() {
   local dry=0 arg root pids rc=0 n=0
   for arg in "$@"; do
@@ -1419,13 +1425,16 @@ cmd_orphans() {
     n=$((n + 1))
     if [ "$dry" -eq 1 ]; then
       printf 'would end %s  %s\n' "$pids" "$root"
-    elif wt_end_orphans "$root"; then
+    elif wt_end_orphans "$root" 2>/dev/null; then
       printf 'ended %s  %s\n' "$pids" "$root"
     else
+      printf 'failed %s  %s: outlived SIGTERM\n' "$pids" "$root"
       rc=1
     fi
+  # Each dir above a /Library/ in a binary's path is a candidate root; ProjectSettings/ picks the
+  # project, so one under a dir named Library is still found.
   done < <(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/exe -maxdepth 0 -lname '*/Library/*' -printf '%l\n' 2>/dev/null |
-    sed 's|/Library/.*||' | sort -u)
+    awk -F'/Library/' '{ p = $1; print p; for (i = 2; i < NF; i++) { p = p "/Library/" $i; print p } }' | sort -u)
   [ "$n" -gt 0 ] || panel_hint 'no orphan daemons'
   return "$rc"
 }

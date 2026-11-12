@@ -984,7 +984,27 @@ orphan_project() {
   touch "$SANDBOX/kill.ignored"
   run cmd_orphans
   assert_failure
-  assert_output --partial 'an orphan daemon outlived SIGTERM'
+  assert_output "failed 500  $P: outlived SIGTERM"
+}
+
+@test "orphans counts an editor whose cwd is the project as open, however its path was spelled" {
+  orphan_project
+  fake_proc 700 "$P" /opt/Unity/Editor/Unity 400
+  echo Unity > "$WT_PROC_ROOT/700/comm"
+  run cmd_orphans
+  assert_success
+  assert_output --partial 'no orphan daemons'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans finds a project that sits under a dir named Library" {
+  orphan_project
+  Q="$SANDBOX/Library/game"
+  mkdir -p "$Q/ProjectSettings"
+  rm -rf "$WT_PROC_ROOT/500"
+  fake_proc 500 "$Q" "$Q/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
+  run cmd_orphans -n
+  assert_output "would end 500  $Q"
 }
 
 # -- done: kill, then reap, on the server --
