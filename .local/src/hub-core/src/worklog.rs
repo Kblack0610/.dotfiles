@@ -61,8 +61,9 @@ impl Work {
 }
 
 impl Row for Work {
-    const COLUMNS: &'static [&'static str] =
-        &["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"];
+    const COLUMNS: &'static [&'static str] = &[
+        "state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost",
+    ];
     const STATES: &'static [&'static str] = &[
         "all",
         "done",
@@ -254,7 +255,11 @@ where
         what: i.title(),
         plan: i.plan_label.clone(),
         // The item's own type, else the one its task led with (`fix(hub): ...`).
-        kind: i.kind.clone().filter(|k| !k.is_empty()).or_else(|| crate::text::clean(&i.task).kind),
+        kind: i
+            .kind
+            .clone()
+            .filter(|k| !k.is_empty())
+            .or_else(|| crate::text::clean(&i.task).kind),
         ci: first.and_then(|p| p.check.clone()),
         pr: label.map(|l| if more > 0 { format!("{l} +{more}") } else { l }),
         url: first
@@ -274,7 +279,11 @@ fn pr_row(p: &Pr) -> Work {
         state: if p.open { "open" } else { "done" },
         when: p.at.clone(),
         project: p.project.clone(),
-        what: if what.is_empty() { p.title.trim().to_string() } else { what },
+        what: if what.is_empty() {
+            p.title.trim().to_string()
+        } else {
+            what
+        },
         plan: None,
         // The conventional-commit type its title led with, so `kind:fix` finds items and PRs.
         kind,
@@ -289,11 +298,7 @@ fn pr_row(p: &Pr) -> Work {
 
 /// One row per item, one per unclaimed PR, attention first and newest first inside that. Queued
 /// items keep agent-queue's order, which is the order they will start in.
-pub fn gather<Tz: TimeZone>(
-    items: &[Item],
-    days: &[(String, Value)],
-    tz: &Tz,
-) -> Gathered
+pub fn gather<Tz: TimeZone>(items: &[Item], days: &[(String, Value)], tz: &Tz) -> Gathered
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -766,10 +771,17 @@ mod tests {
         let rows = work(&[i], vec![("2026-11-08", json!({"open": [red, draft]}))]);
         let row = |slugged: bool| {
             let r = rows.iter().find(|r| r.slug.is_some() == slugged).unwrap();
-            (r.what.clone(), r.ci.clone().unwrap_or_default(), r.kind.clone())
+            (
+                r.what.clone(),
+                r.ci.clone().unwrap_or_default(),
+                r.kind.clone(),
+            )
         };
         assert_eq!(row(true), ("a".into(), "CI failure".into(), None));
-        assert_eq!(row(false), ("pr 8".into(), "draft".into(), Some("fix".into())));
+        assert_eq!(
+            row(false),
+            ("pr 8".into(), "draft".into(), Some("fix".into()))
+        );
     }
 
     #[test]
@@ -780,8 +792,15 @@ mod tests {
         ids["title"] = json!("fix(x): ar-186");
         let mut deps = pr(".dotfiles", 10, AT);
         deps["title"] = json!("deps: bump serde");
-        let rows = work(&[typed, own], vec![("2026-11-08", json!({"open": [ids, deps]}))]);
-        let at = |what: &str| rows.iter().find(|r| r.what == what).unwrap_or_else(|| panic!("{what}: {rows:?}"));
+        let rows = work(
+            &[typed, own],
+            vec![("2026-11-08", json!({"open": [ids, deps]}))],
+        );
+        let at = |what: &str| {
+            rows.iter()
+                .find(|r| r.what == what)
+                .unwrap_or_else(|| panic!("{what}: {rows:?}"))
+        };
         assert_eq!(at("mend the table").kind.as_deref(), Some("fix"));
         assert_eq!(at("b").kind.as_deref(), Some("chore"));
         assert_eq!(at("ar-186").kind.as_deref(), Some("fix"));

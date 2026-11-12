@@ -1071,7 +1071,7 @@ impl QueueRow<'_> {
 
 impl crate::table::Row for QueueRow<'_> {
     const COLUMNS: &'static [&'static str] = &[
-        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title",
+        "state", "title", "project", "in", "wait", "run", "kind", "size", "acct", "pr", "plan",
     ];
     /// `all` first, because the first chip keeps every row; then the states in the order the
     /// Queue sections list them.

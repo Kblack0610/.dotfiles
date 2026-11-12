@@ -146,3 +146,4 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | The agents chip robot is amber and the hover says no `agent_session_bucket` | `fleet_sessions.prom` predates the bucket order: the next `fleet-sessions tick` writes it |
 | The agents chip robot is amber and the hover says no `fleet_sessions.prom` | `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
 | The agents chip robot is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |
+| A tick consumes many CPU seconds across Unity worktrees | Check `journalctl --user -u fleet-state.service` for CPU per tick. `dirty_paths` uses one index reader and disables parallel index preloading for recursive status checks, preserving tracked, untracked and submodule dirt without changing repository config. |

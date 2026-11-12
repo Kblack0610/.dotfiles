@@ -36,7 +36,9 @@ pub const DETAILS: [&str; 4] = [
 ];
 
 /// The intake steps the ingest block counts: what inbox-triage does with a line.
-const INTAKE: [&str; 7] = ["moved", "filed", "dup", "planned", "left", "asked", "refused"];
+const INTAKE: [&str; 7] = [
+    "moved", "filed", "dup", "planned", "left", "asked", "refused",
+];
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Runner {
