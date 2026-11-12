@@ -320,4 +320,14 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_equal "$(jq -c '[.filesystem.allowWrite, .network.strictAllowlist]' <<<"$output")" '[[".","/var/y","~/.agent"],true]'
   run sandbox_srt_settings --bogus x
   assert_failure 2
+  # The profile's allowRead is readable; in a repo, its git common dir is readable and never writable.
+  jq '.sandbox.filesystem.allowRead = ["/opt/vendor"]' "$SANDBOX_FILE" > "$SANDBOX/p.json"; SANDBOX_FILE="$SANDBOX/p.json"
+  git init -q "$SANDBOX/r" && cd "$SANDBOX/r"
+  run sandbox_srt_settings
+  assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"$SANDBOX/r/.git\",\"/opt/vendor\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
+  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" '[[".","~/.agent"],[]]'
+  jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null
+  jq '.sandbox.filesystem.allowRead = ["rel/path"]' "$SANDBOX_FILE" > "$SANDBOX/bad.json"
+  run jq -e "$SANDBOX_SHAPE" "$SANDBOX/bad.json"
+  assert_failure
 }

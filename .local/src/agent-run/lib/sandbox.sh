@@ -20,7 +20,7 @@ SANDBOX_SHAPE='
   type == "object" and (.sandbox | type == "object")
   and ((.permissions // {}) | type == "object") and (.permissions.deny | strs)
   and ((.sandbox.filesystem // {}) | type == "object") and ((.sandbox.network // {}) | type == "object")
-  and (.sandbox.filesystem.denyRead | paths) and (.sandbox.filesystem.allowWrite | paths)
+  and (.sandbox.filesystem.denyRead | paths) and (.sandbox.filesystem.allowRead | paths) and (.sandbox.filesystem.allowWrite | paths)
   and (.sandbox.filesystem.denyWrite | paths) and (.sandbox.network.allowedDomains | strs)'
 
 # sandbox_load -> SANDBOX_FILE (empty for an unsandboxed lane), and the lane's GitHub token.
@@ -140,8 +140,9 @@ sandbox_codex_flags() {
 # claude's sandbox is built on (@anthropic-ai/sandbox-runtime: bwrap, its own network namespace, and a
 # proxy that holds the run to allowedDomains), so one profile means the same thing on both.
 
-# What an srt-held run needs on PATH: srt itself, and the bwrap and socat it drives on Linux.
-SANDBOX_SRT_NEEDS="${SANDBOX_SRT_NEEDS:-srt bwrap socat}"
+# What an srt-held run needs on PATH: srt itself, and on Linux the bwrap and socat it drives (macOS
+# srt uses sandbox-exec).
+if [ "$(uname -s)" = Linux ]; then SANDBOX_SRT_NEEDS="${SANDBOX_SRT_NEEDS:-srt bwrap socat}"; else SANDBOX_SRT_NEEDS="${SANDBOX_SRT_NEEDS:-srt}"; fi
 
 # The environment an srt-held run keeps from its pane; every other variable (the gateway master key,
 # tokens, the tmux and D-Bus sockets) is dropped. srt adds its own proxy variables. Each reads as
@@ -157,10 +158,12 @@ sandbox_srt_refusal() {
 }
 
 # sandbox_srt_settings [--ro <path>] [--rw <path>]... -> the srt --settings JSON: the profile's
-# filesystem and network, with the run's cwd (".", srt resolves it where it starts), each --rw path
-# and the git common dir writable, each --ro path and srt's own package (its seccomp helper runs
-# inside) readable through denyRead, the common dir's hooks and config read-only, and strictAllowlist
-# on. Paths are passed as given; srt expands ~/ and follows links, so name a stowed file by its target.
+# filesystem and network, with the run's cwd (".", srt resolves it where it starts) and each --rw path
+# writable, and each --ro path, the profile's allowRead, the git common dir and srt's own package (its
+# seccomp helper runs inside) readable through denyRead, and strictAllowlist on. The common dir is
+# read-only: the run's commits are not needed (fleet-dispatch moves and scores its tree outside), and
+# a writable one would let it move the shared repo's refs. Paths are passed as given; srt expands ~/
+# and follows links, so name a stowed file by its target.
 sandbox_srt_settings() {
   local ro=() rw=() pkg
   while [ $# -gt 0 ]; do
@@ -180,9 +183,9 @@ sandbox_srt_settings() {
     | {network: ((.sandbox.network // {}) | .allowedDomains //= [] | .deniedDomains //= [] | .strictAllowlist = true),
        filesystem: {
          denyRead: ($fs.denyRead // []),
-         allowRead: (["."] + $ro + $rw + $c + ($fs.allowWrite // []) + (if $pkg == "" then [] else [$pkg] end)),
-         allowWrite: (["."] + $rw + $c + ($fs.allowWrite // [])),
-         denyWrite: (($fs.denyWrite // []) + ($c | map(. + "/hooks", . + "/config")))}}' \
+         allowRead: (["."] + $ro + $rw + $c + ($fs.allowRead // []) + ($fs.allowWrite // []) + (if $pkg == "" then [] else [$pkg] end)),
+         allowWrite: (["."] + $rw + ($fs.allowWrite // [])),
+         denyWrite: ($fs.denyWrite // [])}}' \
     "$SANDBOX_FILE"
 }
 

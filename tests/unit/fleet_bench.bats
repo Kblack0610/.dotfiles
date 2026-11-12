@@ -5426,6 +5426,12 @@ STUB
   assert_output $'["canary-greet-w1","greet","c1",false,1,"o/r#7",12]\n["canary-greet-w2","greet","c2",true,0,"o/r#7",12]'
   run "$SUBJECT" canary list
   assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass'
+  # BENCH_CANARY_WRAP (fleet-dispatch's srt line for a sandboxed lane) runs the oracle command inside it.
+  BENCH_CANARY_WRAP="touch $(printf %q "$SANDBOX/wrapped") && exec" AGENT_QUEUE_ITEM=canary-greet-w3 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: pass (exit 0)'
+  [ -f "$SANDBOX/wrapped" ] || fail "the oracle did not run inside BENCH_CANARY_WRAP"
+  BENCH_CANARY_WRAP="false &&" AGENT_QUEUE_ITEM=canary-greet-w4 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: fail (exit 1)'
 }
 
 @test "canary queue: one night canary item per task a week, from canary with its own brief; a second pass queues nothing" {

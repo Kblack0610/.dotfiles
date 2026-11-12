@@ -1476,7 +1476,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1552,11 +1552,17 @@ gateway_launch() {
             sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
           { say "start: lane sandbox '$sbx' cannot be applied to $harness; nothing started"; return 1; }
         cid=$(jq -r .canary <<<"$it")
-        cmd="$(sandbox_env_clear) AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
+        # jail: the cleared env, and the run's tmp for srt's sockets (TMPDIR) and for the child, which srt
+        # hands CLAUDE_CODE_TMPDIR as its TMPDIR (else /tmp/claude, masked here); srtc: srt on this run's
+        # settings. Both the run and the oracle its score runs (BENCH_CANARY_WRAP) go inside them.
+        jail="$(sandbox_env_clear) TMPDIR=$(printf '%q' "$run/tmp") CLAUDE_CODE_TMPDIR=$(printf '%q' "$run/tmp")"
+        srtc="srt --settings $(printf '%q' "$run/srt-$sid.json") --"
+        cmd="$jail AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
         cmd="$cmd OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$(printf '%q' "$run/data") XDG_CACHE_HOME=$(printf '%q' "$run/cache")"
-        cmd="$cmd XDG_STATE_HOME=$(printf '%q' "$run/state") TMPDIR=$(printf '%q' "$run/tmp") srt --settings $(printf '%q' "$run/srt-$sid.json") --"
+        cmd="$cmd XDG_STATE_HOME=$(printf '%q' "$run/state") $srtc"
         # The canary steps the brief leaves out read and write fleet state, so they run here, outside
         # the sandbox, before and after it; the run can neither reach its oracle nor write its score.
+        # The oracle runs the code the model wrote, so the score runs that command back inside the jail.
         # A start that fails skips the run and the score: the tree was never put at base, so a score
         # there would grade the merged code.
         cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
@@ -1565,7 +1571,7 @@ gateway_launch() {
       fi
       cmd="$cmd opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
-      [ -z "$sbx" ] || cmd="$cmd; AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
+      [ -z "$sbx" ] || cmd="$cmd; BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.

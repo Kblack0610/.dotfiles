@@ -223,6 +223,7 @@ set -uo pipefail
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
+: "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model [effort]` a line (content as data)
 : "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
@@ -4624,15 +4625,16 @@ canary_repo() {
 }
 
 # canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree, runs its
-# command there under BENCH_CANARY_TIMEOUT and returns its exit (98 when the overlay fails: a broken
-# task, not a failed session)
+# command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set) and returns its exit
+# (98 when the overlay fails: a broken task, not a failed session)
 canary_oracle() {
-  local merge paths=() cmd=()
+  local merge paths=() cmd=() wrap=()
   merge=$(jq -r .merge <<<"$1")
   mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
   mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
   git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
-  (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${cmd[@]}") >>"$3" 2>&1
+  [ -z "$BENCH_CANARY_WRAP" ] || wrap=(bash -c "$BENCH_CANARY_WRAP \"\$@\"" oracle)
+  (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}") >>"$3" 2>&1
 }
 
 # canary_brief <task> <slug> [sandboxed] -> the night item's whole task: no /one-shot, no PR (fleet-dispatch
