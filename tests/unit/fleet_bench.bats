@@ -5374,8 +5374,8 @@ case "$1" in
   show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
   set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
   add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
-       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; esac; shift; done
-       jq -n --arg s "$slug" --arg a "$agent" '{slug: $s, agent: $a}' > "$CQ/$slug.json" ;;
+       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; --priority) prio=$2 ;; esac; shift; done
+       jq -n --arg s "$slug" --arg a "$agent" --arg p "${prio:-}" '{slug: $s, agent: $a, priority: $p}' > "$CQ/$slug.json" ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/cq-stub"
@@ -5481,6 +5481,13 @@ STUB
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
+  # A lane that spends a Claude account queues at high and another harness's at low: at low the claude
+  # run sat behind every runnable item and never started.
+  run "$SUBJECT" canary queue --harness claude --model haiku --effort max
+  assert_success
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
+  assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
   # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened and the lane kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
