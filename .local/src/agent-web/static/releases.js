@@ -87,7 +87,7 @@ function appBuilds(a) {
   const b = a.builds || [];
   if (!b.length) return `<div class="cline"><b>Builds</b> <span class="muted">no build run joined to a tag in the last 30 days</span></div>`;
   const rows = b.map((x) => `<tr><td>${esc(x.tag)}</td><td>${esc(x.workflow)}</td><td class="${levelClass(x.level)}">${esc(x.state_text)}</td>` +
-    `<td class="n">${esc(x.started_text)}</td><td class="n${x.live ? " muted" : ""}">${esc(x.ended_text)}</td>` +
+    `<td>${esc(x.started_text)}</td><td${x.live ? ' class="muted"' : ""}>${esc(x.ended_text)}</td>` +
     `<td>${/^https:/.test(x.url || "") ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">run</a>` : ""}</td></tr>`).join("");
   const live = b.filter((x) => x.live).length;
   const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">tag</th><th>workflow</th><th data-role="glance">state</th><th data-role="glance">started</th><th>finished</th><th>link</th></tr>${rows}</table></div>`;

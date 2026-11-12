@@ -237,8 +237,8 @@ test("an opened app lists its build runs newest first, below its releases, and c
   await open();
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-builds:binks" open><summary><b>Builds<\/b> <span class="muted">2 runs, 1 in progress<\/span><\/summary>/);
-  assert.match(b, /<tr><td>binks-v3<\/td><td>Release builds<\/td><td class="">in progress 12m<\/td><td class="n">11-11 16:20<\/td><td class="n muted">-<\/td><td><a href="https:\/\/github.com\/o\/binks\/actions\/runs\/30" target="_blank" rel="noopener">run<\/a><\/td><\/tr>/);
-  assert.match(b, /<tr><td>binks-v2<\/td><td>Steam \(binks\)<\/td><td class="">cancelled<\/td><td class="n">11-05 10:00<\/td><td class="n">11-05 10:01<\/td><td><\/td><\/tr>/, "a link that is not https is dropped");
+  assert.match(b, /<tr><td>binks-v3<\/td><td>Release builds<\/td><td class="">in progress 12m<\/td><td>11-11 16:20<\/td><td class="muted">-<\/td><td><a href="https:\/\/github.com\/o\/binks\/actions\/runs\/30" target="_blank" rel="noopener">run<\/a><\/td><\/tr>/);
+  assert.match(b, /<tr><td>binks-v2<\/td><td>Steam \(binks\)<\/td><td class="">cancelled<\/td><td>11-05 10:00<\/td><td>11-05 10:01<\/td><td><\/td><\/tr>/, "a link that is not https is dropped");
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("rel-builds:binks") && b.indexOf("rel-builds:binks") < b.indexOf("<b>Changelog</b>"));
 });
 
