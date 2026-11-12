@@ -103,6 +103,8 @@ _tmux_agent_wrap() {
 codex()    { _tmux_agent_wrap codex "$@"; }
 gemini()   { _tmux_agent_wrap gemini "$@"; }
 opencode() { _tmux_agent_wrap opencode "$@"; }
+# opencode personal profile (OpenCode Go only): ~/.config/opencode/README.md
+ocp()      { ( export OPENCODE_CONFIG="$HOME/.config/opencode/personal.json"; opencode "$@" ) }
 aider()    { _tmux_agent_wrap aider "$@"; }
 
 alias co="codex"
