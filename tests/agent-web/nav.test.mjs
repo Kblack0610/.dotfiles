@@ -86,3 +86,24 @@ test("a click opens that section on the showing board, not a same-named one on a
   assert.equal(here.scrolled, 1);
   assert.equal(hidden.open, false);
 });
+
+test("a section painted later above the sought one does not leave it off screen, until the reader scrolls", () => {
+  const tests = anchor("sec-tests", "Tests");
+  const board = { scrollTop: 0, querySelectorAll: (q) => (q.startsWith("[id^=") ? [tests] : []) };
+  // Where scrollIntoView leaves the board: the anchor's offset, which a paint above it raises.
+  let offset = 400;
+  tests.scrollIntoView = function () { this.scrolled++; board.scrollTop = offset; };
+  boards.log = board;
+  vm.runInContext('st.tab = "log"; st.section = "tests"; seekSection()', ctx);
+  assert.equal(tests.scrolled, 1);
+  offset = 9000; // the runs table paints above Tests; the board did not move, so Tests is pushed down
+  vm.runInContext("seekSection()", ctx);
+  assert.equal(tests.scrolled, 2);
+  assert.equal(board.scrollTop, 9000);
+  board.scrollTop = 8000; // the reader scrolls
+  vm.runInContext("seekSection()", ctx);
+  assert.equal(tests.scrolled, 2);
+  board.scrollTop = 9000;
+  vm.runInContext("seekSection()", ctx);
+  assert.equal(tests.scrolled, 2, "a dropped hold stays dropped");
+});
