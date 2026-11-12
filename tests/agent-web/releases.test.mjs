@@ -223,6 +223,7 @@ test("an opened app lists its releases newest first with when, the one before an
   await open();
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
+  assert.match(b, /<th class="n" data-role="glance" data-named>released<\/th>/, "a date header aligns with its cells");
   assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
   assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">none merged<\/td><td class="wrap muted">none merged<\/td><\/tr>/);
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
@@ -239,6 +240,7 @@ test("an opened app lists its build runs newest first, below its releases, and c
   await open();
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-builds:binks" open><summary><b>Builds<\/b> <span class="muted">2 runs, 1 in progress<\/span><\/summary>/);
+  assert.match(b, /<th class="n" data-role="glance">started<\/th><th class="n">finished<\/th>/, "date headers align with their cells");
   assert.match(b, /<tr><td>binks-v3<\/td><td>Release builds<\/td><td class="">in progress 12m<\/td><td class="n">11-11 16:20<\/td><td class="n muted">-<\/td><td><a href="https:\/\/github.com\/o\/binks\/actions\/runs\/30" target="_blank" rel="noopener">run<\/a><\/td><\/tr>/);
   assert.match(b, /<tr><td>binks-v2<\/td><td>Steam \(binks\)<\/td><td class="">cancelled<\/td><td class="n">11-05 10:00<\/td><td class="n">11-05 10:01<\/td><td><\/td><\/tr>/, "a link that is not https is dropped");
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("rel-builds:binks") && b.indexOf("rel-builds:binks") < b.indexOf("<b>Changelog</b>"));
