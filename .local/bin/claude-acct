@@ -996,7 +996,9 @@ room_source() {
 # once in usage_json; this picks the best account whose room is ok and says why when none is. --json
 # prints the same answer for readers: {pick (that account's name, or null), why (the refusal
 # sentence, or null), accounts (every account's name, dir, state, rank, live and room), sources (every
-# row of the sources file, the same fields with its kind: fleet-dispatch routes over them)}.
+# row of the sources file, the same fields with its kind: fleet-dispatch routes over them), fleet
+# (FLEET_JQ's keeps and rate, and carries: the live sessions the accounts sustain at pace, null
+# unread; fleet-dispatch's away target)}.
 cmd_room() {
     local all rows json=0 pick pdir pline unread closest cwhy within why=''
     case "${1:-}" in
@@ -1038,9 +1040,10 @@ cmd_room() {
         why="no account has room; $closest is the closest, $cwhy$within"
     fi
     if (( json )); then
-        jq --arg p "$pick" --arg w "$why" '{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
+        jq --arg p "$pick" --arg w "$why" --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
             accounts: [.[] | select(.kind == "claude") | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}],
-            sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, alert, week_used, week_gone, room}]}' <<< "$all"
+            sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, alert, week_used, week_gone, room}],
+            fleet: (fleet($now) | {keeps, rate, carries: (if .keeps != null and (.rate // 0) > 0 then (.keeps / .rate | floor) else null end)})}' <<< "$all"
     elif [[ -n "$pick" ]]; then
         echo "claude-acct: room on $pline" >&2
         printf '%s\n' "$pdir"

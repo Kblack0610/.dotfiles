@@ -308,7 +308,7 @@ load 'fleet_dispatch/common'
 
 @test "run starts nothing once the live cap is reached" {
   game_ready
-  export DISPATCH_TARGET_BURST=1
+  export DISPATCH_TARGET_AWAY=1
   project other beta "$SANDBOX/repos/other"
   row other human 'other work' '- [/] other work'
   started_item other-work lab:other-agent-1 run '' 'board:other:other work' running other
@@ -321,7 +321,7 @@ load 'fleet_dispatch/common'
 # Pace targets (plan session-close-verdict P4): every live session counts, hand starts too.
 @test "run starts nothing while the fleet is at its pace target, hand-started sessions counted" {
   game_ready
-  export DISPATCH_TARGET_BURST=6
+  export DISPATCH_TARGET_AWAY=6
   fleet_state 6
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
@@ -335,17 +335,37 @@ load 'fleet_dispatch/common'
   assert_output --partial 'started game-agent-1'
 }
 
-@test "the pace target is the present one while the human is here and the burst while away" {
-  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_BURST=10
+@test "the pace target is the present one while the human is here and the away one while away" {
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=10
   fleet_state 3
   stub fleet-presence 'echo "here 0 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: present 3, away 10)'
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: present 3, away what the accounts carry, at most 10)'
   assert_output --partial 'the present pace target is 3, starting nothing'
   stub fleet-presence 'echo "away 45 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: present 3, away 10)'
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: present 3, away what the accounts carry, at most 10)'
   refute_output --partial 'pace target is'
+}
+
+@test "away, the pace target is what the accounts carry at pace, at most the away target and never under the run floor" {
+  export DISPATCH_TARGET_PRESENT=30 DISPATCH_TARGET_AWAY=10
+  fleet_state 3
+  stub fleet-presence 'echo "away 45 tmux"'
+  jq '.fleet = {keeps: 1, rate: 0.25, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 4 live sessions (the human is away'
+  # A carry over the away target is held to it; the run floor is the least it drops to.
+  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away'
+  jq '.fleet.carries = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 5 live sessions (the human is away'
+  # Here, the carry does not lower the present target.
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
 }
 
 @test "a missing or stale fleet state document holds every start: the live count is unknown" {
@@ -359,7 +379,7 @@ load 'fleet_dispatch/common'
 
 @test "headroom bounds what could start by the room under the pace target" {
   two_items
-  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_BURST=6
+  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_AWAY=6
   fleet_state 5
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .total_live, .target, .target_when, .held] | @tsv' <<<"$output")" $'1\t5\t6\taway\t'
@@ -367,12 +387,12 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live sessions, the away target (present 25, away 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live sessions, the away target (present 50, away what the accounts carry, at most 6); hand starts count toward it and are never refused'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_BURST=6
+  export DISPATCH_TARGET_AWAY=6
   # Two heavy and one light live session: 2 + 2 + 1 = 5 units.
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
@@ -400,7 +420,7 @@ load 'fleet_dispatch/common'
 
 @test "a heavy item alone at 5 of 6 run units is a full fleet: NOOP, not BLOCKED" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_BURST=6
+  export DISPATCH_TARGET_AWAY=6
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
   sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
