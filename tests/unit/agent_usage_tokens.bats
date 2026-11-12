@@ -358,6 +358,17 @@ gw_live() {
   SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
   assert_failure 2
   assert_output --partial 'since the fix at 2026-01-01 12:00: no gateway figures'
+  gw_live '{"gateway":{"calls":50,"errors":30000,"by_error":{"HTTPException":20000},"truncated":true}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  assert_output --partial 'truncated'
+}
+
+@test "check --gateway-errors: a watermark that is not an epoch is ignored, never a crash that reads as a trip" {
+  gw_day 2026-01-01 3 '{"HTTPException":3}'
+  SENTINEL_SINCE=abc run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output '2026-01-01: no BadRequestError in the gateway errors (3 errors in 100 calls)'
 }
 
 @test "check --gateway-errors: a zero minimum or an empty class list falls back instead of tripping or crashing" {

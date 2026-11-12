@@ -342,18 +342,27 @@ def gateway_verdict(label, gw):
 
 
 def gateway_errors_check(newest):
-    since = int(ENV.get("SENTINEL_SINCE") or 0)
+    raw = (ENV.get("SENTINEL_SINCE") or "0").strip()
+    since = int(raw) if raw.isdigit() else 0   # watch-companion-loop passes an epoch or 0
     if since > day_window(dt.date.fromisoformat(newest["date"]))[0].timestamp():
         # A fix landed after this snapshot's day began, so its errors may predate the fix:
         # count only the gateway calls since the fix, read live from Langfuse.
         start = dt.datetime.fromtimestamp(since).astimezone()
         until = dt.datetime.now().astimezone()
+        label = f"since the fix at {start:%Y-%m-%d %H:%M}"
+        if until <= start:
+            print(f"{label}: no window yet")
+            return 0
         out, why = run_json(LANGFUSE + ["--since", start.isoformat(timespec="seconds"),
                                         "--until", until.isoformat(timespec="seconds")], timeout=600)
-        if not isinstance(out, dict) or not out.get("gateway"):
-            print(f"since the fix at {start:%Y-%m-%d %H:%M}: no gateway figures ({why or 'langfuse returned none'})")
+        gw = out.get("gateway") if isinstance(out, dict) else None
+        if not gw:
+            print(f"{label}: no gateway figures ({why or 'langfuse returned none'})")
             return 2
-        return gateway_verdict(f"since the fix at {start:%Y-%m-%d %H:%M}", out["gateway"])
+        if gw.get("truncated"):
+            print(f"{label}: the gateway error classes are truncated, so a BadRequestError could be missing")
+            return 2
+        return gateway_verdict(label, gw)
     gw = (newest.get("langfuse") or {}).get("gateway")
     if not gw:
         print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
