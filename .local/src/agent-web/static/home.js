@@ -47,7 +47,7 @@ const runT = tblTab({
 });
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
-  body: () => propBody(hst.data), render: () => renderHome(),
+  head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
 const refreshHome = coalesce(async () => {
@@ -117,11 +117,14 @@ function propBody(h) {
     : `<div class="panel">No proposal matches.</div>`);
 }
 
+// A failed read hues the title, so the reason at the top of the page is not the only sign.
+const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? tblCount(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
+
 function propSection(h) {
   const t = h.proposals_table;
-  if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
   const body = tblBodyFirst(t, () => propBody(h));
-  return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
+  return `<div id="home-prop-head">${propHead(h)}</div>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
 
@@ -246,21 +249,19 @@ function runRow(r, l) {
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
 
-// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab.
+// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab,
+// which the last line links filtered to the running ones, after the fleet's session counts.
 function runBody(h) {
   const t = h.running_table, rows = h.running;
-  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>`;
+  const foot = `<div class="cline muted">${h.sessions ? `<b>Sessions</b> ${esc(h.sessions)} ` : ""}<a href="#sessions?s=running">all running in Sessions</a></div>`;
+  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>${foot}`;
   const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
-    tblMore(more, "more") + `</div>`;
+    tblMore(more, "more") + foot + `</div>`;
 }
 
-// The session counts head the list they count, linking to the tab that lists the sessions.
-function runHead(h) {
-  const t = h.running_table;
-  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
-  return sec("Running", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "", counts + ` <a class="muted" href="#sessions?s=running">all in Sessions -&gt;</a>`);
-}
+// A table's head count: its rows, or "N of M" while a search or state narrows them.
+const runHead = (h) => secHead("running", "Running", tblCount(h.running_table));
 
 // One card per tab, as hub_core::cards words it: the big number in the card's hue, the bar of
 // its counted states, the labelled counts and where to look first. The title, each count and the
@@ -293,8 +294,7 @@ function cardsLine(cards) {
   return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ") + stale;
 }
 
-const sec = (title, n, body, extra = "") => `<h2 class="sec" id="sec-${title.split(" ")[0].toLowerCase()}">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
-const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
+const needsHead = (t) => secHead("needs", "Needs you", tblCount(t));
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
 // its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).
@@ -307,13 +307,15 @@ function nightRow(r) {
   return `<div class="cline"><a href="${esc(r.link)}">${esc(r.name)}</a> ${cchip(r.level, r.level)} ${esc(r.line)} ${act}</div>${det}`;
 }
 
+// A bad area or a read error hues the title; the window's start is the last line.
 function nightSection() {
   const n = hst.night;
-  const head = (extra) => `<h2 class="sec" id="sec-night">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
-  if (!n) return head("") + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
+  const head = (level) => secHead("night", "Since last night", null, level);
+  if (!n) return head(hst.nightErr ? "warn" : null) + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
   const errs = [hst.nightErr, ...n.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const ok = n.ok_line ? `<div class="cline muted">${esc(n.ok_line)}</div>` : "";
-  return head(`since ${esc(n.since_label)} <a href="#daily">briefing</a>`) + errs + n.rows.map(nightRow).join("") + ok;
+  const level = n.rows.some((r) => r.level === "bad") ? "bad" : errs || n.rows.length ? "warn" : null;
+  return head(level) + errs + n.rows.map(nightRow).join("") + ok + `<div class="cline muted"><b>Since</b> ${esc(n.since_label)}</div>`;
 }
 
 // Queue a fix: the area's task, worded by hub-core, through the Queue tab's own POST.
@@ -336,9 +338,13 @@ function drawHome() {
   const rt = h.running_table;
   const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
   const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
-  const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
-    `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
-    h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
+  // Vitals: its tally (warn while any is off or unread) and the Grafana trend, then a row per
+  // question unless all are on target (dashboards rule 4).
+  const v = h.vitals;
+  const vitals = v ? secHead("vitals", "Vitals", null, v.all_ok ? null : "warn") +
+    `<div class="cline${v.all_ok ? "" : " warn"}">${esc(v.head)}${h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : ""}</div>` +
+    (v.all_ok ? "" : v.rows.map((r) =>
+      `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join("")) : "";
   const t = h.table;
   const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";

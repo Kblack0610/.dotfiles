@@ -16,7 +16,10 @@ const jst = tblTab({
   state: { hist: "", log: null, all: false },
   params: (p) => { if (jobName()) p.set("name", jobName()); },
   head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
+  tiles: (t) => jobsTiles(t.data),
 });
+// When the list was read and the window it covers, after the state tiles.
+const jobsTiles = (d) => tile("READ", d.at ? clock(d.at * 1e3) : "-", "var(--c-other)", `last ${Math.round((d.window_secs || 86400) / 3600)}h`);
 
 const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? ""}|${j.state}`;
 
@@ -42,20 +45,21 @@ function jobRow(j, n) {
 
 const JOB_COLS = { state: ["state"], source: ["source"], name: ["name"], started: ["started", "n"], took: ["took", "n"], result: ["result"], host: ["host"], detail: ["detail"] };
 
+// A job's page names the job it lists, with the way back to every job.
 function jobsBody(d) {
   const t = d.table, shown = d.jobs || [];
   const rows = jst.all ? shown : shown.slice(0, JOBS_OPEN);
   const more = shown.length - rows.length;
-  return shown.length
+  const page = jobName() ? `<div class="cline">Every run of <b>${esc(jobName())}</b> <a class="btn sm" href="#infra/jobs">All jobs</a></div>` : "";
+  return page + (shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table>` +
       tblMore(more) + `</div>`
-    : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`;
+    : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`);
 }
 
 function jobsHead(d) {
-  const hours = Math.round((d.window_secs || 86400) / 3600);
-  let html = `<h2 class="sec" id="sec-jobs">Jobs ${jobName() ? `<span>every run of <b>${esc(jobName())}</b> <a href="#infra/jobs">back to all</a></span>` : ""}` +
-    ` <span class="muted">${d.table.shown} of ${d.table.total} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
+  const t = d.table;
+  let html = secHead("jobs", "Jobs", tblCount(t));
   if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#infra/runs">${esc(d.ci.says)}</a></div>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -63,7 +67,7 @@ function jobsHead(d) {
 }
 
 const jobsTail = () => `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; its N runs lists them all. Click a row for its log.</div>` +
-  (jst.log ? `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>` : "");
+  (jst.log ? `${secHead("", "Log")}<div class="panel">${pageRow("Job", esc(jst.log.title))}<pre class="joblog">${esc(jst.log.text)}</pre></div>` : "");
 
 // A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
 // The Fleet tab's runner page reads its runs' logs here too.

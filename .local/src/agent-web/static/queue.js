@@ -282,15 +282,15 @@ function renderQueue() {
   qst.render();
 }
 
-// The fold's title says the worst step even while it is shut.
-function qFlowTitle() {
+// The worst step hues the head, so a phone's shut fold still says so, and is a line under it.
+// The fold line is the head itself, so the open fold does not say Pipeline twice.
+function qFlow() {
   const r = qfl.data?.line, n = r?.nodes[r.worst];
   const why = n?.stopped ? `${n.label} stopped` : n?.hot ? `${n.label} past its bound` : "";
-  return `Pipeline${why ? ` <span class="warn">${esc(why)}</span>` : ""}`;
+  return pfold("q-flow", secHead("flow", "Pipeline", null, why ? "warn" : null), (why ? `<div class="cline warn">${esc(why)}</div>` : "") + qStrip() + qFlowTail(), true);
 }
-const qFlow = () => pfold("q-flow", qFlowTitle(), `<h2 class="sec" id="sec-flow">Pipeline</h2>${qStrip()}${qFlowTail()}`);
 // The heading, then the last dispatch pass's verdict (hub-core `capacity::Dispatch`), amber when held.
-const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>` +
+const qTableHead = () => secHead("table", "Queue", tblCount(qst.table)) +
   (qst.dispatch ? `<div class="cline qdispatch${qst.dispatch.warn ? " warn" : ""}">${esc(qst.dispatch.line)}</div>` : "");
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
@@ -332,13 +332,13 @@ function qCandBody() {
     (more > 0 ? `<div class="muted">+${more} more${qst.candQ.trim() ? " (the search reads the rows this page holds)" : ""}</div>` : "");
 }
 
-// The Candidates fold: counts in the heading; chips for each reason a row is blocked, with how
-// many it blocks; a search box; the projects worked on today that no worker covers; the rows.
+// The Candidates fold: the row count in the heading, urgent rows blocked a line under it; chips
+// for each reason a row is blocked, with how many it blocks; a search box with the auto count and
+// the read time; the projects worked on today that no worker covers; the rows.
 function qCandidates() {
   const k = "sec:candidates", open = secOpen(qst.open, k);
   const c = qst.cands;
-  const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}${c.as_of ? `, as of ${esc(c.as_of)}` : ""}`
-    : qst.candErr ? "unread" : "reading";
+  const level = qst.candErr ? "bad" : c?.urgent_blocked ? "warn" : null;
   let body;
   if (qst.candErr) body = `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
   else if (!c) body = `<div class="card muted">Reading candidates...</div>`;
@@ -349,12 +349,14 @@ function qCandidates() {
       ...(c.reasons || []).map((r) => chip(r.reason, `${r.reason} ${r.rows}`))].join(" ");
     const gap = (c.uncovered || []).length
       ? `<div class="cline warn">Worked on today, and no worker covers a row: ${c.uncovered.map(esc).join(", ")}</div>` : "";
-    body = `<div class="card qcfilter"><div class="opts"><input id="qc-q" placeholder="search task, project, why" value="${esc(qst.candQ)}">${chips}</div></div>` +
+    const facts = `<div class="cline muted"><b>auto</b> ${c.auto}${c.as_of ? `, <b>as of</b> ${esc(c.as_of)}` : ""}</div>`;
+    body = `<div class="card qcfilter"><div class="opts"><input id="qc-q" placeholder="search task, project, why" value="${esc(qst.candQ)}">${chips}</div>${facts}</div>` +
       `${gap}<div id="qc-body">${qCandBody()}</div>`;
   }
   const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
-  return `<details class="csec" id="sec-candidates" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
-    `<span class="muted">(${count})</span></h2></summary>${msg}${body}</details>`;
+  const urgent = c?.urgent_blocked ? `<div class="cline warn">${c.urgent_blocked} urgent blocked</div>` : "";
+  return `<details class="csec" id="sec-candidates" data-k="${k}"${open ? " open" : ""}><summary>${secHead("", "Candidates", c ? c.total : null, level)}</summary>` +
+    `${urgent}${msg}${body}</details>`;
 }
 
 async function qPromote(i) {
@@ -478,4 +480,7 @@ TABS.queue = {
     if (ev.kind === "resync") refreshFlow();
   },
 };
-refreshQueue();
+// The nav badge needs one read on any tab. It waits for app.js's route (whose listener runs first:
+// app.js loads before this file) so a linked view (`#queue?s=ready`) reads once, with its view,
+// and the Queue tab's own show() makes that read there.
+document.addEventListener("DOMContentLoaded", () => { if (st.tab !== "queue") refreshQueue(); });

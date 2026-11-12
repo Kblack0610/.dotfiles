@@ -139,7 +139,8 @@ const consumers = (o = {}) => ({
 
 test("Consumers start open after Burn, green or red, and the reader's fold stays", () => {
   const quiet = show(board({ consumers: consumers() }));
-  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="muted">2 consumers: must 1, low 1 \| lazer-core \$0\.50\/\$200<\/span>/, "green is open");
+  assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="n">2<\/span><\/h2><\/summary>/, "green is open, its head a count");
+  assert.doesNotMatch(quiet, /MISMATCH:/, "no mismatch, no line");
   assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="models"'), "after Burn, before Models");
   for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
   assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
@@ -147,7 +148,7 @@ test("Consumers start open after Burn, green or red, and the reader's fold stays
   assert.match(quiet, /pri: the priority its conf or key declares/);
   const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
   const h = show(board({ consumers: red }));
-  assert.match(h, /data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="burn bad">1 MISMATCH \| /);
+  assert.match(h, /data-k="consumers" id="sec-consumers" open><summary><h2 class="sec bad">Consumers <span class="n">1<\/span><\/h2><\/summary><div class="cline warn">1 MISMATCH: /);
   assert.match(h, /<td class="bad">nightly-thing<\/td>.*?<td class="bad">MISMATCH: lazer-pool is low priority<\/td>/);
   // negative control: the reader's fold wins over the open default, and a stale read says why
   cost.open.consumers = false;
@@ -290,9 +291,10 @@ const sections = (sort = null) => ({
   table: { ...board().table, total: 2, shown: 2, columns: SEC_KEYS.map((k) => (k === sort ? col(k, "desc", [k, "asc"]) : col(k, null, [k, "desc"]))) },
 });
 
-test("the Sections block starts open under its headline, with All PRs on top and both caveats", () => {
+test("the Sections block starts open with its window, All PRs on top and both caveats", () => {
   const h = show(board({ sections: sections() }));
-  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections" open><summary><h2 class="sec">Sections <span class="muted">598 PRs in 7d, 52% first try/, "open, headline in the summary");
+  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections" open><summary><h2 class="sec">Sections <span class="n">2<\/span><\/h2><\/summary><div class="panel scroll"><div><b>window<\/b> last 7d<\/div>/, "open, a count on the head and the window in the body");
+  assert.match(h, /<tr class="allrow"><td class="">All PRs<\/td><td class="n">598<\/td><td class="n">52%<\/td><td class="n">0\.98<\/td><td class="n">145<\/td><td class="n">1109<\/td><td class="n">116<\/td>/, "the old headline's PRs, first try, gate min and greens lost are the All PRs row");
   for (const k of ["section", "PRs", "first try", "gate reds/PR", "gate min/PR", "gate h", "greens lost", "cost/PR", "tokens/PR", "work min/PR"]) assert.match(h, new RegExp(`title="sort by ${k.replace("/", "\\/")}"`), `header ${k}`);
   assert.match(h, /data-ssort="prs" data-sdir="desc"/, "its headers sort apart from the main table's");
   assert.ok(h.indexOf("All PRs</td>") < h.indexOf("Assets/Playground/Tests</td>"), "All PRs is first");
@@ -359,7 +361,7 @@ test("the token and Langfuse folds follow the Spend sections, in the Models inne
   const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
   const at = (id) => h.indexOf(`id="${id}"`);
   assert.ok(at("sec-totals") >= 0 && at("sec-totals") < at("sec-burn") && at("sec-burn") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse"), "the DOM order is the layout order");
-  assert.match(show(board()), /id="sec-tokens"><span class="warn">no snapshot|Where the tokens go <span class="warn">no snapshot/);
+  assert.match(show(board()), /<h2 class="sec warn" id="sec-tokens">Where the tokens go<\/h2><div class="cline warn">no snapshot/);
 });
 
 test("a new token snapshot re-reads Costs while it is shown, and not from another tab", async () => {
@@ -394,10 +396,10 @@ const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 1
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
 const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
 
-test("the tokens section starts open while fresh, with the week on its head", () => {
+test("the tokens section starts open while fresh, with the week in its body", () => {
   const h = tail(tokens());
-  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens" open><summary>/);
-  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
+  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens" open><summary><h2 class="sec">Where the tokens go<\/h2><\/summary><div class="panel scroll">/);
+  assert.match(h, /7d: 18\.0B context, [^,]+, tool output carried 15%/);
   assert.match(h, /by tool/);
   assert.match(h, /by Bash command/);
   assert.match(h, /82\.3%/);
@@ -414,14 +416,14 @@ test("a named row takes its chart slot and Other its grey", () => {
 test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
   const h = tail(tokens({ stale: true }));
   assert.match(h, /id="sec-tokens" open>/);
-  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
+  assert.match(h, /<h2 class="sec warn">Where the tokens go<\/h2><\/summary><div class="cline warn">stale: newest snapshot 2026-11-05<\/div>/);
   run("cost").open.tokens = false;
   assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
 });
 
 test("no snapshot is an amber head with nothing to open", () => {
   const h = tail(null);
-  assert.match(h, /class="warn">no snapshot/);
+  assert.match(h, /<h2 class="sec warn" id="sec-tokens">Where the tokens go<\/h2><div class="cline warn">no snapshot/);
   assert.doesNotMatch(h, /<details/);
 });
 
@@ -456,7 +458,7 @@ test("the fold keeps what paint remembered, fresh or stale, under one key", () =
   f.open = { tokens: false };
   assert.doesNotMatch(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
   assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/, "going stale does not undo the reader's fold");
-  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens" id="sec-tokens"><summary>.*class="warn"/, "the folded head still wears amber");
+  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens" id="sec-tokens"><summary><h2 class="sec warn">/, "the folded head still wears amber");
   f.open = {};
 });
 
@@ -469,10 +471,10 @@ const lfFigures = () => ({
 });
 const lfTail = (t) => { const f = run("cost"); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
 
-test("the langfuse section starts open while it reads, with both error shares and the gateway's cost on its head", () => {
+test("the langfuse section starts open while it reads, with both error shares and the gateway's cost first in its body", () => {
   const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
-  assert.match(h, /id="sec-langfuse" open>/);
-  assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
+  assert.match(h, /id="sec-langfuse" open><summary><h2 class="sec">What Langfuse sees<\/h2><\/summary><div class="panel scroll"><div><b>tool errors<\/b> 2%, <b>gateway errors<\/b> 13%, <b>gateway cost<\/b> \$3\.59<\/div>/);
+  assert.doesNotMatch(h, /cline warn/, "fresh, no warn line");
 });
 
 test("open, it draws the slowest tools, the error classes and the dearest models", () => {
@@ -489,11 +491,11 @@ test("open, it draws the slowest tools, the error classes and the dearest models
 test("no figures is an amber head that says why; a stale snapshot is amber too; a fold the reader closed stays closed", () => {
   const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
   assert.match(none, /data-k="langfuse" id="sec-langfuse" open>/);
-  assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
+  assert.match(none, /<h2 class="sec warn">What Langfuse sees<\/h2><\/summary><div class="cline warn">no figures in snapshot 2026-11-05<\/div>/);
   assert.match(none, /no key \(rbw langfuse-api\)/);
   const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
   assert.match(stale, /data-k="langfuse" id="sec-langfuse" open>/);
-  assert.match(stale, /stale: newest snapshot 2026-11-05/);
+  assert.match(stale, /<h2 class="sec warn">What Langfuse sees<\/h2><\/summary><div class="cline warn">stale: newest snapshot 2026-11-05<\/div>/);
   const f = run("cost");
   f.open = { langfuse: false };
   assert.match(ctx.langfuseSection({ tokens: tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }) }), /data-k="langfuse" id="sec-langfuse"><summary>/);
@@ -519,7 +521,7 @@ test("the fleet figure is Spend's first tile; who spent it is a table under a pl
   const h = show(board({ fleet_cost }));
   assert.ok(h.indexOf("FLEET 24H") < h.indexOf("SPEND 24H") && h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
   assert.match(h, /<span class="tl">FLEET 24H<\/span><span class="tv">about \$849<\/span><span class="ts1">whole fleet, measured \$310, estimated \$538, as of /, "a shared tile");
-  assert.match(h, /<h2 class="sec" id="sec-fleet">Who spent the 24h<\/h2>/, "no figure in the title");
+  assert.match(h, /<h2 class="sec" id="sec-fleet">Who spent the 24h <span class="n">4<\/span><\/h2>/, "a row count, no figure, in the title");
   assert.match(h, /<th class="n" data-role="glance">% of fleet<\/th>/);
   assert.match(h, /<tr><td>shepherd<\/td><td class="n">\$44<\/td><td class="n">5%<\/td><td class="muted">61 sessions, measured<\/td><\/tr>/);
   assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
@@ -549,13 +551,15 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
     series: { sid: "b", session: "shepherd", total: "$15", bars: [bar("2026-11-07", 10, 10, 0), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 5, 5, 0)] } };
   const h = show(board({ history, day }));
   assert.ok(h.indexOf("sec-totals") < h.indexOf("sec-spend") && h.indexOf("sec-spend") < h.indexOf('id="sec-table"') && h.indexOf('id="sec-table"') < h.indexOf("sec-sessions"), "the tiles, the chart, the table, then burn per session last");
-  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend <span class="muted">Nov \$1,579\/day vs Oct/, "open until the reader folds it");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend" open><summary><h2 class="sec">Spend<\/h2><\/summary>/, "open until the reader folds it");
+  assert.match(h, /<div><span class="muted">MONTH<\/span> Nov \$1,579\/day vs Oct \$1,102\/day \(\+43%\)<\/div><div><span class="muted">LAST DAY<\/span> 11-09 \$1,312 vs 7d median \$1,120 \(\+17%\)<\/div>/, "the headline is two facts in the chart's box");
   const days = h.slice(h.indexOf('id="spend-days"'), h.indexOf("By month"));
   assert.match(days, /class="cc sel" data-key="2026-11-09"/, "the picked day is marked");
   assert.match(days, /data-key="2026-11-08" data-tip="2026-11-08: no figure"><div class="cs"><\/div>/, "a day with no figure is an empty column, never a $0 bar");
   assert.match(days, /height:60%;background:var\(--c1\)"><\/i><i style="height:40%;background:var\(--c-other\)/, "billed under estimated");
   assert.match(h, /By month<\/h3>.*data-key="2026-11"/s);
-  assert.match(h, /id="sec-sessions" open><summary><h2 class="sec">Burn per session <span class="muted">2026-11-09: 2 sessions, \$95 of the day&#39;s \$100/);
+  assert.match(h, /id="sec-sessions" open><summary><h2 class="sec">Burn per session <span class="n">2<\/span><\/h2><\/summary>/);
+  assert.match(h, /<div><span class="muted">DAY<\/span> 2026-11-09: 2 sessions, \$95 of the day&#39;s \$100<\/div>/, "the day's figure is a fact under its head");
   // negative control on the cleanup: no day chips, no search box, no facet dropdowns
   const sess = h.slice(h.indexOf('id="sec-sessions"'));
   assert.doesNotMatch(h, /data-cv="day"/, "no day chips: the chart picks the day");
@@ -571,7 +575,7 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   assert.match(h, /<td>11-09<\/td><td class="n">\$1,312<\/td><td class="n">1<\/td><td class="n">\$1,312<\/td><td class="n">-<\/td>/, "a day with no session rows is -, never $0");
   assert.match(h, /\+3 older/);
   assert.match(h, /2 days in the range have no figure and are not counted/);
-  assert.match(show(board({ history: { ...history, stale: true }, day })), /class="warn">stale: no snapshot for yesterday/);
+  assert.match(show(board({ history: { ...history, stale: true }, day })), /<h2 class="sec warn">Spend<\/h2><\/summary><div class="cline warn">stale: no snapshot for yesterday<\/div>/);
   // a click on a day or a row is the day or sid key in the URL and the request
   asked = [];
   body = board({ history, day });
@@ -591,7 +595,7 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   assert.doesNotMatch(ctx.history.url, /sid=c/, "the open row again closes it");
   // negative control: no snapshot says so, never a $0 chart
   const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
-  assert.match(none, /id="sec-spend"><h2 class="sec">Spend <span class="muted">no snapshot with a fleet figure yet/);
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend<\/h2><div class="panel muted">no snapshot with a fleet figure yet/);
   assert.doesNotMatch(none, /spend-days/);
 });
 
@@ -702,7 +706,7 @@ test("the Budget inner tab is this month's cash: head, what needs a look, the bi
   const h = show(board({ budget }));
   assert.ok(shown(h, "budget") && !shown(h, "limits"));
   const b = h.slice(h.indexOf('id="sec-budget"'));
-  assert.match(b, /^id="sec-budget">Budget \$838 so far, ~\$1,304 by month end <span class="muted">Nov, day 11 of 30, caps \$1,445, as of /);
+  assert.match(b, /^id="sec-budget">Budget<\/h2><div class="panel scroll"><div><b>So far<\/b> \$838, <b>by month end<\/b> ~\$1,304, <b>month<\/b> Nov, day 11 of 30, <b>caps<\/b> \$1,445, <b>as of<\/b> /);
   assert.ok(b.indexOf("Needs a look 1") < b.indexOf("<table"), "what needs a look leads the bills");
   assert.match(b, /<tr><td class="warn">lazer<\/td><td class="muted">litellm<\/td><td class="n">\$50<\/td><td class="n warn">\$228<\/td>/, "a bill over its cap is amber");
   assert.match(b, /<tr><td class="">max4<\/td>.*<td class="n ">\$200<\/td>/, "an ok bill is not amber");
@@ -712,10 +716,10 @@ test("the Budget inner tab is this month's cash: head, what needs a look, the bi
   assert.match(b, /<b>By lane<\/b> Agents: queue \$175, CI: ci \$141/);
   assert.match(b, /<th data-role="lead">bill<\/th>/, "the table folds to a phone row");
   assert.doesNotMatch(b, /of \$\d[\d,]*\/mo/, "no list price shown as a share of a fee");
-  assert.match(show(board({ budget: { ...budget, stale: true } })), /class="warn">stale, as of /);
+  assert.match(show(board({ budget: { ...budget, stale: true } })), /<h2 class="sec warn" id="sec-budget">Budget<\/h2><div class="cline warn">stale, as of /);
   // negative control: no file says so, never a $0 table
   const none = show(board({ budget: { why: "no budget file: the fleet-bench budget step has not run" } }));
-  assert.match(none, /id="sec-budget">Budget<\/h2><div class="panel"><span class="warn">no budget file/);
+  assert.match(none, /<h2 class="sec warn" id="sec-budget">Budget<\/h2><div class="panel"><span class="warn">no budget file/);
   run("st.arg = ''");
 });
 

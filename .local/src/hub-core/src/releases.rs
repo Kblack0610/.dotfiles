@@ -1141,11 +1141,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 question,
                 summary: says(&apps),
                 gaps: gaps(&rows),
-                coverage: if coverage.is_empty() {
-                    coverage
-                } else {
-                    format!("coverage: {coverage}")
-                },
+                coverage,
                 apps,
                 rows,
                 errors: s
@@ -1806,7 +1802,7 @@ mod tests {
             a.coverage_text,
             "prev 2/2, deployed 0/1 (1 none declared), reached 1/2"
         );
-        assert_eq!(r.coverage, "coverage: prev 2/2, deployed 0/1, reached 1/2");
+        assert_eq!(r.coverage, "prev 2/2, deployed 0/1, reached 1/2");
         assert_eq!(a.history[1].prs_text, "none merged");
     }
 

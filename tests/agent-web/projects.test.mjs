@@ -107,7 +107,8 @@ function click(id, dataset, row) {
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
   const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, held: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
-  assert.match(cards, /2 projects, 1 in flight; progress is the open version's rows by size/);
+  assert.match(cards, /<h2 class="sec" id="sec-projects">Projects <span class="n">2<\/span><\/h2>/);
+  assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /All rows/, "every project's rows are the Board tab");
   assert.match(cards, /id="projects-tiles".*id="projects-q"/s);
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
@@ -118,7 +119,7 @@ test("the list is one table row per project with its counts, and the card's word
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
-  assert.match(cards, /<details data-k="unlinked" open><summary><h2 class="sec">Not on a card.*1 active queue items no project claims.*dotfiles: tidy/s);
+  assert.match(cards, /<details data-k="unlinked" open><summary><h2 class="sec">Not on a card <span class="n">1<\/span><\/h2><\/summary>.*dotfiles: tidy/s);
 });
 
 test("the list's view goes to the server, and a view that keeps nothing says so", async () => {
@@ -132,7 +133,7 @@ test("the list's view goes to the server, and a view that keeps nothing says so"
   assert.ok(ctx.sent.some((s) => s.u === "/api/projects?q=stage%3Abeta"));
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/board")), "the list's view is not the rows'");
   const { cards } = read();
-  assert.match(cards, /0 of 1 projects, 0 in flight/);
+  assert.match(cards, /Projects <span class="n">0 of 1<\/span><\/h2>/);
   assert.match(cards, /No project matches\./);
 });
 
@@ -193,7 +194,7 @@ const pinOf = (pane, id) => (pane.match(new RegExp(`<div data-pin="${id}"( hidde
 test("an opened project is a header and an inner tab strip over Overview, never every epic's tasks", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", note_says: "model-written, 2026-11-05" });
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
   let { head, pane } = draw(list([c]), "bnb/demo");
   assert.match(head, /<div class="pgoal">ship the menu<\/div><\/div>/);
   assert.match(pinOf(pane, "overview"), /Reading the page\.\.\./);
@@ -211,26 +212,26 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(over, /^<div data-pin="overview">/, "Overview shows");
   for (const id of ["rows", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
   // Needs you: each kind a shut fold with the inner tab that acts on it.
-  assert.match(over, /id="sec-p-needs">Needs you <span class="muted">5<\/span><\/h2>/);
+  assert.match(over, /id="sec-p-needs">Needs you <span class="n">5<\/span><\/h2>/);
   assert.match(over, /<details class="cfold" data-k="pg:need:verify"><summary><b>1 epic landed with no live proof<\/b><\/summary><div>verify: Saves/);
   assert.match(over, /data-k="pg:need:plan"><summary><b>2 plans with no epic<\/b><\/summary><div>plan with no epic: a<\/div><div>plan with no epic: &lt;b&gt;<\/div>/);
   assert.match(over, /data-k="pg:need:stage"><summary><b>1 beta check failing, 1 for a human<\/b> <a href="#" data-pgo="stage">open Stage<\/a><\/summary><div>HUMAN sign off<\/div><div>FAIL a soak test<\/div>/);
   assert.doesNotMatch(over, /<details[^>]* open/, "a group's items are per-row detail and start shut");
-  assert.match(over, /id="sec-p-flight">In flight <span class="muted">1 running, 0 waiting.*wire the bar.*href="#queue\?q=project%3Ademo"/s);
+  assert.match(over, /id="sec-p-flight">In flight <span class="n">1<\/span><\/h2>.*wire the bar.*<div class="cline muted">1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox<\/div><div class="cline"><a href="#queue\?q=project%3Ademo"/s);
   // Systems: one row each, the head's numbers as columns; a system opens Build.
-  assert.match(over, /id="sec-p-systems">Systems <span class="muted">2 systems, 1 open epics/);
+  assert.match(over, /id="sec-p-systems">Systems <span class="n">2<\/span><\/h2>/);
   assert.match(over, /<tr class="jr" tabindex="0" data-psys="ui"><td>ui<\/td><td class="n">25%<\/td><td class="n">0 of 1<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n warn">1<\/td><td class="n">5 of 7<\/td><td class="wrap">Menus 25% <span class="muted">\+2<\/span><\/td><\/tr>/);
   assert.match(over, /data-psys="ci"><td>ci<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">1 of 2<\/td><td class="wrap">-<\/td>/);
   // NEGATIVE CONTROL: the leaves the page carries are never drawn.
   assert.doesNotMatch(head + pane, /wire the pause key|data-leaf/);
   // Stage: failing first, then a human's, then the rest.
-  assert.match(pinOf(pane, "stage"), /id="sec-p-stage">Next stage <span class="muted">beta  4 of 12 met.*<b>FAIL<\/b> a soak test.*<b>HUMAN<\/b> sign off.*<b>TODO<\/b> a playtest/s);
+  assert.match(pinOf(pane, "stage"), /<h2 class="sec warn" id="sec-p-stage">Next stage <span class="n">4 of 12<\/span><\/h2>.*<b>FAIL<\/b> a soak test.*<b>HUMAN<\/b> sign off.*<b>TODO<\/b> a playtest/s);
   const act = pinOf(pane, "activity");
-  assert.match(act, /id="sec-p-shipped">Shipped <span class="muted">none yet/);
-  assert.match(act, /id="sec-p-timeline">Timeline <span class="muted">7d: 1 commit \(1 red on CI\), 1 PR<\/span>.*<div class="muted">PRs: the origin is not GitHub<\/div>/s);
+  assert.match(act, /id="sec-p-shipped">Shipped <span class="n">0<\/span><\/h2>/);
+  assert.match(act, /id="sec-p-timeline">Timeline <span class="n">5<\/span><\/h2>.*<div class="muted">PRs: the origin is not GitHub<\/div>/s);
   assert.match(act, /<div class="ptl bad"><a href="https:\/\/ci\.example\/run\/1" target="_blank" rel="noopener">2h  commit  fix the menu  CI red<\/a><\/div>/);
   assert.match(act, /<div class="ptl">3h  PR      #7 opened: &lt;menu&gt;<\/div><div class="muted more">\+3 older<\/div>/, "a non-http url is not a link");
-  assert.match(act, /id="sec-p-note">Agent note <span class="muted">model-written, 2026-11-05.*landed it/s);
+  assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
 });
 
 test("an inner tab is in the URL, a deep link opens on it, and a system opens Build filtered to it", async () => {
@@ -255,7 +256,7 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens Bu
   await settle(); await settle();
   assert.equal(vm.runInContext(`st.views.projects + "|" + st.arg`, ctx), "dq=sys%3Aui|bnb/demo/build");
   assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"), "Build reads this project's epics");
-  assert.match(box("p-deliv").innerHTML, /id="sec-p-build">Build <span class="muted">Deliverables/);
+  assert.match(box("p-deliv").innerHTML, /<h2 class="sec warn" id="sec-p-build">Build <span class="n">2<\/span><\/h2>/);
   // An epic's row on Build opens Rows filtered to that epic's rows.
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
   const row = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
@@ -386,7 +387,7 @@ const deliv = (o = {}) => {
     { project: "garden", profile: "personal", id: "ga-1", title: "Water", system: "save", done: 2, total: 2, percent: 100, done_says: "100% 2/2", eta: null, eta_day: "", track: "verify" },
   ];
   return {
-    rows, says: "Deliverables (2 open, 1 ready to verify, 0 on track, 1 behind)",
+    rows, behind: 1, says: "Deliverables (2 open, 1 ready to verify, 0 on track, 1 behind)",
     coverage_says: "Coverage: 74 linked / 79 open rows (94%); no feature epic: home-config", legend: "percent is by size, then rows done/all",
     table: {
       q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
@@ -406,7 +407,8 @@ const drawDeliv = async (d) => {
 
 test("Deliverables is a table over the project list: the head, one row per epic, then the coverage line", async () => {
   const html = await drawDeliv(deliv());
-  assert.match(html, /^<div data-tbl="d">.*id="sec-deliverables">Deliverables \(2 open, 1 ready to verify, 0 on track, 1 behind\)<\/h2>/s);
+  assert.match(html, /^<div data-tbl="d"><div id="p-del-head"><h2 class="sec warn" id="sec-deliverables">Deliverables <span class="n">2<\/span><\/h2>/, "an epic behind hues the head");
+  assert.match(await drawDeliv(deliv({ behind: 0 })), /<h2 class="sec" id="sec-deliverables">/, "the control: none behind, a plain head");
   assert.match(html, /id="p-del-tiles".*id="p-del-q"/s);
   assert.match(html, />BEHIND<.*>ON TRACK<.*>VERIFY</s);
   assert.match(html, /data-tsort="project".*data-tsort="epic".*data-tsort="sys".*data-tsort="done".*data-tsort="eta".*data-tsort="track"/s);

@@ -201,8 +201,10 @@ const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
   tab: "infra", id: "infra-" + INFRA_TABLES[name], el: "infra-main", pre: INFRA_TABLES[name], hint,
   refresh: () => refreshInfra(), render: () => renderInfra(), table: () => ist.data?.tables?.[name]?.table,
   wrap: (h) => `<div data-tbl="${INFRA_TABLES[name]}">${h}</div>`,
-  body: () => infraBody(name, labels, cells, empty, o),
+  body: () => infraBody(name, labels, cells, empty, o), tiles: o && o.tiles,
 });
+// A table's head count: its rows, or "N of M" while the view hides some.
+const infraN = (name) => { const t = ist.data?.tables?.[name]?.table; return t && tblCount(t); };
 const INFRA_T = {
   machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search, or machines:razer-laptop", "No pool reports."),
@@ -246,25 +248,24 @@ function doneToday(inst, t1) {
 // Runners: the slots of hub_core::ci, the jobs waiting for a runner with what each needs and the
 // hosts that can take it, the local Unity gate failures, and the day's tiles. Each pool's queue and
 // last day are the Pools table on Machines; the runs themselves (hub_core::builds) are Runs.
-const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} waiting${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
-// The CI runs that went red in the last day (Counts::recent_red, the Runs read's), as the link to
-// Runs on its red chip; none until that read is in.
+// The CI runs that went red in the last day (Counts::recent_red, the Runs read's), as a line that
+// opens Runs on its red state; none until that read is in.
 function failed24h() {
   const n = bld.data?.counts?.recent_red;
-  return n ? `, <a href="#infra/runs?bs=red" title="the red runs, newest first">failed 24h ${n}</a>` : "";
+  return n ? `<div class="cline warn"><a href="#infra/runs?bs=red" title="the red runs, newest first">${n} failed in 24h</a></div>` : "";
 }
 function runnersSection(ci) {
-  const quiet = !ci.busy && !ci.queued && bld.data?.counts && !bld.data.counts.recent_red && !(ci.local || []).length;
-  let html = `<h2 class="sec" id="sec-ci">Runners <span class="muted">${esc(ciHead(ci))}${failed24h()}${quiet ? "; green: nothing waiting or failed in 24h" : ""}</span></h2>`;
+  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
   return html + INFRA_T.runners.html();
 }
-const waitingSection = () => `<h3 class="sec" id="sec-waiting">Waiting for a runner</h3>${INFRA_T.queued.html()}`;
+const waitingSection = () => secHead("waiting", "Waiting for a runner", infraN("queued"), "", "h3") + INFRA_T.queued.html();
 function localSection(inst, t1) {
   const open = secOpen(ist.open, "ci-more") ? " open" : "";
-  return `<h3 class="sec" id="sec-local">Local Unity <span class="muted">gate runs that failed, last 24h</span></h3>${INFRA_T.local.html()}` +
-    `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today</summary>${doneToday(inst, t1)}</details>`;
+  const n = infraN("local");
+  return secHead("local", "Local Unity", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
+    `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "Done today", null, "", "h3")}</summary>${doneToday(inst, t1)}</details>`;
 }
 
 // The governor's global series: whether it is up and saw every source, its queue, and the budget
@@ -345,7 +346,7 @@ function infraPageHtml() {
   const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
   const d = pgst.data;
   if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
-  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
+  let h = `<div class="bhead"><span>${esc(d.head)}</span>${back}</div>`;
   const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return h + o.p.body(d);
@@ -425,7 +426,7 @@ function powerHistory(p) {
   const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
   const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
   const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
-  return `<h3 class="sec">Power <span class="muted">run per UTC day, counted from ${p.step / 60}-minute samples of the governor's power state</span></h3><div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
 }
 
 // The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
@@ -444,18 +445,18 @@ function cloudButtons(p) {
 
 function machineBody(d) {
   const colors = poolColors(d);
-  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
-  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  h += secHead("", "Share", null, "", "h3") + shareBar(d, colors);
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
-  h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
+  h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   const hist = d.history;
   if (hist) {
-    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores, colors)}`;
-    h += `<h3 class="sec">Downtime <span class="muted">stretches with no CPU reading, newest first</span></h3>${pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.")}`;
+    h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors);
+    h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.");
     if (hist.power) h += powerHistory(hist.power);
   }
-  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.tables.recent.rows.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
-  h += `<h3 class="sec">Alerts <span class="muted">firing now and naming it</span></h3>${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
+  h += `${secHead("", "Recent CI jobs", d.tables.recent.rows.length, "", "h3")}${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
+  h += `${secHead("", "Alerts", d.tables.alerts?.rows.length, d.tables.alerts?.rows.length ? "warn" : "", "h3")}${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
   return h;
 }
 
@@ -472,11 +473,11 @@ function poolChart(h) {
 }
 
 function poolBody(d) {
-  let h = `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
-  h += `<h3 class="sec">Machines <span class="muted">with a slot in it</span></h3>${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
-  h += `<h3 class="sec">Waiting <span class="muted">CI jobs waiting for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}</div>`;
+  h += `${secHead("", "Machines", d.tables.machines?.rows.length, "", "h3")}${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
+  h += `${secHead("", "Waiting", d.tables.waiting?.rows.length, "", "h3")}${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
   const hist = d.history;
-  if (hist) h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${poolChart(hist)}`;
+  if (hist) h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + poolChart(hist);
   return h;
 }
 
@@ -529,8 +530,8 @@ function drawInfra() {
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2>${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
-  html += innerWrap("infra", "pools", `<h2 class="sec" id="sec-pools">Pools <span class="muted">each pool's slots and the last day of its queue</span></h2>${INFRA_T.pools.html()}`);
+  html += innerWrap("infra", "machines", `${kpis(cc)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "pools", secHead("pools", "Pools", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(inst, t1));
   paint(el, html, ist.open);
