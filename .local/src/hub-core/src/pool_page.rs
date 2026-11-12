@@ -120,7 +120,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
             n(p.slots),
             n(p.waiting)
         ),
-        parts: parts(infra, p, &machines, &waiting),
+        parts: parts(infra, p, &waiting),
         machines,
         waiting,
         history,
@@ -129,7 +129,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
 }
 
 /// Its row as labelled parts: Slots, Waiting, Last 24h, Grafana.
-fn parts(infra: &Infra, p: &Pool, machines: &[Machine], waiting: &[Queued]) -> Vec<Part> {
+fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let has = |v: Option<f64>| v.is_some_and(|x| x > 0.0);
     let n = |v: f64| format!("{v:.0}");
     let mut out = vec![];

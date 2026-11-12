@@ -1,10 +1,10 @@
 //! The Releases page: every app from `hub_core::releases::read` on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), one row each with what is live
 //! where it matters most. The opened app's pane lists its headline env's channels, its other envs
-//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps, Builds,
-//! Tests, `hub_core::layout`), switched with Left/Right.
+//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps and Release
+//! runs, `hub_core::layout`), switched with Left/Right.
 
-use hub_core::builds::Builds;
+use hub_core::builds::{Builds, Scope};
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
@@ -49,6 +49,9 @@ const LAST_DEPLOY_CAP: usize = 16;
 /// How many releases the pane lists before it says how many more there are.
 const HISTORY_LINES: usize = 8;
 
+/// How many of an opened app's build runs the pane lists; the web lists them all.
+const BUILD_LINES: usize = 6;
+
 /// The changelog read for the opened app: whose it is, whether a worker is still on it (one at a
 /// time, so holding a key over many apps asks for the last one only), and what came back, None
 /// while it is being read.
@@ -59,7 +62,6 @@ pub struct ChangelogRead {
     pub read: Option<Result<Changelog, String>>,
 }
 
-#[derive(Default)]
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
@@ -69,10 +71,24 @@ pub struct ReleasesView {
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
     pub cl: ChangelogRead,
-    /// The Release runs inner tab's table and pane, over `Builds::releases`.
+    /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
+}
+
+impl Default for ReleasesView {
+    fn default() -> Self {
+        ReleasesView {
+            table: DataTable::default(),
+            open: false,
+            down: 0,
+            others: false,
+            cl: ChangelogRead::default(),
+            runs: crate::builds::BuildsView::of(Scope::Release),
+            inner: "",
+        }
+    }
 }
 
 /// Releases' layout entry: its inner tabs.
@@ -81,13 +97,13 @@ pub fn tab() -> &'static layout::Tab {
 }
 
 /// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
-/// red release run of the last day (`b` is `Builds::releases`).
+/// red release run of the last day (`b` is the builds read, cut here to `Scope::Release`).
 pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     let mut out = vec![];
     if s.needs_look() {
         out.push("table");
     }
-    if b.is_some_and(Builds::needs_look) {
+    if b.is_some_and(|b| b.needs_look(Scope::Release)) {
         out.push("runs");
     }
     out
@@ -431,6 +447,30 @@ pub fn detail(
                 p.dim(),
             ));
         }
+    }
+    // The build runs joined to its tags, newest first, as the web's Builds table says them.
+    let live = a.builds.iter().filter(|b| b.live).count();
+    out.extend(wrapped(
+        &format!("  {:<LABEL$} ", "Builds"),
+        &match (a.builds.len(), live) {
+            (0, _) => "no build run joined to a tag in the last 30 days".to_string(),
+            (n, 0) => format!("{n} run{}", if n == 1 { "" } else { "s" }),
+            (n, l) => format!("{n} run{}, {l} in progress", if n == 1 { "" } else { "s" }),
+        },
+        p.dim(),
+        p,
+        w,
+    ));
+    for b in a.builds.iter().take(BUILD_LINES) {
+        let line = format!(
+            "    {}  {}  {}  {} - {}",
+            b.tag, b.workflow, b.state_text, b.started_text, b.ended_text
+        );
+        out.push(clip_line(Line::styled(line, level(b.level, p)), w));
+    }
+    if a.builds.len() > BUILD_LINES {
+        let more = a.builds.len() - BUILD_LINES;
+        out.push(Line::styled(format!("    and {more} older"), p.dim()));
     }
     let mut part = |label: &str, text: &str, style: Style| {
         out.extend(wrapped(&format!("  {label:<LABEL$} "), text, style, p, w));
@@ -799,6 +839,44 @@ mod tests {
             at("Releases") < at("Changelog"),
             "the history sits above the changelog"
         );
+    }
+
+    #[test]
+    fn the_pane_lists_the_apps_build_runs_newest_first_and_counts_the_one_running() {
+        use hub_core::releases::AppBuild;
+        let s = sample();
+        let mut a = app(&s, "binks").clone();
+        assert!(pane(&a, false, None, 100)
+            .iter()
+            .any(|l| l.contains("Builds") && l.contains("no build run joined")));
+        let b = |tag: &str, state: &str, live: bool| AppBuild {
+            tag: tag.into(),
+            workflow: "Release builds".into(),
+            state_text: state.into(),
+            live,
+            started_text: "11-11 00:16".into(),
+            ended_text: if live { "-" } else { "11-11 02:33" }.into(),
+            ..Default::default()
+        };
+        a.builds = vec![b("v0.5.0-binks8", "in progress 4m", true)];
+        a.builds
+            .extend((0..7).map(|i| b(&format!("v0.5.0-binks{}", 7 - i), "success", false)));
+        let lines = pane(&a, false, None, 100);
+        assert!(
+            lines.iter().any(|l| l.contains("8 runs, 1 in progress")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l
+                    .contains("v0.5.0-binks7  Release builds  success  11-11 00:16 - 11-11 02:33")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("and 2 older")), "{lines:?}");
+        let at = |k: &str| lines.iter().position(|l| l.contains(k)).unwrap();
+        assert!(at("v0.5.0-binks8") < at("v0.5.0-binks7"), "newest first");
+        assert!(at("8 runs") < at("Changelog"));
     }
 
     #[test]

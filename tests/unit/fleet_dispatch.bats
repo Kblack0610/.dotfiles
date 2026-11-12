@@ -1873,6 +1873,39 @@ J
   assert_output --partial 'dispatch is held'
 }
 
+@test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item stuck high "$old"
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_BURST=3
+  fleet_state 3
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by a full fleet (3 live sessions, the away pace target is 3)'
+  # Negative control: one under the target the account gate binds, and the item starves.
+  fleet_state 2
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # A stale fleet state document reads no live count, so it holds nothing here.
+  fleet_state 3 30
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # A standing hold still trips at a full fleet, led by its Stopped line.
+  fleet_state 3
+  hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
+  run cmd_starved
+  assert_failure
+  assert_line --index 0 --partial 'Dispatch stopped 2h05m: no account has room'
+  rm "$HOME/.local/state/agentctl/fleet-dispatch/held_since"
+  # An urgent item may preempt a runner session at a full fleet, so it still starves.
+  queued_item hot urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'hot (urgent'
+}
+
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   acct main:pace

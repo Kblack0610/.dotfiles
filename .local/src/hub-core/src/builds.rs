@@ -4,7 +4,7 @@
 //! its last line. A failed run's log is fetched only when the row is opened (docs/dashboards.md
 //! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs, steps
 //! and cost are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
-//! same read cut to the runs the graph tied to a release (`Builds::releases`). Money is a cloud
+//! same read cut to the runs the graph tied to a release (`Builds::scoped`). Money is a cloud
 //! machine's POWER cell on Infra Machines and Costs', so the Run times fold has none.
 //!
 //! | fact                | home                                                           |
@@ -17,6 +17,7 @@
 //! | the pass rate       | computed on read (`verdict`, `pass_by_repo`): the one CI pass rate |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 //! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
+//! | a run's logged tag  | `$SCHEDULES_RUN_TAGS`, else `run-tags.jsonl` beside the ledger (`schedules-sync run-tags`) |
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,8 @@ pub struct Paths {
     pub jobs: PathBuf,
     /// Each repo's test quarantine and its last nightly's counts.
     pub quarantine: PathBuf,
+    /// The tags release runs' logs named, for runs whose title does not carry one.
+    pub run_tags: PathBuf,
 }
 
 impl Paths {
@@ -64,6 +67,8 @@ impl Paths {
             sync: ledger.with_file_name("sync.json"),
             quarantine: env("SCHEDULES_QUARANTINE")
                 .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
+            run_tags: env("SCHEDULES_RUN_TAGS")
+                .unwrap_or_else(|| ledger.with_file_name("run-tags.jsonl")),
             ledger,
             fleet: crate::boards::fleet_state(),
             prs: crate::release_graph::prs_dir(),
@@ -71,10 +76,14 @@ impl Paths {
         }
     }
 
-    /// Whether a changed file is the ledger, its sync record, the job archive or the quarantine:
-    /// what wakes the section.
+    /// Whether a changed file is the ledger, its sync record, the job archive, the quarantine or
+    /// the run tags: what wakes the section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync || p == self.jobs || p == self.quarantine
+        p == self.ledger
+            || p == self.sync
+            || p == self.jobs
+            || p == self.quarantine
+            || p == self.run_tags
     }
 }
 
@@ -268,18 +277,21 @@ pub struct Counts {
 }
 
 impl Counts {
-    fn of(rows: &[Run], now: i64) -> Counts {
-        let n = |s: &str| rows.iter().filter(|r| r.state == s).count();
-        Counts {
-            total: rows.len(),
-            running: n("running"),
-            queued: n("queued"),
-            red: n("red"),
-            recent_red: rows
-                .iter()
-                .filter(|r| r.state == "red" && now - r.started < RECENT_SECS)
-                .count(),
+    fn of<'a>(rows: impl IntoIterator<Item = &'a Run>, now: i64) -> Counts {
+        let mut c = Counts::default();
+        for r in rows {
+            c.total += 1;
+            match r.state.as_str() {
+                "running" => c.running += 1,
+                "queued" => c.queued += 1,
+                "red" => {
+                    c.red += 1;
+                    c.recent_red += usize::from(now - r.started < RECENT_SECS);
+                }
+                _ => {}
+            }
         }
+        c
     }
 
     /// `212 runs in 30 days: 3 running, 2 queued, 14 red`.
@@ -312,6 +324,8 @@ impl Counts {
 pub struct Builds {
     pub at: i64,
     pub counts: Counts,
+    /// The counts of the runs tied to a release (`Scope::Release`), taken with `counts`.
+    pub released: Counts,
     pub rows: Vec<Run>,
     /// Each workflow's run times, by repo, the most-run first.
     pub times: Vec<RunTime>,
@@ -321,35 +335,79 @@ pub struct Builds {
     pub quarantine: Vec<quarantine::Lane>,
 }
 
-impl Builds {
-    /// Releases' Release runs: the runs the graph tied to a release (it deployed one, or ran on
-    /// its tag), counted on their own. Run times and the quarantine are Infra's, so they stay off.
-    pub fn releases(&self, now: i64) -> Builds {
-        let rows: Vec<Run> = self
-            .rows
-            .iter()
-            .filter(|r| r.release.is_some())
-            .cloned()
-            .collect();
-        Builds {
-            at: self.at,
-            counts: Counts::of(&rows, now),
-            rows,
-            times: vec![],
-            errors: self.errors.clone(),
-            quarantine: vec![],
+/// Which runs a runs table lists: every CI run (Infra's) or the runs the graph tied to a release
+/// (it deployed one, or ran on its tag: Releases' Release runs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    #[default]
+    All,
+    Release,
+}
+
+impl Scope {
+    /// agent-web's `scope=`: `release`, else every run.
+    pub fn named(s: &str) -> Scope {
+        if s == "release" {
+            Scope::Release
+        } else {
+            Scope::All
         }
     }
 
-    /// A run went red in the last `RECENT_SECS`, or the ledger did not read: the count on
-    /// Infra's CI inner tab (and, on `releases`, on Release runs). Older reds are history, as
-    /// `Counts::level` says.
-    pub fn needs_look(&self) -> bool {
-        !self.errors.is_empty() || self.counts.level() == Level::Bad
+    pub fn keeps(self, r: &Run) -> bool {
+        self == Scope::All || r.release.is_some()
     }
+}
 
+/// One scope's runs, borrowed from the read: what a runs table and its heading draw. Run times
+/// and the quarantine are Infra's, so the `Release` scope carries none.
+pub struct Scoped<'a> {
+    pub rows: Vec<&'a Run>,
+    pub counts: &'a Counts,
+    pub times: &'a [RunTime],
+    pub quarantine: &'a [quarantine::Lane],
+    pub errors: &'a [String],
+}
+
+impl Scoped<'_> {
     pub fn summary(&self) -> String {
         self.counts.says()
+    }
+}
+
+impl Builds {
+    /// The runs `scope` lists, in the ledger's order.
+    pub fn rows_in(&self, scope: Scope) -> Vec<&Run> {
+        self.rows.iter().filter(|r| scope.keeps(r)).collect()
+    }
+
+    /// The counts the read took of the runs `scope` lists.
+    fn counts_in(&self, scope: Scope) -> &Counts {
+        match scope {
+            Scope::All => &self.counts,
+            Scope::Release => &self.released,
+        }
+    }
+
+    /// The read cut to `scope`, with that scope's counts; `All` is the read as it is.
+    pub fn scoped(&self, scope: Scope) -> Scoped<'_> {
+        let (times, quarantine): (&[RunTime], &[quarantine::Lane]) = match scope {
+            Scope::All => (&self.times, &self.quarantine),
+            Scope::Release => (&[], &[]),
+        };
+        Scoped {
+            rows: self.rows_in(scope),
+            counts: self.counts_in(scope),
+            times,
+            quarantine,
+            errors: &self.errors,
+        }
+    }
+
+    /// A run of `scope` went red in the last `RECENT_SECS`, or the ledger did not read: the count
+    /// on the inner tab those runs are on. Older reds are history, as `Counts::level` says.
+    pub fn needs_look(&self, scope: Scope) -> bool {
+        !self.errors.is_empty() || self.counts_in(scope).level() == Level::Bad
     }
 
     /// The collector has not finished a pass in longer than its cadence explains.
@@ -523,6 +581,8 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         None => (vec![], HashMap::new()),
     };
     let registry = project_map::cached();
+    let (run_tags, errors) = crate::release_graph::read_run_tags(&paths.run_tags);
+    out.errors.extend(errors);
     crate::release_graph::Graph::new(crate::release_graph::Inputs {
         lines: &lines,
         channels: &channels,
@@ -530,6 +590,7 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         prs: &prs,
         live: &live,
         registry: registry.as_deref(),
+        run_tags: &run_tags,
     })
     .join(&mut out.rows);
     // The quarantine is absent until a repo has one: no file is no fold, not an error.
@@ -541,12 +602,14 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
     }
     out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
+    out.released = Counts::of(out.rows_in(Scope::Release), now);
     out
 }
 
 /// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
 /// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
-/// `Tests (delta)`), so one workflow's runs pool.
+/// `Tests (delta)`), as does a tag after `of` (`Release builds of v0.5.0-x7`, `of web-v1.1.0`
+/// are `Release builds`), so one workflow's runs pool.
 pub fn timed_as(workflow: &str, path: &str) -> String {
     if path.starts_with("dynamic/dependabot/") {
         let eco = workflow.split_whitespace().next().unwrap_or_default();
@@ -558,6 +621,9 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
         let id = core.len() >= 7
             && core.chars().all(|c| c.is_ascii_hexdigit())
             && core.chars().any(|c| c.is_ascii_digit());
+        // What `release_graph::titled` reads as a tag: a word with a digit after `of`.
+        let tag = out.last().is_some_and(|w| w == "of") && core.chars().any(|c| c.is_ascii_digit());
+        let id = id || tag;
         if !id {
             out.push(word.to_string());
             continue;
@@ -901,12 +967,13 @@ mod tests {
             counts,
             ..Default::default()
         };
-        assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let look = |b: Builds| b.needs_look(Scope::All);
+        assert!(look(builds(c)) && !look(builds(later)));
         let unread = Builds {
             errors: vec!["runs.jsonl: unreadable".into()],
             ..Default::default()
         };
-        assert!(unread.needs_look());
+        assert!(unread.needs_look(Scope::Release));
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 
@@ -978,6 +1045,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -1002,6 +1070,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -1032,6 +1101,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -1094,6 +1164,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         (d, p)
     }
@@ -1231,10 +1302,15 @@ mod tests {
             project: "app".into(),
             tag: "v1.2.0".into(),
         });
-        let r = b.releases(NOW);
+        b.quarantine = vec![Default::default()];
+        b.released = Counts::of(b.rows_in(Scope::Release), NOW);
+        let r = b.scoped(Scope::Release);
         assert_eq!(r.rows.len(), 1);
         assert_eq!(r.counts.total, 1);
         assert!(r.times.is_empty() && r.quarantine.is_empty());
+        let all = b.scoped(Scope::All);
+        assert_eq!((all.rows.len(), all.counts.total), (3, 3));
+        assert!(!all.times.is_empty() && all.quarantine.len() == 1);
         assert_eq!(r.rows[0].val("release"), Val::Text("v1.2.0".into()));
         assert!(r.rows[0].text().contains("v1.2.0"));
         assert_eq!(b.rows[0].val("release"), Val::None);
@@ -1367,6 +1443,24 @@ mod tests {
         assert_eq!(timed_as("Tests (delta of 3f2a9c1d)", "x"), "Tests (delta)");
         assert_eq!(timed_as("Multi (named)", "x"), "Multi (named)");
         assert_eq!(timed_as("Release builds", "x"), "Release builds");
+        assert_eq!(
+            timed_as("Release builds of v0.5.0-dodginballs7", "x"),
+            "Release builds"
+        );
+        assert_eq!(
+            timed_as("Phone release of web-v1.1.0", "x"),
+            "Phone release"
+        );
+        assert_eq!(timed_as("Proof of concept", "x"), "Proof of concept");
+        assert_eq!(
+            timed_as("Steam (dodginballs of 43026871395)", "x"),
+            "Steam (dodginballs)"
+        );
+        assert_eq!(
+            timed_as("Deploy v2", "x"),
+            "Deploy v2",
+            "a tag folds only after of"
+        );
         assert_eq!(
             timed_as(
                 "github_actions in / for actions/checkout - Update #1687367140",
