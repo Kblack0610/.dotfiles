@@ -136,7 +136,7 @@ function pOpened(c) {
 const P_NEED_GO = { stage: { pgo: "stage" } };
 const pNeedGroups = (pg) => pg.need_groups.map((g) => ({ ...g, go: P_NEED_GO[g.kind] || null }));
 const pNeedCount = (pg) => pNeedGroups(pg).reduce((n, g) => n + g.items.length, 0);
-// A link that moves the page to an inner tab, setting Build's view first when it names one.
+// A link that moves the page to an inner tab.
 const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}">${esc(text)}</a>`;
 const P_GO_TEXT = { stage: "open Stage" };
 
