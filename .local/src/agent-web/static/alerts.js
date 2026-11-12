@@ -29,9 +29,9 @@ function alertsFold(k, title, inner) {
 }
 
 const ALERT_HUE = { red: "bad", warn: "warn", ok: "ok", nodata: "" };
-const ALERT_LEVEL = { red: "FIRING", warn: "WARN", ok: "ALL CLEAR", nodata: "NO DATA" };
+const ALERT_LEVEL = { red: "FIRING", warn: "WARN", ok: "ALL CLEAR", nodata: NO_DATA.toUpperCase() };
 // A health chip's level as Home's strip words it.
-const HEALTH_WORD = { red: "RED", warn: "WARN", ok: "OK", nodata: "NO DATA" };
+const HEALTH_WORD = { red: "RED", warn: "WARN", ok: "OK", nodata: NO_DATA.toUpperCase() };
 const alertState = (s) => (s === "error" || s === "no owner" || s === "unfixed" ? "bad" : s === "fixing" || s === "queued" ? "running" : "");
 // Source, what and where: one Alertmanager rule fires once per place, under one summary.
 const alertKey = (a) => `${a.source}|${a.what}|${a.place}`;
@@ -54,7 +54,7 @@ function alertsHead(d) {
 // Every domain with its hue, the not-green ones first, then why: each component that is not green.
 function alertsHealthWord(chips) {
   const bad = (chips || []).filter((c) => c.level !== "ok").length;
-  return chips?.length ? (bad ? `${bad} not green of ${chips.length}` : `all green (${chips.length})`) : "no data";
+  return chips?.length ? (bad ? `${bad} not green of ${chips.length}` : `all green (${chips.length})`) : NO_DATA;
 }
 
 function alertsHealthChips(d) {

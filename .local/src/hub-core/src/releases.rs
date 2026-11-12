@@ -15,6 +15,7 @@ use crate::pipeline::{dated, stamp};
 use crate::layout;
 use crate::links::{Kind, Link};
 use crate::queue::Item;
+use crate::reading::NOT_READ;
 use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -37,7 +38,7 @@ const STATUSES: [(&str, Level); 6] = [
 /// is what the human needs to hear. Every other word is said as it is written.
 fn shown(status: &str) -> &str {
     match status {
-        "unknown" => "not read",
+        "unknown" => NOT_READ,
         s => s,
     }
 }
@@ -75,7 +76,7 @@ pub const BLANKS: [&str; 6] = [
     "none declared",
     "not recorded",
     "manual",
-    "not read",
+    NOT_READ,
     "none merged",
     "no check",
 ];
@@ -95,7 +96,7 @@ impl Side {
             None if self.source == "manual" => "manual".into(),
             None if self.error.as_deref() == Some("no release tag") => "not recorded".into(),
             None if self.source == "none" => none.into(),
-            None => "not read".into(),
+            None => NOT_READ.into(),
         }
     }
 }
@@ -141,7 +142,7 @@ impl Deploys {
     /// The PREV cell: `not read` when the read failed, else `none` when there is none.
     fn prev_text(&self, none: &str) -> String {
         match (&self.error, &self.prev) {
-            (Some(_), _) => "not read".into(),
+            (Some(_), _) => NOT_READ.into(),
             (None, Some(v)) => v.clone(),
             (None, None) => none.into(),
         }
@@ -150,7 +151,7 @@ impl Deploys {
     /// The LAST DEPLOY cell: `11-06 15:00 ok`, the date dropped for one today.
     fn last_text(&self, now: i64, none: &str) -> String {
         match (&self.error, &self.last) {
-            (Some(_), _) => "not read".into(),
+            (Some(_), _) => NOT_READ.into(),
             (None, Some(d)) => format!("{} {}", stamp(d.at, now), d.state),
             (None, None) => none.into(),
         }
@@ -428,7 +429,7 @@ pub fn check_badge(read: &Result<HashMap<String, Badge>, String>, app: &str) -> 
             level: Level::Ok,
         }),
         Err(_) => Badge {
-            says: "not read".into(),
+            says: NOT_READ.into(),
             level: Level::Warn,
         },
     }
@@ -786,7 +787,7 @@ struct StageFacts {
 /// snapshot has no facts for (the read failed, which `errors` names) says `not read`.
 fn staged(f: Option<&StageFacts>) -> (String, String, Level) {
     let Some(f) = f else {
-        return (String::new(), "not read".into(), Level::Warn);
+        return (String::new(), NOT_READ.into(), Level::Warn);
     };
     let Some(stage) = f.stage.as_deref() else {
         return (String::new(), "none on the lab sheet".into(), Level::Ok);
@@ -867,7 +868,7 @@ fn app(
     let live_text = head.map_or_else(
         || {
             (if channels.iter().all(Release::unread) {
-                "not read"
+                NOT_READ
             } else {
                 "not recorded"
             })
@@ -948,7 +949,7 @@ fn app(
             .filter(|r| !r.implicit && r.deploys.last.is_none())
             .map(|r| {
                 if r.deploys.error.is_some() {
-                    "not read"
+                    NOT_READ
                 } else {
                     r.no_deploy()
                 }
@@ -964,12 +965,12 @@ fn app(
     } else if channels.iter().all(|r| r.no_deploy() == "none declared") {
         "none declared"
     } else if channels.iter().any(|r| r.deploys.error.is_some()) {
-        "not read"
+        NOT_READ
     } else {
         "not recorded"
     };
     let no_release = match line {
-        Some(l) if l.error.is_some() => "not read",
+        Some(l) if l.error.is_some() => NOT_READ,
         Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
         _ => "none declared",
     };
@@ -998,7 +999,7 @@ fn app(
         stage_level,
         stage_rank: None,
         checks: Badge {
-            says: "not read".into(),
+            says: NOT_READ.into(),
             level: Level::Warn,
         },
     }
@@ -1156,7 +1157,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
         }
         Err(e) => Releases {
             question,
-            summary: "not read".into(),
+            summary: NOT_READ.into(),
             errors: vec![e],
             ..Default::default()
         },

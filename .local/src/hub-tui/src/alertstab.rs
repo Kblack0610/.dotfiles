@@ -9,6 +9,7 @@
 use hub_core::alerts::{Alert, Alerts};
 use hub_core::home::{Chip, Level};
 use hub_core::layout::{self, Tab, FOLD_ROWS};
+use hub_core::reading::NO_DATA;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -101,11 +102,12 @@ impl AlertsView {
         now: i64,
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
+        let nodata = NO_DATA.to_uppercase();
         let (style, word) = match a.level {
             Level::Red => (p.status(Some(2.0)).0, "FIRING"),
             Level::Warn => (p.status(Some(1.0)).0, "WARN"),
             Level::Ok => (p.status(Some(0.0)).0, "ALL CLEAR"),
-            Level::Nodata => (p.status(None).0, "NO DATA"),
+            Level::Nodata => (p.status(None).0, nodata.as_str()),
         };
         let c = &a.counts;
         let strip = |i: &layout::Inner| a.strip.get(i.id).copied().unwrap_or(0);
@@ -431,7 +433,7 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
     let mut strip = vec![Span::styled("HEALTH   ", p.head())];
     let bad: Vec<&Chip> = chips.iter().filter(|c| c.level != Level::Ok).collect();
     if chips.is_empty() {
-        strip.push(Span::styled("no data", p.dim()));
+        strip.push(Span::styled(hub_core::reading::NO_DATA, p.dim()));
     } else if bad.is_empty() {
         strip.push(Span::styled(
             format!("all green ({})", chips.len()),

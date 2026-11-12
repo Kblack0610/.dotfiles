@@ -1471,10 +1471,11 @@ impl App {
             return;
         }
         let home = hub_core::home::build(
-            &state,
+            Some(&state),
             self.queue.as_ref(),
             self.tasks.as_ref(),
             self.infra.as_ref(),
+            hub_core::jobs::now(),
         );
         let queue = self.queue.clone();
         let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -3141,13 +3142,12 @@ impl App {
     /// record, a accept, d reject; Esc steps back out.
     /// Home from the reads held, as the page draws it.
     fn home_build(&self) -> hub_core::home::Home {
-        let null = serde_json::Value::Null;
-        let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
         hub_core::home::build(
-            state,
+            self.boards.as_ref().map(|b| &b.watch.state),
             self.queue.as_ref(),
             self.tasks.as_ref(),
             self.infra.as_ref(),
+            hub_core::jobs::now(),
         )
     }
 
