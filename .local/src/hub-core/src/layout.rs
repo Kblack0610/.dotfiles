@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 13] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -127,16 +127,27 @@ pub const TABS: [Tab; 13] = [
         group: "Projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &["cards", "rows"],
-        inner: &[],
-    },
-    Tab {
-        id: "board",
-        group: "Projects",
-        title: "Board",
-        question: "What is on every project's board?",
-        sections: &["rows"],
-        inner: &[],
+        sections: &["cards", "board", "deliverables"],
+        // The project list, every project's rows on one board (the Board tab until 2026-11-12),
+        // and the deliverables. A bare inner id or section after `#projects/` is the inner tab;
+        // anything else is a project, and a project with such a name opens as `<profile>/<name>`.
+        inner: &[
+            Inner {
+                id: "list",
+                title: "Projects",
+                sections: &["cards"],
+            },
+            Inner {
+                id: "all",
+                title: "All rows",
+                sections: &["board"],
+            },
+            Inner {
+                id: "deliverables",
+                title: "Deliverables",
+                sections: &["deliverables"],
+            },
+        ],
     },
     // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
     // graph tied to a release (`builds::Scope::Release`). Every other CI run is Infra's.
@@ -356,6 +367,8 @@ pub const RETIRED: &[(&str, &str)] = &[
     // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
+    // agent-web's Board tab: Projects' All rows inner tab, its board section (2026-11-12).
+    ("board", "projects"),
 ];
 
 /// Sections that moved to another tab: (old tab, old section, new tab, new section), so
@@ -432,9 +445,8 @@ pub const PROJECT_PAGE: [Inner; 5] = [
     },
 ];
 
-/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
-/// Board, which is `a` on Projects there.
-pub const OFF_BAR: [&str; 2] = ["daily", "board"];
+/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists.
+pub const OFF_BAR: [&str; 1] = ["daily"];
 
 /// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth; a tab past the tenth
 /// has none (Tab and Shift-Tab still reach it).
@@ -585,7 +597,7 @@ mod tests {
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Daily").map(|t| t.id), Some("daily"));
         assert_eq!(TABS[0].id, "home", "the landing page leads");
-        assert_eq!(resolve("board").map(|t| t.id), Some("board"));
+        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("log"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));
@@ -715,7 +727,7 @@ mod tests {
             [
                 ("Today", vec!["home", "daily", "log"]),
                 ("Agents", vec!["queue", "sessions", "fleet"]),
-                ("Projects", vec!["projects", "board", "releases"]),
+                ("Projects", vec!["projects", "releases"]),
                 ("System", vec!["alerts", "infra", "schedules", "costs"]),
             ]
         );
@@ -772,6 +784,7 @@ mod tests {
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
         assert_eq!(section("outbox"), Some("outbox"));
+        assert_eq!(section("board"), Some("board"), "the Board tab is All rows");
         assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
@@ -815,6 +828,19 @@ mod tests {
         assert_eq!(at(Some("actions")), Some("actions"));
         // a retired name that is a Log section (`#actions`) lands on the inner tab holding it
         assert_eq!(at(section("actions")), Some("actions"));
+    }
+
+    #[test]
+    fn the_board_is_projects_all_rows_and_its_old_name_lands_there() {
+        let projects = resolve("projects").unwrap();
+        let at = |w: Option<&str>| inner_tab(projects, w).map(|i| i.id);
+        assert_eq!(at(None), Some("list"));
+        assert_eq!(at(section("board")), Some("all"));
+        assert_eq!(at(Some("all")), Some("all"));
+        assert_eq!(at(Some("deliverables")), Some("deliverables"));
+        let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Projects", "All rows", "Deliverables"]);
+        assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");
     }
 
     #[test]

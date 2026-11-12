@@ -48,21 +48,46 @@ pub fn strip_of(
     p: Palette,
     w: usize,
 ) -> Line<'static> {
+    spans(inner, on, |i| Some(count(i)).filter(|n| *n > 0), true, p, w)
+}
+
+/// [`strip_of`] with each inner tab's total beside it, None until it is read: a count, not a
+/// flag, so it is never amber (dashboards rule 5), as agent-web's Projects strip draws it.
+pub fn strip_totals(
+    inner: &[Inner],
+    on: &str,
+    total: impl Fn(&Inner) -> Option<usize>,
+    p: Palette,
+    w: usize,
+) -> Line<'static> {
+    spans(inner, on, total, false, p, w)
+}
+
+/// The strip, a number beside each inner tab `n` gives one; `hot`: that number needs a look.
+fn spans(
+    inner: &[Inner],
+    on: &str,
+    n: impl Fn(&Inner) -> Option<usize>,
+    hot: bool,
+    p: Palette,
+    w: usize,
+) -> Line<'static> {
     let mut s = vec![];
     for i in inner {
-        let n = count(i);
-        let label = if n > 0 {
-            format!("{} {n}", i.title)
+        let n = n(i);
+        let label = match n {
+            Some(n) => format!("{} {n}", i.title),
+            None => i.title.to_string(),
+        };
+        let base = if hot && n.is_some() {
+            p.warn()
         } else {
-            i.title.to_string()
+            Style::new()
         };
         s.push(if i.id == on {
-            let base = if n > 0 { p.warn() } else { Style::new() };
             Span::styled(format!("[{label}]"), base.patch(p.sel()).patch(p.head()))
-        } else if n > 0 {
-            Span::styled(format!(" {label} "), p.warn())
         } else {
-            Span::raw(format!(" {label} "))
+            Span::styled(format!(" {label} "), base)
         });
     }
     s.push(Span::styled("  <- -> switch", p.dim()));
@@ -110,5 +135,37 @@ mod tests {
         let l = strip(costs, "spend", &[], Palette { no_color: true }, 80);
         let open = l.spans.iter().find(|s| s.content == "[Spend]").unwrap();
         assert!(open.style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn a_total_is_plain_and_waits_for_its_read() {
+        let projects = layout::resolve("projects").unwrap();
+        let total = |i: &Inner| (i.id == "all").then_some(12);
+        let l = strip_totals(projects.inner, "list", total, Palette::default(), 80);
+        let words: Vec<&str> = l.spans.iter().map(|s| s.content.trim()).collect();
+        assert_eq!(
+            words[..3],
+            ["[Projects]", "All rows 12", "Deliverables"],
+            "no number until read"
+        );
+        let amber = Palette::default().warn().fg;
+        assert!(
+            l.spans.iter().all(|s| s.style.fg != amber),
+            "a total is not amber"
+        );
+        // negative control: the same number as a flag is amber
+        let l = strip_of(
+            projects.inner,
+            "list",
+            |i| usize::from(i.id == "all") * 12,
+            Palette::default(),
+            80,
+        );
+        let hot = l
+            .spans
+            .iter()
+            .find(|s| s.content.trim() == "All rows 12")
+            .unwrap();
+        assert_eq!(hot.style.fg, Palette::default().warn().fg);
     }
 }

@@ -48,7 +48,7 @@ const TABS = [
   { tab: "home", name: "home-running", row: `#home [data-tbl="r"] tr.jr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
-  { tab: "board", row: `#board tr.jr` },
+  { tab: "projects", name: "projects-all", inner: "all", row: `#p-all tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
   { tab: "alerts", row: `#alerts tr.jr` },
   { tab: "infra", inner: "jobs", row: `#jobs tr.jr` },
@@ -171,8 +171,10 @@ async function wire(context, page, { index, csp, roles }, seen) {
     }
     if (path === "/") return route.fulfill({ status: 200, contentType: TYPES[".html"], body: index, headers: { ...NOSNIFF, "content-security-policy": csp } });
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
-    if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
-    const body = path in FIXTURES ? FIXTURES[path] : {};
+    // A fixture keyed with its query (`/api/queue/candidates?counts=1`) answers that read only.
+    const key = (path + url.search) in FIXTURES ? path + url.search : path;
+    if (!(key in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
+    const body = key in FIXTURES ? FIXTURES[key] : {};
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles, seen.drift)) });
   });
   page.on("pageerror", (e) => seen.errors.push(`pageerror: ${e.message}`));

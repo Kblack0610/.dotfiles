@@ -431,6 +431,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             targets.push((dir, flat));
         }
     }
+    // fleet-dispatch's state directory, for its Candidates snapshot (replaced by a rename). Made
+    // here, as the queue's is, so the first snapshot reaches an open page.
+    let dispatch_state = boards::dispatch_state_dir();
+    std::fs::create_dir_all(&dispatch_state)?;
+    targets.push((dispatch_state, flat));
     // The shepherd's kept rundowns: a directory of whole files, each landed by a rename.
     // Made here, as the queue's is, so the first record reaches an open page.
     let rundowns = boards::shepherd_dir().join("rundowns");
@@ -498,6 +503,8 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
 }
+/// fleet-dispatch wrote its Candidates snapshot: the Queue tab reads the counts afresh.
+const CANDIDATES_EVENT: &str = r#"{"kind":"candidates"}"#;
 /// A Sentinel watch changed state: the Alerts tab reads afresh.
 const ALERTS_EVENT: &str = r#"{"kind":"alerts"}"#;
 
@@ -520,6 +527,10 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    // fleet-dispatch's ranked snapshot, replaced by a rename: the Queue tab's Candidates counts.
+    if p == boards::candidates_file() {
+        return Some(CANDIDATES_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1302,7 +1313,13 @@ async fn home_board(
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let board = hub_core::tasks::feed(&actions::System);
         let open = hub_core::proposals::read(&actions::System);
-        let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+        let mut home = hub_core::home::build(
+            Some(&state),
+            Some(&queue),
+            Some(&board),
+            Some(&infra),
+            hub_core::jobs::now(),
+        );
         home.set_proposals(&open);
         home_shown(home, &q)
     })
@@ -1652,7 +1669,7 @@ mod tests {
                 {"bucket": "NEEDS", "target": "hub/b:1", "project": "b", "idle_min": 1},
             ],
         });
-        let home = hub_core::home::build(&state, None, None, None);
+        let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), 2);
         let (sessions, shown) = (home.sessions.clone(), home.shown);
         let q = HomeQuery {
@@ -1852,6 +1869,13 @@ mod tests {
         // Its state.json is the Pipelines section's; a temp file beside it is not.
         let state = schedules_state();
         assert_eq!(classify(&state).as_deref(), Some(PIPELINES_EVENT));
+        // The Candidates snapshot is its own kind; fleet-dispatch's temp file beside it is none.
+        let cands = boards::candidates_file();
+        assert_eq!(classify(&cands).as_deref(), Some(CANDIDATES_EVENT));
+        assert_eq!(
+            classify(&cands.with_file_name("candidates.jsonl.123")),
+            None
+        );
         assert_eq!(classify(&state.with_file_name(".state.json.tmp")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),

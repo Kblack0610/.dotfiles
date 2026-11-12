@@ -23,6 +23,7 @@ use crate::fleet::ts;
 use crate::infra::Infra;
 use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
+use crate::reading::State as Reading;
 use crate::tasks::{Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
@@ -41,6 +42,9 @@ pub const TEXT_MAX: usize = 160;
 /// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
 /// long list is capped, never unbounded at top level).
 pub const SHOWN: usize = 8;
+/// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
+/// rewrite Home says the state stopped, instead of showing an old list as if it were now.
+pub const FLEET_STATE_STALE_SECS: i64 = 300;
 
 /// What a row is. A Stopped row leads the list; conditions (Budget to Red) list after every
 /// scored row, in this order. A condition has no score, so the needs pager never pages it.
@@ -1037,19 +1041,29 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
 /// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
 pub fn build(
-    state: &Value,
+    state: Option<&Value>,
     queue: Option<&Queue>,
     board: Option<&Result<Feed, String>>,
     infra: Option<&Infra>,
+    now: i64,
 ) -> Home {
     let mut h = Home {
         shown: SHOWN,
         ..Home::default()
     };
-    if state.is_null() {
-        h.errors
-            .push("no fleet state yet (fleet-state.timer writes it every minute)".into());
+    // None is a read still on its way: that is reading, not "no fleet state yet" (ar-919).
+    match state.map(|s| match s {
+        Value::Null => Reading::Never,
+        _ => Reading::of_age(s["generated_epoch"].as_i64(), now, FLEET_STATE_STALE_SECS),
+    }) {
+        None => h.errors.push("fleet state: reading".into()),
+        Some(Reading::Live) => {}
+        Some(r) => h.errors.push(format!(
+            "{} (fleet-state.timer writes it every minute)",
+            r.words("fleet state")
+        )),
     }
+    let state = state.unwrap_or(&Value::Null);
     for u in state["unreadable"]
         .as_array()
         .into_iter()
@@ -1185,7 +1199,7 @@ mod tests {
             items: vec![failed, ok, day, old],
             ..Default::default()
         };
-        let h = build(&st, Some(&q), None, None);
+        let h = build(Some(&st), Some(&q), None, None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         assert_eq!(
             rows,
@@ -1233,7 +1247,7 @@ mod tests {
     fn an_unreadable_signal_source_is_said_not_shown_as_nothing() {
         let mut st = state();
         st["unreadable"] = json!(["comms", "notes", "agentctl", "something-else"]);
-        let h = build(&st, None, None, None);
+        let h = build(Some(&st), None, None, None, NOW);
         assert_eq!(
             h.errors[..3],
             [
@@ -1256,7 +1270,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = build(&state(), Some(&q), None, None);
+        let h = build(Some(&state()), Some(&q), None, None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         assert_eq!(
             rows,
@@ -1303,7 +1317,7 @@ mod tests {
         };
         let mut feed = board().unwrap();
         feed.rows[6].parent = Some("tr-1".into());
-        let h = build(&st, Some(&q), Some(&Ok(feed)), None);
+        let h = build(Some(&st), Some(&q), Some(&Ok(feed)), None, NOW);
         let r = &h.running[0];
         assert_eq!(
             (
@@ -1366,8 +1380,8 @@ mod tests {
             (
                 Some("#sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
-                Some("#board?q=id:=tr-9"),
-                Some("#board?q=id:=tr-1")
+                Some("#projects/all?q=id:=tr-9"),
+                Some("#projects/all?q=id:=tr-1")
             )
         );
         assert_eq!(
@@ -1390,9 +1404,9 @@ mod tests {
         let mut st = state();
         st["asks"] = json!([]);
         st["unreadable"] = json!(["agent-ask"]);
-        let h = build(&st, None, None, None);
+        let h = build(Some(&st), None, None, None, NOW);
         assert!(h.errors.iter().any(|e| e.contains("agent-ask")));
-        let ok = build(&state(), None, None, None);
+        let ok = build(Some(&state()), None, None, None, NOW);
         assert!(!ok.errors.iter().any(|e| e.contains("agent-ask")));
     }
 
@@ -1444,7 +1458,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = build(&st, Some(&q), None, None);
+        let h = build(Some(&st), Some(&q), None, None, NOW);
         let ids: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1480,14 +1494,17 @@ mod tests {
     #[test]
     fn conditions_follow_every_scored_row_and_carry_no_score() {
         let i = infra(vec![], &["watch:a"]);
-        let h = build(&state(), None, None, Some(&i));
+        let h = build(Some(&state()), None, None, Some(&i), NOW);
         let kinds: Vec<Kind> = h.needs.iter().map(|n| n.kind).collect();
         assert_eq!(kinds, [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]);
         assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
         // An ask from the future (a skewed clock) waits zero minutes, never negative.
         let mut st = state();
         st["asks"][0]["created"] = json!("2026-11-06T09:00:00-0800");
-        assert_eq!(score(&build(&st, None, None, None).needs[1]).4, 0);
+        assert_eq!(
+            score(&build(Some(&st), None, None, None, NOW).needs[1]).4,
+            0
+        );
     }
 
     #[test]
@@ -1496,7 +1513,7 @@ mod tests {
         st["stopped"] = json!([{"runner": "fleet-dispatch", "since": NOW - 13 * 3600,
             "why": "no account has room",
             "line": "Dispatch stopped 13h: no account has room. Clears when an account is back under its pace."}]);
-        let h = build(&st, None, None, None);
+        let h = build(Some(&st), None, None, None, NOW);
         let top = &h.needs[0];
         assert_eq!(top.kind, Kind::Stopped);
         assert_eq!(top.id, "stopped:fleet-dispatch");
@@ -1506,7 +1523,7 @@ mod tests {
         assert_eq!(serde_json::to_value(top).unwrap()["kind"], "stopped");
         // The rest keep their order; with no hold there is no Stopped row.
         assert_eq!(h.needs[1].kind, Kind::Ask);
-        assert!(build(&state(), None, None, None)
+        assert!(build(Some(&state()), None, None, None, NOW)
             .needs
             .iter()
             .all(|n| n.kind != Kind::Stopped));
@@ -1554,7 +1571,7 @@ mod tests {
             items: vec![asked],
             ..Default::default()
         };
-        let h = build(&state(), Some(&q), Some(&board()), None);
+        let h = build(Some(&state()), Some(&q), Some(&board()), None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         // The #urgent row has waited longer than the ask, but every live wait leads: it stops
         // running work and a to-do does not. The #high row follows the #urgent one; conditions
@@ -1582,7 +1599,7 @@ mod tests {
             .get("priority")
             .is_none());
         // With no board read there are no sheet rows, and nothing else moves.
-        let without: Vec<Kind> = build(&state(), Some(&q), None, None)
+        let without: Vec<Kind> = build(Some(&state()), Some(&q), None, None, NOW)
             .needs
             .iter()
             .map(|n| n.kind)
@@ -1595,7 +1612,7 @@ mod tests {
         let mut st = state();
         st["asks"][0]["project"] = json!("trader");
         st["asks"][0]["task"] = json!("tr-50");
-        let ids: Vec<String> = build(&st, None, Some(&board()), None)
+        let ids: Vec<String> = build(Some(&st), None, Some(&board()), None, NOW)
             .needs
             .into_iter()
             .filter(|n| n.kind == Kind::Sheet)
@@ -1603,10 +1620,11 @@ mod tests {
             .collect();
         assert_eq!(ids, ["tr-51", "tr-117"]);
         let h = build(
-            &state(),
+            Some(&state()),
             None,
             Some(&Err("notes board --json: boom".into())),
             None,
+            NOW,
         );
         assert!(h
             .errors
@@ -1617,7 +1635,13 @@ mod tests {
 
     #[test]
     fn no_state_reads_as_no_session_counts() {
-        let none = build(&Value::Null, None, None, Some(&infra(vec![], &[])));
+        let none = build(
+            Some(&Value::Null),
+            None,
+            None,
+            Some(&infra(vec![], &[])),
+            NOW,
+        );
         assert_eq!(none.sessions, "", "no state, no counts");
     }
 
@@ -1627,7 +1651,7 @@ mod tests {
             vec![domain("ci", "1"), domain("prod", "0")],
             &["watch:b", "watch:a"],
         );
-        let h = build(&Value::Null, None, None, Some(&i));
+        let h = build(Some(&Value::Null), None, None, Some(&i), NOW);
         let chips: Vec<(&str, Level)> = h
             .health
             .iter()
@@ -1654,7 +1678,7 @@ mod tests {
             error: Some("timeout".into()),
             ..Default::default()
         };
-        let h = build(&state(), None, None, Some(&i));
+        let h = build(Some(&state()), None, None, Some(&i), NOW);
         assert!(h.health.is_empty());
         assert_eq!(h.errors, ["Prometheus: timeout"]);
     }
@@ -1757,16 +1781,53 @@ mod tests {
             stream: "dream".into(),
             ..Proposal::default()
         };
-        let mut h = build(&state(), None, None, None);
+        let mut h = build(Some(&state()), None, None, None, NOW);
         h.set_proposals(&Ok(vec![p.clone()]));
         assert_eq!(h.proposals, [p]);
         assert_eq!(h.proposals_head, "1 from 1 stream");
-        let mut h = build(&state(), None, None, None);
+        let mut h = build(Some(&state()), None, None, None, NOW);
         h.set_proposals(&Err("no jq".into()));
         assert!(h.proposals_failed);
         assert!(h
             .errors
             .iter()
             .any(|e| e == "no jq, so no proposals are shown"));
+    }
+
+    #[test]
+    fn an_old_or_missing_fleet_state_says_so_and_a_fresh_one_says_nothing() {
+        let said = |st: &Value| {
+            build(Some(st), None, None, None, NOW)
+                .errors
+                .into_iter()
+                .filter(|e| e.contains("fleet state"))
+                .collect::<Vec<_>>()
+        };
+        assert!(said(&state()).is_empty());
+        assert_eq!(
+            said(&Value::Null),
+            ["no fleet state yet (fleet-state.timer writes it every minute)"]
+        );
+        let mut old = state();
+        old["generated_epoch"] = json!(NOW - FLEET_STATE_STALE_SECS - 1);
+        let e = said(&old);
+        assert!(
+            e.len() == 1 && e[0].starts_with("fleet state stopped reporting at "),
+            "{e:?}"
+        );
+        // a read still on its way is reading, never "no fleet state yet" (ar-919)
+        let errs = build(None, None, None, None, NOW).errors;
+        assert!(
+            errs.contains(&"fleet state: reading".to_string()),
+            "{errs:?}"
+        );
+        assert!(
+            !errs.iter().any(|e| e.contains("no fleet state")),
+            "{errs:?}"
+        );
+        // a state with no time at all cannot be judged fresh
+        let mut undated = state();
+        undated.as_object_mut().unwrap().remove("generated_epoch");
+        assert_eq!(said(&undated).len(), 1);
     }
 }

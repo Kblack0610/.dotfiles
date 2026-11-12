@@ -2,9 +2,10 @@
 //! socket, so a request arrives as an event and needs no file watch (inotify can be full: an
 //! open Unity Editor takes nearly all of it). With no hub listening, the request is left in a
 //! file that the next hub to start takes, which is how a Prefix key that creates hub:board
-//! lands on its page. A request is the tab's name, then for the Projects tab an optional search
-//! (`projects bnb/demo`, what the projects popup sends to land on one project's rows) or for
-//! Infra the section to open (`infra ci`, what `hub tab ci` sends).
+//! lands on its page. A request is the tab's name, then for the Projects tab an optional word:
+//! a project (`projects bnb/demo`, what the projects popup sends to land on one project's rows),
+//! an inner tab (`projects all`), All rows searched (`projects all id:=ar-1`, a row's link), or
+//! for Infra the section to open (`infra ci`, what `hub tab ci` sends).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -28,11 +29,13 @@ pub fn dir() -> PathBuf {
         .join("hub")
 }
 
-/// A page to show, and for the Board tab the search to show it with.
+/// A page to show, and the word it opens with: on Projects a project, an inner tab or a search
+/// of All rows, elsewhere a section.
 pub type Req = (Tab, Option<String>);
 
-/// `board bnb/demo` -> (Board, Some("bnb/demo")), `ci` -> (Infra, Some("ci")); any other
-/// bare name has no query.
+/// `projects bnb/demo` -> (Projects, Some("bnb/demo")), `ci` -> (Infra, Some("ci")), and the
+/// retired `board` -> (Projects, Some("board")), the section that is All rows (`board <search>`
+/// is All rows searched); any other bare name has no query.
 pub fn parse(s: &str) -> Option<Req> {
     let (t, q) = s
         .trim()
@@ -196,7 +199,11 @@ mod tests {
             take(&d.0),
             Some((Tab::Projects, Some("bnb/demo extra".into())))
         );
-        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
+        assert_eq!(
+            parse("board  "),
+            Some((Tab::Projects, Some("board".into()))),
+            "the Board tab is Projects' All rows"
+        );
         assert_eq!(parse("nonsense bnb/demo"), None);
     }
 

@@ -552,6 +552,10 @@ mod tests {
             ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
+            (
+                "projects",
+                include_str!("../static/projects.js").to_string(),
+            ),
         ];
         for t in hub_core::layout::TABS
             .iter()

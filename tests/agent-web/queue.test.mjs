@@ -115,7 +115,7 @@ const items = [
 const data = { at: 1793942700, items, table, needs_you: 1, open_rows: 200, section_aliases: { waiting: "needs you", running: "running", queued: "ready", done: "done" } };
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''");
-  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
+  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, open: {}, cands: null, candCounts: null, candErr: null, ...over });
 };
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
 test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
@@ -178,17 +178,24 @@ test("the Queue is one table with the server's chips and every header a sort but
   assert.match(h, /id="sec-candidates"/);
 });
 
-test("Candidates heads its row count; urgent rows blocked are a warn line, auto and the read time a fact in the filter card", () => {
-  load();
-  const cands = { rows: [{ key: "ar-1", title: "t", project: "p", why: "", start_label: "auto", reasons: [], blocked: [] }], total: 5, auto: 2, clear: 1, urgent_blocked: 1, as_of: "10:20", reasons: [] };
+test("Candidates heads the counts read's total, open or shut; urgent rows blocked are a warn line, auto and the read time a fact in the filter card", () => {
+  const counts = { total: 5, auto: 2, urgent_blocked: 1, as_of: "10:20" };
+  load(data, { open: { "sec:candidates": true }, candCounts: counts });
+  // The rows read is older than the counts: the heading still says the counts.
+  const cands = { rows: [{ key: "ar-1", title: "t", project: "p", why: "", start_label: "auto", reasons: [], blocked: [] }], total: 4, auto: 2, clear: 1, urgent_blocked: 1, as_of: "10:20", reasons: [] };
   const h = run(`qst.cands = ${JSON.stringify(cands)}; qst.candErr = null; qCandidates()`);
   assert.match(h, /<summary><h2 class="sec warn">Candidates <span class="n">5<\/span><\/h2><\/summary><div class="cline warn">1 urgent blocked<\/div>/);
   assert.match(h, /<div class="cline muted"><b>auto<\/b> 2, <b>as of<\/b> 10:20<\/div><\/div>/);
-  const calm = run(`qst.cands = ${JSON.stringify({ ...cands, urgent_blocked: 0 })}; qCandidates()`);
+  const calm = run(`qst.candCounts = ${JSON.stringify({ ...counts, urgent_blocked: 0 })}; qCandidates()`);
   assert.match(calm, /<h2 class="sec">Candidates <span class="n">5<\/span><\/h2>/);
   assert.doesNotMatch(calm, /urgent/, "the control: no blocked urgent row, no line");
-  assert.match(run("qst.cands = null; qst.candErr = 'boom'; qCandidates()"), /<h2 class="sec bad">Candidates<\/h2><\/summary><div class="panel down">No candidates: boom<\/div>/);
-  run("qst.cands = null; qst.candErr = null");
+  // A failed read is said in the heading, so a shut fold shows it too, and once.
+  for (const open of [true, false]) {
+    const bad = run(`qst.open['sec:candidates'] = ${open}; qst.candCounts = null; qst.cands = null; qst.candErr = 'boom'; qCandidates()`);
+    assert.match(bad, /<summary><h2 class="sec bad">Candidates<\/h2><div class="panel down">No candidates: boom<\/div><\/summary>/);
+    assert.equal(bad.match(/boom/g).length, 1, bad);
+  }
+  run("qst.cands = null; qst.candErr = null; qst.candCounts = null");
 });
 
 test("Pipeline is said once: the worst step hues the head and is a warn line under it", () => {
@@ -243,11 +250,11 @@ test("an item not started is ready or held, a held cell names its hold, and the 
   assert.doesNotMatch(draw(), /ready: starts/);
 });
 
-test("the page caps at the server's open_rows with +N older, one click lifts it", () => {
+test("the page caps at the server's open_rows with +N more, one click lifts it", () => {
   load({ ...data, open_rows: 2 });
   let h = draw();
   assert.doesNotMatch(h, /title q1/);
-  assert.match(h, /<button class="btn sm" data-all="1">\+1 older<\/button>/);
+  assert.match(h, /<button class="btn sm" data-all="1">\+1 more<\/button>/);
   fire("click", { type: "click", target: target({ all: "1" }) });
   h = parts["q-list"].innerHTML;
   assert.match(h, /title q1/);
@@ -313,14 +320,136 @@ test("an item's slug opens that item; one outside the view is searched for once"
 
 test("a new section id scrolls to its section, not into the filter", async () => {
   load();
-  reply = data;
+  asked = [];
+  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0 } : data;
   scrolled = 0;
   run("st.tab = 'queue'; st.arg = 'candidates'; st.views.queue = ''; st.section = null");
   run("refreshQueue()");
-  await settle();
+  await settle(); await settle();
   assert.equal(scrolled, 1, "the page scrolled to Candidates once it drew");
   assert.equal(parts["sec-candidates"].open, true);
+  assert.ok(asked.includes("/api/queue/candidates"), "a link to Candidates opens the fold, so it reads them");
   assert.equal(run("st.views.queue"), "", "and no chip was set");
+  reply = {};
+});
+
+test("shut, Candidates is a heading from its counts read, made after the table's: no rows drawn or read", async () => {
+  const counts = { total: 120, auto: 40, urgent_blocked: 3, as_of: "10:20" };
+  load(data, { candCounts: counts });
+  asked = [];
+  reply = (url) => url.startsWith("/api/queue/projects") ? [] : url.startsWith("/api/queue/candidates") ? counts : data;
+  const h = draw();
+  assert.match(h, /<details class="csec" id="sec-candidates" data-k="sec:candidates"><summary><h2 class="sec warn">Candidates <span class="n">120<\/span><\/h2><\/summary><div class="cline warn">3 urgent blocked<\/div><\/details>/);
+  assert.doesNotMatch(h, /qc-q|qc-body/, "a shut fold builds no rows, chips or search box");
+  run("TABS.queue.show()");
+  await settle(); await settle(); await settle();
+  const cands = asked.filter((u) => u.startsWith("/api/queue/candidates"));
+  assert.deepEqual(cands, ["/api/queue/candidates?counts=1"], `show reads the counts and no rows while shut: ${asked.join(" ")}`);
+  assert.ok(asked.indexOf("/api/queue") < asked.indexOf(cands[0]), `the table's read goes first: ${asked.join(" ")}`);
+  assert.equal(data.candidates, undefined, "the queue read carries no candidates");
+  // The snapshot's event reads the counts again, and still no rows while shut.
+  asked = [];
+  run(`TABS.queue.onEvent({ kind: "candidates" })`);
+  await settle();
+  assert.deepEqual(asked, ["/api/queue/candidates?counts=1"]);
+  asked = [];
+  run(`TABS.queue.onEvent({ kind: "queue" })`);
+  await settle();
+  assert.ok(!asked.some((u) => u.startsWith("/api/queue/candidates")), `a queue event is not the snapshot's: ${asked.join(" ")}`);
+  // Negative control: no snapshot draws no count, never a zero.
+  load();
+  assert.match(draw(), /<h2 class="sec">Candidates<\/h2><\/summary><\/details>/);
+  reply = {};
+});
+
+test("opening Candidates reads them once; a redraw's toggle reads nothing, and shutting drops the rows", async () => {
+  load();
+  asked = [];
+  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [{ key: "k1", task: "a row" }], total: 1, auto: 0, clear: 1, reasons: [] }
+    : url.startsWith("/api/queue/projects") ? [] : data;
+  const fold = (open) => fire("toggle", { target: { open, dataset: { k: "sec:candidates" } } });
+  fold(true);
+  await settle();
+  assert.deepEqual(asked.filter((u) => u.startsWith("/api/queue/candidates")), ["/api/queue/candidates"]);
+  assert.match(parts["q-list"].innerHTML, /id="sec-candidates" data-k="sec:candidates" open>.*id="qc-q"/s);
+  fold(true);
+  await settle();
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue/candidates")).length, 1, "the re-inserted open fold does not read again");
+  run("TABS.queue.show()");
+  await settle(); await settle(); await settle();
+  assert.equal(asked.filter((u) => u === "/api/queue/candidates").length, 2, "an open fold reads its rows on show");
+  fold(false);
+  assert.doesNotMatch(parts["q-list"].innerHTML, /qc-q/);
+  assert.equal(run("qst.cands"), null, "a shut fold holds no rows");
+  // Reopened, it says it is reading, not the old rows, and reads them.
+  let land;
+  const later = new Promise((r) => { land = r; });
+  reply = (url) => url.startsWith("/api/queue/candidates") ? later : data;
+  fold(true);
+  assert.match(parts["q-list"].innerHTML, /Reading candidates\.\.\./);
+  assert.doesNotMatch(parts["q-list"].innerHTML, /a row/);
+  assert.equal(asked.filter((u) => u === "/api/queue/candidates").length, 3);
+  fold(true);
+  assert.equal(asked.filter((u) => u === "/api/queue/candidates").length, 3, "the redraw's toggle while it reads asks for none");
+  land({ rows: [{ key: "k1", title: "a row", reasons: [], blocked: [] }], blocked_rows: [], total: 1, auto: 0, clear: 1, reasons: [] });
+  await settle(); await settle();
+  assert.match(parts["q-list"].innerHTML, /a row/);
+  fold(false);
+  reply = {};
+});
+
+test("a toggle stores the fold's own state, so a click a redraw got ahead of still reads", async () => {
+  // The map already says open (a redraw re-inserted the fold open before this toggle landed) and
+  // no rows are held: the old map compare read nothing and left "Reading candidates..." up.
+  load(data, { open: { "sec:candidates": true } });
+  asked = [];
+  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0, auto: 0, clear: 0, reasons: [] } : data;
+  fire("toggle", { target: { open: true, dataset: { k: "sec:candidates" } } });
+  await settle();
+  assert.deepEqual(asked.filter((u) => u.startsWith("/api/queue/candidates")), ["/api/queue/candidates"]);
+  // And a shut that lands after a redraw re-inserted it open still shuts it.
+  fire("toggle", { target: { open: false, dataset: { k: "sec:candidates" } } });
+  assert.equal(run("qCandOpen()"), false);
+  reply = {};
+});
+
+test("a promote re-reads the counts, and the rows only while the fold is open", async () => {
+  const c = { key: "k1", profile: "personal", project: "p", lane: "agent", text: "- [ ] a row" };
+  for (const open of [false, true]) {
+    load(data, { open: { "sec:candidates": open }, cands: { rows: [c], blocked_rows: [], total: 1, auto: 0, clear: 1, reasons: [] } });
+    asked = [];
+    reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0, auto: 0, clear: 0, reasons: [] } : url === "/api/board" ? { out: "ok" } : data;
+    await run("qPromote(0)");
+    await settle();
+    const got = asked.filter((u) => u.startsWith("/api/queue/candidates"));
+    assert.deepEqual(got, open ? ["/api/queue/candidates?counts=1", "/api/queue/candidates"] : ["/api/queue/candidates?counts=1"], `open ${open}: ${asked.join(" ")}`);
+  }
+  reply = {};
+});
+
+test("on a phone the pipeline is read only while its fold is open", async () => {
+  load();
+  asked = [];
+  reply = data;
+  ctx.matchMedia = () => ({ matches: true });
+  try {
+    run("delete PFOLD['q-flow']; qfl.open = false; refreshFlow()");
+    await settle();
+    assert.ok(!asked.some((u) => u.startsWith("/api/flow")), "a shut fold reads no flow");
+    run("PFOLD['q-flow'] = true");
+    fire("toggle", { target: { open: true, dataset: { pf: "q-flow" } } });
+    await settle();
+    assert.equal(asked.filter((u) => u.startsWith("/api/flow")).length, 1, "opening it reads the flow");
+    // Negative control: on a desktop the fold is always open, so the read happens.
+    ctx.matchMedia = () => ({ matches: false });
+    run("delete PFOLD['q-flow']; refreshFlow()");
+    await settle();
+    assert.equal(asked.filter((u) => u.startsWith("/api/flow")).length, 2);
+  } finally {
+    delete ctx.matchMedia;
+    run("qfl.open = false");
+    reply = {};
+  }
 });
 
 test("the badge counts everything waiting on the human, whatever the view keeps", async () => {
@@ -329,6 +458,19 @@ test("the badge counts everything waiting on the human, whatever the view keeps"
   run("refreshQueue()");
   await settle();
   assert.equal(run("qst.needs"), 3);
+});
+
+test("the title cell is a record cell: the title over its muted note, each one line, the whole on hover and on the opened row", () => {
+  const long = "x".repeat(400);
+  load({ ...data, items: [item("n1", { title: long, note: "held for the release" }), item("n2"), item("n3", { title: "" })] });
+  let h = draw();
+  assert.match(h, new RegExp(`<td class="btitle"><div class="c1" title="${long}"><span class="bt">${long}</span></div><div class="c1 muted" title="held for the release">held for the release</div></td>`));
+  assert.match(h, /data-slug="n2">.*?<div class="c1 muted" title="n2">n2<\/div>/, "no note: the slug says which item");
+  assert.match(h, /data-slug="n3">.*?<div class="c1" title="n3"><span class="bt">n3<\/span><\/div><div class="c1 muted" title="">&nbsp;<\/div>/, "the slug as the title is not said twice, and the row keeps two lines");
+  assert.doesNotMatch(h, /class="(bsum|c2)/, "no clamped block in the queue's cells");
+  load({ ...data, items: [item("n1", { title: long, note: "held for the release" })] }, { sel: "n1" });
+  h = draw();
+  assert.match(h, /<tr class="wdet">.*held for the release/s, "the opened row says the note in full");
 });
 
 test("the removed card, day-heading and tile code is gone", () => {
@@ -453,7 +595,7 @@ test("a row carries its start place, hold, source and board row, and the head sa
   const links = [{ row: "#board/apo-120" }, {}];
   load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
   const h = draw();
-  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="bt">title q1<\/div><\/td>/, "# then the title");
+  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="btitle"><div class="c1" title="title q1"><span class="bt">title q1<\/span><\/div><div class="c1 muted" title="q1">q1<\/div><\/td>/, "# then the title over its slug");
   assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
   assert.match(h, /data-slug="q1">.*?<td>board<\/td>/);
   assert.match(h, /<a class="tl" href="#board\/apo-120">apo-120<\/a>/, "the row links to the board");
