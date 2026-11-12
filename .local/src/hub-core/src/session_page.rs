@@ -652,8 +652,8 @@ mod tests {
         let some = |s: &str| Some(s.to_string());
         assert_eq!(link("Queue item"), some("#queue/the-item"));
         assert_eq!(link("Project"), some("#projects/agent-runtime"));
-        assert_eq!(link("Board row"), some("#board?q=id:=ar-455"));
-        assert_eq!(link("Epic"), some("#board?q=id:=ar-400"));
+        assert_eq!(link("Board row"), some("#projects/all?q=id:=ar-455"));
+        assert_eq!(link("Epic"), some("#projects/all?q=id:=ar-400"));
         assert_eq!(link("PR"), some("https://github.com/o/r/pull/12"));
         assert_eq!(
             (text(&p, "CI"), link("CI")),

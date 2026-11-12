@@ -19,7 +19,7 @@ pub enum Kind {
     Session,
     /// An agent-queue item, by its slug.
     Queue,
-    /// A board row or an epic, by its id (`ar-1494`): the Board filtered to exactly that id.
+    /// A board row or an epic, by its id (`ar-1494`): Projects' All rows filtered to exactly that id.
     Row,
     /// An agentctl runner's page.
     Runner,
@@ -140,7 +140,7 @@ impl Link {
             Kind::Session => format!("#sessions/{seg}"),
             Kind::Queue => format!("#queue/{seg}"),
             // `id:ar-1` alone would match `ar-10`.
-            Kind::Row => format!("#board?q=id:={seg}"),
+            Kind::Row => format!("#projects/all?q=id:={seg}"),
             Kind::Runner => format!("#fleet/{seg}"),
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
@@ -170,7 +170,7 @@ impl Link {
             Kind::Project => ("projects", id.clone()),
             Kind::Session => ("sessions", id.clone()),
             Kind::Queue => ("queue", id.clone()),
-            Kind::Row => ("board", format!("id:={id}")),
+            Kind::Row => ("projects", format!("all id:={id}")),
             Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
@@ -266,7 +266,10 @@ mod tests {
         );
         assert_eq!(
             both(Kind::Row, "ar-455"),
-            ("#board?q=id:=ar-455".into(), a("board", "id:=ar-455"))
+            (
+                "#projects/all?q=id:=ar-455".into(),
+                a("projects", "all id:=ar-455")
+            )
         );
         assert_eq!(
             both(Kind::Runner, "inbox-triage"),
@@ -338,7 +341,7 @@ mod tests {
         );
         assert_eq!(
             Link::to(Kind::Row, "a&q=x #y").href(),
-            "#board?q=id:=a%26q%3Dx%20%23y"
+            "#projects/all?q=id:=a%26q%3Dx%20%23y"
         );
         assert_eq!(Link::tab("nope").tab_args(), None, "no such tab");
     }

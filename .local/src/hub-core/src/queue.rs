@@ -1632,7 +1632,7 @@ mod tests {
                     "#sessions/ops-center-p6"
                 ),
                 want("project", "dotfiles", "#projects/dotfiles"),
-                want("row", "ar-1726", "#board?q=id:=ar-1726"),
+                want("row", "ar-1726", "#projects/all?q=id:=ar-1726"),
                 want(
                     "pr",
                     ".dotfiles#1930",

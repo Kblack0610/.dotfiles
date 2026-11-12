@@ -58,7 +58,7 @@ test("a row reads state, time, project, the work, its PR and cost, and escapes t
   assert.match(h, /<a href="https:\/\/x\/7"[^>]*>notes#7<\/a>/);
   assert.match(h, /<h2 class="sec">Work <span class="n">2 of 3<\/span><\/h2>/);
   assert.match(h, /queue items from 2026-11-04, merged PRs from 2026-10-14/);
-  assert.match(h, /<a href="#board">Board<\/a>/);
+  assert.match(h, /<a href="#projects\/all">All rows<\/a>/);
 });
 
 test("an unread source is an error card above the rows, and an empty window says so", () => {
