@@ -111,11 +111,11 @@ buf() { mapfile -t BUF <<<"$output"; }
 
 # Same input and expected text as sweep.rs golden_blank_lines_group_rows_inside_a_lane.
 @test "a save keeps the blank lines that group a lane" {
-  printf '%s' $'## Focus\n### Low\n- [ ] a #low\n- [ ] b #low\n\n\n- [ ] c #low\n- [ ] d #high\n\n- [ ] e #high\n### Urgent\n\n- [ ] f #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n' > "$NOTE"
+  printf '%s' $'## Focus\n### High\n- [ ] h1 #high\n### Low\n- [ ] a #low\n- [x] b #low\n\n- [ ] c #urgent\n- [ ] d #low\n\n    its note\n- [ ] e #low\n\n\n- [ ] f #low\n### Urgent\n\n- [ ] u #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n' > "$NOTE"
   run save_run 1 0 'vim.cmd "silent write"'
   assert_success
   run sed 's/ #c1104//' "$NOTE"
-  assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] f #urgent\n\n### High\n- [ ] d #high\n\n- [ ] e #high\n\n### Low\n- [ ] a #low\n- [ ] b #low\n\n- [ ] c #low\n\n---\n### Done\n- [x] g\n\n- [x] h\n\n## Notes\n')"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n')"
 }
 
 @test "a note with an empty Focus opens on the bare lanes" {

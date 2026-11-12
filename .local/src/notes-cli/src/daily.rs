@@ -308,22 +308,27 @@ fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> V
 }
 
 /// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it, and
-/// one blank wherever the human left a group break.
+/// one blank before a task where the human left a group break between rows of one lane. A
+/// lane heading or rule ends a break, so the sweep's own spacing never carries.
 fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut under_open = false;
+    let mut gap = false;
     for l in lines {
         if l.trim().is_empty() {
-            if out.last().is_some_and(|p| !p.is_empty()) {
+            gap = !out.is_empty();
+        } else if md::is_open_task(l) {
+            if std::mem::take(&mut gap) {
                 out.push(String::new());
             }
-        } else if md::is_open_task(l) {
             out.push(md::stamp_line(l, today, prev_date));
             under_open = true;
         } else if under_open && is_note(l) {
+            gap = false;
             out.push(l.clone());
         } else {
             under_open = false;
+            gap = false;
         }
     }
     out
@@ -336,9 +341,12 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     let mut keep = Vec::new();
     let mut defer = Vec::new();
     let mut deferring = false;
+    // A group break stays in the note, never in the schedule: it lands before the next KEPT
+    // task, so one beside a deferred task neither leads, trails nor doubles.
+    let mut gap = false;
     for l in lines {
         if l.is_empty() {
-            keep.push(l.clone()); // a group break stays in the note, never in the schedule
+            gap = !keep.is_empty();
             continue;
         }
         if !is_note(l) {
@@ -347,6 +355,9 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
         if deferring {
             defer.push(l.clone());
         } else {
+            if !is_note(l) && std::mem::take(&mut gap) {
+                keep.push(String::new());
+            }
             keep.push(l.clone());
         }
     }
@@ -2044,25 +2055,34 @@ mod tests {
 
     #[test]
     fn carry_focus_keeps_one_blank_per_group_break() {
-        // the lane headers and the done row go; the break between groups carries, once
+        // A swept Focus: lane headings, the sweep's own blank before each, a break in Low.
         let lines = v(&[
+            "### Urgent",
+            "- [ ] u #urgent",
+            "",
             "### Low",
             "- [ ] a #low",
             "",
             "",
-            "- [x] gone",
             "- [ ] b #low",
+            "",
+            "---",
+            "### Done",
+            "- [x] gone",
             "",
         ]);
         let out = carry_focus(&lines, d("2026-06-30"), d("2026-06-29"));
-        assert_eq!(out.len(), 4, "{out:?}");
-        assert!(
-            out[0].contains("a ") && out[1].is_empty() && out[2].contains("b "),
-            "{out:?}"
-        );
-        // a break never lands in the schedule, even after a deferred task
-        let (keep, defer) = route_by_due(&v(&["- [ ] far [2026-07-15]", ""]), d("2026-06-30"));
-        assert_eq!((keep, defer), (v(&[""]), v(&["- [ ] far [2026-07-15]"])));
+        let shape: Vec<bool> = out.iter().map(|l| l.is_empty()).collect();
+        // only the human's break carries: none between lanes, none trailing
+        assert_eq!(shape, [false, false, true, false], "{out:?}");
+        // a break beside a deferred task never leads, trails or lands in the schedule
+        let far = "- [ ] far [2026-07-15]";
+        let (keep, defer) = route_by_due(&v(&[far, "", "- [ ] a"]), d("2026-06-30"));
+        assert_eq!((keep, defer), (v(&["- [ ] a"]), v(&[far])));
+        let (keep, _) = route_by_due(&v(&["- [ ] a", "", far]), d("2026-06-30"));
+        assert_eq!(keep, v(&["- [ ] a"]));
+        let (keep, _) = route_by_due(&v(&["- [ ] a", far, "", "- [ ] b"]), d("2026-06-30"));
+        assert_eq!(keep, v(&["- [ ] a", "", "- [ ] b"]));
     }
 
     #[test]

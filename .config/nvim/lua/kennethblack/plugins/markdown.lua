@@ -366,20 +366,30 @@ return {
         -- Which bucket the last top-level line went to, so its indented children follow it.
         -- `last` is a LANES index, or 0 meaning the done bucket.
         local last = nil
+        -- Group breaks (daily only), mirroring sweep::bucket: a blank after a row marks a break
+        -- in the lane it sits in (its heading, else the lane of the open row above it), kept
+        -- before the next row that lands in that lane when one is already there.
+        local pending, last_open = {}, nil
+        local function land(i, row)
+          if pending[i] and #open[i] > 0 then
+            table.insert(open[i], "")
+          end
+          pending[i] = nil
+          table.insert(open[i], row)
+          last_open = i
+        end
         for _, l in ipairs(body) do
           if daily and not l:match "%S" then
-            -- A blank is a group break the human put there: it stays after the row above it,
-            -- in that row's bucket. One right under a heading has no row above it and goes.
-            if last == 0 then
-              done[#done + 1] = ""
-            elseif last then
-              table.insert(open[last], "")
+            if last_open then
+              pending[cur_lane or last_open] = true
             end
           elseif is_scaffold(l) then
             had_scaffold = true
             cur_lane = scaffold_lane(l)
             last = nil
+            pending, last_open = {}, nil
           elseif l:match "^%s" and l:match "%S" and last then
+            pending = {} -- a blank before a row's indented note is no break
             -- An indented line belongs to the task above it: a wrapped continuation, or a
             -- subtask. Bucketing it alone would tear it off its parent and float it to the
             -- top of the list.
@@ -401,18 +411,18 @@ return {
               local _, lvl = strip_priority(l)
               if lvl then
                 local i = lane_index(lvl)
-                table.insert(open[i], l) -- tag is the source of truth
+                land(i, l) -- tag is the source of truth
                 last = i
               else
                 -- Untagged: inherit the lane it was dropped under, else take the default.
                 -- Either way it leaves here TAGGED - an open task with no stated priority used
                 -- to sort above `### Urgent`, outranking one explicitly marked urgent.
                 local i = (inherit and cur_lane) or default
-                table.insert(open[i], add_tag(l, "#" .. LANES[i][1]))
+                land(i, add_tag(l, "#" .. LANES[i][1]))
                 last = i
               end
             elseif l:match "%S" then
-              table.insert(open[#LANES + 1], l)
+              land(#LANES + 1, l)
               last = #LANES + 1
             end
           end
@@ -427,32 +437,24 @@ return {
           return nil
         end
         local out = {}
-        -- One bucket onto `out`, its group breaks kept: a run of blanks becomes one, and none
-        -- opens or closes the bucket, where the layout places its own. Mirrors sweep::spaced.
-        local function spaced(lines)
-          local first = #out + 1
-          for _, l in ipairs(lines) do
-            local blank = not l:match "%S"
-            if not (blank and (#out < first or out[#out] == "")) then
-              out[#out + 1] = blank and "" or l
-            end
-          end
-          if #out >= first and out[#out] == "" then
-            out[#out] = nil
-          end
+        for _, l in ipairs(open[#LANES + 1]) do -- what is no task, above the lanes
+          out[#out + 1] = l
         end
-        spaced(open[#LANES + 1]) -- what is no task, above the lanes
         for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
           if #out > 0 then
             out[#out + 1] = ""
           end
           out[#out + 1] = lane[2]
-          spaced(open[i])
+          for _, l in ipairs(open[i]) do
+            out[#out + 1] = l
+          end
         end
         out[#out + 1] = "" -- Done placeholder is always present too
         out[#out + 1] = "---"
         out[#out + 1] = "### Done"
-        spaced(done)
+        for _, l in ipairs(done) do
+          out[#out + 1] = l
+        end
         return out, placeholder
       end
 
