@@ -436,6 +436,24 @@ setup_keyd() {
     log_info "keyd enabled and reloaded"
 }
 
+# Ignore a short press of the case power button (a pet steps on it). Reload, never
+# restart, logind: a restart ends the graphical session.
+setup_power_key() {
+    log_section "Setting the power button to ignore a short press"
+
+    local src="$HOME/.dotfiles/etc/systemd/logind.conf.d/50-power-key.conf"
+    local dst="/etc/systemd/logind.conf.d/50-power-key.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "logind drop-in not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    sudo systemctl reload systemd-logind
+    log_info "Installed $dst and reloaded logind"
+}
+
 # Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
@@ -824,6 +842,7 @@ install_all() {
     step avd         setup_freerdp_avd
 
     step keyd        setup_keyd
+    step base        setup_power_key
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 
