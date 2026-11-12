@@ -267,8 +267,9 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent` or `high`). A `high` row ranks after every live wait
-    /// and `urgent` row with the same `human`; a live wait has none and ranks as `urgent`.
+    /// A sheet row's priority (`urgent` or `high`). Every sheet row ranks after every live wait
+    /// with the same `human`, since a live wait stops work already running and a to-do does not;
+    /// among sheet rows, `high` follows `urgent`. A live wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
@@ -303,7 +304,12 @@ impl Score {
         }
     }
 
-    /// A `high` sheet row, which ranks after the rows that block running work or are urgent.
+    /// A sheet row: a to-do, which ranks after the rows that block running work.
+    fn sheet(&self) -> bool {
+        self.priority.is_some()
+    }
+
+    /// A `high` sheet row, which ranks after the `urgent` ones.
     fn later(&self) -> bool {
         self.priority.as_deref() == Some("high")
     }
@@ -988,7 +994,7 @@ pub fn needs(
             n.score.is_none(),
             n.score
                 .as_ref()
-                .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
+                .map(|s| (!s.human, s.sheet(), s.later(), std::cmp::Reverse(s.value))),
         )
     });
     for (i, n) in out.iter_mut().enumerate() {
@@ -1566,19 +1572,20 @@ mod tests {
         };
         let h = build(&state(), Some(&q), Some(&board()), None);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
-        // The #urgent row has waited longer than the ask, so it leads; the #high row, older
-        // still, follows every live wait; conditions stay last.
+        // The #urgent row has waited longer than the ask, but every live wait leads: it stops
+        // running work and a to-do does not. The #high row follows the #urgent one; conditions
+        // stay last.
         assert_eq!(
             rows,
             [
-                (Kind::Sheet, "tr-50"),
                 (Kind::Ask, "a1"),
                 (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Sheet, "tr-50"),
                 (Kind::Sheet, "tr-117"),
                 (Kind::Nightly, "repo"),
             ]
         );
-        let top = &h.needs[0];
+        let top = &h.needs[2];
         let age = (NOW - day_start("2026-11-04").unwrap()) / 60;
         assert!(age > 60 * 24, "a day-old row waits more than a day: {age}");
         assert_eq!(score(top), (true, false, 0, 0, age, age));
@@ -1587,7 +1594,7 @@ mod tests {
         let json = serde_json::to_value(top).unwrap();
         assert_eq!(json["kind"], "sheet");
         assert_eq!(json["score"]["priority"], "urgent");
-        assert!(serde_json::to_value(&h.needs[1]).unwrap()["score"]
+        assert!(serde_json::to_value(&h.needs[0]).unwrap()["score"]
             .get("priority")
             .is_none());
         // With no board read there are no sheet rows, and nothing else moves.
