@@ -316,7 +316,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "an after: successor off focus stays queued when its item closes; on focus it starts" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project app --slug first --running "a" >/dev/null
   "$AQ" add --project app --slug second --after first "b" >/dev/null
   printf 'game\tonly\n' > "$NOTES_FIXTURE/prios"
@@ -408,7 +407,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project game --slug a --running "a" >/dev/null
   "$AQ" add --project game --slug b --running "b" >/dev/null
   "$AQ" add --project game --slug both --after a,b "both" >/dev/null
@@ -1303,7 +1301,6 @@ notes --profile bnb ptask game --agent run gm-9"
 }
 
 @test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
-  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -1325,15 +1322,15 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
-  HOLD_EXIT=1 run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
   assert_success
-  assert_output --partial 'dispatch is held, so held stays queued'
+  assert_output --partial 'so held stays queued for the next dispatch pass'
   assert_not_called 'start --item held'
   [ -f "$(item queued held)" ]
 }
 
 @test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
-  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
   "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
   "$AQ" add --project game --slug other "unrelated" >/dev/null
@@ -1364,11 +1361,13 @@ notes --profile bnb ptask game --agent run gm-9"
   # A dispatch hold keeps it queued for the pass.
   "$AQ" add --project game --running --slug h1 "held parent" >/dev/null
   "$AQ" add --project game --slug h2 --after h1 "held next" >/dev/null
-  HOLD_EXIT=1 run "$AQ" move h1 done --status ok
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" move h1 done --status ok
   assert_success
-  assert_output --partial 'dispatch is held, so h2 stays queued'
+  assert_output --partial 'by human: next queue), so h2 stays queued'
   assert_not_called 'start --item h2'
   [ -f "$(item queued h2)" ]
+  "$REPO_ROOT/.local/bin/agent-hold" release dispatch >/dev/null
   # A start that fails leaves it queued.
   "$AQ" add --project game --running --slug x1 "parent" >/dev/null
   "$AQ" add --project game --slug x2 --after x1 "next" >/dev/null
@@ -1916,7 +1915,6 @@ EOF
 }
 
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture
   "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
   "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null

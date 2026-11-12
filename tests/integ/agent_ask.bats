@@ -217,7 +217,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
 @test "answer and cancel fail the queued items the ask can no longer release, and only those" {
-  local opts='go=run it now|later=run it later' a b c
+  local opts='go=run it now|later=run it later' a b c d e
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
@@ -246,8 +246,14 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   d="$("$AGENT_ASK" post --project demo --options "$opts" 'how should it look?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-d --tags "ask:$d=go" "runs on go" >/dev/null
   "$AGENT_ASK" answer "$d" "Neither: make it slope toward every ramp" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-d
-  assert_line 'state: queued'
+  run "$AGENT_ASK_QUEUE_CMD" show on-d --json
+  [ "$(jq -r '"\(.state) \(.hold // "released")"' <<<"$output")" = "queued released" ]
+  # Negative control: free text that names another option is a deliberate no, so settle-ask fails it.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" 'and the last?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-e --tags "ask:$e=go" "runs on go" >/dev/null
+  "$AGENT_ASK" answer "$e" "No, run it later" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-e
+  assert_line 'status: failed'
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
