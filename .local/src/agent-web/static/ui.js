@@ -192,6 +192,17 @@ function paint(el, html, open) {
   if (open) el.querySelectorAll("details[data-k]").forEach((d) => { open[d.dataset.k] = d.open; });
   el.innerHTML = html;
   el.scrollTop = y;
+  stripInView(el);
+}
+// A phone shows a few of an inner tab strip's tabs (Infra has six), so a repaint scrolls the open
+// one into its strip; the strip is new html each paint and starts scrolled to its left end.
+function stripInView(el) {
+  for (const s of el.querySelectorAll ? el.querySelectorAll(".istrip") : []) {
+    const b = s.querySelector?.("button.on");
+    if (!b?.getBoundingClientRect) continue;
+    const r = s.getBoundingClientRect(), o = b.getBoundingClientRect();
+    if (o.right > r.right || o.left < r.left) s.scrollLeft += o.left - r.left - (r.width - o.width) / 2;
+  }
 }
 
 // A tab whose source pushes nothing (Prometheus, journald) re-reads on a timer while it is

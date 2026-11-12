@@ -455,10 +455,14 @@ mod tests {
 
     #[test]
     fn entity_pages_are_the_links() {
-        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
-        // keeps the id of every page Link::href draws inside an inner tab.
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES (and the old
+        // words it still reads), so the router keeps the id of every page Link::href draws inside
+        // an inner tab, and of a saved link to one.
         let mut want = serde_json::Map::new();
-        for p in hub_core::links::PAGES {
+        for p in hub_core::links::PAGES
+            .iter()
+            .chain(hub_core::links::RETIRED_PAGES)
+        {
             let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
             tab[p.word] = p.inner.into();
         }
