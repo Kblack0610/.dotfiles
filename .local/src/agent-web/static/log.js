@@ -98,7 +98,7 @@ function benchTable(rec) {
   const h = (label, role, n) => `<th${n ? ' class="n"' : ""}${role ? ` data-role="${role}"${role === "glance" ? " data-named" : ""}` : ""}>${label}</th>`;
   const head = h("what", "lead") + h("phase", "glance", 1) + h("PRs", "glance", 1) + h("working", "", 1) + h("waiting", "", 1) + h("stalled", "", 1) + h("CI reds", "", 1) + h("peak ctx", "", 1) + h("cost", "glance", 1) + h("session");
   const row = (s) => `<tr><td class="wrap" title="${esc(s.plan || "")}">${esc(s.name || s.plan || shortTarget(s.target))}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td><td class="muted" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td></tr>`;
-  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
+  return secHead("", "Sessions", ss.length) + `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
 }
 
 function renderLog() {
@@ -127,7 +127,7 @@ function renderLog() {
   html += waiting(nWait);
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary>${secHead("", "Timeline", tl.length)}</summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
   paint(el, html, lst.open);
 }
 

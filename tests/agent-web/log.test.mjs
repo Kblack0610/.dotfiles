@@ -101,6 +101,7 @@ test("a session row leads with what its plan is called, and a phone sees phase, 
     { target: "hub/dotfiles:4", phase: "1/1" },
   ] };
   const html = between(draw(rec({ bench })), "Sessions");
+  assert.match(draw(rec({ bench })), /<h2 class="sec">Sessions <span class="n">2<\/span><\/h2>/);
   const heads = [...html.matchAll(/<th([^>]*)>([^<]*)<\/th>/g)].map((m) => [m[2], (m[1].match(/data-role="(\w+)"/) || [])[1] || "rest"]);
   assert.deepEqual(heads.filter(([, r]) => r !== "rest").map(([l, r]) => `${l}:${r}`), ["what:lead", "phase:glance", "PRs:glance", "cost:glance"]);
   const rows = [...html.matchAll(/<tr><td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);

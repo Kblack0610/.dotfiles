@@ -24,7 +24,7 @@ const relst = tblTab({
   draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
-  body: (t) => releasesBody(t.data),
+  body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
   wrap: (html) => innerWrap("releases", "table", html),
   tail: () => innerWrap("releases", "runs", relRuns.block()),
 });
@@ -81,7 +81,7 @@ function appPage(d) {
   if (!a) return `<div class="bhead"><span>Releases / ${esc(name)}</span>${back}</div>${down}<div class="empty">No such app: ${esc(name)}.</div>`;
   const project = d.app_links?.project ? ` <a class="btn sm" href="${esc(d.app_links.project)}">Project page</a>` : "";
   return `<div class="bhead"><span>Releases / <b>${esc(a.project)}</b> <span class="${levelClass(a.level)}">${esc(a.status_text)}</span></span><span>${back}${project}</span></div>` +
-    `${down}${appStatus()}<h2 class="sec">Channels</h2><div class="panel">${appDetail(a)}</div>`;
+    `${down}${appStatus()}${secHead("", "Channels")}<div class="panel">${appDetail(a)}</div>`;
 }
 
 function appDetail(a) {
@@ -184,18 +184,23 @@ function releaseDetail(r) {
     line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") + `</div></td></tr>`;
 }
 
+// The apps, then how full each history column is (Releases::coverage) in a fold that starts shut.
 function releasesBody(d) {
   const t = d.table, rows = d.rows || [];
-  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>`;
-  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>`;
+  const cover = d.coverage ? cfold("rel-coverage", "Coverage", `<div class="cline">${esc(d.coverage)}</div>`, REL_OPEN) : "";
+  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>${cover}`;
+  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>${cover}`;
 }
 
+// A snapshot older than the collector's cadence is stale.
+const relStale = (d) => d.at && Date.now() / 1e3 - d.at > d.stale_after;
+// When the snapshot was taken, after the apps' state tiles; amber once it is stale.
+const releasesTiles = (d) =>
+  tile("REFRESHED", d.at ? clock(d.at * 1e3) : "-", relStale(d) ? "var(--b-stalled)" : "var(--c-other)", d.at ? `${ago(d.at)} ago` : "no snapshot read");
+
 function releasesHead(d) {
-  const age = d.at ? Date.now() / 1e3 - d.at : 0, stale = d.at && age > d.stale_after;
-  const read = d.at ? `refreshed ${clock(d.at * 1e3)} (${ago(d.at)} ago)` : "no snapshot read";
-  let html = `<h2 class="sec">Releases <span class="muted">${esc(d.question || "")}</span></h2>` +
-    `<div class="cline">${esc(d.summary || "")} <span class="${stale ? "warn" : "muted"}">${esc(read)}</span></div>`;
-  if (d.coverage) html += `<div class="cline muted">${esc(d.coverage)}</div>`;
+  const t = d.table;
+  let html = secHead("", "Releases", t && tblCount(t), d.gaps || relStale(d) ? "warn" : "");
   if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -206,7 +211,6 @@ function releasesHead(d) {
 // It draws inside this tab's page, so its render is the tab's. Every run is Infra's CI runs.
 const relRuns = runsTable({
   tab: "releases", id: "relrun", el: "releases", scope: "release", title: "Release runs", folds: REL_OPEN,
-  lead: `<div class="cline muted">The runs that deployed or ran on a release tag; every run is on <a href="#infra/runs">Infra, CI</a>.</div>`,
   none: "No run tied to a release in 30 days.", render: () => relst.render(),
 });
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
@@ -276,19 +280,18 @@ function appIncidents(list) {
 // The open app's status section: what its Gatus checks say, each check's card, then its incidents.
 function appStatus() {
   const d = apst.data;
-  if (!d) return `<h2 class="sec">Status</h2><div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "reading..."}</div>`;
+  if (!d) return secHead("", "Status") + `<div class="${apst.err ? "panel down" : "empty"}">${apst.err ? esc(apst.err) : "reading..."}</div>`;
   const checked = d.newest ? `checked ${clock(d.newest * 1e3)} (${ago(d.newest)} ago)` : "no result yet";
-  let h = `<h2 class="sec">Status <span class="muted">read ${clock(d.at * 1e3)}</span></h2>` +
+  let h = secHead("", "Status") +
     `<div class="panel"><div class="appbanner"><span class="chip" style="--c:${LEVEL_COLOR[d.level]}">${esc(d.banner)}</span> <span class="muted">${esc(checked)}</span>` +
     (d.monitor ? ` <a href="${esc(d.monitor)}" target="_blank" rel="noopener">Gatus</a>` : "") + `</div>` +
-    d.context.map(pagePart).join("") + `</div>`;
+    d.context.map(pagePart).join("") + pageRow("Read", clock(d.at * 1e3)) + `</div>`;
   const errs = apst.err ? [`refresh failed, showing the last read: ${apst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  const probed = d.groups.filter((g) => !d.unchecked.includes(g));
-  h += `<h2 class="sec">Checks <span class="muted">${esc(probed.join(", "))}</span></h2>`;
+  h += secHead("", "Checks", d.checks.length || null);
   if (d.checks.length && d.unchecked.length) h += `<div class="cline muted">No Gatus check yet: ${esc(d.unchecked.join(", "))}</div>`;
   h += d.checks.length ? d.checks.map((c) => appCheck(c, d.at)).join("") : `<div class="panel muted">No check reports for ${esc(d.groups.join(" or "))} yet.</div>`;
-  return h + `<h2 class="sec">Incidents <span class="muted">two failed results in a row, until two pass</span></h2>` + appIncidents(d.incidents);
+  return h + secHead("", "Incidents", d.incidents.length || null) + appIncidents(d.incidents);
 }
 $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 
