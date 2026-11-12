@@ -28,7 +28,7 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | rbw entry (password field, one line) | Contents | Scope |
 |---|---|---|
 | `store_sales_asc` | `{"key_id", "issuer_id", "p8", "vendor_number"}`, `p8` the `.p8` file in base64 | App Store Connect API key with the Sales role. The vendor number is on Payments and Financial Reports |
-| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console "View financial data" only. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
+| `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console account permissions, all read-only: "View financial data" and "View app information and download bulk reports (read-only)", which brings "View app quality information" with it. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 | `store_sales_steam` | The bare Web API key, one line | The key of a Steamworks Financial API Group (Users and Permissions, Manage Groups). Such a group has no users and no apps: the key reads sales and nothing else. It is not release-state's publisher key `release_state_steam` |
 
 ## Troubleshooting
@@ -43,7 +43,7 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | App Store "no sales yesterday" | Apple answered "There were no sales for the date specified" |
 | Google Play `no sales/salesreport_YYYYMM.zip in the bucket yet` | No sale this month yet, or the month's first report is not out. It also shows when `bucket` in the rbw entry is wrong, because GCS answers 404 for a bucket that does not exist: compare it with the URI in Play Console. An account with no paid app or in-app product has no sales report at all |
 | Google Play `HTTP 403` in the first two days after the invite | Google takes about a day to apply a Play Console invite to the reports bucket, sometimes longer. Wait, then run `store-sales` again |
-| Google Play `HTTP 403` after two days | The service account's grants are short. Check Play Console, Users and permissions: it needs "View financial data", and guides say reading the bucket also takes "View app information and download bulk reports (read-only)". GCP IAM roles on the bucket are reported not to help |
+| Google Play `HTTP 403` after two days | The service account's grants are short. Check Play Console, Users and permissions, Account permissions: it holds the three read-only permissions in Store credentials, and nothing else. GCP IAM roles on the bucket are reported not to help |
 | Steam `no rbw entry store_sales_steam` | The Financial API key is not made yet: see Store credentials |
 | Steam `report did not parse` | A row lacks `net_sales_usd`, `gross_sales_usd` or `net_units_sold`, or is dated another day than the one asked. Steam changed its answer: fix the parser in `store-sales`, never default the field |
 | Any store `HTTP 429` or `HTTP 5xx` | The store still refused after two retries (`STORE_RETRIES` in `.local/lib/store-auth.sh`, each after its Retry-After). The next run reads it again |
