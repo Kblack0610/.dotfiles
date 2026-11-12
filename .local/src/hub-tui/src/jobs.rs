@@ -91,6 +91,7 @@ impl JobsView {
             p.dim(),
         ));
         let mut out = vec![Line::from(spans)];
+        out.extend(DataTable::legend::<Job>(p, 0));
         if !jobs.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", jobs.errors.join("; ")),
@@ -137,7 +138,7 @@ impl JobsView {
 fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
     let state = match j.state {
         State::Running => cell("run", p.good()),
-        State::Queued => cell("queue", p.warn()),
+        State::Queued => cell("waiting", p.warn()),
         State::Done => "done".into(),
     };
     let name = if j.runs > 1 {
@@ -291,7 +292,7 @@ mod tests {
         );
         assert!(rows
             .iter()
-            .any(|r| r.contains("queue unity platform / e2e") && r.contains("wait 1m")));
+            .any(|r| r.contains("waiting unity platform / e2e") && r.contains("wait 1m")));
         assert!(rows
             .iter()
             .any(|r| r.contains("agentctl dream x3") && r.contains("1m success")));
@@ -361,11 +362,12 @@ mod tests {
             .map(plain)
             .collect();
         assert!(
-            st[0].starts_with("all 4  running 1  queued 1  done 2  failed 1"),
+            st[0].starts_with("all 4  running 1  waiting 1  done 2  failed 1"),
             "{st:?}"
         );
         assert!(st[0].ends_with("4 of 4 (last 1d0h)"), "{st:?}");
-        assert_eq!(st[1], "unread: k8s: prometheus down");
+        assert!(st[1].starts_with("waiting: the job is waiting to start"), "{st:?}");
+        assert_eq!(st[2], "unread: k8s: prometheus down");
     }
 
     #[test]

@@ -723,7 +723,7 @@ pub fn runner_page(
                 let result = if j.result.is_empty() {
                     match j.state {
                         hub_core::jobs::State::Running => "running",
-                        hub_core::jobs::State::Queued => "queued",
+                        hub_core::jobs::State::Queued => "waiting",
                         hub_core::jobs::State::Done => "done",
                     }
                     .to_string()

@@ -139,10 +139,10 @@ impl Ci {
         p
     }
 
-    /// `4 hosts, 15 slots, 11 busy, 6 queued (oldest 1h12m)`, or the quiet one.
+    /// `4 hosts, 15 slots, 11 busy, 6 waiting (oldest 1h12m)`, or the quiet one.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
         let mut s = format!(
-            "{} hosts, {} slots, {} busy, {} queued",
+            "{} hosts, {} slots, {} busy, {} waiting",
             self.hosts, self.slots, self.busy, self.queued
         );
         if self.queued > 0 {
@@ -797,6 +797,7 @@ impl Row for Queued {
     const FACETS: &'static [&'static str] = &["pool", "needs", "can"];
     const LEAD: &'static str = "job";
     const GLANCE: &'static [&'static str] = &["wait", "can"];
+    const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::CI;
 
     fn val(&self, col: &str) -> Val {
         match col {

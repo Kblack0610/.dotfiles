@@ -135,13 +135,14 @@ impl Pipeline {
     }
 
     /// `bottleneck: waiting, age p90 9h (bound 4h)`, only when a step is past its bound.
-    pub fn bottleneck_text(&self) -> Option<String> {
+    /// `name` words the step as the surface calls it.
+    pub fn bottleneck_text(&self, name: impl Fn(&str) -> String) -> Option<String> {
         let b = self.bottleneck.as_ref()?;
         let detail = match (b.age_p90_min, b.bound_min) {
             (Some(a), Some(bd)) => format!(", age p90 {} (bound {})", mins(a), mins(bd)),
             _ => String::new(),
         };
-        Some(format!("bottleneck: {}{detail}", b.step))
+        Some(format!("bottleneck: {}{detail}", name(&b.step)))
     }
 
     /// When the snapshot was written, if known; a date is added from an earlier day.
@@ -171,7 +172,7 @@ pub(crate) mod tests {
     fn a_bottleneck_names_its_step_age_and_bound() {
         let p = snapshot(&[("waiting", 2, 540.0, 2.25), ("queued", 3, 60.0, 0.5)]);
         assert_eq!(
-            p.bottleneck_text().unwrap(),
+            p.bottleneck_text(str::to_string).unwrap(),
             "bottleneck: waiting, age p90 9h (bound 4h)"
         );
     }
@@ -181,7 +182,7 @@ pub(crate) mod tests {
         let p = snapshot(&[("queued", 3, 90.0, 1.5), ("waiting", 2, 540.0, 3.0)]);
         assert_eq!(p.bottleneck.unwrap().step, "waiting");
         let p = snapshot(&[("waiting", 2, 90.0, 0.9), ("running", 1, 60.0, 1.0)]);
-        assert_eq!(p.bottleneck_text(), None);
+        assert_eq!(p.bottleneck_text(str::to_string), None);
     }
 
     #[test]

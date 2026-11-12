@@ -203,6 +203,19 @@ test("a state cell says what the item is, and how a done one ended", () => {
   assert.match(h, /<td>done<\/td>/);
 });
 
+test("an item not started is ready or held, a held cell names its hold, and the legend says what each means", () => {
+  const legend = "ready: starts when dispatch has a slot for it; held: waits on its hold";
+  load({ ...data, table: { ...table, legend }, items: [item("r", { state: "queued" }), item("h", { state: "queued", hold: "after r" })] });
+  const h = draw();
+  assert.match(h, /<td>ready<\/td>/);
+  assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
+  assert.match(h, /<div class="muted fold tlegend">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/);
+  assert.doesNotMatch(h, /<td>queued<\/td>/);
+  // Negative control: a table with no legend draws no legend line.
+  load();
+  assert.doesNotMatch(draw(), /tlegend/);
+});
+
 test("the page caps at the server's open_rows with +N older, one click lifts it", () => {
   load({ ...data, open_rows: 2 });
   let h = draw();

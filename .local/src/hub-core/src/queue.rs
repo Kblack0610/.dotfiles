@@ -912,13 +912,18 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 1 ready, 1 held`: the phone widget's queue line. Ready is queued with no hold.
-    pub fn counts_line(&self) -> String {
+    /// The items not started, as `(ready, held)`: ready is queued with no hold.
+    pub fn up_next(&self) -> (usize, usize) {
         let held = self
             .in_state(State::Queued)
             .filter(|i| i.hold.is_some())
             .count();
-        let ready = self.count(State::Queued) - held;
+        (self.count(State::Queued) - held, held)
+    }
+
+    /// `1 running, 1 ready, 1 held`: the phone widget's queue line.
+    pub fn counts_line(&self) -> String {
+        let (ready, held) = self.up_next();
         let mut s = format!("{} running, {ready} ready", self.count(State::Running));
         if held > 0 {
             s += &format!(", {held} held");
@@ -999,6 +1004,7 @@ impl crate::table::Row for QueueRow<'_> {
     const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
+    const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -1011,7 +1017,8 @@ impl crate::table::Row for QueueRow<'_> {
                     State::Waiting => "needs",
                     State::Running => "running",
                     State::Review => "on a PR",
-                    State::Queued => "queued",
+                    State::Queued if i.hold.is_some() => "held",
+                    State::Queued => "ready",
                     State::Done => "done",
                 }
                 .into(),

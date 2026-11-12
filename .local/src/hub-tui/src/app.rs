@@ -4768,7 +4768,7 @@ mod tests {
         };
         let t = top(&mut a);
         assert!(t[0].starts_with("PIPELINE  reading"), "{t:?}");
-        assert!(t[1].starts_with("INBOX -> board -> queued"), "{t:?}");
+        assert!(t[1].starts_with("INBOX -> board -> up next"), "{t:?}");
         a.handle(Msg::Pipeline(Ok(None)));
         let t = top(&mut a);
         assert!(t[1].contains("no snapshot"), "{t:?}");
@@ -5580,7 +5580,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("FLOW  inbox - | board - | queued 2")
+            s.contains("FLOW  inbox - | board - | up next 1 ready, 1 held")
                 && s.contains("running 1 | on a PR 0 | needs you 1"),
             "{s}"
         );
@@ -7260,7 +7260,7 @@ mod tests {
         ))));
         let s = screen(&mut a, 160, 40);
         assert!(
-            s.contains(&want.to_uppercase()) && s.contains("QUEUED"),
+            s.contains(&want.to_uppercase()) && s.contains("WAITING"),
             "{s}"
         );
         assert!(a.hints().contains("Esc all pools"), "{}", a.hints());

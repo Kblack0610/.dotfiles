@@ -277,6 +277,7 @@ impl Draw<'_> {
             head.push(Span::styled(format!("   [/ f s S x{c}]"), p.dim()));
         }
         let mut out = vec![clip_line(Line::from(head), self.w)];
+        out.extend(DataTable::legend::<R>(p, self.w));
         let shown = self.t.view.apply(rows);
         if shown.is_empty() {
             out.push(Line::styled(
@@ -492,9 +493,9 @@ const QUEUED_HEAD: [&str; 7] = ["JOB", "POOL", "REF", "N", "WAIT", "NEEDS", "CAN
 fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
-        "QUEUED".into(),
+        "WAITING".into(),
         rows,
-        "nothing queued",
+        "nothing waiting",
         None,
         |q| {
             let s = if q.stuck { p.bad() } else { Style::default() };

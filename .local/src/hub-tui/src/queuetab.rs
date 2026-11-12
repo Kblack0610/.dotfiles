@@ -514,6 +514,7 @@ pub fn page(
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
+    out.extend(DataTable::legend::<QueueRow>(p, w));
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));

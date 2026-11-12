@@ -145,7 +145,7 @@ impl<'a> Board<'a> {
             head.push(Span::styled(format!("  failed 24h {failed}"), self.p.bad()));
         } else if ci.busy + ci.queued == 0 {
             head.push(Span::styled(
-                "  green: nothing queued or failed in 24h",
+                "  green: nothing waiting or failed in 24h",
                 self.p.good(),
             ));
         }
@@ -554,7 +554,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued (oldest 2h28m)  failed 24h 91\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting (oldest 2h28m)  failed 24h 91\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -599,13 +599,13 @@ pub(crate) mod tests {
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued"),
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting"),
             "{ci}"
         );
         assert!(has(&ci, "failed 24h"), "{ci}");
         // Exceptions lead: the slots and the queue before the day's results and the runs.
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
-        assert!(at("HOST") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
+        assert!(at("HOST") < at("WAITING") && at("WAITING") < at("FINISHED 24H"));
     }
 
     #[test]
@@ -617,11 +617,11 @@ pub(crate) mod tests {
         let ci = tab(&i, "ci", 160);
         assert_line(
             &ci,
-            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 queued green: nothing queued or failed in 24h",
+            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 waiting green: nothing waiting or failed in 24h",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
-        assert_line(&ci, "QUEUED nothing queued");
+        assert_line(&ci, "WAITING nothing waiting");
         assert_line(
             &ci,
             "FINISHED 24H no finished-run series yet (runner exporter)",
@@ -799,7 +799,7 @@ pub(crate) mod tests {
     fn a_stuck_run_is_out_of_the_queue_and_its_oldest_wait() {
         // Its red row is the Alerts tab's (`alertstab` tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "4 queued (oldest 2h28m)"), "{out}");
+        assert!(has(&out, "4 waiting (oldest 2h28m)"), "{out}");
         assert!(!out.contains("RED NOW"), "{out}");
     }
 
