@@ -1346,10 +1346,11 @@ impl App {
         }
     }
 
-    /// The candidates are fleet-dispatch's snapshot, read in a worker on entering the Queue tab,
-    /// on `r` there and after a queue action (a promote takes its row out of the file).
+    /// The candidates are fleet-dispatch's snapshot, read in a worker on opening Queue's
+    /// Candidates inner tab, on `r` there and after a queue action (a promote takes its row out
+    /// of the file); never while another inner tab shows (dashboards rule 10).
     pub fn read_candidates(&mut self) {
-        if self.candidates_read.want() {
+        if self.qv.inner == "candidates" && self.candidates_read.want() {
             let (tx, path) = (self.tx.clone(), self.files.candidates.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(&path)));
@@ -2289,6 +2290,7 @@ impl App {
     /// the item and opens its record, as `#queue/<slug>` does on the web.
     fn open_queue(&mut self, q: &str) {
         self.qv.open(q);
+        self.read_candidates();
         let slug = q.trim();
         let at = self.queue.as_ref().and_then(|queue| {
             self.qv
@@ -2686,13 +2688,13 @@ impl App {
         }
     }
 
-    /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
-    /// pick a row or a candidate, `/ f s S x` are the shared table's, Enter opens a row's detail
-    /// and Esc closes it or clears the view, c arms a cancel and +/- move the priority of an
-    /// active item, C folds or opens the candidates (open at first) and p promotes one. The draw keeps the selected row
-    /// in view.
+    /// The Queue tab's own keys (queuetab.rs): Left/Right switch the inner tab, j/k, PgUp/PgDn,
+    /// space, g/G and Ctrl-d/Ctrl-u pick a row or a candidate, `/ f s S x` are the shared
+    /// table's, Enter opens a row's detail and Esc closes it or clears the view, c arms a cancel
+    /// and +/- move the priority of an active item, and on Candidates p promotes one. The draw
+    /// keeps the selected row in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
-        // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
+        // g and G take the page to its very top (the headings) and bottom (the last row),
         // which keeping the selected row in view alone would stop short of.
         let typing = self.qv.table.typing.is_some() || self.qv.confirm.is_some();
         match k.code {
@@ -2705,7 +2707,9 @@ impl App {
             k.code,
             KeyCode::Char('[' | ']' | '{' | '}') | KeyCode::Esc | KeyCode::Enter
         );
-        if line_key && !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
+        // The pipeline line is Active's, so its keys are too.
+        let on_line = self.qv.on(self.queue.as_ref(), jobs::now()) == "active";
+        if line_key && on_line && !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(q) = &self.queue {
                 let rail =
                     hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), jobs::now());
@@ -2720,13 +2724,19 @@ impl App {
                 }
             }
         }
-        match self.qv.key(
+        let was = self.qv.inner;
+        let ask = self.qv.key(
             k,
             self.queue.as_ref(),
             cands_of(&self.candidates),
             self.page,
             jobs::now(),
-        ) {
+        );
+        if self.qv.inner != was {
+            self.scroll = 0;
+            self.read_candidates();
+        }
+        match ask {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
@@ -4013,7 +4023,7 @@ impl App {
                 "j/k another row  l link, Enter opens it  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Queue => format!(
-                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
+                "<- -> switch  j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects
                 if self.tv.typing()
@@ -4969,19 +4979,28 @@ mod tests {
         let top = |a: &mut App| {
             a.page_lines(100)
                 .iter()
-                .take(5)
+                .take(6)
                 .map(|l| l.to_string())
                 .collect::<Vec<_>>()
         };
         let t = top(&mut a);
-        assert!(t[0].starts_with("PIPELINE  reading"), "{t:?}");
-        assert!(t[1].starts_with("INBOX -> board -> up next"), "{t:?}");
+        assert!(
+            t[0].starts_with("[Active 1] Up next"),
+            "the strip leads: {t:?}"
+        );
+        assert!(t[1].starts_with("PIPELINE  reading"), "{t:?}");
+        assert!(t[2].starts_with("INBOX -> board -> up next"), "{t:?}");
         a.handle(Msg::Pipeline(Ok(None)));
         let t = top(&mut a);
-        assert!(t[1].contains("no snapshot"), "{t:?}");
+        assert!(t[2].contains("no snapshot"), "{t:?}");
         press(&mut a, KeyCode::Char(']'));
         let t = top(&mut a);
-        assert!(t[2].starts_with("inbox -> BOARD"), "{t:?}");
+        assert!(t[3].starts_with("inbox -> BOARD"), "{t:?}");
+        // The line is Active's: Up next opens on its chips, and ] is not the line's there.
+        press(&mut a, KeyCode::Right);
+        let t = top(&mut a);
+        assert!(t[0].starts_with(" Active 1 [Up next]"), "{t:?}");
+        assert!(!t.iter().any(|l| l.starts_with("PIPELINE")), "{t:?}");
     }
 
     #[test]
@@ -5022,6 +5041,7 @@ mod tests {
     #[test]
     fn the_queue_page_follows_the_selection_past_the_bottom() {
         let mut a = app(Tab::Queue);
+        a.qv.inner = "next";
         a.handle(Msg::Queue(Box::new(long_queue(40))));
         assert!(!screen(&mut a, 80, 20).contains("Task 30"));
         for _ in 0..30 {
@@ -5038,13 +5058,17 @@ mod tests {
     #[test]
     fn g_and_shift_g_jump_the_queue_selection_and_the_page_with_it() {
         let mut a = app(Tab::Queue);
+        a.qv.inner = "next";
         a.handle(Msg::Queue(Box::new(long_queue(40))));
         screen(&mut a, 80, 20);
         a.handle(key('G'));
         let s = screen(&mut a, 80, 20);
         assert_eq!(a.qv.table.sel, 39);
         assert!(s.contains("Task 39"), "{s}");
-        assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
+        assert!(
+            !s.contains("CANDIDATES"),
+            "Candidates is its own inner tab:\n{s}"
+        );
         a.handle(key('g'));
         let s = screen(&mut a, 80, 20);
         assert_eq!((a.qv.table.sel, a.scroll), (0, 0));
@@ -5059,6 +5083,7 @@ mod tests {
     #[test]
     fn ctrl_d_and_ctrl_u_move_the_queue_selection_half_a_page() {
         let mut a = app(Tab::Queue);
+        a.qv.inner = "next";
         a.handle(Msg::Queue(Box::new(long_queue(40))));
         screen(&mut a, 80, 20);
         let half = a.page / 2;
@@ -5800,10 +5825,7 @@ mod tests {
         a.handle(key('3'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
-        assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
-            "{s}"
-        );
+        assert!(s.contains("all 2  needs you 1  running 1    2 of 2"), "{s}");
         assert!(
             s.lines().last().unwrap().contains("c cancel  +/- priority"),
             "{s}"
@@ -5857,6 +5879,9 @@ mod tests {
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
         a.handle(key('3'));
+        // Candidates is read only on its inner tab: Left from Active wraps to it.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
+        assert_eq!(a.qv.inner, "candidates");
         // Both workers reply when their read ends: wait for the two messages, not a timer.
         let (mut queue, mut cands) = (false, false);
         while !(queue && cands) {
@@ -5872,14 +5897,12 @@ mod tests {
             !ran.iter().any(|c| c.contains("suggest")),
             "the snapshot is read, never a live suggest: {ran:?}"
         );
-        assert!(screen(&mut a, 160, 40).contains("- CANDIDATES (0, 0 auto)"));
+        assert!(screen(&mut a, 160, 40).contains("CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        for _ in 0..5 {
-            a.handle(key('j'));
-        }
         let s = screen(&mut a, 160, 40);
         assert!(s.contains("bar-17") && s.contains("auto dispatch"), "{s}");
-        assert!(s.contains("C candidates  p promote"), "{s}");
+        assert!(s.contains("+/- priority  p promote"), "{s}");
+        assert!(!s.contains("C candidates"), "the fold key is gone: {s}");
         a.handle(key('p'));
         assert_eq!(a.qv.running.as_deref(), Some("promote shape-city bar-17"));
         loop {

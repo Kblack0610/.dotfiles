@@ -320,10 +320,11 @@ const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
-  "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
+  "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"],
+  "queue/table": ["queue", "active"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"queue":{"tabs":[["active","Active",["flow","active"]],["next","Up next",["next"]],["today","Done today",["today"]],["candidates","Candidates",["candidates"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -346,7 +347,9 @@ const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t
 // The inner tab each tab last showed, so a tab button brings it back as it was.
 const lastInner = {};
 // A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
-// its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
+// its inner tab's arg with the section left to scroll to; anything else is the first inner tab,
+// unless the tab reads words of its own (`TABS[tab].word`: Queue's item slug or old section id),
+// which keeps it as the arg for the tab to resolve.
 function innerRoute(r) {
   const g = INNER_TABS[r.tab];
   if (!g) return r;
@@ -359,7 +362,7 @@ function innerRoute(r) {
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
-  return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : "" };
+  return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : TABS[r.tab]?.word ? r.arg : "" };
 }
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
@@ -422,7 +425,8 @@ function route(hash) {
   return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
-// the groups' visibility and the strip's marks flip without a repaint.
+// the groups' visibility and the strip's marks flip without a repaint. A tab whose inner tabs
+// are reads of their own (`TABS[tab].inner`: Queue's scopes, its Candidates) is told which.
 function innerGo(tab, id) {
   const page = st.page;
   st.arg = lastInner[tab] = id;
@@ -434,6 +438,7 @@ function innerGo(tab, id) {
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
   stripMark(board, "itab", id);
+  if (TABS[tab]?.inner) TABS[tab].inner(id);
 }
 // The strip: one button per inner tab, the open one marked, a count pill beside one whose
 // sections need a look (`flagged`: section ids) and only above zero.
@@ -499,7 +504,8 @@ function setTab(t, arg, query, page) {
   st.page = page || "";
   // A tab button (no arg) brings back the inner tab that tab last showed.
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
-  if (INNER_TABS[t]) lastInner[t] = st.arg;
+  // Only an inner tab is kept: a word the tab reads itself (Queue's slug) is not one to bring back.
+  if (INNER_TABS[t] && (!st.arg || innerOf(t, st.arg)[0] === st.arg)) lastInner[t] = st.arg;
   st.views[t] = query ?? st.views[t] ?? "";
   // The open tab carries aria-current; web-kit's <kb-shell> marks it and names it on the bar.
   for (const n of TAB_NAMES) {

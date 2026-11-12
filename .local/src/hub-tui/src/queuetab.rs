@@ -1,16 +1,19 @@
 //! The Queue tab: agent-queue's items as one table on the shared data-table component, the
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
-//! agent-web's Queue tab. Its sections are `flow` (the pipeline line, `flowline`), `table` and `candidates`.
+//! agent-web's Queue tab. The pipeline line (`flow`, `flowline`) leads Active; Left and Right switch
+//! the inner tabs (`hub_core::layout`): Active, Up next and Done today are the one table in three
+//! scopes (`hub_core::queue::scope`), and Candidates is the ranked board rows.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
 //! detail, where `l` marks each record it names in turn (`Item::links`: session, project, row,
 //! each PR and its CI runs) and Enter on a marked one opens it; `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
-//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
-//! snapshot each `fleet-dispatch run` writes, `as of` its time): `C` opens it, j/k carry on into
-//! its rows, and `p` starts the selected one through the Projects tab's Start (`fleet-dispatch
-//! promote`). Every write goes through hub-core.
+//! active item only. On Candidates (`hub_core::queue::candidates`, the snapshot each
+//! `fleet-dispatch run` writes, `as of` its time, read only while it is open) j/k pick a row and
+//! `p` starts it through the Projects tab's Start (`fleet-dispatch promote`). Every write goes
+//! through hub-core.
 
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
+use hub_core::layout;
 use hub_core::links::Link;
 use hub_core::queue::{
     money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
@@ -23,6 +26,7 @@ use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::flowline::{self, LineView};
 use crate::fmt::{clock, Palette};
+use crate::innertabs;
 
 /// What a key on the Queue tab asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -41,14 +45,16 @@ pub enum Ask {
 
 pub struct QueueView {
     /// The shared table's view (query, state chip, sort) and its selection, an index into the
-    /// drawn rows, then into the candidates the open fold shows.
+    /// drawn rows, or on Candidates into its rows.
     pub table: DataTable,
     /// The selected row's detail replaces the table.
     pub detail: bool,
     /// The detail's marked link (`l`): the item it was marked on and an index into its `links`;
     /// Enter opens it. A refresh that puts another item under the selection drops the mark.
     pub link: Option<(String, usize)>,
-    pub cands_open: bool,
+    /// The inner tab asked for (a `layout::Inner` id of Queue); "" lets the view pick
+    /// (`hub_core::queue::scope`: the one holding its chip, else its search's, else Active).
+    pub inner: &'static str,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
     /// The slug a cancel waits on y for.
@@ -64,14 +70,18 @@ fn at(now: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(now, 0).unwrap_or_default()
 }
 
+/// Queue's layout entry: its pinned pipeline and inner tabs.
+pub fn tab() -> &'static layout::Tab {
+    layout::resolve("queue").expect("queue is a tab")
+}
+
 impl Default for QueueView {
-    /// The candidates start open (dashboards rule 4).
     fn default() -> QueueView {
         QueueView {
             table: DataTable::default(),
             detail: false,
             link: None,
-            cands_open: true,
+            inner: "",
             line: LineView::default(),
             confirm: None,
             running: None,
@@ -81,42 +91,56 @@ impl Default for QueueView {
 }
 
 impl QueueView {
-    /// A request for the tab (`hub --tab "queue running"`): an old section id opens the table on
-    /// its state chip, `candidates` opens that fold, `flow` and `table` are the page as it is, and
-    /// any other word is the query. The table starts from its own view.
+    /// A request for the tab (`hub --tab "queue running"`): an inner tab's id opens it, an old
+    /// section id opens the table on its state chip (and so the inner tab holding it), `flow` and
+    /// `table` are the page as it is, and any other word is the query. The table starts from its
+    /// own view.
     pub fn open(&mut self, query: &str) {
         let q = query.trim();
         self.table.clear();
         self.detail = false;
-        match hub_core::queue::section_chip(q) {
+        self.inner = "";
+        match (innertabs::named(tab(), q), hub_core::queue::section_chip(q)) {
             _ if q.is_empty() => {}
-            Some(chip) => self.table.view.state = chip.into(),
-            None if q.eq_ignore_ascii_case("candidates") => self.cands_open = true,
-            None if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
-            None => self.table.view.q = q.into(),
+            (Some(id), _) => self.inner = id,
+            (None, Some(chip)) => self.table.view.state = chip.into(),
+            _ if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
+            _ => self.table.view.q = q.into(),
         }
     }
 
-    /// The rows the table draws, from every row in the table's own order: the view applied, then
-    /// capped at `TABLE_OPEN_ROWS`; and how many the cap left out.
-    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
-        let mut rows: Vec<QueueRow<'a>> = self.table.view.apply(all).into_iter().copied().collect();
+    /// The inner tab shown and the rows it holds, every row in the table's own order.
+    fn scoped<'a>(&self, all: &[QueueRow<'a>], now: i64) -> (&'static str, Vec<QueueRow<'a>>) {
+        let day = hub_core::text::local_day_start(now);
+        hub_core::queue::scope(all, self.inner, &self.table.view, day)
+    }
+
+    /// The inner tab shown: the one asked for, else the one the view picks.
+    pub fn on(&self, q: Option<&Queue>, now: i64) -> &'static str {
+        self.scoped(&q.map_or(vec![], |q| q.rows(at(now))), now).0
+    }
+
+    /// The rows the table draws, from the inner tab's: the view applied, then capped at
+    /// `TABLE_OPEN_ROWS`; and how many the cap left out.
+    fn drawn<'a>(&self, scoped: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
+        let mut rows: Vec<QueueRow<'a>> =
+            self.table.view.apply(scoped).into_iter().copied().collect();
         let older = rows.len().saturating_sub(TABLE_OPEN_ROWS);
         rows.truncate(TABLE_OPEN_ROWS);
         (rows, older)
     }
 
     pub fn shown<'a>(&self, q: &'a Queue, now: i64) -> Vec<QueueRow<'a>> {
-        self.drawn(&q.rows(at(now))).0
+        self.drawn(&self.scoped(&q.rows(at(now)), now).1).0
     }
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
         self.shown(q, now).get(self.table.sel).map(|r| r.item)
     }
 
-    /// The candidates the fold lists: none while it is shut.
+    /// The candidates the page lists: none off their inner tab.
     pub fn shown_cands<'a>(&self, c: &'a [Candidate]) -> &'a [Candidate] {
-        if self.cands_open {
+        if self.inner == "candidates" {
             c
         } else {
             &[]
@@ -176,8 +200,28 @@ impl QueueView {
             };
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // `/ f s S x`, and every key while a query is being typed, are the shared table's.
-        if !ctrl && (self.table.typing.is_some() || DataTable::owns(k.code)) {
+        let typing = self.table.typing.is_some();
+        // Left and Right switch the inner tab, which starts from no chip: the last one's may not
+        // be among the new one's.
+        if !ctrl && !typing && matches!(k.code, KeyCode::Left | KeyCode::Right) {
+            self.inner = innertabs::step(tab(), self.on(q, now), k.code == KeyCode::Left);
+            self.table.view.state.clear();
+            self.table.sel = 0;
+            (self.detail, self.link) = (false, None);
+            return Ask::Done;
+        }
+        // The table hides its empty chips, so `f` steps over the ones the inner tab draws.
+        if !ctrl && !typing && k.code == KeyCode::Char('f') {
+            if let Some(q) = q {
+                let all = q.rows(at(now));
+                let scoped = self.scoped(&all, now).1;
+                self.table.view.cycle_shown(&scoped);
+                (self.table.sel, self.detail, self.link) = (0, false, None);
+            }
+            return Ask::Done;
+        }
+        // `/ s S x`, and every key while a query is being typed, are the shared table's.
+        if !ctrl && (typing || DataTable::owns(k.code)) {
             if self.table.key::<QueueRow>(k.code) == Took::View {
                 (self.detail, self.link) = (false, None);
             }
@@ -213,10 +257,6 @@ impl QueueView {
             }
             KeyCode::Esc if self.detail => (self.detail, self.link) = (false, None),
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
-            KeyCode::Char('C') => {
-                self.cands_open = !self.cands_open;
-                self.reselect(None, q, c, now);
-            }
             KeyCode::Char('p') => match self.selected_cand(q, c, now) {
                 _ if self.running.is_some() => self.said = busy(),
                 Some(cand) => {
@@ -226,8 +266,8 @@ impl QueueView {
                         cand.start(),
                     );
                 }
-                None if !self.cands_open => {
-                    self.said = Some(Err("C opens the candidates, then j/k onto one".into()))
+                None if self.inner != "candidates" => {
+                    self.said = Some(Err("-> to Candidates, then j/k onto one".into()))
                 }
                 None => self.said = Some(Err("j/k onto a candidate to promote it".into())),
             },
@@ -493,7 +533,19 @@ pub fn page(
     now: i64,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mut out = flowline::lines(flow.0, &v.line, flow.1, p, w);
+    let all = q.rows(at(now));
+    let (on, scoped) = v.scoped(&all, now);
+    // The strip leads: Active amber while an item needs you, Candidates while an urgent row is blocked.
+    let needs = q.items.iter().any(|i| i.state == State::Waiting);
+    let urgent = matches!(cands, Some(Ok(c)) if c.urgent_blocked > 0);
+    let flagged: Vec<&str> = [(needs, "active"), (urgent, "candidates")]
+        .into_iter()
+        .filter_map(|(f, s)| f.then_some(s))
+        .collect();
+    let mut out = vec![innertabs::strip(tab(), on, &flagged, p, w)];
+    if on == "active" {
+        out.extend(flowline::lines(flow.0, &v.line, flow.1, p, w));
+    }
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -506,11 +558,17 @@ pub fn page(
         out.push(clip_line(Line::raw(l), w));
     }
     out.push(status_line(v, p, w));
-    let all = q.rows(at(now));
-    let (rows, older) = v.drawn(&all);
-    let mut chips = v.table.status(&all, p);
+    if on == "candidates" {
+        out.push(Line::raw(""));
+        let top = out.len();
+        let (more, cand_at) = candidates(v, cands, p, w);
+        out.extend(more);
+        return (out, cand_at.map(|a| a + top));
+    }
+    let (rows, older) = v.drawn(&scoped);
+    let mut chips = v.table.status(&scoped, p);
     chips.push(Span::styled(
-        format!("    {} of {}", rows.len() + older, all.len()),
+        format!("    {} of {}", rows.len() + older, scoped.len()),
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
@@ -522,8 +580,8 @@ pub fn page(
         out.extend(detail(r.item, r.timing, v.mark(r.item), p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
-            if all.is_empty() {
-                "Nothing in the queue."
+            if scoped.is_empty() {
+                "Nothing here (<- -> the other inner tabs)."
             } else {
                 "No item matches (/ query, f state, x clears)."
             },
@@ -537,28 +595,18 @@ pub fn page(
             out.push(Line::styled(format!("+{older} older"), p.dim()));
         }
     }
-    out.push(Line::raw(""));
-    let top = out.len();
-    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
-    out.extend(more);
-    (out, at_line.or(cand_at.map(|a| a + top)))
+    (out, at_line)
 }
 
-/// The Candidates fold: its heading counts every ranked row and how many a worker takes; open,
+/// The Candidates inner tab: its heading counts every ranked row and how many a worker takes;
 /// it lists the first `CANDIDATES_SHOWN` in rank order and says how many more there are.
 fn candidates(
-    above: usize,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mark = if v.cands_open { "-" } else { "+" };
-    let hint = if v.cands_open {
-        "C folds, p promotes"
-    } else {
-        "C opens"
-    };
+    let hint = "p promotes";
     let (count, hint) = match cands {
         None => (String::new(), "reading".to_string()),
         Some(Err(_)) => (String::new(), String::new()),
@@ -572,7 +620,7 @@ fn candidates(
     };
     let mut out = vec![clip_line(
         heading(
-            &format!("{mark} CANDIDATES{count}"),
+            &format!("CANDIDATES{count}"),
             format!("  {hint}").trim_end().into(),
             p,
         ),
@@ -586,8 +634,8 @@ fn candidates(
             ));
             return (out, None);
         }
-        Some(Ok(c)) if v.cands_open => c,
-        _ => return (out, None),
+        Some(Ok(c)) => c,
+        None => return (out, None),
     };
     let shown = v.shown_cands(&c.rows);
     if shown.is_empty() {
@@ -629,7 +677,7 @@ fn candidates(
     }
     .fit(w, p.head());
     let mut sel_at = None;
-    if let Some(at) = v.table.sel.checked_sub(above).filter(|i| *i < shown.len()) {
+    if let Some(at) = Some(v.table.sel).filter(|i| *i < shown.len()) {
         t[at + 1].style = p.sel();
         sel_at = Some(out.len() + at + 1);
     }
@@ -761,6 +809,14 @@ pub(crate) mod tests {
         v.key(key(ch), Some(q), c, 10, now())
     }
 
+    /// A fresh view on one inner tab.
+    fn on(inner: &'static str) -> QueueView {
+        QueueView {
+            inner,
+            ..QueueView::default()
+        }
+    }
+
     fn slugs(v: &QueueView, q: &Queue) -> Vec<String> {
         v.shown(q, now())
             .iter()
@@ -788,9 +844,12 @@ pub(crate) mod tests {
             cols,
             "columns in order"
         );
-        let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
-        let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
-        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
+        // Active opens: the waiting row, then the running one; the rest are on their inner tabs.
+        assert!(
+            s.find("Pick a side").unwrap() < s.find("Fix the menu").unwrap(),
+            "{s}"
+        );
+        assert!(!s.contains("Next") && !s.contains("Landed"), "{s}");
         // A waiting row: needs you, in its state for 2h55 (since started), no PR.
         let waiting = line(&s, "Pick a side");
         assert!(
@@ -803,27 +862,32 @@ pub(crate) mod tests {
             running.contains("running") && running.contains("2h40") && running.contains("10m"),
             "{running}"
         );
+        // The chips count the inner tab's rows, an empty one hidden (on a PR here).
+        assert!(s.contains("all 2  needs you 1  running 1    2 of 2"), "{s}");
+        let s = text(&q, &on("next"), 160);
+        assert!(s.find("Next").unwrap() < s.find("Sweep").unwrap(), "{s}");
         assert!(line(&s, "Sweep").contains("held"));
         assert!(line(&s, "Next").contains("ready"));
+        assert!(s.contains("all 2  up next 2    2 of 2"), "{s}");
+        let s = text(&q, &on("today"), 160);
         let done = line(&s, "Landed");
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
-        assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1    5 of 5"),
-            "{s}"
-        );
         assert!(
             s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 95m"),
             "{s}"
         );
         let empty = text(&Queue::default(), &QueueView::default(), 120);
-        assert!(empty.contains("Nothing in the queue."), "{empty}");
+        assert!(
+            empty.contains("Nothing here (<- -> the other inner tabs)."),
+            "{empty}"
+        );
     }
 
     #[test]
     fn at_80_columns_the_columns_drop_by_priority_and_the_title_stays() {
         let mut q = fixture();
         q.items.extend(hub_core::queue::parse(concat!(
-            r#"{"slug":"wide","project":"unity-core-playground","type":"feat","size":"m","account":"claude-lazer","queued":"2026-11-03T12:00:00Z","state":"done","status":"ok","pr":"owner/repo#1234","finished":"2026-11-03T12:30:00Z","task":"Wide row"}"#,
+            r#"{"slug":"wide","project":"unity-core-playground","type":"feat","size":"m","account":"claude-lazer","queued":"2026-11-03T12:00:00Z","state":"review","pr":"owner/repo#1234","started":"2026-11-03T12:10:00Z","task":"Wide row"}"#,
             "\n",
         )));
         let heads = |w: usize| -> Vec<String> {
@@ -862,18 +926,12 @@ pub(crate) mod tests {
         let q = fixture();
         let mut v = QueueView::default();
         press(&mut v, &q, &[], 'j');
-        press(&mut v, &q, &[], 'j');
-        assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 6] = [
+        assert_eq!(v.table.sel, 1);
+        // f steps over the chips Active draws: on a PR has no row, so it is skipped.
+        let want: [(&str, &[&str]); 3] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
-            ("on a PR", &[]),
-            ("up next", &["next-up", "night-sweep"]),
-            ("done", &["landed"]),
-            (
-                "",
-                &["pick-sides", "fix-menu", "next-up", "night-sweep", "landed"],
-            ),
+            ("", &["pick-sides", "fix-menu"]),
         ];
         for (chip, slugs_in) in want {
             assert_eq!(press(&mut v, &q, &[], 'f'), Ask::Done);
@@ -887,20 +945,17 @@ pub(crate) mod tests {
         assert!(text(&q, &v, 160).contains("STATE ^") || text(&q, &v, 160).contains("STATE v"));
         press(&mut v, &q, &[], 'x');
         assert!(v.table.is_default());
+        v.inner = "next";
         press(&mut v, &q, &[], 's');
         press(&mut v, &q, &[], 's');
         assert_eq!(v.table.view.sort, "in");
         assert_eq!(
             slugs(&v, &q),
-            ["pick-sides", "fix-menu", "night-sweep", "next-up", "landed"],
-            "the longest in its state first, the done row (no time) last"
+            ["night-sweep", "next-up"],
+            "the longest in its state first"
         );
         assert_eq!(press(&mut v, &q, &[], 'S'), Ask::Done);
-        assert_eq!(
-            slugs(&v, &q),
-            ["next-up", "night-sweep", "fix-menu", "pick-sides", "landed"],
-            "S flips it"
-        );
+        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep"], "S flips it");
     }
 
     #[test]
@@ -947,7 +1002,7 @@ pub(crate) mod tests {
     #[test]
     fn a_done_row_is_selectable_but_cancel_and_priority_refuse_it() {
         let q = fixture();
-        let mut v = QueueView::default();
+        let mut v = on("today");
         press(&mut v, &q, &[], 'G');
         assert_eq!(v.selected(&q, now()).unwrap().slug, "landed");
         for ch in ['c', '+', '-'] {
@@ -960,8 +1015,7 @@ pub(crate) mod tests {
             assert!(v.confirm.is_none());
         }
         // NEGATIVE CONTROL: the same key on an active row acts.
-        press(&mut v, &q, &[], 'k');
-        press(&mut v, &q, &[], 'k');
+        let mut v = on("next");
         assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
         assert!(matches!(press(&mut v, &q, &[], '-'), Ask::Bump(..)));
     }
@@ -979,17 +1033,19 @@ pub(crate) mod tests {
                 "typed into the query"
             );
         }
-        assert_eq!(slugs(&v, &q).len(), 5, "nothing applies before Enter");
+        assert_eq!(slugs(&v, &q).len(), 2, "nothing applies before Enter");
         assert!(text(&q, &v, 160).contains("| /project:dotfiles_"));
         assert_eq!(
             v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
             Ask::Done
         );
-        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep", "landed"]);
+        // Active holds no dotfiles row, so the search opens the first inner tab that does.
+        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep"]);
+        assert_eq!(v.on(Some(&q), now()), "next");
         assert_eq!(v.table.sel, 0);
         let s = text(&q, &v, 160);
         assert!(
-            s.contains("3 of 5") && s.contains("| /project:dotfiles"),
+            s.contains("2 of 2") && s.contains("| /project:dotfiles") && s.contains("[Up next]"),
             "{s}"
         );
         assert!(!s.contains("Pick a side"), "{s}");
@@ -1030,7 +1086,7 @@ pub(crate) mod tests {
             "a new request starts from the table's own view"
         );
         v.open("candidates");
-        assert!(v.cands_open && v.table.is_default());
+        assert!(v.inner == "candidates" && v.table.is_default());
         v.open("table");
         assert!(v.table.is_default());
         v.open("  ");
@@ -1108,7 +1164,7 @@ pub(crate) mod tests {
             r#"{"slug":"broke","project":"dotfiles","state":"done","status":"failed","finished":"2026-11-03T12:00:00Z","task":"Broke"}"#,
             "\n",
         )));
-        let s = text(&q, &QueueView::default(), 200);
+        let s = text(&q, &on("today"), 200);
         assert!(line(&s, "Merged one").contains("r#7"), "{s}");
         assert!(line(&s, "Nothing shown").contains("! none"), "{s}");
         assert!(line(&s, "Broke").contains("failed"), "{s}");
@@ -1125,7 +1181,7 @@ pub(crate) mod tests {
         let jsonl: Vec<String> = (0..n)
             .map(|i| {
                 format!(
-                    r#"{{"slug":"d-{i}","project":"p","state":"done","status":"ok","finished":"2026-11-03T{:02}:{:02}:00Z","task":"T{i}"}}"#,
+                    r#"{{"slug":"d-{i}","project":"p","state":"queued","queued":"2026-11-03T{:02}:{:02}:00Z","task":"T{i}"}}"#,
                     i / 60 % 24,
                     i % 60
                 )
@@ -1135,12 +1191,12 @@ pub(crate) mod tests {
             items: hub_core::queue::parse(&jsonl.join("\n")),
             ..Default::default()
         };
-        let v = QueueView::default();
+        let v = on("next");
         assert_eq!(v.shown(&q, now()).len(), TABLE_OPEN_ROWS);
         let s = text(&q, &v, 120);
         assert!(s.contains("+5 older"), "{s}");
         assert!(
-            s.contains(&format!("{n} of {n}")) && s.contains(&format!("done {n}")),
+            s.contains(&format!("{n} of {n}")) && s.contains(&format!("up next {n}")),
             "{s}"
         );
     }
@@ -1165,9 +1221,8 @@ pub(crate) mod tests {
             press(&mut v, &q, &[], '+'),
             Ask::Bump("pick-sides".into(), "urgent")
         );
-        for _ in 0..3 {
-            press(&mut v, &q, &[], 'j');
-        }
+        v.inner = "next";
+        v.table.sel = 1;
         let at = |v: &QueueView| v.selected(&q, now()).unwrap().slug.clone();
         assert_eq!(at(&v), "night-sweep");
         assert_eq!(press(&mut v, &q, &[], '-'), Ask::Done);
@@ -1197,6 +1252,7 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'c');
         assert!(v.confirm.is_none(), "no second action while one runs");
         assert_eq!(press(&mut v, &q, &[], 'o'), Ask::Pass);
+        v.inner = "today";
         for _ in 0..10 {
             press(&mut v, &q, &[], 'j');
         }
@@ -1206,13 +1262,14 @@ pub(crate) mod tests {
     #[test]
     fn a_new_read_keeps_the_selection_on_its_slug() {
         let q = fixture();
-        let mut v = QueueView::default();
-        v.table.sel = 2;
-        assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
+        let mut v = on("next");
+        v.table.sel = 1;
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "night-sweep");
         let mut fewer = fixture();
-        fewer.items.retain(|i| i.slug != "pick-sides");
-        v.reselect(Some("next-up".into()), &fewer, &[], now());
-        assert_eq!(v.selected(&fewer, now()).unwrap().slug, "next-up");
+        fewer.items.retain(|i| i.slug != "next-up");
+        v.reselect(Some("night-sweep".into()), &fewer, &[], now());
+        assert_eq!(v.selected(&fewer, now()).unwrap().slug, "night-sweep");
+        v.inner = "today";
         v.reselect(Some("landed".into()), &fewer, &[], now());
         assert_eq!(
             v.selected(&fewer, now()).unwrap().slug,
@@ -1224,47 +1281,68 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn candidates_start_open_and_c_folds_them_to_their_counts_below_the_queue() {
+    fn candidates_are_their_own_inner_tab_with_their_counts() {
         let q = fixture();
         let c = Ok(cands());
+        let s = text_with(&q, &QueueView::default(), Some(&c), 200);
         assert!(
-            text_with(&q, &QueueView::default(), Some(&c), 200).contains("bar-17"),
-            "the candidates start open"
+            !s.contains("CANDIDATES") && !s.contains("bar-17"),
+            "off their inner tab\n{s}"
         );
-        let shut = QueueView {
-            cands_open: false,
-            ..QueueView::default()
-        };
-        let s = text_with(&q, &shut, Some(&c), 200);
-        assert!(s.contains("+ CANDIDATES (3, 2 auto)  C opens"), "{s}");
-        assert!(
-            s.find("Landed").unwrap() < s.find("CANDIDATES").unwrap(),
-            "below the queue\n{s}"
-        );
-        assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
-        assert!(text(&q, &shut, 200).contains("+ CANDIDATES  reading"));
+        let v = on("candidates");
+        let s = text_with(&q, &v, Some(&c), 200);
+        assert!(s.contains("CANDIDATES (3, 2 auto)  p promotes"), "{s}");
+        assert!(s.contains("bar-17") && !s.contains("Pick a side"), "{s}");
+        assert!(s.lines().next().unwrap().contains("[Candidates]"), "{s}");
+        assert!(text(&q, &v, 200).contains("CANDIDATES  reading"));
         let err = Err("no snapshot yet, the next dispatch pass writes one".to_string());
-        assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
+        assert!(text_with(&q, &v, Some(&err), 200)
             .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
         let mut stamped = cands();
         stamped.as_of = "08:07".into();
-        let s = text_with(&q, &shut, Some(&Ok(stamped)), 200);
+        let s = text_with(&q, &v, Some(&Ok(stamped)), 200);
         assert!(
-            s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
+            s.contains("CANDIDATES (3, 2 auto)  as of 08:07  p promotes"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn left_and_right_switch_the_inner_tab_and_drop_the_last_ones_chip() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        let arrow = |v: &mut QueueView, code| v.key(KeyEvent::from(code), Some(&q), &[], 10, now());
+        press(&mut v, &q, &[], 'f');
+        assert_eq!(v.table.view.state, "needs you");
+        for want in ["next", "today", "candidates", "active"] {
+            assert_eq!(arrow(&mut v, KeyCode::Right), Ask::Done);
+            assert_eq!(
+                (v.on(Some(&q), now()), v.table.view.state.as_str()),
+                (want, "")
+            );
+        }
+        assert_eq!(arrow(&mut v, KeyCode::Left), Ask::Done);
+        assert_eq!(v.inner, "candidates", "Left wraps");
+        // A chip with no inner tab named opens the one holding it, as `#queue?s=up%20next` does.
+        let mut v = QueueView::default();
+        v.open("queued");
+        assert_eq!(v.on(Some(&q), now()), "next");
+        assert!(text(&q, &v, 160).starts_with(" Active 1 [Up next]"));
+        v.open("today");
+        assert_eq!(v.inner, "today");
+        // NEGATIVE CONTROL: while a query is typed, the arrows are the query's.
+        press(&mut v, &q, &[], '/');
+        arrow(&mut v, KeyCode::Right);
+        assert_eq!(v.inner, "today");
     }
 
     #[test]
     fn open_candidates_list_ranked_rows_with_auto_or_man_and_held() {
         let q = fixture();
         let c = Ok(cands());
-        let v = QueueView::default();
+        let v = on("candidates");
         let s = text_with(&q, &v, Some(&c), 200);
-        assert!(
-            s.contains("- CANDIDATES (3, 2 auto)  C folds, p promotes"),
-            "{s}"
-        );
+        assert!(s.contains("CANDIDATES (3, 2 auto)  p promotes"), "{s}");
         let (a, b, m) = (line(&s, "bar-17"), line(&s, "ucp-408"), line(&s, "tr-41"));
         assert!(
             a.trim_start().starts_with("1 ") && b.trim_start().starts_with("2 "),
@@ -1298,25 +1376,22 @@ pub(crate) mod tests {
         let q = fixture();
         let c = cands().rows;
         let mut v = QueueView::default();
-        press(&mut v, &q, &c, 'C');
+        let arrow = |v: &mut QueueView, code| v.key(KeyEvent::from(code), Some(&q), &c, 10, now());
         assert_eq!(
             press(&mut v, &q, &c, 'p'),
             Ask::Done,
-            "shut: nothing to promote"
+            "off Candidates: nothing to promote"
         );
         assert!(
-            matches!(&v.said, Some(Err(e)) if e.contains("C opens")),
+            matches!(&v.said, Some(Err(e)) if e.contains("-> to Candidates")),
             "{:?}",
             v.said
         );
-        press(&mut v, &q, &c, 'C');
-        for _ in 0..5 {
-            press(&mut v, &q, &c, 'j');
-        }
+        arrow(&mut v, KeyCode::Left);
         assert_eq!(
             v.selected_cand(&q, &c, now()).unwrap().key,
             "bar-17",
-            "j runs on past the rows"
+            "the selection starts on the first candidate"
         );
         assert!(text_with(&q, &v, Some(&Ok(cands())), 200).contains("fix the jump arc"));
         let Ask::Promote(label, w) = press(&mut v, &q, &c, 'p') else {
@@ -1349,13 +1424,14 @@ pub(crate) mod tests {
         assert_eq!(press(&mut v, &q, &c, 'c'), Ask::Done);
         assert!(v.confirm.is_none(), "c does not cancel a candidate");
 
-        press(&mut v, &q, &c, 'C');
+        arrow(&mut v, KeyCode::Right);
         assert_eq!(
-            v.table.sel, 4,
-            "folding brings the selection back to the rows"
+            (v.inner, v.table.sel),
+            ("active", 0),
+            "leaving brings the selection back to the rows"
         );
         v.running = Some("promote x".into());
-        press(&mut v, &q, &c, 'C');
+        arrow(&mut v, KeyCode::Left);
         assert_eq!(
             press(&mut v, &q, &c, 'p'),
             Ask::Done,

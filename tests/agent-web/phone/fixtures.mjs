@@ -61,7 +61,7 @@ const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done"
 const queue = {
   items: rows(7, (i) => ({ slug: SLUGS[i], title: TEXT[i], project: pick(PROJECTS, i), state: QUEUE_STATE[i], status: "ok", hold: i === 3 ? "fleet-assess HOLD" : "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: i > 4, note: "", unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 } })),
   table: table(7, ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title"], ["all", "needs you", "running", "up next", "done"], { project: PROJECTS.slice(0, 3), kind: ["fix", "feat"], size: ["s", "m"], acct: ["main", "bnb"] }),
-  section_aliases: {}, needs_you: 1, open_rows: 40,
+  inner: "active", section_aliases: {}, needs_you: 1, open_rows: 30,
 };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
@@ -306,7 +306,7 @@ const tests = {
 export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
-  "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/projects": PROJECTS.slice(0, 5),
+  "/api/queue": (q) => ({ ...queue, inner: q.get("in") || queue.inner }), "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,

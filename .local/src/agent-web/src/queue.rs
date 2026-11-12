@@ -95,10 +95,13 @@ impl Cache {
     }
 }
 
-/// The table view over the list: the same keys the page keeps in its URL (`#queue?q=&s=&sort=&dir=`).
+/// The table view over the list: the same keys the page keeps in its URL (`#queue?q=&s=&sort=&dir=`),
+/// and `in`, the inner tab the URL names (`#queue/next`), blank to let the view pick one.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct QueueQuery {
+    #[serde(rename = "in")]
+    pub inner: String,
     pub q: String,
     pub s: String,
     pub sort: String,
@@ -118,10 +121,11 @@ pub async fn list(
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
-/// The rows the view keeps, each worded by `item_view`, and the controls that drew them
-/// (`table`). `needs_you` counts every item whatever the view, for the tab's badge;
-/// `open_rows` is how many rows the page draws before "+N older"; `section_aliases` maps an old
-/// section id (`#queue/running`) to the state chip it opens.
+/// The rows the view keeps of its inner tab (`hub_core::queue::scope`, named in `inner`), each
+/// worded by `item_view`, and the controls that drew them (`table`). `needs_you` counts every
+/// item whatever the view, for the tab's badge and strip; `open_rows` is how many rows the page
+/// draws before "+N older"; `section_aliases` maps an old section id (`#queue/running`) to the
+/// state chip it opens.
 fn render(
     items: Vec<Item>,
     q: &QueueQuery,
@@ -135,8 +139,9 @@ fn render(
         items,
         ..Default::default()
     };
-    let rows = queue.rows(now);
     let view = View::new::<QueueRow>(&q.q, &q.s, &q.sort, &q.dir);
+    let day = hub_core::text::local_day_start(now.timestamp());
+    let (inner, rows) = hub_queue::scope(&queue.rows(now), &q.inner, &view, day);
     let (shown, table) = view.summary(&rows);
     let aliases: serde_json::Map<String, serde_json::Value> = hub_queue::SECTION_ALIASES
         .iter()
@@ -144,10 +149,11 @@ fn render(
         .collect();
     serde_json::json!({
         "at": now.timestamp(),
+        "inner": inner,
         "items": shown.iter().map(|r| item_view(r.item, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
-        "open_rows": hub_queue::TABLE_OPEN_ROWS,
+        "open_rows": hub_queue::CANDIDATES_SHOWN,
         "section_aliases": aliases,
     })
 }
@@ -354,7 +360,7 @@ mod tests {
     #[test]
     fn the_list_is_the_shared_table_in_hub_cores_order_with_its_controls() {
         let items = hub_queue::parse(concat!(
-            r#"{"slug":"d1","state":"done","status":"ok","project":"dotfiles","finished":"2026-11-06T10:00:00Z","task":"fix(a): done"}"#,
+            r#"{"slug":"d1","state":"done","status":"ok","project":"dotfiles","finished":"2026-11-06T12:00:00Z","task":"fix(a): done"}"#,
             "\n",
             r#"{"slug":"q1","state":"queued","project":"dotfiles","queued":"2026-11-06T09:00:00Z","task":"feat(b): up"}"#,
             "\n",
@@ -374,14 +380,26 @@ mod tests {
                 .collect()
         };
         let v = render(items.clone(), &QueueQuery::default(), now);
+        assert_eq!(v["inner"], "active");
+        assert_eq!(slugs(&v), ["w1", "r1"], "needs you, then running");
         assert_eq!(
-            slugs(&v),
-            ["w1", "r1", "q1", "d1"],
-            "needs you, running, up next, done"
+            v["table"]["total"], 2,
+            "the chips count the inner tab's rows"
         );
-        assert_eq!(v["table"]["total"], 4);
         assert_eq!(v["needs_you"], 1);
-        assert_eq!(v["open_rows"], hub_queue::TABLE_OPEN_ROWS);
+        let on = |inner: &str| QueueQuery {
+            inner: inner.into(),
+            ..Default::default()
+        };
+        assert_eq!(slugs(&render(items.clone(), &on("next"), now)), ["q1"]);
+        assert_eq!(slugs(&render(items.clone(), &on("today"), now)), ["d1"]);
+        // No inner tab named: the chip in force picks the one holding it.
+        let chip = QueueQuery {
+            s: "up next".into(),
+            ..Default::default()
+        };
+        assert_eq!(render(items.clone(), &chip, now)["inner"], "next");
+        assert_eq!(v["open_rows"], hub_queue::CANDIDATES_SHOWN);
         assert_eq!(v["section_aliases"]["running"], "running");
         assert_eq!(v["section_aliases"]["waiting"], "needs you");
         assert_eq!(
@@ -395,7 +413,10 @@ mod tests {
         };
         let v = render(items.clone(), &q, now);
         assert_eq!(slugs(&v), ["r1"]);
-        assert_eq!(v["table"]["total"], 4, "the chips count every row");
+        assert_eq!(
+            v["table"]["total"], 2,
+            "the chips count every row of the inner tab"
+        );
         assert_eq!(v["needs_you"], 1, "the badge ignores the view");
         let by_in = QueueQuery {
             sort: "in".into(),
@@ -403,8 +424,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            slugs(&render(items, &by_in, now))[..3],
-            ["w1", "r1", "q1"].map(String::from),
+            slugs(&render(items, &by_in, now)),
+            ["w1", "r1"],
             "asc, none last"
         );
     }

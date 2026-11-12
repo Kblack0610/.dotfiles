@@ -64,8 +64,32 @@ pub const TABS: [Tab; 13] = [
         group: "Agents",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["flow", "table", "candidates"],
-        inner: &[],
+        // The table is one table in three scopes (`queue::INNER_CHIPS`), each its own inner tab,
+        // Active led by the pipeline line; Candidates is read only when its inner tab opens
+        // (dashboards rule 10).
+        sections: &["flow", "active", "next", "today", "candidates"],
+        inner: &[
+            Inner {
+                id: "active",
+                title: "Active",
+                sections: &["flow", "active"],
+            },
+            Inner {
+                id: "next",
+                title: "Up next",
+                sections: &["next"],
+            },
+            Inner {
+                id: "today",
+                title: "Done today",
+                sections: &["today"],
+            },
+            Inner {
+                id: "candidates",
+                title: "Candidates",
+                sections: &["candidates"],
+            },
+        ],
     },
     Tab {
         id: "sessions",
@@ -303,6 +327,8 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // better-release-data-need-polished-dragonfly.md).
     ("releases", "builds", "infra", "runs"),
     ("releases", "tests", "infra", "tests"),
+    // Queue's one table became the Active, Up next and Done today inner tabs (2026-11-12).
+    ("queue", "table", "queue", "active"),
 ];
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
@@ -700,6 +726,7 @@ mod tests {
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 6);
+        assert_eq!(resolve("queue").unwrap().inner.len(), 4);
     }
 
     #[test]
@@ -816,7 +843,13 @@ mod tests {
         let (tab, sec) = moved("fleet", "tokens").unwrap();
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
-        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        assert_eq!(inner_tab(resolve("log").unwrap(), Some("day")), None);
+        // Queue opens on Active, its pipeline line first; the old table link opens Active
+        let queue = resolve("queue").unwrap();
+        assert_eq!(inner_tab(queue, None).map(|i| i.id), Some("active"));
+        assert_eq!(inner_tab(queue, Some("flow")).map(|i| i.id), Some("active"));
+        let (tab, sec) = moved("queue", "table").unwrap();
+        assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("active"));
         // Releases: the apps and an opened one, then Release runs.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);

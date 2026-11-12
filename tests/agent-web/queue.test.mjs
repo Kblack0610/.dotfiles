@@ -15,10 +15,10 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-flow"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-flow": { id: "sec-flow", tagName: "H2", scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part(), "q-tabs": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [], posted = [];
 let reply = {};
@@ -110,10 +110,10 @@ const items = [
   item("r1", { state: "running", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", timing: { in_state: 42, wait: 3, run: 42 } }),
   item("q1", { timing: { in_state: 10 } }),
 ];
-const data = { at: 1793942700, items, table, needs_you: 1, open_rows: 200, section_aliases: { waiting: "needs you", running: "running", queued: "up next", done: "done" } };
+const data = { at: 1793942700, items, table, inner: "active", needs_you: 1, open_rows: 30, section_aliases: { waiting: "needs you", running: "running", queued: "up next", done: "done" } };
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''");
-  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
+  Object.assign(run("qst"), { items: d.items, table: d.table, inner: d.inner, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
 };
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
 test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
@@ -170,9 +170,13 @@ test("the Queue is one table with the server's chips and every header a sort but
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
   assert.match(h, /id="sec-flow"/);
-  assert.match(h, /id="sec-table"/);
-  assert.match(h, /id="sec-candidates"/);
-  assert.match(h, /3 of 4/);
+  assert.match(h, /<div data-in="active"><h2 class="sec" id="sec-active">Active <span class="muted">3 of 4<\/span><\/h2>/, "the heading is the inner tab's");
+  assert.match(h, /<div data-in="candidates" hidden><h2 class="sec" id="sec-candidates">Candidates /, "Candidates is its own inner tab, hidden here");
+  assert.doesNotMatch(h, /<details[^>]*id="sec-candidates"/, "and no longer a fold under the table");
+  // The strip: the open one marked, Active amber while an item needs you.
+  const strip = parts["q-tabs"].innerHTML;
+  assert.match(strip, /data-itab="active" class="on"[^>]*>Active <span class="pill warn">1<\/span><\/button>/);
+  for (const t of ["Up next", "Done today", "Candidates"]) assert.match(strip, new RegExp(`>${t}</button>`), t);
 });
 
 test("a sorted header says its direction, and the number columns are n", () => {
@@ -284,16 +288,80 @@ test("an item's slug opens that item; one outside the view is searched for once"
   assert.equal(run("qst.sel"), "");
 });
 
-test("a new section id scrolls to its section, not into the filter", async () => {
+test("each inner tab's link opens it, and old Queue links still land", async () => {
+  const r = (h) => { const x = run(`route(${JSON.stringify(h)})`); return [x.tab, x.arg]; };
+  for (const id of ["active", "next", "today", "candidates"]) assert.deepEqual(r(`#queue/${id}`), ["queue", id], id);
+  assert.deepEqual(r("#queue/table"), ["queue", "active"], "the old table section opens Active");
+  // A word that is no inner tab stays the arg for refreshQueue: an old chip id, an item's slug.
+  for (const w of ["running", "waiting", "ar-1944"]) assert.deepEqual(r(`#queue/${w}`), ["queue", w], w);
+  // The pipeline leads Active: its old link opens Active and scrolls to it.
+  const flow = run(`route("#queue/flow")`);
+  assert.deepEqual([flow.tab, flow.arg, flow.section], ["queue", "active", "flow"]);
+  // The tab button brings back the last inner tab, never a slug the tab read as a word.
+  reply = (url) => (url.startsWith("/api/queue/projects") ? [] : data);
+  run("setTab('queue', 'next'); setTab('queue', 'ar-1944'); setTab('queue', undefined)");
+  assert.equal(run("st.arg"), "next");
+  await settle(); await settle();
+  run("setTab('queue', '')");
+  await settle(); await settle();
+  reply = {};
+});
+
+test("a scope asks the server for its rows; Candidates reads only when its inner tab opens", async () => {
+  load();
+  reply = (url) => (url.startsWith("/api/queue/candidates") ? { rows: [], total: 0 } : data);
+  asked = [];
+  run("st.arg = 'next'");
+  run("refreshQueue()");
+  await settle();
+  assert.ok(asked.includes("/api/queue?in=next"), asked.join(" "));
+  assert.ok(!asked.some((u) => u.startsWith("/api/queue/candidates")), "no Candidates read off its inner tab");
+  // On Candidates the table keeps the scope it had, hidden; the snapshot is read.
+  asked = [];
+  run("qst.inner = 'next'; innerGo('queue', 'candidates')");
+  await settle();
+  assert.ok(asked.includes("/api/queue/candidates"), asked.join(" "));
+  run("refreshQueue()");
+  await settle();
+  assert.ok(asked.includes("/api/queue?in=next"), asked.join(" "));
+  // A strip switch drops the last scope's chip, which the new one may not have.
+  asked = [];
+  run("st.views.queue = 's=running'; innerGo('queue', 'today')");
+  await settle();
+  assert.equal(run("st.views.queue"), "");
+  assert.ok(asked.includes("/api/queue?in=today"), asked.join(" "));  run("qst.cands = null");
+  reply = {};
+});
+
+test("a view that names no inner tab shows the one the server picked, and the URL follows", async () => {
+  load();
+  reply = { ...data, inner: "next" };
+  run("st.arg = ''; st.views.queue = 's=up%20next'");
+  run("refreshQueue()");
+  await settle();
+  assert.equal(run("st.arg"), "next");
+  assert.equal(ctx.history.url, "#queue/next?s=up%20next");
+  // The server's own default (Active) leaves the bare URL, and the tab button forgets Up next.
+  reply = data;
+  run("st.arg = ''; st.views.queue = 's=running'");
+  run("refreshQueue()");
+  await settle();
+  assert.equal(run("st.arg"), "");
+  assert.equal(run("lastInner.queue"), "");
+  run("st.views.queue = ''");
+});
+
+test("the pipeline's old link opens Active and scrolls to it, not into the filter", async () => {
   load();
   reply = data;
   scrolled = 0;
-  run("st.tab = 'queue'; st.arg = 'candidates'; st.views.queue = ''; st.section = null");
+  const r = run(`route("#queue/flow")`);
+  run(`st.arg = ${JSON.stringify(r.arg)}; st.section = ${JSON.stringify(r.section)}`);
   run("refreshQueue()");
   await settle();
-  assert.equal(scrolled, 1, "the page scrolled to Candidates once it drew");
-  assert.equal(parts["sec-candidates"].open, true);
-  assert.equal(run("st.views.queue"), "", "and no chip was set");
+  assert.equal(scrolled, 1, "the page scrolled to the pipeline once it drew");
+  assert.equal(run("st.views.queue"), "", "no chip was set");
+  assert.equal(run("st.arg"), "active");
 });
 
 test("the badge counts everything waiting on the human, whatever the view keeps", async () => {

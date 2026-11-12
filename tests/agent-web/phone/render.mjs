@@ -154,7 +154,9 @@ async function wire(context, page, { index, csp, roles }, seen) {
     if (path === "/") return route.fulfill({ status: 200, contentType: TYPES[".html"], body: index, headers: { ...NOSNIFF, "content-security-policy": csp } });
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
-    const body = path in FIXTURES ? FIXTURES[path] : {};
+    // A fixture that is a function answers by the query (Queue's `in`, the inner tab it scopes to).
+    const fix = path in FIXTURES ? FIXTURES[path] : {};
+    const body = typeof fix === "function" ? fix(url.searchParams) : fix;
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles, seen.drift)) });
   });
   page.on("pageerror", (e) => seen.errors.push(`pageerror: ${e.message}`));

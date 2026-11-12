@@ -70,8 +70,62 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
-/// How many table rows a view draws before "+N older"; the chips still count every row.
+/// How many table rows the hub TUI draws before "+N older" (its table scrolls); the chips still
+/// count every row. agent-web folds at `CANDIDATES_SHOWN`, with the rest a click away.
 pub const TABLE_OPEN_ROWS: usize = 200;
+
+/// The Queue tab's inner tabs over its one table (layout `queue`), each with the state chips its
+/// rows carry: Active is what runs or waits on the human (a parked PR waits on its merge), Up
+/// next what has not started, Done today what finished since local midnight. Candidates, the
+/// fourth, is a list of its own.
+pub const INNER_CHIPS: [(&str, &[&str]); 3] = [
+    ("active", &["needs you", "running", "on a PR"]),
+    ("next", &["up next"]),
+    ("today", &["done"]),
+];
+
+/// The inner tab a view of the table opens on, and its rows in the table's order: `inner` when
+/// it names one (Candidates holds no row); else the one holding the chip in force
+/// (`#queue?s=up next`); else, with a search typed, the first it finds a row in
+/// (`#queue?q=<slug>`); else Active. While a search is typed Done today reads every finished
+/// item the window holds, so a link to an older one still lands. `day_start` is local midnight
+/// (`text::local_day_start`).
+pub fn scope<'a>(
+    rows: &[QueueRow<'a>],
+    inner: &str,
+    view: &crate::table::View,
+    day_start: i64,
+) -> (&'static str, Vec<QueueRow<'a>>) {
+    use crate::table::Row;
+    let keeps = |id: &str, r: &QueueRow| {
+        let chips = INNER_CHIPS
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map_or(&[][..], |c| c.1);
+        chips.iter().any(|c| r.in_state(c))
+            && (id != "today"
+                || !view.q.is_empty()
+                || r.item
+                    .finished_at()
+                    .is_some_and(|t| t.timestamp() >= day_start))
+    };
+    let of =
+        |id: &str| -> Vec<QueueRow<'a>> { rows.iter().filter(|r| keeps(id, r)).copied().collect() };
+    let ids = || INNER_CHIPS.iter().map(|c| c.0);
+    let inner = inner.trim().to_ascii_lowercase();
+    let id = ids()
+        .chain(["candidates"])
+        .find(|i| *i == inner)
+        .or_else(|| {
+            INNER_CHIPS
+                .iter()
+                .find(|c| c.1.contains(&view.state.as_str()))
+                .map(|c| c.0)
+        })
+        .or_else(|| ids().find(|i| !view.q.is_empty() && !view.apply(&of(i)).is_empty()))
+        .unwrap_or(INNER_CHIPS[0].0);
+    (id, of(id))
+}
 
 /// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
 /// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so
@@ -1002,6 +1056,8 @@ impl crate::table::Row for QueueRow<'_> {
     const STATES: &'static [&'static str] =
         &["all", "needs you", "running", "on a PR", "up next", "done"];
     const FACETS: &'static [&'static str] = &["state", "project", "kind", "size", "acct"];
+    /// An inner tab holds some of the states (`INNER_CHIPS`), so it shows only their chips.
+    const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["state", "in", "project"];
     const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
@@ -1067,7 +1123,8 @@ impl crate::table::Row for QueueRow<'_> {
     }
 }
 
-/// How many candidates a view lists; its heading counts them all.
+/// How many rows a Queue list shows before "+N more": every Candidates view, and agent-web's
+/// table on each inner tab (`open_rows`), so no inner tab runs past a screen or two.
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
@@ -2239,14 +2296,7 @@ mod tests {
             .collect();
         assert_eq!(
             chips,
-            [
-                ("all", 3),
-                ("needs you", 1),
-                ("running", 1),
-                ("on a PR", 0),
-                ("up next", 0),
-                ("done", 1)
-            ]
+            [("all", 3), ("needs you", 1), ("running", 1), ("done", 1)]
         );
         let kinds = View::new::<QueueRow>("project:dotfiles", "", "", "").facets(&rows);
         let kind = kinds.iter().find(|f| f.key == "kind").unwrap();
@@ -2301,6 +2351,74 @@ mod tests {
         for (_, chip) in SECTION_ALIASES {
             assert!(<QueueRow as crate::table::Row>::STATES.contains(&chip));
         }
+    }
+
+    #[test]
+    fn each_inner_tab_scopes_the_table_and_a_link_lands_on_the_one_holding_its_row() {
+        use crate::table::{Row, View};
+        // Every state chip but `all` is in exactly one inner tab, and the ids are the layout's.
+        let chips: Vec<&str> = INNER_CHIPS
+            .iter()
+            .flat_map(|c| c.1.iter().copied())
+            .collect();
+        assert_eq!(chips, QueueRow::STATES[1..]);
+        let ids: Vec<&str> = crate::layout::resolve("queue")
+            .unwrap()
+            .inner
+            .iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids, ["active", "next", "today", "candidates"]);
+        let items = parse(concat!(
+            r#"{"slug":"w","state":"waiting","task":"t"}"#,
+            "\n",
+            r#"{"slug":"r","state":"running","task":"t"}"#,
+            "\n",
+            r#"{"slug":"p","state":"review","task":"t"}"#,
+            "\n",
+            r#"{"slug":"q","state":"queued","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d-new","state":"done","finished":"2026-11-06T10:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d-old","state":"done","finished":"2026-11-04T10:00:00Z","task":"t"}"#,
+        ));
+        let q = Queue {
+            items,
+            ..Default::default()
+        };
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let rows = q.rows(now);
+        let day = chrono::DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
+            .unwrap()
+            .timestamp();
+        let at = |inner: &str, s: &str, query: &str| {
+            let (id, rows) = scope(&rows, inner, &View::new::<QueueRow>(query, s, "", ""), day);
+            (
+                id,
+                rows.iter()
+                    .map(|r| r.item.slug.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(at("", "", ""), ("active", vec!["w", "r", "p"]));
+        assert_eq!(at("next", "", ""), ("next", vec!["q"]));
+        assert_eq!(
+            at("Today", "", ""),
+            ("today", vec!["d-new"]),
+            "finished before midnight is not today"
+        );
+        assert_eq!(at("candidates", "", "").0, "candidates");
+        assert!(at("candidates", "", "").1.is_empty());
+        // An old chip link (`#queue?s=up next`, `#queue/done`) opens the inner tab holding it.
+        assert_eq!(at("", "up next", "").0, "next");
+        assert_eq!(at("", "done", "").0, "today");
+        // A search opens the first inner tab it finds a row in, an older finish included.
+        assert_eq!(at("", "", "d-old"), ("today", vec!["d-new", "d-old"]));
+        assert_eq!(at("", "", "nothing-has-this").0, "active");
+        // A named inner tab wins over the chip and the search.
+        assert_eq!(at("active", "done", "d-old").0, "active");
     }
     #[test]
     fn the_timeline_lists_each_stamp_with_minutes_since_the_one_before() {

@@ -547,14 +547,15 @@ mod tests {
         assert_eq!(got, serde_json::Value::Object(want));
         // Every section a group names is one the page wraps in its inner tab's group, so a
         // section never shows under every inner tab or under none. Releases is checked per
-        // inner tab below: its table and detail share one group.
+        // inner tab below: its table and detail share one group; so is Queue, whose one table
+        // is wrapped in the inner tab its rows are for.
         let pages = [
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "queue"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -582,6 +583,13 @@ mod tests {
                     .any(|s| releases.contains(&format!("innerWrap(\"releases\", \"{s}\""))),
                 "releases.js never draws the {} inner tab",
                 i.id
+            );
+        }
+        let queue = include_str!("../static/queue.js");
+        for at in ["\"candidates\"", "qst.inner"] {
+            assert!(
+                queue.contains(&format!("innerWrap(\"queue\", {at}")),
+                "queue.js never wraps {at} in its inner tab"
             );
         }
     }
