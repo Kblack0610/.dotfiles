@@ -453,12 +453,17 @@ nudged() { [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$1" 2>/dev/null)")" =
 # escalated <sid> <fact> -> exit 0 when this fact is already on the human's list.
 escalated() { [ "$(fact_key "$(sed -n 's/^escalated: //p' "$LEDGER/$1" 2>/dev/null)")" = "$(fact_key "$2")" ]; }
 
-# ledger_write <sid> <key> <fact>: set one key, keep the other (a new nudge clears escalated).
+# ledger_write <sid> <key> <fact>: set one key, keep the other. A new nudge clears an escalation,
+# except a NEEDS one: the ask is still waiting while the session works on, so an overdue nudge to it
+# keeps the page sent once; release_left drops it when the session leaves NEEDS.
 ledger_write() {
   local sid="$1" key="$2" fact="$3" tmp keep=""
   case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
-  [ "$key" = escalated ] && keep="$(grep '^fact: ' "$LEDGER/$sid" 2>/dev/null)"
+  case "$key" in
+    escalated) keep="$(grep '^fact: ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
+    fact)      keep="$(grep '^escalated: NEEDS ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
+  esac
   tmp="$(mktemp "$LEDGER/.$sid.XXXXXX")" || return 1
   { [ -n "$keep" ] && echo "$keep"; printf '%s: %s\nat: %s\n' "$key" "$fact" "$(date -Iseconds)"; } > "$tmp" \
     && mv "$tmp" "$LEDGER/$sid"

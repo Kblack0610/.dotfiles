@@ -933,6 +933,30 @@ MD
   assert_failure
 }
 
+@test "an overdue nudge to a NEEDS session keeps its NEEDS escalation, so the ask pages once (ar-229)" {
+  escalate sid-10 'NEEDS 1 pending ask(s)'
+  mark sid-10 'overdue Phase 2: rollout'
+  run nudged sid-10 'overdue Phase 2: rollout'
+  assert_success
+  run escalated sid-10 'NEEDS 1 pending ask(s)'
+  assert_success
+  # still NEEDS: kept; left NEEDS: released, and the overdue nudge beside it is kept
+  release_left "$(printf 'NEEDS\tt1\tsid-10\n')"
+  run escalated sid-10 'NEEDS 1 pending ask(s)'
+  assert_success
+  release_left "$(printf 'WORKING\tt1\tsid-10\n')"
+  run escalated sid-10 'NEEDS 1 pending ask(s)'
+  assert_failure
+  run nudged sid-10 'overdue Phase 2: rollout'
+  assert_success
+  # any other escalation is cleared by a new nudge, so a fact that comes back pages again
+  mark sid-10 'STALLED PR #9 CI red @feat/x'
+  escalate sid-10 'STALLED PR #9 CI red @feat/x'
+  mark sid-10 'STALLED PR #9 green, not merged @feat/x'
+  run escalated sid-10 'STALLED PR #9 CI red @feat/x'
+  assert_failure
+}
+
 @test "escalating a finding to the human records a page on its episode; a session or shepherd-class one does not" {
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/bench.calls"\n' "$SANDBOX" > "$SANDBOX/bin/fleet-bench"
   chmod +x "$SANDBOX/bin/fleet-bench"
