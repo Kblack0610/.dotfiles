@@ -4,6 +4,10 @@
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
 //   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit]
 // --control forces body min-width 900px and fails unless every tab reports the overflow.
+// The height budget: at a desktop size each tab, and each inner tab of a project page as big as
+// the one that read 33,558 px (fixtures.mjs BIG_PROJECT), stays under BUDGET_SCREENS screens.
+// --control opens every fold and shows every inner tab at once, the page before #1983, and fails
+// unless the big project page reports it.
 // The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
 // a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
 // --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
@@ -13,7 +17,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FIXTURES, NOW } from "./fixtures.mjs";
+import { BIG_PROJECT, FIXTURES, NOW } from "./fixtures.mjs";
 
 const VIEWPORT = { width: 390, height: 844 };
 const ORIGIN = "https://agent-web.invalid";
@@ -26,6 +30,9 @@ const KIT = join(ROOT, ".local/src/web-kit");
 const WIDE = { width: 1280, height: 800 };
 const NAV = { menu: "kb-shell .kb-menu", nav: "kb-shell .kb-nav", group: ".kb-nav .kb-group", item: ".kb-nav > [id^=tab-]", cur: "kb-shell .kb-cur", script: "kb-shell.js" };
 const CONTROL_CSS = "body { min-width: 900px !important; }";
+const DESK = { width: 1400, height: 900 };
+const BUDGET_SCREENS = 3; // dashboards.md, Inner tabs: no tab past about three screens.
+const UNFOLD_CSS = "[data-pin][hidden], [data-in][hidden] { display: block !important; }";
 
 // Each tab's first data row; a tab with several tables names the one the brief measures, and a
 // tab with inner tabs (app.js INNER_TABS) opens the one holding it (`inner`, `#tab/inner`). A second
@@ -45,6 +52,14 @@ const TABS = [
   { tab: "schedules", row: `#schedules tr.jr` },
   { tab: "costs", inner: "spend", row: `#costs-body ${DATA_ROW}` },
   { tab: "releases", row: `#releases tr.jr` },
+];
+
+// The height pass: each tab once (a tab with inner tabs on the one TABS opens), then the big
+// project page's inner tabs (app.js PROJECT_PAGE), each waited on by its first section's heading.
+const PAGE_HEAD = { overview: "p-needs", rows: "p-rows", build: "p-build", stage: "p-stage", activity: "p-shipped" };
+const TALL = [
+  ...TABS.filter((t) => !t.name).map((t) => ({ name: t.tab, hash: t.tab + (t.inner ? "/" + t.inner : ""), el: t.tab, ready: t.row })),
+  ...Object.entries(PAGE_HEAD).map(([inner, sec]) => ({ name: `project/${inner}`, big: true, hash: `projects/${BIG_PROJECT.profile}/${BIG_PROJECT.name}/${inner}`, el: "projects", ready: `#sec-${sec}` })),
 ];
 
 const args = process.argv.slice(2);
@@ -195,6 +210,34 @@ async function renderTab(browser, spec, page0) {
   return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
 }
 
+// One page's height at a desktop size: the document's, or its tab element's when that scrolls
+// inside its own box. Under --control every fold is opened and every inner tab shown first.
+async function heightOf(browser, spec, page0) {
+  const context = await browser.newContext({ viewport: DESK, locale: "en-US", timezoneId: "America/Los_Angeles" });
+  const page = await context.newPage();
+  const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
+  await context.clock.setFixedTime(new Date(NOW * 1000));
+  await page.addInitScript(() => { window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() {} close() {} }; });
+  await wire(context, page, page0, seen);
+  const result = { page: spec.name, big: !!spec.big, height: null, errors: seen.errors };
+  try {
+    await page.goto(`${ORIGIN}/#${spec.hash}`, { waitUntil: "load" });
+    await page.waitForLoadState("networkidle");
+    await page.waitForSelector(spec.ready, { state: "visible", timeout: WAIT_MS });
+    if (control) {
+      await page.addStyleTag({ content: UNFOLD_CSS });
+      await page.evaluate(() => { for (const d of document.querySelectorAll("details")) d.open = true; });
+    }
+    await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
+    result.height = await page.evaluate((id) => Math.max(document.documentElement.scrollHeight, document.getElementById(id)?.scrollHeight || 0), spec.el);
+  } catch (e) {
+    seen.errors.push(`no page: ${e.message.split("\n")[0]}`);
+  }
+  await page.screenshot({ path: join(out, `tall-${spec.name.replace("/", "-")}.png`) }).catch((e) => seen.errors.push(`screenshot: ${e.message}`));
+  await context.close();
+  return result;
+}
+
 // The shell at phone width, closed then open then Escaped, and at a desktop width. Each failed
 // expectation is one error line; screenshots go beside the tabs' (nav-*.png).
 async function navCheck(browser, page0) {
@@ -268,6 +311,8 @@ async function main() {
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
   const navErrors = control ? [] : await navCheck(browser, page);
   if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
+  const heights = [];
+  if (!noKit) for (const spec of TALL) heights.push(await heightOf(browser, spec, page));
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
   if (noKit) {
@@ -280,6 +325,17 @@ async function main() {
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);
+  const budget = BUDGET_SCREENS * DESK.height;
+  console.log(`\nheight at ${DESK.width}x${DESK.height}, budget ${budget}px${control ? " (control: every fold open, every inner tab shown)" : ""}`);
+  for (const h of heights) console.log(`${h.page.padEnd(18)}${String(h.height).padStart(7)}${h.height > budget ? "  over" : ""}${h.errors.map((e) => `  ERROR ${e}`).join("")}`);
+  const unmeasured = heights.filter((h) => h.errors.length || h.height == null);
+  if (unmeasured.length) { console.log(`FAIL: height not measured on ${unmeasured.map((h) => h.page).join(", ")}`); process.exit(1); }
+  const tall = heights.filter((h) => h.height > budget);
+  if (!control && tall.length) { console.log(`FAIL: over ${BUDGET_SCREENS} screens on ${tall.map((h) => `${h.page} ${h.height}px`).join(", ")}`); process.exit(1); }
+  if (control) {
+    const missed = heights.filter((h) => h.big && !(h.height > budget));
+    if (missed.length) { console.log(`FAIL: control height not reported on ${missed.map((h) => h.page).join(", ")}`); process.exit(1); }
+  }
   const errored = results.filter((r) => r.errors.length);
   if (errored.length) { console.log(`FAIL: errors on ${errored.map((r) => r.tab).join(", ")}`); process.exit(1); }
   // A tab whose row has no lead, or whose lead runs off the screen, is what this harness exists to catch.
@@ -288,7 +344,7 @@ async function main() {
   if (control) {
     const missed = results.filter((r) => !(r.pageOverflowX > 0));
     if (missed.length) { console.log(`FAIL: control overflow not reported on ${missed.map((r) => r.tab).join(", ")}`); process.exit(1); }
-    console.log("control ok: every tab reported the forced overflow");
+    console.log("control ok: every tab reported the forced overflow, and the big project page the height");
   }
 }
 

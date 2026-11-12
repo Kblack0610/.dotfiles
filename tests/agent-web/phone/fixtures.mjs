@@ -92,6 +92,24 @@ const deliverables = {
   legend: "percent is the epic's rows by size (#size/s 1, m 3, l 8), then rows done/all",
 };
 
+// A project page (hub_core::page) as big as unity-core-playground's on 2026-11-12, which read
+// 33,558 px before it had inner tabs: 16 systems, 1,000 items needing the human, a 29-check stage
+// and a long timeline. render.mjs holds each of its inner tabs to the height budget.
+export const BIG_PROJECT = { profile: "personal", name: "agent-runtime" };
+const SYSTEMS = ["gameplay", "ci", "ui", "save", "netcode", "audio", "input", "render", "tools", "build", "perf", "art", "levels", "ai", "store", "docs"];
+const needs = (kind, n, says) => ({ kind, says: `${n} ${says}`, items: rows(n, (i) => `ep-${i + 1}: ${TEXT[i % TEXT.length]}`) });
+const bigPage = {
+  project: BIG_PROJECT.name, flow_line: "plan 12, building 30, landed 37, verified 4",
+  releases: { level: "ok", says: "0.4.0 prod ok" }, alerts: { level: "warn", says: "1 firing of 9 watches" },
+  gate: { stage: "beta", fail: 4, human: 2 }, next_says: "beta: 9 of 29 met, 4 failing", errors: [],
+  need_groups: [needs("verify", 600, "epics landed with no live proof"), needs("ask", 250, "asks waiting on you"), needs("red", 150, "red watches on this project")],
+  next_rows: rows(29, (i) => ({ result: pick(["FAIL", "HUMAN", "PASS", "PASS", "PASS"], i), requirement: TEXT[i % TEXT.length], stage: "beta" })),
+  systems_says: "16 systems, 30 open epics",
+  systems: SYSTEMS.map((id, i) => ({ id, percent: 5 + i * 6, features: 2 + i % 3, features_done: i % 2, standing: 1, open_rows: 40 + i * 7, behind: i % 3, criteria_met: i % 5, criteria_total: 5, wave: { title: TEXT[i % TEXT.length], percent: 30 + i, more: i % 4 } })),
+  shipped_says: "3 versions", shipped: ["0.4.0 (Nov 10)", "0.3.2 (Oct 28)", "0.3.1 (Oct 14)"],
+  timeline: { says: "40 events in 14 days", notes: [], lines: rows(40, (i) => ({ line: `11-${String(12 - (i % 12)).padStart(2, "0")} ${TEXT[i % TEXT.length]}`, url: "", level: pick(["ok", "ok", "warn"], i) })), older: 160 },
+};
+
 // Board: hub_core::tasks.
 const board = {
   table: table(8, ["section", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "tier", "since", "text", "profile", "tag"], ["all", "in progress", "filed today", "urgent", "requested"], { project: PROJECTS.slice(0, 3), lane: ["agent", "human"], priority: ["high", "normal"] }),
@@ -243,7 +261,7 @@ export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/projects": PROJECTS.slice(0, 5),
-  "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board,
+  "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
