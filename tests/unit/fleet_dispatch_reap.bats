@@ -1091,6 +1091,27 @@ OUT
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
 }
 
+@test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
+  # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
+  # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  # The real `ptask list` key is the row's text with its tags, not its id: rows() must read the id off the marker.
+  row game agent 'fix(core): slots #tier/3 #size/m' '- [/] fix(core): slots #tier/3 #size/m #c1028 #low <!-- id:gm-4 run:1112 -->'
+  started_item slots lab:game-agent-4 '' '' 'board:game:gm-4'
+  sed -i 's/^lane: human$/lane: agent/' "$AGENT_QUEUE_DIR"/running/*-slots.md
+  printf 'game-agent-4\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  # Both keys seen past the grace, so a reap that read the text key would un-start now, not just record it.
+  orphan_seen game gm-4 96
+  orphan_seen game 'fix(core): slots #tier/3 #size/m' 96
+  run cmd_reap
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix(core): slots' "$NOTES_FIXTURE/rows.game.agent" || fail "a live item's tagged row was un-started"
+  [ -n "$(qitem running slots)" ] || fail "the live item moved"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
 @test "reap: a queue it cannot read un-starts no orphan" {
   export DISPATCH_NIGHT_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
