@@ -29,7 +29,7 @@ function facet(key, values) {
 }
 // A hub_core::table Summary as it serializes; the first state chip keeps every row. A few words
 // carry the tone hub_core::vocab::tone gives them, so a screenshot shows the tiles' hues.
-const TONE = { failed: "bad", red: "bad", attention: "warn", "needs you": "warn", stalled: "warn", ok: "ok", done: "ok" };
+const TONE = { failed: "bad", red: "bad", trip: "bad", error: "bad", attention: "warn", "needs you": "warn", stalled: "warn", ok: "ok", done: "ok" };
 function table(n, columns, states = ["all"], facets = {}) {
   return {
     q: "", state: states[0], sort: "", dir: "desc", total: n, shown: n,
@@ -72,16 +72,18 @@ const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done"
 const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
 const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
 QUEUE_TABLE.states = [["active", 637], ["needs you", 6], ["running", 9], ["on a PR", 40], ["ready", 197], ["held", 385], ["done", 2370], ["all", 3007]].map(([name, n]) => ({ name, n, tone: TONE[name] }));
-// Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (CANDIDATES_SHOWN rows
-// and a few blocked ones), and the counts its `?counts=1` read sends for the heading.
-const candRow = (i) => ({ profile: "personal", project: pick(PROJECTS, i), lane: "agent", key: `ar-${1400 + i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], stage: "alpha", priority: pick(["urgent", "high", "normal"], i), why: `${pick(PROJECTS, i)} is behind its pace and this row unblocks ${TEXT[(i + 2) % TEXT.length]}`, auto: i % 3 === 0, verdict: i % 5 ? "start" : "hold", held: i % 5 === 0, area: "ui", prio: i % 7 ? 2 : 0, blocked: i % 4 ? [] : ["no worker covers the project", "size l over the slot"], start_label: pick(["oneshot", "plan"], i), reasons: i % 4 ? [] : ["no worker", "size"] });
-const candidates = { rows: rows(30, candRow), blocked_rows: rows(12, (i) => candRow(i * 4)), total: 2612, auto: 412, urgent_blocked: 3, clear: 2140, reasons: [{ reason: "no worker", rows: 310 }, { reason: "size", rows: 162 }], uncovered: PROJECTS.slice(2, 4), as_of: "13:10" };
+// Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first CANDIDATES_SHOWN
+// rows on the shared table), and the counts its `?counts=1` read sends for the heading.
+const candRow = (i) => ({ profile: "personal", project: pick(PROJECTS, i), lane: "agent", key: `ar-${1400 + i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], stage: "alpha", priority: pick(["urgent", "high", "normal"], i), why: `${pick(PROJECTS, i)} is behind its pace and this row unblocks ${TEXT[(i + 2) % TEXT.length]}`, auto: i % 3 === 0, verdict: i % 5 ? "start" : "hold", held: i % 5 === 0, area: "ui", prio: i % 7 ? 2 : 0, blocked: i % 4 ? [] : ["no worker covers the project", "size l over the slot"], start_label: pick(["oneshot", "plan"], i) });
+const CAND_TABLE = table(2612, ["rank", "project", "key", "task", "start", "why", "blocked"], ["all", "clear", "blocked"], { project: PROJECTS.slice(0, 3), blocked: ["no worker", "size"] });
+CAND_TABLE.states = [["all", 2612], ["clear", 2140], ["blocked", 472]].map(([name, n]) => ({ name, n, tone: name === "blocked" ? "warn" : undefined }));
+const candidates = { rows: rows(30, (i) => ({ rank: i + 1, ...candRow(i) })), more: 2582, table: CAND_TABLE, auto: 412, urgent_blocked: 3, uncovered: PROJECTS.slice(2, 4), as_of: "13:10" };
 const queue = {
   items: rows(637, (i) => ({ slug: `${pick(SLUGS, i)}-${i}`, title: qTitle(i), project: pick(PROJECTS, i), state: pick(QUEUE_STATE, i), status: "ok", priority: pick(["urgent", "high", "normal"], i), start: i === 2 ? 1 : null, hold: i === 3 ? `after ${SLUGS[2]}` : "", held_on: i === 3 ? `after ${SLUGS[2]}` : "", source: pick(["human", "board"], i), row_id: i % 2 ? `ar-${1100 + i}` : "", mode: "oneshot", plan_label: i === 1 ? "queue table" : "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: i > 4, note: i % 4 ? "" : TEXT[(i + 3) % TEXT.length], unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 } })),
   table: QUEUE_TABLE,
   section_aliases: {}, needs_you: 6, open_rows: QUEUE_ROWS,
 };
-const candCounts = { total: candidates.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
+const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
 const RAIL = [["inbox", "inbox", null], ["board", "board", { tab: "board", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
@@ -236,6 +238,8 @@ const alerts = {
   watches: rows(4, (i) => ({ name: SLUGS[i], state: pick(["TRIP", "ERROR", "OK", "new"], i), severity: "high", since: ago(40), lastrun: ago(2), lasttrip: null, place: TEXT[i], what: "", action: "", evidence: "" })),
   counts: { firing: 7, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1, alertmanager: 1, alertmanager_alerts: 3 },
   strip: { firing: 7, fixes: 1, watches: 3 },
+  watches_table: table(4, ["name", "state", "severity", "project", "since", "lastrun", "place"], ["all", "trip", "error", "new", "ok"], { severity: ["high"], project: PROJECTS.slice(0, 2) }),
+  history_table: table(3, ["when", "actor", "verb", "prio", "source", "text"], ["all", "loud", "failed"], { actor: ["sentinel"], verb: ["tripped"] }),
   errors: [],
 };
 

@@ -50,10 +50,17 @@ const firing = [
 ];
 const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0, alertmanager_alerts: 0 };
 const strip = { firing: 2, fixes: 2, watches: 2 };
+// Watches' and History's summaries (hub_core::table over Watch and Action), each table's own.
+const watchesTable = { q: "", state: "", sort: "", dir: "", total: 3, shown: 3,
+  states: [{ name: "all", n: 3 }, { name: "trip", n: 1, tone: "bad" }, { name: "error", n: 1, tone: "bad" }, { name: "new", n: 0 }, { name: "ok", n: 1, tone: "ok" }],
+  columns: ["name", "state", "severity", "project", "since", "lastrun", "place"].map(col), facets: [] };
+const historyTable = { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "loud", n: 0 }, { name: "failed", n: 0 }],
+  columns: ["when", "actor", "verb", "prio", "source", "text"].map(col), facets: [] };
 const data = (o = {}) => ({
   at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
   firing, rows: firing, table, fixes, history: [{ at: NOW - 600, actor: "sentinel", verb: "tripped", text: "Sentinel: playground-nightly", source: "agent-notify" }],
-  watches: [watch("playground-nightly", "TRIP"), watch("dream", "ERROR"), watch("disk", "OK")], counts, strip, errors: [], ...o,
+  watches: [watch("playground-nightly", "TRIP"), watch("dream", "ERROR"), watch("disk", "OK")], counts, strip, errors: [],
+  watches_table: watchesTable, history_table: historyTable, ...o,
 });
 const show = (d, inner = "") => { run(`st.tab = 'alerts'; st.arg = ${JSON.stringify(inner)}`); Object.assign(alst, { data: d, err: null, sel: null }); for (const k of Object.keys(run("alertsOpen"))) delete run("alertsOpen")[k]; run("alst.render()"); return box.innerHTML; };
 
@@ -189,7 +196,10 @@ test("history counts the older pages and sends them to Log", () => {
 });
 
 test("watches open on their inner tab with nothing tripped, no count on the label, and a fold the reader set stays", () => {
-  assert.match(show(data()), /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><\/summary><div class="cline warn">1 tripped, 1 error<\/div>/);
+  // The head is the title and count; the tiles say how many tripped and failed, so no line repeats it.
+  const h0 = show(data());
+  assert.match(h0, /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><\/summary><div data-tbl="w">/);
+  assert.doesNotMatch(h0, /1 tripped, 1 error/);
   const quiet = data({ counts: { ...counts, watches_tripped: 0, watches_error: 0 }, strip: { ...strip, watches: 0 } });
   const h = show(quiet, "watches");
   assert.match(h, /id="sec-watches" data-k="watches" open>/);
@@ -198,15 +208,47 @@ test("watches open on their inner tab with nothing tripped, no count on the labe
   assert.match(box.innerHTML, /id="sec-watches" data-k="watches"><summary>/);
 });
 
-test("the watches needing a look are the table and the ok ones fold to their count", () => {
-  const h = show(data(), "watches");
-  const sec = h.slice(h.indexOf('id="sec-watches"'), h.indexOf('<div data-in="history"'));
-  const fold = sec.indexOf('data-k="watches-ok"');
-  assert.ok(fold > sec.indexOf("playground-nightly") && fold > sec.indexOf(">dream<"), sec);
-  assert.ok(sec.indexOf(">disk<") > fold, "the ok watch sits in the fold");
-  assert.match(sec, /<details class="sec-d" data-k="watches-ok"><summary class="muted fold">\+1 ok<\/summary>/);
-  // Negative control: no ok watch, no fold.
-  assert.doesNotMatch(show(data({ watches: [watch("dream", "ERROR")] }), "watches"), /watches-ok/);
+// One inner tab's section of the page.
+const section = (h, k, next) => h.slice(h.indexOf(`id="sec-${k}"`), next ? h.indexOf(`<div data-in="${next}"`) : undefined);
+
+test("watches are a shared table: state tiles in their hue, a search bar on the rows, every watch in the reader's order", () => {
+  const sec = section(show(data(), "watches"), "watches", "history");
+  assert.match(sec, /<div class="tiles stiles"><button class="tile t-bad" data-ts="trip"><span class="tl">TRIP<\/span><span class="tv">1<\/span><\/button>/);
+  assert.match(sec, /<button class="tile t-ok" data-ts="ok"><span class="tl">OK<\/span><span class="tv">1<\/span>/);
+  assert.match(sec, /<button class="tile zero" data-ts="new">/, "a state no watch is in is plain");
+  assert.match(sec, /<div class="tqbar"><input id="al-w-q" data-tsearch/);
+  assert.ok(sec.indexOf("tqbar") < sec.indexOf("<table"), "the bar sits on top of the table");
+  const at = ["playground-nightly", "dream", "disk"].map((n) => sec.indexOf(`<td>${n}</td>`));
+  assert.ok(at.every((i) => i >= 0) && at[0] < at[1] && at[1] < at[2], at.join(","));
+  // The ok fold is gone: the OK tile filters to them.
+  assert.doesNotMatch(sec, /watches-ok|\+1 ok/);
+  const none = section(show(data({ watches: [], watches_table: { ...watchesTable, total: 3, shown: 0 } }), "watches"), "watches", "history");
+  assert.match(none, /No watch matches\./);
+  assert.match(section(show(data({ watches: [], watches_table: { ...watchesTable, total: 0, shown: 0 } }), "watches"), "watches", "history"), /No watch defined\./);
+});
+
+test("history is a shared table with its own search bar, and still sends the older pages to Log", () => {
+  const sec = section(show(data(), "history"), "history");
+  assert.match(sec, /<div data-tbl="h">/);
+  assert.match(sec, /<div class="tqbar"><input id="al-h-q" data-tsearch/);
+  assert.match(sec, /<td class="wrap">Sentinel: playground-nightly<\/td>/);
+  assert.match(sec, /\+3 older on <a href="#log\/actions">Log<\/a>/);
+  assert.match(section(show(data({ history: [], history_table: { ...historyTable, total: 1, shown: 0 } }), "history"), "history"), /No page matches\./);
+});
+
+test("a search in Watches or History asks the server with that table's own keys, beside the others", async () => {
+  const asked = [];
+  ctx.fetch = async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => data() }; };
+  show(data(), "watches");
+  run("st.views.alerts = 's=error'");
+  const box = (tbl, v) => ({ type: "input", target: { value: v, dataset: { tsearch: "" }, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl } } : null) } });
+  fire("input", box("w", "dotfiles"));
+  await new Promise((r) => setTimeout(r, 0));
+  fire("input", box("h", "tripped"));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(asked, ["/api/alerts?s=error&wq=dotfiles", "/api/alerts?s=error&wq=dotfiles&hq=tripped"]);
+  assert.equal(run("st.views.alerts"), "s=error&wq=dotfiles&hq=tripped", "a filtered view is a link");
+  run("st.views.alerts = ''");
 });
 
 test("an error body with no counts shows its error, not a blank tab", () => {
