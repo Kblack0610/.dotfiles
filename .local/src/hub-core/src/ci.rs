@@ -278,6 +278,7 @@ pub fn build(infra: &Infra) -> Ci {
     let all = runners(infra);
     let off = infra.powered_off();
     let usual = usual(infra);
+    let alias = infra.aliases();
     let mut ci = Ci::default();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<Slot> = vec![];
@@ -335,7 +336,7 @@ pub fn build(infra: &Infra) -> Ci {
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
     for g in infra.get("gates") {
-        let host = g.label("host").to_string();
+        let host = crate::infra::host(&alias, g.label("host"));
         hosts.insert(host.clone());
         ci.slots += 1;
         ci.busy += 1;
@@ -653,7 +654,7 @@ fn finished(infra: &Infra) -> Vec<Finished> {
                 workflow: s.label("workflow").into(),
                 ..Default::default()
             });
-        let n = s.value.unwrap_or(0.0) as u32;
+        let n = s.value.unwrap_or(0.0).round().max(0.0) as u32;
         let scope = match s.label("scope") {
             "main" => Some(&mut f.main),
             "branch" => Some(&mut f.branch),
@@ -1141,6 +1142,46 @@ mod tests {
             ("unity (local)", "-", Some(300))
         );
         assert_eq!(ci.hosts, 4);
+    }
+
+    #[test]
+    fn a_local_gate_by_the_nodes_hostname_is_its_machines_row() {
+        let mut i = board();
+        i.instant.insert(
+            "uname",
+            series(vec![(
+                json!({"host": "workstation", "nodename": "cachyos-x8664-main"}),
+                "1",
+            )]),
+        );
+        i.instant.insert(
+            "gates",
+            series(vec![(
+                json!({"host": "cachyos-x8664-main", "repo": "game", "branch": "main", "platform": "unity"}),
+                "300",
+            )]),
+        );
+        let ci = build(&i);
+        assert!(ci.rows.iter().any(|r| r.host == "workstation"));
+        assert!(!ci.rows.iter().any(|r| r.host == "cachyos-x8664-main"));
+        assert_eq!(ci.hosts, 4);
+    }
+
+    #[test]
+    fn a_finished_count_rounds_and_a_negative_one_counts_nothing() {
+        let mut i = board();
+        let run = |c: &str, v: &'static str| {
+            (
+                json!({"repo": "game", "workflow": "Tests", "scope": "main", "conclusion": c}),
+                v,
+            )
+        };
+        i.instant.insert(
+            "finished",
+            series(vec![run("success", "2.9999"), run("failure", "-1")]),
+        );
+        let ci = build(&i);
+        assert_eq!((ci.done.runs, ci.done.ok, ci.done.bad), (3, 3, 0));
     }
 
     #[test]

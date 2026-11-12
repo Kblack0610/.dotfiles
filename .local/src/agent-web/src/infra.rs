@@ -9,7 +9,7 @@ use std::sync::Arc;
 use hub_core::infra::Infra;
 use hub_core::table::{Row, View};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::cache::{off, ReadCache};
 
@@ -31,10 +31,10 @@ pub const TABLES: [(&str, &str); 5] = [
 /// The page's URL query: every table's view keys, by their prefix.
 pub type ViewQuery = HashMap<String, String>;
 
-/// The last answer, kept as a failed gather is, inside the answer. A panic in the gather is
-/// shown, not kept.
+/// The last answer beside its JSON less the CI lists, made once per fill; kept as a failed
+/// gather is, inside the answer. A panic in the gather is shown, not kept.
 #[derive(Default)]
-pub struct Cache(ReadCache<Infra, CACHE_SECS>);
+pub struct Cache(ReadCache<(Infra, Map<String, Value>), CACHE_SECS>);
 
 /// One table's rows under its view, and the controls that drew them.
 fn shown<R: Row + Serialize>(rows: &[R], q: &ViewQuery, pre: &str) -> Value {
@@ -43,16 +43,35 @@ fn shown<R: Row + Serialize>(rows: &[R], q: &ViewQuery, pre: &str) -> Value {
     json!({ "rows": rows, "table": table })
 }
 
-/// The answer as JSON with each table under its view (`tables`); the CI lists ride only there.
-pub fn render(infra: &Infra, q: &ViewQuery) -> String {
-    let mut v = serde_json::to_value(infra)
-        .unwrap_or_else(|e| json!({"ok": false, "error": e.to_string()}));
-    if let Some(ci) = v.get_mut("ci").and_then(Value::as_object_mut) {
+/// The answer as JSON less the CI lists, which ride only in `tables`: once per cache fill.
+fn with_base(infra: Infra) -> (Infra, Map<String, Value>) {
+    let mut base = match serde_json::to_value(&infra) {
+        Ok(Value::Object(m)) => m,
+        Ok(_) => Map::new(),
+        Err(e) => json!({"ok": false, "error": e.to_string()})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    };
+    if let Some(ci) = base.get_mut("ci").and_then(Value::as_object_mut) {
         for k in ["rows", "queue", "finished"] {
             ci.remove(k);
         }
     }
-    let mut tables = serde_json::Map::new();
+    (infra, base)
+}
+
+/// The cached base with each table under the page's view: the base is written, not copied.
+#[derive(Serialize)]
+struct Body<'a> {
+    #[serde(flatten)]
+    base: &'a Map<String, Value>,
+    tables: Map<String, Value>,
+}
+
+/// The answer as JSON with each table under its view (`tables`).
+pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String {
+    let mut tables = Map::new();
     for (name, pre) in TABLES {
         let t = match name {
             "machines" => shown(&infra.machines, q, pre),
@@ -63,37 +82,37 @@ pub fn render(infra: &Infra, q: &ViewQuery) -> String {
         };
         tables.insert(name.into(), t);
     }
-    v["tables"] = Value::Object(tables);
-    v.to_string()
+    serde_json::to_string(&Body { base, tables })
+        .unwrap_or_else(|e| json!({"ok": false, "error": e.to_string()}).to_string())
 }
 
 impl Cache {
-    async fn answer(&self) -> Arc<Infra> {
-        let read = off(hub_core::infra::gather);
+    async fn answer(&self) -> Arc<(Infra, Map<String, Value>)> {
+        let read = async { off(hub_core::infra::gather).await.map(with_base) };
         self.0.get((), read).await.unwrap_or_else(|e| {
-            Arc::new(Infra {
+            Arc::new(with_base(Infra {
                 error: Some(e),
                 ..Default::default()
-            })
+            }))
         })
     }
 
     /// The Infra tab's answer with the page's views, as JSON.
     pub async fn get(&self, q: ViewQuery) -> String {
-        let infra = self.answer().await;
-        off(move || render(&infra, &q))
+        let a = self.answer().await;
+        off(move || render(&a.0, &a.1, &q))
             .await
             .unwrap_or_else(|e| json!({"ok": false, "error": e}).to_string())
     }
 
     /// The same answer for Home's health strip and red-now rows.
     pub async fn infra(&self) -> Infra {
-        (*self.answer().await).clone()
+        self.answer().await.0.clone()
     }
 
     /// The rates in the same answer, for the Builds section's prices.
     pub async fn rates(&self) -> hub_core::run_detail::Rates {
-        self.answer().await.rates()
+        self.answer().await.0.rates()
     }
 }
 
@@ -124,7 +143,8 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let out: Value = serde_json::from_str(&render(&infra, &q)).unwrap();
+        let (infra, base) = with_base(infra);
+        let out: Value = serde_json::from_str(&render(&infra, &base, &q)).unwrap();
         let m = &out["tables"]["machines"];
         assert_eq!(m["table"]["state"], "cloud");
         assert_eq!(m["rows"].as_array().unwrap().len(), 1);

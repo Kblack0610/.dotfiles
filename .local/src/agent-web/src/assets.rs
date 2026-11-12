@@ -29,9 +29,17 @@ const WOFF2: &str = "font/woff2";
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -456,6 +464,28 @@ mod tests {
         let got: serde_json::Value =
             serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
         assert_eq!(got, serde_json::Value::Object(want));
+    }
+
+    #[test]
+    fn moved_chips_are_the_layout() {
+        // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
+        // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
+        for (tab, old, table, chip) in hub_core::layout::MOVED_CHIPS {
+            let to = hub_core::layout::MOVED
+                .iter()
+                .find(|m| m.0 == *tab && m.1 == *old)
+                .expect("a moved chip is a moved section");
+            let pre = crate::infra::TABLES
+                .iter()
+                .find(|t| t.0 == *table)
+                .expect("the chip's table is on the page")
+                .1;
+            let want = format!(
+                r#""{tab}/{old}": ["{}", "{}", "{pre}s={chip}"]"#,
+                to.2, to.3
+            );
+            assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
     }
 
     #[test]

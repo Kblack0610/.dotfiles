@@ -548,7 +548,10 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         at(&mut by, h).governor = Some(g);
     }
     for (h, p) in power(infra, &alias) {
-        at(&mut by, h).power = Some(p);
+        // Only a cloud host has a power state; a stopped one has no runner series to say so.
+        let mm = at(&mut by, h);
+        mm.place = "cloud".into();
+        mm.power = Some(p);
     }
     let mut out: Vec<Machine> = by
         .into_values()
@@ -649,7 +652,16 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         }
         out.push(Pool {
             pool: LOCAL_POOL.into(),
-            slots: sum("cc:host_local_open_slots"),
+            // As each machine counts it: a busy gate past the open slots is still a slot.
+            slots: Some(
+                local
+                    .iter()
+                    .map(|h| {
+                        let open = get("cc:host_local_open_slots", h).unwrap_or(0.0);
+                        open.max(get("cc:host_local_busy", h).unwrap_or(0.0))
+                    })
+                    .sum(),
+            ),
             busy: sum("cc:host_local_busy"),
             waiting: sum("cc:host_local_queued"),
             done: sum("cc:host_local_done_24h"),
@@ -819,6 +831,27 @@ mod tests {
             order,
             ["workstation", "mac-mini", "raspberrypi", "aws-burst-1"]
         );
+    }
+
+    #[test]
+    fn a_powered_host_with_no_runner_is_cloud_and_a_busy_gate_past_the_open_slots_is_a_slot() {
+        let mut i = fleet();
+        let p = json!({"__name__": "ci_governor_power_state", "host": "aws-burst-2",
+            "state": "stopped", "reason": "idle", "v": "1"});
+        i.instant.get_mut("power").unwrap().extend(series(vec![p]));
+        let cc = |name: &str, v: &str| json!({"__name__": name, "host": "raspberrypi", "v": v});
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            cc("cc:host_local_slots", "1"),
+            cc("cc:host_local_open_slots", "0"),
+            cc("cc:host_local_busy", "1"),
+        ]));
+        let (ms, pools) = build(&i);
+        let b2 = machine(&ms, "aws-burst-2");
+        assert_eq!((b2.place.as_str(), b2.state.as_str()), ("cloud", "stopped"));
+        let pi = machine(&ms, "raspberrypi");
+        assert_eq!((pi.busy, pi.slots), (1, 1));
+        let local = pools.iter().find(|p| p.pool == LOCAL_POOL).unwrap();
+        assert_eq!((local.slots, local.busy), (Some(2.0), Some(2.0)));
     }
 
     #[test]
