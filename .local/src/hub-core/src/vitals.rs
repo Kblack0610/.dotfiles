@@ -328,7 +328,14 @@ mod tests {
 
     #[test]
     fn a_missing_reading_is_a_question_mark_and_never_an_all_clear() {
-        let v = read(&infra(vital(0.0, "cost", "cost_per_merged_item", None, None))).unwrap();
+        let v = read(&infra(vital(
+            0.0,
+            "cost",
+            "cost_per_merged_item",
+            None,
+            None,
+        )))
+        .unwrap();
         assert_eq!(v.rows[0].text(), "? per merged PR");
         assert_eq!(v.rows[0].level, Level::Nodata);
         assert_eq!(v.head, "0 of 1 on target, 1 unread");
