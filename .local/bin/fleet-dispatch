@@ -1653,6 +1653,25 @@ harness_flag() { jq -e --arg h "$1" --arg k "$2" '.harnesses[$h][$k] == true' "$
 # is_canary <item json> -- the item is a fleet-bench canary: it replays a merged PR and is scored fresh.
 is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
 
+# harness_tier_why <harness> <item json> -> why the harness may not take the item, rc 1: the item's tier
+# (item_tier) is over the harness's `max_tier` in the map, its trust ceiling until its runs score beside
+# claude's (raising it is the human's promotion step). Nothing and rc 0 when the harness names no
+# max_tier or the item is a canary (it replays a merged PR and opens no PR: an eval, not work). rc 2,
+# failing closed, when max_tier is not 1, 2 or 3. Why: the human held unscored harnesses off anything
+# critical (2026-11-12).
+harness_tier_why() {
+  local max tier
+  max=$(jq -r --arg h "$1" '.harnesses[$h] // {} | if has("max_tier") then .max_tier | tojson else "none" end' "$HARNESSES" 2>/dev/null) ||
+    { echo "$HARNESSES is unreadable, so its max_tier is unknown"; return 2; }
+  [ "$max" != none ] || return 0
+  [[ "$max" =~ ^[123]$ ]] || { echo "its max_tier in $HARNESSES is not 1, 2 or 3"; return 2; }
+  ! is_canary "$2" || return 0
+  tier=$(item_tier "$2")
+  [ "$tier" -gt "$max" ] || return 0
+  echo "it takes tier $max work at most (max_tier in $HARNESSES, until its runs score beside claude), and this is tier $tier"
+  return 1
+}
+
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
@@ -3238,7 +3257,8 @@ item_pinned() {
 # hold (takes_plan: a headless one that cannot resume takes no plan item), on a headless one never an
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
 # all while that list is unreadable), an item of a project its `projects` allowlist names when it has
-# one (harness_project_why, pinned or not: ocfree carries public input only), only a canary item when
+# one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
+# its `max_tier` unless a canary (harness_tier_why, pinned or not), only a canary item when
 # it runs in its own lane sandbox (sandbox_item_why), and, when routed rather
 # than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
@@ -3263,6 +3283,7 @@ route() {
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
+    elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
