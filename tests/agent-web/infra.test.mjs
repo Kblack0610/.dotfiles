@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js", "infra.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js", "infra.js", "ci.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const ist = run("ist");
 
@@ -40,11 +40,11 @@ const section = (c) => {
   return run(`ciSection({}, Date.now(), ${JSON.stringify(c)})`);
 };
 
-test("CI lists no runs: one line links to Releases, whose Builds section has them", () => {
+test("the CI runners section lists no runs: they are the Runs section under it (ci.js)", () => {
   Object.assign(ist, { open: {} });
   const h = section({ hosts: 0, slots: 0, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], done });
-  assert.ok(!h.includes("Recent runs"), "the runs are Releases'");
-  assert.match(h, /<div class="cline">Runs: every CI run is on <a href="#releases\/builds">Releases, Builds<\/a><\/div>$/);
+  assert.ok(!h.includes("Recent runs"), "the runs are ci.js's");
+  assert.doesNotMatch(h, /releases\/builds/, "no link to the retired Releases Builds section");
 });
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", pool: "unity", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });

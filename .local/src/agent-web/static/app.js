@@ -320,10 +320,11 @@ const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
-  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"], "projects/all": ["board", ""] };
+  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
+  "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
 // the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
 const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};

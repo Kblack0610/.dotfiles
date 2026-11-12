@@ -158,16 +158,6 @@ impl<'a> Board<'a> {
         }
         out
     }
-
-    /// The CI runs themselves are Releases' Builds section (`hub_core::builds`); CI points there,
-    /// and Releases names its own window so no number is repeated here.
-    pub fn runs_badge(&self) -> Line<'static> {
-        let releases = hub_core::layout::bar_label("releases");
-        Line::from(vec![
-            Span::styled("RUNS", self.p.head()),
-            Span::styled(format!("  every CI run: {releases}, Builds"), self.p.dim()),
-        ])
-    }
 }
 
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
@@ -223,8 +213,6 @@ pub fn infra(
         ci.push(blank());
         ci.extend(table(name));
     }
-    ci.push(blank());
-    ci.push(b.runs_badge());
     let sections = vec![
         ("machines", machines),
         ("pools", table("pools")),
@@ -600,13 +588,13 @@ pub(crate) mod tests {
         .into_iter()
         .map(|s| s.0)
         .collect();
-        // Jobs is the app's, drawn from its own read.
+        // Jobs, Runs and Tests are the app's, drawn from their own reads.
         let want: Vec<_> = hub_core::layout::resolve("infra")
             .unwrap()
             .sections
             .iter()
             .copied()
-            .filter(|s| *s != "jobs")
+            .filter(|s| !["jobs", "runs", "tests"].contains(s))
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
@@ -618,7 +606,6 @@ pub(crate) mod tests {
         // Exceptions lead: the slots and the queue before the day's results and the runs.
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
         assert!(at("HOST") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
-        assert!(at("FINISHED 24H") < at("RUNS  every"));
     }
 
     #[test]
@@ -1059,13 +1046,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ci_lists_no_runs_and_points_at_releases_builds() {
+    fn the_ci_section_lists_no_runs() {
         let ci = tab(&fixture(), "ci", 160);
-        assert_eq!(
-            ci.lines().last(),
-            Some("RUNS  every CI run: 7 Releases, Builds"),
+        assert!(
+            !ci.contains("RECENT RUNS") && !ci.contains("Releases"),
             "{ci}"
         );
-        assert!(!ci.contains("RECENT RUNS"), "the runs are Releases': {ci}");
     }
 }
