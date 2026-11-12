@@ -3847,7 +3847,7 @@ impl App {
                 let at = at.flatten().map(|at| (DETAIL, at.saturating_sub(2)));
                 (l, at.into_iter().collect())
             }
-            // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
+            // Every dollar, cut eight ways (coststab.rs, the same board agent-web draws).
             (Tab::Costs, ..) => match &self.costs {
                 None => reading("the costs"),
                 Some(c) => self.cv.lines(c, self.p, now, w),

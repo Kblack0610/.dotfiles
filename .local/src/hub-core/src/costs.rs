@@ -1,5 +1,5 @@
-//! The Costs tab, both surfaces: what the fleet spent over 24h, 7d or 30d, cut seven ways
-//! (session, model, harness, tool, project, runner, kind), with fleet-bench's model evaluation on
+//! The Costs tab, both surfaces: what the fleet spent over 24h, 7d or 30d, cut eight ways
+//! (session, model, harness, tool, skill, project, runner, kind), with fleet-bench's model evaluation on
 //! the model and harness cuts. One reader over the stores that already hold every figure, so
 //! nothing is written twice and the terminal and the browser cannot disagree (dashboards rule 8):
 //!
@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | per session: cost, models, harness, project, runner, kind | outcomes rows | `agentctl-session-outcomes costs` |
 //! | per runner call | `calls.jsonl` | `fleet::parse_call`, the Fleet tab's parser |
-//! | per tool, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
+//! | per tool and per skill, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
@@ -32,8 +32,8 @@ use crate::table::{self, Row, Summary, Val, View};
 const DAY: i64 = 24 * 3600;
 
 /// The `by:` switch, in the bar's order.
-pub const CUTS: [&str; 7] = [
-    "session", "model", "harness", "tool", "project", "runner", "kind",
+pub const CUTS: [&str; 8] = [
+    "session", "model", "harness", "tool", "skill", "project", "runner", "kind",
 ];
 /// The window switch and its length. The read takes the longest, so a switch needs no re-read.
 pub const WINDOWS: [(&str, i64); 3] = [("24h", DAY), ("7d", 7 * DAY), ("30d", 30 * DAY)];
@@ -49,9 +49,9 @@ pub fn spend_badge() -> String {
     format!("spend: {}", crate::layout::bar_label("costs"))
 }
 
-/// What the tool cut says when its snapshots predate the allocation, on both surfaces.
+/// What the tool and skill cuts say when their snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
-    "no snapshot in this window allocates dollars to tools yet: calls and tokens only";
+    "no snapshot in this window allocates dollars to this cut yet: calls and tokens only";
 
 /// What the direct figure covers and what it cannot, on both surfaces (the pool is a Burn row). opencode's
 /// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
@@ -135,6 +135,21 @@ pub struct ToolDay {
     pub allocated_cost_usd: Option<f64>,
 }
 
+/// One skill's day in a token-usage snapshot: the responses in its spans (a Skill call or loaded
+/// body to the next typed prompt, its subagents included). Its dollars are an allocation: each
+/// session's cost split over its spans by weighted tokens, never a metered figure.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillDay {
+    pub skill: String,
+    pub spans: u64,
+    pub sessions: u64,
+    pub responses: u64,
+    pub context: u64,
+    pub output: u64,
+    pub allocated_cost_usd: Option<f64>,
+}
+
 /// A snapshot's whole-day counts.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -154,6 +169,11 @@ pub struct Snapshot {
     pub unallocated_usd: Option<f64>,
     #[serde(skip)]
     pub commands: Vec<ToolDay>,
+    /// Summed into the skill cut's lines, so the raw days are not sent.
+    #[serde(skip)]
+    pub skills: Vec<SkillDay>,
+    #[serde(skip)]
+    pub skill_unallocated_usd: Option<f64>,
     #[serde(skip)]
     pub totals: Option<SnapshotTotals>,
     #[serde(skip)]
@@ -424,6 +444,8 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
+        skills: serde_json::from_value(v["by_skill"].clone()).unwrap_or_default(),
+        skill_unallocated_usd: v["by_skill_unallocated_usd"].as_f64(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
         langfuse: crate::tokens::langfuse(&v["langfuse"]),
@@ -603,12 +625,13 @@ pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
 }
 
 /// One row of the table, whichever cut. Each cut fills its own columns (`columns`) and leaves
-/// the rest empty, so one row type serves all seven and the sort means the same on each.
+/// the rest empty, so one row type serves all eight and the sort means the same on each.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Line {
     pub session: Option<String>,
     pub title: Option<String>,
     pub tool: Option<String>,
+    pub skill: Option<String>,
     pub kind: Option<String>,
     pub project: Option<String>,
     pub harness: Option<String>,
@@ -633,9 +656,9 @@ pub struct Line {
 
 impl Row for Line {
     const COLUMNS: &'static [&'static str] = &[
-        "session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions",
-        "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr",
-        "at",
+        "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "title",
+        "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr",
+        "src", "pr", "at",
     ];
     const STATES: &'static [&'static str] = &["all"];
     const FACETS: &'static [&'static str] = &["model", "runner"];
@@ -648,6 +671,7 @@ impl Row for Line {
             "session" => text(&self.session),
             "title" => text(&self.title),
             "tool" => text(&self.tool),
+            "skill" => text(&self.skill),
             "kind" => text(&self.kind),
             "project" => text(&self.project),
             "harness" => text(&self.harness),
@@ -688,6 +712,7 @@ pub fn columns(cut: &str) -> &'static [&'static str] {
             "per_pr", "src",
         ],
         "tool" => &["tool", "calls", "tokens", "cost", "share"],
+        "skill" => &["skill", "calls", "sessions", "tokens", "cost", "share"],
         "project" => &["project", "sessions", "tokens", "cost", "share"],
         "runner" => &["runner", "model", "calls", "tokens", "cost", "share"],
         "kind" => &["kind", "sessions", "tokens", "cost", "share"],
@@ -703,6 +728,9 @@ pub fn source(cut: &str) -> &'static str {
     match cut {
         "tool" => {
             "token-usage snapshots; dollars allocated by each session's carried tokens, not metered"
+        }
+        "skill" => {
+            "token-usage snapshots; a skill's span runs from its call to the next typed prompt, dollars allocated by each session's weighted tokens, not metered"
         }
         "runner" => "agentctl-run calls.jsonl",
         _ => "outcomes rows",
@@ -911,6 +939,42 @@ fn tool_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
     lines
 }
 
+/// The skill cut: each skill's spans (as calls), the sessions that ran it and its spans' tokens
+/// (context and output), summed over the window's snapshots. A session counts once per day it ran
+/// the skill. The "(no skill)" row is the responses in no span; the cost of sessions with no
+/// response that day closes the sum as "(no response)", so the column adds up to the window's cost.
+fn skill_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
+    let mut by: BTreeMap<String, Line> = BTreeMap::new();
+    let mut unallocated: Option<f64> = None;
+    for s in snaps {
+        for k in &s.skills {
+            let l = by.entry(k.skill.clone()).or_insert_with(|| Line {
+                skill: Some(k.skill.clone()),
+                calls: Some(0),
+                sessions: Some(0),
+                tokens: Some(0.0),
+                ..Line::default()
+            });
+            l.calls = l.calls.map(|n| n + k.spans);
+            l.sessions = l.sessions.map(|n| n + k.sessions);
+            l.tokens = l.tokens.map(|n| n + (k.context + k.output) as f64);
+            l.cost += k.allocated_cost_usd.unwrap_or(0.0);
+        }
+        if let Some(u) = s.skill_unallocated_usd {
+            *unallocated.get_or_insert(0.0) += u;
+        }
+    }
+    let mut lines: Vec<Line> = by.into_values().collect();
+    if let Some(u) = unallocated.filter(|u| *u > 0.0) {
+        lines.push(Line {
+            skill: Some("(no response)".into()),
+            cost: u,
+            ..Line::default()
+        });
+    }
+    lines
+}
+
 /// One window's total from the outcomes rows: what the tile prints and the 7d check sums.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Total {
@@ -1010,7 +1074,7 @@ pub struct Board {
     /// What this cut's rows are read from.
     pub source: &'static str,
     pub eval_days: Option<u32>,
-    /// `UNPRICED` on the tool cut with no allocated dollars in its window: cost and share are
+    /// `UNPRICED` on the tool or skill cut with no allocated dollars in its window: cost and share are
     /// unknown. Both surfaces print this text.
     pub unpriced: Option<&'static str>,
     pub rows: Vec<Line>,
@@ -1093,9 +1157,11 @@ pub fn board(
     };
     // `total` is the cut's rows under no query, so "3 of 12" counts rows, not slices.
     let (mut lines, filter, total) = match by {
-        "runner" | "tool" => {
+        "runner" | "tool" | "skill" => {
             let all = if by == "runner" {
                 runner_lines(&c.calls, since)
+            } else if by == "skill" {
+                skill_lines(in_window(&c.snapshots, c.at, secs))
             } else {
                 tool_lines(in_window(&c.snapshots, c.at, secs))
             };
@@ -1117,12 +1183,18 @@ pub fn board(
             (lines, s, n)
         }
     };
-    // No snapshot in the window carries the allocation yet, so the tool cut has calls and
-    // tokens but no dollars: the surfaces print "-" and say why, never $0.
-    let unpriced = by == "tool"
-        && !in_window(&c.snapshots, c.at, secs).any(|s| {
+    // No snapshot in the window carries the allocation yet, so the tool or skill cut has calls
+    // and tokens but no dollars: the surfaces print "-" and say why, never $0.
+    let unpriced = match by {
+        "tool" => !in_window(&c.snapshots, c.at, secs).any(|s| {
             s.unallocated_usd.is_some() || s.tools.iter().any(|t| t.allocated_cost_usd.is_some())
-        });
+        }),
+        "skill" => !in_window(&c.snapshots, c.at, secs).any(|s| {
+            s.skill_unallocated_usd.is_some()
+                || s.skills.iter().any(|k| k.allocated_cost_usd.is_some())
+        }),
+        _ => false,
+    };
     let shown_usd: f64 = lines.iter().map(|l| l.cost).sum();
     for l in &mut lines {
         l.share = if shown_usd > 0.0 {
@@ -1863,6 +1935,46 @@ mod tests {
         assert!(!s[1].stale, "a snapshot an hour old");
         c.snapshots.clear();
         assert!(sources(&c)[1].stale, "no snapshot at all is stale");
+    }
+
+    #[test]
+    fn the_skill_cut_sums_each_skills_spans_and_closes_on_the_sessions_with_no_response() {
+        let mut c = costs();
+        let snap = snapshot(
+            "2027-01-14",
+            r#"{"by_skill":[{"skill":"one-shot","spans":2,"sessions":2,"responses":9,"context":900,"output":30,"allocated_cost_usd":6.0},{"skill":"(no skill)","spans":0,"sessions":3,"responses":4,"context":400,"output":10,"allocated_cost_usd":3.0}],"by_skill_unallocated_usd":1.0}"#,
+        )
+        .unwrap();
+        c.snapshots[0].skills = snap.skills;
+        c.snapshots[0].skill_unallocated_usd = snap.skill_unallocated_usd;
+        let b = board(&c, "skill", "7d", "", "", "", ("", ""), &Default::default());
+        assert_eq!(b.columns, columns("skill"));
+        assert_eq!(
+            names(&b, "skill"),
+            ["one-shot", "(no skill)", "(no response)"]
+        );
+        assert_eq!(
+            (b.rows[0].calls, b.rows[0].sessions, b.rows[0].tokens),
+            (Some(2), Some(2), Some(930.0))
+        );
+        assert!(
+            (b.shown_usd - 10.0).abs() < 1e-9,
+            "the rows sum to the cost"
+        );
+        assert!(b.unpriced.is_none());
+        // Negative control: a snapshot from before by_skill has no rows and says it is unpriced.
+        let old = costs();
+        let b = board(
+            &old,
+            "skill",
+            "7d",
+            "",
+            "",
+            "",
+            ("", ""),
+            &Default::default(),
+        );
+        assert!(b.rows.is_empty() && b.unpriced.is_some());
     }
 
     #[test]
