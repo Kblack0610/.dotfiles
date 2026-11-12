@@ -75,7 +75,8 @@ Prefer the cheapest tier that can actually fail. The suite caught a real routing
 `require_disposable_host()` enforces it: it **fails** (never skips - a skip is how a safety tier quietly stops running) unless `/.dockerenv` *and* an image-set env marker are both present. There is deliberately **no override flag**.
 
 ```bash
-make -C tests test-fast     # unit + integ, host-safe, what the Stop hook gates on
+make -C tests test-pr       # the files the PR gate picks for this change: the local gate
+make -C tests test-fast     # unit + integ, every file: main and the nightly run it, not a session
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs
@@ -124,8 +125,8 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 ## 5. Run the gates
 
 ```bash
-make -C tests test-fast        # the Stop hook runs this; must be green
-tests/docker.sh test-container # all tiers
+make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
+tests/docker.sh test-container # all tiers, only when the change touches the harness itself
 tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
 ```
 

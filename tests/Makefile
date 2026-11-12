@@ -42,14 +42,15 @@ junit_mk  = $(if $(junit_on),mkdir -p $(call junit_dir,$(1)) &&)
 # runner, short enough that a blocked test fails the job instead of hanging it.
 UI_TIMEOUT  ?= 420
 
-.PHONY: test test-fast test-unit test-integ test-files test-ui test-ui-inner test-container \
+.PHONY: test test-fast test-pr test-unit test-integ test-files test-ui test-ui-inner test-container \
         test-docker test-rust lint fmt bootstrap clean clean-vendor help
 
 help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-fast    unit + integ (CI runs them in shards: shard.sh)"
+	@echo "  make test-pr      the files the PR gate picks for this change (BASE=<rev>, default the merge-base with origin/main)"
+	@echo "  make test-fast    unit + integ, every file (main and the nightly run it; CI shards it: shard.sh)"
 	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
@@ -112,6 +113,17 @@ test-integ: $(BATS)
 # every red.
 test-files: $(BATS)
 	@$(call junit_mk,files) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,files) $(FILES)
+
+# The local gate: the fast-tier files tests/pick.sh picks for the change from BASE to the working
+# tree (untracked files too), the set the PR's CI gate runs. Why: sessions ran the whole fast tier,
+# about 4,900 tests, as their gate, several at once, and with the runners off that held this
+# 24-core box at load 63 (ar-1652). A change pick.sh cannot scope still gets the whole tier.
+BASE ?= $(shell git -C $(HERE) merge-base HEAD origin/main 2>/dev/null)
+test-pr: $(BATS)
+	@changed=$$( { git -C $(HERE).. diff --name-only $(BASE); git -C $(HERE).. ls-files --others --exclude-standard; } | sort -u); \
+	files=$$(for t in unit integ; do PICK_CHANGED="$$changed" $(HERE)pick.sh $$t $(BASE) || exit 1; done) || exit 1; \
+	[ -n "$$files" ] || { echo "test-pr: no fast-tier file picked"; exit 0; }; \
+	$(MAKE) --no-print-directory -C $(HERE) test-files FILES="$$(printf '$(HERE)%s ' $$files)"
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.
