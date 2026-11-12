@@ -773,6 +773,7 @@ feedruns() {
   # the exporter serves the run again with its new title (home-config #868): the shadow takes it
   feedruns 1 e1 2 false "$new"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
   run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
   assert_success
   run jq -c '[.ok, .unproven, .repos["o/game"]]' <<<"$output"
@@ -781,6 +782,7 @@ feedruns() {
   feedruns 2 e1 2 false
   jq -c '.repos += ["O/Empty"]' "$KD/feed-2" > "$KD/feed-2.new" && mv "$KD/feed-2.new" "$KD/feed-2"
   SCHEDULES_NOW=1762431600 run "$SUBJECT"
+  assert_success
   run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
   assert_failure 1
   run jq -c '[.ok, .unproven, .repos["o/empty"]]' <<<"$output"
