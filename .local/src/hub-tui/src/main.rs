@@ -602,9 +602,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Queue) {
         a.tab = Tab::Queue;
         a.pipeline = Some(hub_core::pipeline::read());
-        // The Candidates fold, with its `as of`: fleet-dispatch's snapshot, a file read.
+        // The Candidates inner tab's list, with its `as of`: fleet-dispatch's snapshot, a file read.
         a.candidates = Some(hub_core::queue::candidates(&a.files.candidates));
-        // `--tab 'queue candidates'` opens the fold, as the tab request does.
+        // `--tab 'queue candidates'` opens that inner tab, as the tab request does.
         a.open_query(section);
         // Only the link is needed here: the page's `o graph` hint reads the Grafana base.
         a.infra = Some(hub_core::infra::Infra {

@@ -530,7 +530,7 @@ pub struct App {
     /// agent-queue's items and week, for the Queue tab and Home's running list and numbers.
     pub queue: Option<Queue>,
     pub qv: QueueView,
-    /// The ranked board rows for the Queue tab's Candidates fold.
+    /// The ranked board rows for the Queue tab's Candidates inner tab.
     pub candidates: Option<Result<Candidates, String>>,
     /// agent-queue's store, watched so the Queue tab follows it; it is never read here.
     pub queue_dir: PathBuf,
@@ -1978,9 +1978,10 @@ impl App {
                 let was = self
                     .queue
                     .as_ref()
-                    .and_then(|old| self.qv.selected(old, now))
+                    .and_then(|old| self.qv.selected(&self.qv.scoped(old, now)))
                     .map(|i| i.slug.clone());
-                self.qv.reselect(was, &q, cands_of(&self.candidates), now);
+                let sc = self.qv.scoped(&q, now);
+                self.qv.reselect(was, &sc, cands_of(&self.candidates));
                 self.queue = Some(*q);
                 if self.queue_read.done() {
                     self.read_queue();
@@ -1996,8 +1997,9 @@ impl App {
                 self.candidates = Some(c);
                 if let Some(q) = &self.queue {
                     let now = jobs::now();
-                    let was = self.qv.selected(q, now).map(|i| i.slug.clone());
-                    self.qv.reselect(was, q, cands_of(&self.candidates), now);
+                    let sc = self.qv.scoped(q, now);
+                    let was = self.qv.selected(&sc).map(|i| i.slug.clone());
+                    self.qv.reselect(was, &sc, cands_of(&self.candidates));
                 }
                 if self.candidates_read.done() {
                     self.read_candidates();
@@ -2294,7 +2296,7 @@ impl App {
         let slug = q.trim();
         let at = self.queue.as_ref().and_then(|queue| {
             self.qv
-                .shown(queue, jobs::now())
+                .shown(&self.qv.scoped(queue, jobs::now()))
                 .iter()
                 .position(|r| r.item.slug == slug)
         });
@@ -2707,12 +2709,13 @@ impl App {
             k.code,
             KeyCode::Char('[' | ']' | '{' | '}') | KeyCode::Esc | KeyCode::Enter
         );
-        // The pipeline line is Active's, so its keys are too.
-        let on_line = self.qv.on(self.queue.as_ref(), jobs::now()) == "active";
+        // The queue scoped once for this key. The pipeline line is Active's, so its keys are too.
+        let now = jobs::now();
+        let sc = self.queue.as_ref().map(|q| self.qv.scoped(q, now));
+        let on_line = sc.as_ref().map_or(self.qv.inner, |s| s.on) == "active";
         if line_key && on_line && !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(q) = &self.queue {
-                let rail =
-                    hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), jobs::now());
+                let rail = hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), now);
                 match self.qv.line.key(k.code, &rail) {
                     flowline::Took::No => {}
                     flowline::Took::Moved => return true,
@@ -2725,13 +2728,9 @@ impl App {
             }
         }
         let was = self.qv.inner;
-        let ask = self.qv.key(
-            k,
-            self.queue.as_ref(),
-            cands_of(&self.candidates),
-            self.page,
-            jobs::now(),
-        );
+        let ask = self
+            .qv
+            .key(k, sc.as_ref(), cands_of(&self.candidates), self.page);
         if self.qv.inner != was {
             self.scroll = 0;
             self.read_candidates();
@@ -4903,13 +4902,17 @@ mod tests {
         assert_eq!(Tab::Queue.dashboard(), Some("kb-agents-overview"));
         let mut a = app(Tab::Queue);
         assert_eq!(
-            queuetab::QueueView::default().key(
-                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
-                Some(&queuetab::tests::fixture()),
-                &[],
-                10,
-                jobs::now()
-            ),
+            {
+                let (v, q) = (queuetab::QueueView::default(), queuetab::tests::fixture());
+                let sc = v.scoped(&q, jobs::now());
+                let mut v = v;
+                v.key(
+                    KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+                    Some(&sc),
+                    &[],
+                    10,
+                )
+            },
             queuetab::Ask::Pass
         );
         // With no Grafana known nothing opens and nothing is spawned.
@@ -6266,7 +6269,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let now = jobs::now();
         let q = a.queue.as_ref().unwrap();
-        let shown = a.qv.shown(q, now);
+        let shown = a.qv.shown(&a.qv.scoped(q, now));
         assert!(a.qv.detail, "the item's record is open");
         assert_eq!(shown[a.qv.table.sel].item.slug, "no-session");
 

@@ -81,7 +81,7 @@ pub const TABS: [Tab; 13] = [
             },
             Inner {
                 id: "today",
-                title: "Done today",
+                title: "Done 24h",
                 sections: &["today"],
             },
             Inner {
@@ -327,7 +327,7 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // better-release-data-need-polished-dragonfly.md).
     ("releases", "builds", "infra", "runs"),
     ("releases", "tests", "infra", "tests"),
-    // Queue's one table became the Active, Up next and Done today inner tabs (2026-11-12).
+    // Queue's one table became the Active, Up next and Done 24h inner tabs (2026-11-12).
     ("queue", "table", "queue", "active"),
 ];
 

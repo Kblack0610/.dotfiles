@@ -13,9 +13,10 @@ use hub_core::queue::{self as hub_queue, Candidates, Item, QueueRow, Stats};
 use hub_core::session_actions::System;
 use hub_core::table::View;
 use serde::Deserialize;
+use std::time::SystemTime;
 use tokio::sync::broadcast;
 
-use crate::cache::EventCache;
+use crate::cache::{EventCache, ReadCache};
 use crate::{bad, ApiResult, Shared};
 
 /// How many days back, today included, the page's Done section reaches.
@@ -109,16 +110,47 @@ pub struct QueueQuery {
 }
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
-/// then filtered and sorted by `hub_core::table` so the page only draws (`render`).
+/// then filtered and sorted by `hub_core::table` so the page only draws (`render`). Beside them,
+/// `candidates` is the Candidates strip's flag, read with each queue read while the list itself
+/// waits for its inner tab (`cand_flag`).
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    s.queue
-        .recent()
-        .await
-        .map(|items| Json(render(items, &q, chrono::Utc::now())))
-        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+    let (items, flag) = tokio::join!(s.queue.recent(), cand_flag());
+    let mut v = items
+        .map(|items| render(items, &q, chrono::Utc::now()))
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    if let Some(f) = flag {
+        v["candidates"] = f;
+    }
+    Ok(Json(v))
+}
+
+/// The snapshot's flag is the same until fleet-dispatch rewrites the file, so it is kept by the
+/// file's mtime; this only bounds how long one is kept at all.
+const CAND_FLAG_SECS: u64 = 3600;
+static CAND_FLAG: ReadCache<serde_json::Value, CAND_FLAG_SECS, Option<SystemTime>> =
+    ReadCache::new();
+
+/// The two numbers the Candidates strip button needs, not the list: how many rows the snapshot
+/// ranks and how many urgent ones something blocks (amber while any are). The snapshot runs to
+/// megabytes, so it is parsed once per write (`CAND_FLAG`), not on every queue read; None when
+/// there is no snapshot to read.
+async fn cand_flag() -> Option<serde_json::Value> {
+    let path = hub_core::boards::candidates_file();
+    let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let read = async move {
+        tokio::task::spawn_blocking(move || hub_queue::candidates(&path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|c| cand_counts(&c))
+    };
+    CAND_FLAG.get(at, read).await.ok().map(|v| (*v).clone())
+}
+
+fn cand_counts(c: &Candidates) -> serde_json::Value {
+    serde_json::json!({ "total": c.total, "urgent_blocked": c.urgent_blocked })
 }
 
 /// The rows the view keeps of its inner tab (`hub_core::queue::scope`, named in `inner`), each
@@ -140,8 +172,7 @@ fn render(
         ..Default::default()
     };
     let view = View::new::<QueueRow>(&q.q, &q.s, &q.sort, &q.dir);
-    let day = hub_core::text::local_day_start(now.timestamp());
-    let (inner, rows) = hub_queue::scope(&queue.rows(now), &q.inner, &view, day);
+    let (inner, rows) = hub_queue::scope(&queue.rows(now), &q.inner, &view, now.timestamp());
     let (shown, table) = view.summary(&rows);
     let aliases: serde_json::Map<String, serde_json::Value> = hub_queue::SECTION_ALIASES
         .iter()
@@ -153,7 +184,7 @@ fn render(
         "items": shown.iter().map(|r| item_view(r.item, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
-        "open_rows": hub_queue::CANDIDATES_SHOWN,
+        "open_rows": hub_queue::PAGE_OPEN_ROWS,
         "section_aliases": aliases,
     })
 }
@@ -399,7 +430,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(render(items.clone(), &chip, now)["inner"], "next");
-        assert_eq!(v["open_rows"], hub_queue::CANDIDATES_SHOWN);
+        assert_eq!(v["open_rows"], hub_queue::PAGE_OPEN_ROWS);
         assert_eq!(v["section_aliases"]["running"], "running");
         assert_eq!(v["section_aliases"]["waiting"], "needs you");
         assert_eq!(
@@ -467,6 +498,11 @@ mod tests {
         assert_eq!(b["reasons"][0]["rows"], 1);
         assert_eq!(b["urgent_blocked"], 1);
         assert_eq!(b["clear"], 0);
+        // The queue read carries only the strip's two numbers, never the rows.
+        let f = cand_counts(&hub_queue::parse_candidates(
+            r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
+        ));
+        assert_eq!(f, serde_json::json!({ "total": 1, "urgent_blocked": 1 }));
         assert_eq!(
             b["uncovered"].as_array().unwrap().len(),
             0,

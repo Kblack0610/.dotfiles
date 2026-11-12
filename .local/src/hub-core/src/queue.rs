@@ -71,13 +71,21 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
 }
 
 /// How many table rows the hub TUI draws before "+N older" (its table scrolls); the chips still
-/// count every row. agent-web folds at `CANDIDATES_SHOWN`, with the rest a click away.
+/// count every row.
 pub const TABLE_OPEN_ROWS: usize = 200;
+
+/// How many table rows agent-web draws on each inner tab before "+N older", with the rest a
+/// click away, so no inner tab runs past a screen or two (its JSON `open_rows`).
+pub const PAGE_OPEN_ROWS: usize = 30;
+
+/// How far back Done 24h reads, the window of the pipeline line's `done 24h` step, which opens it.
+pub const DONE_WINDOW_SECS: i64 = 24 * 3600;
 
 /// The Queue tab's inner tabs over its one table (layout `queue`), each with the state chips its
 /// rows carry: Active is what runs or waits on the human (a parked PR waits on its merge), Up
-/// next what has not started, Done today what finished since local midnight. Candidates, the
-/// fourth, is a list of its own.
+/// next what has not started, Done 24h what finished in the last `DONE_WINDOW_SECS` (or has no
+/// finish stamp that parses, so no done item falls out of every tab). Candidates, the fourth, is
+/// a list of its own.
 pub const INNER_CHIPS: [(&str, &[&str]); 3] = [
     ("active", &["needs you", "running", "on a PR"]),
     ("next", &["up next"]),
@@ -87,14 +95,13 @@ pub const INNER_CHIPS: [(&str, &[&str]); 3] = [
 /// The inner tab a view of the table opens on, and its rows in the table's order: `inner` when
 /// it names one (Candidates holds no row); else the one holding the chip in force
 /// (`#queue?s=up next`); else, with a search typed, the first it finds a row in
-/// (`#queue?q=<slug>`); else Active. While a search is typed Done today reads every finished
-/// item the window holds, so a link to an older one still lands. `day_start` is local midnight
-/// (`text::local_day_start`).
+/// (`#queue?q=<slug>`); else Active. While a search is typed Done 24h reads every finished
+/// item the window holds, so a link to an older one still lands. `now` is unix seconds.
 pub fn scope<'a>(
     rows: &[QueueRow<'a>],
     inner: &str,
     view: &crate::table::View,
-    day_start: i64,
+    now: i64,
 ) -> (&'static str, Vec<QueueRow<'a>>) {
     use crate::table::Row;
     let keeps = |id: &str, r: &QueueRow| {
@@ -107,7 +114,7 @@ pub fn scope<'a>(
                 || !view.q.is_empty()
                 || r.item
                     .finished_at()
-                    .is_some_and(|t| t.timestamp() >= day_start))
+                    .is_none_or(|t| t.timestamp() >= now - DONE_WINDOW_SECS))
     };
     let of =
         |id: &str| -> Vec<QueueRow<'a>> { rows.iter().filter(|r| keeps(id, r)).copied().collect() };
@@ -482,8 +489,15 @@ impl Item {
 
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
+    /// A change landed in several repos records one ref each; the label is the first one's with
+    /// `+N` for the rest, which `links` lists one by one.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        pr_link_of(self.pr.as_deref()?)
+        let mut refs = self.pr_refs();
+        let (label, url) = pr_link_of(refs.next()?)?;
+        match refs.count() {
+            0 => Some((label, url)),
+            n => Some((format!("{label} +{n}"), url)),
+        }
     }
 
     /// What the item names, each to its one page (`links`), which both surfaces list on the
@@ -922,7 +936,7 @@ pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
-/// What a Queue view shows: the items (`all`), the week's stats, and what could not be read.
+/// What a Queue view shows: the items (`all` since yesterday), the week's stats, and what could not be read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     pub items: Vec<Item>,
@@ -939,8 +953,9 @@ impl Queue {
         !self.errors.iter().any(|e| e.starts_with(LIST_FAILED))
     }
 
+    /// Every active item plus those finished since yesterday, so Done 24h holds the whole window.
     pub fn read(runner: &dyn Runner) -> Queue {
-        Queue::from_reads(list(runner, "all"), stats(runner))
+        Queue::from_reads(list_since(runner, "all", &days_ago(1)), stats(runner))
     }
 
     /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
@@ -1123,8 +1138,7 @@ impl crate::table::Row for QueueRow<'_> {
     }
 }
 
-/// How many rows a Queue list shows before "+N more": every Candidates view, and agent-web's
-/// table on each inner tab (`open_rows`), so no inner tab runs past a screen or two.
+/// How many ranked rows a Candidates view lists before "+N more".
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
@@ -1734,6 +1748,14 @@ mod tests {
         };
         let q = Queue::read(&fake);
         assert!(q.errors.is_empty(), "{:?}", q.errors);
+        assert_eq!(
+            fake.calls.borrow()[0],
+            format!(
+                "agent-queue list --json --state all --since {}",
+                days_ago(1)
+            ),
+            "Done 24h needs yesterday's finished items too"
+        );
         assert_eq!(q.count(State::Queued), 1);
         let s = q.stats.unwrap();
         assert_eq!(s.to_pr_minutes_median, Some(95));
@@ -1969,6 +1991,18 @@ mod tests {
         assert!(!bare.merged() && !bare.unproven());
         assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
         assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
+        // One ref per repo: the first one's label and link, and how many more `links` lists.
+        let multi = item(
+            r#"{"slug":"m","state":"done","pr":"kblack0610/home-config#856 Kblack0610/.dotfiles-private#834 Kblack0610/.dotfiles#1973","task":"t"}"#,
+        );
+        assert_eq!(
+            multi.pr_link(),
+            Some((
+                "home-config#856 +2".into(),
+                Some("https://github.com/kblack0610/home-config/pull/856".into())
+            ))
+        );
+        assert_eq!(multi.links().iter().filter(|l| l.what == "pr").count(), 3);
         // Nothing odd reaches a link: no number is a bare label, a slash is trimmed.
         let odd = |pr: &str| {
             item(&format!(
@@ -2381,6 +2415,12 @@ mod tests {
             r#"{"slug":"d-new","state":"done","finished":"2026-11-06T10:00:00Z","task":"t"}"#,
             "\n",
             r#"{"slug":"d-old","state":"done","finished":"2026-11-04T10:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d-eve","state":"done","finished":"2026-11-05T13:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d-none","state":"done","task":"t"}"#,
+            "\n",
+            r#"{"slug":"d-bad","state":"done","finished":"soon","task":"t"}"#,
         ));
         let q = Queue {
             items,
@@ -2390,11 +2430,9 @@ mod tests {
             .unwrap()
             .to_utc();
         let rows = q.rows(now);
-        let day = chrono::DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
-            .unwrap()
-            .timestamp();
         let at = |inner: &str, s: &str, query: &str| {
-            let (id, rows) = scope(&rows, inner, &View::new::<QueueRow>(query, s, "", ""), day);
+            let view = View::new::<QueueRow>(query, s, "", "");
+            let (id, rows) = scope(&rows, inner, &view, now.timestamp());
             (
                 id,
                 rows.iter()
@@ -2406,8 +2444,8 @@ mod tests {
         assert_eq!(at("next", "", ""), ("next", vec!["q"]));
         assert_eq!(
             at("Today", "", ""),
-            ("today", vec!["d-new"]),
-            "finished before midnight is not today"
+            ("today", vec!["d-new", "d-eve", "d-none", "d-bad"]),
+            "the last 24h, the `done 24h` step's window; a finish that does not read stays in"
         );
         assert_eq!(at("candidates", "", "").0, "candidates");
         assert!(at("candidates", "", "").1.is_empty());
@@ -2415,7 +2453,10 @@ mod tests {
         assert_eq!(at("", "up next", "").0, "next");
         assert_eq!(at("", "done", "").0, "today");
         // A search opens the first inner tab it finds a row in, an older finish included.
-        assert_eq!(at("", "", "d-old"), ("today", vec!["d-new", "d-old"]));
+        assert_eq!(
+            at("", "", "d-old"),
+            ("today", vec!["d-new", "d-eve", "d-old", "d-none", "d-bad"])
+        );
         assert_eq!(at("", "", "nothing-has-this").0, "active");
         // A named inner tab wins over the chip and the search.
         assert_eq!(at("active", "done", "d-old").0, "active");

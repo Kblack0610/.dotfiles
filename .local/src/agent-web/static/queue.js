@@ -5,10 +5,11 @@
 // (table.js): hub-core filters and sorts by the view in the tab's URL query, and the durations
 // are its `timing` minutes. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
-// Inner tabs (hub_core::layout): Active, Up next and Done today are the one table in three scopes
+// Inner tabs (hub_core::layout): Active, Up next and Done 24h are the one table in three scopes
 // (hub_core::queue::scope, the `in` the read asks for); Candidates is the ranked board rows
 // (/api/queue/candidates, hub-core over fleet-dispatch's snapshot, `as of` its time), each with a
-// Promote that is the board's Start, read only when its inner tab opens. The pipeline line leads Active.
+// Promote that is the board's Start, read and drawn only while its inner tab is open; the queue read
+// carries its strip flag (`candidates`). The pipeline line leads Active and is read only there.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
 // The line's snapshot is written every 10 minutes; a minute is plenty.
@@ -20,13 +21,14 @@ const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 // detail starts open; a task's details start shut.
 // items: the rows the view keeps; table: hub-core's controls for them; inner: the inner tab they
 // are for; aliases: old section id -> state chip; needs: every item waiting on the human,
-// whatever the view; sel: the opened row.
+// whatever the view; sel: the opened row; candFlag: the Candidates strip's counts; pick: the
+// tab was opened by a link that names no inner tab, so the next read lets the server pick one.
 // The read is the tab's own (refreshQueue): it also follows old section links and reads the stats.
 const qst = tblTab({
   tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    items: null, table: null, inner: "", aliases: {}, needs: 0, openRows: 0, sel: "",
+    items: null, table: null, inner: "", aliases: {}, needs: 0, openRows: 0, sel: "", candFlag: null, pick: false,
     stats: null, projects: [], busy: false, msg: "", draft: null,
     cands: null, candErr: null, candMsg: "", promoting: null,
     // The Candidates filter: a reason chip ("" is every row) and the search words.
@@ -35,7 +37,8 @@ const qst = tblTab({
   },
   head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + innerWrap("queue", "active", qFlow()) + innerWrap("queue", qst.inner, qTableHead()),
   // The table sits in the inner tab its rows are for. Candidates are drawn only with the whole
-  // list: a repaint while the search box has focus leaves them as they were.
+  // list, and only while their inner tab is open: a repaint while the search box has focus
+  // leaves them as they were.
   wrap: (html) => innerWrap("queue", qst.inner, html),
   body: () => qBody(),
   draw: (html) => {
@@ -43,7 +46,7 @@ const qst = tblTab({
     // typed into an answer card.
     const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
     $("q-tabs").innerHTML = innerStrip("queue", qFlagged());
-    keepTyping("#queue .card", () => { $("q-list").innerHTML = html + innerWrap("queue", "candidates", qCandidates()); });
+    keepTyping("#queue .card", () => { $("q-list").innerHTML = html + (qOn() === "candidates" ? innerWrap("queue", "candidates", qCandidates()) : ""); });
     if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
   },
 });
@@ -55,11 +58,17 @@ const refreshCands = coalesce(async () => {
   if (st.tab === "queue") qst.render();
 });
 
-// The pipeline line (flow.js) above the table: /api/flow is hub-core's `flow::Rail` over the live
+// The inner tab shown: the one the URL names, else Active (a slug or old section id the read
+// has not resolved yet reads as Active).
+const qOn = () => innerOf("queue", st.tab === "queue" ? st.arg : "")[0];
+
+// The pipeline line (flow.js) leading Active: /api/flow is hub-core's `flow::Rail` over the live
 // queue and fleet-bench's snapshot. A queue event re-reads it with the table; the snapshot is a
-// file that pushes nothing, so the open tab also re-reads on a cadence. node: the step picked.
+// file that pushes nothing, so Active also re-reads on a cadence. Off Active nothing reads it
+// (dashboards rule 10). node: the step picked.
 const qfl = { data: null, err: null, node: "" };
 const refreshFlow = coalesce(async () => {
+  if (st.tab !== "queue" || qOn() !== "active") return;
   try { qfl.data = await api("/api/flow"); qfl.err = null; } catch (e) { qfl.err = e.message; }
   if (st.tab === "queue") qst.render();
 });
@@ -69,14 +78,17 @@ const qStrip = () => qfl.data ? railHtml(qfl.data.line, qfl.node, qfl.data.grafa
   : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 // The strip's amber marks: Active while an item needs you, Candidates while an urgent row is blocked.
-const qFlagged = () => [qst.needs && "active", qst.cands?.urgent_blocked && "candidates"].filter(Boolean);
+const qFlagged = () => [qst.needs && "active", qst.candFlag?.urgent_blocked && "candidates"].filter(Boolean);
 
-// The inner tab the URL names, or on Candidates the one the table last showed; blank lets the
-// server pick (the one holding the chip in force, else the first the search finds a row in, else Active).
+// The inner tab the read is for: the one the URL names (Active for a bare `#queue`), or on
+// Candidates the one the table last showed. Only a link that names none (`qst.pick`) sends blank,
+// so the server picks (the one holding the chip, else the first the search finds a row in, else
+// Active); a search typed on a tab stays on it.
 function qIn() {
   const arg = st.tab === "queue" ? st.arg : lastInner.queue || "";
   const id = innerOf("queue", arg)[0] === arg ? arg : "";
-  return id === "candidates" ? qst.inner : id;
+  if (id === "candidates") return qst.inner;
+  return id || (qst.pick ? "" : innerOf("queue", "")[0]);
 }
 
 const refreshQueue = coalesce(async () => {
@@ -87,33 +99,38 @@ const refreshQueue = coalesce(async () => {
     const p = tblParams(st.views.queue);
     if (qIn()) p.set("in", qIn());
     const d = await api("/api/queue?" + p);
-    Object.assign(qst, { items: d.items, table: d.table, inner: d.inner, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, err: null });
+    Object.assign(qst, { items: d.items, table: d.table, inner: d.inner, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, candFlag: d.candidates || null, err: null });
   } catch (e) { qst.err = e.message; }
+  // A link's word that sets the view reads again (`again`), and only that read settles the pick.
+  let again = false;
   // A word that is no inner tab: an old section id (`#queue/running`) opens its chip, and so the
   // inner tab holding it.
   if (st.tab === "queue" && st.arg && !homeOf("queue", st.arg)) {
     const arg = st.arg, key = arg.toLowerCase(), chip = Object.hasOwn(qst.aliases, key) ? qst.aliases[key] : "";
     if (chip) {
       st.arg = "";
-      if (!tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); refreshQueue(); } else { setQuery(st.views.queue); }
+      if (!tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); again = true; } else { setQuery(st.views.queue); }
     } else if ((qst.items || []).some((i) => i.slug === arg)) {
       // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
       st.arg = ""; qst.sel = arg; setQuery(st.views.queue);
     } else if (tblParams(st.views.queue).get("q") !== arg) {
       // Not in this view: search for it once, and the read that answers opens it.
-      setQuery(tblSet(st.views.queue, { q: arg, s: "" })); refreshQueue();
+      setQuery(tblSet(st.views.queue, { q: arg, s: "" })); again = true;
     } else st.arg = "";
   }
-  // A view the URL names no inner tab for shows the one the server picked: the strip, the URL and
-  // the tab button's memory follow (Active, the first, is the bare URL).
-  if (st.tab === "queue" && !st.arg && qst.inner) {
+  if (again) { refreshQueue(); return; }
+  // A link that names no inner tab shows the one the server picked: the strip, the URL and the
+  // tab button's memory follow (Active, the first, is the bare URL), and later reads keep it.
+  if (st.tab === "queue" && qst.pick && !st.arg && qst.inner) {
+    qst.pick = false;
     st.arg = lastInner.queue = qst.inner === innerOf("queue", "")[0] ? "" : qst.inner;
     if (st.arg) { showUrl(); stripMark($("queue"), "itab", qst.inner); }
   }
   qst.stats = await stats;
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
-  if (st.tab === "queue") refreshFlow();
+  // The line is read once the inner tab is settled, and only on Active (refreshFlow).
+  if (st.tab === "queue") pollFlow();
 });
 
 function renderQueueBadge() {
@@ -186,12 +203,13 @@ function qState(i) {
   return `<td>${esc(i.state)}</td>`;
 }
 
-// The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.
+// The PR cell: hub-core's label as a link (the first PR and "+N" for the rest, every ref on
+// hover); a done item with no recorded merge says so on hover.
 function qPrCell(i) {
   if (!i.pr) return `<td class="muted">-</td>`;
   const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label || i.pr)}</a>` : esc(i.pr_label || i.pr);
   const flag = i.state === "done" && i.pr_label && !i.pr_merged ? ` <span class="muted" title="merge not recorded">?</span>` : "";
-  return `<td>${link}${flag}</td>`;
+  return `<td title="${esc(i.pr)}">${link}${flag}</td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column.
@@ -298,7 +316,7 @@ function qFlowTitle() {
 }
 const qFlow = () => pfold("q-flow", qFlowTitle(), `<h2 class="sec" id="sec-flow">Pipeline</h2>${qStrip()}${qFlowTail()}`);
 // The table's inner tab by its title; its heading counts what the view keeps of it. A search on
-// Done today reads every finish the window holds (hub_core::queue::scope), and says so.
+// Done 24h reads every finish the window holds (hub_core::queue::scope), and says so.
 const qTitle = () => (homeOf("queue", qst.inner) || [, "Queue"])[1];
 const qTableHead = () => `<h2 class="sec" id="sec-${esc(qst.inner)}">${qTitle()} <span class="muted">${qst.table.shown} of ${qst.table.total}` +
   `${qst.inner === "today" && qst.table.q ? ", every finish in the window" : ""}</span></h2>`;
@@ -324,7 +342,7 @@ function qCandRow([c, i], n) {
   const busy = qst.promoting === c.key;
   const blocked = (c.blocked || []).map((b) => `<span class="cchip ${c.prio === 0 ? "bad" : "warn"}">${esc(b)}</span>`).join(" ");
   return `<tr><td class="n">${n + 1}</td><td>${esc(c.project)}</td><td>${esc(c.key)}</td>` +
-    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted">${esc(c.why)}${blocked ? `<div>${blocked}</div>` : ""}</td>` +
+    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted"><div class="clamp" title="${esc(c.why)}">${esc(c.why)}</div>${blocked ? `<div>${blocked}</div>` : ""}</td>` +
     `<td><button class="btn sm" data-promote="${i}"${qst.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td></tr>`;
 }
 
@@ -474,19 +492,21 @@ TABS.queue = {
   // `#queue/<slug>` and an old section id stay the arg (app.js innerRoute); refreshQueue resolves them.
   word: true,
   async show() {
+    // A link (not the tab button) whose arg is no inner tab: a bare `#queue?s=..`, a slug or an
+    // old section id; the read it starts lets the server pick the inner tab.
+    qst.pick = st.linked && innerOf("queue", st.arg)[0] !== st.arg;
     renderQueue();
     refreshQueue();
-    if (innerOf("queue", st.arg)[0] === "candidates") refreshCands();
-    pollFlow();
+    if (qOn() === "candidates") refreshCands();
     if (!qst.projects.length) {
       try { qst.projects = await api("/api/queue/projects"); } catch (e) { /* the select stays empty; add says why */ }
       if (st.tab === "queue") { qSaveDraft(); renderQueue(); }
     }
   },
-  // A strip switch: Candidates reads its snapshot; a scope reads its rows, without the last
-  // scope's chip, which the new one may not have.
+  // A strip switch: Candidates draws its reading state and reads its snapshot; a scope reads its
+  // rows, without the last scope's chip, which the new one may not have (and Active its line).
   inner(id) {
-    if (id === "candidates") { refreshCands(); return; }
+    if (id === "candidates") { qst.render(); refreshCands(); return; }
     if (tblParams(st.views.queue).get("s")) setQuery(tblSet(st.views.queue, { s: "" }));
     qst.all = false;
     refreshQueue();

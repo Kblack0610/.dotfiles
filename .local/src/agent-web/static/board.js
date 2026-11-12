@@ -161,7 +161,7 @@ const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i)
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
   const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
-  const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
+  const sum = r.summary ? `<div class="bsum clamp muted">${esc(r.summary)}</div>` : "";
   // An epic is the deliverable itself; any other row under none says so, for triage.
   const epic = bEpic(r, i) || (r.section === "epics" ? "" : `<span class="muted">no epic</span>`);
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +

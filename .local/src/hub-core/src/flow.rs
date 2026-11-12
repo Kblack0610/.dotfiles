@@ -5,7 +5,7 @@
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
-//! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
+//! and its chip opens the Queue's done chip, the Done 24h inner tab, the same window); inbox and board are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
 //! past its age bound is the one amber chip (`hot`).

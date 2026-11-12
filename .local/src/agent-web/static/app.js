@@ -6,7 +6,7 @@
 // session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], parked: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", linked: false, asks: [], parked: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -324,7 +324,7 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "queue/table": ["queue", "active"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"queue":{"tabs":[["active","Active",["flow","active"]],["next","Up next",["next"]],["today","Done today",["today"]],["candidates","Candidates",["candidates"]]]}};
+const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"queue":{"tabs":[["active","Active",["flow","active"]],["next","Up next",["next"]],["today","Done 24h",["today"]],["candidates","Candidates",["candidates"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -502,7 +502,9 @@ document.addEventListener("keydown", (e) => {
 function setTab(t, arg, query, page) {
   st.tab = t;
   st.page = page || "";
-  // A tab button (no arg) brings back the inner tab that tab last showed.
+  // A tab button (no arg) brings back the inner tab that tab last showed; anything else is a link,
+  // which `st.linked` tells the tab (Queue lets the server pick the inner tab of a bare one).
+  st.linked = arg !== undefined;
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
   // Only an inner tab is kept: a word the tab reads itself (Queue's slug) is not one to bring back.
   if (INNER_TABS[t] && (!st.arg || innerOf(t, st.arg)[0] === st.arg)) lastInner[t] = st.arg;

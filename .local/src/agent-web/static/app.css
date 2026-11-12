@@ -419,7 +419,9 @@ span.warn { color: var(--b-stalled); }
 .tbl td.bepic { min-width: 12ch; max-width: 28ch; }
 .tbl td.bwhen { min-width: 9ch; max-width: 18ch; }
 .tbl .bt { font-weight: 600; font-size: 13px; }
-.tbl .bsum { font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tbl .bsum { font-size: 11px; }
+/* A long cell text held to two lines, a long word broken anywhere; the cell's title or its opened row has the rest. */
+.tbl .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
 /* Projects: the opened row, under its line (board.js). The record stays in view when the table scrolls sideways. */
 .tbl tr.bopen > td { white-space: normal; padding: 0; }
 .bopen .card { position: sticky; left: 0; max-width: min(100%, calc(100vw - 32px)); box-sizing: border-box; }

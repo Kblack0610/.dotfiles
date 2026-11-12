@@ -171,12 +171,12 @@ test("the Queue is one table with the server's chips and every header a sort but
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
   assert.match(h, /id="sec-flow"/);
   assert.match(h, /<div data-in="active"><h2 class="sec" id="sec-active">Active <span class="muted">3 of 4<\/span><\/h2>/, "the heading is the inner tab's");
-  assert.match(h, /<div data-in="candidates" hidden><h2 class="sec" id="sec-candidates">Candidates /, "Candidates is its own inner tab, hidden here");
+  assert.doesNotMatch(h, /id="sec-candidates"/, "Candidates is its own inner tab, drawn only while it is shown");
   assert.doesNotMatch(h, /<details[^>]*id="sec-candidates"/, "and no longer a fold under the table");
   // The strip: the open one marked, Active amber while an item needs you.
   const strip = parts["q-tabs"].innerHTML;
   assert.match(strip, /data-itab="active" class="on"[^>]*>Active <span class="pill warn">1<\/span><\/button>/);
-  for (const t of ["Up next", "Done today", "Candidates"]) assert.match(strip, new RegExp(`>${t}</button>`), t);
+  for (const t of ["Up next", "Done 24h", "Candidates"]) assert.match(strip, new RegExp(`>${t}</button>`), t);
 });
 
 test("a sorted header says its direction, and the number columns are n", () => {
@@ -239,7 +239,7 @@ test("a click on a chip or a header asks the server for that view, and the URL c
   fire("click", { type: "click", target: target({ ts: "running" }) });
   await settle();
   assert.equal(ctx.history.url, "#queue?q=dotfiles&sort=run&s=running");
-  assert.equal(asked.find((u) => u.startsWith("/api/queue?")), "/api/queue?q=dotfiles&s=running&sort=run");
+  assert.equal(asked.find((u) => u.startsWith("/api/queue?")), "/api/queue?q=dotfiles&s=running&sort=run&in=active", "a chip clicked on Active stays on Active");
   fire("click", { type: "click", target: target({ tsort: "", tdir: "desc" }) });
   await settle();
   assert.equal(ctx.history.url, "#queue?q=dotfiles&s=running", "the plain sort is a bare URL");
@@ -249,14 +249,15 @@ test("an old section id opens the table on its chip, once", async () => {
   load();
   asked = [];
   reply = data;
-  run("st.tab = 'queue'; st.arg = 'running'; st.views.queue = ''");
+  // As a link opens it (setTab with an arg): the server picks the inner tab holding the chip.
+  run("st.tab = 'queue'; st.arg = 'running'; st.views.queue = ''; qst.pick = true");
   run("refreshQueue()");
   await settle(); await settle();
   assert.equal(ctx.history.url, "#queue?s=running");
   assert.ok(asked.includes("/api/queue?s=running"), "the pre-filtered table is asked for");
   assert.equal(run("st.arg"), "");
   // A view that already names a chip keeps it: the old id does not overwrite what the link said.
-  run("st.arg = 'waiting'; st.views.queue = 's=done'");
+  run("st.arg = 'waiting'; st.views.queue = 's=done'; qst.pick = true");
   run("refreshQueue()");
   await settle(); await settle();
   assert.equal(ctx.history.url, "#queue?s=done");
@@ -336,19 +337,49 @@ test("a scope asks the server for its rows; Candidates reads only when its inner
 test("a view that names no inner tab shows the one the server picked, and the URL follows", async () => {
   load();
   reply = { ...data, inner: "next" };
-  run("st.arg = ''; st.views.queue = 's=up%20next'");
+  run("st.arg = ''; st.views.queue = 's=up%20next'; qst.pick = true");
   run("refreshQueue()");
   await settle();
   assert.equal(run("st.arg"), "next");
   assert.equal(ctx.history.url, "#queue/next?s=up%20next");
   // The server's own default (Active) leaves the bare URL, and the tab button forgets Up next.
   reply = data;
-  run("st.arg = ''; st.views.queue = 's=running'");
+  run("st.arg = ''; st.views.queue = 's=running'; qst.pick = true");
   run("refreshQueue()");
   await settle();
   assert.equal(run("st.arg"), "");
   assert.equal(run("lastInner.queue"), "");
   run("st.views.queue = ''");
+});
+
+test("a search typed on a tab stays on it; only a link that names no tab takes the server's pick", async () => {
+  load();
+  asked = [];
+  // The server answers a blank inner tab with Done 24h, where the search found a row.
+  reply = (url) => (url.startsWith("/api/queue/projects") ? [] : url.startsWith("/api/queue?") && !url.includes("in=") ? { ...data, inner: "today" } : data);
+  // The tab button on a bare #queue is Active: a search typed there asks for Active and stays.
+  run("lastInner.queue = ''; setTab('queue', undefined)");
+  await settle(); await settle();
+  asked = [];
+  run("st.views.queue = 'q=x'; refreshQueue()");
+  await settle(); await settle();
+  assert.ok(asked.includes("/api/queue?q=x&in=active"), asked.join(" "));
+  assert.equal(run("st.arg"), "", "still Active");
+  // A link `#queue?q=x` names no tab: the read sends none and the strip follows the server's pick.
+  asked = [];
+  run("setTab('queue', '', 'q=x')");
+  await settle(); await settle();
+  assert.ok(asked.includes("/api/queue?q=x"), asked.join(" "));
+  assert.equal(run("st.arg"), "today");
+  assert.equal(ctx.history.url, "#queue/today?q=x");
+  // The next search typed there stays on the tab the link landed on.
+  asked = [];
+  run("st.views.queue = 'q=y'; refreshQueue()");
+  await settle(); await settle();
+  assert.ok(asked.includes("/api/queue?q=y&in=today"), asked.join(" "));
+  assert.equal(run("st.arg"), "today");
+  run("st.arg = ''; lastInner.queue = ''; st.views.queue = ''");
+  reply = {};
 });
 
 test("the pipeline's old link opens Active and scrolls to it, not into the filter", async () => {
@@ -463,7 +494,7 @@ test("a PR with no recorded merge says so, and a bare older number keeps its wor
 
 test("a row with a PR links it in the PR cell", () => {
   load();
-  assert.match(draw(), /<td><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
+  assert.match(draw(), /<td title="o\/r#7"><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/, "every ref on hover");
 });
 
 test("an opened item links its session, project, row, PR and the PR's CI runs; the project cell links too", () => {
