@@ -116,6 +116,15 @@ pub(crate) fn stamp(epoch: i64, now: i64) -> String {
     }
 }
 
+/// A history cell's time, always with its date (`11-11 00:16`), so today's row reads like the
+/// ones beside it from earlier days.
+pub(crate) fn dated(epoch: i64) -> String {
+    Local
+        .timestamp_opt(epoch, 0)
+        .single()
+        .map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M").to_string())
+}
+
 fn mins(m: f64) -> String {
     crate::queue::dur(Some(m.round() as i64))
 }
@@ -205,6 +214,9 @@ pub(crate) mod tests {
         assert_eq!(stamp(now - 60, now), clock(now - 60));
         let old = stamp(now - 3 * 86_400, now);
         assert_eq!(old.len(), "11-04 12:40".len(), "{old}");
+        // A history cell carries the date even for today.
+        assert_eq!(dated(now - 60).len(), "11-04 12:40".len());
+        assert!(dated(now - 60).ends_with(&clock(now - 60)));
     }
 
     #[test]

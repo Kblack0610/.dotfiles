@@ -951,6 +951,13 @@ impl App {
         }
     }
 
+    /// Each app's build runs are the builds read's rows: put them on whichever read lands last.
+    fn put_builds(&mut self) {
+        if let (Some(r), Some(b)) = (&mut self.releases, &self.builds) {
+            r.with_builds(&b.rows);
+        }
+    }
+
     /// The queue's items as last read, none before the first read lands.
     fn queue_items(&self) -> Vec<hub_core::queue::Item> {
         self.queue
@@ -1706,6 +1713,7 @@ impl App {
             Msg::Releases(s) => {
                 let id = self.selected_release().map(releases::row_id);
                 self.releases = Some(*s);
+                self.put_builds();
                 if let Some(s) = &self.releases {
                     self.rv.reselect(s, id);
                 }
@@ -1730,6 +1738,7 @@ impl App {
                 self.ci.reselect(&b, ci);
                 self.rv.runs.reselect(&b, rel);
                 self.builds = Some(*b);
+                self.put_builds();
                 if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
@@ -6293,6 +6302,38 @@ mod tests {
 
     fn press(a: &mut App, c: KeyCode) {
         a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+    }
+
+    #[test]
+    fn an_apps_build_runs_are_the_builds_rows_whichever_read_lands_last() {
+        let mut a = app(Tab::Releases);
+        let game = hub_core::releases::App {
+            project: "game".into(),
+            ..Default::default()
+        };
+        let releases = || Releases {
+            apps: vec![game.clone()],
+            ..Default::default()
+        };
+        let mut b = bv::tests::fixture();
+        b.rows[0].release = Some(hub_core::release_graph::RunRelease {
+            project: "game".into(),
+            tag: "v0.5.0-game7".into(),
+        });
+        a.handle(Msg::Releases(Box::new(releases())));
+        a.handle(Msg::Builds(Box::new(b.clone())));
+        let tags = |a: &App| -> Vec<String> {
+            a.releases.as_ref().unwrap().apps[0]
+                .builds
+                .iter()
+                .map(|x| x.tag.clone())
+                .collect()
+        };
+        assert_eq!(tags(&a), ["v0.5.0-game7"]);
+        // A newer apps read keeps them, and a second put does not double them.
+        a.handle(Msg::Releases(Box::new(releases())));
+        a.handle(Msg::Builds(Box::new(b)));
+        assert_eq!(tags(&a), ["v0.5.0-game7"]);
     }
 
     #[test]
