@@ -316,6 +316,21 @@ load 'fleet_dispatch/common'
   assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
 }
 
+@test "run while the human is here promotes only what the trickle can start, not a pass's whole room" {
+  game_ready
+  local a; for a in save menu audio sound; do
+    row game human "fix crash on $a" "- [ ] fix crash on $a #high $T"
+    verdict game human "fix crash on $a" dispatch S 1 "$a"
+  done
+  stub fleet-presence 'echo "here 3 desktop"'
+  export DISPATCH_PER_PASS=5 DISPATCH_LOW_WATER=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
+}
+
 @test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
   game_ready
   stub fleet-presence 'echo "here 3 desktop"'
