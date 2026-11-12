@@ -1,7 +1,7 @@
 ---
 name: ci-failures
 description: >-
-  Explain why CI is red across many runs: failure mix, recurring signatures, reds on main, infra vs test, one owner per cause. Use for "why is CI always red", "what keeps failing", "is this flaky", "why did the nightly fail". One PR's reds: /my:fix-ci; CI time: ci-cost.
+  Explain why CI is red across many runs: failure mix, recurring signatures, reds on main, infra vs test, one owner per cause. Use for "why is CI always red", "what keeps failing", "is this flaky", "why did the nightly fail". One PR's reds: fix-ci; CI time: ci-cost.
 metadata:
   category: ops
   tags: [ci, github-actions, failures, flaky, triage]
@@ -21,7 +21,7 @@ What a red means, reruns, quarantine and stop-the-line are `~/.local/src/docs/ci
 - Before choosing which red to fix first, or when a red has no owner.
 - After a fix lands, to show its signature stopped.
 
-Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-hours - that is `ci-cost`. Running or gating playground tests is `playground-headless-test`. A whole cleanup pass (baseline, bandaids, causes, report) is `ci-cleanup`.
+Not for one PR's red checks - that is `fix-ci`. Not for CI time or runner-hours - that is `ci-cost`. Running or gating playground tests is `playground-headless-test`. A whole cleanup pass (baseline, bandaids, causes, report) is `ci-cleanup`.
 
 ## Steps
 
@@ -45,5 +45,5 @@ Not for one PR's red checks - that is `/my:fix-ci`. Not for CI time or runner-ho
 - Do not rerun a job to diagnose it (`ci.md` "Red handling" step 1).
 - Do not call a test flaky from one red, or from `green@sha` alone (step 5).
 - Do not quote a rate or count you did not get from the script in this session.
-- Do not fix here. Fixing is `/my:fix-ci` on one PR, or the owner's PR.
+- Do not fix here. Fixing is `fix-ci` on one PR, or the owner's PR.
 - Do not restate a repo CI rule in a row, a PR or this file; link the doc.
