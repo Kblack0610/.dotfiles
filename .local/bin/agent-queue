@@ -95,12 +95,14 @@ own_session() {
 # The Claude session id of the caller, which every reader of a session (outcomes, fleet-bench,
 # day-log, Langfuse) keys on. Claude Code exports it to every command it runs.
 claude_sid() { [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && printf '%s\n' "$CLAUDE_CODE_SESSION_ID"; }
-# The caller's session when it is on the agent world, else nothing. An item's session is what
-# cancel and the reap kill, so a hub window never lends its session to one.
+# The caller's worktree session (`<repo>-agent-N`) on any world, else nothing, so a hand start on
+# hub or work records itself as it does on lab. An item's session is what cancel and the reap act
+# on, so a checkout session (hub:dotfiles, hub:tools: one session, many conversations) never
+# lends itself to one, declared or not.
 agent_session() {
   local own
   own="$(own_session)" || return 1
-  [ "${own%%:*}" = "$(tmux-world agents)" ] || return 1
+  case "${own#*:}" in *-agent-[0-9]*) ;; *) return 1 ;; esac
   printf '%s\n' "$own"
 }
 # qualified <session> -- `session:` is always <server>:<session>; a bare name is on the agent world.
@@ -972,7 +974,7 @@ cmd_add() {
     case "$from" in board:* | canary) die "--row is for an item not promoted from the board and not a canary, not --from $from" ;; esac
   fi
   check_tags "$tags"
-  # A hand-started session records itself and its window, on the agent world only.
+  # A hand-started session records itself and its window, in a worktree session on any world.
   local window=''
   if [ -n "$running" ] && [ -z "$session" ]; then
     session="$(agent_session)" || session=""
