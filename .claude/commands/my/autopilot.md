@@ -1,6 +1,6 @@
 ---
 name: autopilot
-description: "Stay autonomous and do the whole task now: chain every checkpoint and phase with best judgment, never queue what this session can do, stop only at hard gates. Scope: $ARGUMENTS"
+description: "Stay autonomous and do the whole task now: chain every checkpoint and phase, record assumptions, queue only what this session cannot do, stop only at hard gates. Scope: $ARGUMENTS"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate, TaskUpdate, TaskList]
 argument-hint: "[optional scope, e.g. 'this feature' or 'until CI is green']"
 ---
@@ -53,21 +53,22 @@ the plan/PR body when one exists.
 ## Do it now; queueing is not doing
 
 Under autopilot this overrides every "queue it", "board row", "later phase" and "next pass"
-rule, including the global CLAUDE.md queue lines and one-shot's landing rules. Everything my ask
-covers, every phase of the plan, and every adjacent fix or cleanup you find on the way is done
-in THIS session, back to back, and landed. Your own record (`agent-queue add --running`) is
-tracking, not deferral; keep it.
+rule (the global CLAUDE.md queue lines, one-shot's landing rules). It does not touch the
+hard-stop boundary, the named-risk stop, ask-first repos or another session's dirty files, or a
+fleet-pace hold. Everything my ask covers (inside `$ARGUMENTS` when given), every phase of the
+plan, and every fix the work turns up in the files and repos it already touches is done in THIS
+session, back to back, and landed.
 
 - Run phases one after another here. Do not `agent-queue add --after` the next phase, do not
   wind down between phases, do not hand a phase to another session.
-- A follow-up you found (a bug next door, a stale doc, a missing test) is done now, in its own
-  PR if it is another repo or a separate change. Context size is never a reason: compaction
-  carries the work.
-- Queue or board something ONLY when it truly cannot run in this session: it needs a set time,
-  a day of data or tonight's run; it waits on a hard gate above; or it waits on a PR another
-  live session owns. Each one names that blocker in the item.
-- Before you report done, list every item you queued or boarded this session with its blocker.
-  An item without one of those blockers is not done: go do it.
+- A follow-up you found inside that scope (a bug next door, a stale doc, a missing test) is done
+  now, in its own PR when it is a separate change. Context size is not a reason to stop.
+- Queue or board something ONLY when this session cannot do it: it needs a set time, a day of
+  data or tonight's run; it waits on a PR another live session owns; a fleet-pace hold covers
+  it; or it is outside the scope. A hard gate is an `agent-ask` as above, never a queue item.
+  Each item names its blocker.
+- Before you report done, list every item you queued or boarded this session (not your own
+  running record) with its blocker. One without a blocker is not done: go do it.
 
 ## What autopilot adds over /my:go
 
