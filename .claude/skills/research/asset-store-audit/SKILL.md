@@ -28,7 +28,7 @@ For what the account owns but has not downloaded, read the asset library's `docs
 
 ## Steps
 
-Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.cache/asset-store-audit/<date>` on disk, not the session scratchpad: `/tmp` is RAM on this machine and an unpack runs to many GB. When the report is published, delete `$OUT/pkgs`.
+Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.cache/asset-store-audit/$CLAUDE_CODE_SESSION_ID` on disk, a directory only this session writes, not the session scratchpad: `/tmp` is RAM on this machine and an unpack runs to many GB. When step 8 has saved the report, delete `$OUT`, never its parent.
 
 1. **Unpack without importing.** Cache on Linux: `<publisher>/<category>/` under the `Asset Store-5.x` directory in `~/.local/share/unity3d/`. Skip `*.tmp` (partial downloads) and tell the user which ones are still in progress.
    `python3 scripts/unpack.py "<cache>" "$OUT" -j 12` - streams every package, writes `pkgs/<Pack>/manifest.json` and text assets, and unpacks nested URP / effect sub-packages into `pkgs/<Pack>/nested/`. About 3 minutes for 14 GB.

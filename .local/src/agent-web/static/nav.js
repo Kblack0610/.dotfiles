@@ -28,7 +28,6 @@ outline.onclick = (e) => {
   st.section = b.dataset.sec;
   seekSection();
   st.section = null; // a repaint can have taken the anchor; the next paint must not jump there
-  menuOpen(false);
 };
 
 // A board repaints its own HTML from many places, and a tab change toggles `hidden`; one

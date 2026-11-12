@@ -7,12 +7,16 @@
 //! The query: whitespace-separated terms, all of which must hold. `key:value` matches that
 //! column, and the same key repeated means any of them (`source:unity source:k8s`). `-key:value`
 //! excludes, `-word` excludes text. A bare word matches the row's text. Values match without
-//! case, `key:value` by prefix and a word anywhere in the text; `key:"two words"` quotes. A key
+//! case, `key:value` by prefix (`key:=value` the whole value, for one record by its id) and a
+//! word anywhere in the text; `key:"two words"` quotes. A key
 //! that is not one of the table's columns is read as a bare word, so `http://x` still searches.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::links::Link;
 
 /// A row's value in one column: what `key:value` matches and what the sort orders.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +25,13 @@ pub enum Val {
     Num(f64),
     /// No value; such a row sorts last in either direction.
     None,
+}
+
+/// A reading that may be missing: a missing one sorts last (`Val::None`).
+impl From<Option<f64>> for Val {
+    fn from(v: Option<f64>) -> Self {
+        v.map_or(Val::None, Val::Num)
+    }
 }
 
 impl Val {
@@ -58,6 +69,12 @@ pub trait Row {
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
     const GLANCE: &'static [&'static str] = &[];
+    /// What a state word the rows show means, one `(word, meaning)` per state (`hub_core::vocab`):
+    /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
+    const LEGEND: &'static [(&'static str, &'static str)] = &[];
+    /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
+    /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -83,6 +100,10 @@ pub trait Row {
     fn rank(&self, col: &str) -> Val {
         self.val(col)
     }
+    /// The record `col` names, which both surfaces open from that cell (`hub_core::links`).
+    fn link(&self, _col: &str) -> Option<Link> {
+        None
+    }
 }
 
 /// A table over rows borrowed from a longer list: a surface narrows to its scope first (one
@@ -93,6 +114,8 @@ impl<T: Row> Row for &T {
     const FACETS: &'static [&'static str] = T::FACETS;
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
+    const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = T::TONES;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -108,6 +131,9 @@ impl<T: Row> Row for &T {
     }
     fn rank(&self, col: &str) -> Val {
         (*self).rank(col)
+    }
+    fn link(&self, col: &str) -> Option<Link> {
+        (*self).link(col)
     }
 }
 
@@ -138,6 +164,8 @@ struct Term {
     neg: bool,
     /// A column of the table, or None for a bare word.
     key: Option<&'static str>,
+    /// `key:=value`: the whole value, not a prefix of it.
+    exact: bool,
     value: String,
 }
 
@@ -180,11 +208,16 @@ fn terms<R: Row>(q: &str) -> Vec<Term> {
                 },
                 None => (None, body),
             };
+            let (exact, value) = match value.strip_prefix('=').filter(|_| key.is_some()) {
+                Some(v) => (true, v),
+                None => (false, value),
+            };
             let value = value.trim_matches('"').to_lowercase();
             (!value.is_empty() && value != "-").then(|| Term {
                 raw: raw.clone(),
                 neg,
                 key,
+                exact,
                 value,
             })
         })
@@ -213,10 +246,15 @@ fn term(key: &str, value: &str) -> String {
 impl Term {
     fn hits<R: Row>(&self, r: &R, text: &mut Option<String>) -> bool {
         match self.key {
-            Some(k) => r
-                .vals(k)
-                .iter()
-                .any(|v| v.text().is_some_and(|t| t.starts_with(&self.value))),
+            Some(k) => r.vals(k).iter().any(|v| {
+                v.text().is_some_and(|t| {
+                    if self.exact {
+                        t == self.value
+                    } else {
+                        t.starts_with(&self.value)
+                    }
+                })
+            }),
             None => text.get_or_insert_with(|| r.text()).contains(&self.value),
         }
     }
@@ -234,11 +272,17 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
     })
 }
 
-/// A state chip and how many rows the query leaves under it.
+/// A state chip and how many rows the query leaves under it, with its hue while it holds any
+/// row (`vocab::tone`; a chip at zero is plain) and what its word means when the table's
+/// legend defines it (`Row::LEGEND`).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Chip {
     pub name: &'static str,
     pub n: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<crate::vocab::Level>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub means: Option<&'static str>,
 }
 
 /// A column header: whether it is the sort, and the sort a click on it gives.
@@ -291,37 +335,51 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     });
     let rows = [
         phone_table::<crate::home::Need>(),
+        phone_table::<crate::home::Running>(),
         phone_table::<crate::proposals::Proposal>(),
         phone_table::<crate::queue::QueueRow<'static>>(),
         phone_table::<crate::tasks::Row>(),
         phone_table::<crate::projects::Card>(),
+        phone_table::<crate::deliverables::Deliverable>(),
         phone_table::<crate::session_table::SessionRow>(),
         phone_table::<crate::jobs::Job>(),
         phone_table::<crate::actions::Action>(),
+        phone_table::<crate::alerts::Alert>(),
         phone_table::<crate::fleet::who::Who>(),
         phone_table::<crate::schedules::Schedule>(),
-        phone_table::<crate::releases::Release>(),
+        phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
+        phone_table::<crate::pipelines::Pipeline>(),
+        phone_table::<crate::junit::Suite>(),
+        phone_table::<crate::quarantine::Entry>(),
         phone_table::<crate::sections::Section>(),
+        phone_table::<crate::spend_history::SessRow>(),
         phone_table::<crate::worklog::Work>(),
+        phone_table::<crate::machines::Machine>(),
+        phone_table::<crate::machines::Pool>(),
+        phone_table::<crate::ci::Slot>(),
+        phone_table::<crate::ci::Queued>(),
+        phone_table::<crate::ci::LocalFail>(),
     ];
     rows.into_iter().chain(cuts).collect()
 }
 
-/// One dropdown value: how many rows it would show and the whole query that picks it.
+/// One dropdown value: how many rows it adds, whether it is ticked, and the whole query a
+/// tick on it gives (it joins the column's picks, or leaves them).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct FacetValue {
     pub value: String,
     pub n: usize,
+    pub on: bool,
     pub q: String,
 }
 
-/// A dropdown over one column: the value picked (when the query names exactly one), the query
-/// with that column's terms taken out, and every value in the rows.
+/// A dropdown over one column: the values picked (the query's terms on it, which OR), the
+/// query with that column's terms taken out, and every value in the rows.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Facet {
     pub key: &'static str,
-    pub on: Option<String>,
+    pub on: Vec<String>,
     pub clear: String,
     pub values: Vec<FacetValue>,
 }
@@ -338,6 +396,38 @@ pub struct Summary {
     pub states: Vec<Chip>,
     pub columns: Vec<Column>,
     pub facets: Vec<Facet>,
+    /// Row i of the rows sent beside it: each column that names a record and that record's href
+    /// ([`links`]). Absent when no row links anything. A surface that reshapes the rows after the
+    /// view (Fleet's folds) sends `links` of what it reshaped to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<BTreeMap<&'static str, String>>,
+    /// `Row::LEGEND` as one line ([`legend`]); absent when the table has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legend: Option<String>,
+}
+
+/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
+pub fn legend<R: Row>() -> Option<String> {
+    let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
+pub fn links<R: Row>(rows: &[&R]) -> Vec<BTreeMap<&'static str, String>> {
+    let out: Vec<BTreeMap<&'static str, String>> = rows
+        .iter()
+        .map(|r| {
+            R::COLUMNS
+                .iter()
+                .filter_map(|c| r.link(c).map(|l| (*c, l.href())))
+                .collect()
+        })
+        .collect();
+    if out.iter().all(BTreeMap::is_empty) {
+        vec![]
+    } else {
+        out
+    }
 }
 
 impl View {
@@ -401,13 +491,22 @@ impl View {
         R::STATES
             .iter()
             .enumerate()
-            .map(|(i, s)| Chip {
-                name: s,
-                n: if i == 0 {
+            .map(|(i, s)| {
+                let n = if i == 0 {
                     kept.len()
                 } else {
                     kept.iter().filter(|r| r.in_state(s)).count()
-                },
+                };
+                Chip {
+                    name: s,
+                    n,
+                    tone: if n > 0 {
+                        crate::vocab::tone(R::TONES, s)
+                    } else {
+                        None
+                    },
+                    means: R::LEGEND.iter().find(|(w, _)| w == s).map(|(_, m)| *m),
+                }
             })
             .enumerate()
             .filter(|(i, c)| !R::HIDE_EMPTY || *i == 0 || c.n > 0 || c.name == self.state)
@@ -425,31 +524,42 @@ impl View {
             .join(" ")
     }
 
-    /// Each of `R::FACETS` as a dropdown. A value's count is what picking it would show:
-    /// the rest of the query and the chip still apply, the column's own terms do not.
+    /// Each of `R::FACETS` as a multi-pick dropdown. A value's count is what it adds: the rest
+    /// of the query and the chip still apply, the column's own terms do not, so the counts hold
+    /// still while values are ticked. A value's `q` toggles it among the column's picks, which
+    /// OR (a repeated key); the dropdown owns its column's terms, so a tick drops an exclusion
+    /// typed on that column.
     pub fn facets<R: Row>(&self, rows: &[R]) -> Vec<Facet> {
         let ts = terms::<R>(&self.q);
         R::FACETS
             .iter()
             .map(|key| {
-                let mine: Vec<&Term> = ts.iter().filter(|t| t.key == Some(*key)).collect();
-                let on = match mine.as_slice() {
-                    [t] if !t.neg => Some(t.value.clone()),
-                    _ => None,
-                };
+                let mut on: Vec<String> = vec![];
+                for t in ts.iter().filter(|t| t.key == Some(*key) && !t.neg) {
+                    if !on.contains(&t.value) {
+                        on.push(t.value.clone());
+                    }
+                }
                 let clear = self.without::<R>(key);
                 let base = View {
                     q: clear.clone(),
                     ..self.clone()
                 };
                 let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                // Each value a row holds counts once, as the filter matches it (`vals`), so a
+                // row in two pools counts under both.
                 for r in base.apply(rows) {
-                    if let Some(v) = r.val(key).text().filter(|v| !v.is_empty()) {
-                        *counts.entry(v).or_default() += 1;
+                    let mut seen = std::collections::BTreeSet::new();
+                    for v in r.vals(key).iter().filter_map(Val::text) {
+                        if !v.is_empty() && seen.insert(v.clone()) {
+                            *counts.entry(v).or_default() += 1;
+                        }
                     }
                 }
                 // A prefix term (`source:ag`) is its own option, so the dropdown shows what is on.
-                if let Some(v) = on.as_ref().filter(|v| !counts.contains_key(*v)) {
+                let prefixes: Vec<&String> =
+                    on.iter().filter(|v| !counts.contains_key(*v)).collect();
+                for v in prefixes {
                     let n = counts
                         .iter()
                         .filter(|(k, _)| k.starts_with(v.as_str()))
@@ -459,10 +569,19 @@ impl View {
                 }
                 let values = counts
                     .into_iter()
-                    .map(|(value, n)| FacetValue {
-                        q: joined(&clear, key, &value),
-                        value,
-                        n,
+                    .map(|(value, n)| {
+                        let picked = on.contains(&value);
+                        let picks: Vec<&String> = if picked {
+                            on.iter().filter(|v| **v != value).collect()
+                        } else {
+                            on.iter().chain(std::iter::once(&value)).collect()
+                        };
+                        FacetValue {
+                            q: picks.iter().fold(clear.clone(), |q, v| joined(&q, key, v)),
+                            on: picked,
+                            value,
+                            n,
+                        }
                     })
                     .collect();
                 Facet {
@@ -546,6 +665,8 @@ impl View {
             states: self.states(rows),
             columns,
             facets: self.facets(rows),
+            links: links(&shown),
+            legend: legend::<R>(),
         };
         (shown, s)
     }
@@ -596,6 +717,13 @@ mod tests {
         fn in_state(&self, s: &str) -> bool {
             (s == "live") == self.live
         }
+    }
+
+    #[test]
+    fn a_table_that_links_nothing_sends_no_links() {
+        let (_, t) = View::default().summary(&rows());
+        assert!(t.links.is_empty());
+        assert!(serde_json::to_value(&t).unwrap().get("links").is_none());
     }
 
     fn rows() -> Vec<T> {
@@ -653,6 +781,10 @@ mod tests {
         );
         assert_eq!(names(&q("n:10")), ["queue table"]);
         assert_eq!(names(&q("n:1.5")), ["ci cost"]);
+        assert_eq!(names(&q("n:1")).len(), 2, "1 is a prefix of 10");
+        assert_eq!(names(&q("n:=1")).len(), 0, "= is the whole value");
+        assert_eq!(names(&q("n:=10")), ["queue table"]);
+        assert_eq!(names(&q("-n:=10")).len(), 3);
     }
 
     #[test]
@@ -747,18 +879,62 @@ mod tests {
         let v = q("kind:fix nightly");
         let fs = v.facets(&rows());
         let kind = &fs[1];
-        assert_eq!(kind.on.as_deref(), Some("fix"));
+        assert_eq!(kind.on, ["fix"]);
         assert_eq!(kind.clear, "nightly");
-        let vals: Vec<(&str, usize, &str)> = kind
+        let vals: Vec<(&str, usize, bool, &str)> = kind
             .values
             .iter()
-            .map(|f| (f.value.as_str(), f.n, f.q.as_str()))
+            .map(|f| (f.value.as_str(), f.n, f.on, f.q.as_str()))
             .collect();
-        assert_eq!(vals, [("fix", 1, "nightly kind:fix")]);
+        assert_eq!(
+            vals,
+            [("fix", 1, true, "nightly")],
+            "a tick on a pick takes it off"
+        );
         let project = &fs[0];
-        assert_eq!(project.on, None);
+        assert!(project.on.is_empty());
         assert_eq!(project.values[0].q, "kind:fix nightly project:playground");
         assert_eq!(joined("", "name", "hub sort"), "name:\"hub sort\"");
+    }
+
+    #[test]
+    fn a_facet_ticks_several_values_that_or_and_counts_hold_still() {
+        let qs = |v: &View, key: &str| -> Vec<(String, usize, bool, String)> {
+            let fs = v.facets(&rows());
+            let f = fs.iter().find(|f| f.key == key).unwrap();
+            f.values
+                .iter()
+                .map(|x| (x.value.clone(), x.n, x.on, x.q.clone()))
+                .collect()
+        };
+        let one = q("kind:fix");
+        let kinds = qs(&one, "kind");
+        let s = |a: &str, n, on, q: &str| (a.to_string(), n, on, q.to_string());
+        assert_eq!(
+            kinds,
+            [
+                s("chore", 1, false, "kind:fix kind:chore"),
+                s("feat", 1, false, "kind:fix kind:feat"),
+                s("fix", 2, true, ""),
+            ],
+            "a tick adds a value beside the pick; counts are the column's own, not narrowed by it"
+        );
+        let two = q("kind:fix kind:feat");
+        assert_eq!(names(&two), ["nightly fix", "queue table", "hub sort"]);
+        let fs = two.facets(&rows());
+        assert_eq!(fs[1].on, ["fix", "feat"]);
+        assert_eq!(qs(&two, "kind")[1], s("feat", 1, true, "kind:fix"));
+        assert_eq!(qs(&two, "kind")[0].1, 1, "counts hold still while ticking");
+        assert_eq!(
+            qs(&two, "project")[0],
+            s("dotfiles", 2, false, "kind:fix kind:feat project:dotfiles"),
+            "another column ANDs with this one's picks"
+        );
+        let pre = q("project:dot project:play");
+        let fs = pre.facets(&rows());
+        assert_eq!(fs[0].on, ["dot", "play"]);
+        let dot = fs[0].values.iter().find(|x| x.value == "dot").unwrap();
+        assert_eq!((dot.n, dot.on, dot.q.as_str()), (2, true, "project:play"));
     }
 
     #[test]

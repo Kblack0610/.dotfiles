@@ -5,13 +5,24 @@
 # one writes account symlinks and queries the usage endpoint and Prometheus, so a test that
 # reached it through the inherited PATH would hit the network and pass or fail on this
 # machine's accounts. `pick` prints $STUB_ACCT_PICK (empty is the main account); `pick <name>`
-# prints $HOME/.claude-<name>. A test that needs more writes its own over this one.
+# prints $HOME/.claude-<name>. `room --source <name> --json` prints $NOTES_FIXTURE/room-<name>.json
+# with the exit its verdict gives (0 room, 1 refused, 2 unread), 3 when it holds "missing", and
+# room with no such file. A test that needs more writes its own over this one.
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
 printf 'claude-acct %s\n' "$*" >> "$FIX/calls.log"
 case "${1:-}" in
   pick) if [ -n "${2:-}" ]; then printf '%s\n' "$HOME/.claude-$2"; else printf '%s\n' "${STUB_ACCT_PICK:-}"; fi ;;
-  room) printf '%s\n' "${STUB_ACCT_PICK:-}" ;;
+  room)
+    if [ "${2:-}" = --source ] && [ -r "$FIX/room-${3:-}.json" ]; then
+      row="$(cat "$FIX/room-$3.json")"
+      [ "$row" = missing ] && exit 3
+      printf '%s\n' "$row"
+      jq -e .room.ok <<<"$row" >/dev/null && exit 0
+      [ "$(jq -r .room.reason <<<"$row")" = unread ] && exit 2
+      exit 1
+    fi
+    printf '%s\n' "${STUB_ACCT_PICK:-}" ;;
 esac
 exit 0

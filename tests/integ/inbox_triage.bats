@@ -90,6 +90,10 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ "$(grep -c 'fix(audio)' "$SHEET")" = 1 ] || fail "filed more than once: $(cat "$SHEET")"
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
   grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
+  # The --priority pass's rubric, so the row is filed with the priority that pass would give it (ar-1615).
+  grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
+  # An agent-lane row is #requested, so the rubric makes it high; filed without one, the --priority pass re-tags it (ar-1633).
+  grep -q 'lane agent is filed #requested, so the person asked for it: it is #high' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the agent-lane priority"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -106,6 +110,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx FAILED "$st/last-outcome"
   grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
   grep -q '"action":"sweep-stopped".*"why":"model call failed: You have hit your weekly limit - resets 7pm"' "$HOME/.local/state/notes/ingest.jsonl" || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  inbox | grep -q 'the gun sound is off'
+}
+
+@test "a failed board read names notes' own error in the log and the outcome" {
+  # 2026-11-10: the board read failed for 15 hours and the log said only "notes board --json
+  # failed", because notes' stderr went to /dev/null.
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes board --json failed (exit 2): error: sheet other: bad heading'
+  grep -q 'outcome=FAILED .*notes board --json failed (exit 2): error: sheet other: bad heading' "$HOME/.local/state/agentctl/inbox-triage/activity.log"
   inbox | grep -q 'the gun sound is off'
 }
 
@@ -567,6 +585,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial '#go'
 }
 
+@test "outbox: a plan only the model asked for gets #go, so only the person's own #plan holds the row for review" {
+  sheet '' ''
+  outbox '- [ ] other needs a logo\n- [ ] other needs a font #plan\n- [ ] other needs a color\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(brand): a logo #size/m"], "project": "other", "plan": true}' \
+    '{"n": 2, "action": "file", "rows": ["feat(brand): a font #size/s"], "project": "other", "plan": true}' \
+    '{"n": 3, "action": "file", "rows": ["feat(brand): a color #size/s #plan"], "project": "other", "plan": false}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'feat\(brand\): a logo #size/m #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  # a #plan the model wrote into its row text, with plan false, is the model's too
+  grep -qE 'feat\(brand\): a color #size/s #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  # negative control: the person's own #plan, with no #go, is theirs to review
+  run grep 'a font' "$PROJ/other/README.md"
+  assert_output --partial '#plan'
+  refute_output --partial '#go'
+}
+
 @test "outbox: the routing prompt names the homes and the shared-code rule, as --backlog does" {
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
   sheet '' ''
@@ -948,9 +983,12 @@ ask_stub() {
   gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
   # rows reach the model in sheet order: sc-4, sc-5, sc-6
   answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
-  run "$TRIAGE" --backlog --priority
+  # run from a session: the record still names inbox-priority, the lane judge-eval scores these by
+  CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --priority
   assert_success
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
+  run notes log --json --action tagged
+  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#low"],["sc-5","inbox-priority","+#high"]]'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
@@ -1113,7 +1151,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -qx 'options: other|scratch|drop' "$f" || fail "$(cat "$f")"
   grep -qx 'recommend: other' "$f" || fail "$(cat "$f")"
   grep -qx 'resume: run:agentctl-inbox-triage --answer' "$f" || fail "$(cat "$f")"
-  grep -q '^context: Your outbox line: the menu flickers after a match. Written after it: the logo is too dark' "$f" || fail "$(cat "$f")"
+  grep -qx 'context: Your outbox line: the menu flickers after a match. Written after it: the logo is too dark. The projects it could go to: other scratch' "$f" || fail "$(cat "$f")"
   grep -q 'the menu flickers after a match' "$HOME/.notes/outbox.md" || fail "the asked line left the outbox"
   run jq -r 'select(.action == "asked") | [.from, .why, .text] | join(" ")' "$HOME/.local/state/notes/ingest.jsonl"
   assert_output "outbox $(basename "$f" .md) the menu flickers after a match"

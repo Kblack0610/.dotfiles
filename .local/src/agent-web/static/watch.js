@@ -133,7 +133,7 @@ $("log-changes").addEventListener("change", (e) => {
 
 const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_tokens || 0));
 
-// The open session's fleet-state card, folded to one line above its transcript.
+// The open session's fleet-state card above its transcript, open until the reader folds it to one line.
 function renderFacts() {
   const el = $("facts");
   const s = st.sel && st.view !== "page" && sessionsOf().find((x) => (x.session_id && x.session_id === st.sel.session) || x.target === st.sel.target);
@@ -142,7 +142,7 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, `<details data-k="facts"${wst.open.facts ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
+  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
 }
 
 // The folds under the table: how old the state is, the last day's swimlanes and the shepherd's
@@ -181,7 +181,7 @@ function renderLogRanked() {
   const rows = ost.rows || [];
   const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
     : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
-    : `<div class="panel scroll"><table class="tbl"><tr><th class="n">friction</th><th>session</th><th>project</th><th class="n">wall</th><th class="n">cost</th><th class="n">PRs</th><th>why</th></tr>${rows.map((r) => {
+    : `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance" data-named>friction</th><th data-role="lead">session</th><th>project</th><th class="n">wall</th><th class="n" data-role="glance" data-named>cost</th><th class="n">PRs</th><th data-role="glance">why</th></tr>${rows.map((r) => {
         const prs = r.prs_merged + r.prs_open + r.prs_closed_unmerged;
         const open = ost.open === r.session_id;
         const card = open ? `<tr><td colspan="7" class="wrap"><pre class="joblog">${ost.cards[r.session_id] == null ? "Loading the card." : esc(ost.cards[r.session_id])}</pre></td></tr>` : "";
@@ -190,7 +190,7 @@ function renderLogRanked() {
       }).join("")}</table></div>`;
   $("log-ranked").innerHTML = `<div class="bhead"><span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span></div>${body}`;
 }
-$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows) loadRanked(); });
+$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows && logShows("ranked")) loadRanked(); });
 $("log-ranked").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-sid]");
   if (!row) return;
@@ -198,10 +198,10 @@ $("log-ranked").addEventListener("click", (e) => {
   ost.open = ost.open === sid ? null : sid;
   if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderLogRanked();
 });
-LOG_PARTS.push({ show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
+LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
-// A folded overview section; the fold is remembered across re-renders by its key.
-const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open[k] ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
+// An overview section, open until the reader folds it; the fold is remembered across re-renders by its key.
+const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${secOpen(wst.open, k) ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
 
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;
@@ -217,5 +217,5 @@ for (const id of ["scroll", "facts"]) {
   }, true);
 }
 
-const logWatchFeed = pushed("log", ["watch"], refreshWatch);
-LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
+const logWatchFeed = pushed("log", ["watch"], refreshWatch, () => logShows("changes"));
+LOG_PARTS.push({ sec: "changes", show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });

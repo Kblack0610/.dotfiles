@@ -24,12 +24,14 @@ pub const OPEN: [&str; 7] = [
     "fixing",
     "queued",
 ];
-/// The outcomes that need nothing: the fix held, the red cleared itself, the item was dropped, or
-/// a cleanup merge held, is inside its hold window, or broke and the red is over.
-pub const SETTLED: [&str; 6] = [
+/// The outcomes that need nothing: the fix held, the red cleared itself, the item was dropped, its
+/// red is routed to alert (its watch pages the human on a KPI no merge clears), or a cleanup merge
+/// held, is inside its hold window, or broke and the red is over.
+pub const SETTLED: [&str; 7] = [
     "fixed",
     "cleared",
     "cancelled",
+    "alert route",
     "held",
     "holding",
     "recovered",
@@ -39,6 +41,9 @@ pub const SETTLED: [&str; 6] = [
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Red {
     pub slug: String,
+    /// The queue item's project; empty when the item names none.
+    #[serde(default)]
+    pub project: String,
     /// `<area> <name>` (`watch playground-nightly`), else the item's title.
     #[serde(default)]
     pub red: String,
@@ -74,6 +79,14 @@ fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
         serde_json::Value::String(s) => Some(s),
         v => Some(v.to_string()),
     })
+}
+
+/// A GitHub PR page's checks tab, where its CI runs are listed. None for any other forge, whose
+/// PR page is the only link a row has until the PR store carries its runs.
+pub fn checks_url(pr_url: &str) -> Option<String> {
+    let url = pr_url.trim_end_matches('/');
+    (url.starts_with("https://github.com/") && url.contains("/pull/"))
+        .then(|| format!("{url}/checks"))
 }
 
 /// A PR as a link: a URL as it is, `owner/repo#N` on GitHub, anything else (a bare number, a
@@ -257,6 +270,8 @@ mod tests {
         "\n",
         r#"{"slug":"ar-9","red":"watch f","state":"done","queued":"2026-11-06T02:00:00Z","outcome":"cleared"}"#,
         "\n",
+        r#"{"slug":"ar-10","red":"watch board-chain","state":"done","queued":"2026-11-05T12:00:00Z","merged":"fed","outcome":"alert route"}"#,
+        "\n",
     );
 
     #[test]
@@ -270,10 +285,14 @@ mod tests {
             ["ar-3", "ar-7", "ar-8", "ar-5", "ar-4", "ar-2"],
             "came back, still red, no fix, needs merge, fixing, queued"
         );
-        assert_eq!(slugs(&r.settled), ["ar-9", "ar-6", "ar-1"], "newest first");
+        assert_eq!(
+            slugs(&r.settled),
+            ["ar-9", "ar-6", "ar-10", "ar-1"],
+            "newest first"
+        );
         assert_eq!(
             r.summary,
-            "6 open: 1 came back, 1 still red, 1 no fix, 1 needs merge, 1 fixing, 1 queued | 1 fixed, 1 cleared, 1 cancelled in 7d, fix p50 34m"
+            "6 open: 1 came back, 1 still red, 1 no fix, 1 needs merge, 1 fixing, 1 queued | 1 fixed, 1 cleared, 1 cancelled, 1 alert route in 7d, fix p50 34m"
         );
     }
 

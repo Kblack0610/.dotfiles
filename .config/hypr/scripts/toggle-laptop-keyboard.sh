@@ -5,28 +5,30 @@
 INTERNAL_KB="razer-razer-blade-keyboard"
 STATE_FILE="/tmp/laptop-keyboard-disabled"
 
+kb_enabled() { hyprctl eval "hl.device({ name = \"$INTERNAL_KB\", enabled = $1 })"; }
+
 toggle() {
     if [[ -f "$STATE_FILE" ]]; then
         # Currently disabled, enable it
-        hyprctl keyword "device[$INTERNAL_KB]:enabled" true
+        kb_enabled true
         rm -f "$STATE_FILE"
         notify-send -t 2000 "Keyboard" "Internal keyboard enabled"
     else
         # Currently enabled, disable it
-        hyprctl keyword "device[$INTERNAL_KB]:enabled" false
+        kb_enabled false
         touch "$STATE_FILE"
         notify-send -t 2000 "Keyboard" "Internal keyboard disabled"
     fi
 }
 
 enable() {
-    hyprctl keyword "device[$INTERNAL_KB]:enabled" true
+    kb_enabled true
     rm -f "$STATE_FILE"
     notify-send -t 2000 "Keyboard" "Internal keyboard enabled"
 }
 
 disable() {
-    hyprctl keyword "device[$INTERNAL_KB]:enabled" false
+    kb_enabled false
     touch "$STATE_FILE"
     notify-send -t 2000 "Keyboard" "Internal keyboard disabled"
 }

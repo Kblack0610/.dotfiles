@@ -2,9 +2,13 @@
 # agentctl-wave-roll - cut each project's version when its owner says it shipped.
 #
 # Who owns the number is project_version_owner (stages.md, "Versions"):
-#   tag    once the newest tag has reached the sheet's `Version:`, release it: open tasks carry
-#          to the next version, the finished one freezes, the next opens after the tag, and the
-#          agent board follows (notes `projects --release`).
+#   tag    one lab note per tag, named from the tag (`notes projects --release --tag`), each
+#          tag since RELEASE_NOTES_SINCE and the newest, lowest first. A tag that has reached the
+#          sheet's `Version:` releases it: open tasks carry to the next version, the finished
+#          one freezes as the tag, the next opens after the tag, and the agent board follows. A
+#          tag below the open version (a hotfix nobody planned) gets a note marked as having
+#          no planned rows, and the sheet stays open. The sheet's `Version:` is the next open
+#          version, and only this roll moves it.
 #   sheet  no build, so the sheet counter: cut when its stage's cadence has passed since the last
 #          cut and the version has closed rows (`release` in `notes projects --stats --json`), at
 #          the bump notes derives, carrying open rows. A project never cut, or one a whole
@@ -31,6 +35,7 @@ mkdir -p "$INBOX"
 
 # shellcheck source=/dev/null
 . "$HOOKS" || { echo "wave-roll: cannot source $HOOKS" >&2; exit 1; }
+project_release_lib || { echo "wave-roll: cannot load git-release.sh" >&2; exit 1; }
 # Every project's cadence facts (`release`: due, backlog, bump) and `automation`, read once per pass.
 STATS="$(notes projects --stats --json 2>/dev/null | jq -ce 'arrays' 2>/dev/null)" || STATS='[]'
 
@@ -43,21 +48,8 @@ has_sheet() {
   [ -n "$1" ] || return 1
   grep -qE '^[[:space:]]*Version:[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+' "$1/README.md" 2>/dev/null || [ -f "$1/tasks.md" ]
 }
-# ver_ge A B: A >= B, both bare `vX.Y.Z`.
-ver_ge() { [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
 patch_after() { local v="${1#v}"; printf 'v%s.%s.%s' "${v%%.*}" "$(cut -d. -f2 <<<"$v")" "$(( ${v##*.} + 1 ))"; }
 minor_after() { local v="${1#v}"; printf 'v%s.%s.0' "${v%%.*}" "$(( $(cut -d. -f2 <<<"$v") + 1 ))"; }
-
-# plausible_next SHIPPED V: V is a version the app could ship next - the same major with
-# at most one minor step, or the next major at minor 0. 2026-10-25 a stray `v1.16.0 (planned)` version on
-# an app tagged v0.4.0 was promoted, and the sheet ran so far ahead of its tags that no tag
-# could ever roll it again.
-plausible_next() {
-  local s="${1#v}" v="${2#v}"
-  local sa="${s%%.*}" sb va vb
-  sb="$(cut -d. -f2 <<<"$s")" va="${v%%.*}" vb="$(cut -d. -f2 <<<"$v")"
-  { [ "$va" = "$sa" ] && [ "$vb" -le $((sb + 1)) ]; } || { [ "$va" = $((sa + 1)) ] && [ "$vb" = 0 ]; }
-}
 
 # The version to open next: the first PLANNED version above the shipped tag, so a roadmap the
 # human already laid out is what becomes current; else the patch after the tag. A planned
@@ -65,8 +57,8 @@ plausible_next() {
 next_after() { # $1=profile $2=project $3=shipped
   local v state
   while IFS=$'\t' read -r v state _; do
-    [ "$state" = planned ] && is_ver "$v" && ! ver_ge "$3" "$v" || continue
-    if plausible_next "$3" "$v"; then printf '%s' "$v"; return; fi
+    [ "$state" = planned ] && is_ver "$v" && ! git_version_ge "$3" "$v" || continue
+    if git_version_next_ok "$3" "$v"; then printf '%s' "$v"; return; fi
     log "skip planned version $v on $2: too far above tag $3 to be its next release" >&2
   done < <(notes --profile "$1" projects --roadmap "$2" 2>/dev/null)
   patch_after "$3"
@@ -94,7 +86,80 @@ fetch_tags() { # $1=project
     || { fetch_failed=$((fetch_failed + 1)); log "fetch failed for $repo: comparing against local tags"; }
 }
 
-rolled=0 failed=0
+# roll PROFILE NAME LEVEL NEXT WHY [TAG]: one roll of the open version $ver through notes-roll
+# at LEVEL (`auto` lets notes derive it), expected to open NEXT; logged, paged and counted.
+# A dry run only says what it would do. 0 rolled (or would), 1 the roll failed.
+rolled=0 recorded=0 failed=0
+roll() {
+  local profile="$1" name="$2" level="$3" next="$4" why="$5" tag="${6:-}" open out opened stale
+  open="$(notes --profile "$profile" ptask "$name" list 2>/dev/null | grep -c . || true)"
+  if [ "$DRY" = 1 ]; then
+    printf 'would roll %s/%s: %s -> %s (%s, carry %s)\n' "$profile" "$name" "$ver" "$next" "$why" "$open"
+    return 0
+  fi
+  if out="$("$ROLL" ${tag:+--tag "$tag"} "$profile" "$name" "$level" carry 2>&1 </dev/null)"; then
+    rolled=$((rolled + 1))
+    # The number notes opened, which for a cadence cut is the bump it derived on the freeze.
+    opened="$(sed -n 's/^released [^:]*: v[0-9.]* -> \(v[0-9.]*\).*/\1/p' <<<"$out" | head -1)"
+    next="${opened:-$next}"
+    log "rolled $name $ver -> $next ($why, carried $open)"
+    stale="$(grep -o 'stale (carried [0-9]*x): .*' <<<"$out" || true)"
+    agent-notify -t "version released: $name" \
+      "$name $ver closed by $why; $next is current, $open task(s) carried.${stale:+ Stale: $stale}"
+  else
+    failed=$((failed + 1))
+    log "FAILED $name $ver -> $next: $(tail -3 <<<"$out" | tr '\n' ' ')"
+    agent-notify -p high -t "release failed: $name" "$(tail -5 <<<"$out")"
+    return 1
+  fi
+}
+
+# record PROFILE NAME TAG: the note of a tag below the open version, with no planned rows.
+record() {
+  local profile="$1" name="$2" tag="$3" out
+  if [ "$DRY" = 1 ]; then
+    printf 'would record %s/%s: %s, no planned rows (sheet open at %s)\n' "$profile" "$name" "$tag" "$ver"
+    return 0
+  fi
+  if out="$("$ROLL" --tag "$tag" "$profile" "$name" 2>&1 </dev/null)"; then
+    recorded=$((recorded + 1))
+    log "recorded $name $tag: no planned rows (sheet open at $ver)"
+  else
+    failed=$((failed + 1))
+    log "FAILED to record $name $tag: $(tail -3 <<<"$out" | tr '\n' ' ')"
+    agent-notify -p high -t "release note failed: $name $tag" "$(tail -5 <<<"$out")"
+    return 1
+  fi
+}
+
+# by_tag PROFILE NAME SHIPPED DIR: a tag owner's pass (header, `tag`). Each tag since
+# RELEASE_NOTES_SINCE plus the newest, lowest first, so a version's rows freeze under the first
+# tag that reached it. A failed roll ends the project's pass: later tags wait for the next one.
+by_tag() {
+  local profile="$1" name="$2" shipped="$3" dir="$4" tag next rolled_on=""
+  local -A since=()
+  while IFS= read -r tag; do [ -z "$tag" ] || since[$tag]=1; done < <(project_release_tags_since "$name" 2>/dev/null)
+  while IFS= read -r tag; do
+    # After a roll, the open version it left, read back so this tag compares against it.
+    if [ -n "$rolled_on" ]; then
+      ver="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+      if ! is_ver "$ver"; then
+        failed=$((failed + 1))
+        log "FAILED $name: rolled on $rolled_on but cannot read its open version back ('$ver'); $tag and later wait"
+        return 0
+      fi
+      rolled_on=""
+    fi
+    if git_version_ge "$tag" "$ver"; then
+      next="$(next_after "$profile" "$name" "$tag")"
+      roll "$profile" "$name" "$next" "$next" "tag $tag" "$tag" || return 0
+      if [ "$DRY" = 1 ]; then ver="$next"; else rolled_on="$tag"; fi
+    elif [ -n "${since[$tag]:-}" ] && [ ! -e "$dir/versions/$tag.md" ]; then
+      record "$profile" "$name" "$tag" || return 0
+    fi
+  done < <(printf '%s\n' "${!since[@]}" "$shipped" | grep . | sort -uV)
+}
+
 while read -r profile; do
   # Whole lines: tab is IFS whitespace, so `read a b c d` collapses the empty third column.
   while IFS= read -r row; do
@@ -119,8 +184,7 @@ while read -r profile; do
         [ "$DRY" = 0 ] || printf 'skip %s: tag %s is not vX.Y.Z\n' "$name" "$shipped"
         continue
       fi
-      ver_ge "$shipped" "$ver" || continue          # the open version has not shipped yet
-      next="$(next_after "$profile" "$name" "$shipped")" level="$next" why="tag $shipped"
+      by_tag "$profile" "$name" "$shipped" "$(dirname "$sheet")"
     else
       rel="$(jq -c '.release // {}' <<<"$st")"
       [ "$(jq -r '.due // false' <<<"$rel")" = true ] || continue
@@ -131,33 +195,13 @@ while read -r profile; do
       fi
       bump="$(jq -r '.bump // "patch"' <<<"$rel")"
       if [ "$bump" = minor ]; then next="$(minor_after "$ver")"; else next="$(patch_after "$ver")"; fi
-      level=auto why="cadence $(jq -r .cadence_days <<<"$rel")d, $bump"
-    fi
-    open="$(notes --profile "$profile" ptask "$name" list 2>/dev/null | grep -c . || true)"
-
-    if [ "$DRY" = 1 ]; then
-      printf 'would roll %s/%s: %s -> %s (%s, carry %s)\n' "$profile" "$name" "$ver" "$next" "$why" "$open"
-      continue
-    fi
-    if out="$("$ROLL" "$profile" "$name" "$level" carry 2>&1)"; then
-      rolled=$((rolled + 1))
-      # The number notes opened, which for a cadence cut is the bump it derived on the freeze.
-      opened="$(sed -n 's/^released [^:]*: v[0-9.]* -> \(v[0-9.]*\).*/\1/p' <<<"$out" | head -1)"
-      next="${opened:-$next}"
-      log "rolled $name $ver -> $next ($why, carried $open)"
-      stale="$(grep -o 'stale (carried [0-9]*x): .*' <<<"$out" || true)"
-      agent-notify -t "version released: $name" \
-        "$name $ver closed by $why; $next is current, $open task(s) carried.${stale:+ Stale: $stale}"
-    else
-      failed=$((failed + 1))
-      log "FAILED $name $ver -> $next: $(tail -3 <<<"$out" | tr '\n' ' ')"
-      agent-notify -p high -t "release failed: $name" "$(tail -5 <<<"$out")"
+      roll "$profile" "$name" auto "$next" "cadence $(jq -r .cadence_days <<<"$rel")d, $bump"
     fi
   done < <(notes --profile "$profile" projects 2>/dev/null)
 done < <(notes config --profiles 2>/dev/null)
 
 [ "$DRY" = 1 ] && exit 0
-log "pass done: $rolled rolled, $failed failed, $fetch_failed of $fetched tag fetches failed"
+log "pass done: $rolled rolled, $recorded tag notes recorded, $failed failed, $fetch_failed of $fetched tag fetches failed"
 
 # Publish a verdict, or the unit's PENDING is promoted to STALLED on stop and fleet-liveness
 # reads every quiet pass as a stall. Every fetch failing is a stall in its own right: the pass
@@ -169,8 +213,8 @@ if command -v proof_report >/dev/null 2>&1; then
     proof_outcome wave-roll STALLED "$failed roll(s) failed"
   elif [ "$fetched" -gt 0 ] && [ "$fetch_failed" = "$fetched" ]; then
     proof_outcome wave-roll STALLED "tag fetch failed for all $fetched repos: blind to remote tags"
-  elif [ "$rolled" -gt 0 ]; then
-    proof_report wave-roll WORKED "$rolled rolled"
+  elif [ "$((rolled + recorded))" -gt 0 ]; then
+    proof_report wave-roll WORKED "$rolled rolled, $recorded tag notes recorded"
   else
     detail="nothing to roll"
     [ "$fetch_failed" = 0 ] || detail+=" ($fetch_failed of $fetched tag fetches failed)"

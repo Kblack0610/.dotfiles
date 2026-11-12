@@ -91,6 +91,10 @@ CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
 CLAUDE_CODE_ARTIFACT              # Artifact tool on/off (claude-telemetry.sh defaults it to 0); a tool toggle, no routing effect
 CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY
+CLAUDE_CODE_DISABLE_CLAUDE_MDS    # 1 skips loading CLAUDE.md files; a CALL_CONTEXT=lean agent call sets it (harnesses/claude.sh), no routing effect
+CLAUDE_CODE_TMPDIR                # where claude writes temp files; fleet-dispatch points it at a run's tmp inside the srt sandbox (ocfree), no routing effect
+OPENCODE_DISABLE_CLAUDE_CODE      # 1 stops OpenCode reading ~/.claude rules and skills; fleet-dispatch sets it for a public-only harness (ocfree), no routing effect
+OPENCODE_DISABLE_PROJECT_CONFIG   # 1 skips a repo's opencode.json; it only removes a config source, never names a provider (fleet-dispatch, ocfree)
 CLAUDE_CODE_ENABLE                # not a variable: a prefix fragment inside a regex
 CLAUDE_CODE_ENHANCED              # in tests/unit/claude_telemetry.bats:24
 LLM_MAXTOK                        # token budget, not a destination

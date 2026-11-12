@@ -897,6 +897,7 @@ mod tests {
             started: None,
             target: None,
             phases: None,
+            ..Default::default()
         };
         Card {
             name: name.into(),

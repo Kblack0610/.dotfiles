@@ -75,7 +75,8 @@ Prefer the cheapest tier that can actually fail. The suite caught a real routing
 `require_disposable_host()` enforces it: it **fails** (never skips - a skip is how a safety tier quietly stops running) unless `/.dockerenv` *and* an image-set env marker are both present. There is deliberately **no override flag**.
 
 ```bash
-make -C tests test-fast     # unit + integ, host-safe, what the Stop hook gates on
+make -C tests test-pr       # the files the PR gate picks for this change: the local gate
+make -C tests test-fast     # unit + integ, every file: main and the nightly run it, not a session
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs
@@ -124,14 +125,19 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 ## 5. Run the gates
 
 ```bash
-make -C tests test-fast        # the Stop hook runs this; must be green
+make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
 tests/docker.sh test-container # all tiers
 tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
 ```
 
 The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
 
-CI (`.github/workflows/tests.yml`): `fast` on the runner, split into shards by `tests/shard.sh` and the per-file seconds in `tests/shard-weights.tsv` (a shard near its 10-minute cap: regenerate the table with `tests/shard.sh --weights <job logs>`, or add a shard to the matrix; never raise the timeout), `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
+CI (`.github/workflows/tests.yml`), under the doctrine in `~/.local/src/docs/ci.md`; this repo's PR budget is a p90 of 5 minutes, and `timeout-minutes: 10` is the hang guard, never a lever:
+- `fast` on the runner. A pull request runs what `tests/pick.sh` picks (the `test_picked` function the Stop hook uses) plus `tests/broad.txt`; main, the schedule and a dispatch run the whole tier, and so does a PR that touches the harness or whose diff cannot be read. The pick line ("picked N of M" or "full: <why>") is on the run's Summary page. A PR green and main red means the picker missed a dependency: teach `test_picked` it, with a case in `tests/integ/shell_tests_scope.bats`.
+- `tests/shard.sh` splits the files across the matrix by the per-file seconds the `weights` job reads from the newest green main run's JUnit (`shard.sh --junit`), so there is no table to regenerate. Each shard writes its predicted and actual seconds to the Summary. A shard near its cap: split its heaviest file (a file never spans shards) or add a shard to the matrix.
+- `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
+
+The `rust` job runs `make test-rust CRATES=...` on what `tests/pick.sh rust` picks on a pull request: the crates whose directory or `tests/rust-inputs.txt` lines the change touches, plus the crates that depend on them by path; a change to the rust gate files runs all of them, and so does main. A crate that reads a new file outside its directory adds a line there (`unit/pick.bats` fails until it does).
 
 ## 6. Land it
 

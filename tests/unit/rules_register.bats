@@ -9,7 +9,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   # sandbox_init moves HOME, so the real register and the ~ sources in it are read from here.
-  REAL_HOME="$HOME"
+  REAL_HOME="$HOME" REAL_PATH="$PATH"
   REAL="${RULES_PRIVATE_REPO:-$HOME/.dotfiles-private}/.config/agentctl/rules.jsonl"
   sandbox_init basic
   SUBJECT="$REPO_ROOT/.local/bin/fleet-bench"
@@ -164,7 +164,8 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
 
 @test "register: the text of every rule here is still in its source, and every bounded measure prints a number" {
   real_register
-  HOME="$REAL_HOME" RULES_REGISTER="$REAL" run "$SUBJECT" rules --json
+  # The real gh and its login too: the sandbox's gh stub would make every gh measure read as dead.
+  PATH="$REAL_PATH" HOME="$REAL_HOME" XDG_CONFIG_HOME="$REAL_HOME/.config" RULES_REGISTER="$REAL" run "$SUBJECT" rules --json
   assert_success
   local states="$output"
   # Only this repo's sources: a rule edited or a measure gone elsewhere is the scorecard's line, and

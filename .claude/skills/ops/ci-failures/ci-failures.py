@@ -5,10 +5,12 @@
                    [--days N] [--until TIME] [--cache DIR] [--offline] [--json]
 
 Reads the finished GitHub Actions runs created in the N days (default 3) ending at --until
-(default now) from the run ledger (`schedules-sync runs`, synced every 10 minutes, so the last
-pass's runs are the newest it has), and for every red run each attempt's jobs, each failed job's check-run
-annotations and, when those say nothing but an exit code, its `--log-failed` output. Each
-failed job gets:
+(default now), or since SENTINEL_SINCE (an epoch, a watch's fix) when that is later, from the
+run ledger (`schedules-sync runs`, synced every 10 minutes, so the last
+pass's runs are the newest it has), and for every red run each attempt's jobs from the job
+archive (`schedules-sync jobs`; an earlier attempt of a re-run is not in it, so that one is read
+from gh and counted in jobs_from_gh), each failed job's check-run annotations and, when those say
+nothing but an exit code, its `--log-failed` output. Each failed job gets:
 
 - a signature: workflow / job / failed step :: the line that says what broke, with numbers,
   SHAs and workspace paths normalized so the same failure on two branches groups as one;
@@ -23,10 +25,12 @@ failed job gets:
   picked or a moving base can change between the two, so it is flaky only once those are ruled out.
 
 A red run counts once, in the bucket of its first root (non-derived) job. A run whose own
-conclusion is cancelled is not a red. A finished attempt's jobs, annotations and logs never
+conclusion is cancelled is not a red. These are red counts by cause; the pass rate is
+hub_core's (`hub ci pass`), which day-log reads. A finished attempt's jobs, annotations and logs never
 change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>). --offline
-reads only that cache and the ledger. On a gh error, or a ledger that is stale or does not sync
-the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
+reads only that cache, the ledger and the archive. A job GitHub stored no log for is read from its annotations and step and listed in
+logs_missing. On any other gh error, an archive that cannot be read,
+or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
 """
 import argparse
 import datetime
@@ -72,6 +76,11 @@ class Partial(Exception):
     pass
 
 
+class Missing(Exception):
+    """GitHub stored no log for a finished job (`log not found`): a fact about that one job, so
+    the job is read from its annotations and step and listed in logs_missing, never PARTIAL."""
+
+
 def parse_time(s):
     return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
@@ -96,7 +105,7 @@ class Source:
 
     def __init__(self, repo, cache, offline):
         self.repo, self.cache, self.offline = repo, cache, offline
-        self.partial = 0
+        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = 0, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
 
     def gh(self, *args):
@@ -105,8 +114,10 @@ class Source:
         try:
             return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
         except (subprocess.CalledProcessError, OSError) as e:
-            err = getattr(e, "stderr", "") or str(e)
-            print(f"gh {' '.join(args[:3])}: {err.strip()[:200]}", file=sys.stderr)
+            err = (getattr(e, "stderr", "") or str(e)).strip()
+            print(f"gh {' '.join(args[:3])}: {err[:200]}", file=sys.stderr)
+            if err.startswith("log not found"):
+                raise Missing()
             self.partial = 1
             raise Partial()
 
@@ -129,18 +140,10 @@ class Source:
         """The finished runs created in the window, newest attempt each, in created order. The
         ledger lists every workflow; --workflow keeps a run by its name or its file's name. A
         closed window (--until given) needs a ledger synced past its end, else it is PARTIAL."""
-        argv = [SCHEDULES_SYNC, "runs", self.repo, "--since", stamp(since)] + (["--until", stamp(until)] if closed else [])
-        try:
-            got = subprocess.run(argv, capture_output=True, text=True)
-            why = "" if got.returncode == 0 else (got.stderr or got.stdout).strip()[:200]
-        except OSError as e:
-            why = str(e)
-        if why:
-            print(f"run ledger: {why}", file=sys.stderr)
-            self.partial = 1
-            return []
+        self.since = since
+        got = self.sync("run ledger", "runs", "--since", stamp(since), *(["--until", stamp(until)] if closed else []))
         out = []
-        for r in json.loads(got.stdout):
+        for r in got or []:
             if r.get("status") != "completed":
                 continue
             out.append({"databaseId": r["id"], "workflowName": r.get("workflow"), "headBranch": r.get("branch"),
@@ -150,8 +153,33 @@ class Source:
                         "_listed_as": [os.path.basename(r.get("path") or "")] if r.get("path") else []})
         return out
 
+    def sync(self, label, verb, *args):
+        """`schedules-sync <verb> <repo> args` parsed, or None (PARTIAL) when it fails."""
+        try:
+            got = subprocess.run([SCHEDULES_SYNC, verb, self.repo, *args], capture_output=True, text=True)
+            why = "" if got.returncode == 0 else (got.stderr or got.stdout).strip()[:200]
+        except OSError as e:
+            why = str(e)
+        if why:
+            print(f"{label}: {why}", file=sys.stderr)
+            self.partial = 1
+            return None
+        return json.loads(got.stdout)
+
     def jobs(self, run, attempt):
+        """An attempt's jobs from the job archive (`schedules-sync jobs`, its complete records of
+        the window's runs, read on the first call; one that cannot be read is PARTIAL). The archive
+        holds the attempt the run ledger saw finish, so an earlier attempt of a re-run (or one the
+        archive has not completed yet) is read from gh, behind the cache, and counted in from_gh."""
+        if self.archived is None:
+            got = self.sync("job archive", "jobs", "--since", stamp(self.since))
+            # The archive keeps a job's browser link as url; gh's own reads call it html_url.
+            self.archived = {(r["run_id"], r["attempt"]): [{**j, "html_url": j.get("url")} for j in r["jobs"]]
+                             for r in got or [] if r.get("complete") and r.get("forge", "github") == "github"}
         rid = run["databaseId"]
+        if (rid, attempt) in self.archived:
+            return self.archived[(rid, attempt)]
+        self.from_gh += 1
         data = self.cached(f"jobs-{rid}-{attempt}.json",
                            lambda: self.gh("api", f"repos/{self.repo}/actions/runs/{rid}/attempts/{attempt}/jobs?per_page=100"))
         return (data or {}).get("jobs", [])
@@ -161,9 +189,13 @@ class Source:
                            lambda: self.gh("api", f"repos/{self.repo}/check-runs/{job['id']}/annotations")) or []
 
     def log(self, job):
-        return self.cached(f"log-{job['id']}.txt",
-                           lambda: self.gh("run", "view", "-R", self.repo, "--job", str(job["id"]), "--log-failed"),
-                           as_json=False) or ""
+        try:
+            return self.cached(f"log-{job['id']}.txt",
+                               lambda: self.gh("run", "view", "-R", self.repo, "--job", str(job["id"]), "--log-failed"),
+                               as_json=False) or ""
+        except Missing:  # not cached: a log that turns up later is read by the next pass
+            self.logs_missing.append(job["id"])
+            return ""
 
 
 def read_log(text):
@@ -201,6 +233,8 @@ def record(src, run, attempt, job):
     notes = [a.get("message", "") for a in src.annotations(job) if a.get("annotation_level") == "failure"]
     said = [n for n in notes if not GENERIC.match(n.strip())]
     line, errors, code = read_log(src.log(job)) if not said else (said[0], said[:5], None)
+    if not said and job["id"] in src.logs_missing:
+        line = "(no log on GitHub)"  # its own signature, never merged with a blank-line one
     if code is None:
         codes = [int(m.group(1)) for n in notes for m in [re.search(r"exit code (\d+)", n)] if m]
         code = codes[0] if codes else None
@@ -320,8 +354,10 @@ def analyse(runs, records, base, branches):
     }
 
 
-def report(a, args, since, until, partial):
-    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh or the run ledger failed, counts are low" if partial else ""))
+def report(a, args, since, until, partial, logs_missing):
+    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh, the run ledger or the job archive failed, counts are low" if partial else ""))
+    if logs_missing:
+        print(f"no log on GitHub for {len(logs_missing)} failed job(s), read from annotations and step: {', '.join(map(str, logs_missing))}")
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"
     print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), "
           f"{a['pending_runs']} pending (red only on a check that waits for another run, not red), {a['cancelled']} cancelled (not red)")
@@ -359,6 +395,10 @@ def main(argv):
     args = p.parse_args(argv[1:])
     until = parse_time(args.until) if args.until else datetime.datetime.now(datetime.timezone.utc)
     since = until - datetime.timedelta(days=args.days)
+    # a Sentinel probe's fix watermark (watch-companion-loop resolve): the runs before the fix are not its red
+    fix = os.environ.get("SENTINEL_SINCE", "")
+    if fix.isdigit() and int(fix) > 0:
+        since = min(until, max(since, datetime.datetime.fromtimestamp(int(fix), datetime.timezone.utc)))
     cache = args.cache or os.path.expanduser(f"~/.cache/ci-failures/{args.repo.replace('/', '-')}")
     src = Source(args.repo, cache, args.offline)
     runs = src.runs(since, until, bool(args.until))
@@ -369,10 +409,10 @@ def main(argv):
     a = analyse(runs, records, args.base, set(args.branch))
     if args.json:
         json.dump({"repo": args.repo, "since": stamp(since), "until": stamp(until), "partial": bool(src.partial),
-                   **a, "records": records}, sys.stdout, indent=1, default=str)
+                   "jobs_from_gh": src.from_gh, "logs_missing": src.logs_missing, **a, "records": records}, sys.stdout, indent=1, default=str)
         print()
     else:
-        report(a, args, since, until, src.partial)
+        report(a, args, since, until, src.partial, src.logs_missing)
     return 3 if src.partial else 0
 
 

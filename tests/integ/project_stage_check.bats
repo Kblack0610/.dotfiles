@@ -494,3 +494,41 @@ real_row() {
   run "$CHECK" games-canon --stage dev
   assert_line --regexp '^PASS +dev +A build profile'
 }
+
+# rs_stub <stages-json>: release-state's snapshot as the stage rows read it.
+rs_stub() {
+  printf '{"rows": [], "stages": %s}\n' "$1" > "$SANDBOX/rs.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
+  chmod +x "$SANDBOX/bin/release-state"
+}
+
+@test "stages.md: no draft or dev row reads where a project deploys (a deploy is not the app being live)" {
+  # Every real draft and dev row, run for a project with a prod deploy: none may ask release-state,
+  # the only source of deploy facts, so none can cap where a project deploys.
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n'
+    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; } > "$STAGES_DOC"
+  rs_stub '{"shooter": {"stage": "draft", "rungs": ["prod"]}}'
+  printf '#!/usr/bin/env bash\ntouch "%s"\ncat "%s"\n' "$SANDBOX/rs.asked" "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
+  for stage in draft dev; do run "$CHECK" shooter --stage "$stage"; done
+  [ ! -e "$SANDBOX/rs.asked" ]
+  # Negative control: the alpha rung row does ask, so the marker would have caught a draft one.
+  real_row 'alpha | game, app | A private target live'
+  run "$CHECK" shooter --stage alpha
+  [ -e "$SANDBOX/rs.asked" ]
+}
+
+@test "stages.md: each deploy rung row passes only when a live target serves that rung" {
+  real_row 'alpha | game, app | A private target live'
+  rs_stub '{"shooter": {"stage": "alpha", "rungs": ["prod"]}}'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A private target live'
+  rs_stub '{"shooter": {"stage": "alpha", "rungs": ["alpha", "prod"]}}'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +A private target live'
+  real_row 'beta | game, app | Its external tester channel live'
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Its external tester channel live'
+  real_row 'prod | game, app | Live on a public channel'
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +prod +Live on a public channel'
+}

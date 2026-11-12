@@ -1,25 +1,20 @@
 "use strict";
-// The Infra tab, as the hub's Infra tab: health, red now, one MACHINES table, CI, Jobs (jobs.js),
-// cloud runners and the governor, exceptions first. /api/infra asks Prometheus the board's own
-// queries; statuses are the cc:* rules, so nothing is judged here.
+// The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
+// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), Runners
+// (slots, waiting jobs, local Unity failures), Runs, Pipelines and Tests (ci.js), and Jobs (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
+// Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
 // (REFRESH_SECS=60): the rules evaluate every minute, and faster only redraws the same numbers.
 const INFRA_REFRESH_MS = 60e3;
-// A job running past this shows amber: playground ci.md calls a gate past about an hour a bug.
-const LONG_RUN_SECS = 3600;
-const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other"];
-// A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
-const FAILED_OPEN = 25;
-// Each failed group's folded state, which outlives the re-render on every refresh.
-const ist = { data: null, err: null, open: {}, reds: null, redsErr: null };
+// Each fold's open state, which outlives the re-render on every refresh.
+const ist = { data: null, err: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
-  // The red fixes come from fleet-bench, not Prometheus, so a failed read of either leaves the
-  // other up; a failed reds read drops its rows rather than leave a stale list.
-  const reds = api("/api/reds").then((r) => { ist.reds = r; ist.redsErr = null; }, (e) => { ist.reds = null; ist.redsErr = e.message; });
-  try { ist.data = await api("/api/infra"); ist.err = null; } catch (e) { ist.err = e.message; }
-  await reds;
+  const view = new URLSearchParams(Object.values(INFRA_TABLES).flatMap((pre) => [...tblParams(st.views.infra, pre)])).toString();
+  try { ist.data = await api("/api/infra" + (view ? "?" + view : "")); ist.err = null; } catch (e) { ist.err = e.message; }
+  // An open page re-reads with the board, so its numbers move and a failed read retries.
+  if (infraPage()) refreshPage();
   if (st.tab === "infra") renderInfra();
 });
 
@@ -61,219 +56,163 @@ function kpis(cc) {
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
     tile("CI BUSY", `${busy}/${slots}`, "var(--c1)", `${where}, ${waiting} waiting`)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
-    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`)}${
+    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
 }
 
-// The health tiles, exceptions first: red, then amber, then no data each get a tile; the green
-// domains fold into one tile that names them.
-function domainSplit(cc) {
-  const dom = cc["cc:domain_status"] || {}, comp = cc["cc:component_status"] || {};
-  const shown = DOMAINS.filter((d) => d in dom || d === "k3s" || d === "ci");
-  const rank = (v) => (v === 2 ? 0 : v === 1 ? 1 : v === 0 ? 3 : 2);
-  const bad = shown.filter((d) => dom[d] !== 0).sort((a, b) => rank(dom[a]) - rank(dom[b]));
-  const green = shown.filter((d) => dom[d] === 0);
-  return { dom, comp, bad, green };
-}
-
-// A phone's one line for the tiles: what is not green, by name.
-function domainLine(cc) {
-  const { dom, bad, green } = domainSplit(cc);
-  if (!bad.length) return `<span class="chip sm" style="--c:var(--b-done)">all green ${green.length}</span>`;
-  return bad.map((d) => { const [word, c] = statusOf(dom[d]); return `<span class="chip sm" style="--c:${c}">${esc(d)} ${word}</span>`; }).join(" ") + ` <span class="muted">${green.length} green</span>`;
-}
-
-function domainTiles(cc) {
-  const { dom, comp, bad, green } = domainSplit(cc);
-  return `<div class="tiles roomy">${bad.map((d) => {
-    const [word, c] = statusOf(dom[d]);
-    const why = Object.entries(comp).filter(([k, v]) => k.startsWith(d + "/") && v > 0).map(([k, v]) => `${k.slice(d.length + 1)} ${statusOf(v)[0].toLowerCase()}`);
-    return `<div class="tile" style="--c:${c}"><span class="tl">${esc(d.toUpperCase())}</span><span class="tv sm">${word}</span>${why.length ? `<span class="ts1">${esc(why.join(", "))}</span>` : ""}</div>`;
-  }).join("")}${green.length ? `<div class="tile" style="--c:var(--b-done)"><span class="tl">GREEN ${green.length}</span><span class="tv sm">OK</span><span class="ts1">${esc(green.join(", "))}</span></div>` : ""}</div>`;
-}
-
-// Pools with slots or a queue, the longest queue first.
-const poolOrder = (cc) => [...new Set([...Object.keys(cc["cc:pool_slots"] || {}), ...Object.keys(cc["cc:pool_waiting"] || {})])]
-  .sort((a, b) => ((cc["cc:pool_waiting"] || {})[b] || 0) - ((cc["cc:pool_waiting"] || {})[a] || 0) || a.localeCompare(b));
-
-// Each pool's queue and its last day: waiting, the oldest wait, done and pass. Its slots and the
-// machines serving it are the MACHINES table's pools column.
-function queuesTable(cc) {
-  const pools = poolOrder(cc);
-  const g = (n, p) => (cc[n] || {})[p];
-  const row = (p, waiting, oldest, done, pass) => `<tr><td>${esc(p)}</td><td class="n${waiting ? " warn" : ""}">${waiting ?? "-"}</td><td class="n">${secs(oldest)}</td><td class="n">${done ?? "-"}</td><td class="n ${pass == null ? "" : pass < 0.7 ? "bad" : pass < 0.9 ? "warn" : ""}">${pct(pass)}</td></tr>`;
-  let rows = pools.map((p) => row(p, g("cc:pool_waiting", p), g("cc:pool_oldest_wait_seconds", p), g("cc:pool_done_24h", p), g("cc:pool_pass_ratio_24h", p))).join("");
-  for (const h of Object.keys(cc["cc:host_local_slots"] || {})) rows += row(`unity-local on ${h}`, g("cc:host_local_queued", h), null, g("cc:host_local_done_24h", h), g("cc:host_local_pass_ratio_24h", h));
-  for (const p of Object.keys(cc["cc:pool_done_24h"] || {}).filter((p) => !pools.includes(p))) rows += row(p, null, null, g("cc:pool_done_24h", p), g("cc:pool_pass_ratio_24h", p));
-  return `<table class="tbl"><tr><th data-role="lead">pool</th><th class="n" data-role="glance" data-named>waiting</th><th class="n" data-role="glance" data-named>oldest</th><th class="n">done 24h</th><th class="n" data-role="glance" data-named>pass</th></tr>${rows}</table>`;
-}
+// The tab's tables, each with its view keys' prefix in the URL; agent-web infra.rs TABLES names the
+// same. The rows, their order, chips, facets and links are hub_core's (machines.rs, ci.rs), which the
+// TUI draws too; this file only draws the cells.
+const INFRA_TABLES = { machines: "m", pools: "p", runners: "r", queued: "w", local: "u" };
 
 // One bar per core, in core order, from cc:host_core_busy_ratio; amber past 90% as the cpu meter.
 function coreStrip(cores) {
   const busyColor = (v) => (v > 0.9 ? "var(--b-stalled)" : "var(--c1)");
-  return `<span class="cores">${cores.map(([cpu, v]) => `<i title="cpu ${esc(cpu)}: ${pct(v)}"><b style="height:${(Math.max(0, Math.min(1, v || 0)) * 100).toFixed(0)}%;background:${busyColor(v)}"></b></i>`).join("")}</span>`;
+  return `<span class="cores">${cores.map((v, i) => `<i title="cpu ${i}: ${pct(v)}"><b style="height:${(Math.max(0, Math.min(1, v || 0)) * 100).toFixed(0)}%;background:${busyColor(v)}"></b></i>`).join("")}</span>`;
 }
 
-// Per runner name: the cores its job uses and a pinned slot's CPUs (cc:runner_cores_*, from
-// roles/ci-runner-cpu), and whether the governor withholds it.
-function runnerIndex(inst) {
-  const by = {};
-  for (const s of inst.runner_cores || []) (by[s.labels.runner] ||= {})[s.labels.__name__ === "cc:runner_cores_busy" ? "busy" : "allowed"] = s.value;
-  for (const s of inst.withheld || []) (by[s.labels.name] ||= {}).held = true;
-  return by;
+// Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
+// the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
+// no reading is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
+// their disks.
+function diskCell(m) {
+  const free = m.disk;
+  if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">no reading</td>`;
+  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
 }
 
-// Each machine's CI slots, counted as cc:pool_slots counts them and as the hub board's
-// machine_slots does: a slot is a running runner, or an idle one the governor does not
-// withhold. A withheld runner shows as `<pool> withheld` and is no slot; an offline or missing
-// one counts in `off`. The workstation's local gates fold into its row as unity-local, as
-// cc:site_slots folds them into local. `cpu` is the cores each runner's job is using.
-function machineSlots(cc, inst) {
-  const by = {}, ri = runnerIndex(inst), per = {}, order = poolOrder(cc);
-  const at = (h) => (by[h] ||= { host: h, cloud: false, busy: 0, slots: 0, off: 0, pools: [], cpu: [] });
-  const rank = (p) => { const i = order.indexOf(p); return i < 0 ? order.length : i; };
-  for (const r of inst.runners || []) {
-    const l = r.labels, m = at(l.host), c = ri[l.name] || {};
-    m.cloud ||= l.site === "cloud";
-    if (c.busy != null) m.cpu.push([l.name, c.busy]);
-    if (l.state !== "running" && l.state !== "idle") { m.off++; continue; }
-    const run = l.state === "running";
-    if (run || !c.held) m.slots++;
-    if (run) m.busy++;
-    const pool = l.pool + (c.held ? " withheld" : "");
-    const e = ((per[l.host] ||= {})[pool] ||= { rank: rank(l.pool), b: 0, n: 0 });
-    e.n++; if (run) e.b++;
-  }
-  for (const [h, ps] of Object.entries(per)) at(h).pools.push(...Object.entries(ps).sort(([a, x], [b, y]) => x.rank - y.rank || a.localeCompare(b)).map(([p, e]) => `${p} ${e.b}/${e.n}`));
-  const g = (n, h) => (cc[n] || {})[h];
-  const gates = {};
-  for (const r of inst.gates || []) gates[r.labels.host] = (gates[r.labels.host] || 0) + 1;
-  for (const [h, n] of Object.entries(gates)) if (g("cc:host_local_slots", h) == null) at(h).pools.push(`${n} gates`);
-  for (const [h, total] of Object.entries(cc["cc:host_local_slots"] || {})) {
-    const busy = g("cc:host_local_busy", h) || 0, open = g("cc:host_local_open_slots", h) || 0, room = Math.round(total - open), m = at(h);
-    m.busy += busy; m.slots += Math.max(open, busy);
-    m.pools.push(`unity-local ${g("cc:host_local_busy", h) ?? "?"}/${g("cc:host_local_open_slots", h) ?? "?"}${room > 0 ? `+${room}` : ""}`);
-  }
-  return Object.values(by);
-}
 const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
-const whereCell = (m) => (m.cloud ? "cloud" : "local");
-const cpuTitle = (m) => m.cpu.sort((a, b) => b[1] - a[1]).map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
+const cpuTitle = (m) => m.runner_cores.map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
+const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
+const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
+const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 
-// The one MACHINES table: every machine with stats or a CI slot, those that carry CI first, then
-// the busiest. Its pools column is each pool's busy/slots there, so it is the Pools table's
-// slots and the old CI-by-machine rollup too.
-function machinesTable(cc, inst) {
-  const g = (n, h) => (cc[n] || {})[h];
-  const cores = {};
-  for (const s of inst.cores || []) (cores[s.labels.host] ||= []).push([s.labels.cpu, s.value]);
-  const num = (c) => c.split(",").map(Number);
-  for (const c of Object.values(cores)) c.sort(([a], [b]) => { const [x, y] = [num(a), num(b)]; return x[0] - y[0] || (x[1] || 0) - (y[1] || 0); });
-  const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
-  const carries = (h) => !!(ci[h] && (ci[h].slots || ci[h].pools.length));
-  // Machines that carry CI first, then the busiest.
-  const hosts = [...new Set([...Object.keys(cc["cc:host_cores"] || {}), ...Object.keys(ci).filter(carries)])].sort((a, b) => carries(b) - carries(a) || (g("cc:host_cpu_busy_ratio", b) || 0) - (g("cc:host_cpu_busy_ratio", a) || 0));
-  return `<table class="tbl"><tr><th data-role="lead">machine</th><th>where</th><th class="n" data-role="glance" data-named>busy</th><th>cpu (per core)</th><th class="n" data-role="glance" data-named>now</th><th class="n">6h</th><th class="n">load</th><th>mem</th><th class="n"></th><th class="n" data-role="glance" data-named>temp</th><th>pools</th></tr>${hosts.map((h) => {
-    const cpu = g("cc:host_cpu_busy_ratio", h), mem = g("cc:host_mem_used_ratio", h), temp = g("cc:host_temp_c", h), load = g("cc:host_load1", h), n = g("cc:host_cores", h), m = ci[h];
-    return `<tr><td>${esc(h)}</td><td class="muted">${m ? whereCell(m) : "local"}</td><td class="n${m && m.off ? " warn" : ""}"${m && m.cpu.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m ? busyCell(m) : "-"}${m && m.off ? ` +${m.off} off` : ""}</td><td class="m">${cores[h] ? coreStrip(cores[h]) : meter(cpu, cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${pct(cpu)}</td><td class="n">${pct(g("cc:host_cpu_busy_ratio:avg6h", h))}</td><td class="n${load > n * 1.5 ? " warn" : ""}">${load == null ? "-" : load.toFixed(1)}/${n ?? "?"}</td><td class="m">${meter(mem, mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")}</td><td class="n">${pct(mem)}</td><td class="n${temp > 85 ? " warn" : ""}">${temp == null ? "-" : Math.round(temp) + "C"}</td><td class="muted wrap">${esc(m ? m.pools.join("  ") : "")}</td></tr>`;
-  }).join("")}</table>`;
+// The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
+// cycle's action, and its verdict on a hover.
+const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
+function governorCell(g) {
+  if (!g) return td("muted", "-");
+  const mode = g.live ? "live" : '<span class="muted">dry run</span>';
+  const act = g.action ? ` <span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
+  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${mode}${act}</td>`;
 }
 
-// The CI section's running jobs, grouped by machine (the most jobs first, each group longest
-// first): the group row carries the machine and its busy/slots, so pool and host columns go.
-// A job using more than half its machine's cores shows amber: one job starving the rest.
-function runningTable(cc, inst) {
-  const ri = runnerIndex(inst), hostCores = cc["cc:host_cores"] || {};
-  const prBy = {};
-  for (const r of [...(inst.runners || []), ...(inst.waiting || [])]) if (r.labels.pr && r.labels.pr !== "") prBy[`${r.labels.repo}/${r.labels.branch}`] = r.labels.pr;
-  const by = {};
-  for (const r of (inst.runners || []).filter((r) => r.labels.state === "running")) {
-    const l = r.labels;
-    (by[l.host || "-"] ||= []).push({ v: r.value, name: l.name, repo: l.repo, pr: l.pr, job: l.job_name, detail: l.title && l.title !== l.workflow ? l.title : l.branch });
-  }
-  // A machine that is not a runner runs its gates locally: the PR from a runner or queue row on
-  // the same branch.
-  for (const r of inst.gates || []) {
-    const l = r.labels, repo = l.repo || l.worktree;
-    (by[l.host || "-"] ||= []).push({ v: r.value, repo, pr: prBy[`${repo}/${l.branch}`], job: `${l.platform} (local)`, detail: l.branch });
-  }
-  const groups = Object.entries(by).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-  const jobs = groups.reduce((x, [, js]) => x + js.length, 0);
-  if (!jobs) return { n: 0, head: "nothing", body: '<div class="empty">Nothing running.</div>' };
-  const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
-  const body = `<table class="tbl"><tr><th data-role="glance">PR</th><th data-role="glance">job</th><th class="n" data-role="glance" data-named>for</th><th class="n">cores</th><th data-role="lead">PR title or branch</th></tr>${groups.map(([host, js]) =>
-    `<tr class="hgrp"><td colspan="5">${esc(host)} <span class="muted">${ci[host] ? `${whereCell(ci[host])}, ${busyCell(ci[host])} busy` : ""}</span></td></tr>${js.sort((a, b) => (b.v || 0) - (a.v || 0)).map((r) => {
-      const c = ri[r.name] || {}, n = hostCores[host];
-      const cores = c.busy == null ? "-" : `${c.busy.toFixed(1)}/${c.allowed ?? n ?? "?"}`;
-      return `<tr><td>${esc(r.repo || "-")}${r.pr ? "#" + esc(r.pr) : ""}</td><td>${esc(r.job || "-")}</td><td class="n${r.v > LONG_RUN_SECS ? " warn" : ""}">${secs(r.v)}</td><td class="n${c.busy > n / 2 ? " warn" : ""}"${c.allowed ? ` title="pinned to ${c.allowed} CPUs of ${n ?? "?"}"` : ""}>${cores}</td><td class="wrap">${esc(r.detail || "-")}</td></tr>`;
-    }).join("")}`).join("")}</table>`;
-  return { n: jobs, head: `${jobs} job${jobs === 1 ? "" : "s"}`, body };
+// A cloud host's power, which the governor starts for a deep queue: its state, today's hours
+// against the cap and where its rule stands. Its buttons are on the machine's page.
+const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
+const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc((state || "?").toUpperCase())}</span>`;
+
+function powerCell(m) {
+  const p = m.power;
+  if (!p) return td("muted", "-");
+  const last = p.changed_at ? `last ${p.changed} ${when(p.changed_at)}${p.reason ? ` (${p.reason})` : ""}` : p.reason;
+  const cost = p.usd_per_hour != null ? ` ~${usd(p.hours * p.usd_per_hour)}` : "";
+  return `<td class="wrap" title="${esc(last || "")}">${powerChip(p.state)} ${p.hours.toFixed(1)}/${p.max ?? "?"} h${cost} <span class="muted">${esc(p.rule)}</span></td>`;
 }
 
-const queuedRuns = (inst) => (inst.waiting || []).filter((r) => r.labels.stuck !== "true");
-function queuedTable(inst) {
-  const groups = {};
-  for (const r of queuedRuns(inst)) {
-    const k = [r.labels.pool, r.labels.repo, r.labels.pr, r.labels.branch].join("\t");
-    const g = (groups[k] ||= { l: r.labels, n: 0, old: 0 });
-    g.n++; g.old = Math.max(g.old, r.value || 0);
-  }
-  const rows = Object.values(groups).sort((a, b) => b.old - a.old);
-  if (!rows.length) return '<div class="empty">Nothing waiting.</div>';
-  return `<table class="tbl"><tr><th>pool</th><th data-role="glance">repo</th><th data-role="glance">PR</th><th class="n">jobs</th><th class="n" data-role="glance" data-named>waiting</th><th data-role="lead">branch</th></tr>${rows.map((g) =>
-    `<tr><td>${esc(g.l.pool || "-")}</td><td>${esc(g.l.repo || "-")}</td><td>${g.l.pr ? "#" + esc(g.l.pr) : "-"}</td><td class="n">${g.n}</td><td class="n">${secs(g.old)}</td><td class="wrap">${esc(g.l.branch || "-")}</td></tr>`).join("")}</table>`;
+// Each table's cells by column, in the order the summary's columns come (hub_core Row::COLUMNS);
+// `l` is the row's links (tblLinks). A label's second field is its header's class.
+const MACH_COLS = { machine: ["machine"], where: ["where"], state: ["state"], busy: ["busy", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
+  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], pools: ["pools"], running: ["running"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
+const MACH_CELLS = {
+  machine: (m, l) => td("", tblLink(l.machine, m.host)),
+  where: (m) => td("muted", esc(m.where)),
+  state: (m) => td(m.state === "up" ? "" : m.state === "no reading" ? "muted" : "warn", esc(m.state)),
+  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
+  "6h": (m) => td("n", pct(m.cpu6h)),
+  load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
+  mem: (m) => td("m", `${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}`),
+  temp: (m) => td(`n${m.temp > 85 ? " warn" : ""}`, m.temp == null ? "-" : Math.round(m.temp) + "C"),
+  disk: diskCell,
+  pools: (m) => td("muted wrap", esc(m.pools.join("  ")) || "-"),
+  running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
+  governor: (m) => governorCell(m.governor),
+  power: powerCell,
+  up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
+};
+
+const POOL_COLS = { pool: ["pool"], slots: ["slots", "n"], busy: ["busy", "n"], withheld: ["withheld", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"],
+  done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const num = (v) => v ?? "-";
+const POOL_CELLS = {
+  pool: (p, l) => td("", tblLink(l.pool, p.pool)),
+  slots: (p) => td("n", num(p.slots)),
+  busy: (p) => td("n", num(p.busy)),
+  withheld: (p) => td(`n${p.withheld ? " warn" : ""}`, num(p.withheld)),
+  waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
+  oldest: (p) => td("n", secs(p.oldest)),
+  done: (p) => td("n", num(p.done)),
+  pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
+  machines: (p) => td("muted wrap", esc(p.machines.join(", ")) || "-"),
+};
+
+// The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): every machine's
+// slots with the job each runs and how long against its usual; a late job (past an hour or its
+// usual p90) shows amber.
+const SLOT_COLS = { host: ["host"], slot: ["slot"], state: ["state"], pool: ["pool"], ran: ["ran", "n"], usual: ["usual", "n"], job: ["job"], ref: ["ref"] };
+const slotState = (s) => (s === "off" ? "bad" : s === "withheld" ? "warn" : s === "busy" ? "" : "muted");
+const SLOT_CELLS = {
+  host: (r, l) => td("", tblLink(l.host, r.host)),
+  slot: (r) => td("", esc(r.slot)),
+  state: (r) => td(slotState(r.state), esc(r.state)),
+  pool: (r, l) => td("muted", tblLink(l.pool, r.pool)),
+  ran: (r) => td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : "")),
+  usual: (r) => td("n muted", secs(r.usual)),
+  job: (r) => (r.state === "busy" ? td("wrap", esc(r.job || "-")) : td("muted wrap", esc(r.note || ""))),
+  ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
+};
+
+const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"] };
+const QUEUED_CELLS = {
+  job: (q) => td(q.stuck ? "bad" : "", esc(q.job || "-")),
+  pool: (q, l) => td("muted", tblLink(l.pool, q.pool)),
+  ref: (q) => td("muted", esc(ciRef(q))),
+  n: (q) => td("n", q.n),
+  wait: (q) => td("n", secs(q.wait)),
+  needs: (q) => td("muted", esc(q.needs.join(", "))),
+  can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
+};
+
+// A local Unity gate's failures (hub_core::ci LocalFail): a gate run on a workstation never
+// reaches GitHub, so the Runs table cannot show it. `last` is the start of its last failed hour.
+const LOCAL_COLS = { last: ["last", "n"], repo: ["repo"], branch: ["branch"], platform: ["platform"], result: ["result"], failed: ["failed", "n"] };
+const LOCAL_CELLS = {
+  last: (f) => td("n", stamp(f.last)),
+  repo: (f) => td("muted", esc(f.repo)),
+  branch: (f) => td("wrap", esc(f.branch)),
+  platform: (f) => td("", esc(f.platform)),
+  result: (f) => td("bad", esc(f.result)),
+  failed: (f) => td("n", f.n),
+};
+
+// One table's rows from the read: `cap` rows until its "+N more".
+function infraBody(name, labels, cells, empty, o = {}) {
+  const d = ist.data.tables[name], t = d.table, rows = d.rows;
+  if (!rows.length) return `<div class="panel"><div class="empty">${t.total ? "No row matches." : empty}</div></div>`;
+  const keys = t.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
+  const cap = o.cap && !INFRA_T[name].all ? o.cap : rows.length, shown = rows.slice(0, cap);
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${shown.map((r, i) =>
+    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table>${tblMore(rows.length - shown.length, "more")}</div>`;
 }
 
-// What is red: cc:red_now, the dashboard's table (watches, runners, nodes, feed, Sentinel) plus the
-// board's DOWN line (the down runners hub_core::infra::runners_down judged, stuck runs, the
-// exporter and GitHub).
-function redItems(d) {
-  const inst = d.instant;
-  const items = (inst.red || []).map((s) => s.labels.item).filter(Boolean).sort();
-  for (const r of d.down || []) items.push(`runner ${r.labels.name} ${r.labels.state}`);
-  for (const r of inst.waiting || []) if (r.labels.stuck === "true") items.push(`stuck run: ${r.labels.repo} ${r.labels.branch}, ${secs(r.value)}, no jobs`);
-  // The likeliest cause first, as the hub board's DOWN line: a missed scrape (exporter_up 0 or
-  // absent) blanks every exporter series, a spent rate limit leaves jobs and history unread,
-  // and api counts only the runner sources, so one repo's failed run list says nothing here.
-  const v = (q) => ((inst[q] || [])[0] || {}).value;
-  if (v("exporter_up") !== 1) items.unshift("runner exporter missed its last scrape: runner rows may be missing");
-  else if (v("rate_left") === 0) items.unshift("GitHub rate limit spent: runner jobs and history unread until it resets");
-  else if (v("api") !== 1) items.unshift("GitHub not answering the exporter: runner rows may be missing");
-  else if (!(inst.runners || []).length) items.push("no runner series from the exporter");
-  return items;
-}
-
-// Main's pass rate leads: a red on the default branch is everyone's problem, while a red gate on
-// a work branch is usually the gate doing its job (github_runs_finished's scope label).
-function finishedTable(inst) {
-  const agg = {};
-  const zero = () => ({ ok: 0, bad: 0, can: 0 });
-  for (const s of inst.finished || []) {
-    const k = `${s.labels.repo}\t${s.labels.workflow}`, a = (agg[k] ||= { repo: s.labels.repo, wf: s.labels.workflow, runs: 0, ok: 0, bad: 0, can: 0, main: zero(), branch: zero() });
-    const n = s.value || 0, c = s.labels.conclusion, sc = a[s.labels.scope] || {};
-    a.runs += n;
-    for (const t of [a, sc]) if (c === "success") t.ok += n; else if (c === "failure" || c === "timed_out") t.bad += n; else if (c === "cancelled") t.can += n;
-  }
-  const all = Object.values(agg);
-  if (!all.length) return { head: "no finished-run series yet", body: "" };
-  const sum = (xs) => xs.reduce((x, a) => ({ runs: x.runs + a.runs, ok: x.ok + a.ok, bad: x.bad + a.bad, can: x.can + a.can }), { runs: 0, ok: 0, bad: 0, can: 0 });
-  const pass = (a) => (a.ok + a.bad ? a.ok / (a.ok + a.bad) : null);
-  const t = sum(all), tm = sum(all.map((a) => ({ runs: 0, ...a.main })));
-  const head = `${t.runs} runs, ${pct(pass(t))} pass, main ${pct(pass(tm))}, ${t.bad} failed, ${t.can} cancelled`;
-  const bad = all.filter((a) => a.bad + a.can > 0).sort((a, b) => (pass(a.main) ?? 2) - (pass(b.main) ?? 2) || (pass(a) ?? 2) - (pass(b) ?? 2) || b.bad - a.bad);
-  const green = all.filter((a) => a.bad + a.can === 0);
-  const seg = (a) => `<span class="stack" data-tip="${esc(`${a.repo} ${a.wf}\nmain: ${a.main.ok} passed, ${a.main.bad} failed, ${a.main.can} cancelled\nbranches: ${a.branch.ok} passed, ${a.branch.bad} failed, ${a.branch.can} cancelled`)}">${[[a.ok, "var(--b-done)"], [a.bad, "var(--b-needs)"], [a.can, "var(--c-other)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
-  const cls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
-  const body = (bad.length ? `<table class="tbl"><tr><th data-role="glance">repo</th><th data-role="lead">workflow</th><th></th><th class="n" data-role="glance" data-named>main</th><th class="n">branches</th><th class="n">runs</th><th class="n" data-role="glance" data-named>failed</th><th class="n">cancelled</th></tr>${bad.map((a) => {
-    const pm = pass(a.main);
-    return `<tr><td>${esc(a.repo)}</td><td class="wrap">${esc(a.wf)}</td><td class="m">${seg(a)}</td><td class="n ${cls(pm)}">${pct(pm)}</td><td class="n muted">${pct(pass(a.branch))}</td><td class="n">${a.runs}</td><td class="n">${a.bad}</td><td class="n">${a.can}</td></tr>`;
-  }).join("")}</table>` : "") + (green.length ? `<div class="muted fold">+${green.length} green workflows, ${green.reduce((x, a) => x + a.runs, 0)} runs</div>` : "");
-  return { head, body };
-}
+const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
+  tab: "infra", id: "infra-" + INFRA_TABLES[name], el: "infra-main", pre: INFRA_TABLES[name], hint,
+  refresh: () => refreshInfra(), render: () => renderInfra(), table: () => ist.data?.tables?.[name]?.table,
+  wrap: (h) => `<div data-tbl="${INFRA_TABLES[name]}">${h}</div>`,
+  body: () => infraBody(name, labels, cells, empty, o),
+});
+const INFRA_T = {
+  machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports."),
+  pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search, or machines:razer-laptop", "No pool reports."),
+  runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
+  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing waiting."),
+  local: infraTable("local", LOCAL_COLS, LOCAL_CELLS, "search, or platform:android branch:feat", "No local Unity gate failed in 24h."),
+};
 
 // Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
-// A conclusion that is none of these (skipped, neutral) counts in no column, as in finishedTable.
+// A conclusion that is none of these (skipped, neutral) counts in no column, as builds::verdict counts.
 const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
 const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
 const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
@@ -283,51 +222,13 @@ function tally(rows) {
   for (const r of rows) if (r.out) t[r.out] += r.n;
   return t;
 }
-const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
-const hh = (hour) => String(new Date(hour * 1e3).getHours()).padStart(2, "0");
 
-// What failed, like the Log tab's merged list: main first because a red there is everyone's
-// problem, then each repo, then the local Unity runs by branch.
-function failedList(inst) {
-  const runs = (inst.failed || []).slice().sort((a, b) => b.value - a.value);
-  const group = (key, name, n, body) => {
-    const open = ist.open[key] ?? (key === "main" || n <= FAILED_OPEN);
-    return `<details class="panel area" data-k="${esc(key)}"${open ? " open" : ""}><summary>${esc(name)} <span class="muted">${n}</span></summary>${body}</details>`;
-  };
-  const row = (s) => {
-    const l = s.labels, what = l.pr ? "#" + l.pr : "run";
-    const text = l.pr ? l.title : `${l.branch}${l.title ? ": " + l.title : ""}`;
-    return `<div class="pr" data-tip="${esc(`${l.repo} ${l.workflow}\n${l.branch}\n${l.conclusion} ${clock(s.value * 1e3)}`)}"><span class="ft">${clock(s.value * 1e3)}</span><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(what)}</a><span class="pt">${esc(text)}</span>${l.conclusion === "timed_out" ? '<b class="ci fail">timeout</b>' : ""}</div>`;
-  };
-  const byWorkflow = (rows, name) => {
-    const g = {};
-    for (const s of rows) (g[name(s.labels)] ||= []).push(s);
-    return Object.entries(g).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([w, rs]) => `<div class="grp">${esc(w)}</div>${rs.map(row).join("")}`).join("");
-  };
-  const main = runs.filter((s) => s.labels.scope === "main");
-  const branch = {};
-  for (const s of runs.filter((s) => s.labels.scope !== "main")) (branch[s.labels.repo] ||= []).push(s);
-  let html = main.length ? group("main", "On main", main.length, byWorkflow(main, (l) => `${l.repo} ${l.workflow}`)) : "";
-  html += Object.entries(branch).sort((a, b) => b[1].length - a[1].length).map(([repo, rs]) => group("repo:" + repo, repo, rs.length, byWorkflow(rs, (l) => l.workflow))).join("");
-  // The ledger counts per hour, so a whole day folds one branch's runs into one row.
-  const local = {};
-  for (const s of inst.local_failed || []) {
-    const l = s.labels, k = [l.repo, l.branch, l.platform, l.result].join("\t");
-    const a = (local[k] ||= { l, n: 0, last: 0 });
-    a.n += s.value || 0; a.last = Math.max(a.last, +l.hour);
-  }
-  const lrows = Object.values(local).sort((a, b) => b.last - a.last || b.n - a.n);
-  if (lrows.length) {
-    html += group("local", "Local Unity", lrows.reduce((x, a) => x + a.n, 0), lrows.map((a) =>
-      `<div class="pr"><span class="ft">${hh(a.last)}:00</span><span class="pt">${esc(a.l.branch)}</span><span class="by">${esc(a.l.platform)} ${esc(a.l.result)}${a.n > 1 ? " x" + a.n : ""}</span></div>`).join(""));
-  }
-  return html || `<div class="panel">Nothing failed.</div>`;
-}
-const failedCount = (inst) => (inst.failed || []).length + (inst.local_failed || []).reduce((x, s) => x + (s.value || 0), 0);
+// Passed of passed and failed; a cancel is neither.
+const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
 
 function doneToday(inst, t1) {
   const ci = ciRows(inst), local = localRows(inst);
-  if (!ci.length && !local.length) return `<h3 class="sec">Done today</h3><div class="panel">No hourly data yet.</div>`;
+  if (!ci.length && !local.length) return `<div class="panel">No hourly data yet.</div>`;
   const midnight = new Date(t1).setHours(0, 0, 0, 0) / 1e3, today = (r) => r.hour >= midnight;
   const tc = tally(ci.filter(today)), tl = tally(local.filter(today));
   const failed = (scope) => tally(ci.filter((r) => today(r) && r.scope === scope)).bad;
@@ -339,95 +240,62 @@ function doneToday(inst, t1) {
     tile("CANCELLED", tc.can, "var(--c-other)")}${
     tile("LOCAL UNITY", tl.ok + tl.bad, "var(--c3)", `${pct(passOf(tl))} pass`)}</div>`;
   const note = `Tiles count from midnight; CI is read every 10 minutes. Runs per hour and the 24h status lanes are in Grafana ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-command-center", "Command Center")}.`;
-  return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
+  return `${tiles}<div class="muted fold">${note}</div>`;
 }
 
-// The CI section: what is running, waiting and failed in the last 24h, each only when it has
-// rows; all three empty is green and reads as the heading line. Then the 24h pass rates with the
-// green workflows as one line, one fold for the day's tiles and the queues by pool, and a line
-// to the runs themselves: Releases' Builds section (hub_core::builds) lists every CI run.
-function ciSection(cc, inst, t1) {
-  const run = runningTable(cc, inst), queued = queuedRuns(inst).length, failed = failedCount(inst), fin = finishedTable(inst);
-  const green = !run.n && !queued && !failed;
-  let html = `<h2 class="sec" id="sec-ci">CI <span class="muted">${green ? `green: nothing running, waiting or failed in 24h; ${esc(fin.head)}` : `running ${run.n}, queued ${queued}, failed 24h ${failed}`}</span></h2>`;
-  if (run.n) html += `<h3 class="sec">Running <span class="muted">${esc(run.head)}</span></h3><div class="panel scroll">${run.body}</div>`;
-  if (queued) html += `<h3 class="sec">Queued</h3><div class="panel scroll">${queuedTable(inst)}</div>`;
-  if (failed) html += `<h3 class="sec">Failed, last 24h</h3>${failedList(inst)}`;
-  // Workflows with a failure or a cancel get a row; the green ones are one line under them.
-  if (fin.body) html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h3><div class="panel scroll">${fin.body}</div>`;
-  const open = ist.open["ci-more"] ? " open" : "";
-  html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today, queues by pool</summary>` +
-    doneToday(inst, t1) +
-    `<h3 class="sec">Queues by pool</h3><div class="panel scroll">${queuesTable(cc)}</div></details>`;
-  return html + `<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds</a></div>`;
+// Runners: the slots of hub_core::ci, the jobs waiting for a runner with what each needs and the
+// hosts that can take it, the local Unity gate failures, and the day's tiles. Each pool's queue and
+// last day are the Pools table on Machines; the runs themselves (hub_core::builds) are Runs.
+const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} waiting${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
+// The CI runs that went red in the last day (Counts::recent_red, the Runs read's), as the link to
+// Runs on its red chip; none until that read is in.
+function failed24h() {
+  const n = bld.data?.counts?.recent_red;
+  return n ? `, <a href="#infra/runs?bs=red" title="the red runs, newest first">failed 24h ${n}</a>` : "";
+}
+function runnersSection(ci) {
+  const quiet = !ci.busy && !ci.queued && bld.data?.counts && !bld.data.counts.recent_red && !(ci.local || []).length;
+  let html = `<h2 class="sec" id="sec-ci">Runners <span class="muted">${esc(ciHead(ci))}${failed24h()}${quiet ? "; green: nothing waiting or failed in 24h" : ""}</span></h2>`;
+  // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
+  if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
+  return html + INFRA_T.runners.html();
+}
+const waitingSection = () => `<h3 class="sec" id="sec-waiting">Waiting for a runner</h3>${INFRA_T.queued.html()}`;
+function localSection(inst, t1) {
+  const open = secOpen(ist.open, "ci-more") ? " open" : "";
+  return `<h3 class="sec" id="sec-local">Local Unity <span class="muted">gate runs that failed, last 24h</span></h3>${INFRA_T.local.html()}` +
+    `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today</summary>${doneToday(inst, t1)}</details>`;
 }
 
-// The Cloud runners card: each host the governor powers (its ci_governor_power_* series), with
-// buttons that hold it on or off for a while or hand it back. POST /api/cloud-runner writes the
-// governor's override ConfigMap; the pod sees the change within about two minutes.
-const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
-const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
-// The button armed by a first click ("host:action"), and the last answer.
-const cst = { armed: "", msg: "" };
-
-function cloudHosts(inst) {
-  const by = {};
-  const KEYS = { hours_today: "hours", max_hours_day: "max", usd_per_hour: "rate", idle_seconds: "idle", idle_off_seconds: "idleOff",
-    want: "want", start_min_excess: "excess", held_seconds: "held", start_after_seconds: "holdFor" };
-  for (const s of inst.power || []) {
-    const l = s.labels, h = (by[l.host] ||= { host: l.host }), k = l.__name__.replace("ci_governor_power_", "");
-    if (k === "state") { h.state = l.state; h.reason = l.reason; }
-    else if (k === "override") { h.override = l.action; h.until = s.value; }
-    else if (k === "last_change") { h.changed = l.action; h.changedAt = s.value; }
-    else if (KEYS[k]) h[KEYS[k]] = s.value;
-  }
-  return Object.values(by).sort((a, b) => a.host.localeCompare(b.host));
-}
-
-const mins = (s) => Math.floor((s || 0) / 60);
-
-// Where the governor's power rule stands for a host, from its own numbers (governor.py decide()).
-function ruleText(h) {
-  if (h.override === "on") return `held on by the button until ${when(h.until)}`;
-  if (h.override === "off") return `held off by the button until ${when(h.until)}`;
-  const capped = h.max && h.hours >= h.max;
-  if (h.state === "starting") return "booting: its slots count once their runners are online";
-  if (h.state === "stopping") return "stopping";
-  if (h.state === "draining") return capped ? `${h.max} h used today: stops once no slot is busy` : "stops once no slot is busy";
-  if (h.state === "running") return h.idle < 60 ? "busy" : `idle ${mins(h.idle)} of ${mins(h.idleOff)} min, then stops`;
-  if (capped) return `${h.max} h used today: no start until 00:00 UTC`;
-  if (h.held > 0) return `${h.want} jobs past the home hosts, held ${mins(h.held)} of ${mins(h.holdFor)} min, then starts`;
-  return h.want ? `${h.want} job${h.want === 1 ? "" : "s"} past the home hosts, starts at ${h.excess}` : `no job past the home hosts; starts at ${h.excess ?? "?"}`;
-}
-
-// The governor's other series: per host and global, by metric name.
+// The governor's global series: whether it is up and saw every source, its queue, and the budget
+// lines. Its per-host verdict and power are the machines table's governor and power columns.
 function governorIndex(inst) {
-  const g = { host: {}, alerts: [], actions: [], usd: {} };
+  const g = { alerts: [], actions: [] };
   for (const s of inst.governor || []) {
     const l = s.labels, n = l.__name__.replace("ci_governor_", "");
-    if (l.host) {
-      const h = (g.host[l.host] ||= { host: l.host });
-      if (n === "decision") { h.verdict = l.verdict; h.action = l.action; } else h[n] = s.value;
-    } else if (n === "budget_usd") g.usd[l.kind] = s.value;
-    else if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
+    if (l.host) continue;
+    if (n === "budget_alert") g.alerts.push([l.basis, Number(l.usd)]);
     else if (n === "budget_action_usd") g.actions.push([l.type, l.status, s.value]);
     else g[n] = s.value;
   }
   return g;
 }
 
+function governorLine(g) {
+  if (g.up == null) return "";
+  const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
+    : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
+  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; a dry-run host is logged, never changed; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
+}
+
 // [150, 100, 100] -> "$100 and $150"
 const usdList = (xs) => [...new Set(xs)].sort((a, b) => a - b).map((x) => "$" + x).join(" and ");
 
-// The month as AWS Budgets last gave it, and what happens at each line.
+// What AWS does at each budget line; the month's dollars are Costs > Budget, beside every other bill.
 function budgetLines(g) {
   if (g.budget_ok == null) return "";
-  const u = g.usd;
-  if (u.limit == null) return `<div class="muted">Month: the governor has not read the AWS budget yet${g.budget_ok ? "" : ' (its last read failed: runbook, "budget read")'}.</div>`;
-  // AWS forecasts from history; on a new account it can sit below what is already spent.
-  const fc = u.forecast == null || u.forecast < u.actual ? "no AWS forecast yet" : `forecast ${usd(u.forecast)}`;
-  const stale = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span>`;
-  const month = `<div class="month"><span>Month: <b>${usd(u.actual)}</b> of ${usd(u.limit)}, ${fc}</span><span class="m">${meter(u.limit ? u.actual / u.limit : 0, u.actual >= u.limit * 0.75 ? "var(--b-stalled)" : "var(--c2)")}</span><span class="muted">AWS Budgets, as of ${when(g.budget_updated)}${stale}</span></div>`;
+  const failed = g.budget_ok ? "" : ` <span class="chip sm" style="--c:var(--b-stalled)">READ FAILED</span> (runbook, "budget read")`;
+  const month = `<div class="month"><span>Month: <a href="#costs/budget">Costs, Budget</a></span><span class="muted">the governor read AWS Budgets ${when(g.budget_updated)}${failed}</span></div>`;
   const act = g.alerts.filter(([b]) => b === "actual").map(([, v]) => v), fore = g.alerts.filter(([b]) => b === "forecasted").map(([, v]) => v);
   const mails = act.length ? `Emails at ${usdList(act)}${usdList(fore) === usdList(act) ? " (spent or forecast)" : fore.length ? `, forecast at ${usdList(fore)}` : ""}` : "";
   const stops = [...new Set(g.actions.map(([, , v]) => v))].map((v) => {
@@ -438,38 +306,184 @@ function budgetLines(g) {
   return month + (lines ? `<div class="muted">${lines}. Each day stops at its hour cap.</div>` : "");
 }
 
-function cloudCard(inst) {
-  const hosts = cloudHosts(inst), g = governorIndex(inst);
-  if (!hosts.length) return "";
-  const rows = hosts.map((h) => {
-    const btns = CLOUD_ACTS.map(([a, n, label]) => {
-      const k = `${h.host}:${a}`;
-      return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
-    }).join(" ");
-    const over = h.override && h.override !== "none" ? `${esc(h.override)} until ${when(h.until)}` : "none";
-    const why = h.reason && h.reason !== "none" ? h.reason : "";
-    const last = h.changedAt ? `${esc(h.changed)} ${when(h.changedAt)}${why ? ` (${esc(why)})` : ""}` : why ? esc(why) : "-";
-    const cost = h.rate != null ? ` ~${usd((h.hours || 0) * h.rate)}` : "";
-    return `<tr><td>${esc(h.host)}</td><td><span class="chip sm" style="--c:${POWER_COLOR[h.state] || "var(--c-other)"}">${esc((h.state || "?").toUpperCase())}</span></td><td class="wrap">${esc(ruleText(h))}</td><td class="muted">${last}</td><td class="m">${meter(h.max ? (h.hours || 0) / h.max : 0, "var(--c2)")}</td><td class="n">${(h.hours || 0).toFixed(1)}/${h.max ?? "?"} h${cost}</td><td>${over}</td><td>${btns}</td></tr>`;
-  }).join("");
-  return `<h2 class="sec" id="sec-cloud">Cloud runners <span class="muted">the governor starts them for a deep queue; a button overrides it</span></h2><div class="panel"><div class="scroll"><table class="tbl"><tr><th data-role="lead">host</th><th data-role="glance">state</th><th>rule</th><th>last</th><th></th><th class="n" data-role="glance" data-named>today</th><th>override</th><th></th></tr>${rows}</table></div>${budgetLines(g)}<div class="err">${esc(cst.msg)}</div></div>`;
+// The page open in place of the tab's tables, `#infra/<word>/<name>` (hub_core::links PAGES, whose
+// inner tab app.js ENTITY_PAGES mirrors), each read by hub_core for the hub's page too: its word,
+// its read, its back button's words, and the body under the header every page shares. One state, one read and
+// one header serve them all, so a third page is a row here.
+const INFRA_PAGES = [
+  // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
+  // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
+  { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its busy, slots
+  // and waiting over 7 days.
+  { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
+];
+// The open page, by its hash (`machines/<host>`), and its last read; `all` unfolds a machine's
+// power history and lasts while the page stays open.
+const pgst = { page: "", data: null, err: null, all: false };
+// The row and name of the page the hash opens, or null on the tab's tables.
+const infraPage = () => {
+  if (st.tab !== "infra") return null;
+  const p = INFRA_PAGES.find((r) => st.page.startsWith(r.word + "/"));
+  return p ? { p, name: st.page.slice(p.word.length + 1) } : null;
+};
+// A read that lands after another page opened is dropped; a failed one keeps the last read up.
+const refreshPage = coalesce(async () => {
+  const o = infraPage(), page = st.page;
+  if (!o || pgst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api(o.p.api(o.name)); } catch (e) { err = e.message; }
+  if (pgst.page !== page) return;
+  if (data) pgst.data = data;
+  pgst.err = err;
+  if (st.page === page) renderInfra();
+});
+// Its header, back button and read errors, then its row's body.
+function infraPageHtml() {
+  const o = infraPage();
+  if (!o) return "";
+  const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
+  const d = pgst.data;
+  if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
+  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
+  const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  return h + o.p.body(d);
+}
+// Power changes shown before "+N older".
+const HIST_ROWS = 30;
+
+// Each pool one slot colour on the whole page (share bar and chart), by name.
+function poolColors(d) {
+  const names = new Set(d.share.filter((s) => s.what !== "idle" && s.what !== "other").map((s) => s.what));
+  if (d.history) d.history.hours.forEach((x) => Object.keys(x.pools).forEach((p) => names.add(p)));
+  return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
-// cycle's verdict and action, and the slots it lets take jobs.
-const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
-function governorPanel(inst) {
-  const g = governorIndex(inst), hosts = Object.values(g.host).sort((a, b) => a.host.localeCompare(b.host));
-  if (g.up == null && !hosts.length) return "";
-  const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
-    : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  const rows = hosts.map((h) => `<tr><td>${esc(h.host)}</td><td>${h.live === 1 ? "live" : '<span class="muted">dry run</span>'}</td><td>${esc(h.verdict || "-")}</td><td><span class="chip sm" style="--c:${ACTION_COLOR[h.action] || "var(--c-other)"}">${esc((h.action || "-").toUpperCase())}</span></td><td class="n">${h.admitted ?? "-"}</td></tr>`).join("");
-  return `<h2 class="sec" id="sec-governor">Governor <span class="muted">${health} queue ${g.queue ?? "?"}; a dry-run host is logged, never changed</span></h2><div class="panel scroll"><table class="tbl"><tr><th data-role="lead">host</th><th data-role="glance">mode</th><th data-role="glance">verdict</th><th data-role="glance">action</th><th class="n">admitted</th></tr>${rows}</table></div>`;
+// Each pool its colour, other the muted one, idle the empty track.
+function shareBar(d, colors) {
+  if (!d.share.length) return `<div class="muted">No core reading: no runner and no CPU series.</div>`;
+  const color = (s) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : colors[s.what]);
+  const bar = d.share.map((s) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
+  const words = d.share.map((s) => `${tblLink(s.link, s.what)} ${s.cores.toFixed(1)}`).join(", ");
+  return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
+}
+
+// An hourly chart's column label: the weekday at midnight, else none.
+const dayTick = (at) => { const d = new Date(at * 1e3); return d.getHours() === 0 ? d.toLocaleDateString([], { weekday: "short" }) : ""; };
+
+// One column per hour: the pools' cores as a share of the machine, then the rest of its CPU.
+function historyChart(h, cores, colors) {
+  const pools = [...new Set(h.hours.flatMap((x) => Object.keys(x.pools)))].sort();
+  const cols = h.hours.map((x) => {
+    const segs = pools.map((p) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: colors[p] }));
+    const ci = segs.reduce((a, s) => a + s.v, 0);
+    if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
+    const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
+    const tip = x.cpu == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
+    return { key: String(x.at), label: dayTick(x.at), tip, segs };
+  });
+  const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
+  return `${columns(cols, { height: 120, yfmt: pct })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`;
+}
+
+const DOWN_COLS = { from: ["from"], to: ["to"], took: ["took", "n"], why: ["why"] };
+const DOWN_CELLS = {
+  from: (r) => td("", stamp(r.from)),
+  to: (r) => td(r.open ? "warn" : "", r.open ? "now" : stamp(r.to)),
+  took: (r) => td("n", secs(r.to - r.from)),
+  why: (r) => td("muted", esc(r.why)),
+};
+const RECENT_COLS = { started: ["started"], repo: ["repo"], job: ["job"], runner: ["runner"], conclusion: ["conclusion"], took: ["took", "n"] };
+const RECENT_CELLS = {
+  started: (r, l) => td("", tblLink(l.started, r.started ? stamp(r.started) : "-")),
+  repo: (r) => td("muted", esc(r.repo)),
+  job: (r, l) => td("wrap", tblLink(l.job, r.job)),
+  runner: (r) => td("muted", esc(r.runner)),
+  conclusion: (r) => td(r.conclusion === "failure" ? "bad" : r.conclusion === "success" ? "" : "muted", esc(r.conclusion || "running")),
+  took: (r) => td("n", secs(r.took)),
+};
+const PAGE_ALERT_COLS = { sev: ["sev"], what: ["what"], source: ["source"], since: ["since", "n"], state: ["state"] };
+const PAGE_ALERT_CELLS = {
+  sev: (a) => td("warn", esc(a.sev)),
+  what: (a, l) => td("wrap", tblLink(l.what, a.what)),
+  source: (a) => td("muted", esc(a.source)),
+  since: (a) => td("n", a.since ? stamp(a.since) : "-"),
+  state: (a) => td("muted", esc(a.state)),
+};
+// A page table: the rows in hub_core's order with their links, with no view of its own.
+function pageTable(d, labels, cells, empty) {
+  if (!d || !d.rows.length) return `<div class="empty">${empty}</div>`;
+  const keys = d.table.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
+  const role = Object.fromEntries(d.table.columns.map((c) => [c.key, c.role || ""]));
+  const head = keys.map((k) => `<th${labels[k][1] ? ` class="${labels[k][1]}"` : ""} data-role="${role[k]}" data-label="${esc(labels[k][0])}">${esc(labels[k][0])}</th>`).join("");
+  return `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${d.rows.map((r, i) => `<tr>${keys.map((k) => cells[k](r, tblLinks(d.table, i))).join("")}</tr>`).join("")}</table></div>`;
+}
+
+function powerHistory(p) {
+  const ch = [...p.changes].reverse(), shown = pgst.all ? ch : ch.slice(0, HIST_ROWS);
+  const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
+  const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
+  const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
+  return `<h3 class="sec">Power <span class="muted">run per UTC day, counted from ${p.step / 60}-minute samples of the governor's power state</span></h3><div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+}
+
+// The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
+// POST /api/cloud-runner writes the governor's override ConfigMap; the pod sees the change within
+// about two minutes.
+const CLOUD_ACTS = [["on", 2, "On 2h"], ["off", 6, "Off 6h"], ["clear", 0, "Clear"]];
+// The button armed by a first click ("host:action") and the last answer.
+const cst = { armed: "", msg: "", host: "" };
+function cloudButtons(p) {
+  const btns = CLOUD_ACTS.map(([a, n, label]) => {
+    const k = `${p.host}:${a}`;
+    return `<button class="btn sm" data-cloud="${esc(k)}" data-hours="${n}">${cst.armed === k ? `Click again: ${label}` : label}</button>`;
+  }).join(" ");
+  return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
+}
+
+function machineBody(d) {
+  const colors = poolColors(d);
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
+  const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
+  h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
+  const hist = d.history;
+  if (hist) {
+    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores, colors)}`;
+    h += `<h3 class="sec">Downtime <span class="muted">stretches with no CPU reading, newest first</span></h3>${pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.")}`;
+    if (hist.power) h += powerHistory(hist.power);
+  }
+  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.tables.recent.rows.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
+  h += `<h3 class="sec">Alerts <span class="muted">firing now and naming it</span></h3>${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
+  return h;
+}
+
+// One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
+function poolChart(h) {
+  const n = (v) => (v == null ? "?" : v.toFixed(1));
+  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
+  const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
+    segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
+  const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
+  const key = [["busy", SLOTS[0]], ["idle", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
+  return `${columns(slots, { height: 120 })}<div class="muted">${key} slots, hourly means of ${h.step / 60}-minute samples</div>`
+    + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
+}
+
+function poolBody(d) {
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
+  h += `<h3 class="sec">Machines <span class="muted">with a slot in it</span></h3>${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
+  h += `<h3 class="sec">Waiting <span class="muted">CI jobs waiting for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
+  const hist = d.history;
+  if (hist) h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${poolChart(hist)}`;
+  return h;
 }
 
 async function cloudAct(key, hours) {
   const i = key.lastIndexOf(":"), host = key.slice(0, i), action = key.slice(i + 1);
   cst.armed = "";
+  cst.host = host;
   try { await post("/api/cloud-runner", { host, action, hours }); cst.msg = `${host}: ${action} sent; the governor reads it within about 2 minutes.`; }
   catch (e) { cst.msg = `${host}: ${e.message}`; }
   renderInfra();
@@ -479,6 +493,7 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
+  if (e.target.closest("[data-hist-all]")) { pgst.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;
@@ -488,59 +503,72 @@ $("infra").addEventListener("click", (e) => {
   setTimeout(() => { if (cst.armed === k) { cst.armed = ""; renderInfra(); } }, 4000);
 });
 
-// Red fixes: each red the triage queued as a fix in the last week, from /api/reds, which
-// (hub_core::reds) orders the open ones worst first and words the summary; the first LOG_ROWS
-// open ones show, then "+N more", and the settled ones fold to a count. A failed read says so here, never an empty list that reads as all fixed.
-const FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
-  fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
-function fixRow(r) {
-  const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
-  return `<div class="pr"><span class="chip sm" style="--c:${FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
-    `<span class="pt">${esc(r.red)}</span><span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
-}
-function fixesSection() {
-  const head = (sub) => `<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">${esc(sub)}</span></h2>`;
-  if (ist.redsErr) return head("read failed") + `<div class="panel down">${esc(ist.redsErr)}</div>`;
-  const r = ist.reds;
-  if (!r) return head("Loading...");
-  const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(fixRow).join("")}</div>` +
-    (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
-  const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${ist.open["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(fixRow).join("")}</div></details>` : "";
-  return head(r.summary) + open + settled;
-}
-
-function renderInfra() {
-  const el = $("infra-main"), tail = $("infra-tail");
+function drawInfra() {
+  const el = $("infra-main");
   const d = ist.data;
-  if (!d) { el.innerHTML = `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>` + (ist.err ? fixesSection() : ""); tail.innerHTML = ""; return; }
+  // The strip comes first on every path, then each section in its inner tab's group
+  // (hub_core::layout, app.js INNER_TABS). Runs, Pipelines and Tests with its Quarantine (ci.js)
+  // and Jobs (jobs.js) are elements of their own under main, each painted by its own read.
+  innerHide("infra", "runs", $("ci-runs"));
+  innerHide("infra", "pipelines", $("ci-pipelines"));
+  innerHide("infra", "tests", $("ci-tests"));
+  innerHide("infra", "quarantine", $("ci-tests"));
+  innerHide("infra", "jobs", $("jobs"));
+  const strip = innerStrip("infra", infraFlagged(d));
+  if (infraPage()) { paint(el, strip + infraPageHtml()); return; }
+  // A run's own page stands in for the Runs table, as a machine's does for Machines.
+  if (ciRunId()) { $("ci-runs").hidden = true; paint(el, strip + runPage()); return; }
+  if (!d) { paint(el, strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`); return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>${fixesSection()}`; tail.innerHTML = ""; seekSection(); return; }
-  const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
+  if (!d.ok) { paint(el, strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`); seekSection(); return; }
+  const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
-  const red = redItems(d);
   // Home owns the asks; Infra shows their count as a badge that opens Home.
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
-  let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += pfold("infra-health", domainLine(cc), `<div id="sec-health">${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}</div>`);
-  html += red.length
-    ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
-    : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;
-  html += fixesSection();
-  html += `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
-  html += ciSection(cc, inst, t1);
+  let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
+  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2>${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "pools", `<h2 class="sec" id="sec-pools">Pools <span class="muted">each pool's slots and the last day of its queue</span></h2>${INFRA_T.pools.html()}`);
+  html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
+    innerWrap("infra", "local", localSection(inst, t1));
   paint(el, html, ist.open);
-  paint(tail, cloudCard(inst) + governorPanel(inst));
   seekSection();
 }
+
+// A table's search or dropdown in use keeps focus: only that table's rows and chips repaint, and
+// the others redraw around it (home.js renderHome).
+function renderInfra() {
+  const busy = ist.data?.ok && Object.values(INFRA_T).find((t) => t.repaint());
+  if (busy) { for (const [name, t] of Object.entries(INFRA_T)) if (t !== busy && $(`infra-${INFRA_TABLES[name]}-body`)) t.redraw(); return; }
+  drawInfra();
+}
+
+// The sections whose inner tab carries a count: Runners' lines hub_core::ci judged red (a queued
+// job no online runner can take), runs that need a look (Builds::needs_look), a red pipeline
+// (Pipelines::red) and a failed suite in the Tests run on show (ci.js); the hub's
+// App::infra_flagged reads the same.
+const infraFlagged = (d) => [d && d.ci && (d.ci.red || []).length && "ci", bld.data?.look && "runs", pip.data?.red > 0 && "pipelines",
+  tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
 const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 
 TABS.infra = {
-  // The Jobs section (jobs.js) reads its own source on its own timer.
-  show() { renderInfra(); pollInfra(); jst.render(); pollJobs(); },
+  // The Jobs section (jobs.js) reads its own source on its own timer; Runs, Pipelines and Tests
+  // (ci.js) read on show and again on each new ledger line (and Pipelines on a state.json write).
+  show() {
+    const page = infraPage() ? st.page : "";
+    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
+    showRunPage();
+    renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); pipFeed.show(!pip.data || pip.moved()); tstFeed.show(!tst.data || tst.moved());
+    // A section not read yet says so at once: its read paints it only when it answers (a cold
+    // /api/pipelines takes seconds), and an empty element reads as a broken tab.
+    for (const t of [bld, pip, tst]) if (!t.data) t.render();
+  },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); } },
+  onEvent(ev) {
+    if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
+    bldFeed.onEvent(ev); pipFeed.onEvent(ev); tstFeed.onEvent(ev); runFeed.onEvent(ev);
+  },
 };

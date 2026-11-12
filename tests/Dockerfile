@@ -24,6 +24,15 @@
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
 
+# The linters are pinned, and that is not fussiness: a new shellcheck release finds new
+# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
+# deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
+# Each comes from its project's official image (a static binary at /bin, amd64 and arm64),
+# pinned by digest, from the registry the base image already needs. Not the GitHub release
+# asset: that one can answer 504 for longer than any curl retry waits.
+FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
+FROM mvdan/shfmt:v3.13.1@sha256:f22f3936140be1ba02d493b5d2b91d0e8b4af93fd903e7f46c477822bca4a3be AS shfmt
+
 FROM debian:trixie-slim
 
 # Pinned so a CI run and a laptop run agree, and so a distro bump cannot silently change
@@ -33,27 +42,23 @@ FROM debian:trixie-slim
 ARG TMUX_REF=3.8
 ARG TMUX_STOCK=
 ARG FZF_REF=0.74.1
-# The linters are pinned too, and that is not fussiness: a new shellcheck release finds new
-# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
-# deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
-ARG SHELLCHECK_REF=v0.11.0
-ARG SHFMT_REF=v3.13.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ncurses-term supplies the xterm-256color terminfo entry the harness pins TERM to; without
 # it tmux falls back and the rendered grid differs. `column` comes from bsdextrautils on
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
+# nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
+# lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 \
+      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 \
     && rm -rf /var/lib/apt/lists/*
 
-# Every download below (tmux, fzf, shellcheck, shfmt) goes to GitHub's release CDN, which answers a
-# 504 now and then, and the image is rebuilt on every CI run with no layer cache, so one 504 failed
-# the ui tier and the lint job together. curl reads this file, so the
+# The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
+# and the image is rebuilt on every CI run with no layer cache. curl reads this file, so the
 # retry lives in one place and each download keeps its plain `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
@@ -99,23 +104,10 @@ RUN arch="$(dpkg --print-architecture)" \
     && fzf --version
 
 # shellcheck + shfmt, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
-# having to install a linter. shellcheck ships a static binary; shfmt is a single Go binary.
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) sc_arch=x86_64; sh_arch=amd64 ;; \
-         arm64) sc_arch=aarch64; sh_arch=arm64 ;; \
-         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL -o /tmp/sc.tar.xz \
-      "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_REF}/shellcheck-${SHELLCHECK_REF}.linux.${sc_arch}.tar.xz" \
-    && tar xf /tmp/sc.tar.xz -C /tmp \
-    && install -m 0755 "/tmp/shellcheck-${SHELLCHECK_REF}/shellcheck" /usr/local/bin/shellcheck \
-    && curl -fsSL -o /usr/local/bin/shfmt \
-      "https://github.com/mvdan/sh/releases/download/${SHFMT_REF}/shfmt_${SHFMT_REF}_linux_${sh_arch}" \
-    && chmod 0755 /usr/local/bin/shfmt \
-    && rm -rf /tmp/sc.tar.xz "/tmp/shellcheck-${SHELLCHECK_REF}" \
-    && shellcheck --version | grep version: \
-    && shfmt --version
+# having to install a linter.
+COPY --from=shellcheck /bin/shellcheck /usr/local/bin/shellcheck
+COPY --from=shfmt /bin/shfmt /usr/local/bin/shfmt
+RUN shellcheck --version | grep version: && shfmt --version
 
 # THE MARKER. tmux_harness.bash's require_disposable_host() checks for this together with
 # /.dockerenv, and hard-fails the test otherwise. Both are needed: the env var alone could

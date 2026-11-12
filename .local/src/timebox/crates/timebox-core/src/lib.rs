@@ -14,4 +14,4 @@ pub mod stats;
 pub mod store;
 
 pub use event::{Event, EventKind};
-pub use state::{RunState, Snapshot, Stopwatch};
+pub use state::{Alerts, Queue, RunState, Snapshot, Stopwatch, Task};

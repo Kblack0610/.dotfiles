@@ -14,14 +14,15 @@ set -euo pipefail
 
 note() { hyprctl notify -1 2500 "rgb(88c0d0)" "$1"; }
 
-# int=1 means grabbing is currently DISABLED (compositor control / GRAB OFF).
-cur=$(hyprctl getoption binds:disable_keybind_grabbing -j | jq -r '.int')
+# bool true means grabbing is currently DISABLED (compositor control / GRAB OFF).
+# Since 0.57 getoption -j reports a bool option as "bool", not "int".
+cur=$(hyprctl getoption binds:disable_keybind_grabbing -j | jq -r '.bool')
 
-if [ "$cur" = "1" ]; then
-  hyprctl keyword binds:disable_keybind_grabbing false
+if [ "$cur" = "true" ]; then
+  hyprctl eval 'hl.config({ binds = { disable_keybind_grabbing = false } })'
   note "RustDesk: FULL passthrough → all keys go to the Mac. Ctrl+Alt+Shift+Esc to step out."
 else
-  hyprctl keyword binds:disable_keybind_grabbing true
+  hyprctl eval 'hl.config({ binds = { disable_keybind_grabbing = true } })'
   note "RustDesk: compositor control → your Hyprland keybinds work locally."
 fi
 

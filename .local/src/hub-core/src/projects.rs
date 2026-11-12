@@ -128,6 +128,23 @@ pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
     serde_json::from_str(&out).map_err(|e| format!("notes projects --stats --json: {e}"))
 }
 
+/// This machine's own notes profile (`notes config --machine-profile`), which decides whether a
+/// work project is listed here; `personal` when notes cannot say, so a box without notes hides
+/// work rather than listing it, and says so on stderr (the same fallback as
+/// `project_machine_profile` in project-name.sh).
+pub fn machine_profile(runner: &dyn Runner) -> String {
+    let out = runner.run(&["notes".into(), "config".into(), "--machine-profile".into()]);
+    out.ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "hub-core: `notes config --machine-profile` failed, so work projects are hidden here; rebuild notes"
+            );
+            "personal".into()
+        })
+}
+
 /// project-map.json: `$AGENT_QUEUE_PROJECT_MAP`, else the shared-hooks copy. agent-queue checks
 /// `--project` against the same file.
 pub fn map_path() -> PathBuf {
@@ -421,7 +438,7 @@ pub fn build(
     if let Some(q) = queue {
         out.errors.extend(q.errors.iter().cloned());
         let by_slug: HashMap<&str, &Item> = q.items.iter().map(|i| (i.slug.as_str(), i)).collect();
-        for r in home::running(state, q) {
+        for r in home::running(state, q, feed) {
             let item = by_slug[r.slug.as_str()];
             match owner(item, &labs).and_then(|o| at(&mut cards, &o)) {
                 Some(k) => cards[k].running.push(r),
@@ -466,22 +483,22 @@ pub fn build(
     out
 }
 
-/// A card's one-line progress, the same words on both surfaces:
-/// `v0.0.1 53% (314 of 590 by size), 7d 103, 28d 239, ETA 33d`.
+/// A card's one-line progress, the same words on both surfaces, every number named:
+/// `v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d`.
 pub fn summary(c: &Card) -> String {
     let p = &c.progress;
     let mut s = c.version.clone().unwrap_or_else(|| "no version".into());
     match c.percent {
         Some(pc) => {
             s += &format!(
-                " {pc}% ({} of {} by size)",
+                " {pc}% done ({} of {} size points)",
                 p.done_weight,
                 p.done_weight + p.open_weight
             )
         }
         None => s += " no rows",
     }
-    s += &format!(", 7d {}, 28d {}", p.closed_7d, p.closed_28d);
+    s += &format!(", closed {} in 7d, {} in 28d", p.closed_7d, p.closed_28d);
     s += &match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
@@ -597,6 +614,7 @@ mod tests {
             started: None,
             target: None,
             phases: None,
+            ..Default::default()
         }];
         let names = |q: &str, s: &str, sort: &str, dir: &str| -> Vec<String> {
             View::new::<Card>(q, s, sort, dir)
@@ -653,7 +671,7 @@ mod tests {
         assert!(v["cards"][0]["summary"]
             .as_str()
             .unwrap()
-            .starts_with("v0.1.0 25% (1 of 4 by size)"));
+            .starts_with("v0.1.0 25% done (1 of 4 size points)"));
         assert_eq!(v["cards"][0]["in_flight"], false);
         assert_eq!(v["cards"][0]["note_says"], "none");
         assert_eq!(
@@ -904,7 +922,7 @@ mod tests {
         c.eta_days = eta_days(&c.progress);
         assert_eq!(
             summary(&c),
-            "v0.0.1 53% (314 of 590 by size), 7d 103, 28d 239, ETA 33d"
+            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d"
         );
         c.eta_days = None;
         assert!(summary(&c).ends_with("no ETA (no closes in 28d)"));

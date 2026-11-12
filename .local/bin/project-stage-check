@@ -211,7 +211,7 @@ judge() {
       # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
       case "$pred" in *\`*) echo TODO; return ;; esac
       # A predicate is plain shell: `ls a b | grep -q .` must not fail on this script's pipefail.
-      if (set +o pipefail; export NAME TYPE REPO ROOT LAB; cd "$CHECK_DIR" || exit 1; eval "$pred") >/dev/null 2>&1; then
+      if (set +o pipefail; STAGE=""; [ -n "$SYSTEMS" ] || STAGE="$TARGET"; export NAME TYPE REPO ROOT LAB STAGE; cd "$CHECK_DIR" || exit 1; eval "$pred") >/dev/null 2>&1; then
         echo PASS
       else
         echo FAIL

@@ -17,7 +17,7 @@ const el = () => new Proxy({}, {
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
-const parts = { "work-head": part(), "work-facets": part(), "work-chips": part(), "work-body": part(), "work-tail": part() };
+const parts = { "work-head": part(), "work-facets": part(), "work-tiles": part(), "work-body": part(), "work-tail": part() };
 const doc = { getElementById: (id) => (id === "log-work" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};

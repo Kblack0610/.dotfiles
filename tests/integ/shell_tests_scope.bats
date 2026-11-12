@@ -90,6 +90,65 @@ fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats
   assert_failure
 }
 
+@test "picker: a name a test only stubs, mentions in prose, or uses as a directory does not pick it" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  local t
+  for t in '  stub agentctl "exit 0"' '# the agentctl conf' '@test "agentctl says no" {' \
+    'mkdir -p "$HOME/.config/agentctl/"' 'systemctl --user start agentctl@inbox.service'; do
+    run test_picked .local/bin/agentctl tests/x.bats <<<"$t"
+    assert_failure
+  done
+  # The same name run for real still picks it (negative control).
+  run test_picked .local/bin/agentctl tests/x.bats <<<'  stub fleet-bench "exit 0"; run agentctl list'
+  assert_success
+  # The real files: an agentctl change leaves the fleet_dispatch*.bats files out; a fleet-dispatch
+  # change, sourced only in the fleet_dispatch/common.bash they load, picks every one.
+  local f n=0
+  for f in "$REPO_ROOT"/tests/unit/fleet_dispatch*.bats; do
+    n=$((n + 1))
+    run test_picked .local/bin/agentctl "tests/unit/${f##*/}" <"$f"
+    assert_failure
+    run test_picked .local/bin/fleet-dispatch "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/unit/fleet_dispatch/common.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+    run test_picked tests/helpers/sandbox.bash "tests/unit/${f##*/}" <"$f"
+    assert_success
+  done
+  [ "$n" -gt 1 ]
+}
+
+@test "picker: a file a test loads picks it, with or without .bash, and so does a file that one loads" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  _TEST_PICK_REPO="$BATS_TEST_TMPDIR/repo"
+  mkdir -p "$_TEST_PICK_REPO/tests/unit/lib"
+  printf "load 'lib/inner'\n" > "$_TEST_PICK_REPO/tests/unit/lib/outer.bash"
+  printf "load 'lib/outer'\n" > "$_TEST_PICK_REPO/tests/unit/lib/inner.bash"   # a cycle ends
+  printf 'run fleet-dispatch\n' > "$_TEST_PICK_REPO/tests/unit/lib/plain"
+  local t
+  for t in "load 'lib/outer'" "load 'lib/outer.bash'" 'load lib/outer'; do
+    run test_picked tests/unit/lib/inner.bash tests/unit/x.bats <<<"$t"
+    assert_success
+  done
+  run test_picked tests/unit/lib/plain tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_success
+  run test_picked .local/bin/fleet-dispatch tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_success
+  # Negative controls: a file the test does not load, and a load of another directory's file.
+  run test_picked tests/unit/lib/inner.bash tests/unit/x.bats <<<"load 'lib/plain'"
+  assert_failure
+  run test_picked tests/unit/lib/inner.bash tests/integ/x.bats <<<"load 'lib/outer'"
+  assert_failure
+}
+
+@test "picker: a basename many files share counts only with its parent directory" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/skills/sentinel/SKILL.md tests/x.bats <<<'grep -c x "$R/.claude/skills/ci-cost/SKILL.md"'
+  assert_failure
+  run test_picked .claude/skills/sentinel/SKILL.md tests/x.bats <<<'grep -c x "$R/.claude/skills/sentinel/SKILL.md"'
+  assert_success
+}
+
 @test "picker: a changed test file picks itself" {
   SHELL_TESTS_CHANGED=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
   assert_output --partial "tests/integ/shell_tests_scope.bats"

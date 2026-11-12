@@ -11,13 +11,15 @@
 # every 3s. Each `gh run view` spends one call from the actions REST bucket (fleet-assess
 # gh_budget), so the cadence is slow.
 #
-# Exit: 0 success, neutral or skipped; 1 any other conclusion; 2 usage; 3 the first read failed
-# (wrong repo or id, auth) or MAX_ERRORS later reads failed in a row; 4 still open after MAX_SECS.
+# Exit: 0 success, neutral or skipped; 1 any other conclusion; 2 usage; 3 FIRST_READS reads failed
+# before a good one (wrong repo or id, auth) or MAX_ERRORS later reads failed in a row; 4 still
+# open after MAX_SECS.
 set -uo pipefail
 
 POLL_SECS=60            # the one cadence: a CI run takes minutes, and every read costs a call
 MAX_SECS=$((12 * 3600)) # guard, not a cadence: a run still open after 12h is not worth a session's wait
 MAX_ERRORS=15           # consecutive failed reads after a good one (network, rate limit): 15 min of outage
+FIRST_READS=3           # a run `gh workflow run` just started can 404 for seconds; a wrong id still fails in 2 min
 
 case "${1:-}" in
   '' | -h | --help) echo "usage: [GH_REPO=<owner>/<repo>] gh-run-wait <run-id> [label]" >&2; exit 2 ;;
@@ -37,8 +39,10 @@ while :; do
       case "$conclusion" in success | neutral | skipped) exit 0 ;; *) exit 1 ;; esac
     fi
   else
-    [ -n "$read_ok" ] || { echo "gh-run-wait: cannot read run $id (gh's error above; another repo needs GH_REPO)" >&2; exit 3; }
     errors=$((errors + 1))
+    if [ -z "$read_ok" ] && [ "$errors" -ge "$FIRST_READS" ]; then
+      echo "gh-run-wait: cannot read run $id (gh's error above; another repo needs GH_REPO)" >&2; exit 3
+    fi
     if [ "$errors" -ge "$MAX_ERRORS" ]; then
       echo "gh-run-wait: $MAX_ERRORS reads of run $id failed in a row (gh's errors above)" >&2
       exit 3

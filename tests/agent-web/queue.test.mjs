@@ -18,9 +18,9 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-tiles": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
-let asked = [];
+let asked = [], posted = [];
 let reply = {};
 const ctx = vm.createContext({
   console,
@@ -32,9 +32,9 @@ const ctx = vm.createContext({
   setTimeout: () => 0,
   location: { pathname: "/", hash: "" },
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
-  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
+  fetch: async (url, o) => { asked.push(url); if (o && o.body) posted.push(`${url} ${o.body}`); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
@@ -101,7 +101,7 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 const table = {
   q: "", state: "", sort: "", dir: "", total: 4, shown: 3,
   states: [{ name: "all", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "up next", n: 1 }, { name: "done", n: 0 }],
-  columns: ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title"].map((k) => col(k)),
+  columns: ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"].map((k) => col(k)),
   facets: [],
 };
 const item = (slug, o = {}) => ({ state: "queued", project: "dotfiles", slug, title: `title ${slug}`, priority: "high", ...o });
@@ -116,6 +116,43 @@ const load = (d = data, over = {}) => {
   Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
 };
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
+test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
+  await settle();
+  load();
+  draw();
+  const descriptors = [box, parts["q-list"]].map((parent) => [parent, Object.getOwnPropertyDescriptor(parent, "innerHTML")]);
+  // Replacing either ancestor detaches the input and clears browser focus.
+  for (const [parent, descriptor] of descriptors) Object.defineProperty(parent, "innerHTML", {
+    configurable: true,
+    get: () => descriptor.value,
+    set: (html) => { descriptor.value = html; doc.activeElement = null; },
+  });
+  const search = { id: "qt-q", dataset: { tsearch: "" }, value: "title", selectionStart: 1, selectionEnd: 4, closest: () => null };
+  doc.activeElement = search;
+  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0 }
+    : url.startsWith("/api/queue/stats") ? { week: "updated stats" }
+    : { ...data, items: [item("fresh")], table: { ...table, q: "title" } };
+  try {
+    fire("input", { type: "input", target: search });
+    await settle();
+    assert.equal(run("st.views.queue"), "q=title");
+    assert.equal(doc.activeElement, search, "the query response keeps focus");
+    assert.match(parts["qt-body"].innerHTML, /title fresh/, "the query response repaints the rows");
+    for (const refresh of ["refreshQueue", "refreshCands", "refreshFlow"]) {
+      run(`${refresh}()`);
+      await settle();
+      assert.equal(doc.activeElement, search, `${refresh} keeps the original input focused`);
+      assert.equal(search.value, "title");
+      assert.deepEqual([search.selectionStart, search.selectionEnd], [1, 4]);
+      assert.match(parts["qt-body"].innerHTML, /title fresh/);
+    }
+    assert.match(parts["qt-head"].innerHTML, /updated stats/);
+  } finally {
+    doc.activeElement = null;
+    reply = {};
+    for (const [parent, descriptor] of descriptors) Object.defineProperty(parent, "innerHTML", descriptor);
+  }
+});
 const target = (attrs, row) => ({
   dataset: attrs,
   closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs }
@@ -125,10 +162,10 @@ const target = (attrs, row) => ({
 test("the Queue is one table with the server's chips and every header a sort button", () => {
   load();
   const h = draw();
-  assert.match(h, /<button class="on" data-ts="">all <span class="n">3<\/span><\/button>/, "no chip is every row");
-  assert.match(h, /<button class="" data-ts="needs you">needs you <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<button class="" data-ts="up next">up next <span class="n">1<\/span><\/button>/);
-  for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title"]) {
+  assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
+  assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
+  assert.match(h, /<button class="tile" data-ts="up next"><span class="tl">UP NEXT<\/span><span class="tv">1<\/span><\/button>/);
+  for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"]) {
     assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
@@ -164,6 +201,19 @@ test("a state cell says what the item is, and how a done one ended", () => {
   assert.match(h, /<td class="bad">failed<\/td>/);
   assert.match(h, /<td class="muted">cancelled<\/td>/);
   assert.match(h, /<td>done<\/td>/);
+});
+
+test("an item not started is ready or held, a held cell names its hold, and the legend says what each means", () => {
+  const legend = "ready: starts when dispatch has a slot for it; held: waits on its hold";
+  load({ ...data, table: { ...table, legend }, items: [item("r", { state: "queued" }), item("h", { state: "queued", hold: "after r" })] });
+  const h = draw();
+  assert.match(h, /<td>ready<\/td>/);
+  assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/, "the legend is a fold under the table");
+  assert.doesNotMatch(h, /<td>queued<\/td>/);
+  // Negative control: a table with no legend draws no legend line.
+  load();
+  assert.doesNotMatch(draw(), /ready: starts/);
 });
 
 test("the page caps at the server's open_rows with +N older, one click lifts it", () => {
@@ -208,6 +258,32 @@ test("an old section id opens the table on its chip, once", async () => {
   assert.equal(ctx.history.url, "#queue?s=done");
 });
 
+test("an item's slug opens that item; one outside the view is searched for once", async () => {
+  load();
+  asked = [];
+  const slug = items[0].slug;
+  reply = data;
+  run(`st.tab = 'queue'; st.arg = '${slug}'; st.views.queue = ''`);
+  run("refreshQueue()");
+  await settle(); await settle();
+  assert.equal(run("qst.sel"), slug, "the item's record opens");
+  assert.equal(run("st.arg"), "");
+  // Not in this view: the table searches for it, and the read that has it opens it.
+  reply = (url) => (url.includes("q=gone") ? { ...data, items: [{ ...items[0], slug: "gone" }] } : { ...data, items: [] });
+  run("qst.sel = ''; st.arg = 'gone'; st.views.queue = 's=done'");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.ok(asked.some((u) => u.startsWith("/api/queue?q=gone")), asked.join(" "));
+  assert.equal(run("qst.sel"), "gone");
+  // An unknown slug searches once and then gives up, with the table still drawn.
+  reply = { ...data, items: [] };
+  run("qst.sel = ''; st.arg = 'nowhere'; st.views.queue = ''");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.equal(run("st.arg"), "");
+  assert.equal(run("qst.sel"), "");
+});
+
 test("a new section id scrolls to its section, not into the filter", async () => {
   load();
   reply = data;
@@ -240,14 +316,44 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   load({ ...data, items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /Item <span class="muted">w1<\/span>/);
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="11"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);
   assert.match(h, /<dd>2h10<\/dd>/);
   assert.match(h, /do the thing/);
   fire("click", { type: "click", target: target({}, "w1") });
-  assert.doesNotMatch(parts["q-list"].innerHTML, /Item <span/, "the same row again shuts it");
+  assert.doesNotMatch(parts["q-list"].innerHTML, /wdet/, "the same row again shuts it");
+});
+
+test("an opened row past the cap still shows, with its detail", () => {
+  load({ ...data, open_rows: 1 }, { sel: "q1" });
+  const h = draw();
+  assert.match(h, /data-slug="q1">.*<tr class="wdet">/s);
+  assert.doesNotMatch(h, /data-all/, "nothing is left under the opened row");
+});
+
+test("a waiting row's detail carries its session's ask, answered in place; one with none says where to look", async () => {
+  run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1" }]; st.asks = [{ id: "A1", session: "sid-1", question: "Ship it?", options: ["yes", "no"], project: "dotfiles" }]`);
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  let h = draw();
+  assert.match(h, /<tr class="wdet">.*<div class="card need k-ask" data-id="A1">.*Ship it\?/s);
+  assert.doesNotMatch(h, /answer on Home|data-home/);
+  posted = []; asked = [];
+  reply = { ok: true };
+  const card = { dataset: { id: "A1" }, querySelector: () => null };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : sel === "[data-a]" ? { dataset: { a: "yes" } } : null) } });
+  await settle();
+  assert.ok(posted.some((u) => u.startsWith("/api/asks/answer") && u.includes('"answer":"yes"')), posted.join(" "));
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue")).length, 0, "an answer re-reads no queue: the asks read redraws the card");
+  fire("toggle", { target: { open: true, dataset: { k: "ask:A1" }, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : null) } });
+  assert.equal(run("askst.open['ask:A1']"), true, "a card's fold is kept where waiting.js draws it from");
+  assert.equal(run("qst.open['ask:A1']"), undefined);
+  run("st.asks = []");
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  h = draw();
+  assert.match(h, /Waiting on a prompt in its window/, "negative control: no ask, no card, and the line says where to look");
+  run("st.agents = []");
 });
 
 test("cancel and the priority select are for an active item only, cancel asks twice", async () => {
@@ -290,4 +396,24 @@ test("a PR with no recorded merge says so, and a bare older number keeps its wor
 test("a row with a PR links it in the PR cell", () => {
   load();
   assert.match(draw(), /<td><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
+});
+
+test("an opened item links its session, project, row, PR and the PR's CI runs; the project cell links too", () => {
+  const links = [
+    { what: "session", text: "agent-3", href: "#fleet/session/w1" },
+    { what: "project", text: "dotfiles", href: "#projects/dotfiles" },
+    { what: "row", text: "ar-1726", href: "#projects/agent-runtime?row=ar-1726" },
+    { what: "pr", text: "o/r#7", href: "https://github.com/o/r/pull/7" },
+    { what: "ci", text: "CI runs of o/r#7", href: "#infra/runs?bq=pr:=o%2Fr%237" },
+  ];
+  load({ ...data, items: [item("w1", { links })], table: { ...table, links: [{ project: "#projects/dotfiles" }] } });
+  assert.match(draw(), /<td><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td>/, "the project cell is its page");
+  fire("click", { type: "click", target: target({}, "w1") });
+  const h = parts["q-list"].innerHTML;
+  assert.match(h, /<div class="cline qlinks">session <a class="tl" href="#fleet\/session\/w1">agent-3<\/a>, project <a class="tl" href="#projects\/dotfiles">dotfiles<\/a>, row <a class="tl" href="#projects\/agent-runtime\?row=ar-1726">ar-1726<\/a>, pr <a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">o\/r#7<\/a>, <a class="tl" href="#infra\/runs\?bq=pr:=o%2Fr%237">CI runs of o\/r#7<\/a><\/div>/);
+  fire("click", { type: "click", target: target({}, "w1") });
+  load({ ...data, items: [item("w1")] });
+  fire("click", { type: "click", target: target({}, "w1") });
+  assert.doesNotMatch(parts["q-list"].innerHTML, /qlinks/, "an item that names nothing draws no line");
+  fire("click", { type: "click", target: target({}, "w1") });
 });

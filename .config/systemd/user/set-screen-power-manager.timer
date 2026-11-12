@@ -1,5 +1,5 @@
 [Unit]
-Description=Set screen power saveer
+Description=Keep screens awake during the day and enable power saving overnight
 After=graphical-session-pre.target
 PartOf=graphical-session.target
 

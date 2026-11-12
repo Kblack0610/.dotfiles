@@ -13,8 +13,8 @@ The human's own machines (Linux workstation and a Mac). Stow links each tracked 
 ## Ship a change
 
 1. Land it on `main` through a PR. CI (`.github/workflows/tests.yml`) runs the unit and integ tiers, the ui tier in a container, the Rust gate, skill lint and shellcheck.
-2. Update the main checkout: `git -C ~/.dotfiles pull`. A new file needs `cd ~/.dotfiles && stow --no-folding .` to get its link; edits to a linked file are live with no step.
-3. Rebuild a Rust part if its crate changed: `cargo build --release` in its directory (the symlink in `~/.local/bin` already points at `target/release/`).
+2. `agent-land` does the rest of the deploy as its live step, `dotfiles-autopull --now`: it fast-forwards the main checkout, links any file the move added (`dotfiles-deploy --apply --missing`, `skill-deploy`), runs `cargo build --release` for every Rust tool linked into `~/.local/bin` (cargo follows path dependencies such as `hub-core`, and is a no-op when nothing changed), restarts a running user unit named after a tool whose binary is newer than the unit (`agent-web.service`), and restarts a running persistent agentctl runner whose script is newer than its `agentctl@<name>.service` (inbox-triage, sentinel), since a long-lived bash process keeps the code it started with (a change only to a library it sources waits for `agentctl restart <name>`). Each step prints one `live:` line. A PR merged by hand gets the same at the next shell start (at most every 6h), or now with `dotfiles-autopull --now ~/.dotfiles`.
+3. A failed build leaves the binary on disk in place and says so on a `live:` line; its report is in `~/.cache/dotfiles-autopull/autopull.log`. All builds of one pass share a 900s budget (`DOTFILES_AUTOPULL_BUILD_SECS`). `hub`, `agent-panel` and `timebox` pick up the new binary on their next start; `agent-web.service` (its unit is in the private overlay) is the only Rust unit restarted today.
 4. Re-read the config on every live world: `Prefix+r`, or `tmx reload`. Scripts run fresh on each key, so they need nothing more.
 5. Add a new world or repair a missing session with `tmx ensure <world>`. It only creates what is missing.
 
@@ -26,7 +26,7 @@ Revert the PR on `main` (a new revert PR, never a rewrite of pushed history), pu
 
 ## Not yet in place
 
-- No deploy workflow runs on merge: the forge API check for it is still "not yet" in `.local/src/docs/stages.md`, and a pull plus `tmx reload` is the whole deploy.
+- No deploy workflow runs on merge: the forge API check for it is still "not yet" in `.local/src/docs/stages.md`. `agent-land`'s live step deploys on the merging machine only, and `tmx reload` stays a hand step.
 - No perf baseline on the target. Worktree creation cost is measured by hand (`.local/src/tmux/README.md`, "Measuring it again").
 - Secrets: none are held by this tree. Machine-local state (`~/.config/tmux-servers/hidden`, the dispatch pane map) is per machine and never synced.
 
@@ -41,9 +41,9 @@ The human's Linux workstation, where the runners, queue and dispatch run unatten
 ## Ship a change
 
 1. Land it on `main` through a PR (`agent-land <pr>` for a queue item). CI runs the fast tiers, the Rust gate and skill lint. A change to the private overlay is its own PR in that repo.
-2. Pull the checkout that stow points at: `git -C ~/.dotfiles pull`, and the same for `~/.dotfiles-private`. A new file needs `stow --no-folding .` in that repo to get its link.
+2. `agent-land`'s live step pulls the checkout that stow points at, links new files, rebuilds the Rust views and restarts `agent-web` (the cockpit's step 2 above). A PR merged by hand: `dotfiles-autopull --now ~/.dotfiles` (or `~/.dotfiles-private`).
 3. After a conf, role or timer change: `agentctl reload`. It validates confs, skips an invalid one (shown by `agentctl list` under "invalid"), regenerates timers and runs `daemon-reload`.
-4. After a Rust crate change: `cargo build --release` in the crate, then `systemctl --user restart agent-web` if that is the crate. The `hub` TUI picks up the new binary on its next start.
+4. A Rust crate change needs no step: the live step rebuilds every Rust tool linked into `~/.local/bin` (`agent-web`, `hub`, `agent-panel`, `timebox`) and restarts `agent-web.service` on a new binary.
 5. Check: `agentctl list` for each runner's verdict and next run, `agentctl status <name>` for one, `fleet-sessions --json` for the sessions.
 
 A worktree is not the deployed copy: links point at the main checkout, so run a script from a worktree by its path. Do not start a live model call or a daemon from a test on the host.
@@ -56,6 +56,6 @@ A worktree is not the deployed copy: links point at the main checkout, so run a 
 
 ## Not yet in place
 
-- No deploy workflow runs on merge: the forge API check for it is still "not yet" in `.local/src/docs/stages.md`, and a pull plus `agentctl reload` is the whole deploy.
+- No deploy workflow runs on merge: the forge API check for it is still "not yet" in `.local/src/docs/stages.md`. `agent-land`'s live step deploys on the merging machine only, and `agentctl reload` stays a hand step.
 - No perf baseline on the target. Spend and call volume are watched instead (`~/.config/agentctl/SENTINEL.md`, "Spend alerts").
 - Secrets: none are held by either tree. Route and gateway keys are machine-local files under `~/.local/state/`, per machine and never synced; there is no `secrets-sync --check` yet (stage row "P4").

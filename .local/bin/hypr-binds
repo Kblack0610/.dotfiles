@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # hypr-binds - every live Hyprland bind as one TSV row each, with the full chord that reaches it.
 #
-#   hypr-binds    chord<TAB>description<TAB>dispatcher<TAB>arg, in `hyprctl binds -j` order
+#   hypr-binds    chord<TAB>description<TAB>dispatcher<TAB>arg, in the order the config binds them
 #
 # A bind inside a submap is reached by the binds that enter that submap, so its chord is the path
-# from the top: a leaf `p` in pinbar-timebox reads "Super+A u t p". The first chord into a submap
+# from the top: a leaf `p` in pinbar-timebox reads "Super+A t p". The first chord into a submap
 # wins, and an Esc that goes back to a parent is never taken as the way in. description is empty
-# for a bind made without one (bind rather than bindd).
+# for a bind made without one.
 #
-# The one reader of `hyprctl binds -j`: control-menu lists its window rows from it and `keys`
-# its hypr layer, so a chord means the same thing in both.
+# The source is the bind registry the Lua config keeps (.config/hypr/conf/keys.lua), read with
+# `hyprctl repl`: since 0.57, `hyprctl binds -j` names every action "HL.Dispatcher(exec_cmd)" and
+# not what it runs. control-menu lists its window rows from this and `keys` its hypr layer, so a
+# chord means the same thing in both.
 
 set -u
 
-hyprctl binds -j 2>/dev/null | jq -r '
+json=$(hyprctl repl 'return hypr_binds_json()' 2>/dev/null)
+[ -n "$json" ] || { echo "hypr-binds: no bind registry (is Hyprland running with the Lua config? see hyprctl configerrors)" >&2; exit 1; }
+printf '%s\n' "$json" | jq -r '
     def bit($n): (. / $n | floor) % 2 == 1;
     def chord: [(.modmask | if bit(64) then "Super" else empty end, if bit(4) then "Ctrl" else empty end,
                  if bit(8) then "Alt" else empty end, if bit(1) then "Shift" else empty end),
