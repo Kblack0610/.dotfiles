@@ -10,8 +10,8 @@
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
 //! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
-//! from facts (who can act, what it holds, how long it waited, the row's own priority), never a
-//! model's number.
+//! from facts (who can act, whether it stops running work, what it holds, how long it waited, a
+//! sheet row's own priority), never a model's number.
 
 use std::collections::HashSet;
 
@@ -304,14 +304,14 @@ impl Score {
         }
     }
 
-    /// A sheet row: a to-do, which ranks after the rows that block running work.
-    fn sheet(&self) -> bool {
-        self.priority.is_some()
-    }
-
-    /// A `high` sheet row, which ranks after the `urgent` ones.
-    fn later(&self) -> bool {
-        self.priority.as_deref() == Some("high")
+    /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
+    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one.
+    fn tier(&self) -> u8 {
+        match self.priority.as_deref() {
+            None => 0,
+            Some("high") => 2,
+            Some(_) => 1,
+        }
     }
 }
 
@@ -677,9 +677,9 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
 }
 
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
-/// infra (None until read), ranked: the asks, sessions, queue items and `#urgent` sheet rows only
-/// the human can act on by what their wait costs (`Score::value`), then the `#high` sheet rows
-/// by the same value, then those the judge said a machine could answer, then the conditions:
+/// infra (None until read), ranked: the asks, sessions and queue items only the human can act on
+/// by what their wait costs (`Score::value`), then the `#urgent` sheet to-dos, then the `#high`
+/// ones, each by the same value, then those the judge said a machine could answer, then the conditions:
 /// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
 /// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
 pub fn needs(
@@ -994,7 +994,7 @@ pub fn needs(
             n.score.is_none(),
             n.score
                 .as_ref()
-                .map(|s| (!s.human, s.sheet(), s.later(), std::cmp::Reverse(s.value))),
+                .map(|s| (!s.human, s.tier(), std::cmp::Reverse(s.value))),
         )
     });
     for (i, n) in out.iter_mut().enumerate() {
@@ -1563,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn human_sheet_rows_that_need_the_human_rank_by_priority_then_their_wait() {
+    fn live_waits_lead_then_sheet_to_dos_by_priority_then_their_wait() {
         let mut asked = item("asked", State::Waiting, Some("lab:repo-agent-1"));
         asked.row = Some("trader:tr-51".into());
         let q = Queue {
