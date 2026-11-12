@@ -184,6 +184,8 @@ ask_project() {
     KEPT=$((KEPT + 1)); DEFERRED="$(jq -c --arg t "$text" '. + [$t]' <<<"$DEFERRED")"; return 0
   fi
   for p in "$@"; do opts+="$p=file it on $p|"; done
+  # Names every option's project, so a name like zmk_config is not refused as an undefined term.
+  context+="${context:+. }The projects it could go to: $*"
   opts+="drop=take the line out of the outbox, it needs no row"
   t="$text"; [ "${#t}" -le 100 ] || t="${t:0:97}..."
   q="Which project is this outbox line for: \"$t\"?"
