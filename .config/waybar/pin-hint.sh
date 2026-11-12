@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# which-key style popup for the pin leader submaps (see hypr/conf.d/leader.conf).
+# which-key style popup for the pin leader submaps (see hypr/conf/leader.lua).
 # Replace-in-place via a fixed notification id so nested levels swap the popup
 # rather than stacking. Auto-expires as a safety net if a submap is left open.
 #
-# The legend is the submap's described binds (bindd/bindpd in leader.conf), read live from
+# The legend is the submap's described binds (the description on each bind in leader.lua), read live from
 # `hyprctl binds -j`, so a key added there with a description shows here with no edit. Keys
 # that share a description share a line entry (esc/q exit).
 #

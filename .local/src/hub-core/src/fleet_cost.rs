@@ -8,10 +8,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Older than this the block says it is stale: four missed tries of the sampler's 30 minutes, the
-/// limit `fleet-bench kpi` uses for the same file.
-const STALE_SECS: i64 = 2 * 3600;
-/// How many past days the block lists, from the nightly token-usage snapshots.
-const DAYS: usize = 7;
+/// limit `fleet-bench kpi` uses for the same file. `budget.json` shares it, from the same step
+/// (`FILE_STALE_SECS` in agent-usage-budget.py).
+pub(crate) const STALE_SECS: i64 = 2 * 3600;
 /// Below this a dollar figure is rounding, not money.
 const CENT: f64 = 0.005;
 
@@ -124,12 +123,11 @@ pub struct FleetCost {
     pub rows: Vec<Row>,
     /// Models with no fitted rate, whose tokens are not in the total.
     pub unpriced: Vec<String>,
-    pub days: String,
     pub foot: &'static str,
 }
 
 /// Dollars at a size that does not claim more than an estimate knows: cents only under $10.
-fn dollars(v: f64) -> String {
+pub fn dollars(v: f64) -> String {
     if v < 10.0 {
         return format!("${v:.2}");
     }
@@ -221,8 +219,8 @@ fn share_text(usd: Option<f64>, total: f64) -> String {
     }
 }
 
-/// The block from the file and the past days' totals (date, dollars), newest first.
-pub fn build(f: &File, past: &[(String, f64)], now: i64) -> FleetCost {
+/// The block from the file.
+pub fn build(f: &File, now: i64) -> FleetCost {
     let dream = f.by_runner.get("dream").cloned().unwrap_or_default();
     let runner = f.by_origin.get("runner").cloned().unwrap_or_default();
     let others = Cut {
@@ -309,20 +307,8 @@ pub fn build(f: &File, past: &[(String, f64)], now: i64) -> FleetCost {
                 )
             })
             .collect(),
-        days: days_line(past),
         foot: FOOT,
     }
-}
-
-/// `11-04 $1,754  11-05 $2,127`, oldest first.
-fn days_line(past: &[(String, f64)]) -> String {
-    let mut days: Vec<String> = past
-        .iter()
-        .take(DAYS)
-        .map(|(d, usd)| format!("{} {}", d.get(5..).unwrap_or(d), dollars(*usd)))
-        .collect();
-    days.reverse();
-    days.join("  ")
 }
 
 /// The block when there is no file to read.
@@ -373,7 +359,7 @@ mod tests {
 
     #[test]
     fn the_rows_add_up_to_the_whole_and_every_share_is_of_it() {
-        let b = build(&file(), &[], NOW);
+        let b = build(&file(), NOW);
         let sum: f64 = b.rows.iter().filter_map(|r| r.usd).sum();
         assert!((sum - 200.0).abs() < 1e-9, "{sum}");
         assert_eq!(row(&b, "shepherd").share, "15%");
@@ -387,7 +373,7 @@ mod tests {
 
     #[test]
     fn each_row_says_what_is_measured_and_what_is_estimated() {
-        let b = build(&file(), &[], NOW);
+        let b = build(&file(), NOW);
         assert_eq!(
             row(&b, "queue, dispatch run").basis,
             "40 sessions, estimated"
@@ -414,7 +400,7 @@ mod tests {
 
     #[test]
     fn a_harness_with_no_price_is_unknown_never_zero() {
-        let b = build(&file(), &[], NOW);
+        let b = build(&file(), NOW);
         let r = row(&b, "lazer-reserve");
         assert_eq!((r.usd, r.cost.as_str(), r.share.as_str()), (None, "-", "-"));
         assert_eq!(r.basis, "0 of 1 session, no price known");
@@ -423,7 +409,7 @@ mod tests {
 
     #[test]
     fn every_runner_is_named_under_other_runners_and_the_remainder_says_what_it_is() {
-        let b = build(&file(), &[], NOW);
+        let b = build(&file(), NOW);
         let r = row(&b, "other runners");
         assert_eq!(r.usd, Some(20.0), "the runner origin less dream");
         assert_eq!(
@@ -445,7 +431,7 @@ mod tests {
             },
         );
         f.total.usd = 225.0;
-        let b = build(&f, &[], NOW);
+        let b = build(&f, NOW);
         let sum: f64 = b.rows.iter().filter_map(|r| r.usd).sum();
         assert!((sum - 225.0).abs() < 1e-9, "{sum}");
         assert_eq!(row(&b, "queue, resume").basis, "4 sessions, estimated");
@@ -460,7 +446,7 @@ mod tests {
         assert_eq!(c.priced(), None);
         let mut f = file();
         f.by_origin.insert("plan".into(), c);
-        let b = build(&f, &[], NOW);
+        let b = build(&f, NOW);
         let r = row(&b, "queue, plan");
         assert_eq!((r.usd, r.cost.as_str(), r.share.as_str()), (None, "-", "-"));
         assert_eq!(r.basis, "3 sessions, no price known");
@@ -474,18 +460,14 @@ mod tests {
             "coverage": {"estimated_token_share": null, "sessions": 0, "sessions_estimated": 0},
         }))
         .unwrap();
-        assert_eq!(build(&f, &[], NOW).coverage, "no tokens in the window");
+        assert_eq!(build(&f, NOW).coverage, "no tokens in the window");
     }
 
     #[test]
-    fn staleness_coverage_unpriced_and_days_read_as_they_say() {
-        let past = [
-            ("2026-11-08".to_string(), 738.4),
-            ("2026-11-07".to_string(), 1295.0),
-        ];
-        let b = build(&file(), &past, NOW);
+    fn staleness_coverage_and_unpriced_read_as_they_say() {
+        let b = build(&file(), NOW);
         assert!(!b.stale);
-        assert!(build(&file(), &past, NOW + 2 * 3600).stale);
+        assert!(build(&file(), NOW + 2 * 3600).stale);
         assert_eq!(
             b.coverage,
             "70% of tokens estimated: 200 of 300 sessions have no cost telemetry"
@@ -494,7 +476,6 @@ mod tests {
             b.unpriced,
             ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"]
         );
-        assert_eq!(b.days, "11-07 $1,295  11-08 $738");
     }
 
     #[test]

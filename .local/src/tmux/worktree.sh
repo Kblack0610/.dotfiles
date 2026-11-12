@@ -37,6 +37,8 @@
 #                     $WT_ROOT; with one, that repo's linked worktrees. --tsv prints
 #                     state, action, name, path, reason per tree and no total.
 #                     An orphan daemon in Library/ does not hold a tree: gc ends it and names its pid.
+#   orphans [-n]      end every orphan daemon in a Unity project's Library/ (any path, not
+#                     only $WT_ROOT) whose editor is gone, and name each by pid.
 #   --list            the rows, TSV. The data behind the picker, split out so it is
 #                     assertable without a terminal.
 #   preview <path>    the picker's preview pane for one worktree.
@@ -357,8 +359,14 @@ wt_submodule_worktrees() {
 
 # wt_editor_open <path> -- true when a Unity editor has <path> open. An editor holds no tmux
 # pane, so the session checks miss it, and deleting a project under it loses its scene edits.
-# Hub-launched editors run as unityhub-unity-editor-* with a lowercase -projectpath.
+# Hub-launched editors run as unityhub-unity-editor-* with a lowercase -projectpath. An editor's
+# working directory is its project, so one opened through a symlink or a differently spelled
+# path counts too.
 wt_editor_open() {
+  local pid
+  for pid in $(wt_pids_inside "$1"); do
+    case "$(cat "${WT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null)" in Unity* | unityhub-unity*) return 0 ;; esac
+  done
   ps -eo comm=,args= 2>/dev/null |
     awk -v p="$1" '
       $1 !~ /^(Unity|unityhub-unity)/ { next }
@@ -407,14 +415,17 @@ wt_tmux_all() {
 
 wt_live_sessions() { wt_tmux_all list-sessions -F '#{session_name}'; }
 
-wt_session_exists() {
+# wt_session_server <name> -- the server a live session of that name is on, rc 1 if none.
+wt_session_server() {
   local s
-  tmux has-session -t "=$1" 2>/dev/null && return 0
+  tmux has-session -t "=$1" 2>/dev/null && { printf '%s\n' "${WT_SERVER:-$(wt_current_server)}"; return 0; }
   while IFS= read -r s; do
-    tmux -L "$s" has-session -t "=$1" 2>/dev/null && return 0
+    tmux -L "$s" has-session -t "=$1" 2>/dev/null && { printf '%s\n' "$s"; return 0; }
   done < <(wt_other_servers)
   return 1
 }
+
+wt_session_exists() { wt_session_server "$1" >/dev/null; }
 
 # wt_pane_inside <path> -- true when any tmux pane, in ANY session, sits in <path> or below.
 # The session-name check alone misses a pane that cd'd in from elsewhere: a Claude started in
@@ -875,14 +886,18 @@ wt_lock() {
   ln -s "$$" "$lock" 2>/dev/null
 }
 
-# wt_to_agent_world -- send this run's sessions to the agent world, from whichever world the key
-# was pressed in, or from no tmux at all. An explicit --server still wins. Inside tmux the
-# client has to cross servers too, which WT_HOP tells wt_focus.
+# wt_to_agent_world [<session>] -- send this run's sessions to the agent world (`@agents`, lab),
+# from whichever world the key was pressed in, or from no tmux at all: every worktree session
+# lives there, the human's and the dispatched ones alike, and only main checkouts sit in hub.
+# A <session> already live on some server stays there: a second session on the same directory
+# would be a second Claude in it. An explicit --server still wins. Inside tmux the client has to
+# cross servers too, which WT_HOP tells wt_focus.
 WT_HOP=0
 wt_to_agent_world() {
-  local world
+  local session="${1:-}" world=''
   [ -z "$WT_SERVER" ] || return 0
-  world="$(world_agents)"
+  [ -z "$session" ] || world="$(wt_session_server "$session")"
+  [ -n "$world" ] || world="$(world_agents)"
   [ -n "$world" ] && [ "$world" != "$(wt_current_server)" ] || return 0
   WT_SERVER="$world"
   panel_in_tmux && WT_HOP=1
@@ -1090,7 +1105,7 @@ wt_land() {
   local path="$1" name
   [ -d "$path" ] || panel_die "no such worktree: $path"
   name="$(basename "$path")"
-  wt_to_agent_world
+  wt_to_agent_world "$name"
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   wt_focus "$name"
 }
@@ -1387,6 +1402,43 @@ cmd_gc() {
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 
+# cmd_orphans [-n] -- end every orphan daemon whose Unity editor is gone, wherever its project
+# lives. The plugin stops its gamedev-mcp-server only when its editor quits cleanly; after a
+# crash or a kill the server ran on, holding its port, until someone killed it by hand (ar-228).
+# reap ends one only in a landed tree, so the main checkout, a clone or an unlanded tree kept
+# theirs. A dir counts as a project when it has ProjectSettings/. The unity-orphan-gc runner
+# runs this on a cadence: nothing signals the exit of a process that is not our child.
+# rc 1 when a daemon outlived SIGTERM, named by pid and project.
+cmd_orphans() {
+  local dry=0 arg root pids rc=0 n=0
+  for arg in "$@"; do
+    case "$arg" in
+    -n | --dry-run) dry=1 ;;
+    *) panel_die "orphans: unknown argument: $arg" ;;
+    esac
+  done
+  while IFS= read -r root; do
+    [ -d "$root/ProjectSettings" ] || continue
+    wt_editor_open "$root" && continue
+    pids=$(wt_orphans_inside "$root" | paste -sd, -)
+    [ -n "$pids" ] || continue
+    n=$((n + 1))
+    if [ "$dry" -eq 1 ]; then
+      printf 'would end %s  %s\n' "$pids" "$root"
+    elif wt_end_orphans "$root" 2>/dev/null; then
+      printf 'ended %s  %s\n' "$pids" "$root"
+    else
+      printf 'failed %s  %s: outlived SIGTERM\n' "$pids" "$root"
+      rc=1
+    fi
+  # Each dir above a /Library/ in a binary's path is a candidate root; ProjectSettings/ picks the
+  # project, so one under a dir named Library is still found.
+  done < <(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/exe -maxdepth 0 -lname '*/Library/*' -printf '%l\n' 2>/dev/null |
+    awk -F'/Library/' '{ p = $1; print p; for (i = 2; i < NF; i++) { p = p "/Library/" $i; print p } }' | sort -u)
+  [ "$n" -gt 0 ] || panel_hint 'no orphan daemons'
+  return "$rc"
+}
+
 # ── Picker ───────────────────────────────────────────────────────────────────
 
 cmd_pick() {
@@ -1438,6 +1490,10 @@ reap)
 gc)
   shift
   cmd_gc "$@"
+  ;;
+orphans)
+  shift
+  cmd_orphans "$@"
   ;;
 preview)
   shift

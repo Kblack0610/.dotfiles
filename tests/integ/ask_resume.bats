@@ -246,6 +246,8 @@ EOF
   assert_output --partial "would run: consumer --answer $id"
   ask-resume "$id"
   ask-resume --all
-  run calls
+  # The answer also reads the queue for items held on the ask (agent-ask start_held), so only the
+  # consumer's own calls are counted.
+  run grep '^consumer ' "$NOTES_FIXTURE/calls.log"
   assert_output "consumer --answer $id"
 }

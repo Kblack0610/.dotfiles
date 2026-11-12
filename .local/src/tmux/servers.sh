@@ -481,7 +481,7 @@ _focus_terminal() {
   [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1 || return 0
   wins=" $(hyprctl clients -j 2>/dev/null | jq -r '.[].pid' 2>/dev/null | tr '\n' ' ')"
   while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
-    case "$wins" in *" $pid "*) hyprctl dispatch focuswindow "pid:$pid" >/dev/null 2>&1; return 0 ;; esac
+    case "$wins" in *" $pid "*) hyprctl dispatch "hl.dsp.focus({ window = \"pid:$pid\" })" >/dev/null 2>&1; return 0 ;; esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
   done
   return 0
@@ -663,6 +663,9 @@ FLEET_STATE_MAX_AGE=300
 # The widest a row may be: the hub runs in an 80-column tmux pane (dashboards rule 11).
 ROW_WIDTH=80
 SESSION_NAME_WIDTH=30
+# A favourite session's mark (tags.sh fav), a star and a space: two cells, the width of the
+# indent it replaces. Written as UTF-8 bytes, since $'\u...' depends on the caller's locale.
+FAV_MARK=$'\xe2\x98\x85 '
 
 declare -A FLEET=() FLEET_SESSIONS=()
 FLEET_EPOCH=0
@@ -751,7 +754,7 @@ _row() {
 # forks (tests/integ/tmx_rows_cost.bats pins it).
 _all_rows() {
   local s n sess wins att spath created activity idx wname wact pcmd ptitle line m1
-  local disp mark what col title need body="" rows word known now fleet_ok=0 name f
+  local disp mark what col title need body="" rows word known now fleet_ok=0 name f fav
   local -a stranded=() sessions=()
   local -A declared=() what_of=() wrows_of=() col_of=() title_of=() need_of=()
 
@@ -768,7 +771,7 @@ _all_rows() {
     [ -n "$s" ] || continue
 
     mapfile -t sessions < <(tmux -L "$s" list-sessions -F \
-      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}" 2>/dev/null)
+      "#{session_name}"$'\t'"#{session_windows}"$'\t'"#{session_attached}"$'\t'"#{session_path}"$'\t'"#{session_created}"$'\t'"#{session_activity}"$'\t'"#{?@fav,1,0}" 2>/dev/null)
     n="${#sessions[@]}"
     if [ "$n" -eq 0 ]; then
       _row "$s" '' '' "$s  not running"; body+="$_ROW"$'\n'
@@ -814,7 +817,7 @@ _all_rows() {
 
     rows=""; need=0
     for line in "${sessions[@]}"; do
-      IFS=$'\t' read -r sess wins att spath created activity <<< "$line"
+      IFS=$'\t' read -r sess wins att spath created activity fav <<< "$line"
       [ -n "$sess" ] || continue
       spath="${spath/#$HOME/\~}"
       what="${what_of["$sess"]:-}"
@@ -824,6 +827,7 @@ _all_rows() {
         && [ "$created" -le "$FLEET_EPOCH" ] && [ -z "${declared["$sess"]:-}" ]; then
         _mid "$sess" "$SESSION_NAME_WIDTH"; _idle_text "$(( (now - activity) / 60 ))"
         printf -v disp '  %s  %-*s %s  idle %s  stranded' "$s" "$SESSION_NAME_WIDTH" "$_MID" "$what" "$_IDLE"
+        [ "$fav" = "1" ] && disp="$FAV_MARK${disp:2}"
         _row "$s" "$sess" '' "$disp"; stranded+=("$_ROW")
         continue
       fi
@@ -838,6 +842,8 @@ _all_rows() {
         printf -v disp '  %-13s %-22s %2s win  %s' "$m1" "$_MID" "$wins" "$what"
       fi
       [ "$att" = "1" ] && disp="$disp  (attached)"
+      # A favourite (Prefix+t f, the session's @fav) leads with a star in place of the indent.
+      [ "$fav" = "1" ] && disp="$FAV_MARK${disp:2}"
       _row "$s" "$sess" '' "$disp"; rows+="$_ROW"$'\n'
       [ "$wins" = "1" ] || rows+="${wrows_of["$sess"]:-}"
     done

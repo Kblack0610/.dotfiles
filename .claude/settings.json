@@ -62,10 +62,16 @@
       "Bash(chown -R * /)",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git push --force-if-includes*)",
       "Bash(git reset --hard*)",
       "Bash(git clean -fd*)",
       "Bash(git clean -fx*)",
       "Bash(git clean -ffd*)",
+      "Bash(git clean -f)",
+      "Bash(git clean -f *)",
+      "Bash(git clean -fdx*)",
+      "Bash(git clean -xdf*)",
       "Bash(curl * | sh)",
       "Bash(curl * | bash)",
       "Bash(curl * | zsh)",
@@ -201,15 +207,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-pkill-f.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Bash|Read",
         "hooks": [
           {
@@ -250,7 +247,7 @@
         ]
       },
       {
-        "matcher": "Grep|Glob|Bash",
+        "matcher": "Grep|Glob",
         "hooks": [
           {
             "type": "command",
@@ -390,6 +387,7 @@
     "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
+    "reaper-ops": "name-only",
     "run": "name-only",
     "runn-log-time": "name-only",
     "schedule": "name-only",

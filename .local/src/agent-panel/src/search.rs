@@ -36,8 +36,12 @@ pub fn index_notes(index: &str) -> HashMap<String, String> {
         .filter_map(|line| {
             let f: Vec<&str> = line.split('\t').collect();
             let id = f.first().filter(|id| !id.is_empty())?;
-            let text: Vec<&str> =
-                [5, 7, 8, 9, 10].iter().filter_map(|&i| f.get(i)).copied().filter(|v| *v != "-" && !v.is_empty()).collect();
+            let text: Vec<&str> = [5, 7, 8, 9, 10]
+                .iter()
+                .filter_map(|&i| f.get(i))
+                .copied()
+                .filter(|v| *v != "-" && !v.is_empty())
+                .collect();
             Some((id.to_string(), text.join(" ").to_lowercase()))
         })
         .collect()
@@ -114,13 +118,18 @@ pub fn notes(rows: &[Row], agents: &[Agent], index: &HashMap<String, String>) ->
 /// at the start of a word: "helm" is not in "overwhelm", "pod" not in "tripod".
 fn matches(note: &str, words: &[Vec<&str>]) -> bool {
     words.iter().all(|alts| {
-        alts.first().is_some_and(|w| note.contains(w)) || alts.iter().skip(1).any(|w| starts_a_word(note, w))
+        alts.first().is_some_and(|w| note.contains(w))
+            || alts.iter().skip(1).any(|w| starts_a_word(note, w))
     })
 }
 
 fn starts_a_word(note: &str, w: &str) -> bool {
-    note.match_indices(w)
-        .any(|(i, _)| note[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
+    note.match_indices(w).any(|(i, _)| {
+        note[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric())
+    })
 }
 
 /// The rows of `notes` (see [`notes`]) that match `query`, as fzf input. A leading `'` on a word
@@ -143,7 +152,9 @@ pub fn filter(notes: &str, query: &str, topics: &HashMap<String, Vec<String>>) -
     let mut out: Vec<&str> = Vec::new();
     let mut header: Option<&str> = None;
     for line in notes.lines() {
-        let Some((note, row)) = line.split_once('\t') else { continue };
+        let Some((note, row)) = line.split_once('\t') else {
+            continue;
+        };
         if row.starts_with('\t') {
             // A header: its target field is empty. Held until one of its agents matches.
             header = Some(row);
@@ -178,18 +189,34 @@ mod tests {
     }
 
     fn row(target: &str, display: &str) -> Row {
-        Row { target: target.into(), text: format!("{target}\t{display}") }
+        Row {
+            target: target.into(),
+            text: format!("{target}\t{display}"),
+        }
     }
 
     fn fixture() -> String {
         let index = "sid-1\tu\t-\t1\t/home/u/dotfiles\tfeat/x\tfix-nightly-test-red-loop\tTurntable speaker audio not working | fix-nightly-test-red-loop\tthe record player is silent\tnow fix the nightly\t.config/pipewire/x.conf\t-\thand\n\
                      sid-2\tu\t-\t1\t/home/u/dotfiles\tmain\tsnapcast\tWhole house snapcast\tset up snapcast\t-\t-\t-\thand\n";
-        let agents = [agent("hub/dotfiles:1", "sid-1", "dotfiles"), agent("hub/dotfiles:2", "sid-2", "dotfiles"), agent("lab/game:1", "sid-3", "game")];
+        let agents = [
+            agent("hub/dotfiles:1", "sid-1", "dotfiles"),
+            agent("hub/dotfiles:2", "sid-2", "dotfiles"),
+            agent("lab/game:1", "sid-3", "game"),
+        ];
         let rows = [
-            Row { target: String::new(), text: "\t\x1b[1m━━━ dotfiles\x1b[0m (2)".into() },
-            row("hub/dotfiles:1", " \x1b[32m✓\x1b[0m 56m dotfiles:1 fix-nightly-test-red-loop"),
+            Row {
+                target: String::new(),
+                text: "\t\x1b[1m━━━ dotfiles\x1b[0m (2)".into(),
+            },
+            row(
+                "hub/dotfiles:1",
+                " \x1b[32m✓\x1b[0m 56m dotfiles:1 fix-nightly-test-red-loop",
+            ),
             row("hub/dotfiles:2", " ✓ 2m dotfiles:2 snapcast"),
-            Row { target: String::new(), text: "\t━━━ game (1)".into() },
+            Row {
+                target: String::new(),
+                text: "\t━━━ game (1)".into(),
+            },
             row("lab/game:1", " ✓ 1h game:1 dodge balls"),
         ];
         notes(&rows, &agents, &index_notes(index))
@@ -204,22 +231,36 @@ mod tests {
         // Neither session ever says "sound": sid-1 says "record player", sid-2 "snapcast".
         let t = topics("# comment\n\nsound snapcast record\nnetwork wifi\n");
         let notes = fixture();
-        assert_eq!(targets(&filter(&notes, "sound", &t)), ["", "hub/dotfiles:1", "hub/dotfiles:2"]);
-        assert_eq!(targets(&filter(&notes, "SOUND house", &t)), ["", "hub/dotfiles:2"]);
+        assert_eq!(
+            targets(&filter(&notes, "sound", &t)),
+            ["", "hub/dotfiles:1", "hub/dotfiles:2"]
+        );
+        assert_eq!(
+            targets(&filter(&notes, "SOUND house", &t)),
+            ["", "hub/dotfiles:2"]
+        );
         // Negative controls: without the topic, "sound" is in no session; a topic with no
         // matching word matches nothing; a topic word does not stand for its topic.
         assert_eq!(filter(&notes, "sound", &no_topics()), "");
         assert_eq!(filter(&notes, "network", &t), "");
-        assert_eq!(filter(&notes, "snapcast", &t), filter(&notes, "snapcast", &no_topics()));
+        assert_eq!(
+            filter(&notes, "snapcast", &t),
+            filter(&notes, "snapcast", &no_topics())
+        );
         // A topic word matches at the start of a word only: "player" holds "aye" mid-word.
         let t = topics("vote aye");
         assert_eq!(filter(&notes, "vote", &t), "");
-        assert!(starts_a_word("set up snapcast", "snap") && !starts_a_word("whole housesnap", "snap"));
+        assert!(
+            starts_a_word("set up snapcast", "snap") && !starts_a_word("whole housesnap", "snap")
+        );
     }
 
     #[test]
     fn the_cwd_adds_its_checkout_name_not_the_home_path() {
-        assert_eq!(targets(&filter(&fixture(), "game", &no_topics())), ["", "lab/game:1"]);
+        assert_eq!(
+            targets(&filter(&fixture(), "game", &no_topics())),
+            ["", "lab/game:1"]
+        );
         assert_eq!(filter(&fixture(), "home", &no_topics()), "");
     }
 
@@ -236,7 +277,10 @@ mod tests {
 
     #[test]
     fn every_word_must_match_and_case_does_not_matter() {
-        assert_eq!(targets(&filter(&fixture(), "SNAPCAST house", &no_topics())), ["", "hub/dotfiles:2"]);
+        assert_eq!(
+            targets(&filter(&fixture(), "SNAPCAST house", &no_topics())),
+            ["", "hub/dotfiles:2"]
+        );
         // Negative control: audio is in sid-1, snapcast in sid-2, never both in one session.
         assert_eq!(filter(&fixture(), "audio snapcast", &no_topics()), "");
         assert_eq!(filter(&fixture(), "zzzz-nothing", &no_topics()), "");
@@ -244,16 +288,31 @@ mod tests {
 
     #[test]
     fn row_text_project_and_prompts_match_too() {
-        assert_eq!(targets(&filter(&fixture(), "dodge", &no_topics())), ["", "lab/game:1"]);
-        assert_eq!(targets(&filter(&fixture(), "record player", &no_topics())), ["", "hub/dotfiles:1"]);
+        assert_eq!(
+            targets(&filter(&fixture(), "dodge", &no_topics())),
+            ["", "lab/game:1"]
+        );
+        assert_eq!(
+            targets(&filter(&fixture(), "record player", &no_topics())),
+            ["", "hub/dotfiles:1"]
+        );
         // An agent with no index row still matches on its project.
-        assert_eq!(targets(&filter(&fixture(), "game", &no_topics())), ["", "lab/game:1"]);
+        assert_eq!(
+            targets(&filter(&fixture(), "game", &no_topics())),
+            ["", "lab/game:1"]
+        );
     }
 
     #[test]
     fn an_exact_match_quote_is_dropped_and_an_empty_query_keeps_every_row() {
-        assert_eq!(filter(&fixture(), "'dotfiles", &no_topics()), filter(&fixture(), "dotfiles", &no_topics()));
-        assert_eq!(targets(&filter(&fixture(), "'dotfiles", &no_topics())), ["", "hub/dotfiles:1", "hub/dotfiles:2"]);
+        assert_eq!(
+            filter(&fixture(), "'dotfiles", &no_topics()),
+            filter(&fixture(), "dotfiles", &no_topics())
+        );
+        assert_eq!(
+            targets(&filter(&fixture(), "'dotfiles", &no_topics())),
+            ["", "hub/dotfiles:1", "hub/dotfiles:2"]
+        );
         assert_eq!(filter(&fixture(), "  ", &no_topics()).lines().count(), 5);
     }
 

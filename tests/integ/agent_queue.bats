@@ -15,8 +15,8 @@ setup() {
   git init -q "$REPO"
   # Two games in the game repo (level, arena), a repo whose work counts on its owner (tools ->
   # cockpit), and a project with a row code in another checkout (elsewhere).
-  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app", "/x/tools": "tools"}, aliases: {"g2": "game"},
-    trackers: {"level": {repo: "game", path: "Assets/Level", code: "lv"}, "arena": {repo: "game", path: "Assets/Arena/", code: "ar"},
+  jq -n --arg r "$REPO" '{paths: {($r): "game", "/x/app": "app", "/x/tools": "tools"},
+    trackers: {"game": {names: ["g2"]}, "level": {repo: "game", path: "Assets/Level", code: "lv"}, "arena": {repo: "game", path: "Assets/Arena/", code: "ar"},
       "notes": {repo: null}, "app": {}, "tools": {owner: "cockpit"}, "cockpit": {repo: "tools"},
       "elsewhere": {repo: "app", code: "el"}}}' > "$AGENT_QUEUE_PROJECT_MAP"
   # A plan item starts its session through fleet-dispatch: a recording stub, never the real one.
@@ -141,7 +141,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ ! -d "$AGENT_QUEUE_DIR/queued" ] || [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
 }
 
-@test "an alias is filed as its project, and a slug cannot be active twice" {
+@test "another spelling is filed as its project, and a slug cannot be active twice" {
   run "$AQ" add --project g2 --slug dup "x"
   assert_success
   [ "$(field "$(item queued dup)" project)" = game ]
@@ -238,6 +238,35 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "list orders an item with no priority line as high, and the rest of the queue still reads" {
+  "$AQ" add --project game --slug a-low --priority low "a"
+  "$AQ" add --project game --slug b-high "b"
+  f="$(item queued b-high)"
+  sed -i '/^priority:/d' "$f"
+  run bash -c "'$AQ' list --json | jq -r '[.slug, .priority] | @tsv'"
+  assert_success
+  assert_output $'b-high\thigh\na-low\tlow'
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = b-high ]
+}
+
+@test "list fails, never prints an empty queue, when the queue cannot be read" {
+  "$AQ" add --project game --slug a-item "a"
+  # The one read every listing goes through (items_json) fails; every other jq is the real one.
+  real="$(command -v jq)"
+  printf '#!/usr/bin/env bash\n[ "${1:-}" = -Rsc ] && exit 5\nexec %q "$@"\n' "$real" > "$SANDBOX/bin/jq"
+  chmod +x "$SANDBOX/bin/jq"
+  run "$AQ" list --json
+  assert_failure
+  assert_output --partial "could not read the queue"
+  run "$AQ" list
+  assert_failure
+  run "$AQ" next
+  assert_failure
+  assert_output --partial "could not read the queue"
+}
+
 @test "a project's #prio ranks its items within a priority, under red and urgent, over cleanup" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
@@ -287,7 +316,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "an after: successor off focus stays queued when its item closes; on focus it starts" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project app --slug first --running "a" >/dev/null
   "$AQ" add --project app --slug second --after first "b" >/dev/null
   printf 'game\tonly\n' > "$NOTES_FIXTURE/prios"
@@ -351,6 +379,71 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+}
+
+# ar-39: after: is a list of slugs.
+@test "after: takes a list: a comma list and a repeated --after store one line, set too, and an unknown or own slug is refused" {
+  "$AQ" add --project game --slug a "a" >/dev/null
+  "$AQ" add --project game --slug b "b" >/dev/null
+  "$AQ" add --project game --slug c "c" >/dev/null
+  "$AQ" add --project game --slug d --after a,b --after "c a" "d" >/dev/null
+  [ "$(field "$(item queued d)" after)" = "a b c" ]
+  "$AQ" set d after=c,b >/dev/null
+  [ "$(field "$(item queued d)" after)" = "c b" ]
+  run "$AQ" add --project game --slug e --after a,nope "e"
+  assert_failure
+  assert_output --partial "--after nope: no item has that slug"
+  run "$AQ" add --project game --slug e --after a,e "e"
+  assert_failure
+  assert_output --partial "--after e: an item cannot wait on itself"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-e.md 2>/dev/null)" ]
+  # set after= is checked the same way.
+  run "$AQ" set d after=a,nope
+  assert_failure
+  assert_output --partial "--after nope: no item has that slug"
+  run "$AQ" set d after=d
+  assert_failure
+  [ "$(field "$(item queued d)" after)" = "c b" ]
+}
+
+@test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
+  "$AQ" add --project game --slug a --running "a" >/dev/null
+  "$AQ" add --project game --slug b --running "b" >/dev/null
+  "$AQ" add --project game --slug both --after a,b "both" >/dev/null
+  f="$(item queued both)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
+  assert_output "after a b"
+  run "$AQ" bump both urgent
+  assert_output --partial "both is held after a b: it starts when those land"
+  # tk's plan phases are already ticked: it closes as landed, but only once both its parents have.
+  printf '## Phases\n\n- [x] one\n' > "$SANDBOX/tk-plan.md"
+  "$AQ" add --project game --slug tk --after a,b "tk" >/dev/null
+  sed -i "/^from: /i plan: $SANDBOX/tk-plan.md\nphases: 1" "$(item queued tk)"
+  run "$AQ" move a done --status ok
+  refute_output --partial "releases"
+  # One of two closed ok: it still holds on the other, and nothing starts or closes it.
+  assert_not_called 'start --item both'
+  [ -n "$(item queued tk)" ]
+  run bash -c "'$AQ' show both --json | jq -r '.hold, .ready // \"none\"'"
+  assert_output $'after b\nnone'
+  run "$AQ" move b done --status ok
+  assert_line "b releases: both tk"
+  assert_called 'fleet-dispatch start --item both'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-tk.md)" status)" = ok ]
+  "$AQ" set a finished=2026-11-03T12:00:00Z >/dev/null
+  "$AQ" set b finished=2026-11-03T13:00:00Z >/dev/null
+  # ready is the latest finish of the list, through list and show alike.
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .ready'"
+  assert_output 2026-11-03T13:00:00Z
+  run bash -c "'$AQ' show both --json | jq -r '.hold // \"none\", .ready'"
+  assert_output $'none\n2026-11-03T13:00:00Z'
+  # A dead slug in the list is named even while another is live: it never releases.
+  "$AQ" add --project game --slug c "c" >/dev/null
+  "$AQ" add --project game --slug x "x" >/dev/null
+  "$AQ" add --project game --slug two --after c,x "two" >/dev/null
+  "$AQ" move x done --status failed >/dev/null
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
+  assert_output "after x closed failed, dead: cancel it or set after=<slug>"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
@@ -452,6 +545,14 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   ask o1 answered 'B, the other' human
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = go ]
+  # 2026-11-12: a free-text answer, whose first word names no option, is the human's own answer and releases.
+  ask o1 answered 'Neither: shape the whole bowl' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = go ]
+  # Negative control: an empty answer still holds.
+  ask o1 answered '' human
+  run "$AQ" next --json
+  assert_failure
 }
 
 @test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
@@ -1034,7 +1135,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$(field "$f" from)" = "board:level:fix the lobby: soon" ]
 }
 
-@test "set refuses a project the registry does not know, or an alias, and writes nothing" {
+@test "set refuses a project the registry does not know, or another spelling of one, and writes nothing" {
   "$AQ" add --project game --slug s "fix the lobby"
   run "$AQ" set s project=nowhere
   assert_failure
@@ -1063,7 +1164,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -n "$(field "$f" started)" ]
 }
 
-@test "--running on the agent world records <server>:<session>; off it or outside tmux, none" {
+@test "--running records <server>:<session> on any world; only a worktree session (<repo>-agent-N) records; a checkout session, declared or not, or no tmux, records none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
   TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
   assert_success
@@ -1072,6 +1173,14 @@ notes --profile bnb ptask game --agent run gm-9"
   TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubbed "from a hub window"
   assert_success
   [ -z "$(field "$(item running hubbed)" session)" ]
+  printf 'dotfiles-agent-3\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubwt "from a hub worktree session"
+  assert_success
+  [ "$(field "$(item running hubwt)" session)" = hub:dotfiles-agent-3 ]
+  printf 'tools\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --slug hubtools "from an undeclared checkout session"
+  assert_success
+  [ -z "$(field "$(item running hubtools)" session)" ]
   TMUX="$SANDBOX/tmp/tmux-1000/hub,123,0" run "$AQ" add --project game --running --session given --slug given "given"
   [ "$(field "$(item running given)" session)" = lab:given ]
   run "$AQ" add --project game --running --slug nowhere "no tmux"
@@ -1191,7 +1300,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
-@test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
+@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -1204,10 +1313,24 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item p3'
   run "$AQ" add --project game --slug o1 "one shot"
   assert_not_called 'start --item o1'
+  # A low plan item waits for a dispatch pass; an urgent one still starts.
+  run "$AQ" add --project game --mode plan --priority low --slug lp "plan, low"
+  assert_success
+  assert_output --partial 'lp is low priority, so a dispatch pass starts it in its turn'
+  assert_not_called 'start --item lp'
+  [ -f "$(item queued lp)" ]
+  run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
+  assert_called 'fleet-dispatch start --item up'
+  # 2026-11-12: an urgent plan item started under the human's dispatch hold.
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
+  assert_success
+  assert_output --partial 'so held stays queued for the next dispatch pass'
+  assert_not_called 'start --item held'
+  [ -f "$(item queued held)" ]
 }
 
-@test "the next phase starts when its parent closes ok; not on failed, not past an open hold, not when dispatch is held" {
-  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
+@test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
   "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
   "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
   "$AQ" add --project game --slug other "unrelated" >/dev/null
@@ -1215,6 +1338,16 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_success
   assert_called 'fleet-dispatch start --item ph2'
   assert_not_called 'start --item other'
+  # Only urgent and high skip the queue: a low next phase waits for a dispatch pass.
+  "$AQ" add --project game --running --slug l1 "parent" >/dev/null
+  "$AQ" add --project game --slug l2 --after l1 --priority low "low next" >/dev/null
+  "$AQ" add --project game --slug l3 --after l1 --priority high "high next" >/dev/null
+  run "$AQ" move l1 done --status ok
+  assert_success
+  assert_output --partial 'l2 is low priority, so a dispatch pass starts it in its turn'
+  assert_not_called 'start --item l2'
+  [ -f "$(item queued l2)" ]
+  assert_called 'fleet-dispatch start --item l3'
   # A failed parent leaves its next phase held.
   "$AQ" add --project game --running --slug f1 "fails" >/dev/null
   "$AQ" add --project game --slug f2 --after f1 "after a failure" >/dev/null
@@ -1228,11 +1361,13 @@ notes --profile bnb ptask game --agent run gm-9"
   # A dispatch hold keeps it queued for the pass.
   "$AQ" add --project game --running --slug h1 "held parent" >/dev/null
   "$AQ" add --project game --slug h2 --after h1 "held next" >/dev/null
-  HOLD_EXIT=1 run "$AQ" move h1 done --status ok
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" move h1 done --status ok
   assert_success
-  assert_output --partial 'dispatch is held, so h2 stays queued'
+  assert_output --partial 'by human: next queue), so h2 stays queued'
   assert_not_called 'start --item h2'
   [ -f "$(item queued h2)" ]
+  "$REPO_ROOT/.local/bin/agent-hold" release dispatch >/dev/null
   # A start that fails leaves it queued.
   "$AQ" add --project game --running --slug x1 "parent" >/dev/null
   "$AQ" add --project game --slug x2 --after x1 "next" >/dev/null
@@ -1293,6 +1428,76 @@ EOF
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
   [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
+}
+
+@test "add --plan: (independent) waits on --after alone, (after N) on phase N's item, unmarked lines keep the chain" {
+  cat > "$SANDBOX/marked.md" <<'EOF'
+## Phases
+
+- [x] 1. Landed thing
+- [ ] 2. Second thing
+- [ ] 3. Third thing (independent): runs beside 2
+- [ ] 4. Fourth thing (after 2)
+- [ ] 5. Fifth thing (with 4)
+- [ ] 6. Sixth thing
+- [ ] 7. Seventh thing (after 5)
+- [ ] 8. Eighth thing (after 1)
+EOF
+  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/marked.md" --project game --after base --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue marked-p2	phases 2	after base$'
+  assert_line --index 2 --regexp '^would queue marked-p3	phases 3	after base$'
+  assert_line --index 4 --regexp '^would queue marked-p4	phases 4 5	after marked-p2$'
+  # NEGATIVE CONTROL: an unmarked line still waits on the item before it, here the independent one.
+  assert_line --index 6 --regexp '^would queue marked-p6	phases 6	after marked-p4$'
+  # (after 5) is phase 5's item, which is 4's; (after 1) names a landed phase, so --after alone.
+  assert_line --index 8 --regexp '^would queue marked-p7	phases 7	after marked-p4$'
+  assert_line --index 10 --regexp '^would queue marked-p8	phases 8	after base$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/marked.md" --project game
+  assert_success
+  f="$(item queued marked-p3)"
+  [ "$(field "$f" after)" = "" ]
+  [ "$(field "$f" title)" = "marked P3: Third thing: runs beside 2" ]
+  [ "$(field "$(item queued marked-p4)" after)" = marked-p2 ]
+  [ "$(field "$(item queued marked-p4)" title)" = "marked P4+5: Fourth thing; Fifth thing" ]
+  [ "$(field "$(item queued marked-p8)" after)" = "" ]
+  # A marker that cannot be honoured is refused whole, naming the line; nothing is queued.
+  bad() {
+    printf '## Phases\n\n- [-] 1. Deferred\n- [ ] 2. Two\n- [ ] 3. %s\n' "$1" > "$SANDBOX/bad.md"
+    run "$AQ" add --plan "$SANDBOX/bad.md" --project game --slug bad --dry-run
+    assert_failure
+    assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
+  }
+  bad "Three (after 3)" "(after 3) names no earlier phase"
+  bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
+  bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
+  bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 7 ]
+}
+
+@test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
+  "$AQ" add --project game --slug first "first"
+  "$AQ" add --project game --slug second --after first "second"
+  run "$AQ" bump second urgent
+  assert_success
+  assert_output --partial "second -> urgent"
+  assert_output --partial "second is held after first: it starts when that lands; agent-queue set second after= runs it now"
+  [ "$(field "$(item queued second)" after)" = first ]
+  # NEGATIVE CONTROL: no after:, or a bump below urgent, says nothing more.
+  run "$AQ" bump first urgent
+  assert_output "first -> urgent"
+  run "$AQ" bump second high
+  assert_output "second -> high"
+  # An after: that released leaves a pr: hold, which bump does not name (ar-39 review).
+  "$AQ" move first done --status ok >/dev/null
+  "$AQ" set second tags=pr:Org/game#11 >/dev/null
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  echo CLOSED > "$SANDBOX/pr-11"
+  [[ "$("$AQ" show second --json | jq -r .hold)" == "pr:Org/game#11 closed unmerged"* ]]
+  run "$AQ" bump second urgent
+  assert_output "second -> urgent"
 }
 
 @test "add --plan writes nothing when a slug is taken, and refuses what it cannot expand" {
@@ -1357,6 +1562,36 @@ EOF
   assert_success
   run grep -- "-L default kill-session -t =game-agent-3" "$NOTES_FIXTURE/calls.log"
   assert_success
+}
+
+# 2026-11-10: two probe items deleted by hand sat queued in the record for days, chain_drift 2.
+@test "cancel of a slug whose file is gone closes it in the record while the record holds it active" {
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+echo "notes $*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in
+  # the record replays a written cancel unless NOTES_DROP says the write was lost
+  "log --steps --json") if grep -q 'ingest record' "$NOTES_FIXTURE/calls.log" && [ -z "${NOTES_DROP:-}" ]; then
+      echo '{"steps":[{"step":"queued","items":[]},{"step":"done","items":["gone","ghost"]}]}'
+    else echo '{"steps":[{"step":"queued","items":["ghost"]},{"step":"done","items":["gone"]}]}'; fi ;;
+  "log --days 3650 --item ghost --json") echo '{"action":"item-added","from":"game","text":"probe","item":"ghost"}'
+    echo '{"action":"item-set","from":"game","text":"probe","item":"ghost"}' ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+  # a write the record never took is no cancel
+  NOTES_DROP=1 run "$AQ" cancel ghost
+  assert_failure; assert_output --partial "ghost is still active in the record"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" cancel ghost
+  assert_success
+  assert_output "cancelled ghost in the record: its file was already gone"
+  assert_called "notes ingest record --stage queue --action item-cancelled --from game --item ghost --to done -- probe"
+  # one the record has closed, or never held, is still nothing active
+  for s in gone never; do
+    run "$AQ" cancel "$s"
+    assert_failure; assert_output --partial "nothing active with slug $s"
+  done
 }
 
 # 2026-11-04: cancelling an item hand-started in a hub:dotfiles window killed hub:dotfiles and
@@ -1680,7 +1915,6 @@ EOF
 }
 
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture
   "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
   "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null
@@ -1799,6 +2033,72 @@ notes --profile bnb ptask level --agent start lv-9'
   "$AQ" add --project game --from canary --slug norow "check(canary): x" >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" move norow running >/dev/null
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+# tr-71 and tr-129: added by hand with --from board:, their rows were never marked, so the merge left
+# them open (merged_open_rows).
+@test "an item promoted from a board row (from: board:, no row:) marks that row run like a row: item" {
+  story_notes
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  [ -z "$(field "$(item queued promoted)" row)" ] || fail "the fixture needs an item with no row: line"
+  "$AQ" set promoted profile=bnb lane=agent >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" move promoted running >/dev/null
+  "$AQ" move promoted queued >/dev/null
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent run lv-4
+notes --profile bnb ptask level --agent start lv-4'
+}
+
+# ar-1597: an item re-pointed with set row= left its first row started with no item, which read as
+# board_orphan_started until the orphan pass.
+@test "set row= or from=board: un-starts the row the item leaves and marks the one it works now" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug repoint "feat(menu): repoint" >/dev/null
+  [ "$(field "$(item queued repoint)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" set repoint row=level:lv-2
+  assert_success; assert_output --partial "board row lv-9 on level un-started"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent unstart lv-9
+notes --profile bnb ptask level --agent start lv-2'
+  # The same row again writes nothing.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-2 >/dev/null
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # The left row is un-started on the profile and lane it was on, even when the set moves both.
+  "$AQ" move repoint running >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set repoint row=level:lv-8 profile=work lane=human >/dev/null
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent unstart lv-2
+notes --profile work ptask level run lv-8'
+  # A failed un-start warns with the command; the set stands and succeeds.
+  printf '#!/usr/bin/env bash\n[[ " $* " != *" unstart "* ]]\n' > "$SANDBOX/bin/notes"
+  run "$AQ" set repoint row=level:lv-1
+  assert_success; assert_output --partial "left board row lv-8 on level, not un-started"
+  [ "$(field "$(item running repoint)" row)" = level:lv-1 ]
+  story_notes
+  # A board-promoted item re-pointed by from= leaves its row the same way.
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set promoted from=board:level:lv-6 >/dev/null
+  run grep -c 'ptask level --agent unstart lv-4$' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # A row another active item works stays started.
+  "$AQ" add --project game --from board:level:lv-5 --slug holder "fix(menu): holder" >/dev/null
+  "$AQ" set promoted from=board:level:lv-5 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set promoted from=board:level:lv-7 >/dev/null
+  run grep -c ' unstart ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A done item's rows are its close's business.
+  "$AQ" move promoted done --status failed >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" set promoted from=board:level:lv-3 >/dev/null
   run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }
@@ -1959,6 +2259,11 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_success
   assert_output --partial "no story row filed on level: error: no such project"
   [ -z "$(field "$(item queued no-sheet)" row)" ]
+  # an item whose row: line is empty has no row to a reader, not the row "" (ar-1551)
+  sed -i 's/^agent: /row: \nagent: /' "$(item queued no-sheet)"
+  [ "$(grep -c '^row: $' "$(item queued no-sheet)")" = 1 ]
+  run jq -sc '[.[] | select(.slug == "no-sheet") | has("row")]' <<<"$("$AQ" list --json --state all)"
+  assert_output '[false]'
 }
 
 @test "--row links an open board row and starts it: no second row, and from: stays the origin" {
@@ -2125,9 +2430,12 @@ OUT
   assert_success
   assert_output --partial "notes row parse failed, so sturdy is untyped"
   [ -z "$(field "$(item queued sturdy)" type)" ]
+  # Its row (from: board:) is marked too; that write failing warns and the move stands (mark_row).
   run "$AQ" move sturdy running
   assert_success
-  assert_output "sturdy: queued -> running"
+  assert_line --index 0 "sturdy: queued -> running"
+  assert_output --partial "board row lv-2 on level not marked run"
+  [ -n "$(item running sturdy)" ]
 }
 
 # --- admission (ar-697) ------------------------------------------------------------------
@@ -2159,7 +2467,7 @@ started_item() {
   assert_success
 }
 
-@test "admission never holds a human, #requested, red, urgent or --running add, at or over the limit" {
+@test "admission never holds a human, #requested, red, auto:epics verify, urgent or --running add, at or over the limit" {
   export AGENT_QUEUE_ADMIT_MIN=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --from auto:x --slug held "held"
@@ -2167,11 +2475,14 @@ started_item() {
   "$AQ" add --project game --slug human "human" >/dev/null
   "$AQ" add --project game --from auto:x --tags '#requested' --slug asked "asked" >/dev/null
   "$AQ" add --project game --from auto:x --tags red --slug broken "broken" >/dev/null
+  "$AQ" add --project game --from auto:epics --priority high --tags verify --slug verify-e-1 "verify e" >/dev/null
+  run "$AQ" add --project game --from auto:x --tags verify --slug other-verify "another filer's verify"
+  assert_failure 5
   "$AQ" add --project game --from auto:x --priority urgent --slug urgent "urgent" >/dev/null
   "$AQ" add --project game --from auto:x --running --session s1 --slug mine "mine" >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "asked,broken,human,mine,one,urgent"
-  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 1 ]
+  assert_output "asked,broken,human,mine,one,urgent,verify-e-1"
+  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 2 ]
 }
 
 @test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral, urgent and --from human are not" {

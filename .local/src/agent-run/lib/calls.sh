@@ -29,8 +29,9 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 # reply to stdout as the plain run would, append the call line, and return the command's exit
 # code. The reply is .structured_output as one JSON line when the agent has a SCHEMA, else
 # .result (claude) or the first choice's content (raw). A schema run that ended without valid
-# output has no such field, so its prose goes out and the caller's parse fails visibly. A capped
-# call returns CALLS_RC_CAPPED.
+# output has no such field, so its prose goes out and the caller's parse fails visibly. A claude
+# error result with no result key (error_max_budget_usd, error_during_execution) prints its
+# `errors`, one line, and keeps its subtype on the call line. A capped call returns CALLS_RC_CAPPED.
 calls_record() {
   local harness="$1" id t0 t1 out rc=0 text tmp pid="" killed=""
   shift
@@ -55,8 +56,9 @@ calls_record() {
   if text="$(jq -cer 'if type != "object" then error
     elif has("result") or has("structured_output") then .structured_output // .result
     elif has("choices") or has("error") then .choices[0].message.content // ""
+    elif .type == "result" then .errors // [] | map(tostring) | join("; ")
     else error end' <<<"$out" 2>/dev/null)"; then
-    printf '%s\n' "$text"
+    [ -n "$text" ] && printf '%s\n' "$text"
   else
     text="$out"; out='{}'
     [ -n "$text" ] && printf '%s\n' "$text"

@@ -13,7 +13,8 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
-/// Where the page and app.css name the asset version.
+/// Where the page and every CSS file name the asset version: web-kit's tokens.css versions the
+/// fonts with it (`css_names_the_fonts_at_the_current_version`).
 const VERSION_MARK: &str = "{{v}}";
 /// Where the page takes its tab list.
 const NAV_MARK: &str = "{{nav}}";
@@ -22,10 +23,23 @@ const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
-/// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
+/// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
+/// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
+/// ui.js is the shared helpers, md.js the markdown renderer,
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
+    ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -41,7 +55,9 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
@@ -57,12 +73,12 @@ const FILES: &[(&str, &str, &[u8])] = &[
     (
         "inter.woff2",
         WOFF2,
-        include_bytes!("../static/fonts/inter.woff2"),
+        include_bytes!("../../web-kit/inter.woff2"),
     ),
     (
         "jetbrains-mono.woff2",
         WOFF2,
-        include_bytes!("../static/fonts/jetbrains-mono.woff2"),
+        include_bytes!("../../web-kit/jetbrains-mono.woff2"),
     ),
 ];
 
@@ -119,7 +135,7 @@ fn nav_html() -> String {
     for t in &hub_core::layout::TABS {
         if t.group != group {
             group = t.group;
-            html += &format!("<div class=\"navg\">{group}</div>\n");
+            html += &format!("<div class=\"kb-group\">{group}</div>\n");
         }
         let badge = match t.id {
             "home" => "<span id=\"ask-badge\"></span>",
@@ -262,8 +278,7 @@ mod tests {
 
     #[test]
     fn the_schedules_headers_are_hub_cores_columns() {
-        // Rule 8, less `repo` and `next`: the name says the one, a row's detail the other, and
-        // both still sort and filter.
+        // Rule 8, less `repo`: the name says it, and it still sorts and filters.
         use hub_core::table::Row;
         let js = include_str!("../static/schedules.js");
         let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
@@ -274,13 +289,13 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::schedules::Schedule::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 2]);
-        assert_eq!(all[all.len() - 2..], ["repo", "next"]);
+        assert_eq!(keys, all[..all.len() - 1]);
+        assert_eq!(all[all.len() - 1..], ["repo"]);
     }
 
     #[test]
     fn the_releases_headers_are_hub_cores_columns() {
-        // Rule 8, less `id` and `where`: the channel says the one, a row's detail the other.
+        // Rule 8, less `channel` and `id`: they only filter, an opened app lists its channels.
         use hub_core::table::Row;
         let js = include_str!("../static/releases.js");
         let at = js.find("const REL_COLS = {").expect("no REL_COLS");
@@ -290,17 +305,18 @@ mod tests {
             .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
-        let all = hub_core::releases::Release::COLUMNS;
+        let all = hub_core::releases::App::COLUMNS;
         assert_eq!(keys, all[..all.len() - 2]);
-        assert_eq!(all[all.len() - 2..], ["id", "where"]);
+        assert_eq!(all[all.len() - 2..], ["channel", "id"]);
     }
 
     #[test]
     fn the_builds_headers_are_hub_cores_columns() {
-        // Rule 8: the Builds table draws the first columns hub_core::builds sorts and filters;
-        // `forge` and `event` are dropdowns and `title` the open row's heading.
+        // Rule 8: the CI run tables draw the first columns hub_core::builds sorts and filters;
+        // `forge` and `event` are dropdowns, `title` the open row's heading, and `id` and `pr`
+        // only a query's (a run's record `id:=`, a PR's runs `pr:=`).
         use hub_core::table::Row;
-        let js = include_str!("../static/releases.js");
+        let js = include_str!("../static/ci.js");
         let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
         let body = &js[at..at + js[at..].find('}').unwrap()];
         let keys: Vec<&str> = body
@@ -309,8 +325,11 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 3]);
-        assert_eq!(all[all.len() - 3..], ["forge", "event", "title"]);
+        assert_eq!(keys, all[..all.len() - 5]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
@@ -435,6 +454,135 @@ mod tests {
     }
 
     #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
+        // keeps the id of every page Link::href draws inside an inner tab.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+    }
+
+    #[test]
+    fn moved_chips_are_the_layout() {
+        // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
+        // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
+        for (tab, old, table, chip) in hub_core::layout::MOVED_CHIPS {
+            let to = hub_core::layout::MOVED
+                .iter()
+                .find(|m| m.0 == *tab && m.1 == *old)
+                .expect("a moved chip is a moved section");
+            let pre = crate::infra::TABLES
+                .iter()
+                .find(|t| t.0 == *table)
+                .expect("the chip's table is on the page")
+                .1;
+            let want = format!(
+                r#""{tab}/{old}": ["{}", "{}", "{pre}s={chip}"]"#,
+                to.2, to.3
+            );
+            assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
+    }
+
+    #[test]
+    fn project_page_is_the_layout() {
+        // Rule 8 for an opened project: app.js's PROJECT_PAGE is hub_core::layout::PROJECT_PAGE.
+        let want: Vec<serde_json::Value> = hub_core::layout::PROJECT_PAGE
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const PROJECT_PAGE = "))
+            .expect("app.js has PROJECT_PAGE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
+        assert_eq!(got, serde_json::Value::Array(want));
+        // Every section a group names is an anchor projects.js draws.
+        let js = include_str!("../static/projects.js");
+        for i in hub_core::layout::PROJECT_PAGE {
+            for s in i.sections {
+                assert!(
+                    js.contains(&format!("\"{s}\"")),
+                    "projects.js never names {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inner_tabs_are_the_layout() {
+        // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
+        let mut want = serde_json::Map::new();
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty())
+        {
+            let tabs: Vec<serde_json::Value> = t
+                .inner
+                .iter()
+                .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+                .collect();
+            want.insert(t.id.to_string(), serde_json::json!({ "tabs": tabs }));
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const INNER_TABS = "))
+            .expect("app.js has INNER_TABS");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+        // Every section a group names is one the page wraps in its inner tab's group, so a
+        // section never shows under every inner tab or under none. Releases is checked per
+        // inner tab below: its table and detail share one group.
+        let pages = [
+            ("costs", include_str!("../static/costs.js").to_string()),
+            ("infra", include_str!("../static/infra.js").to_string()),
+        ];
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+        {
+            let (_, js) = pages
+                .iter()
+                .find(|p| p.0 == t.id)
+                .unwrap_or_else(|| panic!("{} has inner tabs but no page here", t.id));
+            for s in t.inner.iter().flat_map(|i| i.sections) {
+                let at = format!("(\"{}\", \"{s}\"", t.id);
+                assert!(
+                    js.contains(&format!("innerWrap{at}"))
+                        || js.contains(&format!("innerHide{at}")),
+                    "{}'s page never puts {s} in its inner tab",
+                    t.id
+                );
+            }
+        }
+        // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
+        let releases = include_str!("../static/releases.js");
+        for i in hub_core::layout::resolve("releases")
+            .expect("releases")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| releases.contains(&format!("innerWrap(\"releases\", \"{s}\""))),
+                "releases.js never draws the {} inner tab",
+                i.id
+            );
+        }
+    }
+
+    #[test]
     fn log_folds_are_the_layout() {
         // Rule 8 for sections: each folded Log section in hub_core::layout is a `sec-<name>`
         // fold in index.html, in its order. The day and its history are the day view
@@ -490,12 +638,13 @@ mod tests {
 
     #[test]
     fn css_names_the_fonts_at_the_current_version() {
+        // web-kit's tokens.css names the fonts relative to itself, so they resolve under /static/.
         let b = built();
-        let css = b.files.iter().find(|(n, _, _)| *n == "app.css").unwrap();
+        let css = b.files.iter().find(|(n, _, _)| *n == "tokens.css").unwrap();
         let css = std::str::from_utf8(&css.2).unwrap();
         assert!(!css.contains(VERSION_MARK));
-        assert!(css.contains(&format!("/static/inter.woff2?v={}", b.version)));
-        assert!(css.contains(&format!("/static/jetbrains-mono.woff2?v={}", b.version)));
+        assert!(css.contains(&format!("url(inter.woff2?v={})", b.version)));
+        assert!(css.contains(&format!("url(jetbrains-mono.woff2?v={})", b.version)));
     }
 
     #[test]

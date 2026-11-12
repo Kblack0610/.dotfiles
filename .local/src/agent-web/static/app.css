@@ -1,51 +1,25 @@
-/* Self-hosted (static/fonts, SIL OFL 1.1), variable weight 400-700, latin only: other scripts
-   fall through to the system font in the stacks below. {{v}} is the asset version (assets.rs). */
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 400 700; font-display: swap; src: url(/static/inter.woff2?v={{v}}) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 700; font-display: swap; src: url(/static/jetbrains-mono.woff2?v={{v}}) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+/* agent-web's own look on top of web-kit's tokens.css (fonts, type scale, palette, page base) and
+   shell.css (the top bar and the grouped tab list). Only what is agent-web's own lives here. */
 :root {
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* type scale: everything is one of these */
-  --head: 49px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
-  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #57564f; --line: #d4d1c8;
-  --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
   --user: #eaf0fb; --tool: #f1efe9;
   /* fleet-sessions buckets */
   --b-needs: #d4483b; --b-stalled: #dd7a1f; --b-landed: #8457d0; --b-chat: #8f8d86; --b-parked: #b5b3ab; --b-working: #2f6fde; --b-done: #3f9a5a;
-  /* categorical series, fixed order (dataviz palette) */
-  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #8f5bd0; --c6: #d6498f; --c-other: #a3a19a;
-  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #b2b0a6; --line: #3d3c38;
-    --accent: #6f9ef0; --user: #1f2a3d; --tool: #24231f; color-scheme: dark;
+    --user: #1f2a3d; --tool: #24231f;
     --b-needs: #e8665a; --b-stalled: #f0953f; --b-landed: #a585e6; --b-chat: #77756e; --b-parked: #57554f; --b-working: #6f9ef0; --b-done: #5cb877;
-    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #9a6bdc; --c6: #d85a99; --c-other: #66645e;
   }
 }
-* { box-sizing: border-box; }
 html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: var(--fs-md)/1.5 var(--sans); font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
-header h1 { font-size: 16px; margin: 0; }
-/* The menu button and the current tab's name show only on a narrow screen, where the tab list
-   is a dropdown the button opens (app.js menuOpen). */
-.menu, .cur { display: none; }
-.menu { position: relative; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; width: 38px; height: 34px; padding: 0; cursor: pointer; }
-.menu .bars, .menu .bars::before, .menu .bars::after { position: absolute; left: 10px; width: 16px; height: 2px; background: currentColor; border-radius: 1px; content: ""; }
-.menu .bars { top: 16px; } .menu .bars::before { left: 0; top: -5px; } .menu .bars::after { left: 0; top: 5px; }
-.menu #menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
-.cur { font-weight: 600; color: var(--muted); }
-.tabs { display: flex; flex-direction: column; gap: 1px; }
-.navg { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }
+/* The bar and tab list are web-kit's <kb-shell> (shell.css). The open tab's outline (nav.js) sits
+   under its button; the bar adds the live dot and title. */
 .outl { display: flex; flex-direction: column; margin: 1px 0 4px 10px; border-left: 1px solid var(--line); }
 .outl:empty { display: none; }
-.tabs .outl button { border: 0; padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted); text-align: left; }
-.tabs .outl button:hover { color: var(--ink); }
-.tabs button { flex: none; }
-.tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
-.tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.kb-nav .outl button { border: 0; background: transparent; cursor: pointer; font: inherit; padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted); text-align: left; }
+.kb-nav .outl button:hover { color: var(--ink); }
+.seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
 .signout { white-space: nowrap; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 4px; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
@@ -60,6 +34,9 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head
 .pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .pill { font: 11px var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); white-space: nowrap; }
 .pill.here { background: var(--accent); color: #fff; }
+/* Inner tabs (app.js innerStrip): a count pill on a tab whose sections need a look. */
+.istrip .pill.warn { background: var(--b-stalled); color: #fff; }
+[data-in][hidden] { display: none; }
 .pill.parked { background: var(--busy); color: #fff; }
 .pill.ask { background: var(--wait); color: #fff; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -124,6 +101,14 @@ main.open #back { display: inline-block; }
 textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .empty { color: var(--muted); padding: 24px 16px; }
 .err { color: var(--wait); font-size: 12px; min-height: 1em; }
+.cstat { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.cstat:empty { display: none; }
+.card.sending button, .card.sending input { pointer-events: none; opacity: .55; }
+.card.sending { cursor: progress; }
+.btn .spin { display: inline-block; vertical-align: -2px; margin-right: 6px; }
+.spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--line); background: var(--accent); } }
 #asks { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
 #asks > details { max-width: 760px; margin: 0 auto; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: 760px; }
@@ -140,6 +125,8 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #q-list .card { max-width: none; }
 #b-root > *, #b-root h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 #b-tbl .card, #b-tbl h2.sec, #p-cards .card { max-width: none; }
+/* The board's table takes the screen's width: a row's title and epic are what it is read for. */
+#b-root > #b-tbl { max-width: 1600px; }
 #b-root summary { cursor: pointer; }
 #b-root summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
@@ -148,6 +135,11 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #d-main > div > *, #daily h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
 #daily .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
 #daily a.btn { text-decoration: none; display: inline-block; }
+/* A linked cell (table.js tblLink) reads as its text; the link shows on hover or keyboard focus, and
+   a touch screen, which has no hover, keeps a dotted underline (dashboards.md, Link). Early in the
+   file so a status class on the same anchor (a.warn, a.ci) still colours it. */
+a.tl { color: inherit; text-decoration: none; } a.tl:hover, a.tl:focus-visible { color: var(--accent); text-decoration: underline; }
+@media (hover: none) { a.tl { text-decoration: underline dotted; text-underline-offset: 2px; } }
 a.wl, a.ptag { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
 a.wl.missing { color: var(--muted); border-bottom-style: dashed; border-color: var(--muted); }
 #daily pre.raw { font: var(--fs-sm)/1.45 var(--mono); background: var(--tool); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -239,6 +231,15 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .tdays { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .tdate { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
+/* Inner tabs (app.js innerStrip), the first row of their tab, as fleet-platform's SectionTabs: flush
+   left over one rule across the page, the open tab bright with an accent underline, the rest muted
+   until hovered. A phone scrolls the strip sideways inside itself; the page never does. Scoped to
+   .istrip, so the other .seg controls keep their boxes. */
+.seg.istrip { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 12px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.seg.istrip button { flex: none; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 16px; font-weight: 500; transition: color .15s, border-color .15s; }
+.seg.istrip button:hover { color: var(--ink); }
+.seg.istrip button.on { color: var(--ink); background: transparent; border-color: transparent; border-bottom-color: var(--accent); font-weight: 650; }
+.seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
 .muted { color: var(--muted); font-weight: normal; }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
@@ -273,14 +274,12 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .pcard .pprog { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; }
 .pcard .pprog .meter { flex: 1; width: auto; height: 8px; }
 .pcard .ppct { font: 600 var(--fs-sm) var(--mono); min-width: 3.5em; text-align: right; }
-.pcard .psum { font-size: var(--fs-xs); color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; margin-bottom: 8px; }
+.pcard .psum { font-size: var(--fs-xs); color: var(--muted); overflow-wrap: anywhere; margin-bottom: 8px; }
 .pcard .pgoal { font-size: var(--fs-md); margin-bottom: 8px; overflow-wrap: anywhere; }
 .pcard .prun { list-style: none; margin: 0 0 8px; padding: 0; }
 .pcard .prun li { display: flex; flex-direction: column; padding: 6px 0 6px 10px; border-left: 3px solid var(--b-working); margin-bottom: 4px; font-size: var(--fs-sm); }
 .pcard .prt { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .pcard .prm { color: var(--muted); font-size: var(--fs-xs); }
-.pcard .pep { padding-left: 12px; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
-.pcard .pleaf { padding-left: 28px; font: var(--fs-xs) var(--mono); overflow-wrap: anywhere; }
 .pcard details .cfold { margin-left: 12px; }
 .pcard .psys { margin: 8px 0; padding: 2px 0 2px 14px; font-size: var(--fs-sm); color: var(--muted); }
 .pcard .ptl { font: var(--fs-xs) var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -335,19 +334,46 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cols { padding-bottom: 16px; }
 .tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
 .tsort { display: none; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+/* The shared table: 13px rows with room to breathe, small caps headers over a firmer rule, faint
+   row lines, and every other record row tinted so a wide row is easy to follow across. The tint
+   counts record rows only: an opened row's detail, a channel's detail and the filter row are skipped. */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
+.tbl td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); white-space: nowrap; }
+.tbl tr:last-child > td { border-bottom: 0; }
+.tbl tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.tbl th.n { font-family: inherit; }
+.tbl td a:not(.btn) { color: var(--accent); text-decoration: none; } .tbl td a:not(.btn):hover { text-decoration: underline; }
 .tbl tr.allrow td { font-weight: 600; border-bottom: 1px solid var(--muted); }
 .thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
+/* A facet's dropdown (table.js tblFacet): a pill under its column's header, tinted while it filters,
+   opening a checklist of the column's values with counts. The menu is fixed to the page under its
+   pill (table.js tblPlace), so a scrolling panel does not clip it. */
+.tbl tr.tfilters th { padding: 2px 6px 4px; font-weight: 400; }
+.tbl tr.tfilters td { padding: 0; }
+.tfacet { display: inline-block; vertical-align: middle; }
+.tfacet > summary { list-style: none; cursor: pointer; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; white-space: nowrap; max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.tfacet > summary::-webkit-details-marker { display: none; }
+.tfacet > summary::after { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 2px 3px 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+.tfacet > summary:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
+.tfacet.on > summary { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.tfmenu { position: fixed; z-index: 40; min-width: 12em; max-width: min(320px, 92vw); overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px; box-shadow: 0 6px 18px rgb(0 0 0 / 25%); }
+.tfmenu label { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; color: var(--ink); white-space: nowrap; }
+.tfmenu label:hover { background: var(--bg); }
+.tfmenu label > span:first-of-type { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.tfmenu .n { color: var(--muted); font-family: var(--mono); }
+.tfacet.busy .tfmenu { cursor: progress; }
+.tfacet.busy .tfmenu label, .tfacet.busy .tfclear { opacity: .5; }
+.tfclear { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 3px 6px; font-size: 12px; color: var(--accent); cursor: pointer; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.bfilter .tfacet { margin: 0 2px; }
 .tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
 .cores { display: flex; gap: 1px; width: 100%; height: 16px; }
 .cores i { display: flex; align-items: flex-end; flex: 1 1 0; min-width: 2px; max-width: 12px; height: 100%; background: var(--line); border-radius: 1px; overflow: hidden; }
 .cores b { display: block; width: 100%; }
-.tbl tr.tot td { font-weight: 600; border-bottom: 0; }
+.tbl tr.tot td { font-weight: 600; border-bottom: 0; border-top: 1px solid var(--muted); }
 .tbl tr.hgrp td { padding-top: 10px; font-weight: 600; }
 .scroll { overflow-x: auto; }
 .month { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 6px 0 4px; border-top: 1px solid var(--line); font-size: 13px; }
@@ -387,12 +413,20 @@ span.warn { color: var(--b-stalled); }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
 .tbl tr.jr, .tbl tr.wr, .tbl tr.prop, .tbl tr.qr { cursor: pointer; }
-.tbl .btext { max-width: 56ch; overflow: hidden; text-overflow: ellipsis; }
+/* Board cells wrap, breaking a long word or PR ref anywhere, so the table never outgrows the screen. */
+.tbl td.btitle, .tbl td.bepic, .tbl td.bwhen { white-space: normal; overflow-wrap: anywhere; }
+.tbl td.btitle { min-width: 28ch; }
+.tbl td.bepic { min-width: 12ch; max-width: 28ch; }
+.tbl td.bwhen { min-width: 9ch; max-width: 18ch; }
+.tbl .bt { font-weight: 600; font-size: 13px; }
+.tbl .bsum { font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 /* Projects: the opened row, under its line (board.js). The record stays in view when the table scrolls sideways. */
 .tbl tr.bopen > td { white-space: normal; padding: 0; }
 .bopen .card { position: sticky; left: 0; max-width: min(100%, calc(100vw - 32px)); box-sizing: border-box; }
-.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td { background: var(--bg); }
-.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.rc, .tbl tr.rh { cursor: pointer; }
+.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td, .tbl tr.rc:hover td, .tbl tr.rh:hover td, .tbl tr.click:hover td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td, .tbl tr.rc.sel td, .tbl tr.rh.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.sel > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* An expanded table row: Schedules and Proposals. */
 .tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
 .tbl tr.wdet .tbl { margin-top: 6px; }
@@ -402,25 +436,6 @@ span.warn { color: var(--b-stalled); }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
-/* Below the sidebar's width the same list is a dropdown the menu button opens (app.js menuOpen). */
-@media (max-width: 899px) {
-  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
-  .menu, .cur { display: inline-block; }
-  .tabs { display: none; }
-  header.open .tabs { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
-  header.open .tabs button { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
-  header.open .tabs button.on { border-color: var(--accent); }
-  header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
-  header.open .tabs { max-height: calc(100dvh - 56px); overflow-y: auto; }
-}
-/* The sidebar (docs/dashboards.md, Sidebar): the tab list as a column under the header. */
-@media (min-width: 900px) {
-  .tabs { position: fixed; z-index: 10; top: calc(var(--head) + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
-  .tabs button { text-align: left; border-color: transparent; }
-  .tabs form { margin-top: auto; padding-top: 10px; }
-  main { margin-left: 184px; }
-  header { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
-}
 .pfold > summary { display: none; }
 .actrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (max-width: 760px) {
@@ -447,17 +462,33 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.tphone, .tbl.tphone > tbody { display: block; font-size: 13px; }
   .tbl.tphone .btn { min-height: 40px; }
   .tbl.tphone > * > tr[data-phone=head] { display: none; }
+  /* The filter row folds to a strip of pills over the rows, empty cells gone, the menu full width. */
+  .tbl.tphone > * > tr[data-phone=filters] { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .tbl.tphone > * > tr[data-phone=filters] > td { display: none; }
+  .tbl.tphone > * > tr[data-phone=filters] > th { border: 0; padding: 0; }
+  .tfacet > summary { min-height: 40px; box-sizing: border-box; display: flex; align-items: center; font-size: 13px; }
+  .tfmenu { left: 4px !important; right: 4px; max-width: none; }
+  .tfmenu label, .tfclear { min-height: 40px; box-sizing: border-box; font-size: 14px; }
+  .tfclear { display: flex; align-items: center; }
   .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
   .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
-  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] > td { background: none; box-shadow: none; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td.warn { color: var(--b-stalled); } .tbl.tphone > * > tr[data-phone=row] > td.bad { color: var(--b-needs); }
   .tbl.tphone > * > tr[data-phone=row] > td[data-named]::before { content: attr(data-label) " "; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest]::before { content: attr(data-label) ": "; color: var(--muted); }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest][data-label=""]::before { content: none; }
   .tbl.tphone > * > tr:not([data-phone]), .tbl.tphone > * > tr:not([data-phone]) > td { display: block; white-space: normal; overflow-wrap: anywhere; }
+  /* An opened run's jobs: one job per block, each cell a labelled line (releases.js runJobs). */
+  .tbl.rdjobs, .tbl.rdjobs tbody, .tbl.rdjobs tr, .tbl.rdjobs td { display: block; }
+  .tbl.rdjobs tr:first-child { display: none; }
+  .tbl.rdjobs tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .tbl.rdjobs td { border: 0; padding: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .tbl.rdjobs td::before { content: attr(data-label) " "; color: var(--muted); }
   .seg button, .tsort, .bfilter select, .tdate { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
@@ -582,3 +613,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .tundo { margin: 0 0 10px; }
 .ntag { display: inline-block; text-indent: 0; font: 600 var(--fs-xs) var(--mono); padding: 0 6px; border-radius: 9px; background: var(--tool); color: var(--muted); }
 #daily details.cfold { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; margin: 0 auto 10px; }
+/* Costs > Spend: the 30-day chart beside the month bars on a wide screen, stacked on a phone. */
+.spendcharts { display: grid; gap: 8px; }
+@media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
+#sec-spend tr[data-sid] { cursor: pointer; }
+#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }

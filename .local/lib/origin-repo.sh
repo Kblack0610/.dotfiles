@@ -16,8 +16,11 @@ origin_repo() {
   [ -n "${1:-}" ] || return 1
   url=$(git -C "$1" remote get-url origin 2>/dev/null) && [ -n "$url" ] || return 1
   [ -z "${2:-}" ] || [ "$(url_host "$url")" = "${2,,}" ] || return 1
-  sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$url"
+  url_repo "$url"
 }
+
+# url_repo <url> -> <owner>/<repo> of a remote URL, as origin_repo reads it.
+url_repo() { sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$1"; }
 
 # origin_host <dir> -> the host of <dir>'s origin remote, lower-cased (url_host); nothing for a
 # path origin, and rc 1 with no origin.
