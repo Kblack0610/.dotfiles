@@ -478,21 +478,19 @@ rs_stub() {
   chmod +x "$SANDBOX/bin/release-state"
 }
 
-@test "stages.md: a project deploys no higher than the stage checked, and no snapshot entry fails" {
-  real_row 'draft | base | Deploys no higher than its stage'
-  rs_stub '{"shooter": {"stage": "dev", "rungs": ["alpha", "prod"]}}'
-  run "$CHECK" shooter
-  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
-  # The same deploys pass for a move up to prod: the row reads the stage checked, not today's.
-  run "$CHECK" shooter --stage prod
-  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
-  rs_stub '{"shooter": {"stage": "dev", "rungs": []}}'
-  run "$CHECK" shooter
-  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
-  # NEGATIVE CONTROL: a snapshot with no facts for the project is a FAIL, never a quiet pass.
-  rs_stub '{}'
-  run "$CHECK" shooter
-  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
+@test "stages.md: no draft or dev row reads where a project deploys (a deploy is not the app being live)" {
+  # Every real draft and dev row, run for a project with a prod deploy: none may ask release-state,
+  # the only source of deploy facts, so none can cap where a project deploys.
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n'
+    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; } > "$STAGES_DOC"
+  rs_stub '{"shooter": {"stage": "draft", "rungs": ["prod"]}}'
+  printf '#!/usr/bin/env bash\ntouch "%s"\ncat "%s"\n' "$SANDBOX/rs.asked" "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
+  for stage in draft dev; do run "$CHECK" shooter --stage "$stage"; done
+  [ ! -e "$SANDBOX/rs.asked" ]
+  # Negative control: the alpha rung row does ask, so the marker would have caught a draft one.
+  real_row 'alpha | game, app | A private target live'
+  run "$CHECK" shooter --stage alpha
+  [ -e "$SANDBOX/rs.asked" ]
 }
 
 @test "stages.md: each deploy rung row passes only when a live target serves that rung" {

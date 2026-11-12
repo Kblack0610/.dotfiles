@@ -20,7 +20,7 @@ const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
 const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
-let asked = [];
+let asked = [], posted = [];
 let reply = {};
 const ctx = vm.createContext({
   console,
@@ -32,9 +32,9 @@ const ctx = vm.createContext({
   setTimeout: () => 0,
   location: { pathname: "/", hash: "" },
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
-  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
+  fetch: async (url, o) => { asked.push(url); if (o && o.body) posted.push(`${url} ${o.body}`); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "flow.js", "jobs.js", "waiting.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
@@ -316,14 +316,44 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   load({ ...data, items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /Item <span class="muted">w1<\/span>/);
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="10"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);
   assert.match(h, /<dd>2h10<\/dd>/);
   assert.match(h, /do the thing/);
   fire("click", { type: "click", target: target({}, "w1") });
-  assert.doesNotMatch(parts["q-list"].innerHTML, /Item <span/, "the same row again shuts it");
+  assert.doesNotMatch(parts["q-list"].innerHTML, /wdet/, "the same row again shuts it");
+});
+
+test("an opened row past the cap still shows, with its detail", () => {
+  load({ ...data, open_rows: 1 }, { sel: "q1" });
+  const h = draw();
+  assert.match(h, /data-slug="q1">.*<tr class="wdet">/s);
+  assert.doesNotMatch(h, /data-all/, "nothing is left under the opened row");
+});
+
+test("a waiting row's detail carries its session's ask, answered in place; one with none says where to look", async () => {
+  run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1" }]; st.asks = [{ id: "A1", session: "sid-1", question: "Ship it?", options: ["yes", "no"], project: "dotfiles" }]`);
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  let h = draw();
+  assert.match(h, /<tr class="wdet">.*<div class="card need k-ask" data-id="A1">.*Ship it\?/s);
+  assert.doesNotMatch(h, /answer on Home|data-home/);
+  posted = []; asked = [];
+  reply = { ok: true };
+  const card = { dataset: { id: "A1" }, querySelector: () => null };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : sel === "[data-a]" ? { dataset: { a: "yes" } } : null) } });
+  await settle();
+  assert.ok(posted.some((u) => u.startsWith("/api/asks/answer") && u.includes('"answer":"yes"')), posted.join(" "));
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue")).length, 0, "an answer re-reads no queue: the asks read redraws the card");
+  fire("toggle", { target: { open: true, dataset: { k: "ask:A1" }, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : null) } });
+  assert.equal(run("askst.open['ask:A1']"), true, "a card's fold is kept where waiting.js draws it from");
+  assert.equal(run("qst.open['ask:A1']"), undefined);
+  run("st.asks = []");
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+  h = draw();
+  assert.match(h, /Waiting on a prompt in its window/, "negative control: no ask, no card, and the line says where to look");
+  run("st.agents = []");
 });
 
 test("cancel and the priority select are for an active item only, cancel asks twice", async () => {
