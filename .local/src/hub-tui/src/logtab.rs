@@ -236,6 +236,7 @@ mod tests {
             verb: verb.into(),
             text: "agent-3\tstalled".into(),
             priority: None,
+            failed: false,
             reference: None,
             source: "shepherd".into(),
         }

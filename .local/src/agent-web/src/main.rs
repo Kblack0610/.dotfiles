@@ -12,6 +12,7 @@
 
 mod alerts;
 mod assets;
+mod audit;
 mod auth;
 mod board;
 mod briefing;
@@ -219,6 +220,7 @@ async fn main() -> Result<()> {
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
+        .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
         .with_state(state);
@@ -431,6 +433,12 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             targets.push((dir, flat));
         }
     }
+    // The operator audit log, for Log's Actions section. Made here, so the first line reaches an
+    // open page.
+    if let Some(dir) = hub_core::audit::path().parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
     // fleet-dispatch's state directory, for its Candidates snapshot (replaced by a rename). Made
     // here, as the queue's is, so the first snapshot reaches an open page.
     let dispatch_state = boards::dispatch_state_dir();
@@ -555,9 +563,13 @@ fn classify(p: &Path) -> Option<String> {
     if parent == "shepherd" && matches!(name, ".due" | ".lease" | ".pass" | "passes.tsv") {
         return Some(r#"{"kind":"shepherd"}"#.to_string());
     }
-    // Log's Actions section's own ledgers: the shepherd's log and agent-notify's (which has no
-    // extension). The dispatch log, the run ledger and the queue reach it as their own kinds.
-    if (parent == "shepherd" && name == "log.md") || (parent == "agent-notify" && name == "log") {
+    // Log's Actions section's own ledgers: the shepherd's log, agent-notify's (which has no
+    // extension) and the audit log. The dispatch log, the run ledger and the queue reach it as
+    // their own kinds.
+    if (parent == "shepherd" && name == "log.md")
+        || (parent == "agent-notify" && name == "log")
+        || (parent == "audit" && name == "actions.jsonl")
+    {
         return Some(r#"{"kind":"actions"}"#.to_string());
     }
     // Daily's outbox: the doc and the ingest record of what intake did with its lines. Before
@@ -679,13 +691,19 @@ async fn callback(
     };
     if !s.oauth.is_allowed(&login) {
         eprintln!("agent-web: rejected Forgejo user {login}");
+        let refused = hub_core::audit::Entry::new(&login, "signin.refused", "agent-web", "web");
+        tokio::task::spawn_blocking(move || hub_core::audit::record(&refused));
         return denied(
             StatusCode::FORBIDDEN,
             "That Forgejo account is not allowed here.",
         );
     }
     let id = match s.sessions.create(&login) {
-        Ok(id) => id,
+        Ok(id) => {
+            let started = hub_core::audit::Entry::new(&login, "signin.started", "agent-web", "web");
+            tokio::task::spawn_blocking(move || hub_core::audit::record(&started));
+            id
+        }
         Err(e) => {
             eprintln!("agent-web: could not store session: {e:#}");
             return denied(
@@ -1917,6 +1935,7 @@ mod tests {
         for p in [
             "/h/.agent/shepherd/log.md",
             "/h/.local/state/agent-notify/log",
+            "/h/.agent/audit/actions.jsonl",
         ] {
             assert_eq!(
                 classify(Path::new(p)).as_deref(),

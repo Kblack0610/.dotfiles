@@ -137,6 +137,7 @@ mod tests {
             verb: "nudge".into(),
             text: "t".into(),
             priority: None,
+            failed: false,
             reference: None,
             source: "shepherd".into(),
         };

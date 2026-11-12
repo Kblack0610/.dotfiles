@@ -1370,6 +1370,7 @@ impl App {
         let runner = self.runner.clone();
         std::thread::spawn(move || {
             let r = hub_core::capacity::start(runner.as_ref(), &name);
+            audited(entry("timer.started", &name), &r);
             let _ = tx.send(Msg::Acted(said(&label, r)));
         });
     }
@@ -1392,6 +1393,11 @@ impl App {
                 &snap.accounts,
             )
             .and_then(|steps| actions::execute(&steps, runner.as_ref()));
+            let action = format!("session.{}", hub_core::audit::past(a.name()));
+            audited(
+                entry(&action, &target).to(serde_json::json!({ "account": account })),
+                &r,
+            );
             let r = said(&label, r);
             let _ = tx.send(Msg::Acted(r));
         });
@@ -1425,6 +1431,7 @@ impl App {
     fn queue_act(
         &mut self,
         label: String,
+        e: hub_core::audit::Entry,
         f: impl FnOnce(&dyn Runner) -> Result<String, String> + Send + 'static,
     ) {
         self.qv.running = Some(label.clone());
@@ -1432,7 +1439,9 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(&label, f(runner.as_ref()));
+            let r = f(runner.as_ref());
+            audited(e, &r);
+            let r = said(&label, r);
             let _ = tx.send(Msg::QueueActed(r));
         });
     }
@@ -1518,6 +1527,10 @@ impl App {
                 ..Default::default()
             };
             let r = hub_core::queue::add(runner.as_ref(), &add).map(|o| o.trim().to_string());
+            audited(
+                entry("queue.added", &add.project).to(serde_json::json!({ "task": add.task })),
+                &r,
+            );
             let _ = tx.send(Msg::FixQueued(name, r));
         });
     }
@@ -1542,11 +1555,12 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = if accept {
-                proposals::accept(runner.as_ref(), &id)
+            let (r, action) = if accept {
+                (proposals::accept(runner.as_ref(), &id), "proposal.accepted")
             } else {
-                proposals::reject(runner.as_ref(), &id)
+                (proposals::reject(runner.as_ref(), &id), "proposal.rejected")
             };
+            audited(entry(action, &id), &r);
             let _ = tx.send(Msg::ProposalActed(said("proposal", r)));
         });
     }
@@ -1660,8 +1674,10 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(&label, hub_core::tasks::apply(runner.as_ref(), &w));
-            let _ = tx.send(Msg::TasksActed(r));
+            let e = w.audit_entry(&hub_core::audit::local_actor(), "hub");
+            let r = hub_core::tasks::apply(runner.as_ref(), &w);
+            audited(e, &r);
+            let _ = tx.send(Msg::TasksActed(said(&label, r)));
         });
     }
 
@@ -1673,11 +1689,12 @@ impl App {
         let tx = self.tx.clone();
         let runner = self.runner.clone();
         std::thread::spawn(move || {
-            let r = said(
-                &label,
-                hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value),
+            let r = hub_core::projects::set_prio(runner.as_ref(), &profile, &name, value);
+            audited(
+                entry("project.prio-set", &name).to(serde_json::json!({ "prio": value })),
+                &r,
             );
-            let _ = tx.send(Msg::TasksActed(r));
+            let _ = tx.send(Msg::TasksActed(said(&label, r)));
         });
     }
 
@@ -2835,19 +2852,22 @@ impl App {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
             queuetab::Ask::Cancel(slug) => {
-                self.queue_act(format!("cancel {slug}"), move |r| {
+                let e = entry("queue.canceled", &slug);
+                self.queue_act(format!("cancel {slug}"), e, move |r| {
                     hub_core::queue::cancel(r, &slug)
                 });
                 true
             }
             queuetab::Ask::Bump(slug, prio) => {
-                self.queue_act(format!("bump {slug} to {prio}"), move |r| {
+                let e = entry("queue.bumped", &slug).to(serde_json::json!({ "priority": prio }));
+                self.queue_act(format!("bump {slug} to {prio}"), e, move |r| {
                     hub_core::queue::bump(r, &slug, prio)
                 });
                 true
             }
             queuetab::Ask::Promote(label, w) => {
-                self.queue_act(label, move |r| hub_core::tasks::apply(r, &w));
+                let e = w.audit_entry(&hub_core::audit::local_actor(), "hub");
+                self.queue_act(label, e, move |r| hub_core::tasks::apply(r, &w));
                 true
             }
             queuetab::Ask::Follow(l) => {
@@ -5044,6 +5064,21 @@ fn open(url: &str) {
         .spawn();
 }
 
+/// An audit line for a change made from this terminal, under the local user (`hub_core::audit`).
+fn entry(action: &str, target: &str) -> hub_core::audit::Entry {
+    hub_core::audit::Entry::new(&hub_core::audit::local_actor(), action, target, "hub")
+}
+
+/// Record `e` with how `r` went. This crate's tests drive these actions with a fake runner, so
+/// they write no line on the real log.
+fn audited<T>(e: hub_core::audit::Entry, r: &Result<T, String>) {
+    let e = e.outcome_of(r);
+    if cfg!(test) {
+        return;
+    }
+    hub_core::audit::record(&e);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5821,6 +5856,7 @@ mod tests {
             verb: verb.into(),
             text: format!("row {verb}"),
             priority: None,
+            failed: false,
             reference: None,
             source: "shepherd".into(),
         };

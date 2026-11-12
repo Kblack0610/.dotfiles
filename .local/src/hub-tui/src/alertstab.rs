@@ -1006,6 +1006,7 @@ pub(crate) mod tests {
             verb: "tripped".into(),
             text: "Sentinel: playground-nightly".into(),
             priority: None,
+            failed: false,
             reference: None,
             source: "agent-notify".into(),
         }];

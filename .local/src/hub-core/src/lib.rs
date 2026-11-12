@@ -7,6 +7,7 @@ pub mod actions;
 pub mod alertmanager;
 pub mod alerts;
 pub mod app_status;
+pub mod audit;
 pub mod boards;
 pub mod briefing;
 pub mod budget;
