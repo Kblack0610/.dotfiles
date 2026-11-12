@@ -1670,8 +1670,9 @@ resume_thread() {
 }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
-# agent launching one for a board row, a reboot restore. Each start of agent work comes out tagged @dispatch on
-# its server (the human reads [dispatch] as "an agent started this"), and a session doing work
+# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
+# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
 # which the human had to ask about twice.
@@ -1816,7 +1817,8 @@ cmd_start() {
     origin=${START_ORIGIN:-resume}
     # A resume is an agent's work only when its item came from a start (it has an origin). With no
     # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of
-    # a session they opened, so it gets no @dispatch label and its item no origin.
+    # a session they opened, so it gets no @dispatch label. Its item still records origin=resume:
+    # live_runs reads an empty origin with a session as a runner slot.
     [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
@@ -1838,9 +1840,9 @@ cmd_start() {
     fi
     # A window joined into a live session is one Claude among others there, so the item does not
     # take that session: reap goes by its `sessions:` ids instead (claude_gone).
-    rec=(); [ -z "$agent_work" ] || rec+=("origin=$origin"); [ -n "$joined" ] || rec+=("session=$server:$session")
+    rec=("origin=$origin"); [ -n "$joined" ] || rec+=("session=$server:$session")
     # --resume keeps the conversation's session id, so that is the one the item claims.
-    [ -z "$item" ] || { { [ ${#rec[@]} = 0 ] || agent-queue set "$item" "${rec[@]}" >/dev/null; } && agent-queue claim "$item" --sid "$resume" >/dev/null; } ||
+    [ -z "$item" ] || { agent-queue set "$item" "${rec[@]}" >/dev/null && agent-queue claim "$item" --sid "$resume" >/dev/null; } ||
       say "restored $session, but could not record it on queue item $item"
   else
     [ -n "$cwd" ] || cwd=$(repo_dir "$project")

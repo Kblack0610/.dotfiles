@@ -217,7 +217,7 @@ load 'fleet_dispatch/common'
 
 # 2026-11-12: every restored or scratch-sent hand session came back labelled dispatch, and so
 # did each window the human opened in it with Prefix+c.
-@test "start --resume of a hand item (no origin) neither tags the session nor gives the item an origin" {
+@test "start --resume of a hand item (no origin) does not tag the session; the item records origin resume" {
   project game beta "$SANDBOX/repos/game"
   started_item mine hub:dotfiles
   : > "$NOTES_FIXTURE/tmux.sessions.default"
@@ -226,7 +226,7 @@ load 'fleet_dispatch/common'
   assert_success
   assert_not_called '@dispatch'
   f=$(qitem running mine)
-  assert_equal "$(qfield "$f" session) [$(qfield "$f" origin)] $(qfield "$f" sessions)" 'default:mine [] abc-123'
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" sessions)" 'default:mine resume abc-123'
 }
 
 @test "start --resume --prompt gives the resumed conversation its first message; without a resume it is refused" {
@@ -548,10 +548,10 @@ load 'fleet_dispatch/common'
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
   assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
-  # The session filed its own item (no origin): a hand session, so no @dispatch label and no origin.
+  # The session filed its own item (no origin): a hand session, so no @dispatch label.
   assert_not_called '@dispatch'
   f=$(qitem running plan-work)
-  assert_equal "$(qfield "$f" session) [$(qfield "$f" origin)]" 'default:planned []'
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
 
   # Once the transcript shows the plan approved, the resume goes on in the mode it ran in.
   transcript conv-plan '{"permissionMode":"plan"}

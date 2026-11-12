@@ -1264,8 +1264,7 @@ OUT
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
   assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
-  # The session filed hub-work itself: a hand session's item gets no origin from a restore.
-  assert_equal "$(qfield "$f" origin)" ''
+  assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
 }
 
