@@ -287,11 +287,7 @@ fn pr_row(p: &Pr) -> Work {
 
 /// One row per item, one per unclaimed PR, attention first and newest first inside that. Queued
 /// items keep agent-queue's order, which is the order they will start in.
-pub fn gather<Tz: TimeZone>(
-    items: &[Item],
-    days: &[(String, Value)],
-    tz: &Tz,
-) -> Gathered
+pub fn gather<Tz: TimeZone>(items: &[Item], days: &[(String, Value)], tz: &Tz) -> Gathered
 where
     Tz::Offset: std::fmt::Display,
 {

@@ -376,7 +376,7 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   assert_output '["2025-11-06T12:10:00Z",[30]]'
 }
 
-@test "ledger: state.json is byte-for-byte what the schedule-only fetch wrote (golden from main)" {
+@test "ledger: state.json is byte-for-byte what the schedule-only fetch wrote (golden from main, plus night_absent)" {
   game_files
   # The golden was written by the event=schedule version of this script from these runs alone;
   # the all-events page adds a push run on the same workflow and a run of another workflow.
@@ -886,10 +886,15 @@ EOF
 FAIL  B  ==> 1/3 passed, 1 failed, 1 known red, 0 skipped
 NOT RUN C  never started' durations.txt '12 P.A'
   zip_art 8 suite-1/A.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
+  KNOWN    P.B.four (2.5s)
+  Passed   P.A.one (0.3s)
 ==> 3/5 passed' suite-1/batch-1.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
 ==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.two' \
-    run/editor.log '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.Log.ignored'
-  zip_art 9 suite-2/E.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.E.three("a b")'
+    run/editor.log '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.Log.ignored
+  KNOWN    P.Log.ignored (1.0s)'
+  zip_art 9 suite-2/E.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.E.three("a b")
+  KNOWN    P.E.five("x (y)") (10.0s)
+  KNOWN    P.B.four (2.4s)'
 }
 
 nightly_runs() {
@@ -909,6 +914,9 @@ nightly_runs() {
   # an expired artifact is not asked for, and a test named in a batch and alone counts once.
   run jq -c '.repos[0] | [.nightly.run_id, .nightly.known, .nightly.now_passing, .nightly.now_passing_tests, .nightly.logs, .no_summary]' "$QUAR"
   assert_output '[50,3,3,["P.A.one","P.A.two","P.E.three(\"a b\")"],2,["51:1"]]'
+  # the quarantined tests results.py marked KNOWN (failed), once each; a test in neither list did not run
+  run jq -c '.repos[0].nightly.known_tests' "$QUAR"
+  assert_output '["P.B.four","P.E.five(\"x (y)\")"]'
   # a repo with no quarantine is no lane, and is asked again a day later, not every pass
   run jq -c '.absent' "$QUAR"
   assert_output '{"o/empty":"2025-11-06T12:00:00Z"}'
@@ -951,6 +959,48 @@ nightly_runs() {
   assert_success
   run jq -c '.repos[0] | [.report.entries, .error]' "$QUAR"
   assert_output '[2,"quarantine.py report: quarantine.txt:3: needs a date"]'
+}
+
+# night_file <sha> <json>: o/game's scripts/night.json on main, as the contents API answers it
+night_file() {
+  printf '{"sha":"%s","content":"%s"}' "$1" "$(printf '%s' "$2" | base64 -w0)" | serve 'repos/o/game/contents/scripts/night.json?ref=main'
+}
+
+@test "night set: scripts/night.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
+  game_files; runs | page1
+  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "held": {"multi.yml": "Multi (all)"}}'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | map([.repo, .night.night, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,"2025-11-06T12:00:00Z"]]'
+
+  # warm: the same file is a conditional 304 and keeps its night; o/empty is not asked for a day
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run grep night.json "$GHD/calls"
+  assert_output 'repos/o/game/contents/scripts/night.json?ref=main (conditional)'
+  run jq -c '.repos[0].night | [.night, .sha]' "$STATE"
+  assert_output '[{"test.yml":"Tests (all)"},"n1"]'
+
+  # a moved sha is read again; a day on, o/empty is asked again and still has none
+  night_file n2 '{"night": {"test.yml": "Tests (all)", "soak.yml": "Soak (all)"}}'
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | map([.night.night, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[[{"test.yml":"Tests (all)","soak.yml":"Soak (all)"},{},"n2",null],[null,null,null,"2025-11-07T12:00:00Z"]]'
+  run grep -c 'o/empty/contents/scripts/night.json' "$GHD/calls"
+  assert_output 1
+}
+
+@test "negative control: a night.json that is not a JSON object is kept with its error, never read as an empty night" {
+  game_files; runs | page1
+  night_file n3 '["test.yml"]'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0].night | [.night, .held, .sha, .error]' "$STATE"
+  assert_output '[{},{},"n3","scripts/night.json: not a JSON object"]'
 }
 
 # ---- PR store ----

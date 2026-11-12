@@ -15,17 +15,19 @@ const el = () => new Proxy({}, {
   set: (t, k, v) => { t[k] = v; return true; },
 });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], dataset: {} });
-// Each section's element keeps its own listeners, as the page's #ci-runs and #ci-tests do.
+// Each section's element keeps its own listeners, as the page's #ci-runs, #ci-pipelines and #ci-tests do.
 const boxOf = () => { const on = {}; return Object.assign(part(), { on, addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } }); };
-const runs = boxOf(), tests_ = boxOf();
+const runs = boxOf(), pipes_ = boxOf(), tests_ = boxOf();
 const fire = (box, ev, e) => (box.on[ev] || []).forEach((f) => f(e));
-const parts = { "ci-runs": runs, "ci-tests": tests_, "infra-main": part(), jobs: part() };
+const parts = { "ci-runs": runs, "ci-pipelines": pipes_, "ci-tests": tests_, "infra-main": part(), jobs: part() };
 const doc = { body: el(), getElementById: (id) => (parts[id] ||= part()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let builds = {};
 let tests = {};
 let cases = {};
 let detail = {};
+let pipes = {};
+let pdetail = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -39,7 +41,8 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : {};
+    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds
+      : url.startsWith("/api/pipelines/detail") ? pdetail : url.startsWith("/api/pipelines") ? pipes : {};
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -58,7 +61,23 @@ const bdata = (o = {}) => ({
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
-const showBuilds = (d = bdata()) => { run("st.tab = 'infra'; st.arg = 'ci'"); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null, detail: null }); run("bld.render()"); };
+const prow = (o = {}) => ({
+  state: "red", why: "the last 2 runs failed", forge: "github.com", repo: "o/play", project: "unity-core-playground", pipeline: "Tests (all)", file: ".github/workflows/test.yml",
+  trigger: "night", nightly: "on", schedule: "nightly 02:00 on playground-night", next: NOW() + 3600, runner: "playground-night", last: NOW() - 7200, last_id: 41, last_result: "failure",
+  pass: 60, runs: 5, usual: 1500, p90: 2400, running: 0, ...o,
+});
+const pdata = (o = {}) => ({
+  at: NOW() - 60, summary: "2 pipelines in 1 repo: 1 red", red: 1, errors: [],
+  rows: [prow(), prow({ state: "green", why: "passing", pipeline: "Lint", file: ".github/workflows/lint.yml", trigger: "push", nightly: "", schedule: "", next: null, last_result: "success", pass: 100, running: 1 })],
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], facets: [],
+    columns: ["state", "repo", "pipeline", "trigger", "nightly", "schedule", "next", "last", "pass", "runs", "usual", "p90"].map(bcol),
+    links: [{ repo: "#projects/unity-core-playground", next: "#schedules/playground-night", last: "#infra/runs/o%2Fplay%2F41" }, { repo: "#projects/unity-core-playground" }] },
+  ...o,
+});
+pipes = pdata(); // every Infra show reads the pipelines too
+const showPipes = (d = pdata()) => { run("st.tab = 'infra'; st.arg = 'pipelines'"); Object.assign(run("pip"), { data: d, err: null, sel: null, detail: null }); run("pip.render()"); };
+const prowEl = (key) => ({ dataset: { pkey: key }, closest: (sel) => (sel === "tr.pipr" ? { dataset: { pkey: key } } : null) });
+const showBuilds = (d = bdata()) => { run("st.tab = 'infra'; st.arg = 'runs'"); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null, detail: null }); run("bld.render()"); };
 const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: key } } : null) });
 const BKEY = "github.com|binks|77|2";
 
@@ -140,30 +159,18 @@ test("an opened run shows its header, every job with its price, the steps and th
   fire(runs, "click", { type: "click", target: brow(BKEY) });
 });
 
-test("the Run times fold is each workflow's times and carries no money", () => {
-  showBuilds(bdata({ times: [{ repo: "o/binks", workflow: "Tests", runs: 3, pass: 66, longest: 600, usual: { median: 300, p90: 500 } }] }));
-  const b = runs.innerHTML;
-  assert.match(b, /<b>Run times<\/b> <span class="muted">1 workflows, 30 days/);
-  assert.match(b, /<td>binks<\/td><td class="wrap">Tests<\/td><td class="n">3<\/td><td class="n">5m<\/td>/);
-  assert.match(b, /<td class="n">66%<\/td>/);
-  assert.doesNotMatch(b, /\$ per run|month to date|idle \$/, "the money is the Cloud card's and Costs'");
+// The Run times fold went to Pipelines (usual, p90, pass); the runs are the table alone.
+test("the runs carry no Run times fold, and their counts are Runners' failed 24h link to the red runs", () => {
+  showBuilds(bdata({ counts: { total: 2, running: 0, queued: 0, red: 1, recent_red: 3 } }));
+  assert.doesNotMatch(runs.innerHTML, /Run times/);
+  assert.equal(run("failed24h()"), ', <a href="#infra/runs?bs=red" title="the red runs, newest first">failed 24h 3</a>');
+  Object.assign(run("bld").data, { counts: { total: 2, running: 0, queued: 0, red: 0, recent_red: 0 } });
+  assert.equal(run("failed24h()"), "", "none failed draws nothing");
 });
 
-test("the Quarantine fold says each repo's line, links its nightly and colours each owner row by its end", () => {
-  showBuilds(bdata({
-    quarantine_level: "bad",
-    quarantine: [{ repo: "o/play", level: "bad", entries: 5, url: "https://github.com/o/play/actions/runs/9",
-      says: "play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass",
-      rows: [{ row: "ucp-1", entries: 2, ends: "2026-11-10", days_left: -1, level: "bad", left: "ended" }, { row: "ucp-2", entries: 3, ends: "2026-11-30", days_left: 19, level: "ok", left: "19d" }] }],
-  }));
-  const b = runs.innerHTML;
-  assert.match(b, /data-k="bld-quar"[^>]*><summary><b>Quarantine<\/b> <span class="bad">5 entries in 1 repo<\/span>/);
-  assert.match(b, /<div class="cline bad">play: 5 quarantined over 2 owner rows, 2 ended; nightly 11-11: 12 known red, 3 now pass <a href="https:\/\/github.com\/o\/play\/actions\/runs\/9"/);
-  assert.match(b, /<td>ucp-1<\/td><td class="n">2<\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td>/);
-  assert.match(b, /<td>ucp-2<\/td><td class="n">3<\/td><td>2026-11-30<\/td><td class="n ">19d<\/td>/);
-  assert.ok(b.indexOf("bld-quar") < b.indexOf("bld-body"), "in the head, above the runs");
-  showBuilds(bdata({ quarantine: [] }));
-  assert.doesNotMatch(runs.innerHTML, /bld-quar/, "no repo with a quarantine draws no fold");
+test("the runs carry no Quarantine fold: the quarantine is Tests' table", () => {
+  showBuilds(bdata({ quarantine: [{ repo: "o/play", level: "bad", says: "play: 5 quarantined", rows: [] }] }));
+  assert.doesNotMatch(runs.innerHTML, /bld-quar|Quarantine/);
 });
 
 test("the runs table sorts and filters under its own view keys", () => {
@@ -175,13 +182,18 @@ test("the runs table sorts and filters under its own view keys", () => {
   run("st.views.infra = ''");
 });
 
-test("a builds event re-reads the runs and the tests, and only while Infra is open", async () => {
+test("a builds event re-reads the runs, the pipelines and the tests, and only while Infra is open", async () => {
   builds = bdata();
   run("st.tab = 'infra'");
   asked.length = 0;
   run("TABS.infra").onEvent({ kind: "builds" });
   await settled();
-  assert.deepEqual(asked, ["/api/builds", "/api/tests"]);
+  assert.deepEqual(asked, ["/api/builds", "/api/pipelines", "/api/tests"]);
+  // A state.json write re-reads the pipelines alone: a night's schedule changed, no run did.
+  asked.length = 0;
+  run("TABS.infra").onEvent({ kind: "pipelines" });
+  await settled();
+  assert.deepEqual(asked, ["/api/pipelines"]);
   run("st.tab = 'home'");
   asked.length = 0;
   run("TABS.infra").onEvent({ kind: "builds" });
@@ -190,16 +202,24 @@ test("a builds event re-reads the runs and the tests, and only while Infra is op
 });
 
 const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
-const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
+const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, quarantined: 0, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
 const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "main", sha: "abc1234", title: "t", state: "red", level: "bad", started: NOW() - 600, prs: [], url: `https://github.com/o/binks/actions/runs/${id}`, ...o });
 const tdata = (o = {}) => ({
   at: NOW() - 60, stale_after: 1800, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], run: pickRun(9),
   summary: "main abc1234: 5 tests in 2 suites: 1 failed, 1 skipped, 3 passed", totals: { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 },
   rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], more: 0, fold: null, note: null, errors: [],
-  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "skipped", "time"].map(tcol), facets: [] },
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "quarantined", n: 0 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"].map(tcol), facets: [] },
   ...o,
 });
-const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'ci'"); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("tst.render()"); };
+const held = (o) => ({ test: "P.Yard.Each(\"a\")", repo: "unity-core-playground", row: "db-265", owner: "db-265 fix(yard): x", ends: "2026-11-20", days_left: 8, left: "8d", level: "ok", nightly: "failing", ...o });
+const qdata = (o = {}) => ({
+  lanes: [{ repo: "unity-core-playground", says: "unity-core-playground: 2 quarantined over 2 owner rows, 1 ended; nightly 11-12: 8 known red, 1 now pass", level: "bad", url: "https://github.com/o/play/actions/runs/43215863750" }],
+  rows: [held({ test: "P.Gone", row: "ucp-1", ends: "2026-11-10", days_left: -2, left: "ended", level: "bad" }), held({ nightly: "now passing" })], more: 0, error: null,
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "ended", n: 1 }, { name: "ending", n: 0 }, { name: "held", n: 1 }], columns: ["test", "repo", "row", "ends", "left", "nightly"].map(tcol), facets: [],
+    links: [{ repo: "#projects?q=unity-core-playground", row: "#board?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#board?q=id:=db-265" }] },
+  ...o,
+});
+const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'tests'"); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("tst.render()"); };
 const srow = (key) => ({ dataset: { skey: key }, closest: (sel) => (sel === "tr.sr" ? { dataset: { skey: key } } : null) });
 
 test("the Tests section draws the run's totals, its picker and each suite", () => {
@@ -207,13 +227,61 @@ test("the Tests section draws the run's totals, its picker and each suite", () =
   const b = tests_.innerHTML;
   assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec" id="sec-tests">Tests <span class="muted">main abc1234: 5 tests in 2 suites: 1 failed/);
   assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
-  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
+  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">0<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
   assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
 });
 
-test("runs of two repos' declared workflows name their repo in the picker", () => {
-  showTests(tdata({ runs: [pickRun(9), pickRun(5, { repo: "o/play" })] }));
-  assert.match(tests_.innerHTML, /<option value="5">o\/play main abc1234 red/);
+test("a suite whose failures are all quarantined is amber, and its tests say quarantined", async () => {
+  showTests(tdata({ rows: [suite({ failed: 0, quarantined: 1, state: "quarantined", level: "warn" })] }));
+  assert.match(tests_.innerHTML, /<td class="warn">quarantined<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n muted">0<\/td><td class="n warn">1<\/td>/);
+  cases = { more: 0, cases: [{ name: "held one", fullname: "A.held", result: "quarantined", time: 0.2, message: "Expected 1" }] };
+  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  await settled();
+  assert.match(tests_.innerHTML, /<span class="warn">quarantined<\/span> held one/);
+  assert.match(tests_.innerHTML, /data-cres="quarantined">quarantined <span class="n">1<\/span>/);
+  assert.match(tests_.innerHTML, /<td colspan="8">/, "the detail spans every column");
+});
+
+test("the Quarantine table lists each held test under each lane's line with its nightly link", () => {
+  showTests(tdata({ quarantine: qdata() }));
+  const b = tests_.innerHTML;
+  assert.ok(b.indexOf('data-tbl="t"') < b.indexOf('id="sec-quarantine"'), "below the suites");
+  assert.match(b, /<div class="cline bad">unity-core-playground: 2 quarantined[^<]*<a href="https:\/\/github.com\/o\/play\/actions\/runs\/43215863750"[^>]*>nightly<\/a>/);
+  assert.match(b, /<div data-tbl="q">.*id="qtn-q"/s);
+  assert.match(b, /<td class="wrap">P.Gone<\/td><td><a [^>]*href="#projects\?q=unity-core-playground"[^>]*>unity-core-playground<\/a><\/td><td><a [^>]*href="#board\?q=id:=ucp-1"[^>]*>ucp-1<\/a><\/td><td>2026-11-10<\/td><td class="n bad">ended<\/td><td class="muted">failing<\/td>/);
+  assert.match(b, /<td class="n ">8d<\/td><td class="">now passing<\/td>/);
+  assert.match(b, /data-ts="ended"/);
+  // no run picked still lists the quarantine
+  showTests(tdata({ run: null, runs: [], rows: [], quarantine: qdata() }));
+  assert.match(tests_.innerHTML, /id="sec-quarantine"/);
+  // a bad file is the table's red line; no repo with a quarantine draws nothing
+  showTests(tdata({ quarantine: qdata({ lanes: [], rows: [], error: "quarantine.json: EOF", table: { ...qdata().table, total: 0, links: [] } }) }));
+  assert.match(tests_.innerHTML, /<div class="panel down">quarantine.json: EOF<\/div>/);
+  showTests(tdata({ quarantine: qdata({ lanes: [], rows: [], table: { ...qdata().table, total: 0, links: [] } }) }));
+  assert.doesNotMatch(tests_.innerHTML, /sec-quarantine/);
+});
+
+test("a Quarantine chip re-reads the tests under the q keys, and the suites' keys ride along", async () => {
+  showTests(tdata({ quarantine: qdata() }));
+  run("st.views.infra = 'tq=tier%3Aui&trun=8'");
+  tests = tdata({ quarantine: qdata() });
+  asked.length = 0;
+  const chip = { dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "q" } } : sel === "[data-ts]" ? { dataset: { ts: "ended" } } : null) };
+  fire(tests_, "click", { type: "click", target: chip });
+  await settled();
+  assert.deepEqual(asked, ["/api/tests?tq=tier%3Aui&trun=8&qs=ended"]);
+  assert.equal(run("tblParams(st.views.infra, QTN_PRE).toString()"), "qs=ended");
+  run("st.views.infra = ''");
+  tests = {};
+});
+
+test("the repo picker sits before the run picker, and a new repo drops the picked run", () => {
+  showTests(tdata({ repos: ["o/play", "o/binks"], repo: "o/binks" }));
+  assert.match(tests_.innerHTML, /<select data-twin="repo" data-tclear="run" aria-label="repo"><option value="o\/play">o\/play<\/option><option value="o\/binks" selected>o\/binks<\/option><\/select> <select data-twin="run"/);
+  assert.match(tests_.innerHTML, /<option value="9" selected>main abc1234 red/, "a run is named by branch, commit and result, its repo is the picker's");
+  const pick = run("tblPatch")({ type: "change", target: { dataset: { twin: "repo", tclear: "run" }, value: "o/play" } });
+  assert.deepEqual({ ...pick }, { repo: "o/play", run: "" });
+  assert.equal(run("tblSet('trun=8', { repo: 'o/play', run: '' }, 't')"), "trepo=o%2Fplay");
 });
 
 test("a green run is one line that lists its suites through the passed chip", () => {
@@ -271,51 +339,106 @@ test("the Tests table sorts under its own keys and the run picker names the run 
   run("st.views.infra = ''");
 });
 
-// The CI inner tab holds the runners, the runs and the Tests; the old Releases URLs open them.
-test("the old Releases Builds and Tests URLs open Infra's CI at that section", () => {
-  for (const [hash, section] of [["#releases/builds", "runs"], ["#releases/tests", "tests"], ["#infra/runs", "runs"], ["#infra/tests", "tests"]]) {
-    const r = ctx.route(hash);
-    assert.deepEqual([r.tab, r.arg, r.section], ["infra", "ci", section], hash);
-  }
-  assert.equal(run("innerOf('infra', 'runs')")[0], "ci");
-  assert.equal(run("innerOf('infra', 'tests')")[0], "ci");
+test("the Pipelines table states each pipeline with its why, its night's schedule link and its times", () => {
+  showPipes();
+  const b = pipes_.innerHTML;
+  assert.match(b, /<div id="pip-head"><h2 class="sec" id="sec-pipelines">Pipelines <span class="muted">2 pipelines in 1 repo: 1 red<\/span><\/h2><\/div><div data-tbl="l">/, "the bar and rows sit in the l table");
+  assert.match(b, /<td class="bad" title="the last 2 runs failed">red<\/td><td><a href="#projects\/unity-core-playground">unity-core-playground<\/a><\/td><td class="wrap" title=".github\/workflows\/test.yml">Tests \(all\)<\/td>/);
+  assert.match(b, /<td class="wrap muted"><a href="#schedules\/playground-night">nightly 02:00 on playground-night<\/a><\/td><td class="n" title="[^"]+"><a href="#schedules\/playground-night">/, "a night member's schedule and next start open its runner's row");
+  assert.match(b, /<td class="bad" title="[^"]+"><a href="#infra\/runs\/o%2Fplay%2F41">failure \d+[mhd]<\/a>/, "the last run is its result and age, the stamp its tooltip");
+  assert.match(b, /<td class="n bad">60%<\/td><td class="n">5<\/td><td class="n muted">25m<\/td><td class="n muted">40m<\/td>/);
+  assert.match(b, /<td class="" title="passing">green <span class="muted">1 running<\/span><\/td>/);
+  assert.match(b, /<td class="wrap muted">-<\/td><td class="n">-<\/td>/, "no schedule and no next start draw a dash");
 });
 
-test("Infra's CI strip counts runs needing a look and a failed suite, beside the runners' red", () => {
+test("opening a pipeline reads its detail then, and only then, and shows why, purpose, crons, jobs and its last runs", async () => {
+  showPipes();
+  pdetail = { row: prow(), purpose: "Every test, nightly", crons: ["0 2 * * *"], jobs: "EditMode, PlayMode", night_title: "Tests (all) night",
+    runs: [{ id: 41, attempt: 1, started: NOW() - 7200, branch: "main", event: "schedule", title: "nightly", state: "red", conclusion: "failure", took: 1500, link: "#infra/runs/o%2Fplay%2F41" }] };
+  const KEY = "o/play|.github/workflows/test.yml";
+  asked.length = 0;
+  fire(pipes_, "click", { type: "click", target: prowEl(KEY) });
+  assert.match(pipes_.innerHTML, /<tr class="wdet"><td colspan="12"><div class="sdet"><div class="cline bad">the last 2 runs failed<\/div><div class="cline"><b>File<\/b> .github\/workflows\/test.yml<\/div><div class="cline muted">reading/);
+  await settled();
+  assert.deepEqual(asked, ["/api/pipelines/detail?repo=o%2Fplay&file=.github%2Fworkflows%2Ftest.yml"]);
+  const b = pipes_.innerHTML;
+  assert.match(b, /<b>Purpose<\/b> Every test, nightly/);
+  assert.match(b, /<b>Crons<\/b> 0 2 \* \* \*/);
+  assert.match(b, /<b>Jobs<\/b> EditMode, PlayMode/);
+  assert.match(b, /<b>Night title<\/b> Tests \(all\) night/);
+  assert.match(b, /<td data-label="started" class="n"><a href="#infra\/runs\/o%2Fplay%2F41">[^<]+<\/a><\/td><td data-label="result" class="bad">failure<\/td><td data-label="branch" class="wrap muted">main<\/td>/);
+  // A click on the open row closes it.
+  fire(pipes_, "click", { type: "click", target: prowEl(KEY) });
+  assert.doesNotMatch(pipes_.innerHTML, /wdet/);
+  pdetail = {};
+});
+
+test("the Pipelines table filters under its own l keys, apart from the Pools table's p", () => {
+  showPipes();
+  run("st.views.infra = 'pq=pool&lq=repo%3Aplay&ls=red'");
+  assert.equal(run("tblParams(st.views.infra, PIP_PRE).toString()"), "lq=repo%3Aplay&ls=red");
+  const pre = Object.values(run("INFRA_TABLES")).concat([run("RUNS_PRE"), run("PIP_PRE"), run("TESTS_PRE"), run("QTN_PRE")]);
+  assert.equal(new Set(pre).size, pre.length, `every Infra table has its own view-key prefix: ${pre}`);
+  run("st.views.infra = ''");
+});
+
+// Runs, Pipelines and Tests are inner tabs of their own; the old Releases URLs open them.
+test("the old Releases Builds and Tests URLs open Infra's Runs and Tests", () => {
+  for (const [hash, inner, section] of [["#releases/builds", "runs", "runs"], ["#releases/tests", "tests", "tests"], ["#infra/runs", "runs", undefined], ["#infra/tests", "tests", undefined], ["#infra/quarantine", "tests", "quarantine"]]) {
+    const r = ctx.route(hash);
+    assert.deepEqual([r.tab, r.arg, r.section], ["infra", inner, section], hash);
+  }
+  assert.equal(run("innerOf('infra', 'runs')")[0], "runs");
+  assert.equal(run("innerOf('infra', 'pipelines')")[0], "pipelines");
+  assert.equal(run("innerOf('infra', 'quarantine')")[0], "tests");
+  assert.equal(run("innerOf('infra', 'ci')")[0], "runners", "the retired CI tab is Runners");
+});
+
+test("Infra's strip counts runs needing a look on Runs, a red pipeline on Pipelines and a failed suite on Tests", () => {
   showBuilds(bdata({ look: true }));
   showTests();
+  Object.assign(run("pip"), { data: pdata(), err: null });
   run("ist.data = null; st.arg = 'machines'; renderInfra()");
-  assert.match(parts["infra-main"].innerHTML, /data-itab="ci" [^>]*>CI <span class="pill warn">2<\/span>/);
-  // The runs and Tests elements join the CI group, hidden on another inner tab.
-  assert.equal(runs.dataset.in, "ci");
+  const strip = () => parts["infra-main"].innerHTML;
+  assert.match(strip(), /data-itab="runs" [^>]*>Runs <span class="pill warn">1<\/span>/);
+  assert.match(strip(), /data-itab="pipelines" [^>]*>Pipelines <span class="pill warn">1<\/span>/);
+  assert.match(strip(), /data-itab="tests" [^>]*>Tests <span class="pill warn">1<\/span>/);
+  // Each element joins its own inner tab, hidden on another.
+  assert.equal(runs.dataset.in, "runs");
+  assert.equal(pipes_.dataset.in, "pipelines");
   assert.equal(tests_.hidden, true);
-  run("st.arg = 'ci'; renderInfra()");
+  run("st.arg = 'runs'; renderInfra()");
   assert.equal(runs.hidden, false);
+  assert.equal(tests_.hidden, true);
   Object.assign(run("bld").data, { look: false });
   Object.assign(run("tst").data.totals, { failed_suites: 0 });
+  Object.assign(run("pip").data, { red: 0 });
   run("renderInfra()");
-  assert.match(parts["infra-main"].innerHTML, /data-itab="ci" [^>]*>CI<\/button>/);
+  assert.match(strip(), /data-itab="runs" [^>]*>Runs<\/button>/);
+  assert.match(strip(), /data-itab="pipelines" [^>]*>Pipelines<\/button>/);
+  assert.match(strip(), /data-itab="tests" [^>]*>Tests<\/button>/);
   run("st.arg = ''");
 });
 
 test("a run's workflow cell opens its record and its repo cell its project", () => {
-  showBuilds(bdata({ table: { ...bdata().table, links: [{ workflow: "#infra/ci/binks%2F77", repo: "#projects/binks" }] } }));
-  assert.match(runs.innerHTML, /<td><a href="#projects\/binks">binks<\/a><\/td><td class="wrap"><a href="#infra\/ci\/binks%2F77">Tests<\/a><\/td>/);
+  showBuilds(bdata({ table: { ...bdata().table, links: [{ workflow: "#infra/runs/binks%2F77", repo: "#projects/binks" }] } }));
+  assert.match(runs.innerHTML, /<td><a href="#projects\/binks">binks<\/a><\/td><td class="wrap"><a href="#infra\/runs\/binks%2F77">Tests<\/a><\/td>/);
 });
 
 test("a run's page reads the run by its repo and id, shows its newest attempt with its jobs and log, and says so when the ledger has none", async () => {
   builds = bdata({ rows: [red, { ...red, attempt: 1, started: red.started - 600 }] }); // the ledger order: newest attempt first
   detail = rdetail();
   asked.length = 0;
-  run('st.tab = "infra"; st.page = "ci/binks/77"; showRunPage()');
+  run('st.tab = "infra"; st.page = "runs/binks/77"; showRunPage()');
   for (let i = 0; i < 4; i++) await settled();
   assert.equal(asked[0], "/api/builds?bq=repo%3A%3Dbinks+id%3A%3D77", "a Forgejo run id is an index within its repo");
   assert.ok(asked.includes("/api/builds/log?forge=github.com&repo=binks&run_id=77&attempt=2"), "the newest attempt's log");
   let h = run("runPage()");
-  assert.match(h, /CI run <span class="muted">binks\/77<\/span> <a href="#infra\/ci">all runs<\/a>/);
+  assert.match(h, /CI run <span class="muted">binks\/77<\/span> <a href="#infra\/runs">all runs<\/a>/);
   assert.match(h, /<b>Run<\/b> github.com binks #77 attempt 2/);
   assert.match(h, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
   builds = bdata({ rows: [] });
+  // The retired #infra/ci/<id> still opens the run.
   run('st.page = "ci/99"; showRunPage()');
   for (let i = 0; i < 4; i++) await settled();
   assert.equal(asked.at(-1), "/api/builds?bq=id%3A%3D99", "a bare id is that id in any repo");

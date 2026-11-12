@@ -148,11 +148,24 @@ pub const TABS: [Tab; 13] = [
         group: "System",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &["machines", "pools", "ci", "runs", "tests", "jobs"],
+        sections: &[
+            "machines",
+            "pools",
+            "ci",
+            "waiting",
+            "local",
+            "runs",
+            "pipelines",
+            "tests",
+            "quarantine",
+            "jobs",
+        ],
         // What is red and its fixes moved to Alerts (MOVED); the governor's verdict and the
-        // cloud power are columns of the machine they act on. CI is the runners, their queue and
-        // finished runs, every run of 30 days with its run times and the quarantine
-        // (`hub_core::builds`), and the declared test workflows' suites (`hub_core::junit`).
+        // cloud power are columns of the machine they act on. Runners keeps the `ci` section id
+        // (the CI head), so `#ci`, `#infra/ci` and `hub --tab ci` still land on it; then the
+        // jobs waiting for a runner and the local Unity gate's failures. Runs is every run of 30
+        // days (`hub_core::builds`), Pipelines each repo's workflows (`hub_core::pipelines`),
+        // Tests the declared test workflows' suites (`hub_core::junit`) and the quarantine.
         pinned: &[],
         inner: &[
             Inner {
@@ -161,9 +174,24 @@ pub const TABS: [Tab; 13] = [
                 sections: &["machines", "pools"],
             },
             Inner {
-                id: "ci",
-                title: "CI",
-                sections: &["ci", "runs", "tests"],
+                id: "runners",
+                title: "Runners",
+                sections: &["ci", "waiting", "local"],
+            },
+            Inner {
+                id: "runs",
+                title: "Runs",
+                sections: &["runs"],
+            },
+            Inner {
+                id: "pipelines",
+                title: "Pipelines",
+                sections: &["pipelines"],
+            },
+            Inner {
+                id: "tests",
+                title: "Tests",
+                sections: &["tests", "quarantine"],
             },
             Inner {
                 id: "jobs",
@@ -353,7 +381,7 @@ pub fn resolve(name: &str) -> Option<&'static Tab> {
 }
 
 /// The section a retired name opens on its new tab, when that name is one of the tab's
-/// sections (`ci` -> Infra's CI section), so an old link lands where its content went.
+/// sections (`ci` -> Infra's Runners head), so an old link lands where its content went.
 pub fn section(name: &str) -> Option<&'static str> {
     let n = name.trim().to_ascii_lowercase();
     let tab = resolve(&n)?;
@@ -543,12 +571,12 @@ mod tests {
             assert!(<crate::machines::Machine as crate::table::Row>::STATES.contains(chip));
         }
         assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
-        // Releases' Builds and Tests links land on Infra's CI inner tab, at the runs or suites.
+        // Releases' Builds and Tests links land on Infra's Runs and Tests inner tabs.
         let infra = resolve("infra").unwrap();
         for (old, new) in [("builds", "runs"), ("Tests", "tests")] {
             let (t, s) = moved("releases", old).unwrap();
             assert_eq!((t.id, s), ("infra", new), "{old}");
-            assert_eq!(inner_tab(infra, Some(s)).map(|i| i.id), Some("ci"));
+            assert_eq!(inner_tab(infra, Some(s)).map(|i| i.id), Some(new));
         }
         assert_eq!(
             moved("releases", "runs"),
@@ -658,7 +686,7 @@ mod tests {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
-        assert_eq!(resolve("infra").unwrap().inner.len(), 3);
+        assert_eq!(resolve("infra").unwrap().inner.len(), 6);
     }
 
     #[test]
@@ -668,14 +696,22 @@ mod tests {
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
         assert_eq!(at(None), Some("machines"));
         assert_eq!(at(Some("pools")), Some("machines"));
-        assert_eq!(at(Some("ci")), Some("ci"));
-        assert_eq!(at(Some("runs")), Some("ci"));
-        assert_eq!(at(Some("tests")), Some("ci"));
+        // `ci` is the Runners head's section, so the old CI inner tab's links open Runners.
+        assert_eq!(at(Some("ci")), Some("runners"));
+        assert_eq!(at(Some("runners")), Some("runners"));
+        assert_eq!(at(Some("waiting")), Some("runners"));
+        assert_eq!(at(Some("runs")), Some("runs"));
+        assert_eq!(at(Some("pipelines")), Some("pipelines"));
+        assert_eq!(at(Some("tests")), Some("tests"));
+        assert_eq!(at(Some("quarantine")), Some("tests"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
         let titles: Vec<&str> = infra.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Machines", "CI", "Jobs"]);
+        assert_eq!(
+            titles,
+            ["Machines", "Runners", "Runs", "Pipelines", "Tests", "Jobs"]
+        );
         // a retired tab name that became a section lands on the inner tab holding it
-        assert_eq!(at(section("ci")), Some("ci"));
+        assert_eq!(at(section("ci")), Some("runners"));
         assert_eq!(at(section("machines")), Some("machines"));
     }
 

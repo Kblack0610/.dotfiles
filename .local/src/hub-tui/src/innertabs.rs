@@ -60,7 +60,8 @@ mod tests {
     #[test]
     fn named_is_strict_so_a_pinned_or_unknown_word_keeps_the_inner_tab_shown() {
         let infra = layout::resolve("infra").unwrap();
-        assert_eq!(named(infra, "ci"), Some("ci"));
+        // `ci` is the Runners head's section, so the old CI inner tab's word opens Runners.
+        assert_eq!(named(infra, "ci"), Some("runners"));
         assert_eq!(named(infra, " Pools "), Some("machines"));
         assert_eq!(named(infra, "jobs"), Some("jobs"));
         assert_eq!(

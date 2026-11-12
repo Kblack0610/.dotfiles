@@ -35,7 +35,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
-        ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
         // runner rows may be missing.
@@ -67,10 +66,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
         ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
-        // Done today: when runs finished, and which failed. An absent metric is an empty answer,
-        // so the tab says "no data" rather than an error until the exporters publish them.
+        // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
+        // absent metric is an empty answer, so the tab says "no data" rather than an error until
+        // the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
-        ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,

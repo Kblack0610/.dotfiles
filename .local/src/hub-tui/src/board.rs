@@ -131,19 +131,23 @@ impl<'a> Board<'a> {
             .collect()
     }
 
-    /// The CI head: slots, busy and the queue (`hub_core::ci`), the last day's failures, and a
-    /// red line per kind of job no online runner can take, naming the missing label.
-    pub fn ci_head(&self, w: usize) -> Vec<Line<'static>> {
+    /// The Runners head: slots, busy and the queue (`hub_core::ci`), the CI runs that went red
+    /// in the last day (`failed`, the runs read's `Counts::recent_red`, none before it lands; the
+    /// red runs are Runs' red chip), and a red line per kind of job no online runner can take,
+    /// naming the missing label.
+    pub fn ci_head(&self, failed: Option<usize>, w: usize) -> Vec<Line<'static>> {
         let ci = &self.infra.ci;
         let secs = |v: i64| dur(v as f64);
-        let failed = ci.done.bad;
         let mut head = vec![
             Span::styled("CI RUNNERS", self.p.head()),
             Span::raw(format!("  {}", ci.head(secs))),
         ];
-        if failed > 0 {
-            head.push(Span::styled(format!("  failed 24h {failed}"), self.p.bad()));
-        } else if ci.busy + ci.queued == 0 {
+        if let Some(n) = failed.filter(|n| *n > 0) {
+            head.push(Span::styled(
+                format!("  failed 24h {n} (Runs, red)"),
+                self.p.bad(),
+            ));
+        } else if failed.is_some() && ci.busy + ci.queued == 0 && ci.local.is_empty() {
             head.push(Span::styled(
                 "  green: nothing waiting or failed in 24h",
                 self.p.good(),
@@ -163,10 +167,11 @@ impl<'a> Board<'a> {
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
 pub type Section = (&'static str, Vec<Line<'static>>);
 
-/// The Infra page as named sections in `hub_core::layout` order, less `jobs`, which the app
-/// draws from its own read; the app shows them by inner tab, and `inner` is the one shown, whose
-/// table has the keys (`infratables`). What is red is the Alerts tab's (`hub_core::alerts`);
-/// here the headline numbers lead the machines, then what runs, waits and finished. A failed
+/// The Infra page as named sections in `hub_core::layout` order, less runs, pipelines, tests
+/// and jobs, which the app draws from its own reads; the app shows them by inner tab, and
+/// `inner` is the one shown, whose table has the keys (`infratables`). What is red is the
+/// Alerts tab's (`hub_core::alerts`); here the headline numbers lead the machines, then what
+/// runs, waits and failed locally. `failed` is the Runners head's (`Board::ci_head`). A failed
 /// read is one section with the error and nothing else: a board never leaves the last (maybe
 /// green) numbers up.
 pub fn infra(
@@ -176,6 +181,7 @@ pub fn infra(
     w: usize,
     tables: &InfraTables,
     inner: &str,
+    failed: Option<usize>,
 ) -> Vec<Section> {
     if !infra.ok {
         return vec![(
@@ -208,15 +214,15 @@ pub fn infra(
     let mut machines = b.numbers(w);
     machines.push(blank());
     machines.extend(table("machines"));
-    let mut ci = b.ci_head(w);
-    for name in ["runners", "queued", "finished"] {
-        ci.push(blank());
-        ci.extend(table(name));
-    }
+    let mut ci = b.ci_head(failed, w);
+    ci.push(blank());
+    ci.extend(table("runners"));
     let sections = vec![
         ("machines", machines),
         ("pools", table("pools")),
         ("ci", ci),
+        ("waiting", table("queued")),
+        ("local", table("local")),
     ];
     sections
         .into_iter()
@@ -227,7 +233,7 @@ pub fn infra(
 /// The CI head and the runners and queued tables, plain: what `hub ci` prints.
 pub fn ci_runners(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
     let t = InfraTables::default();
-    let mut out = Board::new(infra, p).ci_head(w);
+    let mut out = Board::new(infra, p).ci_head(None, w);
     for name in ["runners", "queued"] {
         out.push(Line::raw(""));
         out.extend(t.draw(infra, name, "", p, 0, w));
@@ -265,14 +271,8 @@ pub(crate) mod tests {
         (m, v)
     }
 
-    fn fin(repo: &str, wf: &str, by: &[(&str, &'static str)]) -> Vec<(Value, &'static str)> {
-        by.iter()
-            .map(|(c, n)| (json!({"repo": repo, "workflow": wf, "conclusion": c}), *n))
-            .collect()
-    }
-
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
-    /// mac-mini, a queue for #412, a stuck run, and a day of finished runs.
+    /// mac-mini, a queue for #412, a stuck run, and a day of failed local gates.
     pub(crate) fn fixture() -> Infra {
         let mut cc = vec![
             (json!({"__name__": "cc:overall_status"}), "2"),
@@ -380,27 +380,16 @@ pub(crate) mod tests {
             json!({"pool": "other", "repo": "platform", "branch": "develop", "stuck": "true"}),
             "3949200",
         ));
-        let finished = [
-            fin(
-                "unity-core-playground",
-                "Tests",
-                &[("success", "12"), ("failure", "38"), ("cancelled", "22")],
-            ),
-            fin(
-                "unity-core-playground",
-                "Game catalog",
-                &[("failure", "39")],
-            ),
-            fin("unity-core-playground", "Multi", &[("failure", "14")]),
-            fin(
-                "unity-core-playground",
-                "Docs",
-                &[("success", "5"), ("cancelled", "3")],
-            ),
-            fin("platform", "Checks", &[("success", "30")]),
-            fin("platform", "E2E", &[("success", "8")]),
-        ]
-        .concat();
+        // Two hours of one branch's failed Android gates fold into one row; main's is older.
+        let local = |branch: &str, platform: &str, hour: &str, n: &'static str| {
+            let l = json!({"repo": "unity-core-playground", "branch": branch, "platform": platform, "result": "failure", "hour": hour});
+            (l, n)
+        };
+        let local_failed = vec![
+            local("feat/yard", "android", "1762900000", "2"),
+            local("feat/yard", "android", "1762903600", "1"),
+            local("main", "windows", "1762896400", "1"),
+        ];
         let mut i = Infra {
             ok: true,
             ..Default::default()
@@ -408,7 +397,7 @@ pub(crate) mod tests {
         i.instant.insert("cc", series(cc));
         i.instant.insert("runners", series(runners));
         i.instant.insert("waiting", series(waiting));
-        i.instant.insert("finished", series(finished));
+        i.instant.insert("local_failed", series(local_failed));
         i.instant.insert("api", series(vec![(json!({}), "1")]));
         i.instant
             .insert("exporter_up", series(vec![(json!({}), "1")]));
@@ -468,6 +457,9 @@ pub(crate) mod tests {
         }
     }
 
+    /// The runs read's red runs of the last day, for the Runners head (`Board::ci_head`).
+    const FAILED: Option<usize> = Some(2);
+
     /// The fixture with its CI join built, as `gather` leaves it.
     pub(crate) fn built(i: &Infra) -> Infra {
         let mut j = i.clone();
@@ -485,6 +477,7 @@ pub(crate) mod tests {
             w,
             &InfraTables::default(),
             "",
+            FAILED,
         )
         .into_iter()
         .flat_map(|(_, ls)| ls)
@@ -508,7 +501,7 @@ pub(crate) mod tests {
 
     /// The whole Infra page's styled lines at 160 columns.
     fn all_lines(i: &Infra, p: Palette) -> Vec<Line<'static>> {
-        infra(&built(i), p, 0, 160, &InfraTables::default(), "")
+        infra(&built(i), p, 0, 160, &InfraTables::default(), "", FAILED)
             .into_iter()
             .flat_map(|s| s.1)
             .collect()
@@ -522,6 +515,7 @@ pub(crate) mod tests {
             w,
             &InfraTables::default(),
             "",
+            FAILED,
         )
         .into_iter()
         .find(|s| s.0 == name)
@@ -554,7 +548,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting (oldest 2h28m)  failed 24h 91\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting (oldest 2h28m)  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -570,8 +564,11 @@ pub(crate) mod tests {
         assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
         assert_line(&ci, "razer-laptop 3 idle unity - - - -");
         assert_line(&ci, "mac-mini 1 off macos - - - -");
-        // The queue names each job's wait, what it needs and who can take it.
-        assert_line(&ci, "JOB POOL REF N WAIT NEEDS CAN RUN ON");
+        // The queue, its own section, names each job's wait, what it needs and who can take it.
+        assert_line(
+            &tab(&i, "waiting", 160),
+            "JOB POOL REF N WAIT NEEDS CAN RUN ON",
+        );
     }
 
     #[test]
@@ -584,6 +581,7 @@ pub(crate) mod tests {
             160,
             &InfraTables::default(),
             "",
+            FAILED,
         )
         .into_iter()
         .map(|s| s.0)
@@ -594,7 +592,7 @@ pub(crate) mod tests {
             .sections
             .iter()
             .copied()
-            .filter(|s| !["jobs", "runs", "tests"].contains(s))
+            .filter(|s| !["jobs", "runs", "pipelines", "tests", "quarantine"].contains(s))
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
@@ -602,29 +600,49 @@ pub(crate) mod tests {
             ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting"),
             "{ci}"
         );
-        assert!(has(&ci, "failed 24h"), "{ci}");
-        // Exceptions lead: the slots and the queue before the day's results and the runs.
-        let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
-        assert!(at("HOST") < at("WAITING") && at("WAITING") < at("FINISHED 24H"));
+        assert!(has(&ci, "failed 24h 2"), "{ci}");
+        // The queue and the local failures are their own sections, after the slots.
+        assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
+        assert!(tab(&i, "local", 160).starts_with("LOCAL UNITY  all "));
     }
 
     #[test]
     fn a_quiet_ci_is_one_green_line_and_no_empty_tables() {
         let mut i = fixture();
-        for q in ["runners", "gates", "waiting", "finished"] {
+        for q in ["runners", "gates", "waiting", "local_failed"] {
             i.instant.insert(q, vec![]);
         }
-        let ci = tab(&i, "ci", 160);
+        let section = |failed, name| {
+            infra(
+                &built(&i),
+                Palette { no_color: true },
+                0,
+                160,
+                &InfraTables::default(),
+                "",
+                failed,
+            )
+            .into_iter()
+            .find(|s| s.0 == name)
+            .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+        };
+        let ci = section(Some(0), "ci");
         assert_line(
             &ci,
             "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 waiting green: nothing waiting or failed in 24h",
         );
+        // Before the runs read lands, nothing says green: their failures are not known yet.
+        assert_line(
+            &section(None, "ci"),
+            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 waiting",
+        );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
-        assert_line(&ci, "WAITING nothing waiting");
+        assert_line(&section(Some(0), "waiting"), "WAITING nothing waiting");
         assert_line(
-            &ci,
-            "FINISHED 24H no finished-run series yet (runner exporter)",
+            &section(Some(0), "local"),
+            "LOCAL UNITY no local Unity gate failed in 24h",
         );
         assert!(!ci.contains("HOST") && !ci.contains("all 0"), "{ci}");
     }
@@ -812,38 +830,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn finished_lists_the_red_first_with_cancels_apart_and_the_green_after() {
-        let out = tab(&fixture(), "ci", 160);
-        // Pass is success of success + failure, so Tests' 22 cancels are not failures.
+    fn local_unity_folds_a_branchs_failed_hours_newest_first() {
+        let out = tab(&fixture(), "local", 160);
+        assert!(out.starts_with("LOCAL UNITY  all 2"), "{out}");
+        let rows: Vec<&str> = out
+            .lines()
+            .skip_while(|l| !l.starts_with("LAST "))
+            .skip(1)
+            .collect();
+        assert_eq!(rows.len(), 2, "{out}");
         assert!(
-            has(
-                &out,
-                "FINISHED 24H 171 runs, 38% pass, 91 failed, 25 cancelled all 6 red 4 green 2"
-            ),
+            has(rows[0], "unity-core-playground feat/yard android failure 3"),
+            "the newest first, its two hours one row: {out}"
+        );
+        assert!(
+            has(rows[1], "unity-core-playground main windows failure 1"),
             "{out}"
         );
-        let order: Vec<&str> = out
-            .lines()
-            .skip_while(|l| !l.starts_with("REPO "))
-            .skip(1)
-            .take_while(|l| !l.trim().is_empty())
-            .map(|l| l.split_whitespace().nth(1).unwrap())
-            .collect();
-        assert_eq!(order, ["Game", "Multi", "Tests", "Docs", "Checks", "E2E"]);
-        assert_line(&out, "unity-core-playground Game catalog - - 39 39 0");
-        assert_line(&out, "unity-core-playground Tests - - 72 38 22");
-        assert_line(&out, "unity-core-playground Docs - - 8 0 3");
-        assert_line(&out, "platform Checks - - 30 0 0");
-    }
-
-    #[test]
-    fn finished_with_no_series_says_so() {
-        let mut i = fixture();
-        i.instant.insert("finished", vec![]);
-        assert!(has(
-            &text(&i, 160),
-            "FINISHED 24H no finished-run series yet (runner exporter)"
-        ));
     }
 
     #[test]

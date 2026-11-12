@@ -324,10 +324,11 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
-// hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
-// the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
+const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+// hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
+// `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
+// assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"}};
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
