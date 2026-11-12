@@ -277,10 +277,10 @@ pub const TABS: [Tab; 12] = [
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
             "totals",
-            "sessions",
             "fleet",
             "spend",
             "table",
+            "sessions",
             "burn",
             "consumers",
             "tokens",
@@ -288,14 +288,15 @@ pub const TABS: [Tab; 12] = [
             "sections",
             "budget",
         ],
-        // The strip splits the four questions; Spend opens first, its tiles (the 24h fleet figure
-        // among them) then burn per session per day. Budget is cash (the bills we pay); the rest
-        // of the tab is list price.
+        // The strip splits the four questions; Spend opens first: its tiles (the 24h fleet figure
+        // among them), who spent it, the chart and period rows ($/session among them), the table,
+        // then the picked day's sessions last (human, 2026-11-12). Budget is cash (the bills we
+        // pay); the rest of the tab is list price.
         inner: &[
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "limits",
@@ -856,7 +857,7 @@ mod tests {
             Inner {
                 id: "a",
                 title: "A",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "a",
@@ -886,7 +887,7 @@ mod tests {
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "sessions", "fleet", "spend", "table"],
+                sections: &["totals", "fleet", "spend", "table", "sessions"],
             },
             Inner {
                 id: "models",

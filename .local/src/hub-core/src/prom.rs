@@ -37,6 +37,9 @@ fn num(v: &Value) -> Option<f64> {
     v.as_str()?.parse::<f64>().ok().filter(|f| f.is_finite())
 }
 
+/// A range query's `(start, end, step)` in unix seconds.
+pub type Range = (i64, i64, i64);
+
 /// A Prometheus `/api/v1/query(_range)` answer as one Series per result, labels and all.
 pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
     if resp["status"] != "success" {
@@ -68,6 +71,30 @@ pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
                 .unwrap_or_default(),
         })
         .collect())
+}
+
+/// A query of VictoriaMetrics, the long-term copy (2 years) Prometheus remote-writes to: an
+/// instant query, or a range `(start, end, step)` in unix seconds. VictoriaMetrics is
+/// ClusterIP-only, so it is read through `kube_proxy` (`CC_VM_SERVICE`, `monitoring/victoria-metrics:8428`).
+/// A range asks `nocache=1`: with its cache on, VictoriaMetrics rounds a long range's start and
+/// end down to the step, so a daily range ends at 00:00 UTC and today's results are missing.
+pub fn vm(
+    runner: &dyn crate::session_actions::Runner,
+    query: &str,
+    range: Option<Range>,
+) -> Result<Vec<Series>, String> {
+    use crate::kube_proxy::{encode, get};
+    let path = match range {
+        None => format!("/api/v1/query?query={}", encode(query)),
+        Some((start, end, step)) => format!(
+            "/api/v1/query_range?query={}&start={start}&end={end}&step={step}&nocache=1",
+            encode(query)
+        ),
+    };
+    let body = get(runner, "CC_VM_SERVICE", &path)?;
+    let v: Value =
+        serde_json::from_str(&body).map_err(|e| format!("VictoriaMetrics answer: {e}"))?;
+    flatten(&v)
 }
 
 /// A board setting: the environment wins, else its `KEY=value` line in
