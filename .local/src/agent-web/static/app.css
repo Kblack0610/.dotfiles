@@ -122,7 +122,7 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 4px auto 8px; max-width: var(--page-max); }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
-#queue > *, #queue h2.sec { max-width: var(--page-max); }
+#queue > *, #queue h2.sec { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
 #home > *, #home h2.sec { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
 #b-root > *, #b-root h2.sec, #p-head > * { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
 #b-tbl .card, #b-tbl h2.sec, #p-cards .card { max-width: none; }
@@ -576,7 +576,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .dn .dlc { margin-left: auto; }
 .dng { flex: none; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 @media (min-width: 900px) {
-  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, 760px); justify-content: center; align-items: start; gap: 28px; }
+  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, calc(var(--page-max) - 218px)); justify-content: center; align-items: start; gap: 28px; }
   #daily > * { margin: 0; max-width: none; }
   #d-nav { position: sticky; top: 0; flex-direction: column; max-height: calc(100vh - 100px); overflow-y: auto; }
   .dng { margin: 14px 10px 4px; padding-top: 12px; border-top: 1px solid var(--line); }

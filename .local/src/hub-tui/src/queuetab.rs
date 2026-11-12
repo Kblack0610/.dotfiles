@@ -306,8 +306,9 @@ fn state(i: &Item, p: Palette) -> Cell {
     }
 }
 
+/// hub-core `QueueRow::COLUMNS` in capitals: the sort mark is an index into that list.
 const HEADER: [&str; 11] = [
-    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE",
+    "STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR", "PLAN",
 ];
 
 fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
@@ -327,16 +328,16 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
     }
     vec![
         state(i, p),
+        title.into(),
+        or_dash(&Some(i.project.clone())).into(),
         mins(r.timing.in_state).into(),
         mins(r.timing.wait).into(),
         mins(r.timing.run).into(),
-        or_dash(&Some(i.project.clone())).into(),
         or_dash(&i.kind).into(),
         or_dash(&i.size).into(),
         or_dash(&i.account).into(),
         pr,
         or_dash(&i.plan_label).into(),
-        title.into(),
     ]
 }
 
@@ -474,12 +475,12 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
     Table {
         header: HEADER.to_vec(),
         rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7, 9],
-        flex: Some(10),
+        keep: vec![0, 3, 2, 5, 9, 4, 6, 7, 8, 10],
+        flex: Some(1),
         flexmin: 20,
         flexkeep: true,
-        right: vec![1, 2, 3],
-        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14), (9, 20)],
+        right: vec![3, 4, 5],
+        cap: vec![(2, 18), (6, 8), (8, 10), (9, 14), (10, 20)],
         mark: v.table.mark::<QueueRow>(),
     }
     .fit(w, p.head())
@@ -680,6 +681,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
     use hub_core::queue::Stats;
+    use hub_core::table::Row;
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(
@@ -781,14 +783,14 @@ pub(crate) mod tests {
         let q = fixture();
         let s = text(&q, &QueueView::default(), 160);
         let header = line(&s, "STATE");
-        let cols = [
-            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE",
-        ];
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
-            cols,
+            HEADER,
             "columns in order"
         );
+        // The sort mark is an index into hub-core's columns, so the header is them in capitals.
+        let core: Vec<String> = QueueRow::COLUMNS.iter().map(|c| c.to_uppercase()).collect();
+        assert_eq!(HEADER.to_vec(), core);
         let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
         let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
         assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
@@ -836,12 +838,12 @@ pub(crate) mod tests {
         };
         assert_eq!(
             heads(160),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "PLAN", "TITLE"]
+            ["STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "KIND", "SIZE", "ACCT", "PR", "PLAN"]
         );
         // PLAN, ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
         assert_eq!(
             heads(80),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "PR", "TITLE"],
+            ["STATE", "TITLE", "PROJECT", "IN", "WAIT", "RUN", "PR"],
             "{}",
             text(&q, &QueueView::default(), 80)
         );
@@ -888,9 +890,10 @@ pub(crate) mod tests {
         assert!(text(&q, &v, 160).contains("STATE ^") || text(&q, &v, 160).contains("STATE v"));
         press(&mut v, &q, &[], 'x');
         assert!(v.table.is_default());
-        press(&mut v, &q, &[], 's');
-        press(&mut v, &q, &[], 's');
-        assert_eq!(v.table.view.sort, "in");
+        for _ in 0..4 {
+            press(&mut v, &q, &[], 's');
+        }
+        assert_eq!(v.table.view.sort, "in", "state, title, project, then in");
         assert_eq!(
             slugs(&v, &q),
             ["pick-sides", "fix-menu", "night-sweep", "next-up", "landed"],
