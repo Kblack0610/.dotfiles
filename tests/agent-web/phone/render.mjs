@@ -223,7 +223,7 @@ async function renderTab(browser, spec, page0) {
     await page.waitForSelector(spec.row, { state: "visible", timeout: WAIT_MS });
     await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
     if (spec.name) await page.locator(spec.row).first().scrollIntoViewIfNeeded();
-    const { badText, ...numbers } = await page.evaluate(measure, { width: device.viewport.width, row: spec.row });
+    const { badText, ...numbers } = await page.evaluate(measure, { width: (wide ? WIDE : VIEWPORT).width, row: spec.row });
     Object.assign(result, numbers);
     if (badText) seen.errors.push(`a fixture field is missing: the page shows "${badText}"`);
   } catch (e) {
