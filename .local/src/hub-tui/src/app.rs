@@ -212,6 +212,9 @@ fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: 
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+/// How many rows Log's Work lists once it has the keys and scrolls; unfocused it lists
+/// `layout::FOLD_ROWS`. The TUI's own number: agent-web's page size is `layout::fold_rows("work")`.
+const WORK_FOCUSED_ROWS: usize = 200;
 /// Lines an opened run's log keeps under its detail, however many jobs the detail lists.
 const BUILD_LOG_MIN: usize = 6;
 
@@ -4606,7 +4609,7 @@ impl App {
         };
         let today = chrono::Local::now().date_naive();
         let cap = if self.log_work {
-            hub_core::worklog::SHOWN
+            WORK_FOCUSED_ROWS
         } else {
             hub_core::layout::FOLD_ROWS
         };

@@ -441,6 +441,7 @@ span.warn { color: var(--b-stalled); }
 .tbl td.warn, .tbl td.bad { font-weight: 600; }
 .tbl td.warn { color: var(--b-stalled); } .tbl td.bad { color: var(--b-needs); }
 .tbl td.wrap { white-space: normal; min-width: 160px; }
+.tbl .c2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .panel.down { border-left: 4px solid var(--b-needs); }
 .stack { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; min-width: 80px; }
 .stack i { display: block; }
