@@ -365,6 +365,11 @@ def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
   | [scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"];
 # the "<project>:<id>" board row a queue item works: its row, else the board: it came from
 def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
+# board rows -> the oldest open #requested agent row as {project, id, since, h}, ties by key so the
+# named row is stable; the one source of requested_unstarted_h and the row it names
+def oldest_request($t): [.[] | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
+  | sort_by([.since, .project, .id]) | first // empty
+  | {project, id, since, h: (($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)};
 def claimed: (.session_id // "") != "";
 def ran_gate: (.gate_runs // 0) > 0;
 def first_try: .gate_red == 0;
@@ -1875,10 +1880,7 @@ board_links() {
 # oldest_requested <now> -> the oldest open #requested agent row as {project, id, since, h}, the row
 # behind requested_unstarted_h; nothing when there is none or the board does not read
 oldest_requested() {
-  $BENCH_BOARD_CMD 2>/dev/null | jq -c --argjson t "$1" '
-    [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
-    | sort_by(.since) | first // empty
-    | {project, id, since, h: (($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)}' 2>/dev/null
+  $BENCH_BOARD_CMD 2>/dev/null | jq -c --argjson t "$1" "$JQ_LIB"'.rows // [] | oldest_request($t)' 2>/dev/null
 }
 
 # chain_notes <now> <chain json>: the lines under the chain table that say which rows sit behind
@@ -1970,8 +1972,7 @@ chain_counts() {
       "epic_linked_share=\(n(if $b == null or $p == null then null
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
-      "requested_unstarted_h=\(n(if $b == null then null else [$agent[] | select(.requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
-        | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))",
+      "requested_unstarted_h=\(n(if $b == null then null else [$b | oldest_request($t) | .h] | first // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"')

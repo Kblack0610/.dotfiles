@@ -96,12 +96,14 @@ fn clause(infra: &Infra, key: &str, past: bool) -> String {
         .iter()
         .find(|(k, _, _)| *k == key)
         .map_or((None, Unit::Plain), |(_, w, u)| (Some(*w), *u));
-    let value = kpi(infra, "agent_bench_kpi", key, WINDOW).map_or("?".into(), |x| number(x, unit));
+    let reading = kpi(infra, "agent_bench_kpi", key, WINDOW);
+    let value = reading.map_or("?".into(), |x| number(x, unit));
     let mut said = match words {
         Some(w) => w.replace("{}", &value),
         None => format!("{} {value}", key.replace('_', " ")),
     };
-    if let Some(row) = subject(infra, key) {
+    // The row is named only when there is something to act on: a reading past its limit.
+    if let Some(row) = subject(infra, key).filter(|_| past && reading.is_some()) {
         said = format!("{said} ({row})");
     }
     match gauge(infra, "agent_bench_kpi_limit", key).filter(|_| past) {
@@ -401,6 +403,23 @@ mod tests {
         assert_eq!(
             v.rows[0].text(),
             "Oldest request 306h (agent-runtime:ar-574), limit 72h; 1 unverified"
+        );
+        // Within its limit the row is not named: nothing to act on.
+        let mut rows = vital(
+            0.0,
+            "outcome",
+            "requested_unstarted_h",
+            Some(3.0),
+            Some((72.0, 0.0)),
+        );
+        rows.push(metric(
+            "agent_bench_kpi_subject",
+            json!({"kpi": "requested_unstarted_h", "subject": "agent-runtime:ar-574"}),
+            1.0,
+        ));
+        assert_eq!(
+            read(&infra(rows)).unwrap().rows[0].text(),
+            "Oldest request 3h"
         );
     }
 
