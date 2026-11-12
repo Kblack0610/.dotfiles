@@ -1,10 +1,13 @@
 //! The Fleet tab: hub-core's `fleet`, shared with the TUI. It is all files, read on every
 //! request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is read
 //! only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
+//! The answer judge's verdicts are a table of their own under the `v` key prefix (`vq`, `vs`,
+//! `vsort`, `vdir`), on Log's Judges section and on the ask-judge runner page alike.
 
 use std::collections::HashSet;
 
-use hub_core::fleet::{self, who, who::Who, Fleet, Paths};
+use hub_core::fleet::{self, who, who::Who, AskVerdict, Fleet, Paths};
+use hub_core::layout::FOLD_ROWS;
 use hub_core::table::View;
 use serde::Deserialize;
 
@@ -20,6 +23,33 @@ pub struct FleetQuery {
     pub sort: String,
     pub dir: String,
     pub fold: String,
+    #[serde(flatten)]
+    pub verdicts: VerdictQuery,
+}
+
+/// The answer judge's verdicts' view, under the `v` prefix.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct VerdictQuery {
+    pub vq: String,
+    pub vs: String,
+    pub vsort: String,
+    pub vdir: String,
+}
+
+impl VerdictQuery {
+    fn view(&self) -> View {
+        View::new::<AskVerdict>(&self.vq, &self.vs, &self.vsort, &self.vdir)
+    }
+}
+
+/// A runner's page: its name, and the verdicts' view when it is the answer judge's.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct RunnerQuery {
+    pub name: String,
+    #[serde(flatten)]
+    pub verdicts: VerdictQuery,
 }
 
 /// A Fleet read. The files are read afresh each time, so there is nothing to keep.
@@ -34,8 +64,9 @@ pub async fn get(q: FleetQuery) -> String {
 }
 
 /// The Fleet with its `who` rows cut to the view and folds, and the controls that drew them
-/// (`table`; `hidden` is how many rows the folds hold back).
+/// (`table`; `hidden` is how many rows the folds hold back), and the verdicts Log lists.
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
+    f.judge.view(&q.verdicts.view(), FOLD_ROWS);
     let view = View::new::<Who>(&q.q, &q.s, &q.sort, &q.dir);
     let all = std::mem::take(&mut f.who);
     let (rows, mut table) = view.summary(&all);
@@ -63,8 +94,12 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
 }
 
 /// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
-pub async fn runner(name: String) -> Result<String, String> {
-    let r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
+pub async fn runner(q: RunnerQuery) -> Result<String, String> {
+    let name = q.name.clone();
+    let mut r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
+    if let fleet::runner::Extras::AskJudge { judge } = &mut r.extras {
+        judge.view(&q.verdicts.view(), fleet::runner::PAGE_ROWS);
+    }
     serde_json::to_string(&r).map_err(|e| e.to_string())
 }
 
@@ -133,6 +168,35 @@ mod tests {
         );
         let v = who_of(&render(fleet(), &q("", "")));
         assert_eq!(v["table"]["links"][1]["who"], "#sessions/lab%2Fa%3A1");
+    }
+
+    #[test]
+    fn the_verdicts_view_rides_the_fleet_read_and_counts_every_verdict() {
+        let uri = "/api/fleet?q=lab&vs=wrong&vq=ship".parse().unwrap();
+        let axum::extract::Query(q) =
+            axum::extract::Query::<FleetQuery>::try_from_uri(&uri).unwrap();
+        assert_eq!((q.q.as_str(), q.verdicts.vs.as_str()), ("lab", "wrong"));
+        let wrong = |question: &str| AskVerdict {
+            question: question.into(),
+            score: "wrong".into(),
+            ..Default::default()
+        };
+        let mut f = fleet();
+        f.judge.verdicts = (0..FOLD_ROWS + 5).map(|_| wrong("ship it?")).collect();
+        f.judge.verdicts.push(wrong("which login?"));
+        let v = who_of(&render(f, &q));
+        assert_eq!(v["judge"]["verdicts"].as_array().unwrap().len(), FOLD_ROWS);
+        assert_eq!(v["judge"]["table"]["shown"], FOLD_ROWS + 5);
+        assert_eq!(v["judge"]["table"]["total"], FOLD_ROWS + 6);
+        let uri = "/api/fleet/runner?name=ask-judge&vs=passed"
+            .parse()
+            .unwrap();
+        let axum::extract::Query(r) =
+            axum::extract::Query::<RunnerQuery>::try_from_uri(&uri).unwrap();
+        assert_eq!(
+            (r.name.as_str(), r.verdicts.vs.as_str()),
+            ("ask-judge", "passed")
+        );
     }
 
     #[test]

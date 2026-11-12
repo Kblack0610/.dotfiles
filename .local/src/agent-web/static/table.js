@@ -61,12 +61,12 @@ const tblDrawn = new WeakMap();
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
-// One count chip, for the lists that filter themselves (the Sessions side list, Tests results,
-// the Fleet verdicts); a table draws its states as tiles (tblTiles).
-const chipBtn = (on, attr, val, label, n) =>
-  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
-// The state chips with their counts; the first keeps every row.
-const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
+// The state chips with their counts, the first keeping every row: for the Sessions side list,
+// too narrow for tiles. A table draws its states as tiles (tblTiles).
+const tblChips = (t) => t.states.map((c, i) => {
+  const on = i ? c.name === t.state : !t.state;
+  return `<button class="${on ? "on" : ""}" data-ts="${i ? esc(c.name) : ""}">${esc(c.name)} <span class="n">${c.n}</span></button>`;
+}).join("");
 
 // The table's overview: each state but `all` as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
