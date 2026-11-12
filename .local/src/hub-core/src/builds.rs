@@ -14,6 +14,7 @@
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 //! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
+//! | a run's logged tag  | `$SCHEDULES_RUN_TAGS`, else `run-tags.jsonl` beside the ledger (`schedules-sync run-tags`) |
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -45,6 +46,8 @@ pub struct Paths {
     pub jobs: PathBuf,
     /// Each repo's test quarantine and its last nightly's counts.
     pub quarantine: PathBuf,
+    /// The tags release runs' logs named, for runs whose title does not carry one.
+    pub run_tags: PathBuf,
 }
 
 impl Paths {
@@ -61,6 +64,8 @@ impl Paths {
             sync: ledger.with_file_name("sync.json"),
             quarantine: env("SCHEDULES_QUARANTINE")
                 .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
+            run_tags: env("SCHEDULES_RUN_TAGS")
+                .unwrap_or_else(|| ledger.with_file_name("run-tags.jsonl")),
             ledger,
             fleet: crate::boards::fleet_state(),
             prs: crate::release_graph::prs_dir(),
@@ -68,10 +73,14 @@ impl Paths {
         }
     }
 
-    /// Whether a changed file is the ledger, its sync record, the job archive or the quarantine:
-    /// what wakes the section.
+    /// Whether a changed file is the ledger, its sync record, the job archive, the quarantine or
+    /// the run tags: what wakes the section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync || p == self.jobs || p == self.quarantine
+        p == self.ledger
+            || p == self.sync
+            || p == self.jobs
+            || p == self.quarantine
+            || p == self.run_tags
     }
 }
 
@@ -498,6 +507,8 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         None => (vec![], HashMap::new()),
     };
     let registry = project_map::cached();
+    let (run_tags, errors) = crate::release_graph::read_run_tags(&paths.run_tags);
+    out.errors.extend(errors);
     crate::release_graph::Graph::new(crate::release_graph::Inputs {
         lines: &lines,
         channels: &channels,
@@ -505,6 +516,7 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         prs: &prs,
         live: &live,
         registry: registry.as_deref(),
+        run_tags: &run_tags,
     })
     .join(&mut out.rows);
     // The job archive is optional until schedules-sync writes it: runs then price as no record.
@@ -530,7 +542,8 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
 
 /// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
 /// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
-/// `Tests (delta)`), so one workflow's runs pool.
+/// `Tests (delta)`), as does a version tag after `of` (`Release builds of v0.5.0-x7` is `Release
+/// builds`), so one workflow's runs pool.
 pub fn timed_as(workflow: &str, path: &str) -> String {
     if path.starts_with("dynamic/dependabot/") {
         let eco = workflow.split_whitespace().next().unwrap_or_default();
@@ -542,6 +555,10 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
         let id = core.len() >= 7
             && core.chars().all(|c| c.is_ascii_hexdigit())
             && core.chars().any(|c| c.is_ascii_digit());
+        let tag = out.last().is_some_and(|w| w == "of")
+            && core.starts_with('v')
+            && core[1..].starts_with(|c: char| c.is_ascii_digit());
+        let id = id || tag;
         if !id {
             out.push(word.to_string());
             continue;
@@ -892,6 +909,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -916,6 +934,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -946,6 +965,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -1008,6 +1028,7 @@ mod tests {
             prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         (d, p)
     }
@@ -1240,6 +1261,19 @@ mod tests {
         assert_eq!(timed_as("Tests (delta of 3f2a9c1d)", "x"), "Tests (delta)");
         assert_eq!(timed_as("Multi (named)", "x"), "Multi (named)");
         assert_eq!(timed_as("Release builds", "x"), "Release builds");
+        assert_eq!(
+            timed_as("Release builds of v0.5.0-dodginballs7", "x"),
+            "Release builds"
+        );
+        assert_eq!(
+            timed_as("Steam (dodginballs of 43026871395)", "x"),
+            "Steam (dodginballs)"
+        );
+        assert_eq!(
+            timed_as("Deploy v2", "x"),
+            "Deploy v2",
+            "a tag folds only after of"
+        );
         assert_eq!(
             timed_as(
                 "github_actions in / for actions/checkout - Update #1687367140",

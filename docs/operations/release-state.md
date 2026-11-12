@@ -85,6 +85,8 @@ The collector writes raw facts only, and every link between two of them is compu
 |---|---|---|
 | Release: tag, sha, date, the tag before it | the git tag | `git_tags`, `git_prev_tag` in `git-release.sh` |
 | Deploy on a channel | a GitHub Deployment under the target id | the project's repo (Deploy history) |
+| CI run: workflow, run name, status, start and end | the run ledger `~/.local/state/ci/runs.jsonl` | `schedules-sync` (the graph reads it, never `refresh`) |
+| The tag a run's log named, for runs whose name carries none | `~/.local/state/ci/run-tags.jsonl` (`SCHEDULES_RUN_TAGS`) | `schedules-sync run-tags <repo> <workflow path>...` (a backfill; the ledger is never rewritten) |
 | Gitops pin, when it moved, what it held before | the manifest in the gitops repo | `git log -S` on the pinned file |
 | PRs a release carried | the merge subjects in `prev..tag` | `changelog` |
 
@@ -94,9 +96,9 @@ PRs have one store of their own, read by the graph (never by `refresh`): `~/.age
 |---|---|---|
 | release -> previous release | tag ancestry | `git-release.sh` (`git_prev_tag`) |
 | release -> PRs | `(#N)` subjects in `prev..tag` | `git-release.sh` (the changelog), written as each tag's `prs` |
-| release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; then a Deployment whose version names no tag of the line, by its commit; the earliest successful deploy per channel | `hub_core::release_graph::reached` |
+| release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; then a Deployment whose version names no tag of the line, by its commit; the earliest successful deploy per channel; else a channel whose live reading names the tag, shown as `(live)` with no time | `hub_core::release_graph::reached` |
 | run -> PRs | the PR whose merge sha is the run's commit; else, off a shared branch (`main`, `master`, `develop`), the PRs on the run's head branch in its repo not closed before the run started | `Graph::run_prs` |
-| run -> release | the Deployment whose URL names the run (`.../actions/runs/<id>`); else a run on a tag of the line | `Graph::release` |
+| run -> release | the Deployment whose URL names the run (`.../actions/runs/<id>`); else a run on a tag of the line; else the tag its run name carries (`Release builds of <tag>`, `Phone release of <tag>`) or its log named; else, for a Steam upload (`Steam (<game> of <run id>)`), the release of the run it uploads | `Graph::release` |
 | run -> owner | the live session on the run's branch; else the session of the queue item that names one of the run's PRs | `Graph::owner` |
 | PR -> queue item -> row | an item's `pr:` refs (`owner/repo#N`, a bare `N` read in the item's project's one repo), the item that merged it first; its `row:` | `Graph::new` |
 | release -> rows | each of its PRs' items' rows | `Graph::history` |
@@ -104,7 +106,7 @@ PRs have one store of their own, read by the graph (never by `refresh`): `~/.age
 
 `hub releases --json` prints the Releases read with every join, the graph's one output for shell tools (fleet-bench's lead time reads each tag's first deploy from it). `hub releases check` prints one line per place the stores disagree inside the ledger's 30 days: a PR an item or a tag names that the PR store lacks (in a repo the store holds), a bare `pr:N` on a project with no single repo, a Deployment naming a run of a ledger repo that the ledger lacks; it exits 1 when it prints a line or a store could not be read. `agent-land` closes a row with proof `pr:<owner>/<repo>#N`, so the join needs no project lookup.
 
-An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, where each reached (`not recorded` when no channel says so), its PRs and their board rows (`-` when none); a release opens its changelog. The RELEASED column is the newest tag and its date.
+An opened app on the Releases tab lists its releases newest first with when each was released, the one before it, where each reached (`not recorded` when no channel says so), its PRs and their board rows (`-` when none); a release opens its changelog. Below them are its build runs, newest first: the builds read's runs the graph tied to one of its tags (the same rows Release runs lists, `Releases::with_builds`), each with tag, workflow, state (queued or in progress with the time so far, success, failed, cancelled), started and finished, and a link to the run. The RELEASED column is the newest tag and its date, plus `building <tag>` while a run is in progress. Every history cell carries its date, today's too.
 
 ## Project identity
 
@@ -156,7 +158,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 
 ## Changelog for a version
 
-`changelog` takes any tag of the project's own line (its `tagGlob`, the monorepo `name-v*` ladder or `v*`, or, for a project with no release tag, its `buildTags`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path`, and the repo root too when the project is its repo or has no `path` (a monorepo product never reads a root file that may be another product's), holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag`, filtered to the registry `path`, the newest 100, with a last line saying older ones are not shown. The Releases tab shows it in an opened app: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
+`changelog` takes any tag of the project's own line (its `tagGlob`, the monorepo `name-v*` ladder or `v*`, or, for a project with no release tag, its `buildTags`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path`, and the repo root too when the project is its repo or has no `path` (a monorepo product never reads a root file that may be another product's), holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag` that touch the registry `path`, the newest 100, with a last line saying older ones are not shown; a product in a monorepo then lists the range's other merged PRs, counted, under `<N> merged PRs elsewhere in the repo, touching nothing under <path>`, so a release built from repo-wide changes never reads as empty. The Releases tab shows it in an opened app: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
 
 ## Troubleshooting
 
@@ -172,6 +174,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A Steam row is `unknown` with `no branch <name> on the app` | The branch does not exist on that app yet, or the registry says `default` where Steam says `public` |
 | A row is `unknown` with `no checkout for repo` | The repo key has no `paths` entry in the registry on this machine |
 | A TestFlight or Play row is `drift` while the versions match | The store's newest build is not the build the upload recorded: a second build of that version was uploaded by hand or by another workflow. `release-state show --json \| jq '.rows[] \| select(.id == "<id>") \| [.pinned.build, .live.build]'` shows both |
+| An app's build runs miss an older Release builds or Steam run | Its run name carries no tag (runs before the playground's `run-name:`). Run `schedules-sync run-tags <owner>/<game repo> .github/workflows/release.yml .github/workflows/steam.yml .github/workflows/phone-release.yml .github/workflows/ios-release.yml`: it reads each such run's log once and appends the tag to `run-tags.jsonl` |
 | The doctor says `tag <t> in <repo> is listed by <a> and <b>` | Two projects' release lines (`tagGlob`, or the bare `v*` fallback of a key with no `tagGlob`) or `buildTags` match one real tag, so both histories and version rolls would claim it. Narrow one glob; a repo-only key (no `lab`, no `targets`) is not counted |
 | A game shows no row | It has no store target in the registry. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind. Its build tags belong in `buildTags`, which feed its history and changelog only |
 | An app's release history says `no tags read` | The project has no release tag and no `buildTags`, or the checkout has not fetched its tags. `release-state show --json \| jq '.releases["<p>"]'` gives the glob and any error |
