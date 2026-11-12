@@ -32,6 +32,10 @@ const AGENTCTL: &str = "agentctl";
 /// The schedule word of a runner with no timer, which another runner starts.
 const ON_DEMAND: &str = "on demand";
 const TIMER: &str = "timer";
+/// How late GitHub may start a scheduled workflow: it queues them under load, often 10 to 30
+/// minutes. 1h since 2026-11-12, low confidence, from one 10-minute cron read stale at 20 minutes.
+/// Revisit when a CI row reads stale while its runs are only queued, or misses a real stop.
+const CI_CRON_LATE_S: i64 = 3600;
 const K8S: &str = "k8s";
 
 /// One finished run, newest first on its row.
@@ -108,6 +112,9 @@ pub struct Schedule {
     /// Turned off: a disabled runner, a suspended CronJob.
     #[serde(skip)]
     off: bool,
+    /// Seconds a run may be late past its two intervals before the row reads stale.
+    #[serde(skip)]
+    grace: i64,
 }
 
 impl Schedule {
@@ -138,7 +145,8 @@ impl Schedule {
     /// Settle the state from what is known by `at`: stale when no run finished in two intervals.
     fn judge(&mut self, at: i64) {
         let quiet = self.last.map(|l| at - l);
-        let overdue = matches!((quiet, self.every), (Some(q), Some(e)) if e > 0 && q > 2 * e);
+        let overdue =
+            matches!((quiet, self.every), (Some(q), Some(e)) if e > 0 && q > 2 * e + self.grace);
         self.state = JobState::of(self.off, self.last, self.streak < 0, overdue);
         if self.state == JobState::Stale && self.state_why.is_empty() {
             self.state_why = format!(
@@ -150,15 +158,21 @@ impl Schedule {
         self.state_level = self.state.level();
     }
 
-    /// Fold an `agentctl liveness` fault into the state: a stalled or failed outcome, or a conf
-    /// that will not load, is failing, even on a row whose week of runs is empty, since the outcome
+    /// Fold an `agentctl liveness` fault into the state: a stalled or failed outcome, a conf that
+    /// will not load, a timer not armed or a runner not running is failing, even on a row whose week of runs is empty, since the outcome
     /// on file is older than the ledger. Any other fault on a row that reads ok is stale; one on a
     /// row that has never run leaves it never, and an off one off.
     fn fault(&mut self, why: &str) {
         self.state_why = format!("liveness: {why}");
-        let failed = ["STALLED", "FAILED", "invalid conf"]
-            .iter()
-            .any(|w| why.contains(w));
+        let failed = [
+            "STALLED",
+            "FAILED",
+            "invalid conf",
+            "not armed",
+            "not running",
+        ]
+        .iter()
+        .any(|w| why.contains(w));
         self.state = match self.state {
             JobState::Ok | JobState::Stale | JobState::Never if failed => JobState::Failing,
             JobState::Ok => JobState::Stale,
@@ -602,6 +616,7 @@ fn ci_rows(text: &str, at: i64, off: i32) -> Result<CiRead, String> {
                 purpose: w.purpose.unwrap_or_default().trim().to_string(),
                 next: w.crons.iter().filter_map(|c| cron_next(c, at)).min(),
                 every: w.crons.iter().filter_map(|c| cron_every(c, at)).min(),
+                grace: CI_CRON_LATE_S,
                 inside: layers(&w.jobs),
                 before: raw.join(", "),
                 words: vec![short.clone(), file],
@@ -853,6 +868,8 @@ struct Cron {
     annotations: Vec<Series>,
     /// When the controller last started it: a run older than the journal's week.
     last: Vec<Series>,
+    /// When one of its Jobs last succeeded, the verdict on that start.
+    passed: Vec<Series>,
 }
 
 /// The CronJobs kube-state-metrics reports. A cron is UTC (the controller's zone) unless its
@@ -904,10 +921,16 @@ fn k8s_rows(c: &Cron, runs: &[Job], at: i64, off: i32, local: &str) -> Vec<Sched
             };
             row.settle(runs_of(runs, &row.name));
             if row.last.is_none() {
-                row.last = find(&c.last, &ns, &job)
-                    .and_then(|s| s.value)
-                    .map(|v| v as i64)
-                    .filter(|t| *t > 0);
+                let at_of = |of: &[Series]| {
+                    find(of, &ns, &job)
+                        .and_then(|s| s.value)
+                        .map(|v| v as i64)
+                        .filter(|t| *t > 0)
+                };
+                let running = runs
+                    .iter()
+                    .any(|j| j.name == row.name && j.state == State::Running);
+                verdict_of_start(&mut row, at_of(&c.last), at_of(&c.passed), running);
             }
             row
         })
@@ -1130,6 +1153,7 @@ fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
                 suspended: q("kube_cronjob_spec_suspend"),
                 annotations: q("kube_cronjob_annotations"),
                 last: q("kube_cronjob_status_last_schedule_time"),
+                passed: q("kube_cronjob_status_last_successful_time"),
             }
         }
         Err(e) => {
@@ -1140,6 +1164,25 @@ fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
     let (runs, e) = jobs::k8s_runs(at, at - WEEK);
     tagged(e, "k8s", &mut errors);
     (k8s_rows(&cron, &runs, at, off, &local_zone()), errors)
+}
+
+/// A CronJob with no run in the journal's week: its last start, judged by its last success from
+/// kube-state-metrics. A start with no success at or after it failed, unless it is still running;
+/// a start alone is never read as a pass.
+fn verdict_of_start(row: &mut Schedule, last: Option<i64>, passed: Option<i64>, running: bool) {
+    row.last = last;
+    row.ok_at = passed;
+    match (last, passed) {
+        (Some(l), Some(p)) if p >= l => {
+            (row.streak, row.ok, row.result) = (1, Some(true), "succeeded".into());
+        }
+        (Some(l), _) if !running => {
+            (row.streak, row.ok, row.red_since) = (-1, Some(false), Some(l));
+            row.fail_at = Some(l);
+            row.result = "no success since this start".into();
+        }
+        _ => {}
+    }
 }
 
 /// This machine's zone name, from `TZ` or the `/etc/localtime` link; empty when neither says.
@@ -1518,6 +1561,20 @@ mod tests {
         assert_eq!(r.runs[0].failed, ["PlayMode 2"]);
         assert_eq!(r.runs[0].url, "u2");
         assert_eq!(r.streak, -1);
+
+        // GitHub starts a scheduled run late under load: a 10-minute cron 30 minutes quiet is
+        // still on time, 2h quiet is stale.
+        let mut late = Schedule {
+            last: Some(AT - 1800),
+            every: Some(600),
+            grace: CI_CRON_LATE_S,
+            ..Default::default()
+        };
+        late.judge(AT);
+        assert_eq!(late.state, JobState::Ok);
+        late.last = Some(AT - 7200);
+        late.judge(AT);
+        assert_eq!(late.state, JobState::Stale);
     }
 
     #[test]
@@ -1702,6 +1759,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             annotations: vec![series(&note, 1.0)],
             // A start older than the journal's week still counts as the last.
             last: vec![series(&quiet, 40.0)],
+            passed: vec![],
         };
         let mut j = done("nas/phones-backup", true, 50);
         j.source = jobs::Source::K8s;
@@ -1745,6 +1803,35 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             "suspended is off"
         );
         assert_eq!(b.purpose, "", "no annotation is a gap, drawn amber");
+    }
+
+    #[test]
+    fn a_cronjob_start_alone_is_never_a_pass() {
+        let judged = |last, passed, running| {
+            let mut r = Schedule {
+                every: Some(86400),
+                ..Default::default()
+            };
+            verdict_of_start(&mut r, last, passed, running);
+            r.judge(AT);
+            (r.state, r.ok_at, r.fail_at)
+        };
+        let l = AT - 3600;
+        assert_eq!(
+            judged(Some(l), Some(l + 60), false),
+            (JobState::Ok, Some(l + 60), None)
+        );
+        assert_eq!(
+            judged(Some(l), Some(l - 86400), false),
+            (JobState::Failing, Some(l - 86400), Some(l)),
+            "no success since its last start"
+        );
+        assert_eq!(
+            judged(Some(l), None, true).0,
+            JobState::Ok,
+            "still running has no verdict yet"
+        );
+        assert_eq!(judged(None, None, false).0, JobState::Never);
     }
 
     #[test]
@@ -2004,6 +2091,9 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         dream.fault(&live["dream"]);
         assert_eq!(dream.state, JobState::Stale);
         assert!(status(&dream, AT, PST).starts_with("stale, liveness: timer fired Thu 03:00"));
+        let mut unarmed = row(AGENTCTL, "unarmed", 4, "why");
+        unarmed.fault("timer not armed, it never fires (agentctl reload)");
+        assert_eq!(unarmed.state, JobState::Failing);
         let mut fresh = row(AGENTCTL, "fresh", 0, "why");
         fresh.fault(&live["fresh"]);
         assert_eq!(

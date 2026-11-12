@@ -463,12 +463,15 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
     use crate::reading::JobState;
     let n = |st: JobState| s.rows.iter().filter(|r| r.state == st).count();
     let (failing, stale, never) = (n(JobState::Failing), n(JobState::Stale), n(JobState::Never));
-    let why = s
+    // One "no purpose" count everywhere (the chip, the summary): every row with none. The bar
+    // splits the rows once, so there only an ok row with none adds to the amber part.
+    let why = s.rows.iter().filter(|r| r.purpose.is_empty()).count();
+    let quiet_gaps = s
         .rows
         .iter()
-        .filter(|r| r.state.level() == crate::vocab::Level::Ok && r.purpose.is_empty())
+        .filter(|r| r.state == JobState::Ok && r.purpose.is_empty())
         .count();
-    let look = stale + never + why;
+    let look = stale + never + quiet_gaps;
     let mut c = Card::new("schedules", "Schedules", "")
         .bar(s.rows.len() - failing - look, look, failing)
         .part("Failing", failing, lvl(failing, Level::Red))
@@ -492,7 +495,9 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
             JobState::Stale | JobState::Never => {
                 (format!("{} - {}", r.kind, r.status), Level::Warn)
             }
-            _ if r.purpose.is_empty() => (format!("{} - no purpose", r.kind), Level::Warn),
+            JobState::Ok if r.purpose.is_empty() => {
+                (format!("{} - no purpose", r.kind), Level::Warn)
+            }
             _ => return None,
         };
         Some(row(r.name.clone(), sub, level, None))

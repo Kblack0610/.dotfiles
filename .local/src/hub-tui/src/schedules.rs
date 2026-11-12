@@ -207,6 +207,7 @@ pub fn detail(r: &Schedule, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         let at = u.at.map_or("-".into(), |t| clock(t, now));
         let took = u
             .took
+            .filter(|t| *t > 0)
             .map_or(String::new(), |t| format!("in {}", dur(t as f64)));
         let failed = if u.failed.is_empty() {
             String::new()

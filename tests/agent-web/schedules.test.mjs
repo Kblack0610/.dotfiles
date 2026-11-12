@@ -150,3 +150,10 @@ test("a repaint leaves the search box in use and a failed read says why", () => 
   run("schst.render()");
   assert.match(box.innerHTML, /schedules: gone/);
 });
+
+test("a past time reads as HH:MM today, its weekday this week, and MM-DD past that", () => {
+  const now = Date.now() / 1e3;
+  assert.match(run(`when(${now})`), /^\d\d:\d\d$/);
+  assert.match(run(`when(${now - 3 * 86400})`), /^[A-Z][a-z]{2} \d\d:\d\d$/);
+  assert.match(run(`when(${now - 40 * 86400})`), /^\d\d-\d\d \d\d:\d\d$/, "a weekday would name the wrong week");
+});

@@ -69,13 +69,17 @@ const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).p
 // A hub level ("bad", "warn", other) as its CSS class, "" for none.
 const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
 
-// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday otherwise.
+// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday within six days,
+// and with its MM-DD past that, where a weekday would name the wrong week.
 function when(t) {
   if (!t) return "-";
   const d = new Date(typeof t === "number" ? t * 1e3 : t);
   if (isNaN(d)) return esc(t);
-  return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
-    : `${d.toLocaleDateString([], { weekday: "short" })} ${clock(d.getTime())}`;
+  if (d.toDateString() === new Date().toDateString()) return clock(d.getTime());
+  const pad = (n) => String(n).padStart(2, "0");
+  return Math.abs(d - Date.now()) < 6 * 86400e3
+    ? `${d.toLocaleDateString([], { weekday: "short" })} ${clock(d.getTime())}`
+    : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock(d.getTime())}`;
 }
 // One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
 // drawn as one: its link opens in place, or a URL outside the hub in a new tab.

@@ -43,7 +43,7 @@ function scheduleRow(r) {
 }
 
 const runLine = (u) => `<div>${u.at ? when(u.at) : "-"} <span class="${u.ok === false ? "bad" : ""}">${esc(u.result)}</span>` +
-  (u.took != null ? ` <span class="muted">in ${secs(u.took)}</span>` : "") +
+  (u.took > 0 ? ` <span class="muted">in ${secs(u.took)}</span>` : "") +
   (u.failed.length ? `<span class="muted">: ${esc(u.failed.join(", "))}</span>` : "") +
   (u.url ? ` <a href="${esc(u.url)}" target="_blank" rel="noopener">Open run</a>` : "") + `</div>`;
 

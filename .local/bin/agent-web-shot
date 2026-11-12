@@ -32,9 +32,11 @@ const [tab, done] = [arguments[0], arguments[arguments.length - 1]];
 const PLACEHOLDER = /^(loading|reading)\b[^.]{0,80}(\.\.\.|\.)$/i;
 const busy = (el) => [...el.querySelectorAll("*")].some((e) =>
   !e.children.length && PLACEHOLDER.test(e.textContent.trim()) && e.checkVisibility());
-// A tab draws into its own section (#home), or into #main's detail pane (#sessions draws into
-// #scroll); the placeholder scan covers all of #main, where a hidden tab is not visible.
-const ok = () => { const el = document.getElementById(tab) || document.getElementById("main"); return el && el.innerHTML.trim() && !busy(document.getElementById("main")); };
+// A tab draws into its own section (#home), except Sessions, which draws into #scroll; a hash
+// with neither is never ready, so the shot waits out the timeout and says so. The placeholder
+// scan covers all of #main, where a hidden tab is not visible.
+const DRAWS_INTO = { sessions: "scroll" };
+const ok = () => { const el = document.getElementById(DRAWS_INTO[tab] || tab); return el && el.innerHTML.trim() && !busy(document.getElementById("main")); };
 if (ok()) return done(true);
 const mo = new MutationObserver(() => { if (ok()) { mo.disconnect(); done(true); } });
 mo.observe(document.body, { childList: true, subtree: true, characterData: true });
