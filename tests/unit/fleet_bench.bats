@@ -196,18 +196,13 @@ agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
 # HELP agent_bench_vital The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.
 # TYPE agent_bench_vital gauge
-agent_bench_vital{question="output",kpi="merged_prs"} 0
-agent_bench_vital{question="flow",kpi="queue_net_24h"} 1
-agent_bench_vital{question="flow",kpi="step_age_p90_queued"} 2
-agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 3
-agent_bench_vital{question="quality",kpi="first_pass_share"} 4
-agent_bench_vital{question="you",kpi="human_answered_per_day"} 5
-agent_bench_vital{question="you",kpi="buzzes_per_day"} 6
-agent_bench_vital{question="cost",kpi="points_per_pr"} 7
-agent_bench_vital{question="trust",kpi="ledger_coverage"} 8
-agent_bench_vital{question="trust",kpi="loop_dark_7d"} 9
-agent_bench_vital{question="outcome",kpi="requested_unstarted_h"} 10
-agent_bench_vital{question="outcome",kpi="landed_unverified"} 11
+agent_bench_vital{question="you",kpi="human_answered_per_day"} 0
+agent_bench_vital{question="you",kpi="buzzes_per_day"} 1
+agent_bench_vital{question="outcome",kpi="requested_unstarted_h"} 2
+agent_bench_vital{question="outcome",kpi="landed_unverified"} 3
+agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 4
+agent_bench_vital{question="quality",kpi="first_pass_share"} 5
+agent_bench_vital{question="cost",kpi="cost_per_merged_item"} 6
 # HELP agent_bench_improve Improvement claims live now, and verdicts of each kind, from effect.jsonl.
 # TYPE agent_bench_improve gauge
 agent_bench_improve{state="live"} 0
@@ -2853,13 +2848,13 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_failure 2
 }
 
-@test "kpi --vitals: the default list names only keys kpi_json carries, seven questions" {
+@test "kpi --vitals: the default list names only keys kpi_json carries, four questions" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" kpi --json
   local all=$output
   run "$SUBJECT" kpi --vitals --json
   assert_success
-  assert_equal "$(jq -c 'map(.question) | unique | length' <<<"$output")" 7
+  assert_equal "$(jq -c 'map(.question) | unique | length' <<<"$output")" 4
   assert_equal "$(jq -c --argjson all "$all" 'map(select(.kpi as $k | $all | has($k) | not) | .kpi)' <<<"$output")" '[]'
 }
 
@@ -2871,7 +2866,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run grep -m2 '^## ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## Vitals'
   assert_line --index 1 '## KPIs'
-  run grep -c '^| output | merged_prs ' "$BENCH_SCORECARD_DIR/latest.md"
+  run grep -c '^| you | buzzes_per_day ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output 1
   source "$SUBJECT"
   BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0" '{"steps": []}'
