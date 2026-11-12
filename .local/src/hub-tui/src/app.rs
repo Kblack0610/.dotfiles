@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use hub_core::alerts::Alert;
 use hub_core::boards::{self, DayRow, Watch};
-use hub_core::builds::{self, Builds};
+use hub_core::builds::{self, Builds, Scope};
 use hub_core::fleet::who::{Opens, Who};
 use hub_core::fleet::ASK_FILTERS;
 use hub_core::home::Need;
@@ -3520,6 +3520,7 @@ impl App {
 
     fn hints(&self) -> String {
         let tabs = "0-9";
+        let runs = self.infra_open == Some(Opened::Runs);
         match self.tab {
             Tab::Home if self.hv.typing.is_some() || self.prv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3531,14 +3532,14 @@ impl App {
             Tab::Alerts => format!(
                 "j/k move  Enter open  o fix PR  i its item  w watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.infra_open == Some(Opened::Runs) && self.ci.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Infra if self.infra_open == Some(Opened::Runs) && self.ci.times.is_some() => {
+            Tab::Infra if runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Infra if runs && self.ci.times.is_some() => {
                 "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  q quit".into()
             }
-            Tab::Infra if self.infra_open == Some(Opened::Runs) && self.ci.log.is_some() => {
+            Tab::Infra if runs && self.ci.log.is_some() => {
                 "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  q quit".into()
             }
-            Tab::Infra if self.infra_open == Some(Opened::Runs) => format!(
+            Tab::Infra if runs => format!(
                 "Enter log  t run times, quarantine  / query  f state  s sort  S asc/desc  x clear  o open run  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.infra_open.is_none() && self.infra_inner == "ci" => format!(
@@ -3706,7 +3707,11 @@ impl App {
         if i.is_some_and(|i| !i.ci.red.is_empty()) {
             out.push("ci");
         }
-        if self.builds.as_ref().is_some_and(Builds::needs_look) {
+        if self
+            .builds
+            .as_ref()
+            .is_some_and(|b| b.needs_look(Scope::All))
+        {
             out.push("runs");
         }
         out

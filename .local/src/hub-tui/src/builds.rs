@@ -47,8 +47,14 @@ impl BuildsView {
 
     /// The scope's rows the query and chip keep, in its sort or the ledger's newest-first order.
     fn kept<'a>(&self, b: &'a Builds) -> Vec<&'a Run> {
-        let rows = b.rows_in(self.scope);
-        self.table.view.apply(&rows).into_iter().copied().collect()
+        match self.scope {
+            // Every run: the view over the read itself, no list of references to build first.
+            Scope::All => self.table.view.apply(&b.rows),
+            scope => {
+                let rows = b.rows_in(scope);
+                self.table.view.apply(&rows).into_iter().copied().collect()
+            }
+        }
     }
 
     /// The rows the view keeps, capped as the page is.
@@ -82,15 +88,22 @@ impl BuildsView {
                 p.warn(),
             ));
         }
-        let all = self.kept(b).len();
+        let (shown, more) = builds::cap(
+            self.table
+                .view
+                .apply(&s.rows)
+                .into_iter()
+                .copied()
+                .collect(),
+        );
         let mut spans = self.table.status(&s.rows, p);
         spans.push(Span::styled(
-            format!("    {} of {}", all.min(builds::LIST_ROWS), s.rows.len()),
+            format!("    {} of {}", shown.len(), s.rows.len()),
             p.dim(),
         ));
-        if all > builds::LIST_ROWS {
+        if more > 0 {
             spans.push(Span::styled(
-                format!(" ({} older: narrow with /)", all - builds::LIST_ROWS),
+                format!(" ({more} older: narrow with /)"),
                 p.dim(),
             ));
         }

@@ -354,27 +354,16 @@ impl Scope {
 /// and the quarantine are Infra's, so the `Release` scope carries none.
 pub struct Scoped<'a> {
     pub rows: Vec<&'a Run>,
-    pub counts: Counts,
+    pub counts: &'a Counts,
     pub times: &'a [RunTime],
     pub quarantine: &'a [quarantine::Lane],
     pub errors: &'a [String],
 }
 
 impl Scoped<'_> {
-    /// `looks` over this scope's runs: the count on the inner tab they are on.
-    pub fn needs_look(&self) -> bool {
-        looks(&self.counts, self.errors)
-    }
-
     pub fn summary(&self) -> String {
         self.counts.says()
     }
-}
-
-/// A run went red in the last `RECENT_SECS`, or the ledger did not read. Older reds are history,
-/// as `Counts::level` says.
-fn looks(counts: &Counts, errors: &[String]) -> bool {
-    !errors.is_empty() || counts.level() == Level::Bad
 }
 
 impl Builds {
@@ -383,25 +372,33 @@ impl Builds {
         self.rows.iter().filter(|r| scope.keeps(r)).collect()
     }
 
+    /// The counts the read took of the runs `scope` lists.
+    pub fn counts_in(&self, scope: Scope) -> &Counts {
+        match scope {
+            Scope::All => &self.counts,
+            Scope::Release => &self.released,
+        }
+    }
+
     /// The read cut to `scope`, with that scope's counts; `All` is the read as it is.
     pub fn scoped(&self, scope: Scope) -> Scoped<'_> {
-        let all = scope == Scope::All;
+        let (times, quarantine): (&[RunTime], &[quarantine::Lane]) = match scope {
+            Scope::All => (&self.times, &self.quarantine),
+            Scope::Release => (&[], &[]),
+        };
         Scoped {
             rows: self.rows_in(scope),
-            counts: if all {
-                self.counts.clone()
-            } else {
-                self.released.clone()
-            },
-            times: if all { &self.times } else { &[] },
-            quarantine: if all { &self.quarantine } else { &[] },
+            counts: self.counts_in(scope),
+            times,
+            quarantine,
             errors: &self.errors,
         }
     }
 
-    /// `looks` over every run: the count on Infra's CI inner tab.
-    pub fn needs_look(&self) -> bool {
-        looks(&self.counts, &self.errors)
+    /// A run of `scope` went red in the last `RECENT_SECS`, or the ledger did not read: the count
+    /// on the inner tab those runs are on. Older reds are history, as `Counts::level` says.
+    pub fn needs_look(&self, scope: Scope) -> bool {
+        !self.errors.is_empty() || self.counts_in(scope).level() == Level::Bad
     }
 
     /// The collector has not finished a pass in longer than its cadence explains.
@@ -725,7 +722,10 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
         }
         pass.add(r.conclusion.as_deref());
         // A startup failure never ran its jobs, so its seconds would drag the usual time down.
-        let ran = matches!(r.conclusion.as_deref(), Some("success" | "failure" | "timed_out"));
+        let ran = matches!(
+            r.conclusion.as_deref(),
+            Some("success" | "failure" | "timed_out")
+        );
         let timed = ran && r.started_at.is_some();
         if let (true, Some(t)) = (timed, r.took) {
             took.push(t);
@@ -954,12 +954,13 @@ mod tests {
             counts,
             ..Default::default()
         };
-        assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let look = |b: Builds| b.needs_look(Scope::All);
+        assert!(look(builds(c)) && !look(builds(later)));
         let unread = Builds {
             errors: vec!["runs.jsonl: unreadable".into()],
             ..Default::default()
         };
-        assert!(unread.needs_look());
+        assert!(unread.needs_look(Scope::Release));
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 

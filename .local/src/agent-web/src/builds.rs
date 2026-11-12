@@ -50,7 +50,7 @@ struct Shown<'a> {
     /// The Quarantine fold: a lane per repo whose base carries a quarantine, and its worst.
     quarantine: Vec<Quarantined<'a>>,
     quarantine_level: Level,
-    /// `Scoped::needs_look`: the count on the inner tab the runs are on.
+    /// `Builds::needs_look`: the count on the inner tab the runs are on.
     look: bool,
     table: Summary,
 }
@@ -95,7 +95,8 @@ fn quarantined(l: &Lane) -> Quarantined<'_> {
 }
 
 fn render(b: &Builds, q: &Query) -> String {
-    let s = b.scoped(Scope::named(&q.scope));
+    let scope = Scope::named(&q.scope);
+    let s = b.scoped(scope);
     let view = View::new::<Run>(&q.bq, &q.bs, &q.bsort, &q.bdir);
     let (rows, table) = view.summary(&s.rows);
     let (rows, more) = builds::cap(rows.into_iter().copied().collect());
@@ -114,7 +115,7 @@ fn render(b: &Builds, q: &Query) -> String {
             .map(Lane::level)
             .min()
             .unwrap_or_default(),
-        look: s.needs_look(),
+        look: b.needs_look(scope),
         table,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))

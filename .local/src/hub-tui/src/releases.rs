@@ -100,7 +100,7 @@ pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     if s.needs_look() {
         out.push("table");
     }
-    if b.is_some_and(|b| b.scoped(Scope::Release).needs_look()) {
+    if b.is_some_and(|b| b.needs_look(Scope::Release)) {
         out.push("runs");
     }
     out
