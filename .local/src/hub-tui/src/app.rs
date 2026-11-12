@@ -2399,6 +2399,10 @@ impl App {
                 self.open_jobs();
                 self.jobs_history(Some(id.to_string()));
             }
+            Kind::App => {
+                self.rv.open_app(self.releases.as_ref(), id);
+                self.sync_changelog();
+            }
             _ => {}
         }
     }

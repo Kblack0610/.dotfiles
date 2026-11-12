@@ -25,10 +25,12 @@ pub(crate) fn alert(l: Level, p: Palette) -> Style {
 }
 
 /// `App::COLUMNS` in capitals, in its order, the sort mark placed by that index; `project` is
-/// drawn as APP. `channel` and `id` filter without a column: the pane says them.
-const HEADER: [&str; 6] = [
+/// drawn as APP and `live` as DEPLOYED (a deploy is not the app being live). `channel` and `id`
+/// filter without a column: the pane says them.
+const HEADER: [&str; 7] = [
     "APP",
-    "LIVE",
+    "STAGE",
+    "DEPLOYED",
     "STATUS",
     "CHANNELS",
     "RELEASED",
@@ -36,12 +38,15 @@ const HEADER: [&str; 6] = [
 ];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 9;
-/// APP and LIVE at 80 columns and at their widest: each takes half of whatever a wider terminal
-/// adds. CHANNELS holds `7: 2 not read, 4 ok, 1 released`.
+/// APP and DEPLOYED at 80 columns and at their widest: each takes half of whatever a wider
+/// terminal adds.
 const APP_FIT: (usize, usize) = (16, 26);
 const LIVE_FIT: (usize, usize) = (16, 28);
+/// `draft`, `alpha`: the ladder's longest word.
+const STAGE_CAP: usize = 5;
 const STATUS_CAP: usize = 10;
-const CHANNELS_CAP: usize = 31;
+/// `2 not read, 4 ok, 1 released`.
+const CHANNELS_CAP: usize = 28;
 /// `v1.19.0 10-27 15:02`; a longer build tag clips.
 const RELEASED_CAP: usize = 24;
 /// `10-26 15:02 fail`.
@@ -75,6 +80,8 @@ pub struct ReleasesView {
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
+    /// The app a page link named (`releases apps/<name>`), selected once the snapshot is read.
+    pub want: Option<RowId>,
 }
 
 impl Default for ReleasesView {
@@ -87,6 +94,7 @@ impl Default for ReleasesView {
             cl: ChangelogRead::default(),
             runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
+            want: None,
         }
     }
 }
@@ -163,8 +171,24 @@ impl ReleasesView {
         self.table.view.apply(&s.apps)
     }
 
-    /// Move the selection to the row with this id after a read, or keep the index in range.
+    /// An app's page (`links::Kind::App`): the whole table on the Apps inner tab, that app
+    /// selected now or once the snapshot is read, its pane open from the newest release.
+    pub fn open_app(&mut self, s: Option<&Releases>, id: &str) {
+        self.open_view(String::new());
+        self.inner = "apps";
+        self.open = true;
+        self.others = true;
+        self.cl.project.clear();
+        self.want = Some(id.to_string());
+        if let Some(s) = s {
+            self.reselect(s, None);
+        }
+    }
+
+    /// Move the selection to the row with this id (or the app a page link named) after a read,
+    /// or keep the index in range.
     pub fn reselect(&mut self, s: &Releases, id: Option<RowId>) {
+        let id = self.want.take().or(id);
         let rows = self.shown(s);
         let at = id.and_then(|id| rows.iter().position(|a| a.project == id));
         self.table.keep(at, rows.len());
@@ -228,15 +252,16 @@ impl ReleasesView {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|a| row(a, p)).collect(),
             // Columns drop from the end of `keep` when narrow: LAST DEPLOY (blank until a recorder writes), then RELEASED.
-            keep: vec![0, 2, 1, 3, 4, 5],
+            keep: vec![0, 3, 2, 1, 4, 5, 6],
             right: vec![],
             cap: vec![
                 (0, fit(APP_FIT)),
-                (1, fit(LIVE_FIT)),
-                (2, STATUS_CAP),
-                (3, CHANNELS_CAP),
-                (4, RELEASED_CAP),
-                (5, LAST_DEPLOY_CAP),
+                (1, STAGE_CAP),
+                (2, fit(LIVE_FIT)),
+                (3, STATUS_CAP),
+                (4, CHANNELS_CAP),
+                (5, RELEASED_CAP),
+                (6, LAST_DEPLOY_CAP),
             ],
             mark,
             ..Default::default()
@@ -261,6 +286,11 @@ fn row(a: &App, p: Palette) -> Vec<Cell> {
     };
     vec![
         a.project.clone().into(),
+        if a.stage.is_empty() {
+            cell("-".to_string(), p.dim())
+        } else {
+            tinted(&a.stage, a.stage_level)
+        },
         a.live_text.clone().into(),
         cell(a.status_text.clone(), level(a.level, p)),
         channels,
@@ -574,7 +604,12 @@ mod tests {
         use hub_core::table::Row;
         let lower: Vec<String> = HEADER
             .iter()
-            .map(|h| h.to_lowercase().replace(' ', "_").replace("app", "project"))
+            .map(|h| {
+                h.to_lowercase()
+                    .replace(' ', "_")
+                    .replace("app", "project")
+                    .replace("deployed", "live")
+            })
             .collect();
         let all = App::COLUMNS;
         assert_eq!(lower, all[..HEADER.len()]);
@@ -587,7 +622,7 @@ mod tests {
         let st = ReleasesView::default().status(&s, p, AT + 120);
         assert_eq!(
             text(&st[0]),
-            "What is live where, and which builds made it?"
+            "What is deployed where, and which builds made it?"
         );
         assert!(
             text(&st[1]).starts_with("2 apps: 1 drift, 1 ok"),
@@ -633,7 +668,7 @@ mod tests {
         let s = sample();
         let t = ReleasesView::default().table(&s, Palette::default(), 80, false);
         let head = text(&t[0]);
-        for col in ["APP", "LIVE", "STATUS", "CHANNELS"] {
+        for col in ["APP", "STAGE", "DEPLOYED", "STATUS", "CHANNELS"] {
             assert!(head.contains(col), "{head}");
         }
         assert_eq!(t.len(), 3, "a header and one row per app, not per channel");
@@ -642,7 +677,7 @@ mod tests {
         assert!(
             binks.contains("v1.2.3 prod")
                 && binks.contains("ok")
-                && binks.contains("2: 1 not read, 1 ok"),
+                && binks.contains("1 not read, 1 ok"),
             "{binks}"
         );
         assert!(
@@ -669,11 +704,20 @@ mod tests {
     fn a_channel_not_read_tints_the_channels_cell_amber_and_drift_the_status_red() {
         let (s, p) = (sample(), Palette::default());
         let cells = row(app(&s, "binks"), p);
-        assert_eq!(cells[3].style, p.warn());
-        assert_eq!(cells[2].style, p.good());
+        assert_eq!(cells[4].style, p.warn());
+        assert_eq!(cells[3].style, p.good());
         let drift = row(app(&s, "kenneth-black-portfolio"), p);
-        assert_eq!(drift[2].style, p.bad());
-        assert_eq!(drift[3].style, Style::default());
+        assert_eq!(drift[3].style, p.bad());
+        assert_eq!(drift[4].style, Style::default());
+    }
+
+    #[test]
+    fn an_app_with_no_lab_stage_says_a_dim_dash_as_the_web_does() {
+        let (s, p) = (sample(), Palette::default());
+        let mut a = app(&s, "binks").clone();
+        a.stage = String::new();
+        let cells = row(&a, p);
+        assert_eq!((cells[1].text.as_str(), cells[1].style), ("-", p.dim()));
     }
 
     #[test]
@@ -717,7 +761,7 @@ mod tests {
         let binks = app(&s, "binks");
         let shut = pane(binks, false, None, 80);
         assert_eq!(shut[0], "> binks  v1.2.3 prod, ok");
-        assert_eq!(shut[1], "  channels 2: 1 not read, 1 ok");
+        assert_eq!(shut[1], "  channels 1 not read, 1 ok");
         assert_eq!(shut[2], "  stage not read");
         assert!(
             shut.iter().any(|l| l.starts_with("  prod binks-prod")),

@@ -33,6 +33,8 @@ pub enum Kind {
     Job,
     /// A PR's CI runs, by `owner/repo#N`: Infra's runs table filtered to that PR.
     PrRuns,
+    /// An app on the Releases tab, by its project name: its channels, releases, builds, changelog.
+    App,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -68,6 +70,12 @@ pub const PAGES: &[Page] = &[
         tab: "infra",
         word: "jobs",
         inner: "jobs",
+    },
+    Page {
+        kind: Kind::App,
+        tab: "releases",
+        word: "apps",
+        inner: "apps",
     },
 ];
 
@@ -124,7 +132,9 @@ impl Link {
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         }
     }
 
@@ -146,7 +156,9 @@ impl Link {
             Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         })
     }
 }

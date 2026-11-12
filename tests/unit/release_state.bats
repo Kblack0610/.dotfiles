@@ -1039,15 +1039,15 @@ EOF
   [ "$(row game-testflight | jq -r .drift_since)" -gt 1000 ]
 }
 
-@test "stages: a draft project live on any channel is ahead of its stage, every target named" {
+@test "stages: a draft project deployed on any channel is fine, its rungs still named" {
   notes_stub '[{"name": "web", "stage": "draft"}, {"name": "nolab", "stage": ""}]'
   run "$RS" refresh
   assert_success
   run jq -c '.stages_error, .stages.web, .stages.shop' "$RELEASE_STATE_DIR/state.json"
   assert_line --index 0 'null'
-  assert_line --index 1 '{"stage":"draft","rungs":["alpha","prod"],"needs":[],"ahead":["web-prod","web-preview"]}'
+  assert_line --index 1 '{"stage":"draft","rungs":["alpha","prod"],"needs":[]}'
   # A project with no stage still has its rungs, for the gate that sets its first stage.
-  assert_line --index 2 '{"stage":null,"rungs":[],"needs":[],"ahead":[]}'
+  assert_line --index 2 '{"stage":null,"rungs":[],"needs":[]}'
 }
 
 @test "stages: a stage off the ladder or a channel the map does not name judges nothing" {
@@ -1055,19 +1055,19 @@ EOF
   jq '.trackers.web.targets[1].channel = "_comment"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
   "$RS" refresh >/dev/null
   run jq -c '.stages.web' "$RELEASE_STATE_DIR/state.json"
-  assert_output '{"stage":null,"rungs":["prod"],"needs":[],"ahead":[]}'
+  assert_output '{"stage":null,"rungs":["prod"],"needs":[]}'
 }
 
-@test "stages: a beta app names the rung nothing serves and the target above it" {
+@test "stages: a beta app names the rung nothing serves, and a target above it is no fault" {
   notes_stub '[{"name": "web", "stage": "beta"}]'
   "$RS" refresh >/dev/null
-  run jq -c '.stages.web | [.needs, .ahead]' "$RELEASE_STATE_DIR/state.json"
-  assert_output '[["beta"],["web-prod"]]'
-  # Negative control: at prod it owes beta and nothing is ahead.
+  run jq -c '.stages.web | [.needs, has("ahead")]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[["beta"],false]'
+  # Negative control: at prod it still owes beta.
   notes_stub '[{"name": "web", "stage": "prod"}]'
   "$RS" refresh >/dev/null
-  run jq -c '.stages.web | [.needs, .ahead]' "$RELEASE_STATE_DIR/state.json"
-  assert_output '[["beta"],[]]'
+  run jq -c '.stages.web.needs' "$RELEASE_STATE_DIR/state.json"
+  assert_output '["beta"]'
 }
 
 @test "stages: a target not read serves no rung, and infra owes none" {
