@@ -178,6 +178,8 @@ real_epic_board() {
   reconcile_epics
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug | paste -sd,)" 'verify-gm-1-1,verify-gm-1-2'
   # and an open verify row never holds its epic: the check closes it on its proof
+  grep -qE -- '^- \[/\] check\(epics\): verify gm-1 .*#of/gm-1 .*id:gm-5' "$board" ||
+    fail "no open verify row under gm-1: $(cat "$board")"
   run notes --profile personal ptask game done gm-1 --proof run:2
   assert_success
 }
