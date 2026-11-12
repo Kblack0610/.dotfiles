@@ -233,4 +233,8 @@ aws projects to $650 this month, past its $600 cap'
   echo '[{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"limit"},"value":[0,"600"]},{"metric":{"__name__":"ci_governor_budget_action_usd","type":"RUN_SSM_DOCUMENTS"},"value":[0,"700"]}]' > "$FIX/aws"
   run b '.lines[] | select(.name == "aws") | [.cap, .note]'
   assert_output '[600,""]'
+  # an action at the limit is the same cap: no stop note
+  sed -i 's/"700"/"600"/' "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.cap, .note]'
+  assert_output '[600,""]'
 }

@@ -315,11 +315,14 @@ def read_bill(b, frac, work, month):
                 fc = None
             # A budget action (platform infra/aws-ci-burst, account.tf) stops every host at its threshold,
             # below the limit: that threshold is where work stops, so it is the cap.
-            stops = [float(r["value"][1]) for r in rows if r["metric"].get("__name__") == "ci_governor_budget_action_usd"]
-            caps = [c for c in (vals.get("limit"), *stops) if c is not None]
-            notes = ([f"AWS stops the hosts at ${min(stops):,.0f}"] if stops and min(caps) == min(stops) else []) + \
-                (["AWS's own forecast"] if fc is not None else [])
-            line.update(cap=min(caps) if caps else None, spent=vals["actual"],
+            stop = min((float(r["value"][1]) for r in rows
+                        if r["metric"].get("__name__") == "ci_governor_budget_action_usd"), default=None)
+            limit = vals.get("limit")
+            below = stop is not None and (limit is None or stop < limit)
+            notes = [f"AWS stops the hosts at ${stop:,.0f}"] if below else []
+            if fc is not None:
+                notes.append("AWS's own forecast")
+            line.update(cap=stop if below else limit, spent=vals["actual"],
                         projected=pace(vals["actual"], frac) if fc is None else fc, note="; ".join(notes))
         elif b["kind"] == "digitalocean":
             spent = float(run_json(["doctl", "balance", "get", "-o", "json"])["month_to_date_usage"])
