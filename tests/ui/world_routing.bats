@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
-# Tier 3: the real manifests against real tmux sockets. Agents only in lab, other repos in hub.
+# Tier 3: the real manifests against real tmux sockets. Every repo and every worktree a human
+# starts in hub, lab only for what fleet-dispatch starts.
 #
 # TMUX_SERVERS_DIR is the repo's own .config/tmux-servers, so a manifest edit that breaks the
 # rule fails here. The fixture is the directories those manifests name, under the sandbox HOME.
@@ -48,38 +49,45 @@ in_pane() {
   "$REAL_TMUX" -L "$1" wait-for ran
 }
 
-@test "playground resolves to lab, and dotfiles to hub" {
+@test "playground and dotfiles resolve to hub, and the dispatch world is lab" {
   run "$WORLD" route "$PLAYGROUND"
-  assert_output 'lab unity-core-playground'
+  assert_output 'hub unity-core-playground'
   run "$WORLD" route "$HOME/.dotfiles"
   assert_output 'hub dotfiles'
   run "$WORLD" agents
   assert_output lab
 }
 
-@test "ensure from either world opens playground on lab and dotfiles on hub" {
-  "$TMX" ensure hub unity-core-playground
+@test "ensure from either world opens playground and dotfiles on hub" {
+  "$TMX" ensure lab unity-core-playground
   "$TMX" ensure lab dotfiles
-  sessions_of lab | grep -qxF unity-core-playground || fail "playground is not on lab"
+  sessions_of hub | grep -qxF unity-core-playground || fail "playground is not on hub"
   sessions_of hub | grep -qxF dotfiles || fail "dotfiles is not on hub"
-  ! sessions_of hub | grep -qxF unity-core-playground || fail "playground opened on hub"
-  ! sessions_of lab | grep -qxF dotfiles || fail "dotfiles opened on lab"
+  [ -z "$(sessions_of lab)" ] || fail "lab holds a session the human opened: $(sessions_of lab)"
 }
 
-@test "a game checkout no entry names lands in lab, and any other repo in hub" {
+@test "any checkout lands in hub, a game checkout too" {
   mkdir -p "$HOME/dev/bnb/games/new-game/.git" "$HOME/dev/home/tools/.git"
   run "$WORLD" route "$HOME/dev/bnb/games/new-game"
-  assert_output 'lab new-game'
+  assert_output 'hub new-game'
   run "$WORLD" route "$HOME/dev/home/tools"
   assert_output 'hub tools'
 }
 
-@test "a dotfiles agent worktree resolves to lab and its session is made on lab" {
+@test "a dotfiles worktree the human starts resolves to hub and its session is made there, none on lab" {
   run "$WT" new --detach -c "$HOME/.dotfiles"
   assert_success
   assert_equal "${lines[-1]}" dotfiles-agent-1
   run "$WORLD" route "$HOME/.worktrees/dotfiles-agent-1"
-  assert_output 'lab dotfiles-agent-1'
+  assert_output 'hub dotfiles-agent-1'
+  assert_equal "$(sessions_of hub)" dotfiles-agent-1
+  assert_equal "$(sessions_of lab)" ''
+}
+
+@test "a dispatched start names the dispatch world, so its session is made on lab" {
+  run "$WT" new --detach --server "$("$WORLD" agents)" -c "$HOME/.dotfiles"
+  assert_success
+  assert_equal "${lines[-1]}" dotfiles-agent-1
   assert_equal "$(sessions_of lab)" dotfiles-agent-1
   assert_equal "$(sessions_of hub)" ''
 }
@@ -92,9 +100,9 @@ in_pane() {
   "$REAL_TMUX" -L hub has-session -t =dotfiles || fail "cancel killed hub dotfiles"
 }
 
-@test "the same --running from a lab agent session records that session and its window" {
-  in_pane lab dotfiles-agent-1 "$(printf '%q' "$AQ") add --running --project dotfiles --slug hand 'by hand'"
+@test "the same --running from a hub worktree session records that session and its window" {
+  in_pane hub dotfiles-agent-1 "$(printf '%q' "$AQ") add --running --project dotfiles --slug hand 'by hand'"
   f="$(ls "$AGENT_QUEUE_DIR"/running/*-hand.md)"
-  assert_equal "$(field "$f" session)" lab:dotfiles-agent-1
+  assert_equal "$(field "$f" session)" hub:dotfiles-agent-1
   [ -n "$(field "$f" window)" ] || fail "no window recorded"
 }

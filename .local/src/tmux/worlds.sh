@@ -4,7 +4,7 @@
 #
 #   tmux-world route <dir>     "<world> <session>" for that directory; world `here` when no
 #                              manifest claims it
-#   tmux-world agents          the world every agent worktree session lives on; empty if none
+#   tmux-world agents          the world fleet-dispatch starts its sessions in (`@agents`); empty if none
 #   tmux-world session <name>  the world that declares that session; rc 1 if none does
 #
 # The manifests (.config/tmux-servers/*.conf) are the only routing table, and this file is the
@@ -147,19 +147,31 @@ world_is_linked() {
   [ "${gitdir:-}" != "${common:-}" ] && [ "${common##*/}" = .git ]
 }
 
+# world_main_repo <dir> -- the main checkout a linked worktree was cut from.
+world_main_repo() {
+  local common
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  printf '%s\n' "${common%/.git}"
+}
+
 # world_route <dir> -- "<world> <session>". The one rule:
 #   a directory a manifest names  -> that world, under the manifest's session name
-#   any linked worktree           -> the agent world, whichever repo it was cut from
+#   a linked worktree             -> its main repo's world (a manifest name, else `@repos`), under the worktree's own name
 #   any other directory           -> the `@repos` world
 #   none of those                 -> `here`, the caller's own world
+# `@agents` is not a routing rule: it names the world fleet-dispatch starts its sessions in.
 world_route() {
-  local dir="${1%/}" decl world
+  local dir="${1%/}" decl world main
   if decl="$(world_of_dir "$dir")"; then
     printf '%s\n' "$decl"
     return 0
   fi
-  if world_is_linked "$dir"; then
-    world="$(world_agents)"
+  if world_is_linked "$dir" && main="$(world_main_repo "$dir")"; then
+    if decl="$(world_of_dir "$main")"; then
+      world="${decl%% *}"
+    else
+      world="$(world_of_repo "$main")"
+    fi
   else
     world="$(world_of_repo "$dir")"
   fi
