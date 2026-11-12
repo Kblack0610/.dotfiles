@@ -377,6 +377,23 @@ EOF
   assert_output "$(printf '%s\n' app-one monorepo no-repo toolrepo)"
 }
 
+@test "project_dir_key: a repo-only key resolves to its repo; a key with a path or no repo is itself" {
+  write_tracker_map
+  jq '.trackers["app-one"].path = "apps/one"' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
+  run project_dir_key cockpit;   assert_output 'toolrepo'
+  run project_dir_key app-two;   assert_output 'monorepo'
+  run project_dir_key app-one;   assert_output 'app-one'
+  run project_dir_key no-repo;   assert_output 'no-repo'
+  run project_dir_key unmapped;  assert_output 'unmapped'
+}
+
+@test "project_dir_key: no registry is the key itself" {
+  export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/absent.json"
+  run project_dir_key cockpit
+  assert_success
+  assert_output 'cockpit'
+}
+
 @test "project_lab_names: a repo lists every project that belongs to it, itself included" {
   write_tracker_map
   run project_lab_names monorepo
