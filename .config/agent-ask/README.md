@@ -61,8 +61,8 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
-agent-ask list [project|--all] [--pending]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at (new columns only ever go at the end; option_notes is the `--options` meanings joined by `|`)
-agent-ask count [project|--all]             number of pending asks
+agent-ask list [project|--all] [--pending|--parked|--open|--answered]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until (parked_until is filled only while the ask is parked; new columns only ever go at the end; option_notes is the `--options` meanings joined by `|`)
+agent-ask count [project|--all]             number of pending asks, parked ones left out
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released
@@ -75,6 +75,8 @@ agent-ask judge <id>                         the answer judge's call on one pend
 agent-ask sweep [project|--all]              judge every pending ask again and answer each live one as the judge through `answer`'s delivery, or arm it when its type has a wait; prints `<project> <id> answered <x>|armed <x>|yours <rule> <reason>` per ask. Run after a policy or DELAY_RULES change
 agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again; `fleet-state.service` runs it each pass
 agent-ask cancel <id>                        status->cancelled
+agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
+agent-ask unpark <id>                        put a parked ask back on the boards now
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
 agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
 ```
@@ -112,6 +114,8 @@ judge_override:           # on a live answer: the option the human's next messag
 judge_override_note:      # that message
 judge_override_at:
 resume: /captain resume
+parked_until:             # set by `park`: UTC, the ask is off the boards until then
+parked_at:
 ```
 
 ## The answer judge
@@ -137,6 +141,10 @@ A pending ask is judged again whenever `judge` runs on it, so a verdict made und
 Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`), which also counts assumed answers and how many were overridden. A type and its wait are the human's call, by a PR to `DELAY_RULES`; `judge-eval` shows each type against the bar to inform it.
 
 `AGENT_ASK_NO_JUDGE=1` skips the call, and `AGENT_ASK_<key>` replaces the conf's `DELAY_RULES` or `PRECEDENTS`; the test sandbox sets the first.
+
+## Parked asks
+
+An ask that waits on something the human must do with their hands (wear a headset, fly the drone) is parked, not left on the boards. `park` keeps it `pending` and writes `parked_until`, so its queue item stays held (fleet-dispatch's `item_ask` reads `list --open`) and an answer still resumes it. Until that time `list --pending`, `count` (the status bar's !N), the questions panel's waiting line and Home's Needs you leave it out, and `sweep` passes it by. The questions panel shows it last, tagged `park` with its date (`p` parks or unparks the selected row), and agent-web shows it in a shut Parked fold under Needs you, each row with an Unpark button. On the date it is back on every board with no write and no timer: `list` compares `parked_until` with the clock once and fills its last column only while the ask is parked, so no reader compares dates itself. `list --parked` lists only parked asks, `list --open` every pending one. Test: `tests/integ/agent_ask.bats`.
 
 ## Producer / consumer wiring
 

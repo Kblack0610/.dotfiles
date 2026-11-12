@@ -321,7 +321,7 @@ function drawHome() {
   const warn = (t) => `<span class="warn">${esc(t)}</span>`;
   const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
   paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)} <a href="#alerts">Alerts</a></div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)} <a href="#alerts">Alerts</a></div>`) + spend + vitals) + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
@@ -337,6 +337,7 @@ $("home").addEventListener("click", (e) => {
   if (e.target.closest("summary")) return;
   const t = e.target;
   if (t.dataset.fix) { queueFix(t.dataset.fix); return; }
+  if (t.dataset.unpark) { parkAsk(t.dataset.unpark, true); return; }
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
   const prow = t.closest("tr.prop");

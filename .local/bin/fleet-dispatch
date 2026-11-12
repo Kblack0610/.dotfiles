@@ -1944,7 +1944,8 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # moves nothing on a guess.
 item_ask() {
   local own asks; own=$(jq -r '.ask // ""' <<<"$2")
-  asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
+  # --open: a parked ask still holds its item; parking only takes it off the boards.
+  asks=$(agent-ask list --all --open 2>/dev/null) || return 1
   awk -F'\t' -v s="$1" -v own="$own" '
     function tag(   n, o, i, t) {
       n = split($7, o, "|"); t = ""
@@ -3718,7 +3719,8 @@ epic_verify_task() {
 waiting_sessions() {
   local panel asks shared working wsids
   panel=$(agent-panel list --json 2>/dev/null) || return 1
-  asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
+  # --open: a session whose ask is parked still waits on its human; parking only hides the row.
+  asks=$(agent-ask list --all --open 2>/dev/null) || return 1
   shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)
   working=$(jq -r 'select(.status == "busy" or .status == "shell") | .target | sub(":[^:/]*$"; "") | sub(".*/"; "")' <<<"$panel" 2>/dev/null)
   wsids=$(jq -r 'select(.status == "busy" or .status == "shell") | .session_id // empty' <<<"$panel" 2>/dev/null)

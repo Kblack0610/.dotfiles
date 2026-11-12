@@ -18,8 +18,16 @@
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
-#   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
-#                                       TSV rows for agent-web and the bridge
+#   agent-ask list [project|--all] [--pending|--parked|--open|--answered] [--since <n>d]
+#                                       TSV rows for agent-web and the bridge. --pending is what
+#                                       waits on the human now (a parked ask is left out until
+#                                       its date), --parked only the parked ones, --open both
+#   agent-ask park <id> [--until <date>]
+#                                       keep a pending ask off the boards until <date>: it stays
+#                                       pending, so its queue hold and answer are unchanged.
+#                                       Without --until, the days for the held item's priority
+#                                       (park.conf PARK_DAYS)
+#   agent-ask unpark <id>               put a parked ask back on the boards now
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer [--by who] <id> <answer...>
 #                                       record the answer; flip to answered;
@@ -85,6 +93,12 @@
 # A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
 # "PR #1036 is green, merge it?".
 
+# PARKED is not a status. A pending ask with `parked_until` still ahead waits on something the
+# human will do later (plug in a headset, order parts): `list --pending` and `count` leave it out,
+# so the boards stop showing it, and on that time it is back with no write and no timer. It
+# keeps `status: pending`, so the queue hold on it, `answer` and `resume` need nothing new, and
+# the judge's sweep passes it by. `parked_until` is UTC, so a DST change cannot move it.
+#
 # LIFECYCLE: pending -> answered | cancelled. A question has ONE home, this file, and stays
 # pending until the human answers or drops it, even after its session is gone (the card says so).
 # An answer that no live session takes and no `resume` consumes becomes one agent board row,
@@ -126,6 +140,8 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
+# PARK_DAYS: how long `park` with no --until keeps an ask off the boards, by the held item's priority.
+: "${AGENT_ASK_PARK_CONF:=$HOME/.config/agent-ask/park.conf}"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
@@ -308,6 +324,8 @@ render_ask() {
   local head="asking you" hc="$c"
   [ "$kind" = question ] || { head="$kind - asking you"; hc="$r"; }
   [ "$st" = pending ] || { head="$st"; hc="$d"; }
+  [ "$st" = pending ] && [ -n "${ASK[parked_until]:-}" ] && [[ "${ASK[parked_until]}" > "$(now_utc)" ]] &&
+    { head="parked until $(date -d "${ASK[parked_until]}" '+%a %b %-d %H:%M')"; hc="$d"; }
   printf '%s%s%s  %s%s%s\n\n' "$b$hc" "$head" "$x" "$d" "$where" "$x"
   printf '%s' "$b"; wrap "" "${ASK[question]:-}"; printf '%s' "$x"
   IFS='|' read -r -a opts <<< "${ASK[options]:-}"
@@ -539,6 +557,8 @@ cmd_list() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --pending)  want=pending; shift ;;
+      --parked)   want=parked; shift ;;
+      --open)     want=open; shift ;;
       --answered) want=answered; shift ;;
       --since)    since="$2"; shift 2 ;;
       --all)      key="--all"; shift ;;
@@ -557,19 +577,25 @@ cmd_list() {
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
-  #      answer_note, assume_at, resume  (append new columns at the end only)
+  #      answer_note, assume_at, resume, parked_until  (append new columns at the end only;
+#      parked_until is filled only while the ask is parked, so no reader compares it with the clock)
   # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
   # 368 asks. A key's first `key: ` line wins, as in `field`.
   local files=()
   mapfile -t files < <(ask_files "$key")
   [ "${#files[@]}" -gt 0 ] || return 0
-  awk -v want="$want" -v cutoff="$cutoff" '
+  awk -v want="$want" -v cutoff="$cutoff" -v now="$(now_utc)" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until", K, " ")
     }
-    function flush(   i, d, p, row) {
+    function flush(   i, d, p, row, parked) {
       if (cur == "") return
-      if (want != "" && v["status"] != want) return
+      parked = v["status"] == "pending" && v["parked_until"] > now
+      if (want == "pending" && (v["status"] != "pending" || parked)) return
+      if (want == "parked" && !parked) return
+      if (want == "open" && v["status"] != "pending") return
+      if (want == "answered" && v["status"] != "answered") return
+      if (!parked) v["parked_until"] = ""
       if (cutoff != "" && v["answered_at"] != "") {
         p = index(v["answered_at"], "T"); d = p ? substr(v["answered_at"], 1, p - 1) : v["answered_at"]
         if (d < cutoff) return
@@ -781,6 +807,7 @@ cmd_sweep() {
   load_queue_asks
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
+    is_parked "$f" && continue
     id="$(field "$f" id)"; said=yours
     "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
     if ans="$(live_answer "$f")"; then
@@ -1309,6 +1336,60 @@ close_ask() {
 }
 
 cmd_cancel() { close_ask cancelled "$@"; }
+
+# is_parked <file>: a pending ask whose parked_until is still ahead.
+is_parked() {
+  local until; until="$(field "$1" parked_until)"
+  [ -n "$until" ] && [[ "$until" > "$(now_utc)" ]]
+}
+# park_days <priority>: the days park.conf's PARK_DAYS gives that priority, else its `normal` entry, else 7.
+park_days() {
+  local kv; declare -A d=()
+  for kv in $( [ -r "$AGENT_ASK_PARK_CONF" ] && . "$AGENT_ASK_PARK_CONF" >/dev/null 2>&1; printf '%s' "${PARK_DAYS:-}"); do d[${kv%%=*}]=${kv#*=}; done
+  echo "${d[${1:-normal}]:-${d[normal]:-7}}"
+}
+# ask_priority <file>: the priority of the queue item the ask holds, else of its `task:` item,
+# else normal.
+ask_priority() {
+  local slug p=""
+  slug="$(queue_holders "$(field "$1" id)" | head -1 | cut -f1)"
+  [ -n "$slug" ] || slug="$(field "$1" task)"
+  [ -n "$slug" ] && p="$($AGENT_ASK_QUEUE_CMD show "$slug" --json 2>/dev/null | jq -r '.priority // empty' 2>/dev/null)"
+  echo "${p:-normal}"
+}
+cmd_park() {
+  local id="" until="" f at
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --until) until="${2:-}"; shift; shift ;;
+      *) id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || { echo "usage: agent-ask park <id> [--until <date>]" >&2; return 2; }
+  f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask parks" >&2; return 1; }
+  if [ -n "$until" ]; then
+    at="$(now_utc "$until" 2>/dev/null)" || { echo "agent-ask park: '$until' is not a date" >&2; return 2; }
+    [[ "$at" > "$(now_utc)" ]] || { echo "agent-ask park: $until is not in the future" >&2; return 2; }
+  else
+    at="$(now_utc "+$(park_days "$(ask_priority "$f")") days")"
+  fi
+  # A parked ask is out of the judge's way too: an arm would answer it while the human is away.
+  drop_arm "$f"
+  set_field "$f" parked_until "$at" parked_at "$(now_iso)"
+  queue_changed
+  echo "parked $id until $(date -d "$at" '+%a %b %-d %H:%M')" >&2
+}
+cmd_unpark() {
+  local id="${1:-}" f
+  [ -n "$id" ] || { echo "usage: agent-ask unpark <id>" >&2; return 2; }
+  f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  drop_field "$f" parked_until parked_at
+  queue_changed
+  echo "unparked $id" >&2
+}
 cmd_recommend() {
   local id="${1:-}" opt="${2:-}"
   [ -n "$id" ] && [ -n "$opt" ] || { echo "usage: agent-ask recommend <id> <option> [why...]" >&2; return 2; }
@@ -1599,6 +1680,8 @@ case "$sub" in
   titles) session_titles ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
+  park)   cmd_park "$@" ;;
+  unpark) cmd_unpark "$@" ;;
   recommend)    cmd_recommend "$@" ;;
   resumable)    cmd_resumable "$@" ;;
   mark-resumed) cmd_mark_resumed "$@" ;;

@@ -617,10 +617,10 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 26 tab-separated fields per ask, resume last" {
+@test "list emits 27 tab-separated fields per ask, parked_until last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '26'
+  assert_output '27'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
@@ -730,6 +730,104 @@ outcomes_cli() {
   "$AGENT_ASK" cancel "$id" 2>/dev/null
   run "$AGENT_ASK" count demo
   assert_output '0'
+}
+
+# ── park: off the boards until a date, still pending ─────────────────────────
+
+# days_ahead <utc stamp>: whole days from now to the stamp, rounded.
+days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); }
+
+@test "park keeps the ask pending but out of --pending and count; --parked and --open list it; unpark brings it back" {
+  local id; id="$(post demo 'wear the headset?')"
+  post demo 'other?' >/dev/null
+  run "$AGENT_ASK" park "$id" --until '+2 days'
+  assert_success
+  assert_output --partial "parked $id until"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_line --regexp '^parked_until: 20[0-9-]{8}T[0-9:]{8}Z$'
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  run bash -c '"$AGENT_ASK" list demo --pending | cut -f1'
+  refute_output --partial "$id"
+  run bash -c '"$AGENT_ASK" list demo --parked | cut -f1'
+  assert_output "$id"
+  run bash -c '"$AGENT_ASK" list demo --open | wc -l'
+  assert_output '2'
+  run bash -c '"$AGENT_ASK" list demo --parked | cut -f27'
+  assert_output --regexp '^20[0-9-]{8}T[0-9:]{8}Z$'
+  run "$AGENT_ASK" unpark "$id"
+  assert_success
+  assert_equal "$("$AGENT_ASK" count demo)" 2
+  run "$AGENT_ASK" show "$id"
+  refute_line --partial 'parked_until:'
+}
+
+@test "a parked ask whose date has passed is back on --pending and count with no write" {
+  local id; id="$(post demo 'fly the drone?')"
+  printf 'parked_until: %s\n' "$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)" >> "$HOME/.agent/asks/demo/$id.md"
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  run bash -c '"$AGENT_ASK" list demo --pending | cut -f1'
+  assert_output "$id"
+  run bash -c '"$AGENT_ASK" list demo --parked'
+  assert_output ''
+  # list fills parked_until only while parked, so no reader compares it with the clock.
+  run bash -c '"$AGENT_ASK" list demo | cut -f27'
+  assert_output ''
+  # Negative control: the same field a day ahead hides it.
+  sed -i "s/^parked_until: .*/parked_until: $(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)/" "$HOME/.agent/asks/demo/$id.md"
+  assert_equal "$("$AGENT_ASK" count demo)" 0
+}
+
+@test "park with no --until takes PARK_DAYS for the held item's priority, normal when no item holds it" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  printf 'PARK_DAYS="urgent=1 high=3 normal=7 low=14"\n' > "$BATS_TEST_TMPDIR/park.conf"
+  export AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  local held free
+  held="$("$AGENT_ASK" post --project demo --kind gate 'go?')"
+  free="$("$AGENT_ASK" post --project other --kind gate 'go too?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --priority high --tags "ask:$held=approve" "the next phase" >/dev/null
+  "$AGENT_ASK" park "$held" 2>/dev/null
+  "$AGENT_ASK" park "$free" 2>/dev/null
+  assert_equal "$(days_ahead "$("$AGENT_ASK" show "$held" | sed -n 's/^parked_until: //p')")" 3
+  assert_equal "$(days_ahead "$("$AGENT_ASK" show "$free" | sed -n 's/^parked_until: //p')")" 7
+}
+
+@test "park refuses a past date, a bad date and an ask that is not pending" {
+  local id done; id="$(post demo 'a?')"; done="$(post other 'b?')"
+  "$AGENT_ASK" answer "$done" yes 2>/dev/null
+  run "$AGENT_ASK" park "$id" --until '-1 day'
+  assert_failure 2
+  run "$AGENT_ASK" park "$id" --until 'not a date at all'
+  assert_failure 2
+  run "$AGENT_ASK" park "$done" --until '+1 day'
+  assert_failure 1
+  assert_output --partial 'only a pending ask parks'
+  run "$AGENT_ASK" show "$id"
+  refute_line --partial 'parked_until:'
+}
+
+@test "park drops a judge arm, sweep passes a parked ask by, and answering it still closes it" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  local parked open
+  parked="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
+  open="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the other flake?')"
+  printf 'assume_answer: fix\nassume_at: 2099-01-01T00:00:00-0800\n' >> "$HOME/.agent/asks/demo/$parked.md"
+  "$AGENT_ASK" park "$parked" --until '+1 day' 2>/dev/null
+  run "$AGENT_ASK" show "$parked"
+  refute_line --partial 'assume_answer:'
+  refute_line --partial 'assume_at:'
+  fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  : > "$BATS_TEST_TMPDIR/judge.calls"
+  run "$AGENT_ASK" sweep --all
+  assert_success
+  refute_output --partial "$parked"
+  assert_line --regexp "^other	$open	answered fix	"
+  run grep -c 'fix the flake?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '0'
+  "$AGENT_ASK" answer "$parked" wait 2>/dev/null
+  run "$AGENT_ASK" show "$parked"
+  assert_line 'status: answered'; assert_line 'answer: wait'
 }
 
 # ── answer / cancel lifecycle ────────────────────────────────────────────────
