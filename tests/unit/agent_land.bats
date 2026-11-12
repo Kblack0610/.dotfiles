@@ -1230,7 +1230,7 @@ repo_map() {
   sed -i 's/fix the crash on load/stop the load crash/' "$sheet"
   run "$LAND" 42 --item gm-1
   assert_success
-  assert_output --partial 'board: closed "gm-1" with pr:42'
+  assert_output --partial 'board: closed "gm-1" with pr:o/r#42'
   run agent-queue show gm-1 --json
   assert_equal "$(jq -r .state <<<"$output")" done
   run notes ptask game list
@@ -1265,7 +1265,7 @@ real_notes_board() {
 
   run "$LAND" 42 --item title
   assert_success
-  assert_output --partial 'board: closed "gm-2" with pr:42'
+  assert_output --partial 'board: closed "gm-2" with pr:o/r#42'
   grep -qE -- '^- \[x\] feat\(menu\): the title screen .*gm-2' "$dir/agent/README.md" ||
     fail "the story did not close: $(cat "$dir/agent/README.md")"
 }
@@ -1279,7 +1279,7 @@ real_notes_board() {
     fail "the row was not started: $(cat "$dir/agent/README.md")"
   run "$LAND" 42 --item back
   assert_success
-  assert_output --partial 'board: closed "gm-2" with pr:42'
+  assert_output --partial 'board: closed "gm-2" with pr:o/r#42'
   grep -qE -- '^- \[x\] fix\(menu\): the back button .*gm-2' "$dir/agent/README.md" ||
     fail "the linked row did not close: $(cat "$dir/agent/README.md")"
   [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed"
@@ -1303,7 +1303,7 @@ real_notes_board() {
   printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
   run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
   assert_success
-  assert_output --partial 'board: closed "gm-2" with pr:42'
+  assert_output --partial 'board: closed "gm-2" with pr:o/r#42'
   assert_line 'rows: closed gm-9 on game'
   grep -qE -- '^- \[x\] feat\(menu\): a settings page .*gm-9' "$dir/README.md" ||
     fail "the plan's row did not close: $(cat "$dir/README.md")"
