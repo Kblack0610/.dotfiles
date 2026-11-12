@@ -115,6 +115,21 @@ EOF
   assert_output --partial 'trackers.mono-canon has board "nope"'
 }
 
+@test "a tracker client that clients does not define fails and names it; a defined one passes" {
+  # A typo'd client hides a work project on the work machine too (project_visible), so the
+  # doctor is where it surfaces.
+  clean_map
+  jq '.clients = {"acme": {"profile": "acmework"}} | .trackers.alpha.client = "acme"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 1 tracker clients name a clients profile'
+  refute_output --partial 'has client'
+  jq '.trackers.labonly.client = "acmee"' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.labonly has client "acmee", which clients does not define with a profile'
+  refute_output --partial 'tracker clients name a clients profile'
+}
+
 @test "a string comment key in trackers does not hide the relations after it" {
   # NEGATIVE CONTROL: an unguarded `.trackers | to_entries[] | .value.repo` dies on the
   # first string value, so every relation after it went unchecked and the check still
