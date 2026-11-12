@@ -450,16 +450,33 @@ project_keys() {
     "$PROJECT_VISIBLE_JQ"' select(visible($m))' 2>/dev/null || true
 }
 
+# --- a key no directory resolves to ---
+#
+# A tracker with a `repo` and no `path` (notes-cockpit, agent-runtime: lab projects about a
+# repo's tooling) is a project key no directory resolves to, so no preflight reads a per-key file
+# of its own: sessions in that repo resolve to the repo. `pathless_repo` runs on a project key
+# with the registry slurped as `$reg`: that repo for such a key, null for any other.
+PROJECT_PATHLESS_JQ='def pathless_repo:
+  (($reg[0].trackers // {})[.] // null) as $t
+  | if ($t | type) == "object" and ($t.repo // "") != "" and ($t.path // "") == ""
+    then $t.repo else null end;'
+
+# project_dir_key <key> -> the key a session in <key>'s directory resolves to: its repo for a
+# key with a repo and no path, else <key> itself. agentctl-dream reads and promotes a lane's
+# lessons under it.
+project_dir_key() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 \
+    && jq -nr --arg k "$1" --slurpfile reg "$map_file" "$PROJECT_PATHLESS_JQ"' $k | pathless_repo // $k' 2>/dev/null \
+    || printf '%s\n' "$1"
+}
+
 # project_anchor_keys -> the keys that get an anchor at ~/.agent/anchors/<key>.md: every
-# project key except one with a `repo` and no `path`. No directory resolves to such a key
-# (notes-cockpit, agent-runtime: lab projects about a repo's tooling), so no preflight would
-# read its anchor; its lab line is in the repo's anchor instead.
+# project key except one with no directory (pathless_repo); its lab line is in the repo's anchor.
 project_anchor_keys() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
-  project_keys | jq -rR --slurpfile m "$map_file" '
-    . as $k | ($m[0].trackers[$k] // {}) as $t
-    | select(($t | type) != "object" or ($t.repo // "") == "" or ($t.path // "") != "")'
+  project_keys | jq -rR --slurpfile reg "$map_file" "$PROJECT_PATHLESS_JQ"' select(pathless_repo == null)'
 }
 
 # project_known <name> -> 0 when <name> is itself a project key (a `paths` value or an object
