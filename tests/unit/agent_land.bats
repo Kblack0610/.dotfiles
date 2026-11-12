@@ -390,6 +390,22 @@ moved_again() {
   assert_output 0
 }
 
+@test "--admin passes gh's --admin to the merge, after the checks" {
+  run "$LAND" 42 --item ship --admin
+  assert_success
+  assert_line 'landed #42'
+  run grep -c 'pr merge 42 --squash --admin --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "without --admin the merge carries no --admin" {
+  run "$LAND" 42 --item ship
+  assert_success
+  run grep -c -- '--admin' "$LOG"
+  assert_output 0
+}
+
 @test "--merge-commit --dry-run names the merge-commit method" {
   run "$LAND" 42 --item ship --merge-commit --dry-run
   assert_success
