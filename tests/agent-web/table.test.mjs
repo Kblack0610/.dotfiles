@@ -404,7 +404,7 @@ test("the head is the state tiles, hued and explained by the server, over one se
   const h = run(`tblBar("tt", t, "search", "<i>extra</i>")`);
   assert.doesNotMatch(h, /fseg|bfilter|tlegend/, "no chip row, no search card, no legend line");
   assert.match(h, /^<div id="tt-tiles"><div class="tiles stiles"><button class="tile on t-bad" data-ts="" title="no progress in 2h"><span class="tl">STUCK<\/span><span class="tv">1<\/span><\/button><button class="tile zero" data-ts="free"><span class="tl">FREE<\/span><span class="tv">0<\/span><\/button><i>extra<\/i><\/div><\/div><div class="tqbar"><input id="tt-q" data-tsearch/);
-  assert.match(h, /title="key:value matches a column[^"]*\. stuck: no progress in 2h"/, "the legend is the box's hover");
+  assert.match(h, /data-tsearch[^>]*title="key:value matches a column[^"]*the text">/, "the search box's hover is the query syntax; the legend is tblTab's fold");
   ctx.t = { ...summary };
   assert.match(run(`tblBar("tt", t, "search")`), /^<div id="tt-tiles"><\/div><div class="tqbar">/, "a table whose only state is all has no tiles");
 });

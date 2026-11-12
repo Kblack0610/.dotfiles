@@ -83,7 +83,7 @@ test("a job not started reads waiting in STATE, the word its chip and legend use
   const h = box.innerHTML;
   assert.match(h, /<td>waiting<\/td><td class="muted">ci<\/td>/);
   assert.doesNotMatch(h, /<td>queued<\/td>/);
-  assert.match(h, /id="jobs-q" data-tsearch[^>]*title="[^"]*\. waiting: the job has not started"/, "the legend is the search box's hover");
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">waiting: the job has not started<\/div>/, "the legend is a fold under the table");
 });
 
 test("CI runs are one count line that links to Infra's CI runs", () => {

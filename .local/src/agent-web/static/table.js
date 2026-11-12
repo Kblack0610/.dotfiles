@@ -90,15 +90,13 @@ function tblDays({ key, on, windows, date }) {
 }
 
 // The table's head: its tiles (tblTiles), then one bar fused to the top of the table under it:
-// the search box, the facets no header drew, the phone sort and the window buttons. The search
-// box's hover says the query syntax and the table's state words (the summary's `legend`,
-// hub_core::vocab). `id` names the parts a repaint while the search box has focus replaces around
+// the search box (its hover says the query syntax), the facets no header drew, the phone sort and
+// the window buttons. `id` names the parts a repaint while the search box has focus replaces around
 // it: `<id>-facets` and `<id>-tiles`. `tiles` is a tab's own tiles after the states.
 const TBL_SYNTAX = "key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text";
 function tblBar(id, t, hint, tiles = "", days = "") {
-  const help = TBL_SYNTAX + (t.legend ? `. ${t.legend}` : "");
   return `<div id="${id}-tiles">${tblTiles(t, tiles)}</div>` +
-    `<div class="tqbar"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="${esc(help)}">` +
+    `<div class="tqbar"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="${esc(TBL_SYNTAX)}">` +
     `<span class="tqf" id="${id}-facets">${tblFacets(t)}${days}</span></div>`;
 }
 
@@ -218,7 +216,10 @@ function tblTab(o) {
     around();
   };
   const wrap = o.wrap || ((html) => html);
-  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, extra(), days()) + body) + part("tail", o.tail); };
+  // What the table's state words mean (the summary's `legend`, hub_core::vocab), folded shut under
+  // it (rule 3): a phone has no hover for a tile's meaning.
+  const legend = (v) => (v.legend ? cfold(id + "-legend", "Legend", `<div class="muted">${esc(v.legend)}</div>`, open()) : "");
+  t.html = () => { const v = table(), body = tblBodyFirst(v, () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, v, o.hint, extra(), days()) + body + legend(v)) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;

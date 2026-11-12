@@ -209,7 +209,7 @@ test("an item not started is ready or held, a held cell names its hold, and the 
   const h = draw();
   assert.match(h, /<td>ready<\/td>/);
   assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
-  assert.match(h, /data-tsearch[^>]*title="[^"]*\. ready: starts when dispatch has a slot for it; held: waits on its hold"/, "the legend is the search box's hover");
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/, "the legend is a fold under the table");
   assert.doesNotMatch(h, /<td>queued<\/td>/);
   // Negative control: a table with no legend draws no legend line.
   load();

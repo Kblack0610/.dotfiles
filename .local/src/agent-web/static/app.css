@@ -462,6 +462,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   /* A table's state tiles are one scrolling row on a phone, so the table starts in the first screen. */
   .stiles { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 6px; scrollbar-width: none; }
   .stiles > * { flex: 0 0 auto; }
+  /* The row scrolls, so what is broken, then what needs attention, leads it (rule 4). */
+  .stiles > .t-bad { order: -2; } .stiles > .t-warn { order: -1; }
   .stiles .tile { flex-direction: row; align-items: center; gap: 6px; min-height: 40px; padding: 4px 10px 4px 12px; }
   .stiles .tv { font-size: 15px; }
   .stiles .ts1 { display: none; }

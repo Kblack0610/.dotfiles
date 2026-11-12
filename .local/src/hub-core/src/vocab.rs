@@ -5,8 +5,8 @@
 //! CI job are `waiting`.
 
 pub use agent_panel::vocab::Vocab;
+use serde::Serialize;
 
-use crate::releases::Level;
 
 /// An agent-queue item that has not started (`queue::State::Queued`), the Queue table's STATE.
 pub const QUEUE: &[(&str, &str)] = &[
@@ -28,6 +28,16 @@ pub const CI: &[(&str, &str)] = &[
     ),
     ("stuck", "the chip for a job no online runner holds those labels for"),
 ];
+
+/// What one row's state means, for its colour (docs/dashboards.md rule 5).
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Bad,
+    Warn,
+    #[default]
+    Ok,
+}
 
 /// Each state word with a hue on a chip or tile (dashboards.md rule 5: green ok, amber needs
 /// attention, red broken), matched without case. A word not here is plain. Both surfaces read it

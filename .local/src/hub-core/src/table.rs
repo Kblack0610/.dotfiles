@@ -74,7 +74,7 @@ pub trait Row {
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
     /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
     /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
-    const TONES: &'static [(&'static str, crate::releases::Level)] = &[];
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -115,7 +115,7 @@ impl<T: Row> Row for &T {
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
-    const TONES: &'static [(&'static str, crate::releases::Level)] = T::TONES;
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = T::TONES;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -280,7 +280,7 @@ pub struct Chip {
     pub name: &'static str,
     pub n: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tone: Option<crate::releases::Level>,
+    pub tone: Option<crate::vocab::Level>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub means: Option<&'static str>,
 }
