@@ -98,8 +98,10 @@ fn render(b: &Builds, q: &Query) -> String {
     let scope = Scope::named(&q.scope);
     let s = b.scoped(scope);
     let view = View::new::<Run>(&q.bq, &q.bs, &q.bsort, &q.bdir);
-    let (rows, table) = view.summary(&s.rows);
+    let (rows, mut table) = view.summary(&s.rows);
     let (rows, more) = builds::cap(rows.into_iter().copied().collect());
+    // The links run beside the rows the page gets, and the cap dropped the rest.
+    table.links = hub_core::table::links(&rows);
     let out = Shown {
         at: b.at,
         summary: s.summary(),

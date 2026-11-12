@@ -328,6 +328,8 @@ const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machin
 // hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
 // the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
 const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
+// The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
+const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
 // holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
@@ -416,9 +418,12 @@ function route(hash) {
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
 // the groups' visibility and the strip's marks flip without a repaint.
 function innerGo(tab, id) {
+  const page = st.page;
   st.arg = lastInner[tab] = id;
   st.page = "";
   showUrl();
+  // Leaving a record's page (`#infra/ci/<run>`) shows the inner tab's own sections again.
+  if (page && st.tab === tab && TABS[tab]) TABS[tab].show();
   const board = $(tab);
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });

@@ -297,3 +297,29 @@ test("Infra's CI strip counts runs needing a look and a failed suite, beside the
   assert.match(parts["infra-main"].innerHTML, /data-itab="ci" [^>]*>CI<\/button>/);
   run("st.arg = ''");
 });
+
+test("a run's workflow cell opens its record and its repo cell its project", () => {
+  showBuilds(bdata({ table: { ...bdata().table, links: [{ workflow: "#infra/ci/77", repo: "#projects/binks" }] } }));
+  assert.match(runs.innerHTML, /<td><a href="#projects\/binks">binks<\/a><\/td><td class="wrap"><a href="#infra\/ci\/77">Tests<\/a><\/td>/);
+});
+
+test("a run's page reads the run by id, shows its newest attempt with its jobs and log, and says so when the ledger has none", async () => {
+  builds = bdata({ rows: [red, { ...red, attempt: 1, started: red.started - 600 }] }); // the ledger order: newest attempt first
+  detail = rdetail();
+  asked.length = 0;
+  run('st.tab = "infra"; st.page = "ci/77"; showRunPage()');
+  for (let i = 0; i < 4; i++) await settled();
+  assert.equal(asked[0], "/api/builds?bq=id%3A%3D77");
+  assert.ok(asked.includes("/api/builds/log?forge=github.com&repo=binks&run_id=77&attempt=2"), "the newest attempt's log");
+  let h = run("runPage()");
+  assert.match(h, /CI run <span class="muted">77<\/span> <a href="#infra\/ci">all runs<\/a>/);
+  assert.match(h, /<b>Run<\/b> github.com binks #77 attempt 2/);
+  assert.match(h, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
+  builds = bdata({ rows: [] });
+  run('st.page = "ci/99"; showRunPage()');
+  for (let i = 0; i < 4; i++) await settled();
+  h = run("runPage()");
+  assert.match(h, /No CI run 99 in the ledger's 30 days\./);
+  run('st.page = ""; showRunPage()');
+  builds = {};
+});

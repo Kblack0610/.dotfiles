@@ -121,7 +121,8 @@ async function openSession(id) {
     await refreshAgents();
     if (st.arg !== id) return;
   }
-  const a = st.agents.find((x) => x.session === id || x.target === id);
+  // An item's link names its session by the item (hub_core::queue Item::links), as session_page::find resolves it.
+  const a = st.agents.find((x) => x.session === id || x.target === id) || st.agents.find((x) => (x.items || []).includes(id));
   select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
   sideShow(true);
 }

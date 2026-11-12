@@ -106,11 +106,10 @@ test("a view change lands in the URL and the API asks the server for it", async 
   fire({ type: "click", target: target({ tsort: "", tdir: "desc" }) });
   await new Promise((r) => setImmediate(r));
   assert.equal(ctx.history.url, "#infra?q=source%3Aci&s=failed", "the plain sort is a bare URL");
-  jst.hist = "dream";
-  run("jst.refresh()");
+  run('st.tab = "infra"; st.page = "jobs/dream"; jst.refresh()');
   await new Promise((r) => setImmediate(r));
   assert.equal(asked.at(-1), "/api/jobs?q=source%3Aci&s=failed&name=dream", "a history keeps the view");
-  jst.hist = null;
+  run('st.page = ""');
 });
 
 test("a refresh while the search box has focus leaves the box alone", () => {
@@ -131,4 +130,19 @@ test("a failed collection says why instead of drawing an empty table", () => {
   Object.assign(jst, { data: { jobs: [], errors: ["gh: rate limited"] }, err: null });
   run("jst.render()");
   assert.match(box.innerHTML, /<div class="card err">gh: rate limited<\/div>/);
+});
+
+test("a job's page is its URL: every run of it is read by name, and its host cell opens the machine", async () => {
+  asked = [];
+  body = { ...data, table: { ...table, links: [{ name: "#infra/jobs/gate", host: "#infra/machines/workstation" }] }, jobs: [job("gate", { source: "unity", runs: 4, host: "workstation" })] };
+  run('st.tab = "infra"; st.views.infra = ""; st.page = "jobs/gate"; showJobs()');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(asked.at(-1), "/api/jobs?name=gate");
+  const h = box.innerHTML;
+  assert.match(h, /every run of <b>gate<\/b> <a href="#infra\/jobs">back to all<\/a>/);
+  assert.match(h, /<a href="#infra\/jobs\/gate" class="muted" title="every run of this job">4 runs<\/a>/);
+  assert.match(h, /<td class="muted"><a href="#infra\/machines\/workstation">workstation<\/a><\/td>/);
+  run('st.page = ""; showJobs()');
+  assert.equal(jst.hist, "", "leaving the page drops the rows read for it");
+  assert.equal(jst.data, null);
 });

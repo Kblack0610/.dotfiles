@@ -353,7 +353,7 @@ function budgetLines(g) {
 // draws too): its parts, the cores each pool uses there, what runs there, the governor and its
 // buttons, its last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
 const mst = { host: "", data: null, err: null, all: false };
-const machineHost = () => (st.tab === "infra" && st.page.startsWith("machines/") ? st.page.slice("machines/".length) : "");
+const machineHost = () => pageId("infra", "machines");
 const refreshMachine = coalesce(async () => {
   const host = machineHost();
   if (!host) return;
@@ -479,7 +479,7 @@ function machinePage() {
 // too): its parts, the machines with a slot in it, the CI jobs waiting
 // for it, and its busy, slots and waiting over 7 days.
 const poolst = { name: "", data: null, err: null };
-const poolName = () => (st.tab === "infra" && st.page.startsWith("pools/") ? st.page.slice("pools/".length) : "");
+const poolName = () => pageId("infra", "pools");
 const refreshPool = coalesce(async () => {
   const name = poolName();
   if (!name) return;
@@ -548,6 +548,8 @@ function drawInfra() {
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
   if (machineHost()) { paint(el, strip + machinePage()); return; }
+  // A run's own page stands in for CI's sections, as a machine's does for Machines.
+  if (ciRunId()) { $("ci-runs").hidden = $("ci-tests").hidden = true; paint(el, strip + runPage()); return; }
   if (poolName()) { paint(el, strip + poolPage()); return; }
   if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
@@ -590,11 +592,12 @@ TABS.infra = {
     if (h !== mst.host) { Object.assign(mst, { host: h, data: null, err: null, all: false }); if (h) refreshMachine(); }
     const p = poolName();
     if (p !== poolst.name) { Object.assign(poolst, { name: p, data: null, err: null }); if (p) refreshPool(); }
-    renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data);
+    showRunPage();
+    renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); tstFeed.show(!tst.data || tst.moved());
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
     if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
-    bldFeed.onEvent(ev); tstFeed.onEvent(ev);
+    bldFeed.onEvent(ev); tstFeed.onEvent(ev); runFeed.onEvent(ev);
   },
 };
