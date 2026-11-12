@@ -41,10 +41,10 @@ Key behaviors:
 - **Write**: Report generation and metrics documentation
 
 ## Key Patterns
-- **Domain Analysis**: Quality/Security/Performance/Architecture → specialized assessment
-- **Pattern Recognition**: Language detection → appropriate analysis techniques
-- **Severity Assessment**: Issue classification → prioritized recommendations
-- **Report Generation**: Analysis results → structured documentation
+- **Domain Analysis**: Quality/Security/Performance/Architecture -> specialized assessment
+- **Pattern Recognition**: Language detection -> appropriate analysis techniques
+- **Severity Assessment**: Issue classification -> prioritized recommendations
+- **Report Generation**: Analysis results -> structured documentation
 
 ## Examples
 

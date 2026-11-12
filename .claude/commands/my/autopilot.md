@@ -1,31 +1,31 @@
 ---
 name: autopilot
-description: "Stay autonomous for the rest of the task — chain through every checkpoint with best-judgment, record assumptions, stop only at hard gates. Scope: $ARGUMENTS"
+description: "Stay autonomous for the rest of the task - chain through every checkpoint with best-judgment, record assumptions, stop only at hard gates. Scope: $ARGUMENTS"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate, TaskUpdate, TaskList]
 argument-hint: "[optional scope, e.g. 'this feature' or 'until CI is green']"
 ---
 
-# Autopilot — best-judgment passthrough (standing mode)
+# Autopilot - best-judgment passthrough (standing mode)
 
 This is `/my:go`'s decision posture, held for the **rest of the task** instead of a single
 checkpoint. Adopt the `kb-coordinator` operating mode
 (`~/.dotfiles/.claude/agents/kb-coordinator.md`) and stay in it: at *every* subsequent fork,
 question, or plan-approval point, resolve it yourself, record the assumption, and keep going.
 
-**Scope:** `$ARGUMENTS` — if present, autopilot covers this scope (e.g. "this feature",
+**Scope:** `$ARGUMENTS` - if present, autopilot covers this scope (e.g. "this feature",
 "until CI is green"). If empty, it runs until the task is complete.
 
 ## Core rule (same as /my:go)
 
-**Decision rule** — choose the option that best balances
-**correctness → maintainability → scalability → simplicity** *for this specific use case*.
+**Decision rule** - choose the option that best balances
+**correctness -> maintainability -> scalability -> simplicity** *for this specific use case*.
 Take any already-recommended option/default unless I've contradicted it. Prefer existing
-patterns and utilities over net-new code — grep and reuse first. Don't gold-plate.
+patterns and utilities over net-new code - grep and reuse first. Don't gold-plate.
 
-**Hard-stop boundary (the ONLY thing that pauses you)** — irreversible or outward-facing
+**Hard-stop boundary (the ONLY thing that pauses you)** - irreversible or outward-facing
 actions only: destructive/data-loss ops, release tags &
 `deploy.sh`, widening rollouts, rollbacks, any human approval gate (the release-coordinator
-**Hard constraints** apply verbatim — `~/.claude/skills/release-coordinator/SKILL.md`),
+**Hard constraints** apply verbatim - `~/.claude/skills/release-coordinator/SKILL.md`),
 money, auth/secrets/tokens, external sends. Such a gate pauses that one action, never the run:
 build everything up to it with the switch off, open the PR, post one `agent-ask` with the exact
 commands I would run, then carry on with every step and phase that does not need it. Before
@@ -47,16 +47,16 @@ start it. One fails -> that failure is your named risk. A nightly red is never o
 keeps the default branch green, so a nightly red stops no phase unless your own merged PR is a
 suspect for it (then fixing it is your next step).
 
-**Log assumptions** — each non-obvious choice as `assumed: <X> because <Y>`, persisted into
+**Log assumptions** - each non-obvious choice as `assumed: <X> because <Y>`, persisted into
 the plan/PR body when one exists.
 
 ## What autopilot adds over /my:go
 
 1. **Standing posture.** The directive persists for the remainder of this task/session.
-   Do not drop back to asking after one decision — keep chaining through checkpoints until
+   Do not drop back to asking after one decision - keep chaining through checkpoints until
    the work is done, the scope is met, a hard gate is hit, or I say stop.
 2. **Auto-advance plan mode.** When a plan is ready, take the recommended approach
-   (`ExitPlanMode` and proceed) rather than waiting on me — still honoring the hard-stop
+   (`ExitPlanMode` and proceed) rather than waiting on me - still honoring the hard-stop
    boundary.
 3. **Periodic assumption digest.** Roughly every few autonomous decisions (or per logical
    milestone), emit a brief running tally of the `assumed:` lines so far, so I can audit
