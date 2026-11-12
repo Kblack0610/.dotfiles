@@ -1952,6 +1952,8 @@ mod tests {
                 .map(|(w, _)| *w)
         };
         assert!(kind("scripts/test/ci-gate.sh --pr 1") == Some(Wait::Gate));
+        // The playground's whole-nightly runner, a phase's proof run (2026-11-12 agent-6 read STALLED on it).
+        assert!(kind("agentctl-playground-night --only test > night.log 2>&1") == Some(Wait::Test));
         assert!(kind("gh pr checks 12 --watch") == Some(Wait::Gate));
         assert!(kind("timeout -k 60 10800 bash Logs/land3.sh 2>&1 | tail -25") == Some(Wait::Gate));
         assert!(kind("scripts/gate.sh && agent-land 12 --item x") == Some(Wait::Gate));
