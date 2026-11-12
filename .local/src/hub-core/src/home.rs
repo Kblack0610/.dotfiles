@@ -662,7 +662,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 epic,
                 ci_url: ci
                     .as_ref()
-                    .and_then(|_| pr_url.as_deref())
+                    .and(pr_url.as_deref())
                     .and_then(crate::reds::checks_url),
                 ci,
                 pr_state: said_lower(live, "pr_state").filter(|_| pr.is_some()),

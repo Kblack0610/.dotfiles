@@ -61,7 +61,7 @@ const briefing = {
 const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
 const queue = {
   items: rows(7, (i) => ({ slug: SLUGS[i], title: TEXT[i], project: pick(PROJECTS, i), state: QUEUE_STATE[i], status: "ok", hold: i === 3 ? "fleet-assess HOLD" : "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: i > 4, note: "", unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 } })),
-  table: table(7, ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"], ["all", "needs you", "running", "up next", "done"], { project: PROJECTS.slice(0, 3), kind: ["fix", "feat"], size: ["s", "m"], acct: ["main", "bnb"] }),
+  table: table(7, ["state", "title", "project", "in", "wait", "run", "kind", "size", "acct", "pr", "plan"], ["all", "needs you", "running", "up next", "done"], { project: PROJECTS.slice(0, 3), kind: ["fix", "feat"], size: ["s", "m"], acct: ["main", "bnb"] }),
   section_aliases: {}, needs_you: 1, open_rows: 40,
 };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
