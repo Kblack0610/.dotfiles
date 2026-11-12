@@ -329,12 +329,15 @@ def ci_failures(repo, base, start, end):
     got, err = run_json(shlex.split(reader) + ["--repo", repo, "--base", base] + window_args(start, end), ok=(0, 3))  # 3: partial
     if got is None:
         return None, err
-    runs, red = got.get("runs"), got.get("red_runs")
-    return {"runs": runs, "red": red, "red_rate": share(red, runs), "pending": got.get("pending_runs"),
+    return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
             "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets"),
-            "main": dict(zip(("runs", "red"), got.get("base") or (None, None))),
-            "workflows": {wf: {"runs": n, "red": r, "pass_rate": share(n - r, n)}
-                          for wf, (n, r) in (got.get("by_workflow") or {}).items()}}, None
+            "main": dict(zip(("runs", "red"), got.get("base") or (None, None)))}, None
+
+
+def ci_pass(start, end):
+    """({forge:repo: {runs, green, pass, workflows}}, error) from `hub ci pass`: the one pass rate
+    (hub_core::builds::verdict) of the run ledger's runs created in the day."""
+    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)])
 
 
 def ci_cost(clone, base, day, start, end):
@@ -369,6 +372,11 @@ def ci(a):
         out["unreadable"].append(f"{ENV.get('DAYLOG_CI')}: {e.strerror}")
         repos = []
     start, end = day_bounds(a.day)
+    passes, err = ci_pass(start, end) if repos else ({}, None)
+    if passes is None:
+        out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
+    else:  # the ledger may spell a repo in another case; a repo with no run that day is absent, 0 runs
+        passes = {k.lower(): v for k, v in passes.items()}
     for repo, base, clone in repos:
         row, err = ci_failures(repo, base, start, end)
         if row is None:
@@ -376,6 +384,10 @@ def ci(a):
             row = {}
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
+        if passes is not None:
+            got = passes.get(f"github:{repo}".lower(), {"runs": 0, "green": 0, "pass": None})
+            row["pass"] = {k: got[k] for k in ("runs", "green", "pass")}
+            row["workflows"] = got.get("workflows", {})
         if clone:
             row["cost"], err = ci_cost(clone, base, a.day, start, end)
             if row["cost"] is None:
@@ -438,12 +450,16 @@ def rollup(records):
         short = repo.split("/")[-1].lstrip(".")
         rows = [(get(r, "ci.repos") or {}).get(repo) or {} for r in records]
         fold_tables(CI_TABLES, rows, f"ci.{short}.")
-        if f"ci.{short}.runs" in out:
-            days = out[f"ci.{short}.runs"][1]
-            out[f"ci.{short}.red_rate"] = (share(out[f"ci.{short}.red"][0], out[f"ci.{short}.runs"][0]), days)
+        # The pass rate over the week is green over runs summed, never a mean of daily rates. A day
+        # gathered before hub ci pass has no green, so it is left out.
+        def fold_pass(name, cells):
+            cells = [c for c in cells if c and "green" in c]
+            if cells:
+                out[name] = (share(sum(c["green"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+
+        fold_pass(f"ci.{short}.pass", [row.get("pass") for row in rows])
         for wf in sorted({w for row in rows for w in row.get("workflows") or {}}):
-            cells = [c for c in ((row.get("workflows") or {}).get(wf) for row in rows) if c]
-            out[f"ci.{short}.pass.{wf}"] = (share(sum(c["runs"] - c["red"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+            fold_pass(f"ci.{short}.pass.{wf}", [(row.get("workflows") or {}).get(wf) for row in rows])
     return out
 
 
@@ -510,9 +526,9 @@ def line_of(week):
         parts.append(f"board +{cell('board.opened')['value']:g}/-{cell('board.closed')['value']:g}")
     if cell("cost_usd")["value"] is not None:
         parts.append(f"{usd(cell('cost_usd')['value'])}{signed(cell('cost_usd')['delta'], usd)}")
-    for name in sorted(k for k in m if k.endswith(".red_rate")):
+    for name in sorted(k for k in m if re.fullmatch(r"ci\.[^.]+\.pass", k) and m[k]["value"] is not None):
         pts = lambda v: f"{100 * v:.0f} pts"
-        parts.append(f"{name.split('.')[1]} red {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
+        parts.append(f"{name.split('.')[1]} pass {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
     return f"week to {week['end']} ({week['days_present']} of {WINDOW} days): " + ", ".join(parts)
 
 

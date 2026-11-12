@@ -108,17 +108,16 @@ pub const TABS: [Tab; 13] = [
         pinned: &[],
         inner: &[],
     },
-    // The channels (`hub_core::releases`) and each opened row, then the Builds section (CI runs,
-    // its own reader; release-state has no CI collector), then the Tests section (per-suite
-    // results of one tests.yml run, web first; the TUI follows).
+    // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
+    // graph tied to a release (`builds::Builds::releases`). Every other CI run is Infra's.
     Tab {
         id: "releases",
         group: "Projects",
         title: "Releases",
-        question: "What is building, and what is live where?",
-        sections: &["table", "detail", "builds", "tests"],
-        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
-        // how the last test run went.
+        question: "What is live where, and which builds made it?",
+        sections: &["table", "detail", "runs"],
+        // Two questions: what is live where (the apps and an opened one), and the runs that
+        // built and shipped a release.
         pinned: &[],
         inner: &[
             Inner {
@@ -127,14 +126,9 @@ pub const TABS: [Tab; 13] = [
                 sections: &["table", "detail"],
             },
             Inner {
-                id: "builds",
-                title: "Builds",
-                sections: &["builds"],
-            },
-            Inner {
-                id: "tests",
-                title: "Tests",
-                sections: &["tests"],
+                id: "runs",
+                title: "Release runs",
+                sections: &["runs"],
             },
         ],
     },
@@ -154,10 +148,11 @@ pub const TABS: [Tab; 13] = [
         group: "System",
         title: "Infra",
         question: "Is the machinery healthy?",
-        sections: &["machines", "pools", "ci", "jobs"],
+        sections: &["machines", "pools", "ci", "runs", "tests", "jobs"],
         // What is red and its fixes moved to Alerts (MOVED); the governor's verdict and the
-        // cloud power are columns of the machine they act on, and the CI runners, their queue
-        // and finished runs are their own inner tab.
+        // cloud power are columns of the machine they act on. CI is the runners, their queue and
+        // finished runs, every run of 30 days with its run times and the quarantine
+        // (`hub_core::builds`), and the declared test workflows' suites (`hub_core::junit`).
         pinned: &[],
         inner: &[
             Inner {
@@ -168,7 +163,7 @@ pub const TABS: [Tab; 13] = [
             Inner {
                 id: "ci",
                 title: "CI",
-                sections: &["ci"],
+                sections: &["ci", "runs", "tests"],
             },
             Inner {
                 id: "jobs",
@@ -288,6 +283,11 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // are columns of the machine they act on (2026-11-11). agent-web opens them filtered.
     ("infra", "governor", "infra", "machines"),
     ("infra", "cloud", "infra", "machines"),
+    // Releases' Builds and Tests inner tabs: CI that ships no release is the machinery's
+    // question; Releases keeps the runs tied to a release (2026-11-12, P5 of
+    // better-release-data-need-polished-dragonfly.md).
+    ("releases", "builds", "infra", "runs"),
+    ("releases", "tests", "infra", "tests"),
 ];
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
@@ -543,6 +543,18 @@ mod tests {
             assert!(<crate::machines::Machine as crate::table::Row>::STATES.contains(chip));
         }
         assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
+        // Releases' Builds and Tests links land on Infra's CI inner tab, at the runs or suites.
+        let infra = resolve("infra").unwrap();
+        for (old, new) in [("builds", "runs"), ("Tests", "tests")] {
+            let (t, s) = moved("releases", old).unwrap();
+            assert_eq!((t.id, s), ("infra", new), "{old}");
+            assert_eq!(inner_tab(infra, Some(s)).map(|i| i.id), Some("ci"));
+        }
+        assert_eq!(
+            moved("releases", "runs"),
+            None,
+            "Release runs is Releases' own"
+        );
     }
 
     #[test]
@@ -657,6 +669,8 @@ mod tests {
         assert_eq!(at(None), Some("machines"));
         assert_eq!(at(Some("pools")), Some("machines"));
         assert_eq!(at(Some("ci")), Some("ci"));
+        assert_eq!(at(Some("runs")), Some("ci"));
+        assert_eq!(at(Some("tests")), Some("ci"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
         let titles: Vec<&str> = infra.inner.iter().map(|i| i.title).collect();
         assert_eq!(titles, ["Machines", "CI", "Jobs"]);
@@ -725,14 +739,15 @@ mod tests {
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
         assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
-        // Releases: the apps and an opened one, Builds, Tests; old `#releases/builds` links land
+        // Releases: the apps and an opened one, then Release runs.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
         assert_eq!(at(None), Some("apps"));
         assert_eq!(at(Some("detail")), Some("apps"));
-        assert_eq!(at(Some("builds")), Some("builds"));
-        assert_eq!(at(Some("tests")), Some("tests"));
+        assert_eq!(at(Some("runs")), Some("runs"));
         assert_eq!(at(Some("project:binks")), Some("apps"));
+        let titles: Vec<&str> = rel.inner.iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Apps", "Release runs"]);
     }
 
     #[test]

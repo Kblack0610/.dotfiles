@@ -2,7 +2,8 @@
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
-//! exceptions-first order. The Builds inner tab beside the apps is its own reader's.
+//! exceptions-first order. The Release runs inner tab beside the apps is `builds`' reader, cut by
+//! `Builds::releases`.
 
 use std::collections::HashMap;
 
@@ -1021,7 +1022,7 @@ mod tests {
         let apps: Vec<&str> = r.apps.iter().map(|x| x.project.as_str()).collect();
         assert_eq!(apps, ["d", "e", "c", "a", "b"]);
         assert_eq!(r.at, 100);
-        assert_eq!(r.question, "What is building, and what is live where?");
+        assert_eq!(r.question, "What is live where, and which builds made it?");
     }
 
     #[test]
