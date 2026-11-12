@@ -94,12 +94,6 @@ set -uo pipefail
 # nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
 # a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
 : "${FLEET_PARTIAL_RUNS:=\((named|affected)\)$}"
-# Hours a workflow may go without a run on the branch, counted back from the branch's newest run, and
-# still say something about the branch's health (main_state). A parked or retired workflow runs no
-# more, so its last red would read as main red for the run ledger's 30 days: unity-core-playground
-# parked Multi, HD, Soak and Slim tour on 2026-11-12. Counted from the newest run, not now, so a
-# quiet repo keeps its red.
-: "${FLEET_MAIN_STALE_HOURS:=72}"
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -849,14 +843,11 @@ default_base() {
 # FIRST failure after the last green (the oldest in the window when there is none), so the
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
 # Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over,
-# and so is a workflow with no run in the FLEET_MAIN_STALE_HOURS before the branch's newest run.
+# and so is a workflow MAIN_LIVE drops (no run in MAIN_STALE_HOURS before the branch's newest run).
 main_state() {
-  jq -r --arg partial "$FLEET_PARTIAL_RUNS" --argjson stale "$FLEET_MAIN_STALE_HOURS" \
+  jq -r --arg partial "$FLEET_PARTIAL_RUNS" \
     'map(select(.workflowName // "" | test($partial) | not))
-     | (if length == 0 then "" else map(.createdAt) | max | fromdateiso8601 - $stale * 3600 | todate end) as $since
-     | (map(select(.createdAt >= $since) | .workflowPath) | unique) as $live
-     | map(select(.workflowPath as $p | $live | any(.[]; . == $p)))
-     | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
+     | '"$MAIN_LIVE | $MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's PRs as a JSON array of {number, state, mergedAt},
@@ -898,14 +889,15 @@ prs_cell() {
 # clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
 # fewer. No green in the window, or a range the clone lacks, names nobody.
 main_health() {
-  local dir="$1" url key base b runs wf red green wfs="" sha="" prs="" range
+  local dir="$1" url key base b runs st wf red green wfs="" sha="" prs="" range
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
   key="$CACHE/main_$(repo_slug "$dir")"
   if [ ! -f "$key" ]; then
     base="$(default_base "$dir")"
     b="${base#origin/}"
-    # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
-    if ! runs="$(branch_runs "$dir" "$b")"; then
+    # Could not look is not green: say so, so the shepherd never reads a dead gh, or runs main_state
+    # cannot read, as healthy.
+    if ! runs="$(branch_runs "$dir" "$b")" || ! st="$(main_state <<<"$runs")"; then
       printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-4 "$key"; return
     fi
@@ -925,7 +917,7 @@ main_health() {
       # No green: the oldest red in view slides as runs age out, so that fact names no sha.
       if [ "$green" = - ]; then wfs="${wfs:+$wfs, }$wf ($range)"
       else wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"; fi
-    done < <(main_state <<<"$runs")
+    done <<<"$st"
     if [ -n "$wfs" ]; then
       # Every field non-empty: read with a tab IFS folds an empty field into the next.
       prs="$(tr ' ' '\n' <<<"$prs" | grep . | sort -un | paste -sd' ' -)"

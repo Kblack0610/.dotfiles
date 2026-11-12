@@ -232,17 +232,30 @@ ledger() {
   assert_output ''
 }
 
-@test "main_state passes over a workflow with no run in FLEET_MAIN_STALE_HOURS before the branch's newest run (ar-1892)" {
+@test "main_state passes over a workflow with no run in MAIN_STALE_HOURS before the branch's newest run (ar-1892)" {
   # a parked workflow's last red, four days before the branch's newest run
   old='{"workflowName":"HD","workflowPath":"hd.yml","status":"completed","conclusion":"failure","headSha":"h1","createdAt":"2026-10-21T10:00:00Z"}'
   run main_state <<<"[$old,$(r Tests success g1 1)]"
   assert_output ''
-  # NEGATIVE CONTROL: inside the window the same red reads red
-  FLEET_MAIN_STALE_HOURS=200 run main_state <<<"[$old,$(r Tests success g1 1)]"
-  assert_output "$(printf 'HD\th1\t-')"
+  # a fresh red beside the stale one still reads red
+  run main_state <<<"[$old,$(r Tests failure t1 1)]"
+  assert_output "$(printf 'Tests\tt1\t-')"
   # a quiet branch keeps its red: the window counts back from the newest run, not from now
   run main_state <<<"[$old]"
   assert_output "$(printf 'HD\th1\t-')"
+  # a run with no createdAt keeps no workflow live, and with none dated every run passes
+  run main_state <<<"[$old,$(r Tests success g1 1),{\"workflowName\":\"Multi\",\"workflowPath\":\"multi.yml\",\"status\":\"completed\",\"conclusion\":\"failure\",\"headSha\":\"m1\",\"createdAt\":null}]"
+  assert_output ''
+  run main_state <<<'[{"workflowName":"Multi","workflowPath":"multi.yml","status":"completed","conclusion":"failure","headSha":"m1","createdAt":null}]'
+  assert_output "$(printf 'Multi\tm1\t-')"
+  # NEGATIVE CONTROL: inside the window the same red reads red
+  MAIN_STALE_HOURS=200; source "$REPO_ROOT/.local/lib/main-state.sh"
+  run main_state <<<"[$old,$(r Tests success g1 1)]"
+  assert_output "$(printf 'HD\th1\t-')"
+  # a window that is not a number fails loudly, which main_health reads as UNKNOWN, never OK
+  MAIN_STALE_HOURS=x; source "$REPO_ROOT/.local/lib/main-state.sh"
+  run main_state <<<"[$old]"
+  assert_failure
 }
 
 @test "main_state reads a workflow by its file, so a run title that moves on leaves no red behind (ar-1048)" {

@@ -1,7 +1,7 @@
 ---
 name: playground-nightly-fix
 description: >-
-  Take a red playground nightly (Tests (all)) to green the same day: one owner, one row and one fix item per cause, each fix proved by an on-demand night run. No wait for tonight. Use for "fix the nightly", "get main green", "nightly is red again". Explaining reds: ci-failures.
+  Take a red playground nightly, Tests (all), to green the same day: one owner, one row and one fix item per cause, each fix proved by an on-demand night run. No wait for tonight. Use for "fix the nightly", "get main green", "nightly is red again". Explaining reds: ci-failures.
 metadata:
   category: ops
   tags: [unity, ci, nightly, playground, queue]
