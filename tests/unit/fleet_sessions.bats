@@ -919,7 +919,7 @@ MD
   assert_success
 }
 
-@test "escalate pages once per fact, keeps the nudge, and a new nudge keeps it (ar-229)" {
+@test "escalate pages once per fact, keeps the nudge, and a new nudge clears it" {
   mark sid-2 'STALLED PR #9 CI red @feat/x'
   run escalated sid-2 'STALLED PR #9 CI red @feat/x'
   assert_failure
@@ -928,12 +928,9 @@ MD
   assert_success
   run nudged sid-2 'STALLED PR #9 CI red @feat/x'
   assert_success
-  # a new fact is nudged and not escalated; the old one stays paged
   mark sid-2 'STALLED PR #9 green, not merged @feat/x'
-  run escalated sid-2 'STALLED PR #9 green, not merged @feat/x'
-  assert_failure
   run escalated sid-2 'STALLED PR #9 CI red @feat/x'
-  assert_success
+  assert_failure
 }
 
 @test "an overdue nudge to a NEEDS session keeps its NEEDS escalation, so the ask pages once (ar-229)" {
@@ -943,26 +940,21 @@ MD
   assert_success
   run escalated sid-10 'NEEDS 1 pending ask(s)'
   assert_success
-  # still NEEDS: kept
+  # still NEEDS: kept; left NEEDS: released, and the overdue nudge beside it is kept
   release_left "$(printf 'NEEDS\tt1\tsid-10\n')"
   run escalated sid-10 'NEEDS 1 pending ask(s)'
   assert_success
-}
-
-@test "leaving DONE drops its escalation as well as its nudge, and keeps the rest (ar-229)" {
-  mark sid-11 'DONE clean, no plan file'
-  escalate sid-11 'DONE clean, no plan file'
-  mark sid-11 'LANDED PR #9 merged, tree clean @feat/x'
-  release_left "$(printf 'LANDED\tt1\tsid-11\n')"
-  run escalated sid-11 'DONE clean, no plan file'
+  release_left "$(printf 'WORKING\tt1\tsid-10\n')"
+  run escalated sid-10 'NEEDS 1 pending ask(s)'
   assert_failure
-  run nudged sid-11 'LANDED PR #9 merged, tree clean @feat/x'
+  run nudged sid-10 'overdue Phase 2: rollout'
   assert_success
-  # a ledger holding only a DONE fact and escalation is removed when the session leaves DONE
-  mark sid-12 'DONE clean, no plan file'
-  escalate sid-12 'DONE clean, no plan file'
-  release_left "$(printf 'WORKING\tt1\tsid-12\n')"
-  [ ! -e "$LEDGER/sid-12" ]
+  # any other escalation is cleared by a new nudge, so a fact that comes back pages again
+  mark sid-10 'STALLED PR #9 CI red @feat/x'
+  escalate sid-10 'STALLED PR #9 CI red @feat/x'
+  mark sid-10 'STALLED PR #9 green, not merged @feat/x'
+  run escalated sid-10 'STALLED PR #9 CI red @feat/x'
+  assert_failure
 }
 
 @test "escalating a finding to the human records a page on its episode; a session or shepherd-class one does not" {

@@ -453,24 +453,24 @@ nudged() { [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$1" 2>/dev/null)")" =
 # escalated <sid> <fact> -> exit 0 when this fact is already on the human's list.
 escalated() { [ "$(fact_key "$(sed -n 's/^escalated: //p' "$LEDGER/$1" 2>/dev/null)")" = "$(fact_key "$2")" ]; }
 
-# ledger_write <sid> <key> <fact>: set one key (fact or escalated), keep the other. A nudge keeps
-# the escalation: it is per fact, so a new fact is not escalated, and the old one stays paged. A
-# NEEDS session carrying on past its question got an overdue nudge that wiped its NEEDS escalation,
-# and the next pass paged the human again for the same ask (ar-229). release_left drops it instead.
+# ledger_write <sid> <key> <fact>: set one key, keep the other. A new nudge clears an escalation,
+# except a NEEDS one: the ask is still waiting while the session works on, so an overdue nudge to it
+# keeps the page sent once; release_left drops it when the session leaves NEEDS.
 ledger_write() {
   local sid="$1" key="$2" fact="$3" tmp keep=""
   case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
   case "$key" in
     escalated) keep="$(grep '^fact: ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
-    fact)      keep="$(grep '^escalated: ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
+    fact)      keep="$(grep '^escalated: NEEDS ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
   esac
   tmp="$(mktemp "$LEDGER/.$sid.XXXXXX")" || return 1
   { [ -n "$keep" ] && echo "$keep"; printf '%s: %s\nat: %s\n' "$key" "$fact" "$(date -Iseconds)"; } > "$tmp" \
     && mv "$tmp" "$LEDGER/$sid"
 }
 # mark <sid> <fact>: the claim on a nudge, taken before the message goes out. Exit 1 when the fact
-# is already nudged, whichever pass nudged it, and the ledger is left as it is.
+# is already nudged, whichever pass nudged it, and the ledger is left as it is (a second mark would
+# clear the escalation the first one earned).
 mark() {
   case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
@@ -481,24 +481,15 @@ mark() {
   ) 8>"$LEDGER/mark.lock"
 }
 
-# release_left <rows>: a session that left DONE is no longer holding the DONE nudge or escalation,
-# so its next DONE is a new fact, nudged and paged once (fact_key makes every DONE one fact while it
-# lasts). One that left NEEDS drops its NEEDS escalation the same way, so its next ask or dialog
-# pages once. Every other line stays; a ledger left with no fact or escalation is removed.
+# release_left <rows>: a session that left DONE is no longer holding the DONE nudge, so its next
+# DONE is a new fact and is nudged (fact_key makes every DONE one fact while it lasts). One that
+# left NEEDS drops its NEEDS escalation the same way, so its next ask or dialog pages once.
 release_left() {
-  local b sid _ led gone tmp
+  local b sid _
   while IFS=$'\t' read -r b _ sid _; do
-    led="$LEDGER/$sid"
-    [ -n "$sid" ] && [ -f "$led" ] || continue
-    case "$b" in
-      DONE)  gone='^escalated: NEEDS ' ;;
-      NEEDS) gone='^(fact|escalated): DONE ' ;;
-      *)     gone='^(fact|escalated): DONE |^escalated: NEEDS ' ;;
-    esac
-    grep -qE "$gone" "$led" || continue
-    if grep -vE "$gone" "$led" | grep -qE '^(fact|escalated): '; then
-      tmp="$(mktemp "$LEDGER/.$sid.XXXXXX")" && grep -vE "$gone" "$led" > "$tmp" && mv "$tmp" "$led"
-    else rm -f "$led"; fi
+    [ -n "$sid" ] && [ -f "$LEDGER/$sid" ] || continue
+    if [ "$b" != DONE ] && [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid")")" = DONE ]; then rm -f "$LEDGER/$sid"
+    elif [ "$b" != NEEDS ] && grep -q '^escalated: NEEDS ' "$LEDGER/$sid"; then sed -i '/^escalated: NEEDS /d' "$LEDGER/$sid"; fi
   done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
