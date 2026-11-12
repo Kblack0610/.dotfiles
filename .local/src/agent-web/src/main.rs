@@ -17,6 +17,7 @@ mod board;
 mod briefing;
 mod builds;
 mod cache;
+mod cards;
 mod cli;
 mod cloud;
 mod costs;
@@ -160,6 +161,7 @@ async fn main() -> Result<()> {
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
         .route("/api/home/proposals", get(proposals::list))
+        .route("/api/home/cards", get(cards::get))
         .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
@@ -1298,7 +1300,6 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await

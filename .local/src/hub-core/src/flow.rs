@@ -1,7 +1,7 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). Home leads
-//! with it on both surfaces and the Queue tab shows the same one, from this one builder, so the
-//! hub TUI and agent-web cannot word or count it differently.
+//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). The Queue
+//! tab leads with it as a `Rail` and Home's Queue card takes its bottleneck (`cards::queue`), from
+//! this one builder, so the hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
@@ -419,12 +419,12 @@ impl Rail {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pipeline::tests::snapshot;
     use crate::queue::{Item, Stats, LIST_FAILED};
 
-    fn pipe(ratio: f64) -> Pipeline {
+    pub(crate) fn pipe(ratio: f64) -> Pipeline {
         snapshot(&[
             ("inbox", 4, 1.0, 0.1),
             ("backlog", 312, 1.0, 0.1),
@@ -433,7 +433,7 @@ mod tests {
         ])
     }
 
-    fn queue() -> Queue {
+    pub(crate) fn queue() -> Queue {
         let item = |slug: &str, state| Item {
             slug: slug.into(),
             state,

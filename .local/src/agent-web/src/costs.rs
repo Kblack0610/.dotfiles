@@ -6,6 +6,8 @@
 //! every figure in it moves nightly or per call, so every open tab and view shares one read for
 //! `COSTS_SECS`. The lock is held across the read, so tabs that refresh together wait on one.
 
+use std::sync::Arc;
+
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
@@ -52,13 +54,17 @@ fn kept(c: &Costs) -> bool {
     !c.sessions.is_empty() || c.errors.is_empty()
 }
 
-pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
+/// The one kept read, the tab's and Home's Costs card's.
+pub async fn read() -> Result<Arc<Costs>, String> {
     let read = off(|| {
         let now = chrono::Utc::now().timestamp();
         costs::read(&System, &costs::Paths::from_env(), now)
     });
-    let c = LAST
-        .get_if((), read, kept)
+    LAST.get_if((), read, kept).await
+}
+
+pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
+    let c = read()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let mut b = costs::board(

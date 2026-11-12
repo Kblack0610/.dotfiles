@@ -174,7 +174,34 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
-.flow { margin: 0 0 10px; overflow-wrap: anywhere; } .flow .fchip { text-decoration: none; margin: 0 4px 4px 0; } .flow a.fchip:hover { text-decoration: underline; } .fnote { font-size: var(--fs-sm); } .qwarn { color: var(--b-stalled); font-weight: 600; }
+.flow { margin: 0 0 10px; overflow-wrap: anywhere; } .fnote { font-size: var(--fs-sm); }
+/* Home's status grid (hub_core::cards): one card per tab, a hairline box with no shadow (ui.md
+   rule 2); the label is the KPI tile's small uppercase (rule 6) and the number wears its hue. */
+#home > [data-pf="home-status"] { max-width: 1240px; }
+.kgrid { display: grid; gap: 12px; grid-template-columns: 1fr; margin: 0 0 12px; }
+@media (min-width: 600px) { .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .kgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.kt { display: flex; justify-content: space-between; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); text-decoration: none; }
+.kt:hover { color: var(--ink); }
+.kbig { font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--ink); }
+.kbig.ok { color: var(--b-done); } .kbig.warn { color: var(--b-stalled); } .kbig.bad { color: var(--b-needs); }
+.ku { font-size: var(--fs-sm); color: var(--muted); }
+.kbar { display: flex; gap: 2px; height: 6px; margin: 6px 0 4px; }
+.kbar i { flex: 1; border-radius: 3px; background: var(--line); }
+.kbar i.ok { background: var(--b-done); } .kbar i.warn { background: var(--b-stalled); } .kbar i.bad { background: var(--b-needs); }
+.kparts { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 4px 8px; }
+.kp { display: flex; flex-direction: column; text-decoration: none; color: var(--muted); font-size: var(--fs-xs); min-width: 0; }
+.kp b { font-size: var(--fs-md); color: var(--ink); font-variant-numeric: tabular-nums; }
+.kp b.warn { color: var(--b-stalled); } .kp b.bad { color: var(--b-needs); }
+.kfh { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 650; color: var(--muted); }
+.kf { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; text-decoration: none; color: var(--ink); font-size: var(--fs-sm); padding: 2px 0; min-width: 0; }
+.kf > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kf small { display: block; color: var(--muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; }
+.kf em { flex: none; font-style: normal; font-size: var(--fs-xs); padding: 0 8px; border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.kf em.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.kf em.bad { color: var(--b-needs); background: color-mix(in srgb, var(--b-needs) 14%, transparent); }
+.kf:hover b, .kp:hover b { text-decoration: underline; }
 /* The pipeline line: one point per step on a rail; a phone stacks them, the detail under its step. */
 .rail { display: flex; flex-wrap: wrap; }
 .rnode { position: relative; flex: 1 1 0; min-width: 0; padding: 18px 2px 4px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
