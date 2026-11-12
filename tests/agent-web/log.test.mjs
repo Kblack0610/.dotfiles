@@ -160,3 +160,17 @@ test("the day's history is drawn inside Day's group, whichever inner tab is open
   vm.runInContext(`st.arg = "day"`, ctx);
   assert.match(draw(rec()), /<div data-in="day"><div id="sec-history">/);
 });
+
+test("History charts CI hours per day from each day's ci, gate under the rest of the pool", () => {
+  ctx.input = { r: rec(), hist: [
+    { date: "2026-11-10", live: false, merged: 0, areas: {}, repos: 0, sessions: null, ci: null },
+    { date: "2026-11-11", live: false, merged: 0, areas: {}, repos: 0, sessions: null, ci: { pool_h: 186.6, gate_h: 161.02, runs: 204, gate_p50_min: 22 } },
+  ] };
+  const html = vm.runInContext(`lst.rec = input.r; lst.hist = input.hist; renderLog(); $("log-day").innerHTML`, ctx);
+  const ci = between(html, "CI hours per day", "Merged by hour");
+  assert.match(ci, /data-key="2026-11-11" data-tip="Wed 2026-11-11: 186.6 h on the pool, 161.0 h gating, 204 runs, gate p50 22 min"/);
+  assert.match(ci, /data-key="2026-11-10" data-tip="Tue 2026-11-10: not measured"/);
+  assert.match(ci, /<\/i>Gate<\/span>.*<\/i>Rest of the pool<\/span>/);
+  ctx.input.hist = ctx.input.hist.slice(0, 1);
+  assert.doesNotMatch(vm.runInContext(`lst.hist = input.hist; renderLog(); $("log-day").innerHTML`, ctx), /CI hours per day/, "no measured day, no chart");
+});
