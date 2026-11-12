@@ -424,6 +424,87 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
+/// The answer judge per type and impact level, judge-eval's cells under its current prompt. A
+/// live cell's scored count is the answers the human reviewed (AUDITED); silence scores nothing.
+fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::styled(
+            "  By type and level (self, repo, fleet, critical), under the current prompt:",
+            p.dim(),
+        ),
+        w,
+    )];
+    if j.cells.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!("{PAD}no verdicts under prompt {}", j.prompt),
+                p.dim(),
+            ),
+            w,
+        ));
+        return out;
+    }
+    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
+    let or_dash = |s: &str, none: &str| {
+        if s.is_empty() {
+            none.to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    let rows = j
+        .cells
+        .iter()
+        .map(|c| {
+            let prec = match (c.precision, c.precision_lo, c.precision_hi) {
+                (Some(x), Some(lo), Some(hi)) => format!("{x}% [{lo}-{hi}]"),
+                (x, _, _) => share(x),
+            };
+            vec![
+                or_dash(&c.kind, "(no type)").into(),
+                or_dash(&c.level, "-").into(),
+                c.verdicts.to_string().into(),
+                c.scored.to_string().into(),
+                prec.into(),
+                c.pending.to_string().into(),
+                cell(
+                    if c.live { "yes" } else { "no" }.to_string(),
+                    if c.live { p.good() } else { p.dim() },
+                ),
+                c.audited.to_string().into(),
+                share(c.level_raised_pct).into(),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec![
+                "TYPE",
+                "LEVEL",
+                "VERD",
+                "SCORED",
+                "PREC [95%]",
+                "PEND",
+                "LIVE",
+                "AUDITED",
+                "RAISED",
+            ],
+            rows,
+            keep: vec![0, 1, 4, 3, 6, 7, 2, 5, 8],
+            right: vec![2, 3, 4, 5, 7, 8],
+            ..Default::default()
+        }
+        .fit(w.saturating_sub(PAD.len()), p.dim())
+        .into_iter()
+        .map(|l| {
+            let mut spans = vec![Span::raw(PAD)];
+            spans.extend(l.spans);
+            Line::from(spans)
+        }),
+    );
+    out
+}
+
 /// The week's line, the filters, then what the judge said on each ask and why.
 fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
@@ -759,6 +840,7 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
         Extras::AskJudge { judge } => {
             out.push(judge_head(judge, p, w));
+            out.extend(judge_cells(judge, p, w));
             out.extend(judge_list(judge, ASK_FILTERS[0], p, now, w));
         }
         Extras::Ingest {
@@ -1037,6 +1119,26 @@ pub mod tests {
                         you: "pending".into(),
                         score: "pending".into(),
                         at: Some(NOW - 120),
+                        ..Default::default()
+                    },
+                ],
+                cells: vec![
+                    hub_core::fleet::Cell {
+                        kind: "ship_deploy".into(),
+                        level: "repo".into(),
+                        verdicts: 4,
+                        scored: 3,
+                        pending: 1,
+                        precision: Some(66.7),
+                        precision_lo: Some(20.8),
+                        precision_hi: Some(93.9),
+                        live: true,
+                        audited: 3,
+                        level_raised_pct: Some(25.0),
+                    },
+                    hub_core::fleet::Cell {
+                        verdicts: 2,
+                        pending: 2,
                         ..Default::default()
                     },
                 ],
@@ -1429,6 +1531,45 @@ pub mod tests {
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");
+    }
+
+    #[test]
+    fn the_answer_judges_page_tables_each_type_at_each_level_as_judge_eval_scores_it() {
+        let mut r = runner_fixture();
+        r.extras = Extras::AskJudge {
+            judge: fixture().judge,
+        };
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        let s = lines.join("\n");
+        let head = lines
+            .iter()
+            .position(|l| l.contains("TYPE") && l.contains("AUDITED"));
+        let head = head.unwrap_or_else(|| panic!("{s}"));
+        assert!(lines[head].contains("PREC [95%]"), "{s}");
+        let row = &lines[head + 1];
+        for want in ["ship_deploy", "repo", "66.7% [20.8-93.9]", "yes", "25%"] {
+            assert!(row.contains(want), "{want}: {row}");
+        }
+        // A verdict with no type or level is its own cell, never folded into another.
+        assert!(lines[head + 2].contains("(no type)"), "{s}");
+        // It sits between the judge's counts and its verdict list.
+        let judge = lines
+            .iter()
+            .position(|l| l.starts_with("ANSWER JUDGE"))
+            .unwrap();
+        let list = lines.iter().position(|l| l.contains("7d:")).unwrap();
+        assert!(judge < head && head < list, "{s}");
+
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.cells.clear();
+        }
+        let lines = page_text(Some(&Ok(r)), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("no verdicts under prompt 60c840b")),
+            "{lines:?}"
+        );
     }
 
     #[test]

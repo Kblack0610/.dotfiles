@@ -108,24 +108,26 @@ judge_ask_docs() {
 }
 
 # judge_verdicts <asks root> <verdicts.jsonl>: every verdict that names its call, one JSON line
-# each: {agent, subject, project, value, rule, reason, judge_call, at}. A gate the ask judge
+# each: {agent, subject, project, value, rule, reason, level, judge_call, at}. The level is the
+# ask's judge_level, or the dispatch verdict's tier ("tier 2"); empty when none was recorded. A gate the ask judge
 # never sent to the model has no call and is left out; so is every verdict written before
 # judge_call existed.
 judge_verdicts() {
   local asks="$1" verdicts="$2"
   judge_ask_docs "$asks" | jq -c 'select(.judge_call // "" | length > 0)
     | {agent: "ask-judge", subject: .id, project, value: (.judge | sub(":.*"; "")),
-       rule: (.judge_rule // ""), reason: (.judge_reason // ""), judge_call, at: .judged_at}'
+       rule: (.judge_rule // ""), reason: (.judge_reason // ""), level: (.judge_level // ""), judge_call, at: .judged_at}'
   [ -f "$verdicts" ] && jq -c 'select(.judge_call // "" | length > 0)
     | {agent: "dispatch-judge", subject: "\(.project)/\(.lane)/\(.key)", project, value: .verdict,
-       rule: (.rule // ""), reason: (.reason // ""), judge_call, at}' "$verdicts" 2>/dev/null
+       rule: (.rule // ""), reason: (.reason // ""), level: (if .tier == null then "" else "tier \(.tier)" end), judge_call, at}' "$verdicts" 2>/dev/null
   return 0
 }
 
 # judge_langfuse_events <calls.jsonl> <since epoch> <mark epoch>: stdin judge_verdicts lines.
 # stdout: one Langfuse score-create event per verdict judged after <mark> and since <since>
 # whose call has a session id: a CATEGORICAL score named for the agent, valued with its call,
-# its comment the rule and reason, on the session its call ran as (the trace key). The score id
+# its comment the rule and reason, its level in metadata when it has one (a Langfuse score takes
+# no tags, so metadata.level is the tag), on the session its call ran as (the trace key). The score id
 # is the verdict's, so a resend overwrites it. Each event carries `epoch` at the top level for
 # the caller's mark; strip it before sending.
 judge_langfuse_events() {
@@ -141,5 +143,6 @@ judge_langfuse_events() {
        body: {id: "jv:\($v.judge_call):\($v.subject)", sessionId: $sid[$v.judge_call],
               name: $v.agent, value: $v.value, dataType: "CATEGORICAL",
               comment: "\($v.rule): \($v.reason)",
-              metadata: {subject: $v.subject, project: $v.project, rule: $v.rule, judge_call: $v.judge_call}}}'
+              metadata: ({subject: $v.subject, project: $v.project, rule: $v.rule, judge_call: $v.judge_call}
+                + (if ($v.level // "") == "" then {} else {level: $v.level} end))}}'
 }

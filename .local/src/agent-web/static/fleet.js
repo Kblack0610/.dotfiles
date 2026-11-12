@@ -126,6 +126,19 @@ function judgeTiles(j) {
   return `<div class="tiles">${tiles}</div>`;
 }
 
+// The answer judge per type and impact level, judge-eval's cells under its current prompt. A live
+// cell's scored count is the answers you reviewed (audited); silence scores nothing.
+function judgeCells(j) {
+  const pc = (x) => (x == null ? "-" : `${x}%`);
+  const prec = (c) => c.precision == null ? "-" : `${c.precision}% <span class="muted">[${c.precision_lo}-${c.precision_hi}]</span>`;
+  const rows = j.cells.map((c) => `<tr><td>${esc(c.type || "(no type)")}</td><td>${esc(c.level || "-")}</td><td class="n">${c.verdicts}</td><td class="n">${c.scored}</td>` +
+    `<td class="n">${prec(c)}</td><td class="n">${c.pending}</td><td class="${c.live ? "" : "muted"}">${c.live ? "yes" : "no"}</td><td class="n">${c.audited}</td><td class="n">${pc(c.level_raised_pct)}</td></tr>`).join("");
+  return `<div class="muted">By type and level (self, repo, fleet, critical), under the current prompt</div>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">type</th><th data-role="glance">level</th><th class="n">verdicts</th><th class="n">scored</th>` +
+    `<th class="n" data-role="glance" data-named>precision [95%]</th><th class="n">pending</th><th data-role="glance" data-named>live</th><th class="n">audited</th><th class="n">raised</th></tr>${rows ||
+    `<tr><td colspan="9" class="muted">no verdicts under prompt ${esc(j.prompt || "none")}</td></tr>`}</table></div>`;
+}
+
 // The answer judge's filters: hub_core::fleet::ASK_FILTERS, read as the row they keep.
 const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
 const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
@@ -166,7 +179,7 @@ function runnerExtras(x) {
         dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
     case "ask-judge":
       return `<h2 class="sec">Answer judge <span class="muted">prompt ${esc(x.judge.prompt || "none")}, its call against your answer; newest ${x.judge.verdicts.length} here, every verdict on <a href="#log">Log</a></span></h2>` +
-        judgeTiles(x.judge) + judgeList(x.judge);
+        judgeTiles(x.judge) + judgeCells(x.judge) + judgeList(x.judge);
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
