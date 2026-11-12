@@ -21,17 +21,19 @@ Not for investigating with everything in view: `deep-research-code`. Not for rev
 
 ## Steps
 
-1. **Freeze.** Pick the commit before X landed (`git log` it yourself, here, not in the brief), or HEAD when X is unlanded. Snapshot it with no history:
-   `~/.claude/skills/blind-review/blind.sh snapshot <repo> <sha>` prints the path, under `~/.cache/blind-review/$CLAUDE_CODE_SESSION_ID/`.
+Every command below is `B=~/.claude/skills/blind-review/blind.sh`.
+
+1. **Freeze.** Pick the commit before X landed (`git log` it yourself, here, not in the brief), or HEAD when X is unlanded. `$B snapshot <repo> <sha>` prints the path of a history-free copy under `~/.cache/blind-review/$CLAUDE_CODE_SESSION_ID/`. It is `git archive`, so submodules are absent, LFS files are pointers and `export-ignore` paths are dropped; name what is missing in the brief.
 2. **Brief.** Fill `assets/brief.md` with the original ask in the human's words, the snapshot path, the read-only data sources and the live checkout path to forbid. Leave out X, its owner's reasoning and your own view. If you have already read X, write the ask from the human's message, not from memory of X.
-3. **Run.** One fresh Agent (`general-purpose` or `claude`; never `fork`, which inherits your context). Note the agent ID it returns.
-4. **Audit.** `blind.sh audit <agent-id> <live checkout path>` exits 1 and prints the call when the agent read a plan, `~/.agent`, `~/.notes`, the live checkout or git history. A leak voids the run: fix the brief and run it again.
-5. **Verify.** Re-check the blind answer's numbers and load-bearing claims against the live system before anyone acts on them. An independent answer is not a correct one.
-6. **Compare.** One table, X beside blind: approach, cost, risks, what each missed. Add your recommendation and leave the pick to the human.
-7. **Clean.** `blind.sh clean` deletes this session's snapshots.
+3. **Check what the agent inherits.** A subagent starts in your working directory, so it may load the live repo's CLAUDE.md, its auto-memory `MEMORY.md` and the recent commit subjects, and the audit cannot see any of that. Grep those for X's name, slug or PR number first. If one names X, run the blind agent from a session whose working directory is not that repo.
+4. **Run.** One fresh Agent (`general-purpose` or `claude`; never `fork`, which inherits your context). Note the agent ID it returns.
+5. **Audit.** `$B audit <agent-id> <live checkout path>` exits 1 and prints the call when the agent read a plan, `~/.agent`, `~/.notes`, the live checkout or git history. A leak voids the run: fix the brief and run it again. Exit 2 means the transcript could not be checked, which is not a pass.
+6. **Verify.** Re-check the blind answer's numbers and load-bearing claims against the live system before anyone acts on them. An independent answer is not a correct one.
+7. **Compare.** One table, X beside blind: approach, cost, risks, what each missed. Add your recommendation and leave the pick to the human.
+8. **Clean.** `$B clean` deletes this session's snapshots.
 
 ## Do NOT
 
-- Hand the blind answer to X's owner, or file it on an agent-ask the judge auto-answers, before the human picks. Why: on 2026-11-11 that started an adoption of the blind plan before anyone had judged whether it was any good.
+- Hand the blind answer to X's owner, or file it on an agent-ask the judge auto-answers, before the human picks. Why: the owner or the judge adopts it before anyone has judged whether it is any good.
 - Change X because of the blind answer before the human has chosen.
 - Use a git worktree as the snapshot. Why: it carries the history and the commits that made X.
