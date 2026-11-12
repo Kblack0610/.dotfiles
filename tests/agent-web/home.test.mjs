@@ -647,7 +647,7 @@ test("an opened sheet row closes from its card: a refresh keeps the form, the ro
   const needs = [sheet("t-1"), sheet("a row with no id")];
   const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
   assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
-  assert.match(html, /data-tab="board">Open the board/);
+  assert.match(html, /href="#projects\/all">Open all rows/);
   assert.equal((html.match(/data-closego/g) || []).length, 1);
   // What was picked and typed is Home's state, so the next draw shows it again.
   vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);

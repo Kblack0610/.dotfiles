@@ -144,11 +144,7 @@ impl Tab {
                 .into_iter()
                 .find(|t| t.title().eq_ignore_ascii_case(n))
         };
-        by_title(s).or_else(|| {
-            let t = hub_core::layout::resolve(s)?;
-            // Agent-web's Board tab is `a` on Projects here.
-            by_title(if t.id == "board" { "Projects" } else { t.title })
-        })
+        by_title(s).or_else(|| by_title(hub_core::layout::resolve(s)?.title))
     }
     fn index(self) -> usize {
         Tab::SHOWN.iter().position(|t| *t == self).unwrap_or(0)
@@ -2621,6 +2617,15 @@ impl App {
     /// The Projects tab's keys: the list's (projtab.rs), or with the rows open theirs
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
+        // The tab's own inner tabs (the list, All rows, Deliverables): Left/Right switch them.
+        let typing =
+            self.tv.typing() || self.pv.table.typing.is_some() || self.pv.dv.typing.is_some();
+        if let (KeyCode::Left | KeyCode::Right, false) = (k.code, typing) {
+            if self.pv.step_top(&mut self.tv, k.code == KeyCode::Left) {
+                self.scroll = 0;
+                return true;
+            }
+        }
         if !self.pv.open {
             let cards = self.cards().cards;
             if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() && !self.pv.dfocus {
@@ -2633,19 +2638,16 @@ impl App {
                 }
                 return true;
             }
-            // `d` takes the keys only for a table that is read: with none, it is a plain no-op.
-            if k.code == KeyCode::Char('d')
-                && self.pv.table.typing.is_none()
-                && !self.pv.dfocus
-                && !matches!(self.deliverables, Some(Ok(_)))
-            {
-                return true;
-            }
+            // Deliverables before its read says it is reading, or why it failed; d/Esc go back.
             if self.pv.dfocus {
                 if let Some(Ok(d)) = &self.deliverables {
                     return self.pv.dkey(&mut self.tv, k, &cards, d, self.page);
                 }
-                self.pv.dfocus = false;
+                if let KeyCode::Esc | KeyCode::Char('d') = k.code {
+                    self.pv.dfocus = false;
+                    return true;
+                }
+                return false;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
@@ -3259,9 +3261,11 @@ impl App {
                 self.qv.open("");
                 self.qv.table.view.state = to.state.into();
             }
+            // As `hub --tab`: a retired tab that is now a section (`board`) opens that section.
             tab => {
-                if let Some(t) = Tab::parse(tab) {
+                if let Some((t, q)) = crate::tabreq::parse(tab) {
                     self.go(t);
+                    self.open_query(q);
                 }
             }
         }
@@ -4076,7 +4080,7 @@ impl App {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
-                "j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
+                "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
                 "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
@@ -4087,11 +4091,10 @@ impl App {
                 }
             ),
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "<- -> inner tabs  " } else { "" }
+                "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+                "<- -> inner tabs  j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
                 "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  u w n e m b flow  F fix  {tabs} pages  r refresh  q quit"
@@ -4231,10 +4234,19 @@ impl App {
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
-            // One project's card stays on top of its rows; All has none. Only Rows reads the
-            // board, so the other inner tabs draw while it is read or failed.
+            // One project's card stays on top of its rows; All rows has the tab's strip. Only
+            // Rows reads the board, so the other inner tabs draw while it is read or failed.
             (Tab::Projects, ..) => {
                 let mut l = vec![];
+                if self.tv.project.is_none() {
+                    let feed = match &self.tasks {
+                        Some(Ok(f)) => Some(f),
+                        _ => None,
+                    };
+                    let dl = self.deliverables.as_ref();
+                    l.push(projtab::top_strip(feed, dl, "all", self.p, w));
+                    l.push(Line::raw(""));
+                }
                 if let Some((profile, name)) = &self.tv.project {
                     let cards = self.cards().cards;
                     if let Some(c) = cards
@@ -6126,7 +6138,10 @@ mod tests {
         a.handle(Msg::Projects(Box::new(loaded())));
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
-        assert!(at("ALL ROWS  4 open rows") < at("PROJECT "), "{s}");
+        assert!(
+            at("[Projects] All rows 5  Deliverables") < at("PROJECT "),
+            "{s}"
+        );
         assert!(
             at("demo  ") < at("garden  "),
             "by name when none is in flight"
@@ -7919,16 +7934,21 @@ mod tests {
     }
 
     #[test]
-    fn d_takes_the_keys_only_for_a_read_deliverables_table_and_p_leaves_its_search_alone() {
+    fn d_opens_deliverables_read_or_not_and_p_leaves_its_search_alone() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Projects, tx);
         a.deliverables_read.busy = true;
         a.handle(Msg::Projects(Box::new(loaded())));
-        // still reading, or failed: d does nothing, the list keeps the keys
+        // still reading, or failed: d shows it saying so, and d or Esc goes back
+        a.handle(key('d'));
+        assert!(a.pv.dfocus);
+        assert!(screen(&mut a, 140, 30).contains("reading fleet-bench epics"));
         a.handle(key('d'));
         assert!(!a.pv.dfocus);
         a.deliverables = Some(Err("fleet-bench epics: exit 2".into()));
         a.handle(key('d'));
+        assert!(screen(&mut a, 140, 30).contains("exit 2"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!a.pv.dfocus);
         // read: d moves the keys, / types into the table's search (a capital P is text there)
         a.deliverables = Some(Ok(hub_core::deliverables::Deliverables::default()));
@@ -7939,6 +7959,48 @@ mod tests {
         a.handle(key('P'));
         assert_eq!(a.pv.dv.typing.as_deref(), Some("P"));
         assert!(a.prv.said.is_none() && a.tv.said.is_none());
+    }
+
+    #[test]
+    fn left_right_walk_the_list_all_rows_and_deliverables_and_board_opens_all_rows() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Projects, tx);
+        a.projects_read.busy = true;
+        a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
+        a.handle(Msg::Projects(Box::new(loaded())));
+        let arrow = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let on = |a: &App| a.pv.top(&a.tv);
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("all"));
+        let s = screen(&mut a, 140, 30);
+        assert!(s.contains(" Projects [All rows 5] Deliverables "), "{s}");
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("deliverables"));
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Left));
+        assert_eq!(on(&a), Some("deliverables"));
+        // typing in the list's search, an arrow is the search's
+        a.handle(arrow(KeyCode::Right));
+        a.handle(key('/'));
+        a.handle(arrow(KeyCode::Left));
+        assert_eq!(on(&a), Some("list"));
+        a.handle(arrow(KeyCode::Esc));
+        // `hub --tab board` and its search, and the flow strip's board chip, open All rows
+        let (t, q) = crate::tabreq::parse("board").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(on(&a), Some("all"));
+        assert!(a.tv.table.view.q.is_empty(), "board is no search");
+        let (t, q) = crate::tabreq::parse("board id:=ar-1").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!(
+            (on(&a), a.tv.table.view.q.as_str()),
+            (Some("all"), "id:=ar-1")
+        );
+        a.go(Tab::Home);
+        a.open_flow("board");
+        assert_eq!((a.tab, on(&a)), (Tab::Projects, Some("all")));
     }
 
     #[test]

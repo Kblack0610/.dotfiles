@@ -126,8 +126,13 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
   assert.deepEqual(r("#focus/status/inbox"), { name: "focus", tab: "daily", arg: "status/inbox", query: "" }, "an old Focus link still opens its note");
   assert.deepEqual(r("#outbox"), { name: "outbox", tab: "daily", arg: "outbox", query: "" }, "the retired Outbox tab is Daily's outbox");
   assert.deepEqual(r("#projects/notes-cockpit"), { name: "projects", tab: "projects", arg: "notes-cockpit", query: "" });
-  assert.deepEqual(r("#board"), { name: "board", tab: "board", arg: "", query: "" });
-  assert.deepEqual(r("#projects/all"), { name: "projects", tab: "board", arg: "", query: "", section: "" });
+  assert.deepEqual(r("#projects/personal/notes-cockpit/rows"), { name: "projects", tab: "projects", arg: "personal/notes-cockpit/rows", query: "" }, "a project's path is no inner tab");
+  // The Board tab is Projects' All rows: its old links land there, a search kept.
+  assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "all", query: "", section: "board" });
+  assert.deepEqual(r("#board?q=id:=ar-455"), { name: "board", tab: "projects", arg: "all", query: "q=id:=ar-455", section: "board" });
+  assert.deepEqual(r("#projects/all"), { name: "projects", tab: "projects", arg: "all", query: "" });
+  assert.deepEqual(r("#projects/Deliverables?dq=x"), { name: "projects", tab: "projects", arg: "deliverables", query: "dq=x" });
+  assert.deepEqual(r("#projects/board"), { name: "projects", tab: "projects", arg: "all", query: "", section: "board" }, "a section opens the inner tab holding it");
   assert.deepEqual(r(""), { name: "", tab: "home", arg: "", query: "" }, "the landing tab is the first");
   assert.deepEqual(r("#fleet?lane=deliver&s=failed"), { name: "fleet", tab: "fleet", arg: "", query: "lane=deliver&s=failed" }, "after a ? is the tab's view state");
   assert.deepEqual(r("#nope"), { name: "nope", tab: "home", arg: "", query: "" });

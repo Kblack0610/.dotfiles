@@ -45,7 +45,7 @@ function workBody(d) {
 // How far back each source goes, since past that the table cannot say what was not merged.
 function workTail(d) {
   const from = [d.items_from && `queue items from ${esc(d.items_from)}`, d.prs_from && `merged PRs from ${esc(d.prs_from)}`].filter(Boolean).join(", ");
-  return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on the <a href="#board">Board</a>.</div>`;
+  return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on Projects' <a href="#projects/all">All rows</a>.</div>`;
 }
 
 const workFeed = pushed("log", ["queue", "log"], wrk.refresh, () => logShows("work"));

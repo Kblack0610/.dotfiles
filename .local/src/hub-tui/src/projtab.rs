@@ -1,13 +1,14 @@
-//! The Projects tab: one table row per lab project with its open version's progress, built by
-//! `hub_core::projects` (the same rows and words as agent-web's Projects tab), in flight first,
-//! on the shared `DataTable`. j/k pick a project, Enter opens its card over its rows (tasktab.rs,
-//! every row key works there), `a` opens every project's rows; in the rows Esc clears the view
-//! first and then comes back here, as Backspace does at once. `P` steps the selected project's
+//! The Projects tab: its inner tabs (`layout` Projects: the list, All rows, Deliverables, Left/Right
+//! switch them, as agent-web's strip), the list one table row per lab project with its open
+//! version's progress, built by `hub_core::projects` (the same rows and words as agent-web's), in
+//! flight first, on the shared `DataTable`. j/k pick a project, Enter opens its card over its rows
+//! (tasktab.rs, every row key works there), `a` opens All rows, `d` Deliverables; in the rows Esc
+//! clears the view first and then comes back here, as Backspace does at once. `P` steps the selected project's
 //! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
 //! nothing.
 
 use hub_core::deliverables::{Deliverable, Deliverables};
-use hub_core::layout::PROJECT_PAGE;
+use hub_core::layout::{self, Tab, PROJECT_PAGE};
 use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
@@ -56,7 +57,7 @@ pub struct ProjView {
     pub dv: DataTable,
     /// The opened project's Build table: its own view, so the list's Deliverables keep theirs.
     pub bv: DataTable,
-    /// The Deliverables table has the keys (`d`), not the project list.
+    /// The Deliverables inner tab is shown (`d`), not the project list.
     pub dfocus: bool,
 }
 
@@ -110,6 +111,35 @@ impl ProjView {
         self.open = false;
         tv.prompt = None;
         tv.said = None;
+    }
+
+    /// The tab's own inner tab shown, the list's `layout` id; None on an opened project's page.
+    pub fn top(&self, tv: &TaskView) -> Option<&'static str> {
+        match (self.open, tv.project.is_some()) {
+            (true, true) => None,
+            (true, false) => Some(ALL),
+            _ if self.dfocus => Some(DELIVERABLES),
+            _ => Some(LIST),
+        }
+    }
+
+    /// Show the tab's inner tab `id`: All rows opens every project's rows, searched afresh.
+    pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
+        self.dfocus = id == DELIVERABLES;
+        if id != ALL {
+            self.close(tv);
+        } else if self.top(tv) != Some(ALL) {
+            self.open(tv, None);
+        }
+    }
+
+    /// Left/Right on the tab's own inner tabs; false on an opened project's page, whose are its.
+    pub fn step_top(&mut self, tv: &mut TaskView, back: bool) -> bool {
+        let Some(on) = self.top(tv) else {
+            return false;
+        };
+        self.set_top(tv, crate::innertabs::step(projects_tab(), on, back));
+        true
     }
 
     /// The rows are drawn and take the row keys: every project's, or a project's Rows inner tab.
@@ -180,8 +210,14 @@ impl ProjView {
     }
 
     /// `hub tab projects <name>`: the project of that name, whatever the list's view keeps, else
-    /// every project's rows searched for it. `<name>/<inner>` opens that inner tab.
+    /// every project's rows searched for it. `<name>/<inner>` opens that inner tab. A bare inner
+    /// id or section (`all`, `board`, `deliverables`) is the tab's inner tab, never a project:
+    /// one of that name opens as `<profile>/<name>`, as on agent-web.
     pub fn go(&mut self, tv: &mut TaskView, cards: &[Card], name: &str) {
+        if let Some(id) = crate::innertabs::named(projects_tab(), name) {
+            self.set_top(tv, id);
+            return;
+        }
         let (name, inner) = match name.rsplit_once('/') {
             Some((n, i)) if inner_id(i).is_some() => (n, inner_id(i)),
             _ => (name, None),
@@ -291,6 +327,33 @@ fn warn_if(b: bool, p: Palette) -> ratatui::style::Style {
     } else {
         ratatui::style::Style::default()
     }
+}
+
+const LIST: &str = "list";
+const ALL: &str = "all";
+const DELIVERABLES: &str = "deliverables";
+
+/// Projects in `layout`, whose `inner` is the list, All rows and Deliverables.
+fn projects_tab() -> &'static Tab {
+    layout::resolve("projects").expect("layout has Projects")
+}
+
+/// The strip over the list, All rows and Deliverables, each with its total once read: All rows
+/// every project's rows open and closed (`Feed::board_rows`, agent-web's board total), and
+/// Deliverables its epics.
+pub fn top_strip(
+    feed: Option<&Feed>,
+    dl: Option<&Result<Deliverables, String>>,
+    on: &str,
+    p: Palette,
+    w: usize,
+) -> Line<'static> {
+    let total = |i: &layout::Inner| match i.id {
+        ALL => feed.map(|f| f.board_rows(None).len()),
+        DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
+        _ => None,
+    };
+    crate::innertabs::strip_totals(projects_tab().inner, on, total, p, w)
 }
 
 const OVERVIEW: &str = "overview";
@@ -818,8 +881,8 @@ fn drow(r: &Deliverable, p: Palette) -> Vec<Cell> {
     ]
 }
 
-/// The list, and the line the selected row is on (the app keeps it in view); the Deliverables
-/// section comes first.
+/// The strip, then the list or Deliverables, and the line the selected row is on (the app keeps
+/// it in view).
 pub fn page(
     pr: &Projects,
     feed: Option<&Feed>,
@@ -828,31 +891,22 @@ pub fn page(
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let hint = if pv.dfocus {
-        "  Enter opens the epic's project, Esc back"
+    let on = if pv.dfocus { DELIVERABLES } else { LIST };
+    let mut out = vec![top_strip(feed, dl, on, p, w), Line::raw("")];
+    let (mut body, at) = if pv.dfocus {
+        let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
+        let hint = "  Enter opens the epic's project, Esc back";
+        deliverables(dl, &pv.dv, true, hint, p, w)
     } else {
-        "  d browses them"
+        list(pr, pv, p, w)
     };
-    let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
-    let (mut out, dat) = deliverables(dl, &pv.dv, pv.dfocus, hint, p, w);
-    let (mut list, at) = list(pr, feed, pv, p, w);
-    let at = if pv.dfocus {
-        dat
-    } else {
-        at.map(|a| a + out.len())
-    };
-    out.append(&mut list);
+    let at = at.map(|a| a + out.len());
+    out.append(&mut body);
     (out, at)
 }
 
-/// The project list under the Deliverables section.
-fn list(
-    pr: &Projects,
-    feed: Option<&Feed>,
-    pv: &ProjView,
-    p: Palette,
-    w: usize,
-) -> (Vec<Line<'static>>, Option<usize>) {
+/// The project list, the strip's first inner tab.
+fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static>>, Option<usize>) {
     let shown = pv.shown(&pr.cards);
     let total = pr.cards.len();
     let count = if shown.len() == total {
@@ -883,16 +937,6 @@ fn list(
         out.extend(wrapped("", e, p.warn(), p, w));
     }
     out.push(clip_line(Line::from(pv.table.status(&pr.cards, p)), w));
-    let rows = feed.map_or("reading notes board".to_string(), |f| {
-        format!("{} open rows", f.open_rows(None).len())
-    });
-    out.push(clip_line(
-        Line::from(vec![
-            Span::styled("ALL ROWS", p.head()),
-            Span::styled(format!("  {rows}; a opens them"), p.dim()),
-        ]),
-        w,
-    ));
     out.push(Line::raw(""));
     let mut at = None;
     if shown.is_empty() {
@@ -914,8 +958,7 @@ fn list(
             ..Default::default()
         }
         .fit_wrapped(w, p.head());
-        // The Deliverables table has the keys: the list keeps no highlight.
-        if let (false, Some(&start)) = (pv.dfocus, starts.get(pv.at(shown.len()))) {
+        if let Some(&start) = starts.get(pv.at(shown.len())) {
             t[start].style = p.sel();
             at = Some(out.len() + start);
         }
@@ -1348,18 +1391,17 @@ pub(crate) mod tests {
         };
         let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
-        // The Deliverables section is on top and still reading; the list follows it.
-        assert_eq!(s[0], "Deliverables  reading fleet-bench epics");
+        // The strip is on top, nothing counted before its read; the list follows it.
+        assert_eq!(s[0], "[Projects] All rows  Deliverables   <- -> switch");
         let s = s[2..].to_vec();
         assert!(
             s[0].starts_with("PROJECTS  2 projects, 1 in flight"),
             "{s:?}"
         );
         assert_eq!(s[1], "all 2  in flight 1  waiting 1");
-        assert!(s[2].starts_with("ALL ROWS  reading notes board"), "{s:?}");
-        assert_eq!(s[4].split_whitespace().collect::<Vec<_>>(), HEADER.to_vec());
+        assert_eq!(s[3].split_whitespace().collect::<Vec<_>>(), HEADER.to_vec());
         assert_eq!(
-            s[5].split_whitespace().collect::<Vec<_>>(),
+            s[4].split_whitespace().collect::<Vec<_>>(),
             [
                 "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
                 "1.0", "7d", "0", "1", "0", "0", "0", "-"
@@ -1421,18 +1463,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn deliverables_sit_above_the_list_with_the_webs_words() {
+    fn deliverables_is_its_own_inner_tab_with_the_webs_words() {
         let pr = fixture();
         let d = delivs();
-        let (l, at) = page(
-            &pr,
-            None,
-            Some(&d),
-            &ProjView::default(),
-            Palette { no_color: true },
-            120,
-        );
+        let pv = ProjView {
+            dfocus: true,
+            ..Default::default()
+        };
+        let (l, at) = page(&pr, None, Some(&d), &pv, Palette { no_color: true }, 120);
         let s = lines(&l);
+        assert_eq!(
+            s[0], " Projects  All rows [Deliverables 2]  <- -> switch",
+            "{s:?}"
+        );
+        let s = s[2..].to_vec();
         assert!(
             s[0].starts_with("Deliverables (2 open, 0 ready to verify, 1 on track, 1 behind)"),
             "{s:?}"
@@ -1451,21 +1495,27 @@ pub(crate) mod tests {
             s[5].starts_with("Coverage: 4 linked / 9 open rows (44%); percent is"),
             "{s:?}"
         );
-        let list = s.iter().position(|l| l.starts_with("PROJECTS ")).unwrap();
-        assert!(list > 5, "the list is under the section: {s:?}");
-        // the list's own row is the highlighted one until `d` moves the keys
-        assert!(at.unwrap() > list);
+        assert!(
+            !s.iter().any(|l| l.starts_with("PROJECTS ")),
+            "the list is its own inner tab: {s:?}"
+        );
+        assert_eq!(at, Some(5), "the table's first row, under the strip");
     }
 
     #[test]
     fn a_failed_read_says_so_and_a_missing_one_says_reading() {
         let pr = fixture();
-        let pv = ProjView::default();
+        let pv = ProjView {
+            dfocus: true,
+            ..Default::default()
+        };
         let p = Palette { no_color: true };
+        let s = lines(&page(&pr, None, None, &pv, p, 120).0);
+        assert_eq!(s[2], "Deliverables  reading fleet-bench epics");
         let bad: Result<Deliverables, String> = Err("fleet-bench epics: exit 2".into());
         let s = lines(&page(&pr, None, Some(&bad), &pv, p, 120).0);
-        assert_eq!(s[0], "Deliverables");
-        assert_eq!(s[1], "fleet-bench epics: exit 2");
+        assert_eq!(s[2], "Deliverables");
+        assert_eq!(s[3], "fleet-bench epics: exit 2");
         assert!(
             !s.iter()
                 .any(|l| l.starts_with("PROJECT ") && l.contains("EPIC")),
@@ -1606,13 +1656,15 @@ pub(crate) mod tests {
             ..Default::default()
         });
         let p = Palette { no_color: true };
-        let mut pv = ProjView::default();
+        let mut pv = ProjView {
+            dfocus: true,
+            ..Default::default()
+        };
         let s = lines(&page(&pr, None, Some(&d), &pv, p, 120).0);
         assert!(
             s.iter().any(|l| l.contains("epic 00")) && !s.iter().any(|l| l.contains("epic 20"))
         );
         assert!(s.iter().any(|l| l.contains("0 above, 18 below")), "{s:?}");
-        pv.dfocus = true;
         pv.dv.sel = 25;
         let (l, at) = page(&pr, None, Some(&d), &pv, p, 120);
         let s = lines(&l);

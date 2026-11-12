@@ -20,7 +20,7 @@ async function reach(path, opts) {
   }
 }
 
-// How a sheet row closes (`notes ptask done` or `drop`), shared by the Board's form and Home's sheet
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the board's form and Home's sheet
 // cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
 const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };

@@ -196,7 +196,11 @@ mod tests {
             take(&d.0),
             Some((Tab::Projects, Some("bnb/demo extra".into())))
         );
-        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
+        assert_eq!(
+            parse("board  "),
+            Some((Tab::Projects, Some("board".into()))),
+            "the Board tab is Projects' All rows"
+        );
         assert_eq!(parse("nonsense bnb/demo"), None);
     }
 

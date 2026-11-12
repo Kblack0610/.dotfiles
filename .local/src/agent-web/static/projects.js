@@ -5,35 +5,41 @@
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, its Rows
 // with every row action board.js has, Build (Deliverables scoped to it), Stage and Activity.
-// Every project's rows are the Board tab. The numbers are counted, never judged: every line is hub_core's, word
-// for word. Two tables, one at a time, share st.views.projects: this one owns it when nothing is
-// open, the rows when a project is.
+// Its inner tabs (INNER_TABS.projects) are this list, All rows (every project's rows, board.js
+// scoped to all) and Deliverables, each read only while it shows; an opened project's page sits
+// under the list's. The numbers are counted, never judged: every line is hub_core's, word for
+// word. The list and the rows (All rows, or an opened project's) share st.views.projects, one at
+// a time, so a move between them leaves the view behind.
 
 // page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
 // viewed: the view pst.data was read under; inner: the opened page's inner tab (PROJECT_PAGE).
 // The read is the tab's own (refreshProjects): with something open it reads every card.
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
-  shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
+  shown: () => st.tab === "projects" && !pst.open && pTab() === "list", wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
   state: { open: null, inner: "overview", unlinked: true, page: {}, folds: {}, viewed: "" },
-  head: (t) => `<h2 class="sec" id="sec-projects">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  head: (t) => `<h2 class="sec" id="sec-cards">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
 
 // Deliverables: one row per open feature epic across every project (/api/deliverables,
-// hub_core::deliverables, the rows and words the hub TUI draws), above the project list, and an
+// hub_core::deliverables, the rows and words the hub TUI draws), the Deliverables inner tab, and an
 // opened project's Build inner tab (`scope`), the element moved there (dMount). Its view keys are
 // d-prefixed (dq, ds, dsort, ddir) because the list and the rows keep the plain ones. On the list
 // a row opens its project's Build at that epic; on Build it opens the epic's rows (pOpenAt).
 const D_COLS = { project: ["project"], epic: ["epic"], sys: ["sys"], done: ["done", "n"], eta: ["eta", "n"], track: ["track"] };
 const dst = tblTab({
   tab: "projects", id: "p-del", el: "p-deliv", pre: "d", api: "/api/deliverables", hint: "search, or sys:ui track:behind -project:x",
-  shown: () => st.tab === "projects" && (!pst.open || pst.inner === "build"), wait: "Reading fleet-bench epics (about 10s when cold)...",
+  shown: () => dShown(), wait: "Reading fleet-bench epics (about 10s when cold)...",
   params: (p) => { if (pst.open) p.set("scope", pst.open); },
+  got: (t) => { if (!new URLSearchParams(t.q).has("scope")) { pCount.deliverables = t.data.table.total; pStripPaint(); } },
   draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
   head: (t) => (pst.open ? pSec("p-build", "Build", t.data.says) : `<h2 class="sec" id="sec-deliverables">${esc(t.data.says)}</h2>`),
   body: (t) => dBody(t.data),
 });
+
+// Deliverables shows on its inner tab, and on an opened project's Build.
+const dShown = () => st.tab === "projects" && (pst.open ? pst.inner === "build" : pTab() === "deliverables");
 
 const dLine = (r) => `<tr class="jr" tabindex="0" data-open="${esc(r.profile + "/" + r.project)}" data-epic="${esc(r.id)}" data-sys="${esc(r.system)}">` +
   `<td>${esc(r.project)}</td><td class="wrap" title="${esc(r.id)}">${esc(r.title)}</td><td>${pDash(r.system)}</td>` +
@@ -54,14 +60,28 @@ function dBody(d) {
 // is no longer on screen is dropped (another inner tab of the same project is still it), and the
 // move that replaced it reads again.
 const refreshProjects = coalesce(async () => {
-  const arg = st.arg, q = (arg ? new URLSearchParams() : tblParams(st.views.projects)).toString();
-  const same = () => !!arg === !!st.arg && pSplit(arg).key === pSplit(st.arg).key;
+  const arg = pProj(), q = (arg ? new URLSearchParams() : tblParams(st.views.projects)).toString();
+  const same = () => !!arg === !!pProj() && pSplit(arg).key === pSplit(pProj()).key;
   try {
     const got = await api("/api/projects" + (q ? "?" + q : ""));
     if (same()) { pst.data = got; pst.err = null; pst.viewed = q; }
   } catch (e) { if (same()) pst.err = e.message; }
   if (st.tab === "projects") { pDeep(); renderProjects(); }
 });
+
+// The inner tab the URL has open: a bare inner id (innerRoute makes a section one); anything else
+// is a project's path, on the list's. A project named like an inner tab opens as <profile>/<name>.
+const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
+const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
+const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
+// Each inner tab's total, its table's once read: a count, not a flag, so it is never amber.
+const pCount = { all: null, deliverables: null };
+function pStrip() {
+  const tabs = INNER_TABS.projects.tabs.map(([id, title, secs]) =>
+    [id, title + (pCount[id] == null ? "" : ` <span class="muted">${pCount[id]}</span>`), secs]);
+  return stripHtml(tabs, pTab(), "itab");
+}
+const pStripPaint = () => paint($("p-strip"), pst.open ? "" : pStrip());
 
 const pKey = (c) => c.profile + "/" + c.name;
 // The card `want` names, by `<profile>/<name>` or the name alone.
@@ -233,8 +253,8 @@ function pList() {
 // `#projects/<name>` (a `#p:<name>` link on Daily) or `#projects/<profile>/<name>`, with an
 // inner tab after it or not, opens that project's page, once the cards say which project it is.
 function pDeep() {
-  if (!st.arg) return;
-  const { key, inner } = pSplit(st.arg), c = pCard(key);
+  if (!pProj()) return;
+  const { key, inner } = pSplit(pProj()), c = pCard(key);
   if (!c) return;
   if (pst.open !== pKey(c)) pOpen(pKey(c), inner);
   else if (pst.inner !== inner) pInner(inner);
@@ -261,7 +281,7 @@ function pOpen(key, inner) {
 // button), the panes flip without a repaint, and Build reads its rows for this project.
 function pInner(id) {
   pst.inner = P_INNER.includes(id) ? id : "overview";
-  st.arg = pArg();
+  st.arg = lastInner.projects = pArg();
   showUrl();
   pShow();
   if (pst.inner === "build") dst.refresh();
@@ -275,27 +295,48 @@ function pShow() {
 // A click moves the tab: the URL names what is open and the old view's query goes with it, and
 // so do cards read under it. A deep link is the other way in, and keeps its own (pDeep).
 function pGo(key, inner, query) {
-  st.arg = key === null ? "" : key + (inner && inner !== "overview" ? "/" + inner : "");
+  st.arg = lastInner.projects = key === null ? "" : key + (inner && inner !== "overview" ? "/" + inner : "");
   setQuery(query || "");
   if (key === null) {
-    pst.open = null; bst.feed = null; dst.data = null;
-    if (pst.viewed) pst.data = null;
-    renderProjects(); refreshProjects(); refreshBoard(); dst.refresh();
+    pClose();
+    renderProjects(); pRead();
   } else pOpen(key, inner);
 }
-
-// Deliverables sits above the list, and in the opened page's Build pane.
-function dMount() {
-  const d = $("p-deliv"), home = pst.open ? $("p-build") : $("projects");
-  if (d.parentNode === home) return;
-  if (pst.open) home.appendChild(d); else home.insertBefore(d, $("p-cards"));
+// Back to the inner tabs: the opened project's rows and Build go, and cards read under its view.
+function pClose() {
+  pst.open = null; bst.feed = null; dst.data = null;
+  if (pst.viewed) pst.data = null;
+}
+// Read what shows: the list (or an opened project's card), the rows, Deliverables.
+function pRead() {
+  const top = pTab();
+  if (top === "list") refreshProjects();
+  if (top === "all" || pst.open) refreshBoard();
+  if (dShown()) dst.refresh();
 }
 
+// Deliverables is its own inner tab, and the opened page's Build pane.
+function dMount() {
+  const d = $("p-deliv"), home = pst.open ? $("p-build") : $("p-dtop");
+  if (d.parentNode !== home) home.appendChild(d);
+}
+
+// The strip, then the inner tab that shows; an opened project's page replaces all of it.
 function renderProjects() {
   dMount();
-  $("p-cards").hidden = !!pst.open;
+  bMount(pst.open ? "p-board" : "p-all");
+  pStripPaint();
+  innerHide("projects", "cards", $("p-cards"));
+  innerHide("projects", "board", $("p-all"));
+  innerHide("projects", "deliverables", $("p-dtop"));
   $("p-rows").hidden = !pst.open;
-  if (!pst.open) { pst.render(); dst.render(); return; }
+  if (!pst.open) {
+    const top = pTab();
+    if (top === "all") renderBoard();
+    if (top === "list") pst.render(); else if (top === "deliverables") dst.render();
+    return;
+  }
+  $("p-cards").hidden = true;
   const c = pCard(pst.open);
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pOpened(c) : ""), pst.folds);
@@ -349,13 +390,26 @@ $("projects").addEventListener("toggle", (e) => {
 }, true);
 
 TABS.projects = {
-  // Back on the tab, what was open stays open and the URL names it again.
-  show() { bMount("p-board"); if (pst.open && !st.arg) st.arg = pArg(); pDeep(); renderProjects(); refreshProjects(); refreshBoard(); dst.refresh(); },
+  // Back on the tab, what was open stays open and the URL names it again; a link to All rows or
+  // Deliverables (`#board`) leaves it.
+  show() {
+    if (pst.open && P_TABS.includes(st.arg)) pClose();
+    if (pst.open && !st.arg) st.arg = pArg();
+    pDeep(); renderProjects(); pRead();
+  },
+  // A strip click: the view stays with the inner tab it was set on, and the one now showing reads.
+  inner() {
+    if (st.views.projects || pst.open) { setQuery(""); pClose(); }
+    renderProjects(); pRead();
+  },
   // A section on another inner tab of the opened page (an outline click) shows that tab first.
   pin: (id) => { if (pst.open) pInner(id); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
-    if (["watch", "queue", "resync"].includes(ev.kind)) { refreshProjects(); dst.refresh(); }
+    if (["watch", "queue", "resync"].includes(ev.kind)) {
+      if (pTab() === "list") refreshProjects();
+      if (dShown()) dst.refresh();
+    }
     if (ev.kind === "resync") refreshBoard();
   },
 };

@@ -90,11 +90,11 @@ async function drawn(data, open) {
   await settle(); await settle();
   return read();
 }
-// The Board tab under this view, once its rows have come back.
+// Projects' All rows (the Board tab until 2026-11-12) under this view, once its rows have come back.
 async function onBoard(view = "") {
   ctx.view = view;
   ctx.answers = { "/api/projects": list() };
-  vm.runInContext(`st.tab = "board"; st.arg = ""; st.views.board = view; pst.open = null; TABS.board.show();`, ctx);
+  vm.runInContext(`st.tab = "projects"; st.arg = "all"; st.views.projects = view; pst.open = null; TABS.projects.show();`, ctx);
   await settle(); await settle();
   return read();
 }
@@ -108,7 +108,7 @@ test("the list is one table row per project with its counts, and the card's word
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
   const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, held: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /2 projects, 1 in flight; progress is the open version's rows by size/);
-  assert.doesNotMatch(cards, /All rows/, "every project's rows are the Board tab");
+  assert.doesNotMatch(cards, /All rows/, "every project's rows are the All rows inner tab");
   assert.match(cards, /id="projects-tiles".*id="projects-q"/s);
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
@@ -334,7 +334,7 @@ test("a click into a project or Back clears the query; a deep link keeps its own
   assert.equal(vm.runInContext(`st.views.projects`, ctx), "q=menu");
 });
 
-test("Board reads every project's rows under its own view, and leaves them behind", async () => {
+test("All rows reads every project's rows under its own view, and leaves them behind", async () => {
   ctx.sent = [];
   assert.match((await onBoard("q=water")).rows, /1 of 2 rows/);
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "no scope, the Board's own query");
@@ -342,7 +342,7 @@ test("Board reads every project's rows under its own view, and leaves them behin
   vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; TABS.projects.show();`, ctx);
   await settle(); await settle();
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/board")), "the list has no rows to read");
-  assert.equal(vm.runInContext(`bst.feed`, ctx), null, "the Board's rows do not follow");
+  assert.equal(vm.runInContext(`bst.feed`, ctx), null, "All rows' rows do not follow");
   ctx.input = { data: list() };
   ctx.answers = { "/api/projects/demo/page": page };
   vm.runInContext(`pst.data = input.data; pOpen("bnb/demo");`, ctx);
@@ -350,14 +350,14 @@ test("Board reads every project's rows under its own view, and leaves them behin
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"));
 });
 
-test("a Board answer that lands after the tab changed is dropped", async () => {
+test("an All rows answer that lands after the inner tab changed is dropped", async () => {
   await onBoard();
-  vm.runInContext(`bst.feed = null; refreshBoard(); st.tab = "projects"; pst.open = "bnb/demo";`, ctx);
+  vm.runInContext(`bst.feed = null; refreshBoard(); st.arg = "";`, ctx);
   await settle(); await settle();
   assert.equal(vm.runInContext(`bst.feed`, ctx), null);
 });
 
-test("Board opens every project's rows, and a stats error is shown, not hidden", async () => {
+test("All rows opens every project's rows, and a stats error is shown, not hidden", async () => {
   const all = await onBoard();
   assert.match(all.rows, /fix the menu.*water the beds/s);
   assert.match(all.rows, /<a class="btn sm" href="#daily">Daily: personal 3, bnb 1 open<\/a>/, "the daily notes' Focus is a count linking to Daily");
@@ -374,6 +374,49 @@ test("rows past the cap wait behind a button, and a view with nothing says so", 
   assert.match(read().rows, /<span class="qtag">ui<\/span> r204</);
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
+});
+
+test("the strip is the list, All rows and Deliverables; a count is a total once read, never amber", async () => {
+  vm.runInContext(`pCount.all = null; pCount.deliverables = null;`, ctx);
+  draw(list());
+  const strip = () => box("p-strip").innerHTML;
+  assert.match(strip(), /data-itab="list" class="on"[^>]*>Projects<.*data-itab="all" class=""[^>]*>All rows<.*data-itab="deliverables" class=""[^>]*>Deliverables</s);
+  assert.doesNotMatch(strip(), /span/, "nothing read, nothing counted");
+  await onBoard();
+  assert.match(strip(), /data-itab="all" class="on"[^>]*>All rows <span class="muted">2<\/span>/);
+  assert.doesNotMatch(strip(), /warn/);
+  ctx.answers = { "/api/projects/demo/page": "not read here" };
+  vm.runInContext(`pst.data = ${JSON.stringify(list())}; pOpen("bnb/demo");`, ctx);
+  assert.equal(strip(), "", "an opened project has its own strip");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("a strip click reads only the inner tab it shows, and leaves the old one's view behind", async () => {
+  await drawn(list());
+  ctx.answers = { "/api/deliverables": deliv(), "/api/projects": list() };
+  ctx.sent = [];
+  vm.runInContext(`st.views.projects = "q=menu"; innerGo("projects", "deliverables");`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`st.arg + "|" + st.views.projects`, ctx), "deliverables|");
+  assert.deepEqual(ctx.sent.map((s) => s.u), ["/api/deliverables"]);
+  assert.match(box("p-strip").innerHTML, /data-itab="deliverables" class="on"[^>]*>Deliverables <span class="muted">2<\/span>/);
+  ctx.sent = [];
+  vm.runInContext(`innerGo("projects", "all");`, ctx);
+  await settle(); await settle();
+  assert.deepEqual(ctx.sent.map((s) => s.u), ["/api/board"]);
+  assert.match(read().rows, /fix the menu.*water the beds/s);
+});
+
+test("a link to All rows (`#board`) leaves an opened project", async () => {
+  ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
+  vm.runInContext(`st.tab = "projects"; pst.data = ${JSON.stringify(list())}; pGo("bnb/demo");`, ctx);
+  assert.equal(vm.runInContext(`pst.open`, ctx), "bnb/demo");
+  ctx.sent = [];
+  vm.runInContext(`st.arg = "all"; st.views.projects = "q=water"; TABS.projects.show();`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`pst.open`, ctx), null);
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the link's search is read, with no scope");
+  assert.match(read().rows, /1 of 2 rows/);
 });
 
 // The Summary hub_core::table sends beside the Deliverables rows.
@@ -396,12 +439,12 @@ const deliv = (o = {}) => {
 };
 const drawDeliv = async (d) => {
   ctx.answers = { "/api/deliverables": d, "/api/projects": list() };
-  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  vm.runInContext(`st.tab = "projects"; st.arg = "deliverables"; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
   await settle(); await settle();
   return box("p-deliv").innerHTML;
 };
 
-test("Deliverables is a table over the project list: the head, one row per epic, then the coverage line", async () => {
+test("Deliverables is its own inner tab's table: the head, one row per epic, then the coverage line", async () => {
   const html = await drawDeliv(deliv());
   assert.match(html, /^<div data-tbl="d">.*id="sec-deliverables">Deliverables \(2 open, 1 ready to verify, 0 on track, 1 behind\)<\/h2>/s);
   assert.match(html, /id="p-del-tiles".*id="p-del-q"/s);
@@ -425,7 +468,7 @@ test("the Deliverables view keys are d-prefixed, so the project list keeps the p
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")), "the list's view is not the deliverables'");
 });
 
-test("a Deliverables row on the list opens its project's Build searched to its epic", async () => {
+test("a Deliverables row opens its project's Build searched to its epic", async () => {
   await drawDeliv(deliv());
   ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
@@ -436,7 +479,7 @@ test("a Deliverables row on the list opens its project's Build searched to its e
 
 test("a failed Deliverables read says so and never shows an empty table", async () => {
   ctx.answers = { "/api/deliverables": "fleet-bench: not found", "/api/projects": list() };
-  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  vm.runInContext(`st.tab = "projects"; st.arg = "deliverables"; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
   await settle(); await settle();
   const html = box("p-deliv").innerHTML;
   assert.match(html, /class="card err".*fleet-bench: not found/);
