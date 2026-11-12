@@ -6,7 +6,9 @@
 #     --options a=..|b=..  the fixed answer vocabulary, each option with its meaning (required)
 #     --recommend b     which of them YOU recommend; shown marked on the card
 #     --why "reason"    why you recommend it, one sentence; shown under that option
-#     --context "why"   the background the human needs; the question itself stays one line
+#     --context "why"   the background the human needs; the question itself stays one line.
+#                       It opens with one plain-words line defining every session term the
+#                       question, options and --why use; post refuses a term it never names
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
@@ -191,6 +193,24 @@ queue_holders() {
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
+
+# undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
+# names, one per line. A term is a name for a machine: camelCase, a dotted name or file
+# (scale.net.botsPredicted, scaling-net.md), snake_case, a --flag, a row or item id (ucp-526,
+# agent-26) or a `backticked` span. Quoted text is left out: quoting the human is not jargon.
+undefined_terms() {
+  local ctx="$1" t; shift
+  printf '%s\n' "$@" | sed -E 's/"[^"]*"//g' | {
+    grep -oE -e '`[^`]+`' \
+             -e '\b[a-z][a-z0-9]+[A-Z][a-z][A-Za-z0-9]*\b' \
+             -e '\b[A-Za-z_][A-Za-z0-9_-]+(\.[A-Za-z_][A-Za-z0-9_-]+)+' \
+             -e '\b[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)+\b' \
+             -e '(^|[^A-Za-z0-9-])--[a-z][a-z0-9-]*' \
+             -e '\b[a-z]{2,5}-[0-9]+\b'
+  } | sed -E 's/^[^-`]*--/--/; s/^`(.*)`$/\1/' | awk '!seen[$0]++' | while IFS= read -r t; do
+    [[ "$ctx" == *"$t"* ]] || printf '%s\n' "$t"
+  done
+}
 
 # field <file> <key> -> first value (text after "key: ")
 field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
@@ -415,6 +435,16 @@ cmd_post() {
       echo "agent-ask post: every option needs its meaning, --options 'slug=what it does|slug=what it does' (no meaning: $bare)." >&2
       return 2
     fi
+  fi
+  # Every term the human reads before the context (the question, each option's meaning, the
+  # why) is named in --context, which opens with one plain-words line saying what each is.
+  # 2026-11-09: YVyqvq led with scale.net.botsPredicted, its context with "ucp-526 phase 3",
+  # and the human could only reply "whats happening here?".
+  local undefined
+  undefined="$(undefined_terms "$context" "$question" "${option_notes//|/ }" "$why" | paste -sd, - | sed 's/,/, /g')"
+  if [ -n "$undefined" ]; then
+    echo "agent-ask post: the human reads this ask cold, so define its session terms ($undefined): open --context with one plain-words line naming each and saying what it is and why it matters to them, or say it in plain words instead." >&2
+    return 2
   fi
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
