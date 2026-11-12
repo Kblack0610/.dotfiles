@@ -27,7 +27,7 @@ function facet(key, values) {
 }
 // A hub_core::table Summary as it serializes; the first state chip keeps every row. A few words
 // carry the tone hub_core::vocab::tone gives them, so a screenshot shows the tiles' hues.
-const TONE = { failed: "bad", red: "bad", attention: "warn", "needs you": "warn", stalled: "warn", ok: "ok", done: "ok" };
+const TONE = { failed: "bad", red: "bad", trip: "bad", error: "bad", attention: "warn", "needs you": "warn", stalled: "warn", ok: "ok", done: "ok" };
 function table(n, columns, states = ["all"], facets = {}) {
   return {
     q: "", state: states[0], sort: "", dir: "desc", total: n, shown: n,
@@ -201,6 +201,8 @@ const alerts = {
   watches: rows(4, (i) => ({ name: SLUGS[i], state: pick(["TRIP", "ERROR", "OK", "new"], i), severity: "high", since: ago(40), lastrun: ago(2), lasttrip: null, place: TEXT[i], what: "", action: "", evidence: "" })),
   counts: { firing: 7, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1, alertmanager: 1, alertmanager_alerts: 3 },
   strip: { firing: 7, fixes: 1, watches: 3 },
+  watches_table: table(4, ["name", "state", "severity", "project", "since", "lastrun", "place"], ["all", "trip", "error", "new", "ok"], { severity: ["high"], project: PROJECTS.slice(0, 2) }),
+  history_table: table(3, ["when", "actor", "verb", "prio", "source", "text"], ["all", "loud", "failed"], { actor: ["sentinel"], verb: ["tripped"] }),
   errors: [],
 };
 

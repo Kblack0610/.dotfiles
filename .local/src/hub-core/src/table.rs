@@ -345,6 +345,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::jobs::Job>(),
         phone_table::<crate::actions::Action>(),
         phone_table::<crate::alerts::Alert>(),
+        phone_table::<crate::fleet::runner::Watch>(),
         phone_table::<crate::fleet::who::Who>(),
         phone_table::<crate::schedules::Schedule>(),
         phone_table::<crate::releases::App>(),
