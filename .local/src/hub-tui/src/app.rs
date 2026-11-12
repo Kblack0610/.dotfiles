@@ -1971,17 +1971,6 @@ impl App {
                 }
             }
             Msg::ProjPage(pg) => {
-                if self.tv.project.as_ref().map(|(_, n)| n) == Some(&pg.project) {
-                    // The narrowed rows can shrink: keep the selected row, else clamp.
-                    let was = match &self.tasks {
-                        Some(Ok(f)) => self.tv.selected(f).cloned(),
-                        _ => None,
-                    };
-                    self.pv.narrow(&mut self.tv, &pg);
-                    if let Some(Ok(f)) = &self.tasks {
-                        self.tv.reselect(was, f);
-                    }
-                }
                 self.proj_page = Some(*pg);
                 if self.proj_page_read.done() {
                     self.read_proj_page();
@@ -2538,44 +2527,23 @@ impl App {
             }
             if self.pv.dfocus {
                 if let Some(Ok(d)) = &self.deliverables {
-                    let took = self.pv.dkey(&mut self.tv, k, &cards, d, self.page);
-                    // An epic opened from a row narrows at once when its page is already read.
-                    if let (Some(pg), true) = (&self.proj_page, self.pv.epic.is_some()) {
-                        if self.tv.project.as_ref().map(|(_, n)| n) == Some(&pg.project) {
-                            self.pv.narrow(&mut self.tv, pg);
-                        }
-                    }
-                    return took;
+                    return self.pv.dkey(&mut self.tv, k, &cards, d, self.page);
                 }
                 self.pv.dfocus = false;
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
-        if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
-            self.pv.folds = !self.pv.folds;
-            return true;
-        }
+        // An opened project's inner tabs: Left/Right switch them, and every inner tab but Rows
+        // takes its own keys (projtab.rs `page_key`); the row keys are Rows' alone.
         if !self.tv.typing() && self.tv.project.is_some() {
             let name = self.tv.project.as_ref().map(|(_, n)| n.clone());
             let pg = self
                 .proj_page
                 .as_ref()
                 .filter(|pg| Some(&pg.project) == name.as_ref());
-            match (k.code, pg) {
-                (KeyCode::Char('z'), Some(pg)) => {
-                    self.pv.step_system(&mut self.tv, pg);
-                    return true;
-                }
-                (KeyCode::Char('Z'), Some(pg)) => {
-                    self.pv.step_epic(&mut self.tv, pg);
-                    return true;
-                }
-                // An open epic narrows the rows: Esc widens them before it clears or goes back.
-                (KeyCode::Esc, _) if self.pv.epic.is_some() => {
-                    self.pv.close_epic(&mut self.tv);
-                    return true;
-                }
-                _ => {}
+            if self.pv.page_key(&mut self.tv, k, pg, self.page) {
+                self.scroll = 0;
+                return true;
             }
         }
         if let (false, KeyCode::Char('R'), Some((_, name))) =
@@ -2592,7 +2560,7 @@ impl App {
         }
         if !self.tv.typing() {
             let v = &self.tv;
-            let filtered = !v.table.is_default() || v.said.is_some();
+            let filtered = self.pv.rows_shown(v) && (!v.table.is_default() || v.said.is_some());
             if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
                 self.pv.close(&mut self.tv);
                 self.scroll = 0;
@@ -2600,7 +2568,7 @@ impl App {
             }
         }
         // With no rows read there is nothing to clear: Esc still goes back.
-        if self.board_key(k) {
+        if self.pv.rows_shown(&self.tv) && self.board_key(k) {
             return true;
         }
         if k.code == KeyCode::Esc && !self.tv.typing() {
@@ -3990,9 +3958,17 @@ impl App {
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
                 "j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Projects if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
+                "<- -> inner tabs  {}Esc back  r refresh  {tabs} tabs  q quit",
+                match self.pv.inner {
+                    "overview" => "j/k pick a system  Enter its epics  F lists Needs you  ",
+                    "build" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  ",
+                    _ => "j/k scroll  ",
+                }
+            ),
             Tab::Projects if self.pv.open => format!(
                 "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "z/Z/F folds  " } else { "" }
+                if self.tv.project.is_some() { "<- -> inner tabs  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
@@ -4009,7 +3985,7 @@ impl App {
 
     /// The selected row in full, when one project's rows (or All) are open on Projects.
     fn preview(&self, w: usize) -> Option<Vec<Line<'static>>> {
-        if self.tab != Tab::Projects || !self.pv.open {
+        if self.tab != Tab::Projects || !self.pv.open || !self.pv.rows_shown(&self.tv) {
             return None;
         }
         let Some(Ok(f)) = &self.tasks else {
@@ -4147,8 +4123,11 @@ impl App {
                             .find(|c| c.profile == *profile && c.name == *name)
                         {
                             let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                            l = projtab::open_lines(c, pg, &self.pv, self.p, w);
-                            l.push(Line::raw(""));
+                            let (page, at) = projtab::open_lines(c, pg, &self.pv, self.p, w);
+                            if !self.pv.rows_shown(&self.tv) {
+                                return (page, at.map(|a| ("", a)).into_iter().collect());
+                            }
+                            l = page;
                         }
                     }
                     let top = l.len();
@@ -5968,39 +5947,20 @@ mod tests {
         }
         assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
         let s = screen(&mut a, 140, 40);
-        assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
+        assert!(s.contains("NEEDS YOU") && s.contains("[Overview"), "{s}");
         assert!(
-            a.pv.folds && !s.contains("F opens it"),
-            "the sections start open: {s}"
+            !s.contains("ROWS  "),
+            "the rows wait for their inner tab:\n{s}"
         );
-        assert!(s.lines().last().unwrap().contains("z/Z/F folds"), "{s}");
-        a.handle(key('F'));
-        assert!(!a.pv.folds);
-        assert!(screen(&mut a, 140, 40).contains("F opens it"));
-        a.handle(key('F'));
-        // Z opens the first system's first epic and narrows the rows to its open tasks; Esc
-        // widens them again.
-        let mut pg = a.proj_page.clone().unwrap();
-        pg.systems = vec![hub_core::page::System {
-            id: "ui".into(),
-            epics: vec![hub_core::page::EpicLine {
-                id: "de-9".into(),
-                leaves: vec![hub_core::page::Leaf {
-                    id: "de-1".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }];
-        a.proj_page = Some(pg);
-        a.handle(key('Z'));
-        assert_eq!(a.tv.only, Some(vec!["de-1".to_string()]));
-        assert!(screen(&mut a, 140, 40).contains("of the open epic (Esc shows all)"));
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
-        assert!(a.pv.open && a.tv.only.is_none() && a.pv.epic.is_none());
-        a.handle(key('z'));
-        assert!(a.pv.sys.is_none(), "z after ui folds it");
+        assert!(
+            s.lines().last().unwrap().contains("<- -> inner tabs"),
+            "{s}"
+        );
+        // Row keys do nothing off Rows; Right opens Rows.
+        a.handle(key('x'));
+        assert!(a.tv.prompt.is_none());
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right))));
+        assert_eq!(a.pv.inner, "rows");
         let s = screen(&mut a, 140, 30);
         assert!(
             at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
