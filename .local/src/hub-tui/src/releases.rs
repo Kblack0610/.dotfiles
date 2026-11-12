@@ -11,7 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, wrap, Cell, Table};
+use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, Palette};
 use crate::projtab::wrapped;
 
@@ -72,8 +72,8 @@ pub struct ReleasesView {
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
     pub cl: ChangelogRead,
-    /// The Builds inner tab's table and pane.
-    pub builds: crate::builds::BuildsView,
+    /// The Release runs inner tab's table and pane, over `Builds::releases`.
+    pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
 }
@@ -84,26 +84,16 @@ pub fn tab() -> &'static layout::Tab {
 }
 
 /// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
-/// red build of the last day. The TUI reads no tests run, so Tests carries no count here.
+/// red release run of the last day (`b` is `Builds::releases`).
 pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     let mut out = vec![];
     if s.needs_look() {
         out.push("table");
     }
     if b.is_some_and(Builds::needs_look) {
-        out.push("builds");
+        out.push("runs");
     }
     out
-}
-
-/// What the Tests inner tab says: the suites are read by agent-web alone.
-pub fn tests_note(p: Palette, w: usize) -> Vec<Line<'static>> {
-    let text = "The suites of the newest tests.yml run are on agent-web, Releases, Tests. The TUI does not read them.";
-    let words: Vec<&str> = text.split_whitespace().collect();
-    wrap(&words, " ", w.max(20))
-        .into_iter()
-        .map(|l| clip_line(Line::styled(l, p.dim()), w))
-        .collect()
 }
 
 /// The row a selection stands for, so a new snapshot keeps the same app selected.
@@ -577,7 +567,10 @@ mod tests {
     fn the_status_counts_apps_names_what_it_could_not_read_and_says_the_snapshots_age() {
         let (s, p) = (sample(), Palette::default());
         let st = ReleasesView::default().status(&s, p, AT + 120);
-        assert_eq!(text(&st[0]), "What is building, and what is live where?");
+        assert_eq!(
+            text(&st[0]),
+            "What is live where, and which builds made it?"
+        );
         assert!(
             text(&st[1]).starts_with("2 apps: 1 drift, 1 ok"),
             "{}",

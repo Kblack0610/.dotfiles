@@ -1,9 +1,10 @@
-//! The Releases tab's Tests section: the suites of one finished `tests.yml` run, from hub-core's
-//! `junit`. The run is the newest finished one unless the page names another (`trun`); its
-//! artifacts are fetched when it is first read and kept, so only the first look at a run waits
-//! on GitHub. The suites are filtered and sorted here by `hub_core::table`, so the page only
-//! draws. The view keys carry a `t` prefix (`tq`, `ts`, `tsort`, `tdir`). An opened suite reads
-//! its tests from `/api/tests/cases`, which uses the same kept read.
+//! Infra's CI Tests section: the suites of one finished run of a repo's declared test workflow
+//! (`testWorkflows` in the registry), from hub-core's `junit`. The run is the newest finished one
+//! unless the page names another (`trun`); its artifacts are fetched when it is first read and
+//! kept, so only the first look at a run waits on GitHub. The suites are filtered and sorted here
+//! by `hub_core::table`, so the page only draws. The view keys carry a `t` prefix (`tq`, `ts`,
+//! `tsort`, `tdir`). An opened suite reads its tests from `/api/tests/cases`, which uses the same
+//! kept read.
 
 use std::sync::Arc;
 
@@ -80,7 +81,7 @@ fn render(r: &Read, q: &Query) -> String {
             format!("{} {}: {}", run.branch, run.sha, totals.says())
         }
         (Some(run), _) => format!("{} {}: no results", run.branch, run.sha),
-        _ => "no finished run of the tests workflow in the ledger".to_string(),
+        _ => "no finished run of a declared test workflow in the ledger".to_string(),
     };
     let mut errors = r.errors.clone();
     errors.extend(r.loaded.iter().flat_map(|l| l.errors.clone()));
@@ -142,7 +143,7 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
         Ok(b) => b,
         Err(e) => return failed(e),
     };
-    let runs = junit::pickable(&b);
+    let runs = junit::pickable(&b, project_map::cached().as_deref());
     let (run, missing) = choose(&runs, &q.trun);
     let mut errors: Vec<String> = missing.into_iter().collect();
     let kept = match run {
@@ -183,11 +184,10 @@ pub async fn cases(
     let bad = |e: String| (StatusCode::BAD_GATEWAY, e);
     let none = |e: &str| (StatusCode::NOT_FOUND, e.to_string());
     let b = builds::current(items).await.map_err(bad)?;
-    let runs = junit::pickable(&b);
-    let run = runs
-        .iter()
-        .find(|r| r.id == q.run)
-        .ok_or_else(|| none("that run is not among the finished runs of the tests workflow"))?;
+    let runs = junit::pickable(&b, project_map::cached().as_deref());
+    let run = runs.iter().find(|r| r.id == q.run).ok_or_else(|| {
+        none("that run is not among the finished runs of a declared test workflow")
+    })?;
     let l = loaded(run).await.map_err(bad)?;
     let (cases, more) = l
         .cases(&q.tier, &q.suite)
@@ -352,7 +352,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&r, &Query::default())).unwrap();
         assert_eq!(
             v["summary"],
-            "no finished run of the tests workflow in the ledger"
+            "no finished run of a declared test workflow in the ledger"
         );
         assert_eq!(v["table"]["total"], 0);
     }

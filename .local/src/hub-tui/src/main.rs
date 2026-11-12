@@ -49,6 +49,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub vitals [--json]
        hub needs --json | --page
        hub ci [--json | --pool-match SECS]
+       hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -70,6 +71,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
           whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
           or longer, as metric<TAB>label<TAB>value rows. Exits 1 when Prometheus failed
+  ci pass the one CI pass rate (hub_core::builds::verdict) of the run ledger's runs created in
+          [WHEN, WHEN) (epoch seconds or RFC 3339; default the last 24h), on one branch with
+          --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
+          workflow. day-log reads it. Exits 1 when the ledger cannot be read
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -284,8 +289,39 @@ fn needs(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub ci pass`: the pass rate of the ledger's runs over a window, by repo and workflow.
+fn ci_pass(args: &[String]) -> i32 {
+    let now = chrono::Utc::now().timestamp();
+    let (mut since, mut until, mut branch) = (now - 86400, now, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let v = it.next().unwrap_or_else(|| die(USAGE));
+        match a.as_str() {
+            "--since" => since = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--branch" => branch = Some(v.as_str()),
+            _ => die(USAGE),
+        }
+    }
+    let paths = hub_core::builds::Paths::from_env();
+    let text = match std::fs::read_to_string(&paths.ledger) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hub ci pass: {}: {e}", paths.ledger.display());
+            return 1;
+        }
+    };
+    let (rows, _) = hub_core::builds::parse(&text, now);
+    let report = hub_core::builds::pass_by_repo(&rows, since, until, branch);
+    println!("{}", serde_json::to_string(&report).unwrap_or_default());
+    0
+}
+
 /// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
 fn ci(args: Vec<String>) -> i32 {
+    if args.first().map(String::as_str) == Some("pass") {
+        return ci_pass(&args[1..]);
+    }
     enum Mode {
         Text,
         Json,
@@ -455,6 +491,16 @@ fn vitals(args: Vec<String>) -> i32 {
     0
 }
 
+/// The CI runs ledger, joined to the PR store, these queue items and the releases snapshot, as
+/// the live app's `read_builds` reads it.
+fn read_runs(a: &App, items: &[hub_core::queue::Item], now: i64) -> hub_core::builds::Builds {
+    let join = hub_core::builds::Join {
+        runner: &hub_core::session_actions::System,
+        items,
+    };
+    hub_core::builds::read(&a.files.builds, Some(join), now)
+}
+
 /// Epoch seconds, or an RFC 3339 time.
 fn parse_since(s: &str) -> Option<i64> {
     s.parse().ok().or_else(|| {
@@ -597,6 +643,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    // `--tab 'infra runs'` (and the moved `releases builds`) prints the whole CI runs table.
+    if tab == Some(Tab::Infra) && section.as_deref() == Some("runs") {
+        let now = hub_core::jobs::now();
+        let (items, queue_error) = hub_core::actions::queue_items();
+        let b = read_runs(&a, &items, now);
+        let mut errors = b.errors.clone();
+        errors.extend(queue_error);
+        for l in
+            a.ci.status("Runs", &b, a.p, now)
+                .iter()
+                .chain(&a.ci.table(&b, a.p, w, false, now))
+        {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!errors.is_empty());
+    }
     // `--tab jobs` prints the whole jobs table, as the Jobs tab did.
     if tab == Some(Tab::Infra) && section.as_deref() == Some("jobs") {
         let js = hub_core::jobs::collect(&a.paths, &Default::default());
@@ -617,11 +679,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
-        let join = hub_core::builds::Join {
-            runner: &sys,
-            items: &items,
-        };
-        let mut b = hub_core::builds::read(&a.files.builds, Some(join), now);
+        let mut b = read_runs(&a, &items, now).releases(now);
         s.with_builds(&b.rows);
         s.errors.extend(queue_error.clone());
         b.errors.extend(queue_error);
@@ -634,11 +692,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             w,
         )];
         match on {
-            "builds" => {
-                lines.extend(a.rv.builds.status(&b, a.p, now));
-                lines.extend(a.rv.builds.table(&b, a.p, w, false, now));
+            "runs" => {
+                lines.extend(a.rv.runs.status("Release runs", &b, a.p, now));
+                lines.extend(a.rv.runs.table(&b, a.p, w, false, now));
             }
-            "tests" => lines.extend(releases::tests_note(a.p, w)),
             _ => {
                 lines.extend(a.rv.status(&s, a.p, now));
                 lines.extend(a.rv.table(&s, a.p, w, false));
@@ -647,8 +704,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         for l in &lines {
             let _ = writeln!(out, "{}", plain(l));
         }
-        // The exit code is the shown tab's read: Builds' ledger, else the releases snapshot.
-        let errors = if on == "builds" { &b.errors } else { &s.errors };
+        // The exit code is the shown tab's read: the runs ledger, else the releases snapshot.
+        let errors = if on == "runs" { &b.errors } else { &s.errors };
         return i32::from(!errors.is_empty());
     }
     if tab == Some(Tab::Schedules) {
@@ -667,6 +724,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
+    if matches!(tab, None | Some(Tab::Infra)) {
+        let (items, _) = hub_core::actions::queue_items();
+        a.builds = Some(read_runs(&a, &items, hub_core::jobs::now()));
+    }
     // The reds and the Alerts join are read off-thread in the live app; a printed page has no
     // next frame, so read them here or Alerts prints "reading".
     if matches!(tab, None | Some(Tab::Alerts)) {
