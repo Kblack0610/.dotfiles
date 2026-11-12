@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use hub_core::infra::Infra;
+use hub_core::machine_page::{self, MachinePage};
 use hub_core::table::{Row, View};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -116,9 +118,85 @@ impl Cache {
     }
 }
 
+/// One machine's page (`hub_core::machine_page`), kept for the host last asked for: its history
+/// is three week-long range queries and its recent jobs a pass over the jobs archive, so a reload
+/// or the page's own refresh inside `CACHE_SECS` is served the last read.
+#[derive(Default)]
+pub struct Pages(ReadCache<String, CACHE_SECS, String>);
+
+/// The page, its lists sent once: as tables with their rows and links (`shown`, in their own
+/// order), not also as the page's own fields.
+fn page_json(p: &MachinePage) -> String {
+    let none = ViewQuery::new();
+    let mut tables = Map::new();
+    tables.insert("recent".into(), shown(&p.recent, &none, ""));
+    let down = p.history.as_ref().map_or(&[][..], |h| h.down.as_slice());
+    tables.insert("down".into(), shown(down, &none, ""));
+    tables.insert("alerts".into(), shown(&p.alerts, &none, ""));
+    let mut v = match serde_json::to_value(p) {
+        Ok(v) => v,
+        Err(e) => return json!({"error": e.to_string()}).to_string(),
+    };
+    if let Some(o) = v.as_object_mut() {
+        o.remove("recent");
+        o.remove("alerts");
+        if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
+            h.remove("down");
+        }
+        o.insert("tables".into(), Value::Object(tables));
+    }
+    v.to_string()
+}
+
+impl Pages {
+    /// `#infra/machines/<host>`'s read: a name no machine has is a 404, and is not kept.
+    pub async fn get(
+        &self,
+        infra: &Cache,
+        alerts: &crate::alerts::Cache,
+        host: String,
+    ) -> Result<String, (StatusCode, String)> {
+        let read = async {
+            let i = infra.infra().await;
+            let firing = alerts.firing(infra).await;
+            let h = host.clone();
+            let now = hub_core::jobs::now().max(0) as u64;
+            let jobs = hub_core::builds::Paths::from_env().jobs;
+            off(move || {
+                machine_page::read(&i, &h, firing.as_deref().map_err(Clone::clone), &jobs, now)
+                    .map(|p| page_json(&p))
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .map_err(|e| (StatusCode::NOT_FOUND, e))
+        };
+        self.0.get(host.clone(), read).await.map(|s| (*s).clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A machine page sends its lists once, as tables.
+    #[test]
+    fn a_machine_page_sends_its_lists_once_as_tables() {
+        let p = MachinePage {
+            host: "ws".into(),
+            recent: vec![hub_core::machine_page::RecentJob {
+                job: "bats".into(),
+                ..Default::default()
+            }],
+            history: Some(hub_core::host_history::HostHistory::default()),
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
+        assert_eq!(v["host"], "ws");
+        assert!(v.get("recent").is_none() && v.get("alerts").is_none());
+        assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
+        assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
+        assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());
+    }
 
     /// Each table reads its own prefixed keys, and the CI lists are sent once, as tables.
     #[test]

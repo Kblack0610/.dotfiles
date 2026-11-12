@@ -74,12 +74,12 @@ pub struct Step {
     pub completed_at: Option<String>,
 }
 
-fn ts(s: &Option<String>) -> Option<i64> {
+pub(crate) fn ts(s: &Option<String>) -> Option<i64> {
     s.as_deref().and_then(crate::fleet::ts)
 }
 
 /// Seconds from `a` to `b`, when both are known.
-fn span(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+pub(crate) fn span(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     Some((b? - a?).max(0))
 }
 

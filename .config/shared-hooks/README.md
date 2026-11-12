@@ -51,4 +51,4 @@ Writes are never done from a hook. `notes focus add|start|done` owns the vault; 
 
 `tests/unit/focus_lib.bats` covers every checkbox state through the shared parser. `tests/integ/focus_gate.bats` covers the gate's quiet paths as well as its loud one - a gate that fires on idle turns gets trained away within a day. `tests/integ/preflight_focus.bats` covers what turn 1 carries: the agent board, the byte budget, and that the Focus list and an unscoped commit list stay out.
 
-Run them with `make -C tests test-fast`. See the `shell-test-harness` skill before adding more.
+Run them with `make -C tests test-files FILES="unit/focus_lib.bats integ/focus_gate.bats integ/preflight_focus.bats"`. See the `shell-test-harness` skill before adding more.
