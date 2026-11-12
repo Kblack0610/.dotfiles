@@ -4,7 +4,8 @@
 # end_reason, tokens, cost, hard_errors, tests, effort). A false names its reason in `why_not`; a true
 # is proved here by the reader that fact comes from, run on this harness's fixture under
 # tests/fixtures/harness-contract/, giving a value that is not null, zero or empty. A launcher with no
-# reader proves no true, and harnesses on one launcher state the same facts.
+# reader proves no true, and harnesses on one launcher state the same facts. An optional `max_tier`
+# (the harness's trust ceiling, which fleet-dispatch enforces) is 1, 2 or 3.
 # The real map is checked where the private overlay is (the Stop fast tier); public CI skips that one
 # test, and the fixture map and negative controls below run everywhere.
 
@@ -77,7 +78,8 @@ problems() {
       esac
     done
     jq -r --arg h "$h" --arg keys "$KEYS" '.harnesses[$h] as $e | (($e.reports // {}) | (keys - ($keys | split(" ")))[] | "\($h) reports.\(.): not a contract fact"),
-      (($e.why_not // {}) | keys[] | select((if . == "resume" then $e.resume else $e.reports[.] end) != false) | "\($h) why_not.\(.): the fact is not false")' "$map"
+      (($e.why_not // {}) | keys[] | select((if . == "resume" then $e.resume else $e.reports[.] end) != false) | "\($h) why_not.\(.): the fact is not false"),
+      ($e | select(has("max_tier") and ([1, 2, 3] | index($e.max_tier) | not)) | "\($h) max_tier: \(.max_tier | tojson) is not 1, 2 or 3")' "$map"
   done
   # Harnesses on one launcher read their facts from one reader, so they state the same ones.
   jq -r '.harnesses | to_entries | sort_by(.key) | group_by(.value.launcher // .key)[] | select(length > 1)
@@ -122,7 +124,7 @@ fixture_map() {
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.tokens, .hard_errors.tool_errors, .tests]')" '[35,1,1]'
 }
 
-@test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why and launcher siblings that disagree each fail" {
+@test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why, a max_tier that is no tier and launcher siblings that disagree each fail" {
   fixture_map
   jq '.harnesses.glm.why_not |= del(.tests, .effort)
       | .harnesses.glm.reports.effort = true
@@ -130,6 +132,7 @@ fixture_map() {
       | .harnesses.codex.reports.vibes = true
       | .harnesses.codex.why_not = {tokens: "stale"}
       | .harnesses["lazer-reserve"].reports.cost = true | .harnesses["lazer-reserve"].why_not |= del(.cost)
+      | .harnesses.glm.max_tier = "1"
       | .harnesses.cloud = {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: false, tests: false, effort: false},
                             why_not: {resume: "r", end_reason: "e", cost: "c", hard_errors: "h", tests: "t", effort: "f"}}' \
     "$SANDBOX/harnesses.json" > "$SANDBOX/bad.json"
@@ -142,7 +145,8 @@ fixture_map() {
   assert_line 'cloud tokens: true, but the cloud reader gives no value on its fixture'
   assert_line 'lazer-reserve cost: true, but the claude-lazer reader gives no value on its fixture'
   assert_line 'lazer-reserve: states other facts than claude-lazer on the same launcher'
-  assert_equal "${#lines[@]}" 8
+  assert_line 'glm max_tier: "1" is not 1, 2 or 3'
+  assert_equal "${#lines[@]}" 9
 }
 
 @test "negative control: a codex fixture with no turn, no token count and no tool run proves no end_reason, tokens, cost, hard_errors or tests" {

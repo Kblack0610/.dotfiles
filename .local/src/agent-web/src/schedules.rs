@@ -1,6 +1,8 @@
 //! The Schedules tab: everything scheduled and why, from hub-core's `schedules`. The list is
 //! filtered and sorted here by `hub_core::table`, so the page only draws.
 
+use std::sync::Arc;
+
 use hub_core::fleet::Paths;
 use hub_core::schedules::{self, Schedule, Schedules};
 use hub_core::session_actions::System;
@@ -55,11 +57,13 @@ fn failed(e: String) -> String {
 impl Cache {
     /// The view `q` asks for, over the shared read and outside its lock.
     pub async fn get(&self, q: Query) -> String {
+        self.read().await.map_or_else(failed, |s| render(&s, &q))
+    }
+
+    /// The shared read, the tab's and Home's Schedules card's.
+    pub async fn read(&self) -> Result<Arc<Schedules>, String> {
         let read = off(|| schedules::read(&Paths::from_env(), &System));
-        self.0
-            .get((), read)
-            .await
-            .map_or_else(failed, |s| render(&s, &q))
+        self.0.get((), read).await
     }
 }
 

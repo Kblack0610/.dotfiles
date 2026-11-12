@@ -61,14 +61,15 @@ const tblDrawn = new WeakMap();
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
-// The state chips with their counts, the first keeping every row: for the Sessions side list,
-// too narrow for tiles. A table draws its states as tiles (tblTiles).
+// The state chips with their counts, the first the view the table opens on (hub-core
+// `Row::in_default`): for the Sessions side list, too narrow for tiles. A table draws its states
+// as tiles (tblTiles).
 const tblChips = (t) => t.states.map((c, i) => {
   const on = i ? c.name === t.state : !t.state;
   return `<button class="${on ? "on" : ""}" data-ts="${i ? esc(c.name) : ""}">${esc(c.name)} <span class="n">${c.n}</span></button>`;
 }).join("");
 
-// The table's overview: each state but `all` as a tile with its count, in its hue (hub-core's
+// The table's overview: each state but the first (the default view) as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
 // one in force clears it. `extra` is a tab's own tiles after them (Sessions' SPEND). A table with
 // no state but `all` and no extra draws none.

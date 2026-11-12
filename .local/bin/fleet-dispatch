@@ -1653,6 +1653,25 @@ harness_flag() { jq -e --arg h "$1" --arg k "$2" '.harnesses[$h][$k] == true' "$
 # is_canary <item json> -- the item is a fleet-bench canary: it replays a merged PR and is scored fresh.
 is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
 
+# harness_tier_why <harness> <item json> -> why the harness may not take the item, rc 1: the item's tier
+# (item_tier) is over the harness's `max_tier` in the map, its trust ceiling until its runs score beside
+# claude's (raising it is the human's promotion step). Nothing and rc 0 when the harness names no
+# max_tier or the item is a canary (it replays a merged PR and opens no PR: an eval, not work). rc 2,
+# failing closed, when max_tier is not 1, 2 or 3. Why: the human held unscored harnesses off anything
+# critical (2026-11-12).
+harness_tier_why() {
+  local max tier
+  max=$(jq -r --arg h "$1" '.harnesses[$h] // {} | if has("max_tier") then .max_tier | tojson else "none" end' "$HARNESSES" 2>/dev/null) ||
+    { echo "$HARNESSES is unreadable, so its max_tier is unknown"; return 2; }
+  [ "$max" != none ] || return 0
+  [[ "$max" =~ ^[123]$ ]] || { echo "its max_tier in $HARNESSES is not 1, 2 or 3"; return 2; }
+  ! is_canary "$2" || return 0
+  tier=$(item_tier "$2")
+  [ "$tier" -gt "$max" ] || return 0
+  echo "it takes tier $max work at most (max_tier in $HARNESSES, until its runs score beside claude), and this is tier $tier"
+  return 1
+}
+
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
@@ -2701,7 +2720,7 @@ settle_sessionless() {
 # present trickle has room (runnable), and start_items counts the trickle down. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
-# each one published NOOP, which every dashboard showed green. A human's dispatch hold is NOOP.
+# each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
   local items="$1" head why
   head=$(head -n 1 <<<"$items")
@@ -2725,7 +2744,7 @@ run_queue() {
       PROJECT_PASS=1 FLOOR_GATE=$why; start_items "$idle_items" "$2"
       local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
     fi
-    settle "$(held_outcome "$why")" "$why, queue item $(jq -r .slug <<<"$head") waits"
+    settle BLOCKED "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
   start_items "$items" "$2"
@@ -2791,10 +2810,6 @@ start_items() {
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
 }
-
-# held_outcome <gate reason> -> the outcome of a pass that left runnable work: NOOP when the human
-# held dispatch on purpose (agent-hold), else BLOCKED.
-held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
 TAKEN_JQ='(.waits | not)'
@@ -3238,7 +3253,8 @@ item_pinned() {
 # hold (takes_plan: a headless one that cannot resume takes no plan item), on a headless one never an
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
 # all while that list is unreadable), an item of a project its `projects` allowlist names when it has
-# one (harness_project_why, pinned or not: ocfree carries public input only), only a canary item when
+# one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
+# its `max_tier` unless a canary (harness_tier_why, pinned or not), only a canary item when
 # it runs in its own lane sandbox (sandbox_item_why), and, when routed rather
 # than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
@@ -3263,6 +3279,7 @@ route() {
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
+    elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
@@ -3380,6 +3397,7 @@ held_short() {
 # held_clears <why> -> what ends the hold, in the words of the gate that holds.
 held_clears() {
   case "$1" in
+    "held"*) echo "Clears with agent-hold release dispatch" ;;
     "no account has room"*) echo "Clears when an account is back under its pace" ;;
     "account usage unreadable"*) echo "Clears when claude-acct reads usage again" ;;
     "finding firing"*) echo "Clears when its finding stops firing" ;;
@@ -3991,8 +4009,10 @@ machine_why() {
 # Every gate is read and every closed one named, joined by "; ": naming the first only hid a load
 # hold behind an account hold for a whole day. A hold stops the reading: nothing else matters then.
 gate() {
-  local load infra github idle rc out why=()
-  agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
+  local load infra github idle rc out hold why=()
+  # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
+  hold=$(agent-hold check dispatch 2>/dev/null) ||
+    { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
   # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
   acct_room; rc=$?
   case $rc in

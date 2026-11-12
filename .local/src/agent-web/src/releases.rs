@@ -1,7 +1,10 @@
 //! The Releases tab: every app with what is deployed where, its channels on open, from hub-core's
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
-//! No read cache of its own: the read is one small file, and a new snapshot pushes the `releases`
-//! event. The apps' build runs come from the builds read and its cache.
+//! No read cache for the snapshot: it is one small file, and a new snapshot pushes the `releases`
+//! event. The apps' build runs come from the builds read and its cache; their CHECKS cell from
+//! `app_status::badges`, two VictoriaMetrics calls kept `CHECKS_SECS` per set of groups, since the
+//! page re-reads every minute while it shows (Prometheus has no push); a project page's checks
+//! line reads through the same keep.
 
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
@@ -11,7 +14,35 @@ use hub_core::releases::{self, App, Releases, STALE_SECS};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+
+/// How long one read of a set of apps' checks answers again.
+const CHECKS_SECS: i64 = 30;
+type Groups = Vec<(String, Vec<String>)>;
+type Checks = Result<HashMap<String, releases::Badge>, String>;
+/// Each asked-for set of groups (every app's for the tab, one app's for its project page) with
+/// when it was read and what it said.
+static CHECKS: Mutex<BTreeMap<Groups, (i64, Checks)>> = Mutex::new(BTreeMap::new());
+
+/// The checks of `groups` (`hub_core::app_status::badges`), from the last read of the same groups
+/// while it is under `CHECKS_SECS` old. The lock is held through a read, so requests that arrive
+/// together make one read and the rest take its answer.
+pub fn checks(groups: &[(String, Vec<String>)]) -> Checks {
+    let now = hub_core::jobs::now();
+    let mut held = CHECKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, r)) = held.get(groups) {
+        if now - at < CHECKS_SECS {
+            return r.clone();
+        }
+    }
+    let r = hub_core::app_status::badges(&System, groups, now);
+    held.retain(|_, (at, _)| now - *at < CHECKS_SECS);
+    held.insert(groups.to_vec(), (now, r.clone()));
+    r
+}
 
 /// The table view (`q`, `s`, `sort`, `dir`, the keys the page keeps in its URL) and the app whose
 /// page is open (`#releases/apps/<name>`, links::Kind::App), read whatever the view hides.
@@ -87,6 +118,7 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     let read = move || {
         let mut r = releases::read(&System, &items);
         r.errors.extend(queue_error);
+        r.with_checks(&checks(&r.check_groups()));
         match runs {
             Ok(b) => r.with_builds(&b.rows),
             Err(e) => r.errors.push(format!("build runs: {e}")),

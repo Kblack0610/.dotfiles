@@ -11,7 +11,7 @@
 //! up again after 2 good ones, an uptime with any failure never rounds to 100, a monitor silent
 //! for 5 minutes says so, and a check with no results is unknown, not up.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{Local, TimeZone};
 use serde::Serialize;
@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::kube_proxy::label;
 use crate::links::{Kind, Link};
 use crate::prom::{self, Series};
-use crate::releases::{self, Level, Release};
+use crate::releases::{self, Badge, Level, Release};
 use crate::session_actions::Runner;
 use crate::session_page::Part;
 
@@ -45,6 +45,12 @@ const DOWN_AFTER: u64 = 2;
 const UP_AFTER: u64 = 2;
 /// How many incidents the page lists, newest first.
 const INCIDENTS_SHOWN: usize = 20;
+/// How far back a badge reads results: the page's own rule, a check is the app's while it
+/// reported in 24h, so a badge and the page it links to read the same checks. 1,440 points a
+/// series at `STEP`.
+const BADGE_SECS: i64 = 86_400;
+/// How far back a group's newest result is looked for; an app with none in that time has no check.
+const NEWEST_RANGE: &str = "7d";
 const NO_DATA: &str = "No data";
 
 /// One day's bar: the 24 hours ending at `at`.
@@ -70,7 +76,7 @@ pub struct Incident {
 }
 
 /// One Gatus check of the app.
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Check {
     pub name: String,
     pub group: String,
@@ -197,7 +203,7 @@ pub fn days(ok: &BTreeMap<i64, u64>, fail: &BTreeMap<i64, u64>, end: i64) -> Vec
 /// down once it holds `DOWN_AFTER`; a pass before then drops it, and a down run ends at `UP_AFTER`
 /// good results with none failed between them. A single failed result is no incident. A step
 /// holding both is read failures first, so its passes count toward the way back up.
-pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bool) {
+pub fn incidents(steps: &[(i64, u64, u64)]) -> (Runs, bool) {
     let mut out = Vec::new();
     let (mut start, mut fails, mut good, mut down) = (None::<i64>, 0u64, 0u64, false);
     for &(t, ok, fail) in steps {
@@ -226,6 +232,41 @@ pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bo
         out.push((start.unwrap_or(0), None, fails));
     }
     (out, failing)
+}
+
+/// A check's results per step as `(t, ok, failed)`, oldest first, a step with none dropped.
+fn results(c: Option<&Counts>) -> Vec<(i64, u64, u64)> {
+    let Some((ok, fail)) = c else {
+        return vec![];
+    };
+    let ts: BTreeSet<i64> = ok.keys().chain(fail.keys()).copied().collect();
+    ts.into_iter()
+        .map(|t| {
+            (
+                t,
+                ok.get(&t).copied().unwrap_or(0),
+                fail.get(&t).copied().unwrap_or(0),
+            )
+        })
+        .filter(|s| s.1 + s.2 > 0)
+        .collect()
+}
+
+/// A check's state from its results (`No data`, `Down`, `Failing` or `Operational`) and its down
+/// stretches, as [`incidents`] reads them.
+type Runs = Vec<(i64, Option<i64>, u64)>;
+fn state(results: &[(i64, u64, u64)]) -> (&'static str, Runs) {
+    let (runs, failing) = incidents(results);
+    let s = if results.is_empty() {
+        NO_DATA
+    } else if runs.last().is_some_and(|r| r.1.is_none()) {
+        "Down"
+    } else if failing {
+        "Failing"
+    } else {
+        "Operational"
+    };
+    (s, runs)
 }
 
 /// `11-03 14:02` in local time.
@@ -420,29 +461,7 @@ pub fn build(
             .collect();
         let (dok, dfail) = day.get(&key).map_or((&empty, &empty), |(o, f)| (o, f));
         let end = dok.keys().chain(dfail.keys()).max().copied().unwrap_or(now);
-        let (sok, sfail) = steps.get(&key).map_or((&empty, &empty), |(o, f)| (o, f));
-        let ts: BTreeSet<i64> = sok.keys().chain(sfail.keys()).copied().collect();
-        let series: Vec<(i64, u64, u64)> = ts
-            .into_iter()
-            .map(|t| {
-                (
-                    t,
-                    sok.get(&t).copied().unwrap_or(0),
-                    sfail.get(&t).copied().unwrap_or(0),
-                )
-            })
-            .filter(|s| s.1 + s.2 > 0)
-            .collect();
-        let (runs, failing) = incidents(&series);
-        let state = if series.is_empty() {
-            NO_DATA
-        } else if runs.last().is_some_and(|r| r.1.is_none()) {
-            "Down"
-        } else if failing {
-            "Failing"
-        } else {
-            "Operational"
-        };
+        let (state, runs) = state(&results(steps.get(&key)));
         for (from, to, fails) in runs {
             incidents_all.push(Incident {
                 check: key.1.clone(),
@@ -539,7 +558,7 @@ fn queries(sel: &str) -> (Vec<String>, String, String, String, String, String) {
                 )
             })
             .join(" or "),
-        format!("max(tlast_over_time(gatus_results_total{sel}[7d]))"),
+        format!("max(tlast_over_time(gatus_results_total{sel}[{NEWEST_RANGE}]))"),
     )
 }
 
@@ -596,6 +615,75 @@ pub fn read(runner: &(dyn Runner + Sync), app: &str, now: i64) -> Result<AppStat
         return Err(format!("no app named {app}"));
     }
     Ok(page)
+}
+
+/// Each app's banner as a badge for its Releases row and its Projects card, from two queries
+/// over every app's groups at once, so a tab of 20 apps costs two calls and not 180: the last
+/// `BADGE_SECS` of results at `STEP` and each group's newest result. `apps` is each app with its [`groups`]. An app with no result in
+/// `NEWEST_RANGE` is absent: it has no check, which project-map-doctor names.
+pub fn badges(
+    runner: &(dyn Runner + Sync),
+    apps: &[(String, Vec<String>)],
+    now: i64,
+) -> Result<HashMap<String, Badge>, String> {
+    let all: BTreeSet<String> = apps.iter().flat_map(|(_, g)| g.iter().cloned()).collect();
+    if all.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sel = selector(&all.into_iter().collect::<Vec<_>>());
+    let step = format!("sum by (group,name,success) (increase(gatus_results_total{sel}[1m]))");
+    let newest =
+        format!("max by (group) (tlast_over_time(gatus_results_total{sel}[{NEWEST_RANGE}]))");
+    let join = |h: std::thread::ScopedJoinHandle<'_, Result<Vec<Series>, String>>| {
+        h.join().unwrap_or_else(|_| Err("query panicked".into()))
+    };
+    let (steps, newest) = std::thread::scope(|s| {
+        let a = s.spawn(|| prom::vm(runner, &step, Some((now - BADGE_SECS, now, STEP))));
+        let b = s.spawn(|| prom::vm(runner, &newest, None));
+        (join(a), join(b))
+    });
+    match (steps, newest) {
+        (Ok(s), Ok(n)) => Ok(verdicts(apps, &s, &n, now)),
+        (Err(a), Err(b)) if a == b => Err(a),
+        (Err(a), Err(b)) => Err(format!("{a}; {b}")),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    }
+}
+
+/// [`badges`] from its two answers: each app's checks that reported in the window, their states
+/// and the newest result of its groups, through the page's own [`banner`].
+pub fn verdicts(
+    apps: &[(String, Vec<String>)],
+    steps: &[Series],
+    newest: &[Series],
+    now: i64,
+) -> HashMap<String, Badge> {
+    let steps = split(steps);
+    let newest: BTreeMap<&str, i64> = newest
+        .iter()
+        .filter_map(|s| Some((s.label("group"), s.value? as i64)))
+        .collect();
+    apps.iter()
+        .filter_map(|(app, groups)| {
+            let n = groups
+                .iter()
+                .filter_map(|g| newest.get(g.as_str()))
+                .max()
+                .copied()?;
+            let checks: Vec<Check> = steps
+                .iter()
+                .filter(|((g, _), _)| groups.contains(g))
+                .map(|((g, name), c)| Check {
+                    name: name.clone(),
+                    group: g.clone(),
+                    state: state(&results(Some(c))).0.into(),
+                    ..Check::default()
+                })
+                .collect();
+            let (says, level) = banner(&checks, Some(n), now);
+            Some((app.clone(), Badge { says, level }))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -818,6 +906,56 @@ mod tests {
         assert_eq!(groups("binks-chat", &rows), ["binks-chat"]);
         assert_eq!(groups("shop", &rows), ["shop", "shop-preview"]);
         assert_eq!(selector(&groups("binks", &rows)), r#"{group=~"^(binks)$"}"#);
+    }
+
+    #[test]
+    fn a_badge_is_the_pages_banner_and_absence_is_no_badge() {
+        let now = 1_800_000_000;
+        let apps = vec![
+            ("pmp".to_string(), vec!["pmp".to_string()]),
+            (
+                "binks".to_string(),
+                vec!["binks".to_string(), "binks-preview".to_string()],
+            ),
+            ("shop".to_string(), vec!["shop".to_string()]),
+            ("quiet".to_string(), vec!["quiet".to_string()]),
+        ];
+        let at = |n: i64| now - 60 * n;
+        let steps = [
+            series(
+                "pmp",
+                "api",
+                Some(true),
+                &[(at(3), 1.0), (at(2), 1.0), (at(1), 1.0)],
+            ),
+            // Two failed results in a row in a non-prod group still count for the app.
+            series("binks", "web", Some(true), &[(at(3), 1.0), (at(2), 1.0)]),
+            series(
+                "binks-preview",
+                "chat",
+                Some(false),
+                &[(at(2), 1.0), (at(1), 1.0)],
+            ),
+            series("quiet", "web", Some(true), &[(at(90), 1.0)]),
+        ];
+        let newest_of = |g: &str, t: i64| Series {
+            labels: BTreeMap::from([("group".to_string(), g.to_string())]),
+            value: Some(t as f64),
+            points: vec![],
+        };
+        let newest = [
+            newest_of("pmp", at(1)),
+            newest_of("binks", at(2)),
+            newest_of("binks-preview", at(1)),
+            newest_of("quiet", now - 2 * 3600),
+        ];
+        let b = verdicts(&apps, &steps, &newest, now);
+        assert_eq!(b["pmp"].says, "Operational");
+        assert_eq!(b["binks"].says, "Partial outage: chat");
+        assert_eq!(b["binks"].level, Level::Bad);
+        // No result in a week is no check: absent, so the surface says `no check`, never up.
+        assert!(!b.contains_key("shop"));
+        assert!(b["quiet"].says.starts_with("Monitor stopped reporting at "));
     }
 
     /// One live read as the page's JSON, for a screenshot of the page through the phone harness's

@@ -4,6 +4,8 @@
   --user: #eaf0fb; --tool: #f1efe9;
   /* fleet-sessions buckets */
   --b-needs: #d4483b; --b-stalled: #dd7a1f; --b-landed: #8457d0; --b-chat: #8f8d86; --b-parked: #b5b3ab; --b-working: #2f6fde; --b-done: #3f9a5a;
+  /* The one cap on a tab's content: below it a tab takes the screen's width (ui.md rule 10). */
+  --page-max: 1600px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -110,33 +112,30 @@ textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font:
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--line); background: var(--accent); } }
 #asks { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
-#asks > details { max-width: 760px; margin: 0 auto; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: 760px; }
+#asks > details { max-width: var(--page-max); margin: 0 auto; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0 auto 12px; max-width: var(--page-max); }
 .card .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-family: var(--mono); }
 .card .q:not(.md) { white-space: pre-wrap; margin-bottom: 10px; }
 .card .q.planq { max-height: 24em; overflow-y: auto; font-size: 13px; background: var(--tool); padding: 6px 10px; border-radius: 6px; }
 .planpeek { flex-basis: 100%; margin: 4px 0; font-size: 12px; background: var(--tool); padding: 6px 8px; border-radius: 6px; }
 .card .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 /* A section head (ui.js secHead): the title in ink and its count muted beside it. */
-h2.sec, h3.sec { font-size: var(--fs-lg); font-weight: 650; color: var(--ink); margin: 18px auto 8px; max-width: 760px; }
+h2.sec, h3.sec { font-size: var(--fs-lg); font-weight: 650; color: var(--ink); margin: 18px auto 8px; max-width: var(--page-max); }
 h3.sec { font-size: var(--fs-md); font-weight: 600; margin-top: 14px; }
 .sec .n { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sec.warn { color: var(--b-stalled); } .sec.bad { color: var(--b-needs); }
 .card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
-#queue > *, #queue h2.sec { max-width: 760px; }
-#home > *, #home h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
-#q-list .card { max-width: none; }
-#b-root > *, #b-root h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+#queue > *, #queue h2.sec { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
+#home > *, #home h2.sec { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
+#b-root > *, #b-root h2.sec, #p-head > * { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
 #b-tbl .card, #b-tbl h2.sec, #p-cards .card { max-width: none; }
-/* The board's table takes the screen's width: a row's title and epic are what it is read for. */
-#b-root > #b-tbl { max-width: 1600px; }
 #b-root summary { cursor: pointer; }
 #b-root summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 /* Daily (focus.js): one note read like a page, phone width first; a link into another note or a
    project is in-app (#daily/..., #projects/...), so it is styled apart from an external one. */
-#d-main > div > *, #daily h2.sec { max-width: 760px; margin-left: auto; margin-right: auto; }
+#d-main > div > *, #daily h2.sec { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
 #daily .opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
 #daily a.btn { text-decoration: none; display: inline-block; }
 /* A linked cell (table.js tblLink) reads as its text; the link shows on hover or keyboard focus, and
@@ -178,7 +177,33 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
-.flow { margin: 0 0 10px; overflow-wrap: anywhere; } .flow .fchip { text-decoration: none; margin: 0 4px 4px 0; } .flow a.fchip:hover { text-decoration: underline; } .fnote { font-size: var(--fs-sm); } .qwarn { color: var(--b-stalled); font-weight: 600; }
+.flow { margin: 0 0 10px; overflow-wrap: anywhere; } .fnote { font-size: var(--fs-sm); }
+/* Home's status grid (hub_core::cards): one card per tab, a hairline box with no shadow (ui.md
+   rule 2); the label is the KPI tile's small uppercase (rule 6) and the number wears its hue. */
+.kgrid { display: grid; gap: 12px; grid-template-columns: 1fr; margin: 0 0 12px; }
+@media (min-width: 600px) { .kgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1200px) { .kgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.kt { display: flex; justify-content: space-between; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); text-decoration: none; }
+.kt:hover { color: var(--ink); }
+.kbig { font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--ink); }
+.kbig.ok { color: var(--b-done); } .kbig.warn { color: var(--b-stalled); } .kbig.bad { color: var(--b-needs); }
+.ku { font-size: var(--fs-sm); font-weight: 400; color: var(--muted); margin-left: 6px; }
+.kbar { display: flex; gap: 2px; height: 6px; margin: 4px 0; }
+.kbar i { flex: 1; border-radius: 3px; background: var(--line); }
+.kbar i.ok { background: var(--b-done); } .kbar i.warn { background: var(--b-stalled); } .kbar i.bad { background: var(--b-needs); }
+.kparts { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.kp { display: flex; align-items: baseline; gap: 5px; text-decoration: none; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.kp b { font-size: var(--fs-sm); color: var(--ink); font-variant-numeric: tabular-nums; }
+.kp b.warn { color: var(--b-stalled); } .kp b.bad { color: var(--b-needs); }
+.kfh { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); font-size: var(--fs-xs); font-weight: 650; color: var(--muted); }
+.kf { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; text-decoration: none; color: var(--ink); font-size: var(--fs-sm); padding: 1px 0; min-width: 0; }
+.kf > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kf small { margin-left: 6px; color: var(--muted); font-size: var(--fs-xs); }
+.kf em { flex: none; font-style: normal; font-size: var(--fs-xs); padding: 0 8px; border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.kf em.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.kf em.bad { color: var(--b-needs); background: color-mix(in srgb, var(--b-needs) 14%, transparent); }
+.kf:hover b, .kp:hover b { text-decoration: underline; }
 /* The pipeline line: one point per step on a rail; a phone stacks them, the detail under its step. */
 .rail { display: flex; flex-wrap: wrap; }
 .rnode { position: relative; flex: 1 1 0; min-width: 0; padding: 18px 2px 4px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
@@ -228,8 +253,8 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .row-end .err { flex: 1; }
 .rd summary { cursor: pointer; }
 .rd-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
-.board > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
-.board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
+.board > * { max-width: var(--page-max); margin-left: auto; margin-right: auto; }
+.board h2.sec { max-width: var(--page-max); display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
 /* A table's state chips (static/table.js) and a muted mono time. */
 .fseg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .tdays { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -427,7 +452,7 @@ span.warn { color: var(--b-stalled); }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
 .tbl tr.jr, .tbl tr.wr, .tbl tr.prop, .tbl tr.qr { cursor: pointer; }
-/* Board cells wrap, breaking a long word or PR ref anywhere, so the table never outgrows the screen. */
+/* Board and Queue title cells wrap, breaking a long word or PR ref anywhere, so the table never outgrows the screen. */
 .tbl td.btitle, .tbl td.bepic, .tbl td.bwhen { white-space: normal; overflow-wrap: anywhere; }
 .tbl td.btitle { min-width: 28ch; }
 .tbl td.bepic { min-width: 12ch; max-width: 28ch; }
@@ -582,7 +607,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .dn .dlc { margin-left: auto; }
 .dng { flex: none; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 @media (min-width: 900px) {
-  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, 760px); justify-content: center; align-items: start; gap: 28px; }
+  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, calc(var(--page-max) - 218px)); justify-content: center; align-items: start; gap: 28px; }
   #daily > * { margin: 0; max-width: none; }
   #d-nav { position: sticky; top: 0; flex-direction: column; max-height: calc(100vh - 100px); overflow-y: auto; }
   .dng { margin: 14px 10px 4px; padding-top: 12px; border-top: 1px solid var(--line); }

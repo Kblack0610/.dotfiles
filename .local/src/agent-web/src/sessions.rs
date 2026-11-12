@@ -32,8 +32,8 @@ pub struct TableQuery {
 
 /// Every row, the state document under it and what could not be read.
 #[derive(Default)]
-struct Read {
-    rows: Vec<SessionRow>,
+pub(crate) struct Read {
+    pub(crate) rows: Vec<SessionRow>,
     state: Vec<Value>,
     buckets: Vec<String>,
     errors: Vec<String>,
@@ -77,7 +77,7 @@ fn failed(e: String) -> String {
 }
 
 impl Cache {
-    async fn read(&self) -> Result<Arc<Read>, String> {
+    pub(crate) async fn read(&self) -> Result<Arc<Read>, String> {
         let read = off(|| {
             let (state, vocab) = session_table::read_state(&boards::fleet_state());
             let feed = session_table::feed(&System, &session_table::registry());

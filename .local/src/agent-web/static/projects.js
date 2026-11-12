@@ -111,7 +111,7 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
   return `<div class="ptl${l.level === "ok" ? "" : ` ${esc(l.level)}`}">${text}</div>`;
 }).join("") + older(t.older);
 
-// The opened project's header: the card, its goal, Flow, releases, alerts and the next stage's
+// The opened project's header: the card, its goal, Flow, releases, checks, alerts and the next stage's
 // gate (a link to Stage), then the inner tab strip, the count on Overview being what needs the
 // human and on Stage the failing checks.
 function pOpened(c) {
@@ -121,6 +121,7 @@ function pOpened(c) {
   if (pg) {
     if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
     if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
+    if (pg.checks) html += `<div class="cline">checks: <a class="${pg.checks.level === "ok" ? "" : pg.checks.level}" href="#releases/apps/${encodeURIComponent(c.name)}">${esc(pg.checks.says)}</a></div>`;
     if (pg.alerts) html += `<div class="cline">alerts: <a class="${pg.alerts.level === "ok" ? "" : pg.alerts.level}" href="#alerts?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.alerts.says)}</a></div>`;
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");

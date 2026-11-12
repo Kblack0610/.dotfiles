@@ -3,8 +3,12 @@
 # lane, when a Claude account has. An effort overrides the harness's own default for that lane's runs;
 # with none, the harness's default. A claude lane names one, which keeps it out of the claude baseline.
 # A harness with a `projects` allowlist replays only those projects' tasks (ocfree: public input only).
+# A canary is the score that can lift a harness's `max_tier` (harnesses.json): go, nim and ocfree take tier-1
+# work only until their canaries score beside the claude lane's.
 codex sol medium
 codex sol high
 claude haiku max
 claude sonnet medium
 ocfree beam
+opencode-go glm
+nim deepseek

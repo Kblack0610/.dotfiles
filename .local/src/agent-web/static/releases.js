@@ -41,7 +41,7 @@ let relOpened = null;
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
+const REL_COLS = { project: ["app"], stage: ["stage"], live: ["deployed"], status: ["status"], checks: ["checks"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
 // One app; the name goes to its Projects card, the rest of the row to its page.
 function releaseRow(a, i) {
@@ -49,6 +49,7 @@ function releaseRow(a, i) {
   return `<tr class="jr" data-key="${esc(relKey(a))}"><td>${tblLink(project, a.project)}</td>` +
     `<td class="${levelClass(a.stage_level) || "muted"}" title="${esc(a.stage_text)}">${esc(a.stage || "-")}</td>` +
     `<td class="${relDim(a.live_text, "wrap")}">${esc(a.live_text)}</td><td class="${levelClass(a.level)}">${esc(a.status_text)}</td>` +
+    `<td class="${a.checks.says === "no check" ? "muted" : levelClass(a.checks.level)}">${esc(a.checks.says)}</td>` +
     `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relDim(a.released_text)}">${esc(a.released_text)}</td>` +
     `<td class="${relDim(a.last_deploy_text, levelClass(a.deploy_level))}">${esc(a.last_deploy_text)}</td></tr>`;
 }
@@ -234,7 +235,8 @@ const refreshAppPage = coalesce(async () => {
   apst.err = err;
   if (st.page === page) relst.render();
 });
-const pollAppPage = poll("releases", () => { if (relPage()) refreshAppPage(); }, APP_PAGE_REFRESH_MS);
+// The open app's page, or the table's CHECKS column, re-read each minute while it shows.
+const pollAppPage = poll("releases", () => (relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
 // A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
 function dayColor(d) {
   if (!d.ok && !d.fail) return APP_DAY_COLOR.none;
