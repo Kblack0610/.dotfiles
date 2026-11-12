@@ -76,7 +76,7 @@ Picking the probe (deterministic-first):
 | "alert if <metric> goes above/below N" | `metric` | `target` (a /metrics URL), `expect_metric`, `expect_op`, `expect_threshold` |
 | "watch pod restarts / is the rollout healthy" | `kubectl` | `target: ctx/ns/selector`, `expect_restarts_max` or `expect_rollout: ready` |
 | "run this check / exit code" | `command` | `expect_cmd`, `expect_exit` |
-| "does X *look* healthy / are payments flowing / something off" | `agent` | `agent_question`, repeatable `signal:`, slow `interval`, `expiry` if temporary |
+| "does X *look* healthy / are payments flowing / something off" | `agent` | `agent_question`, a `signal:` list, slow `interval`, `expiry` if temporary |
 
 Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high) and
 `expiry`: a duration like `60m` from `created` or an ISO timestamp for a temporary ask, `null` for a standing watch (`--strict` refuses a missing, bare or `~` expiry).
