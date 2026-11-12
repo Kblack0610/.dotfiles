@@ -303,9 +303,8 @@ $("ci-pipelines").addEventListener("click", (e) => {
 // Infra's CI Tests: the suites of one finished run of a declared test workflow.
 const TESTS_PRE = "t";
 const TESTS_HINT = "search, or tier:unit state:failed suite:fleet, or a test's name";
-const TEST_RESULTS = ["all", "failed", "quarantined", "skipped", "passed"];
 const tst = tblTab({
-  tab: "infra", id: "tst", pre: TESTS_PRE, el: "ci-tests", api: "/api/tests", hint: TESTS_HINT, state: { cases: null, res: "" },
+  tab: "infra", id: "tst", pre: TESTS_PRE, el: "ci-tests", api: "/api/tests", hint: TESTS_HINT,
   // The Quarantine table's view rides the same read.
   params: (p) => {
     const v = new URLSearchParams(st.views.infra || "");
@@ -313,11 +312,26 @@ const tst = tblTab({
     for (const [k, v] of tblParams(st.views.infra, QTN_PRE)) p.set(k, v);
   },
   head: (t) => testsHead(t.data), body: (t) => testsBody(t.data), tiles: (t) => testsTiles(t.data),
-  render: () => ciPaint("ci-tests", tst, qtn),
+  render: () => ciPaint("ci-tests", tst, qtn, cas),
   after: () => renderInfra(),
   // An opened suite belongs to the run it was read from: another run shows none open.
-  got: (t) => { if (t.cases && t.cases.run !== (t.data.run && t.data.run.id)) { t.sel = null; t.cases = null; t.res = ""; } },
+  got: (t) => { if (cas.run && cas.run !== (t.data.run && t.data.run.id)) { t.sel = null; shutSuite(); } },
 });
+
+// The opened suite's tests: a table of their own (`c` keys), filtered on the server so the
+// result tiles count every test of the suite, not only the CASE_ROWS it sends.
+const CASES_PRE = "c";
+const cas = tblTab({
+  tab: "infra", id: "cas", pre: CASES_PRE, el: "ci-tests", api: "/api/tests/cases", hint: "search a test's name, full name or failure",
+  state: { run: null, tier: "", suite: "", key: null },
+  params: (p, t) => { p.set("run", t.run); p.set("tier", t.tier); p.set("suite", t.suite); },
+  // A read answers the suite it asked for, which a quick second open may have moved past.
+  got: (t) => { const p = new URLSearchParams(t.q); t.key = `${p.get("run")}|${p.get("tier")}|${p.get("suite")}`; },
+  render: () => tst.render(),
+  wrap: (h) => `<div data-tbl="${CASES_PRE}">${h}</div>`,
+  body: (t) => casesBody(t.data),
+});
+const shutSuite = () => Object.assign(cas, { run: null, tier: "", suite: "", key: null, data: null, err: null });
 
 const TST_COLS = { state: ["state"], tier: ["tier"], suite: ["suite"], tests: ["tests", "n"], failed: ["failed", "n"], quarantined: ["quarantined", "n"], skipped: ["skipped", "n"], time: ["time", "n"] };
 const tstKey = (r) => `${r.tier}|${r.suite}`;
@@ -335,21 +349,18 @@ function suiteRow(r) {
   return open ? row + suiteDetail(r) : row;
 }
 
-// The opened suite's tests, failed first, with the result chips filtering them in place.
+// The opened suite's tests, failed first, under their result tiles and search.
 function suiteDetail(r) {
-  const c = tst.cases && tst.cases.key === tstKey(r) ? tst.cases : null;
-  let inner = `<span class="muted">reading...</span>`;
-  if (c && c.err) inner = `<span class="warn">${esc(c.err)}</span>`;
-  else if (c && c.data) {
-    const all = c.data.cases, n = (x) => (x === "all" ? all.length : all.filter((t) => t.result === x).length);
-    const chips = TEST_RESULTS.map((x) => chipBtn(x === "all" ? !tst.res : tst.res === x, "data-cres", x === "all" ? "" : x, x, n(x))).join("");
-    const list = all.filter((t) => !tst.res || t.result === tst.res);
-    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${dotted(t.name)} <span class="muted">${testTime(t.time)}</span>` +
-      (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
-    inner = `<div class="seg fseg">${chips}</div>` + (lines || `<div class="muted">No ${esc(tst.res)} tests.</div>`) +
-      (c.data.more > 0 ? `<div class="muted">${c.data.more} more not shown; search for a test's name to find it.</div>` : "");
-  }
+  const open = cas.data && cas.key === `${cas.run}|${tstKey(r)}`;
+  const inner = open ? cas.html() : cas.err ? `<span class="warn">${esc(cas.err)}</span>` : `<span class="muted">reading...</span>`;
   return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${dotted(r.suite)}</div>${inner}</div></td></tr>`;
+}
+
+function casesBody(d) {
+  const lines = d.cases.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${dotted(t.name)} <span class="muted">${testTime(t.time)}</span>` +
+    (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
+  return (lines || `<div class="muted">${d.table.total ? "No test matches." : "No tests in this suite."}</div>`) +
+    (d.more > 0 ? `<div class="muted">${d.more} more not shown; search for a test's name to find it.</div>` : "");
 }
 
 function testsBody(d) {
@@ -436,25 +447,23 @@ tst.block = () => {
     `<div id="tst-body">${body}</div></div>` + qtnBlock(tst.data);
 };
 
-// A suite's tests, read when its row opens.
-async function openSuite(key, r) {
+// A suite's tests, read when its row opens, on all of them.
+function openSuite(key, r) {
   tst.sel = key;
-  tst.res = "";
-  const c = tst.cases = { key, run: tst.data.run.id };
+  shutSuite();
+  Object.assign(cas, { run: tst.data.run.id, tier: r.tier, suite: r.suite });
+  setQuery(tblSet(st.views.infra, { q: "", s: "", sort: "", dir: "" }, CASES_PRE));
   tst.render();
-  const q = new URLSearchParams({ run: c.run, tier: r.tier, suite: r.suite });
-  try { c.data = await api("/api/tests/cases?" + q); } catch (e) { c.err = e.message; }
-  if (st.tab === "infra" && tst.cases === c) tst.render();
+  cas.refresh();
 }
 
 $("ci-tests").addEventListener("click", (e) => {
-  const t = e.target, chip = t.closest("[data-cres]");
-  if (chip) { tst.res = chip.dataset.cres; tst.render(); return; }
+  const t = e.target;
   if (t.closest("a") || t.closest(".wdet") || t.closest("button")) return;
   const tr = t.closest("tr.sr");
   if (!tr) return;
   const key = tr.dataset.skey;
-  if (tst.sel === key) { tst.sel = null; tst.cases = null; tst.render(); return; }
+  if (tst.sel === key) { tst.sel = null; shutSuite(); tst.render(); return; }
   const r = (tst.data.rows || []).find((x) => tstKey(x) === key);
   if (r) openSuite(key, r);
 });

@@ -9,7 +9,8 @@
 //! shows without a re-fetch. Both tables are filtered and sorted here by `hub_core::table`, so the
 //! page only draws. The suites' view keys carry a `t` prefix (`tq`, `ts`, `tsort`, `tdir`), the
 //! Quarantine's a `q` (`qq`, `qs`, `qsort`, `qdir`). An opened suite reads its tests from
-//! `/api/tests/cases`, which uses the same kept read. The quarantine rides the builds read, so its
+//! `/api/tests/cases`, which uses the same kept read; their view keys carry a `c` (`cq`, `cs`,
+//! `csort`, `cdir`). The quarantine rides the builds read, so its
 //! file's change pushes the `builds` event the section already listens to.
 
 use std::sync::Arc;
@@ -49,13 +50,17 @@ pub struct Query {
     pub qdir: String,
 }
 
-/// An opened suite: its tier and file name.
+/// An opened suite: its tier and file name, and its tests' view under the `c` prefix.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct CasesQuery {
     pub run: u64,
     pub tier: String,
     pub suite: String,
+    pub cq: String,
+    pub cs: String,
+    pub csort: String,
+    pub cdir: String,
 }
 
 #[derive(Serialize)]
@@ -276,9 +281,11 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
 struct CaseList<'a> {
     cases: Vec<&'a Case>,
     more: usize,
+    table: Summary,
 }
 
-/// The tests of the suite `q` names in run `q.run`, failed first. A request that names no run or
+/// The tests of the suite `q` names in run `q.run` its view keeps, failed first, with the
+/// summary over all of them. A request that names no run or
 /// suite is a 404; a failed read of the ledger or of GitHub is a 502. It never supplies a path
 /// or a URL.
 pub async fn cases(
@@ -293,10 +300,11 @@ pub async fn cases(
         none("that run is not among the finished runs of a declared test workflow")
     })?;
     let l = applied(&b, run, &*loaded(run).await.map_err(bad)?);
-    let (cases, more) = l
-        .cases(&q.tier, &q.suite)
+    let view = View::new::<Case>(&q.cq, &q.cs, &q.csort, &q.cdir);
+    let (cases, table, more) = l
+        .cases(&q.tier, &q.suite, &view)
         .ok_or_else(|| none("that suite is not in the run's results"))?;
-    serde_json::to_string(&CaseList { cases, more }).map_err(|e| bad(e.to_string()))
+    serde_json::to_string(&CaseList { cases, more, table }).map_err(|e| bad(e.to_string()))
 }
 
 #[cfg(test)]

@@ -9,15 +9,19 @@
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
-// A read also answers Log's verdicts and the open runner page.
+// fold: the lead rows the human closed, kept across refreshes. A read also answers the open runner page.
 const fst = tblTab({
   tab: "fleet", id: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
-  state: { fold: new Set(), said: "all" }, shown: () => st.tab === "fleet" && !st.arg,
+  state: { fold: new Set() }, shown: () => st.tab === "fleet" && !st.arg,
   params: (p, t) => { if (t.fold.size) p.set("fold", [...t.fold].join(",")); },
   head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
-  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (st.tab === "fleet" && st.arg) renderFleet(); },
+  after: () => { if (st.tab === "fleet" && st.arg) renderFleet(); },
 });
+
+// The answer judge's verdicts are a table of their own (`v` keys, hub_core::fleet::AskVerdict),
+// filtered on the server so the tiles count every verdict, not only the rows it sends: Log's
+// Judges section (vst) and the ask-judge runner page, which keeps them in Fleet's URL.
+const VERDICTS_PRE = "v";
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
@@ -26,7 +30,8 @@ const runnerHref = (name) => "#fleet/" + encodeURIComponent(name);
 const refreshRunner = coalesce(async () => {
   const name = st.arg;
   if (!name) return;
-  try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name)); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
+  const v = tblParams(st.views.fleet, VERDICTS_PRE).toString();
+  try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name) + (v ? "&" + v : "")); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
   if (st.tab === "fleet" && st.arg === name) renderFleet();
 });
 
@@ -139,20 +144,19 @@ function judgeCells(j) {
     `<tr><td colspan="9" class="muted">no verdicts under prompt ${esc(j.prompt || "none")}</td></tr>`}</table></div>`;
 }
 
-// The answer judge's filters: hub_core::fleet::ASK_FILTERS, read as the row they keep.
-const ASK_FILTERS = ["all", "answered", "would answer", "passed", "wrong"];
-const askShown = (v, f) => f === "all" || (f === "wrong" ? v.score === "wrong" : v.said === f);
+const judgeWeek = (j) => `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>`;
 
-function judgeList(j) {
-  const shown = j.verdicts.filter((v) => askShown(v, fst.said));
-  const seg = `<div class="seg fseg">` + ASK_FILTERS.map((f) =>
-    chipBtn(f === fst.said, "data-said", f, f, j.verdicts.filter((v) => askShown(v, f)).length)).join("") + `</div>`;
+const VERDICT_COLS = { when: ["when", "n"], project: ["project"], type: ["type"], said: ["said"], question: ["question"], why: ["why"], you: ["you", "", true] };
+
+// The verdicts the server kept (Judge::view), newest first, with what the cap left out.
+function judgeRows(j) {
+  const t = j.table;
   const why = (x) => `${x.rule && x.rule !== x.type ? `<b>${esc(x.rule)}</b> ` : ""}${x.evidence ? `"${esc(x.evidence)}" ` : ""}${esc(x.reason)}`;
-  const rows = shown.slice(0, LOG_ROWS).map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
+  const rows = j.verdicts.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${cut(x.question)}</td><td class="wrap muted">${why(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
-  return `<div class="muted">7d: ${share(j.week.live_pct)} answered, ${share(j.week.coverage)} would answer, ${share(j.week.precision)} right</div>${seg}` +
-    `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
+  return `<div class="panel scroll">${rows ? `<table class="tbl">${tblHead(t, VERDICT_COLS)}${rows}</table>` : `<div class="empty">${t.total ? "No verdict matches." : "No verdicts yet."}</div>`}</div>` +
+    older(t.shown - j.verdicts.length);
 }
 
 function renderFleet() {
@@ -177,8 +181,8 @@ function runnerExtras(x) {
       return secHead("", "Dispatch judge") +
         dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
     case "ask-judge":
-      return secHead("", "Answer judge") +
-        judgeTiles(x.judge) + judgeCells(x.judge) + judgeList(x.judge);
+      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells(x.judge) + judgeWeek(x.judge) +
+        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
@@ -252,26 +256,29 @@ function renderRunner(el) {
   paint(el, h);
 }
 
-// Log's Judges' verdicts section: the dispatch judge's newest verdicts and everything the answer
-// judge said, with why and what you did.
-function renderLogVerdicts() {
-  const el = $("log-verdicts"), d = fst.data;
-  if (!d) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading."}</div>`; return; }
-  paint(el, `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
-    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="muted">newest ${d.judge.verdicts.length}</span></h3>${judgeList(d.judge)}`);
-}
-
-$("log-verdicts").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-said]");
-  if (!b) return;
-  fst.said = b.dataset.said;
-  renderLogVerdicts();
+// Log's Judges' verdicts section: the dispatch judge's newest verdicts, then everything the answer
+// judge said, with why and what you did, under its tiles and search.
+const vst = tblTab({
+  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.",
+  shown: () => logShows("verdicts"), hint: "search a question, project, rule or answer",
+  table: (t) => t.data?.judge?.table,
+  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge),
+  wrap: (h) => `<div data-tbl="${VERDICTS_PRE}">${h}</div>`,
 });
+
+function verdictsHead(d) {
+  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch)}` +
+    `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="n">${tblCount(d.judge.table)}</span></h3>${judgeWeek(d.judge)}`;
+}
 
 $("fleet").addEventListener("click", (e) => {
   const t = e.target;
-  const said = t.closest("[data-said]");
-  if (said) { fst.said = said.dataset.said; renderFleet(); return; }
+  // The runner page's verdict tiles and headers: Fleet's URL keeps their view, the page re-reads.
+  if (tblOf(e) === VERDICTS_PRE) {
+    const v = tblPatch(e);
+    if (v) { setQuery(tblSet(st.views.fleet, v, VERDICTS_PRE)); refreshRunner(); }
+    return;
+  }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const fold = t.closest("[data-fold]");
@@ -281,8 +288,8 @@ $("fleet").addEventListener("click", (e) => {
   if (row) location.hash = row.dataset.href;
 });
 
-const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh, () => logShows("verdicts"));
-LOG_PARTS.push({ sec: "verdicts", show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], vst.refresh, () => logShows("verdicts"));
+LOG_PARTS.push({ sec: "verdicts", show() { vst.render(); logFleetFeed.show(!vst.data || vst.moved()); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
     if (rst.name !== st.arg) Object.assign(rst, { name: st.arg, data: null, err: null, log: null, sel: "" });
