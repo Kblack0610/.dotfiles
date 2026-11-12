@@ -232,6 +232,19 @@ ledger() {
   assert_output ''
 }
 
+@test "main_state passes over a workflow with no run in FLEET_MAIN_STALE_HOURS before the branch's newest run (ar-1892)" {
+  # a parked workflow's last red, four days before the branch's newest run
+  old='{"workflowName":"HD","workflowPath":"hd.yml","status":"completed","conclusion":"failure","headSha":"h1","createdAt":"2026-10-21T10:00:00Z"}'
+  run main_state <<<"[$old,$(r Tests success g1 1)]"
+  assert_output ''
+  # NEGATIVE CONTROL: inside the window the same red reads red
+  FLEET_MAIN_STALE_HOURS=200 run main_state <<<"[$old,$(r Tests success g1 1)]"
+  assert_output "$(printf 'HD\th1\t-')"
+  # a quiet branch keeps its red: the window counts back from the newest run, not from now
+  run main_state <<<"[$old]"
+  assert_output "$(printf 'HD\th1\t-')"
+}
+
 @test "main_state reads a workflow by its file, so a run title that moves on leaves no red behind (ar-1048)" {
   # NEGATIVE CONTROL: grouped by title, the old title stays red once the file's runs carry a new one
   run main_state <<<"[$(r 'Multi (nightly)' failure r1 1),$(r 'Multi (all)' success g1 2)]"

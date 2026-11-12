@@ -94,6 +94,12 @@ set -uo pipefail
 # nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
 # a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
 : "${FLEET_PARTIAL_RUNS:=\((named|affected)\)$}"
+# Hours a workflow may go without a run on the branch, counted back from the branch's newest run, and
+# still say something about the branch's health (main_state). A parked or retired workflow runs no
+# more, so its last red would read as main red for the run ledger's 30 days: unity-core-playground
+# parked Multi, HD, Soak and Slim tour on 2026-11-12. Counted from the newest run, not now, so a
+# quiet repo keeps its red.
+: "${FLEET_MAIN_STALE_HOURS:=72}"
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -842,10 +848,15 @@ default_base() {
 # decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
 # FIRST failure after the last green (the oldest in the window when there is none), so the
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
-# Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over.
+# Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over,
+# and so is a workflow with no run in the FLEET_MAIN_STALE_HOURS before the branch's newest run.
 main_state() {
-  jq -r --arg partial "$FLEET_PARTIAL_RUNS" \
-    'map(select(.workflowName // "" | test($partial) | not)) | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
+  jq -r --arg partial "$FLEET_PARTIAL_RUNS" --argjson stale "$FLEET_MAIN_STALE_HOURS" \
+    'map(select(.workflowName // "" | test($partial) | not))
+     | (if length == 0 then "" else map(.createdAt) | max | fromdateiso8601 - $stale * 3600 | todate end) as $since
+     | (map(select(.createdAt >= $since) | .workflowPath) | unique) as $live
+     | map(select(.workflowPath as $p | $live | any(.[]; . == $p)))
+     | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's PRs as a JSON array of {number, state, mergedAt},
