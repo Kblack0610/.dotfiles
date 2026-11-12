@@ -23,6 +23,9 @@ pub const NO_POOL: &str = "no pool named";
 /// The Grafana board a pool's link opens, by its uid.
 pub const BOARD: &str = "kb-ci-runners";
 
+/// A day's pass rate under this is a warning, the cutoff the Pools table colours by.
+pub const PASS_WARN: f64 = 0.9;
+
 /// One hour of a pool's history: the means of its busy and slot samples, the most jobs waiting.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct PoolHour {
@@ -138,7 +141,7 @@ fn parts(infra: &Infra, p: &Pool, machines: &[Machine], waiting: &[Queued]) -> V
     if has(p.withheld) {
         slots = format!("{slots}; {} withheld", n(p.withheld.unwrap_or(0.0)));
     }
-    let hosts = machines.len();
+    let hosts = p.machines.len();
     slots = format!(
         "{slots}, on {hosts} machine{}",
         if hosts == 1 { "" } else { "s" }
@@ -165,7 +168,7 @@ fn parts(infra: &Infra, p: &Pool, machines: &[Machine], waiting: &[Queued]) -> V
         if let Some(r) = p.pass {
             t = format!("{t}, {:.0}% passed", r * 100.0);
         }
-        out.push(Part::new("Last 24h", t).warn(p.pass.is_some_and(|r| r < 0.8)));
+        out.push(Part::new("Last 24h", t).warn(p.pass.is_some_and(|r| r < PASS_WARN)));
     }
     if let Some(g) = infra.grafana.as_deref() {
         out.push(
@@ -183,7 +186,7 @@ fn queries(pool: &str) -> Result<[(&'static str, String); 3], String> {
             ("busy", "sum(cc:host_local_busy)".into()),
             (
                 "slots",
-                "sum(cc:host_local_busy + clamp_min(cc:host_local_open_slots - cc:host_local_busy, 0))"
+                r#"sum(max by (host) ({__name__=~"cc:host_local_open_slots|cc:host_local_busy"}))"#
                     .into(),
             ),
             ("waiting", "sum(cc:host_local_queued)".into()),
@@ -365,8 +368,12 @@ mod tests {
         assert!(queries("unity\"} or vector(1)").is_err());
         let [(_, busy), ..] = queries("unity").unwrap();
         assert_eq!(busy, r#"max(cc:pool_busy{pool="unity"})"#);
-        let [(_, busy), ..] = queries(LOCAL_POOL).unwrap();
+        let [(_, busy), (_, slots), _] = queries(LOCAL_POOL).unwrap();
         assert_eq!(busy, "sum(cc:host_local_busy)");
+        assert!(
+            slots.contains("max by (host)") && !slots.contains(" + "),
+            "a host missing one of its two series still counts: {slots}"
+        );
     }
 
     fn range(points: &[(u64, f64)]) -> Series {

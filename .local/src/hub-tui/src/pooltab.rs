@@ -94,7 +94,10 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     }
     let room = w.saturating_sub(12).max(1);
     let per = h.hours.len().div_ceil(room).max(1);
-    let block = |v: f64| BLOCKS[((v.clamp(0.0, 1.0) * 8.0).round() as usize).max(1)];
+    let block = |v: f64| match v {
+        v if v <= 0.0 => BLOCKS[0],
+        v => BLOCKS[((v.clamp(0.0, 1.0) * 8.0).round() as usize).max(1)],
+    };
     let busy: String = h
         .hours
         .chunks(per)
@@ -119,7 +122,6 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         .map(
             |c| match c.iter().filter_map(|x| x.waiting).reduce(f64::max) {
                 None => '.',
-                Some(v) if v <= 0.0 => BLOCKS[0],
                 Some(v) => block(v / most.max(1.0)),
             },
         )
@@ -186,7 +188,7 @@ mod tests {
             }],
             history: Some(PoolHistory {
                 from: 0,
-                to: 2 * 3600,
+                to: 3 * 3600,
                 step: 120,
                 bucket: 3600,
                 readings: 30,
@@ -199,6 +201,12 @@ mod tests {
                     },
                     PoolHour {
                         at: 3600,
+                        busy: Some(0.0),
+                        slots: Some(3.0),
+                        waiting: Some(0.0),
+                    },
+                    PoolHour {
+                        at: 7200,
                         ..Default::default()
                     },
                 ],
@@ -226,10 +234,10 @@ mod tests {
             "{t}"
         );
         assert!(
-            t.contains("  busy    \u{2588}."),
-            "a full hour, then one with no reading: {t}"
+            t.contains("  busy    \u{2588} ."),
+            "a full hour, an idle one, then one with no reading: {t}"
         );
-        assert!(t.contains("  waiting \u{2588}."), "{t}");
+        assert!(t.contains("  waiting \u{2588} ."), "{t}");
         assert_eq!(grafana(&f).as_deref(), Some("https://g/d/kb-ci-runners"));
     }
 
