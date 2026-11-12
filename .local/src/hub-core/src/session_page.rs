@@ -38,7 +38,7 @@ pub struct Part {
 }
 
 impl Part {
-    fn new(label: &'static str, text: impl Into<String>) -> Part {
+    pub fn new(label: &'static str, text: impl Into<String>) -> Part {
         Part {
             label,
             text: text.into(),
@@ -46,14 +46,14 @@ impl Part {
         }
     }
 
-    fn link(self, to: Link) -> Part {
+    pub fn link(self, to: Link) -> Part {
         Part {
             link: Some(to),
             ..self
         }
     }
 
-    fn warn(self, warn: bool) -> Part {
+    pub fn warn(self, warn: bool) -> Part {
         Part { warn, ..self }
     }
 }
