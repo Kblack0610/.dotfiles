@@ -390,6 +390,42 @@ load 'fleet_dispatch/common'
   [ -z "$(qfield "$f" lane_run)" ] || fail "stamped a run for a model the human chose"
 }
 
+@test "a claude item's effort and never-run model reach claude as --effort and --model; an effort claude does not take refuses the start" {
+  game_ready
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  agent-queue set fix-menu agent=claude model=haiku effort=maximum >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_failure 2
+  assert_output --partial "effort 'maximum' is not one claude takes"
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
+  agent-queue set fix-menu effort=max >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_success
+  assert_called 'claude --model haiku --effort max'
+  # A pin is the lane's own model: no classify, no lane run logged.
+  assert_not_called 'model-lane'
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" model) $(qfield "$f" lane_run)" 'haiku '
+  # A model a start recorded (the item has sessions) is no pin, so a requeued item is picked afresh.
+  assert_equal "$(claude_pin '{"model": "haiku", "sessions": "s1"}')" ''
+  assert_equal "$(claude_pin '{"agent": "codex", "model": "sol"}')" ''
+}
+
+@test "start --resume of a claude item resumes on the model its start ran, at the item's effort" {
+  project game beta "$SANDBOX/repos/game"
+  started_item fix-crash lab:game-agent-9 run
+  agent-queue set fix-crash model=haiku effort=high >/dev/null
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session fix-crash \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-crash
+  assert_success
+  assert_called 'claude --model haiku --effort high'
+  assert_called '--resume abc-123'
+}
+
 @test "start --item waits for the new claude's mode footer, answering a trust prompt, and says when it never shows" {
   project game beta "$SANDBOX/repos/game"
   stub claude-acct '[ "$1" = trust ] && { echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/trust.rc" 2>/dev/null || echo 0)"; }; exit 0'
