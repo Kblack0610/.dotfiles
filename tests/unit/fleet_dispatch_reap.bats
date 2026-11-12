@@ -754,14 +754,14 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries, .mode] | join("|")')" "queued|1 $h1|oneshot"
   # its brief is the fix, on the PR's own branch, and it never merges
   run item_brief "$(agent-queue show fix-crash --json)"
-  assert_line --index 0 '/my:fix-ci o/game#12'
+  assert_line --index 0 '/fix-ci o/game#12'
   assert_output --partial 'gh pr checkout 12 -R o/game'
   assert_output --partial 'fix-ci try 1 of 2'
   assert_output --partial 'run agent-queue move fix-crash review'
   refute_output --partial 'Run agent-land in the foreground'
   echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$(agent-queue show fix-crash --json)" opencode
-  assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
+  assert_line --index 0 'Read ~/.claude/skills/fix-ci/SKILL.md and follow it for PR o/game#12.'
   # the fix session pushed and it is red again: the second try
   fix_ended "$h2" FAIL
   run cmd_reap

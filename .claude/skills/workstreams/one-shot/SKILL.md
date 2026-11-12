@@ -14,7 +14,7 @@ Carries one task the whole way: work, validation, PR, merge, queue record, wind-
 
 ## Scope and triggers
 
-Takes one task from description to landed and wound down with no check-ins; `--pr-only` stops once the PR is open. It stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI) and wind-down (only the session note and teardown).
+Takes one task from description to landed and wound down with no check-ins; `--pr-only` stops once the PR is open. It stops only at the `go` hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from `/go all` (decision posture only, no delivery steps) and wind-down (only the session note and teardown).
 
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
@@ -23,7 +23,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
 ## Steps
 
-1. **Posture.** Follow `~/.claude/commands/my/autopilot.md` for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait: a dispatched one-shot of an unreviewed row writes its own short plan and never waits, and only a row held for review (a plan item `agentctl-inbox-plan` started) waits on approval; that session follows these steps once approved, keeping its approved plan file as the plan. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads CHAT, `finished` stays false, and the session can never close itself.
+1. **Posture.** Follow the `go` skill (`~/.claude/skills/go/SKILL.md`) in standing mode for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait: a dispatched one-shot of an unreviewed row writes its own short plan and never waits, and only a row held for review (a plan item `agentctl-inbox-plan` started) waits on approval; that session follows these steps once approved, keeping its approved plan file as the plan. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads CHAT, `finished` stays false, and the session can never close itself.
 
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
@@ -64,5 +64,5 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 - Land on a red gate, a 0/0 count, or a branch behind its base. The gate is often the only check a PR gets.
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
-- Cross the autopilot hard-stop boundary: no release tags, deploys, secrets or external sends, even though the rest of the run is autonomous.
+- Cross the `go` hard-stop boundary: no release tags, deploys, secrets or external sends, even though the rest of the run is autonomous.
 - Close the window over a blocked run. A teardown that hides the blocker is worse than no wind-down.

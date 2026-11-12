@@ -334,7 +334,7 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
+    /// Dated capture drop (`/remember`, `notes inbox add`).
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
     inbox: String,
