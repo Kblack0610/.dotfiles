@@ -1404,13 +1404,8 @@ async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
-struct RunnerQuery {
-    name: String,
-}
-
-async fn fleet_runner(Query(q): Query<RunnerQuery>) -> ApiResult<Response> {
-    let json = fleet::runner(q.name)
+async fn fleet_runner(Query(q): Query<fleet::RunnerQuery>) -> ApiResult<Response> {
+    let json = fleet::runner(q)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())

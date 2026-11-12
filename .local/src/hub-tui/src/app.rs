@@ -2217,7 +2217,7 @@ impl App {
             let t = c.and_then(|c| c.tokens.as_ref());
             // Only `K` needs the Consumers level, so only `K` builds the section for it.
             let level = (k.code == KeyCode::Char('K'))
-                .then(|| c.map(|c| hub_core::costs::consumers(c, "", "").level))
+                .then(|| c.map(|c| hub_core::costs::consumers(c, Default::default()).level))
                 .flatten();
             let was = self.cv.inner;
             if let Some(seek) = self.cv.fold(k.code, t, level) {
@@ -4975,7 +4975,7 @@ fn open_rows(p: &Option<Result<Vec<proposals::Proposal>, String>>) -> &[proposal
 
 fn cands_of(c: &Option<Result<Candidates, String>>) -> &[Candidate] {
     match c {
-        Some(Ok(c)) => &c.rows,
+        Some(Ok(c)) => c.shown(),
         _ => &[],
     }
 }

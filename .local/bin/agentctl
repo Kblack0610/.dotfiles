@@ -816,7 +816,7 @@ cmd_liveness() {
         # Read raw first: a switched-off conf is out of scope even when it would not load.
         [ "$(sed -n 's/^ENABLED=//p' "$CONFIG_DIR/$n.conf" | head -1 | tr -d "\"' ")" = no ] && continue
         if ! conf=$(load_agent "$n" 2>&1); then
-            printf '%s: invalid conf (%s)\n' "$n" "$conf"; rc=1; continue
+            printf '%s: invalid conf (%s)\n' "$n" "${conf//$'\n'/; }"; rc=1; continue
         fi
         kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
         auto=$(kv_get AUTOSTART <<<"$conf")

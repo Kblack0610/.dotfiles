@@ -278,7 +278,8 @@ mod tests {
 
     #[test]
     fn the_schedules_headers_are_hub_cores_columns() {
-        // Rule 8, less `repo`: the name says it, and it still sorts and filters.
+        // Rule 8, less `result` and `repo`: the state and the name say them, and they still sort
+        // and filter.
         use hub_core::table::Row;
         let js = include_str!("../static/schedules.js");
         let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
@@ -289,8 +290,18 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::schedules::Schedule::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 1]);
-        assert_eq!(all[all.len() - 1..], ["repo"]);
+        assert_eq!(keys, all[..all.len() - 2]);
+        assert_eq!(all[all.len() - 2..], ["result", "repo"]);
+    }
+
+    #[test]
+    fn the_candidates_headers_are_hub_cores_columns() {
+        // qCandRow writes its cells in this order, so the map must be COLUMNS, in order.
+        use hub_core::table::Row;
+        assert_eq!(
+            col_keys(include_str!("../static/queue.js"), "const CAND_COLS = {"),
+            hub_core::queue::Candidate::COLUMNS
+        );
     }
 
     #[test]
