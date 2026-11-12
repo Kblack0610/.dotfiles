@@ -106,6 +106,7 @@ pub fn header(col: &str) -> &'static str {
     match col {
         "session" => "SESSION",
         "tool" => "TOOL",
+        "skill" => "SKILL",
         "kind" => "KIND",
         "project" => "PROJECT",
         "harness" => "HARNESS",
@@ -1407,8 +1408,9 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
     ];
     // The key column and its cost never drop; the evaluation goes before the share.
     let order = [
-        "session", "tool", "kind", "project", "harness", "model", "runner", "cost", "landed",
-        "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src", "pr", "at",
+        "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "cost",
+        "landed", "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src", "pr",
+        "at",
     ];
     let mut keep: Vec<usize> = vec![0];
     keep.extend(order.iter().filter_map(|k| at(k)).filter(|i| *i != 0));
@@ -1435,6 +1437,7 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
             ("project", 20),
             ("runner", 22),
             ("tool", 28),
+            ("skill", 28),
             ("pr", 22),
         ]
         .iter()
