@@ -330,14 +330,16 @@ def ci_failures(repo, base, start, end):
     if got is None:
         return None, err
     return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
-            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets"),
-            "main": dict(zip(("runs", "red"), got.get("base") or (None, None)))}, None
+            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets")}, None
 
 
-def ci_pass(start, end):
+def ci_pass(start, end, branch=None):
     """({forge:repo: {runs, green, pass, workflows}}, error) from `hub ci pass`: the one pass rate
-    (hub_core::builds::verdict) of the run ledger's runs created in the day."""
-    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)])
+    (hub_core::builds::verdict) of the run ledger's runs created in the day, on `branch` when given.
+    Repo keys are lowered: the ledger may spell a repo in another case."""
+    got, err = run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)]
+                        + (["--branch", branch] if branch else []))
+    return (None if got is None else {k.lower(): v for k, v in got.items()}), err
 
 
 def ci_cost(clone, base, day, start, end):
@@ -375,8 +377,12 @@ def ci(a):
     passes, err = ci_pass(start, end) if repos else ({}, None)
     if passes is None:
         out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
-    else:  # the ledger may spell a repo in another case; a repo with no run that day is absent, 0 runs
-        passes = {k.lower(): v for k, v in passes.items()}
+    # main: the base branch's runs and its reds (runs that counted, less the green), one read per base
+    on_base = {}
+    for base in dict.fromkeys(b for _, b, _ in repos):
+        on_base[base], err = ci_pass(start, end, base)
+        if on_base[base] is None:
+            out["unreadable"].append(f"hub ci pass --branch {base}: {err}")
     for repo, base, clone in repos:
         row, err = ci_failures(repo, base, start, end)
         if row is None:
@@ -384,10 +390,14 @@ def ci(a):
             row = {}
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
+        none = {"runs": 0, "green": 0, "pass": None}  # a repo with no run that day is absent: 0 runs
         if passes is not None:
-            got = passes.get(f"github:{repo}".lower(), {"runs": 0, "green": 0, "pass": None})
+            got = passes.get(f"github:{repo}".lower(), none)
             row["pass"] = {k: got[k] for k in ("runs", "green", "pass")}
             row["workflows"] = got.get("workflows", {})
+        if on_base[base] is not None:
+            got = on_base[base].get(f"github:{repo}".lower(), none)
+            row["main"] = {"runs": got["runs"], "red": got["runs"] - got["green"]}
         if clone:
             row["cost"], err = ci_cost(clone, base, a.day, start, end)
             if row["cost"] is None:
