@@ -28,7 +28,8 @@ A red run counts once, in the bucket of its first root (non-derived) job. A run 
 conclusion is cancelled is not a red. These are red counts by cause; the pass rate is
 hub_core's (`hub ci pass`), which day-log reads. A finished attempt's jobs, annotations and logs never
 change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>). --offline
-reads only that cache, the ledger and the archive. On a gh error, an archive that cannot be read,
+reads only that cache, the ledger and the archive. A job GitHub stored no log for is read from its annotations and step and listed in
+logs_missing. On any other gh error, an archive that cannot be read,
 or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
 """
 import argparse
@@ -75,6 +76,11 @@ class Partial(Exception):
     pass
 
 
+class Missing(Exception):
+    """GitHub stored no log for a finished job (`log not found`): a fact about that one job, so
+    the job is read from its annotations and step and listed in logs_missing, never PARTIAL."""
+
+
 def parse_time(s):
     return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
@@ -99,7 +105,7 @@ class Source:
 
     def __init__(self, repo, cache, offline):
         self.repo, self.cache, self.offline = repo, cache, offline
-        self.partial, self.since, self.archived, self.from_gh = 0, None, None, 0
+        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = 0, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
 
     def gh(self, *args):
@@ -108,8 +114,10 @@ class Source:
         try:
             return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
         except (subprocess.CalledProcessError, OSError) as e:
-            err = getattr(e, "stderr", "") or str(e)
-            print(f"gh {' '.join(args[:3])}: {err.strip()[:200]}", file=sys.stderr)
+            err = (getattr(e, "stderr", "") or str(e)).strip()
+            print(f"gh {' '.join(args[:3])}: {err[:200]}", file=sys.stderr)
+            if err.startswith("log not found"):
+                raise Missing()
             self.partial = 1
             raise Partial()
 
@@ -181,9 +189,13 @@ class Source:
                            lambda: self.gh("api", f"repos/{self.repo}/check-runs/{job['id']}/annotations")) or []
 
     def log(self, job):
-        return self.cached(f"log-{job['id']}.txt",
-                           lambda: self.gh("run", "view", "-R", self.repo, "--job", str(job["id"]), "--log-failed"),
-                           as_json=False) or ""
+        try:
+            return self.cached(f"log-{job['id']}.txt",
+                               lambda: self.gh("run", "view", "-R", self.repo, "--job", str(job["id"]), "--log-failed"),
+                               as_json=False) or ""
+        except Missing:  # not cached: a log that turns up later is read by the next pass
+            self.logs_missing.append(job["id"])
+            return ""
 
 
 def read_log(text):
@@ -221,6 +233,8 @@ def record(src, run, attempt, job):
     notes = [a.get("message", "") for a in src.annotations(job) if a.get("annotation_level") == "failure"]
     said = [n for n in notes if not GENERIC.match(n.strip())]
     line, errors, code = read_log(src.log(job)) if not said else (said[0], said[:5], None)
+    if not said and job["id"] in src.logs_missing:
+        line = "(no log on GitHub)"  # its own signature, never merged with a blank-line one
     if code is None:
         codes = [int(m.group(1)) for n in notes for m in [re.search(r"exit code (\d+)", n)] if m]
         code = codes[0] if codes else None
@@ -340,8 +354,10 @@ def analyse(runs, records, base, branches):
     }
 
 
-def report(a, args, since, until, partial):
+def report(a, args, since, until, partial, logs_missing):
     print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh, the run ledger or the job archive failed, counts are low" if partial else ""))
+    if logs_missing:
+        print(f"no log on GitHub for {len(logs_missing)} failed job(s), read from annotations and step: {', '.join(map(str, logs_missing))}")
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"
     print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), "
           f"{a['pending_runs']} pending (red only on a check that waits for another run, not red), {a['cancelled']} cancelled (not red)")
@@ -393,10 +409,10 @@ def main(argv):
     a = analyse(runs, records, args.base, set(args.branch))
     if args.json:
         json.dump({"repo": args.repo, "since": stamp(since), "until": stamp(until), "partial": bool(src.partial),
-                   "jobs_from_gh": src.from_gh, **a, "records": records}, sys.stdout, indent=1, default=str)
+                   "jobs_from_gh": src.from_gh, "logs_missing": src.logs_missing, **a, "records": records}, sys.stdout, indent=1, default=str)
         print()
     else:
-        report(a, args, since, until, src.partial)
+        report(a, args, since, until, src.partial, src.logs_missing)
     return 3 if src.partial else 0
 
 
