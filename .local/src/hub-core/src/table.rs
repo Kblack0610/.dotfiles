@@ -434,6 +434,16 @@ pub fn legend<R: Row>() -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
+/// Cuts a view's rows to the first `cap` and lays the summary's links beside the rows left, in
+/// their order (a caller may have reordered them); the summary still counts every row, and the
+/// answer is how many the cap left out.
+pub fn cap<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, cap: usize) -> usize {
+    let more = rows.len().saturating_sub(cap);
+    rows.truncate(cap);
+    table.links = links(rows);
+    more
+}
+
 /// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
 pub fn links<R: Row>(rows: &[&R]) -> Vec<BTreeMap<&'static str, String>> {
     let out: Vec<BTreeMap<&'static str, String>> = rows
@@ -768,6 +778,19 @@ mod tests {
         let (_, t) = View::default().summary(&rows());
         assert!(t.links.is_empty());
         assert!(serde_json::to_value(&t).unwrap().get("links").is_none());
+    }
+
+    #[test]
+    fn a_cap_cuts_the_rows_counts_the_rest_and_keeps_the_summary_whole() {
+        let all = rows();
+        let (mut shown, mut t) = View::default().summary(&all);
+        assert_eq!(cap(&mut shown, &mut t, 3), 1);
+        assert_eq!((shown.len(), t.total, t.shown), (3, 4, 4));
+        assert_eq!(
+            cap(&mut shown, &mut t, 10),
+            0,
+            "under the cap nothing is left out"
+        );
     }
 
     fn rows() -> Vec<T> {

@@ -339,8 +339,9 @@ impl Judge {
     /// The verdicts `view` keeps, cut to the first `cap`, with the summary over all of them.
     pub fn view(&mut self, view: &View, cap: usize) {
         let all = std::mem::take(&mut self.verdicts);
-        let (shown, table) = view.summary(&all);
-        self.verdicts = shown.into_iter().take(cap).cloned().collect();
+        let (mut shown, mut table) = view.summary(&all);
+        crate::table::cap(&mut shown, &mut table, cap);
+        self.verdicts = shown.into_iter().cloned().collect();
         self.table = Some(table);
     }
 }

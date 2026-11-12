@@ -106,9 +106,7 @@ struct HeldLane<'a> {
 fn held<'a>(b: &'a Builds, entries: &'a [Entry], q: &Query) -> Held<'a> {
     let view = View::new::<Entry>(&q.qq, &q.qs, &q.qsort, &q.qdir);
     let (mut rows, mut table) = view.summary(entries);
-    let more = rows.len().saturating_sub(junit::LIST_ROWS);
-    rows.truncate(junit::LIST_ROWS);
-    table.links = hub_core::table::links(&rows);
+    let more = hub_core::table::cap(&mut rows, &mut table, junit::LIST_ROWS);
     Held {
         lanes: b
             .quarantine

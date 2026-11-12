@@ -318,17 +318,41 @@ mod tests {
     fn a_narrow_work_table_drops_plan_first_and_keeps_pr_and_cost() {
         let mut r = work_row_of("done", "2026-11-09T08:05", "shipped");
         (r.plan, r.ci) = (Some("clean-titles P1".into()), Some("CI failure".into()));
-        let g = worklog::Gathered { rows: vec![r], ..Default::default() };
+        let g = worklog::Gathered {
+            rows: vec![r],
+            ..Default::default()
+        };
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
         let head = |w| {
-            let lines = work(&g, &Window::parse("", today), &DataTable::default(), 10, "2026-11-09", Palette { no_color: true }, w);
-            let all: Vec<String> = lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-            all.into_iter().find(|l| l.contains("STATE")).unwrap_or_default()
+            let lines = work(
+                &g,
+                &Window::parse("", today),
+                &DataTable::default(),
+                10,
+                "2026-11-09",
+                Palette { no_color: true },
+                w,
+            );
+            let all: Vec<String> = lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect();
+            all.into_iter()
+                .find(|l| l.contains("STATE"))
+                .unwrap_or_default()
         };
         let wide = head(160);
-        assert!(["PLAN", "KIND", "CI", "PR", "COST"].iter().all(|h| wide.contains(h)), "{wide}");
+        assert!(
+            ["PLAN", "KIND", "CI", "PR", "COST"]
+                .iter()
+                .all(|h| wide.contains(h)),
+            "{wide}"
+        );
         let narrow = head(70);
-        assert!(narrow.contains("PR") && narrow.contains("COST") && !narrow.contains("PLAN"), "{narrow}");
+        assert!(
+            narrow.contains("PR") && narrow.contains("COST") && !narrow.contains("PLAN"),
+            "{narrow}"
+        );
     }
 
     #[test]

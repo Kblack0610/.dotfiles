@@ -395,7 +395,6 @@ async function qAct(path, body) {
   refreshQueue();
 }
 
-
 const qPending = {};
 $("queue").addEventListener("click", (e) => {
   const t = e.target;

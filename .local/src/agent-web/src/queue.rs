@@ -242,13 +242,11 @@ static CANDS: ReadCache<Candidates, CANDS_SECS, Option<std::time::SystemTime>> =
 fn candidates_view(c: &Candidates, q: &CandQuery) -> serde_json::Value {
     let view = View::new::<Candidate>(&q.cq, &q.cs, &q.csort, &q.cdir);
     let (mut rows, mut table) = view.summary(&c.rows);
-    let more = match q.call {
-        Some(_) => 0,
-        None => rows.len().saturating_sub(hub_queue::CANDIDATES_SHOWN),
+    let shown = match q.call {
+        Some(_) => usize::MAX,
+        None => hub_queue::CANDIDATES_SHOWN,
     };
-    rows.truncate(rows.len() - more);
-    // The links run beside the rows the page gets, and the cap dropped the rest.
-    table.links = hub_core::table::links(&rows);
+    let more = hub_core::table::cap(&mut rows, &mut table, shown);
     let rows: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {

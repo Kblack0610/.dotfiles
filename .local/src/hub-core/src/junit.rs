@@ -419,12 +419,11 @@ impl Loaded {
             .suites
             .iter()
             .find(|s| s.tier == tier && s.suite == suite)?;
-        let (mut cases, table) = view.summary(&s.cases);
+        let (mut cases, mut table) = view.summary(&s.cases);
         if view.sort.is_empty() {
             cases.sort_by_key(|c| rank_of(&c.result));
         }
-        let more = cases.len().saturating_sub(CASE_ROWS);
-        cases.truncate(CASE_ROWS);
+        let more = crate::table::cap(&mut cases, &mut table, CASE_ROWS);
         Some((cases, table, more))
     }
 }
