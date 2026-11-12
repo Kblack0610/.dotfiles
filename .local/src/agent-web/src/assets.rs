@@ -442,17 +442,6 @@ mod tests {
         let ui = include_str!("../static/ui.js");
         let rows = format!("const LOG_ROWS = {};", hub_core::layout::FOLD_ROWS);
         assert!(ui.contains(&rows), "ui.js lacks {rows}");
-        let caps: serde_json::Map<String, serde_json::Value> = hub_core::layout::SECTION_ROWS
-            .iter()
-            .map(|(s, n)| (s.to_string(), serde_json::json!(n)))
-            .collect();
-        let line = ui
-            .lines()
-            .find_map(|l| l.strip_prefix("const SECTION_ROWS = "))
-            .expect("ui.js has SECTION_ROWS");
-        let got: serde_json::Value =
-            serde_json::from_str(line.trim_end_matches(';')).expect("SECTION_ROWS is JSON");
-        assert_eq!(got, serde_json::Value::Object(caps), "ui.js SECTION_ROWS");
         for (old, new) in hub_core::layout::RETIRED {
             // overview and forecast were only ever TUI tabs; the web never had them.
             if !["overview", "forecast"].contains(old) {

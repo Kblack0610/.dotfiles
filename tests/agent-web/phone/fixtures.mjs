@@ -1,8 +1,6 @@
 // What the phone render harness answers for /api/*: one payload per endpoint, keyed by path.
 // Shapes are the ones the page reads (see the sibling tests/agent-web/*.test.mjs), column, state
 // and facet keys are the COLUMNS, STATES and FACETS of the hub-core row they name.
-import { readFileSync } from "node:fs";
-
 export const NOW = 1794000000;
 const ago = (min) => NOW - min * 60;
 const iso = (s) => new Date(s * 1000).toISOString();
@@ -135,6 +133,7 @@ const watch = { state: { sessions: [], vocab: { buckets: sessions.buckets }, gen
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
 const shepherd = {
   target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
+  shown: 30, // layout::fold_rows("rundowns"), sent by shepherd.rs
   rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
 };
 
@@ -178,20 +177,20 @@ const actions = {
 };
 
 // Log's Work table: hub_core::worklog, a live-sized table of which the server sends the first
-// layout::fold_rows("work") (ui.js SECTION_ROWS mirrors it, checked by assets.rs).
-const SECTION_ROWS = JSON.parse(readFileSync(new URL("../../../.local/src/agent-web/static/ui.js", import.meta.url), "utf8").match(/^const SECTION_ROWS = (.*);$/m)[1]);
+// WORK_SHOWN rows (hub_core::layout::fold_rows("work")).
+const WORK_SHOWN = 40;
 const WORK_TOTAL = 3235;
 const logWork = {
   table: table(WORK_TOTAL, ["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
-  rows: rows(SECTION_ROWS.work, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false, plan: i % 3 ? null : `${SLUGS[i % SLUGS.length]}: ${TEXT[(i + 2) % TEXT.length].slice(0, 30)} P${1 + (i % 9)}`, ci: i % 7 ? null : pick(["CI pending", "draft"], i) })),
-  more: WORK_TOTAL - SECTION_ROWS.work, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
+  rows: rows(WORK_SHOWN, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false, plan: i % 3 ? null : `${SLUGS[i % SLUGS.length]}: ${TEXT[(i + 2) % TEXT.length].slice(0, 30)} P${1 + (i % 9)}`, ci: i % 7 ? null : pick(["CI pending", "draft"], i) })),
+  more: WORK_TOTAL - WORK_SHOWN, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
 };
 
 // Fleet: hub_core::fleet::who.
 const fleet = {
   table: table(6, ["kind", "who", "state", "cost", "activity", "since", "for", "doing", "under", "project"], ["all", "lead", "deliver", "observe", "learn", "maintain", "session", "held", "failed", "working", "needs you", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"], project: PROJECTS.slice(0, 2) }),
   who: rows(6, (i) => ({ key: `who-${i}`, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `fleet-${SLUGS[i]}`, state: pick(["working", "held", "needs you"], i), activity: pick(["editing", "reading", "gate"], i), since: ago(20 + i * 15), for: `${20 + i * 15}m`, doing: TEXT[i], under: "", project: pick(PROJECTS, i), opens: "", kids: 0 })),
-  hidden: 0, legend: [], at: NOW, errors: [], workers: [],
+  hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::fold_rows("verdicts")
   // Log's Judges at live counts: hub_core::fleet sends the newest 30 dispatch verdicts
   // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long.
   dispatch: {

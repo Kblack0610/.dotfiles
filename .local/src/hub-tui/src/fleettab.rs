@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
 use crate::fmt::{clock, dur, kilo, older, pct, Palette};
-use hub_core::layout::fold_rows;
+use hub_core::layout::FOLD_ROWS;
 
 fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
@@ -180,8 +180,7 @@ fn who_table(
     out
 }
 
-/// Log's Judges' verdicts section: both judges' counts and their lists, each at most
-/// `layout::fold_rows("verdicts")`;
+/// Log's Judges' verdicts section: both judges' counts and their lists, each at most `FOLD_ROWS`;
 /// `filter` is one of `ASK_FILTERS`, for the answer judge's.
 pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![dispatch_head(&f.dispatch, p, w)];
@@ -359,7 +358,7 @@ fn dispatch_list(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
     let rows = d
         .recent
         .iter()
-        .take(fold_rows("verdicts"))
+        .take(FOLD_ROWS)
         .map(|v| {
             let style = match v.verdict.as_str() {
                 "dispatch" => p.good(),
@@ -397,7 +396,7 @@ fn dispatch_list(d: &Dispatch, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
         }
         .fit(w, p.head()),
     );
-    out.extend(older(d.recent.len(), fold_rows("verdicts"), p));
+    out.extend(older(d.recent.len(), FOLD_ROWS, p));
     out
 }
 
@@ -550,7 +549,7 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
     }
     let rows = shown
         .iter()
-        .take(fold_rows("verdicts"))
+        .take(FOLD_ROWS)
         .map(|x| {
             let wrong = x.score == "wrong";
             vec![
@@ -582,7 +581,7 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
         }
         .fit(w, p.head()),
     );
-    out.extend(older(shown.len(), fold_rows("verdicts"), p));
+    out.extend(older(shown.len(), FOLD_ROWS, p));
     out
 }
 

@@ -310,14 +310,17 @@ pub const TABS: [Tab; 13] = [
 /// (static/ui.js) is this number; its assets test checks.
 pub const FOLD_ROWS: usize = 50;
 
-/// A Log section whose rows stand taller than a line lists fewer than `FOLD_ROWS`, so its inner
-/// tab stays under three screens at 1400x900 on live data (render.mjs): Work's rows wrap to three
-/// lines, a rundown is a card, and Judges holds two tables. Read 2026-11-12, when Work was
-/// 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. agent-web's `SECTION_ROWS`
-/// (static/ui.js) is this list; its assets test checks.
-pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 30), ("rundowns", 30), ("verdicts", 20)];
+/// A web page-height setting, not a TUI one: agent-web's Log lists this many rows of a section
+/// whose rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on
+/// live data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head
+/// stay near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when
+/// Work was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. The server sends each with its
+/// section's data (Work's page, the shepherd's `shown`, the fleet's `verdicts_shown`), so the
+/// page holds no copy. The TUI scrolls one-line rows with no `+N` key, so it keeps `FOLD_ROWS`.
+pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
 
-/// How many rows a section lists before its `+N` line: its `SECTION_ROWS` entry, else `FOLD_ROWS`.
+/// How many rows a section of agent-web's Log lists before its `+N` line: its `SECTION_ROWS`
+/// entry, else `FOLD_ROWS`.
 pub fn fold_rows(section: &str) -> usize {
     SECTION_ROWS
         .iter()

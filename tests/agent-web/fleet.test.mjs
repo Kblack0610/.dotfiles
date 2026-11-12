@@ -80,7 +80,7 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
   vm.runInContext("fst", ctx).data = data;
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /7d: 25% answered, 40% would answer, 91% right/);
-  assert.match(logBox.innerHTML, /<b>knowledge<\/b> "your login" only you know/);
+  assert.match(logBox.innerHTML, /<b>knowledge<\/b> &quot;your login&quot; only you know/);
   assert.match(logBox.innerHTML, /<td>ship_deploy<\/td>/);
   assert.match(logBox.innerHTML, /class="cchip bad">b</);
   const pick = (said) => logClick({ target: { closest: (sel) => (sel === "[data-said]" ? { dataset: { said } } : null) } });
@@ -93,13 +93,11 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
   pick("all");
 });
 
-test("Log's verdict lists stop at the section's rows, clamp long text, and +N older shows the rest", () => {
-  const fs = vm.runInContext("fst", ctx);
-  const cap = vm.runInContext('foldRows("verdicts")', ctx);
-  assert.ok(cap < vm.runInContext("LOG_ROWS", ctx), "Judges lists fewer than LOG_ROWS");
+test("Log's verdict lists stop at the server's verdicts_shown, clamp long text, and each +N older shows only its own list", () => {
+  const fs = vm.runInContext("fst", ctx), cap = 20;
   const verdicts = Array.from({ length: cap + 4 }, (_, i) => ({ ...judge.verdicts[0], id: `v${i}`, question: `question-${i}?` }));
   const recent = Array.from({ length: cap + 2 }, (_, i) => ({ ts: 1793942659, project: "p", key: `row-${i}`, verdict: "skip", reason: "tier 3", tier: 3, clear: false }));
-  fs.data = { ...data, judge: { ...judge, verdicts }, dispatch: { ...data.dispatch, recent } };
+  fs.data = { ...data, verdicts_shown: cap, judge: { ...judge, verdicts }, dispatch: { ...data.dispatch, recent } };
   ctx.renderLogVerdicts();
   const shown = logBox.innerHTML;
   assert.match(shown, />\+2 older</);
@@ -107,11 +105,26 @@ test("Log's verdict lists stop at the section's rows, clamp long text, and +N ol
   assert.match(shown, new RegExp(`question-${cap - 1}\\?`));
   assert.doesNotMatch(shown, new RegExp(`question-${cap}\\?`));
   assert.match(shown, /<td class="wrap"><div class="c2" title="question-0\?">question-0\?<\/div><\/td>/);
-  logClick({ target: { closest: (sel) => (sel === "[data-all]" ? {} : null) } });
-  assert.match(logBox.innerHTML, new RegExp(`question-${cap + 3}\\?`));
-  assert.match(logBox.innerHTML, new RegExp(`row-${cap + 1}<`));
+  // A click on one list's "+N older": the button inside its [data-list] box.
+  const more = (list) => logClick({ target: { closest: (sel) => (sel === "[data-all]" ? { closest: (s) => (s === "[data-list]" ? { dataset: { list } } : null) } : null) } });
+  more("judge");
+  assert.match(logBox.innerHTML, new RegExp(`question-${cap + 3}\\?`), "the answer judge shows every row");
+  assert.doesNotMatch(logBox.innerHTML, new RegExp(`row-${cap + 1}<`), "the dispatch list stays at its first rows");
+  assert.match(logBox.innerHTML, />\+2 older</);
+  fs.judgeAll = false;
+  ctx.renderLogVerdicts();
+  more("dispatch");
+  assert.match(logBox.innerHTML, new RegExp(`row-${cap + 1}<`), "the dispatch list shows every row");
+  assert.doesNotMatch(logBox.innerHTML, new RegExp(`question-${cap}\\?`), "the answer judge stays at its first rows");
+  more("judge");
   assert.doesNotMatch(logBox.innerHTML, /older</);
-  fs.verdictsAll = false;
+  // A new filter starts the answer judge at its first rows again and leaves the dispatch list open.
+  logClick({ target: { closest: (sel) => (sel === "[data-said]" ? { dataset: { said: "all" } } : null) } });
+  assert.equal(fs.judgeAll, false);
+  assert.equal(fs.dispatchAll, true);
+  assert.match(logBox.innerHTML, />\+4 older</);
+  assert.match(logBox.innerHTML, new RegExp(`row-${cap + 1}<`));
+  fs.dispatchAll = false;
   fs.data = data;
 });
 

@@ -28,8 +28,8 @@ function workWhen(w, today) {
 const workPr = (r) => (r.unproven ? qProof(r) : !r.pr ? "" : r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.pr)}</a>` : esc(r.pr));
 
 const workRow = (r, today) => `<tr><td><span class="chip sm" style="--c:${WORK_COLOR[r.state] || "var(--b-chat)"}">${esc(r.state)}</span></td>` +
-  `<td class="n" title="${esc(r.when || "")}">${esc(workWhen(r.when, today))}</td><td>${esc(r.project)}</td><td class="wrap">${esc(r.what)}</td>` +
-  `<td class="muted wrap">${esc(r.plan || "")}</td><td class="muted">${esc(r.kind || "")}</td><td class="muted">${esc(r.ci || "")}</td><td>${workPr(r)}</td><td class="n">${r.cost == null ? "" : usd(r.cost)}</td></tr>`;
+  `<td class="n" title="${esc(r.when || "")}">${esc(workWhen(r.when, today))}</td><td>${esc(r.project)}</td><td class="wrap">${clamp2(esc(r.what), r.what)}</td>` +
+  `<td class="muted">${r.plan ? clamp2(esc(r.plan), r.plan) : ""}</td><td class="muted">${esc(r.kind || "")}</td><td class="muted">${esc(r.ci || "")}</td><td>${workPr(r)}</td><td class="n">${r.cost == null ? "" : usd(r.cost)}</td></tr>`;
 
 function workHead(t) {
   const d = t.data, errs = [t.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");

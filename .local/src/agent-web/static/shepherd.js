@@ -76,11 +76,11 @@ function shepherdOverview() {
   return fold("shep", "Shepherd", `<div class="ovbar">${chat}</div>${pass}`);
 }
 
-// Log's Rundowns section: the shepherd's kept sum-ups, newest first, the first `foldRows` until
-// "+N older" is asked for.
+// Log's Rundowns section: the shepherd's kept sum-ups, newest first, the first `shown` (the
+// server's hub_core::layout::fold_rows("rundowns")) until "+N older" is asked for.
 function renderLogRundowns() {
   const d = shst.data, list = d ? d.rundowns : [];
-  const shown = shst.all ? list : list.slice(0, foldRows("rundowns"));
+  const shown = shst.all || !d ? list : list.slice(0, d.shown);
   const el = $("log-rundowns");
   paint(el, shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
     : list.length ? `<div class="muted">${list.length} newest</div>` + shown.map(rundownCard).join("") + tblMore(list.length - shown.length)
