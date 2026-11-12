@@ -27,6 +27,13 @@ pub enum Val {
     None,
 }
 
+/// A reading that may be missing: a missing one sorts last (`Val::None`).
+impl From<Option<f64>> for Val {
+    fn from(v: Option<f64>) -> Self {
+        v.map_or(Val::None, Val::Num)
+    }
+}
+
 impl Val {
     /// The lower-case text a `key:value` term matches by prefix.
     fn text(&self) -> Option<String> {
@@ -330,6 +337,11 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::sections::Section>(),
         phone_table::<crate::worklog::Work>(),
+        phone_table::<crate::machines::Machine>(),
+        phone_table::<crate::machines::Pool>(),
+        phone_table::<crate::ci::Slot>(),
+        phone_table::<crate::ci::Queued>(),
+        phone_table::<crate::ci::Finished>(),
     ];
     rows.into_iter().chain(cuts).collect()
 }
@@ -498,9 +510,14 @@ impl View {
                     ..self.clone()
                 };
                 let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                // Each value a row holds counts once, as the filter matches it (`vals`), so a
+                // row in two pools counts under both.
                 for r in base.apply(rows) {
-                    if let Some(v) = r.val(key).text().filter(|v| !v.is_empty()) {
-                        *counts.entry(v).or_default() += 1;
+                    let mut seen = std::collections::BTreeSet::new();
+                    for v in r.vals(key).iter().filter_map(Val::text) {
+                        if !v.is_empty() && seen.insert(v.clone()) {
+                            *counts.entry(v).or_default() += 1;
+                        }
                     }
                 }
                 // A prefix term (`source:ag`) is its own option, so the dropdown shows what is on.
