@@ -1004,6 +1004,9 @@ fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
 /// to another command is not writing it. With `lands_only`, only the agent-land `--plan` ones.
 fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
+    // Runs a command after its options (and timeout's duration): the command is the next word.
+    const WRAPPERS: &[&str] = &["timeout", "env", "nice", "nohup", "command", "exec", "time"];
+    let cmd = &without_heredoc_bodies(cmd);
     let mut out = Vec::new();
     for (i, _) in cmd.match_indices("/plans/") {
         let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
@@ -1024,7 +1027,12 @@ fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
         let words: Vec<&str> = before[segment_start(before)..]
             .trim_start_matches([' ', '('])
             .split_whitespace()
-            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+            .skip_while(|w| {
+                (w.contains('=') && !w.starts_with('-'))
+                    || WRAPPERS.contains(&w.rsplit('/').next().unwrap_or(w))
+                    || w.starts_with('-')
+                    || w.starts_with(|c: char| c.is_ascii_digit())
+            })
             .collect();
         let cmd_is = |name: &str| {
             words
@@ -1050,6 +1058,47 @@ fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
 
 /// Where the last shell command in `s` starts: just past its last `|`, `;`, `&` or newline
 /// outside quotes, so a sed script's `;` or `&` does not split it.
+/// The command with each heredoc body dropped: its lines are data fed to a command (a script, a
+/// file's text), not shell, so a plan path in them is no write or landing. The marker line stays,
+/// with any redirect on it. Why: 2026-11-11 a Python heredoc carrying a test fixture's
+/// `agent-land --plan .../copy.md` made that fixture dotfiles-agent-25's plan.
+fn without_heredoc_bodies(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut until: Option<String> = None;
+    for line in cmd.split_inclusive('\n') {
+        if let Some(end) = &until {
+            if line.trim() == end {
+                until = None;
+            }
+            continue;
+        }
+        out.push_str(line);
+        until = heredoc_word(line);
+    }
+    out
+}
+
+/// The terminator of the last heredoc a line opens (`<<EOF`, `<<-'EOF'`, `<< "EOF"`), not a `<<<`.
+fn heredoc_word(line: &str) -> Option<String> {
+    let mut word = None;
+    for (i, _) in line.match_indices("<<") {
+        let rest = &line[i + 2..];
+        if rest.starts_with('<') || line[..i].ends_with('<') {
+            continue;
+        }
+        let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+        let w: String = rest
+            .trim_start_matches(['\'', '"'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !w.is_empty() {
+            word = Some(w);
+        }
+    }
+    word
+}
+
 fn segment_start(s: &str) -> usize {
     let (mut quote, mut start) = (None, 0);
     for (i, c) in s.char_indices() {
@@ -2335,6 +2384,27 @@ mod tests {
             ),
             ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
             ("cat > ~/notes/plans/a.md", vec![]),
+            // A wrapper runs the command after it; a heredoc body is data, its marker line is not.
+            (
+                "timeout 590 agent-land 9 --item x --plan ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cd ~/w; env A=1 nice -n 5 agent-land 9 --plan=~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
+            (
+                "cd ~/w; python3 - <<'EOF'\ns = \"x && agent-land 9 --plan ~/.claude/plans/b.md\"\nEOF\ngit status",
+                vec![],
+            ),
+            (
+                "cat > ~/.claude/plans/a.md <<-\"END\"\necho y > ~/.claude/plans/b.md\nEND\necho z >> ~/.claude/plans/c.md",
+                vec!["a.md", "c.md"],
+            ),
+            (
+                "jq . <<<x\necho y > ~/.claude/plans/a.md",
+                vec!["a.md"],
+            ),
         ] {
             assert_eq!(bash_plan_refs(cmd, false), want, "{cmd}");
         }
