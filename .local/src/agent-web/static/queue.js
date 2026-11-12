@@ -115,7 +115,7 @@ function qAgent(i) {
 function qNeeds(i) {
   const panes = qPanes(i);
   const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
-  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, dialogKind(p.question))).concat(asks.map((k) => askCard(k)));
+  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, dialogKind(p.question), true)).concat(asks.map((k) => askCard(k)));
   if (cards.length) return cards.join("");
   if (i.state !== "waiting" || !i.session) return "";
   return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
@@ -176,7 +176,7 @@ function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   const open = i.slug === qst.sel;
-  return `<tr class="qr${i.slug === qst.sel ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
+  return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
     `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
@@ -397,9 +397,10 @@ $("queue").addEventListener("click", (e) => {
   const point = t.closest("[data-rail]");
   if (point) { qfl.node = point.dataset.rail; qst.render(); return; }
   if (t.id === "q-add") { qAdd(); return; }
-  // An answer card (a session's dialog or an ask) answers in place, as on Home.
+  // An answer card (a session's dialog or an ask) answers in place, as on Home. Its cards come
+  // from st.asks and st.agents, whose own reads redraw the tab, so nothing re-reads the queue here.
   const card = t.closest(".card[data-t], .card[data-id]");
-  if (card) { answerCard(card, e).then(refreshQueue); return; }
+  if (card) { answerCard(card, e); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
   if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; qst.render(); return; }
   if (t.dataset.open) {
@@ -433,6 +434,9 @@ $("queue").addEventListener("input", (e) => {
   if (e.target.closest(".qadd")) qSaveDraft();
 });
 $("queue").addEventListener("toggle", (e) => {
+  // An answer card's folds are waiting.js's (askst.open), and its Full log reads on opening.
+  const card = e.target.closest && e.target.closest(".card[data-t], .card[data-id]");
+  if (card) { askTrace(e, () => qst.render()); if (e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open; return; }
   if (e.target.dataset && e.target.dataset.k) qst.open[e.target.dataset.k] = e.target.open;
 }, true);
 $("queue").addEventListener("keydown", (e) => {

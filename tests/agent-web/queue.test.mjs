@@ -339,12 +339,16 @@ test("a waiting row's detail carries its session's ask, answered in place; one w
   let h = draw();
   assert.match(h, /<tr class="wdet">.*<div class="card need k-ask" data-id="A1">.*Ship it\?/s);
   assert.doesNotMatch(h, /answer on Home|data-home/);
-  posted = [];
+  posted = []; asked = [];
   reply = { ok: true };
   const card = { dataset: { id: "A1" }, querySelector: () => null };
   fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : sel === "[data-a]" ? { dataset: { a: "yes" } } : null) } });
   await settle();
   assert.ok(posted.some((u) => u.startsWith("/api/asks/answer") && u.includes('"answer":"yes"')), posted.join(" "));
+  assert.equal(asked.filter((u) => u.startsWith("/api/queue")).length, 0, "an answer re-reads no queue: the asks read redraws the card");
+  fire("toggle", { target: { open: true, dataset: { k: "ask:A1" }, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : null) } });
+  assert.equal(run("askst.open['ask:A1']"), true, "a card's fold is kept where waiting.js draws it from");
+  assert.equal(run("qst.open['ask:A1']"), undefined);
   run("st.asks = []");
   load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
   h = draw();
