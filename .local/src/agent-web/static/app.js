@@ -330,7 +330,7 @@ const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machin
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
 // hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
 // the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"},"releases":{"apps":"apps"}};
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one

@@ -331,10 +331,17 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cols { padding-bottom: 16px; }
 .tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
 .tsort { display: none; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+/* The shared table: 13px rows with room to breathe, small caps headers over a firmer rule, faint
+   row lines, and every other record row tinted so a wide row is easy to follow across. The tint
+   counts record rows only: an opened row's detail, a channel's detail and the filter row are skipped. */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
+.tbl td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); white-space: nowrap; }
+.tbl tr:last-child > td { border-bottom: 0; }
+.tbl tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.tbl th.n { font-family: inherit; }
+.tbl td a:not(.btn) { color: var(--accent); text-decoration: none; } .tbl td a:not(.btn):hover { text-decoration: underline; }
 .tbl tr.allrow td { font-weight: 600; border-bottom: 1px solid var(--muted); }
 .thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
 /* A facet's dropdown (table.js tblFacet): a pill under its column's header, tinted while it filters,
@@ -413,8 +420,10 @@ span.warn { color: var(--b-stalled); }
 /* Projects: the opened row, under its line (board.js). The record stays in view when the table scrolls sideways. */
 .tbl tr.bopen > td { white-space: normal; padding: 0; }
 .bopen .card { position: sticky; left: 0; max-width: min(100%, calc(100vw - 32px)); box-sizing: border-box; }
-.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td { background: var(--bg); }
-.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.rc, .tbl tr.rh { cursor: pointer; }
+.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td, .tbl tr.rc:hover td, .tbl tr.rh:hover td, .tbl tr.click:hover td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td, .tbl tr.rc.sel td, .tbl tr.rh.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.sel > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* An expanded table row: Schedules and Proposals. */
 .tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
 .tbl tr.wdet .tbl { margin-top: 6px; }
@@ -460,9 +469,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tfclear { display: flex; align-items: center; }
   .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
   .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
-  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] > td { background: none; box-shadow: none; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td.warn { color: var(--b-stalled); } .tbl.tphone > * > tr[data-phone=row] > td.bad { color: var(--b-needs); }
   .tbl.tphone > * > tr[data-phone=row] > td[data-named]::before { content: attr(data-label) " "; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }

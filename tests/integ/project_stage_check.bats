@@ -478,21 +478,9 @@ rs_stub() {
   chmod +x "$SANDBOX/bin/release-state"
 }
 
-@test "stages.md: a project deploys no higher than the stage checked, and no snapshot entry fails" {
-  real_row 'draft | base | Deploys no higher than its stage'
-  rs_stub '{"shooter": {"stage": "dev", "rungs": ["alpha", "prod"]}}'
-  run "$CHECK" shooter
-  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
-  # The same deploys pass for a move up to prod: the row reads the stage checked, not today's.
-  run "$CHECK" shooter --stage prod
-  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
-  rs_stub '{"shooter": {"stage": "dev", "rungs": []}}'
-  run "$CHECK" shooter
-  assert_line --regexp '^PASS +draft +Deploys no higher than its stage'
-  # NEGATIVE CONTROL: a snapshot with no facts for the project is a FAIL, never a quiet pass.
-  rs_stub '{}'
-  run "$CHECK" shooter
-  assert_line --regexp '^FAIL +draft +Deploys no higher than its stage'
+@test "stages.md: no row caps where a project deploys (a deploy is not the app being live)" {
+  run grep -ci 'no higher than its stage' "$BATS_TEST_DIRNAME/../../.local/src/docs/stages.md"
+  assert_output 0
 }
 
 @test "stages.md: each deploy rung row passes only when a live target serves that rung" {
