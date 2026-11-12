@@ -629,14 +629,18 @@ mod tests {
         assert_eq!(own.activity, "waiting on CI 4m");
         assert_eq!(own.val("activity"), Val::Text("waiting on CI 4m".into()));
         let hand = r.iter().find(|x| x.target == "lab/d:2").unwrap();
-        assert_eq!(hand.val("activity"), Val::None, "no activity_line reads as blank");
+        assert_eq!(
+            hand.val("activity"),
+            Val::None,
+            "no activity_line reads as blank"
+        );
     }
 
     #[test]
     fn a_live_row_carries_its_close_verdict_and_the_close_facet_filters() {
         let mut s = state();
         s[0]["close"] = json!({"verdict": "now", "why": "plan finished, PR merged"});
-        s[1]["close"] = json!({"verdict": "keep", "why": "hand-active"});
+        s[1]["close"] = json!({"verdict": "keep", "why": "working"});
         let r = rows(&s, &vocab(), &feed(), &[]);
         let c = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("close");
         assert_eq!(c("lab/d:1"), Val::Text("now".into()));

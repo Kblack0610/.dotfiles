@@ -23,6 +23,10 @@ pub const DAYS: u64 = 7;
 /// Seconds between samples: the governor's cycle is about 2 minutes, so one sample per cycle,
 /// and the `cc:*` rules evaluate every minute.
 pub const STEP: u64 = 120;
+
+// A history stays under the Prometheus point cap of 11,000 per series.
+const _: () = assert!(DAYS * 86_400 / STEP < 11_000);
+
 /// Seconds per history bucket: an hour, so a week is 168 columns on either surface.
 pub const BUCKET: u64 = 3600;
 /// The state written for a stretch with no sample at all (the governor down or not yet run).
@@ -594,11 +598,6 @@ mod tests {
                 hours: 0.0
             }]
         );
-    }
-
-    #[test]
-    fn a_history_stays_under_prometheus_point_cap() {
-        assert!(DAYS * 86_400 / STEP < 11_000);
     }
 
     #[test]

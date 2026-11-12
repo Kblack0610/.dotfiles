@@ -147,7 +147,7 @@ function qMin(m) {
 // The table's columns: key -> [header, class].
 const Q_COLS = {
   state: ["state"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], project: ["project"],
-  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], title: ["title"],
+  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], plan: ["plan"], title: ["title"],
 };
 
 // The state cell: what the item is. A finish says how it ended.
@@ -179,7 +179,7 @@ function qRow(i, n) {
   return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
-    `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
+    `${qPrCell(i)}<td class="muted">${dash(i.plan_label)}</td><td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 

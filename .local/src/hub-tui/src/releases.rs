@@ -4,6 +4,7 @@
 //! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps and Release
 //! runs, `hub_core::layout`), switched with Left/Right.
 
+use hub_core::app_status::AppStatus;
 use hub_core::builds::{Builds, Scope};
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
@@ -57,14 +58,25 @@ const HISTORY_LINES: usize = 8;
 /// How many of an opened app's build runs the pane lists; the web lists them all.
 const BUILD_LINES: usize = 6;
 
-/// The changelog read for the opened app: whose it is, whether a worker is still on it (one at a
-/// time, so holding a key over many apps asks for the last one only), and what came back, None
-/// while it is being read.
-#[derive(Default)]
-pub struct ChangelogRead {
+/// A read for the opened app's pane (its changelog, its status): whose it is, whether a worker
+/// is still on it (one at a time, so holding a key over many apps asks for the last one only),
+/// what came back, None while it is being read, and when it came back.
+pub struct PaneRead<T> {
     pub project: String,
     pub busy: bool,
-    pub read: Option<Result<Changelog, String>>,
+    pub read: Option<Result<T, String>>,
+    pub at: Option<std::time::Instant>,
+}
+
+impl<T> Default for PaneRead<T> {
+    fn default() -> Self {
+        PaneRead {
+            project: String::new(),
+            busy: false,
+            read: None,
+            at: None,
+        }
+    }
 }
 
 pub struct ReleasesView {
@@ -75,7 +87,9 @@ pub struct ReleasesView {
     pub down: usize,
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
-    pub cl: ChangelogRead,
+    pub cl: PaneRead<Changelog>,
+    /// The opened app's checks (`hub_core::app_status`), as the web's `#releases/apps/<app>`.
+    pub st: PaneRead<AppStatus>,
     /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
@@ -91,7 +105,8 @@ impl Default for ReleasesView {
             open: false,
             down: 0,
             others: false,
-            cl: ChangelogRead::default(),
+            cl: PaneRead::default(),
+            st: PaneRead::default(),
             runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
             want: None,
@@ -179,6 +194,8 @@ impl ReleasesView {
         self.open = true;
         self.others = true;
         self.cl.project.clear();
+        self.st.project.clear();
+        self.st.at = None;
         self.want = Some(id.to_string());
         if let Some(s) = s {
             self.reselect(s, None);
@@ -384,6 +401,7 @@ pub fn detail(
     now: i64,
     w: usize,
     cl: Option<&Result<Changelog, String>>,
+    st: Option<&Result<AppStatus, String>>,
 ) -> Vec<Line<'static>> {
     let says = if hub_core::releases::blank(&a.live_text) {
         a.status_text.clone()
@@ -419,6 +437,7 @@ pub fn detail(
             w,
         ));
     }
+    out.extend(status(st, p, now, w));
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
         out.extend(channel(r, p, now, w));
@@ -542,6 +561,94 @@ pub fn detail(
                 }
             }
         }
+    }
+    out
+}
+
+/// How many incidents the pane lists; the web lists `app_status::INCIDENTS_SHOWN`.
+const INCIDENT_LINES: usize = 5;
+
+/// The app's checks, as its web page says them: the banner, each check's uptime and latency over
+/// its last days (one mark a day: `|` all passed, `x` a failed result, `.` no result), then its
+/// recent incidents.
+fn status(
+    st: Option<&Result<AppStatus, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    let head = |text: String, style: Style| {
+        clip_line(
+            Line::from(vec![
+                Span::styled(format!("  {:<LABEL$} ", "Checks"), p.dim()),
+                Span::styled(text, style),
+            ]),
+            w,
+        )
+    };
+    let s = match st {
+        None => return vec![head("reading...".into(), p.dim())],
+        Some(Err(e)) => return vec![head(format!("not read: {e}"), p.warn())],
+        Some(Ok(s)) => s,
+    };
+    let checked = s.newest.map_or("no result yet".into(), |t| {
+        format!(
+            "checked {} ({} ago)",
+            clock(t, now),
+            crate::fmt::dur((now - t) as f64)
+        )
+    });
+    out.push(head(format!("{}, {checked}", s.banner), level(s.level, p)));
+    for part in &s.context {
+        let style = if part.warn { p.warn() } else { p.dim() };
+        out.push(clip_line(
+            Line::styled(format!("    {}  {}", part.label, part.text), style),
+            w,
+        ));
+    }
+    for e in &s.errors {
+        out.push(clip_line(Line::styled(format!("    {e}"), p.warn()), w));
+    }
+    for c in &s.checks {
+        let ups: Vec<String> = c.uptime.iter().map(|(k, v)| format!("{k} {v}")).collect();
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("    {}  ", c.name), Style::default()),
+                Span::styled(c.state.clone(), level(c.level, p)),
+                Span::styled(format!("  {}  {}", ups.join("  "), c.latency_text), p.dim()),
+            ]),
+            w,
+        ));
+        let room = w.saturating_sub(6).min(c.days.len());
+        let marks: Vec<Span> = c.days[c.days.len() - room..]
+            .iter()
+            .map(|d| match (d.ok, d.fail) {
+                (_, f) if f > 0 => Span::styled("x", p.warn()),
+                (0, _) => Span::styled(".", p.dim()),
+                _ => Span::styled("|", level(Level::Ok, p)),
+            })
+            .collect();
+        out.push(Line::from([vec![Span::raw("    ")], marks].concat()));
+    }
+    if !s.unchecked.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!("    no Gatus check yet: {}", s.unchecked.join(", ")),
+                p.dim(),
+            ),
+            w,
+        ));
+    }
+    if s.incidents.is_empty() {
+        out.push(Line::styled("    no incidents in 7 days", p.dim()));
+    }
+    for i in s.incidents.iter().take(INCIDENT_LINES) {
+        let style = if i.to.is_none() { p.warn() } else { p.dim() };
+        out.push(clip_line(
+            Line::styled(format!("    {}  {}", i.check, i.text), style),
+            w,
+        ));
     }
     out
 }
@@ -749,10 +856,94 @@ mod tests {
         cl: Option<&Result<Changelog, String>>,
         w: usize,
     ) -> Vec<String> {
-        detail(a, others, Palette::default(), AT, w, cl)
+        detail(a, others, Palette::default(), AT, w, cl, None)
             .iter()
             .map(text)
             .collect()
+    }
+
+    #[test]
+    fn the_pane_says_the_apps_checks_as_its_web_page_does() {
+        use hub_core::app_status::{AppStatus, Check, Day, Incident};
+        let day = |ok, fail| Day {
+            at: AT,
+            ok,
+            fail,
+            text: String::new(),
+        };
+        let st = AppStatus {
+            app: "alpha".into(),
+            groups: vec!["alpha".into(), "alpha-beta".into()],
+            unchecked: vec!["alpha-beta".into()],
+            banner: "Partial outage: api".into(),
+            level: Level::Bad,
+            newest: Some(AT - 120),
+            context: vec![hub_core::session_page::Part::new("Firing", "alpha-spend").warn(true)],
+            checks: vec![Check {
+                name: "api".into(),
+                group: "alpha".into(),
+                state: "Down".into(),
+                level: Level::Bad,
+                uptime: vec![("24h".into(), "50%".into())],
+                days: vec![day(0, 0), day(288, 0), day(280, 8)],
+                latency: vec![],
+                latency_text: "p50 80ms, p95 120ms".into(),
+            }],
+            incidents: vec![Incident {
+                check: "api".into(),
+                from: AT - 600,
+                to: None,
+                fails: 3,
+                text: "down, ongoing".into(),
+            }],
+            monitor: None,
+            errors: vec![],
+            at: AT,
+        };
+        let s = sample();
+        let lines: Vec<String> = detail(
+            app(&s, "binks"),
+            false,
+            Palette::default(),
+            AT,
+            100,
+            None,
+            Some(&Ok(st)),
+        )
+        .iter()
+        .map(text)
+        .collect();
+        let all = lines.join("\n");
+        assert!(
+            all.contains("Checks    Partial outage: api, checked"),
+            "{all}"
+        );
+        assert!(
+            all.contains("api  Down  24h 50%  p50 80ms, p95 120ms"),
+            "{all}"
+        );
+        assert!(
+            all.contains("    .|x"),
+            "one mark a day, oldest first: {all}"
+        );
+        assert!(all.contains("no Gatus check yet: alpha-beta"), "{all}");
+        assert!(all.contains("    Firing  alpha-spend"), "{all}");
+        assert!(all.contains("api  down, ongoing"), "{all}");
+        let unread: Vec<String> = detail(
+            app(&s, "binks"),
+            false,
+            Palette::default(),
+            AT,
+            100,
+            None,
+            Some(&Err("CC_VM_SERVICE is not set".into())),
+        )
+        .iter()
+        .map(text)
+        .collect();
+        assert!(unread
+            .iter()
+            .any(|l| l.contains("not read: CC_VM_SERVICE is not set")));
     }
 
     #[test]
@@ -988,7 +1179,7 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines.iter().any(|l| l.contains("v2 ok")), "{lines:?}");
-        let failed = detail(&s.apps[at], false, p, AT, 200, None)
+        let failed = detail(&s.apps[at], false, p, AT, 200, None, None)
             .into_iter()
             .find(|l| text(l).contains("v3 fail"))
             .unwrap();

@@ -120,7 +120,7 @@ impl Cache {
     }
 }
 
-/// One Infra page cache (a machine's, a pool's), kept for the name last asked for: each page's
+/// One record page cache (a machine's, a pool's, an app's), kept for the name last asked for: each page's
 /// history is three week-long range queries (a machine's recent jobs also a pass over the jobs
 /// archive), so a reload or the page's own refresh inside `CACHE_SECS` is served the last read.
 /// The app keeps one per kind of page, so opening a pool does not drop the machine read.
@@ -187,7 +187,7 @@ impl Pages {
     /// `name`'s page: `inputs` reads what the page is made from, only on a miss, and hands back
     /// the read that makes it off the async threads. A name its reader does not know is a 404,
     /// and is not kept.
-    async fn get<F>(
+    pub(crate) async fn get<F>(
         &self,
         name: String,
         inputs: impl Future<Output = F>,

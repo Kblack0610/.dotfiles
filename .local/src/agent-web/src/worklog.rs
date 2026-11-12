@@ -89,6 +89,8 @@ mod tests {
             when: Some(when.into()),
             project: project.into(),
             what: "w".into(),
+            plan: None,
+            ci: None,
             kind: None,
             pr: None,
             url: None,
