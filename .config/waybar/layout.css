@@ -5,27 +5,29 @@
  * #status is the `group/status` cluster in config.base. Each member gets the
  * same padding, and every member after the first VISIBLE one draws a divider on
  * its left edge. GTK skips hidden siblings when matching :first-child, so a
- * module that is toggled off or handed to the pin takes its line with it. */
+ * module that is toggled off or handed to the pin takes its line with it.
+ * Descendant selectors on purpose: waybar 0.16 puts an extra node between a
+ * group and its module widgets, and the old `#status > widget` matched nothing. */
 
-#status > widget > label {
+#status widget label {
     padding: 0 12px;
     margin: 5px 0;
 }
 
-#status > widget:not(:first-child) > label {
+#status widget:not(:first-child) label {
     border-left: 2px solid alpha(currentColor, 0.6);
 }
 
 /* #cpu-temp is `group/cpu-temp` in config.base: two modules drawn as one
  * pill. The theme still colours each half, so only the temperature half goes red at
  * critical; this only closes the gap between them and rounds the outer corners. */
-#cpu-temp > widget:first-child > label {
+#cpu-temp widget:first-child > label {
     margin-right: 0;
     padding-right: 4px;
     border-radius: 6px 0 0 6px;
 }
 
-#cpu-temp > widget:last-child > label {
+#cpu-temp widget:last-child > label {
     margin-left: 0;
     padding-left: 4px;
     border-radius: 0 6px 6px 0;
