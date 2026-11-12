@@ -1767,8 +1767,15 @@ judged_ask() {
   # an answer naming no option reviews nothing (negative control)
   judged_ask N1 repo; "$AGENT_ASK" answer --by judge N1 fix 2>/dev/null
   audit="$(sed -n 's/^judge_audit: //p' "$d/N1.md")"
-  "$AGENT_ASK" answer "$audit" "not sure" 2>/dev/null
+  run --separate-stderr "$AGENT_ASK" answer "$audit" "not sure"
+  assert_success; [[ "$stderr" == *"names no option of ask N1"* ]]
   run "$AGENT_ASK" show N1; refute_line --partial 'judge_override'
+  # an audit that cannot post says why and marks the answer unaudited, never silently skipped
+  # (an option note with a term its context never names, which post refuses)
+  judged_ask P1 repo; sed -i 's/^option_notes: fix the test/option_notes: fix it with retryLoop/' "$d/P1.md"
+  run --separate-stderr "$AGENT_ASK" answer --by judge P1 fix
+  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"define its session terms (retryLoop)"* ]]
+  run "$AGENT_ASK" show P1; assert_line 'judge_audit: failed'
 }
 
 @test "live answers: malformed output is an error verdict, and a stuck call times out to one; both stay pending" {

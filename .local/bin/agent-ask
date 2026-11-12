@@ -994,12 +994,17 @@ audit_sample() {
   local o notes=() parts=() options=""
   IFS='|' read -r -a parts <<<"$opts"; IFS='|' read -r -a notes <<<"$(field "$f" option_notes)"
   for o in "${!parts[@]}"; do options+="${options:+|}${parts[$o]}=${notes[$o]:-as the asker offered it}"; done
-  local audit
+  local audit err; err="$(mktemp)"
   audit="$( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE AGENTCTL_NAME
     cmd_post --project "$(field "$f" project)" --profile "$(field "$f" profile)" --kind approval \
       --task "audit of the judge's live answer on ask $id" --audit-of "$id" --options "$options" \
       --context "An audit of the answer judge: it answered ask $id on its own ($(field "$f" judge_rule) at level $level, 1 in $rate of its live answers there is checked). Pick what you would have answered; the judge's own option keeps it, another one overrides it and goes to the asker. $(field "$f" context)" \
-      "$head$q$tail" 2>/dev/null)" || return 0
+      "$head$q$tail" 2>"$err")" || {
+    # A post that fails leaves its reason and a mark, so an unaudited answer never passes for audited.
+    echo "agent-ask: audit of ask $id not posted: $(head -1 "$err")" >&2
+    rm -f "$err"; set_field "$f" judge_audit failed; return 0
+  }
+  rm -f "$err"
   [ -n "$audit" ] && set_field "$f" judge_audit "$audit"
   return 0
 }
@@ -1017,6 +1022,8 @@ audit_answer() {
   g="$(find_ask "$of")"
   [ -n "$g" ] || { echo "agent-ask: ask $of, which this audits, is gone; nothing reviewed" >&2; return 0; }
   before="$(field "$g" judge_override)"
+  [ -n "$(named_option "$(field "$g" options)" "$answer")" ] ||
+    echo "agent-ask: '$answer' names no option of ask $of, so the audit reviewed nothing; answer it with one of them" >&2
   review_judge_answer "$g" "$answer" audit
   after="$(field "$g" judge_override)"
   case "$after" in "$before"|kept|none) ;; *) cmd_answer "$of" "$after" ;; esac
