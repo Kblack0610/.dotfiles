@@ -270,15 +270,15 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
   assert.ok(row, html);
   const cells = row[1];
-  assert.match(cells, /<a href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
-  assert.match(cells, /<a href="#projects\/agent-runtime">agent-runtime<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
-  assert.match(cells, /<a href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
+  assert.match(cells, /<a class="tl" href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
+  assert.match(cells, /<a class="tl" href="#projects\/agent-runtime">agent-runtime<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
   assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
-  assert.match(cells, /<a href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
-  assert.match(cells, /<a class="ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
+  assert.match(cells, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
+  assert.match(cells, /<a class="tl ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
   // No session: the row has no target to open and empty cells say so.
-  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a href="#queue\/q-2">No session yet<\/a><\/td><td><a href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
+  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
   // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did

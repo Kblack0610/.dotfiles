@@ -126,7 +126,8 @@ const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all
 // column -> href map per row it sent, in the same order, so the page builds no `#...` itself.
 const tblLinks = (t, i) => t?.links?.[i] || {};
 // A linked cell: an anchor to its page, a URL outside the hub in a new tab; no href, its text.
-const tblLink = (href, text, cls = "") => href ? `<a${cls ? ` class="${cls}"` : ""} href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : text ? (cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)) : "-";
+// `tl` styles it as its text until hover or focus (app.css).
+const tblLink = (href, text, cls = "") => href ? `<a class="tl${cls ? " " + cls : ""}" href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : text ? (cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)) : "-";
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {

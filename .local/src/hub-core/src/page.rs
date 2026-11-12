@@ -1,6 +1,6 @@
 //! One project's page, read when its card is opened (dashboards rule 10), never for every card:
-//! its systems first (each with its progress, its features and their percents, and each
-//! feature's tasks one level deeper), the Flow line, what needs the human, the next stage's
+//! its systems first (each with its progress, its features and their percents; the tasks are
+//! the rows view's, never drawn here), the Flow line, what needs the human, the next stage's
 //! gaps, the shipped versions and the dev timeline. Every number is counted by its
 //! owner and this module only joins them and says the words, so agent-web and the hub TUI print
 //! the same lines: `fleet-bench epics` (the chain, `epics.rs`), `project-stage-check` (next stage
@@ -17,20 +17,8 @@ use crate::epics::{self, Chain, Epic};
 use crate::projects::Card;
 use crate::session_actions::Runner;
 
-/// Plans with no epic the Needs you list names one by one; the rest are one "+N more" line.
-pub const PLANS_SHOWN: usize = 5;
-
 /// Next stage's head at the top of the ladder.
 pub const NO_NEXT: &str = "no stage after this one";
-
-/// One task under an epic, as opening the epic lists it: `[x] db-131  feat: skin palette  s  pr 412`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Leaf {
-    /// The row's id, which a surface finds the row by to open it.
-    pub id: String,
-    pub line: String,
-    pub done: bool,
-}
 
 /// One epic as its system's line: `one project page  20%  [rows]  brief yes  plan 2 of 7 ...`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -39,8 +27,6 @@ pub struct EpicLine {
     pub line: String,
     /// Behind its frozen baseline, which a surface marks.
     pub behind: bool,
-    /// Its tasks, done and open, in sheet order: what opening it lists.
-    pub leaves: Vec<Leaf>,
 }
 
 /// A system's current wave (`lifecycle.md`, "What an epic is"): its first open feature epic in
@@ -116,10 +102,13 @@ pub struct Page {
     pub project: String,
     /// `ideas 19 | briefs 2 | ...`; None when the chain could not be read.
     pub flow_line: Option<String>,
-    /// Verify an epic whose rows all landed, then plans that name no epic, in that order.
-    pub needs: Vec<String>,
-    /// The same asks grouped by kind, each with its count and every item (`need_groups`).
+    /// What needs the human, grouped by kind, each with its count and every item: the chain's
+    /// (`need_groups`), then the next stage's failing and human checks (kind `stage`).
     pub need_groups: Vec<NeedGroup>,
+    /// The project's open feature epics as the Deliverables table, the TUI's Build inner tab
+    /// (agent-web reads `/api/deliverables?scope=` for its own, the same `deliverables::build`).
+    #[serde(skip)]
+    pub build: crate::deliverables::Deliverables,
     /// Build by system's head: `3 systems, 2 open epics (438 rows with no epic)`.
     pub systems_says: String,
     pub systems: Vec<System>,
@@ -196,27 +185,6 @@ pub fn is_standing(e: &Epic) -> bool {
         .to_ascii_lowercase()
         .strip_suffix(" to standard")
         .is_some_and(|s| s.eq_ignore_ascii_case(&e.system))
-}
-
-/// One task's line: `[x] db-131  feat: skin palette  s  pr 412`, `[/]` for one started.
-fn leaf_line(r: &crate::epics::Row) -> String {
-    let mark = match r.state.as_str() {
-        "done" => 'x',
-        "doing" => '/',
-        _ => ' ',
-    };
-    let mut s = format!("[{mark}] {}  ", r.id);
-    if !r.kind.is_empty() && r.kind != "untyped" {
-        s += &format!("{}: ", r.kind);
-    }
-    s += &r.title;
-    if !r.size.is_empty() {
-        s += &format!("  {}", r.size);
-    }
-    if !r.prs.is_empty() {
-        s += &format!("  pr {}", r.prs.join(", "));
-    }
-    s
 }
 
 /// An epic's line on its system: title, percent, step, brief, plan phases, rows, PRs, ETA and track.
@@ -310,28 +278,34 @@ pub fn need_groups(c: &Chain) -> Vec<NeedGroup> {
     out
 }
 
+/// The next stage's checks that wait on a fix or the human, as one Needs you group; None when
+/// none do or the stage was not read.
+fn stage_group(p: &Page) -> Option<NeedGroup> {
+    let g = p.gate.as_ref().filter(|g| g.fail + g.human > 0)?;
+    Some(NeedGroup {
+        kind: "stage".into(),
+        says: format!(
+            "{} {} check{} failing, {} for a human",
+            g.fail,
+            g.stage,
+            plural(g.fail as usize),
+            g.human
+        ),
+        items: p
+            .next_rows
+            .iter()
+            .filter(|r| r.result == "FAIL" || r.result == "HUMAN")
+            .map(|r| format!("{} {}", r.result, r.requirement))
+            .collect(),
+    })
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
     } else {
         "s"
     }
-}
-
-/// `need_groups` as the TUI's flat list: every epic to verify, then the first [`PLANS_SHOWN`]
-/// plans with no epic and a count of the rest.
-pub fn needs(c: &Chain) -> Vec<String> {
-    let mut out = vec![];
-    for g in need_groups(c) {
-        if g.kind == "plan" && g.items.len() > PLANS_SHOWN {
-            let more = g.items.len() - PLANS_SHOWN;
-            out.extend(g.items.into_iter().take(PLANS_SHOWN));
-            out.push(format!("+{more} more plans with no epic"));
-        } else {
-            out.extend(g.items);
-        }
-    }
-    out
 }
 
 /// The epics under their systems: every system the project's type has, in `systems.md` order,
@@ -417,15 +391,6 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                     id: e.id.clone(),
                     line: epic_line(e, now),
                     behind: e.track.as_deref() == Some("behind"),
-                    leaves: e
-                        .rows
-                        .iter()
-                        .map(|r| Leaf {
-                            id: r.id.clone(),
-                            line: leaf_line(r),
-                            done: r.state == "done",
-                        })
-                        .collect(),
                 })
                 .collect();
             s.open_rows = es
@@ -645,11 +610,13 @@ pub fn read_with(
     let chain = chain().map_err(|e| p.errors.push(e)).ok();
     if let Some(c) = &chain {
         p.flow_line = Some(epics::flow_line(&c.flow));
-        p.needs = needs(c);
         p.need_groups = need_groups(c);
+        p.build =
+            crate::deliverables::build(std::slice::from_ref(c), *chrono::Local::now().offset());
         let in_open = roadmap.as_ref().map(closed_in_open).unwrap_or_default();
         p.systems = systems(c, &criteria, &in_open, now);
     }
+    p.need_groups.extend(stage_group(&p));
     let open_epics: usize = p.systems.iter().map(|s| s.epics.len()).sum();
     p.systems_says = format!("{} systems, {open_epics} open epics", p.systems.len());
     if let Some(n) = chain
@@ -908,19 +875,7 @@ mod tests {
             p.flow_line.as_deref(),
             Some("ideas 3 | briefs 1 | plans 1 | epics 3 | rows 5 | landed 1 | verified 1")
         );
-        assert_eq!(
-            p.needs,
-            vec![
-                "verify: Saves (4 of 4 rows landed, no live proof)",
-                "plan with no epic: a",
-                "plan with no epic: b",
-                "plan with no epic: c",
-                "plan with no epic: d",
-                "plan with no epic: e",
-                "+1 more plans with no epic",
-            ]
-        );
-        // Grouped, every item is kept: the TUI's flat list caps plans, the groups do not.
+        // Grouped by kind with every item, the next stage's failing and human checks last.
         let groups: Vec<(&str, &str, usize)> = p
             .need_groups
             .iter()
@@ -931,6 +886,7 @@ mod tests {
             vec![
                 ("verify", "1 epic landed with no live proof", 1),
                 ("plan", "6 plans with no epic", 6),
+                ("stage", "1 beta check failing, 1 for a human", 1),
             ]
         );
         // The head's numbers as fields, so a table draws them without parsing the line.
@@ -981,18 +937,6 @@ mod tests {
         assert_eq!(
             ui.epics.iter().map(|e| e.behind).collect::<Vec<_>>(),
             vec![true, false, false]
-        );
-        assert_eq!(
-            ui.epics[0]
-                .leaves
-                .iter()
-                .map(|l| (l.id.as_str(), l.line.as_str(), l.done))
-                .collect::<Vec<_>>(),
-            vec![
-                ("gm-3", "[x] gm-3  feat: Main menu  m  pr 101", true),
-                ("gm-4", "[ ] gm-4  Pause menu", false),
-                ("gm-8", "[/] gm-8  fix: Back key  s", false),
-            ]
         );
         assert_eq!(ui.closed, "+2 closed, 2 verified");
         assert_eq!(
