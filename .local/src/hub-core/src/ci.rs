@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use serde::Serialize;
 
 use crate::infra::Infra;
+use crate::links::{Kind, Link};
 use crate::prom::Series;
+use crate::table::{Row, Val};
 
 /// A running job past this is amber whatever its usual: playground `ci.md` calls a gate that
 /// runs past about an hour a bug to fix, not a wait.
@@ -29,6 +31,8 @@ pub struct Slot {
     pub host: String,
     /// `3`, or `2-5` for a run of slots in the same state.
     pub slot: String,
+    /// The runner pool (`cc:pool_*`'s label), `unity-local` for a local gate.
+    pub pool: String,
     /// `busy`, `idle`, `withheld` (the governor holds it back), `off` (offline or missing) or
     /// `standby` (its host is powered off by the governor).
     pub state: String,
@@ -58,6 +62,8 @@ pub struct Fit {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Queued {
     pub job: String,
+    /// The pool the exporter files it under.
+    pub pool: String,
     pub repo: String,
     pub pr: String,
     pub branch: String,
@@ -102,6 +108,10 @@ pub struct Ci {
     pub oldest: i64,
     pub rows: Vec<Slot>,
     pub queue: Vec<Queued>,
+    /// The last day's finished runs per workflow, worst main pass rate first.
+    pub finished: Vec<Finished>,
+    /// Those runs added up, for the section's head.
+    pub done: Tally,
     /// One red line per kind of job no online runner can take (`Queued::problem`), oldest first,
     /// with the count of waiting jobs when more than one. Both surfaces draw these as they are.
     pub red: Vec<String>,
@@ -145,6 +155,8 @@ impl Ci {
 /// A runner as the exporter reports it, one per name.
 struct Runner<'a> {
     s: &'a Series,
+    /// Its machine's one name (`Infra::aliases`): the runner label can be the node's hostname.
+    host: String,
     labels: Vec<String>,
     held: bool,
 }
@@ -163,6 +175,7 @@ fn holds(have: &[String], need: &[String]) -> bool {
 /// One row per runner name, a running one winning when two exporter pods disagree during a
 /// rollout.
 fn runners(infra: &Infra) -> Vec<Runner<'_>> {
+    let alias = infra.aliases();
     let held: HashSet<&str> = infra
         .get("withheld")
         .iter()
@@ -178,6 +191,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     by.into_iter()
         .map(|(n, s)| Runner {
             s,
+            host: crate::infra::host(&alias, s.label("host")),
             labels: lower(s.label("labels")),
             held: held.contains(n),
         })
@@ -264,16 +278,18 @@ pub fn build(infra: &Infra) -> Ci {
     let all = runners(infra);
     let off = infra.powered_off();
     let usual = usual(infra);
+    let alias = infra.aliases();
     let mut ci = Ci::default();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<Slot> = vec![];
     // Slots with no job to say, by host and state: they fold into one row per state.
-    let mut quiet: BTreeMap<(String, &str), Vec<String>> = BTreeMap::new();
+    let mut quiet: BTreeMap<(String, &str, &str), Vec<String>> = BTreeMap::new();
     for r in &all {
         let s = r.s;
-        let host = s.label("host").to_string();
+        let host = r.host.clone();
         hosts.insert(host.clone());
-        let slot = slot_of(s.label("name"), &host);
+        let slot = slot_of(s.label("name"), s.label("host"));
+        let pool = s.label("pool");
         match s.label("state") {
             "running" => {
                 ci.slots += 1;
@@ -286,6 +302,7 @@ pub fn build(infra: &Infra) -> Ci {
                 rows.push(Slot {
                     host,
                     slot,
+                    pool: pool.into(),
                     state: "busy".into(),
                     job: job_name(s),
                     repo: s.label("repo").into(),
@@ -303,20 +320,23 @@ pub fn build(infra: &Infra) -> Ci {
                     note: String::new(),
                 });
             }
-            "idle" if r.held => _ = quiet.entry((host, "withheld")).or_default().push(slot),
+            "idle" if r.held => quiet
+                .entry((host, pool, "withheld"))
+                .or_default()
+                .push(slot),
             "idle" => {
                 ci.slots += 1;
-                quiet.entry((host, "idle")).or_default().push(slot);
+                quiet.entry((host, pool, "idle")).or_default().push(slot);
             }
             _ if off.contains_key(s.label("host")) => {
-                quiet.entry((host, "standby")).or_default().push(slot)
+                quiet.entry((host, pool, "standby")).or_default().push(slot)
             }
-            _ => quiet.entry((host, "off")).or_default().push(slot),
+            _ => quiet.entry((host, pool, "off")).or_default().push(slot),
         }
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
     for g in infra.get("gates") {
-        let host = g.label("host").to_string();
+        let host = crate::infra::host(&alias, g.label("host"));
         hosts.insert(host.clone());
         ci.slots += 1;
         ci.busy += 1;
@@ -337,6 +357,7 @@ pub fn build(infra: &Infra) -> Ci {
         rows.push(Slot {
             host,
             slot: "-".into(),
+            pool: crate::machines::LOCAL_POOL.into(),
             state: "busy".into(),
             job: format!("{} (local)", g.label("platform")),
             repo: repo.into(),
@@ -347,7 +368,7 @@ pub fn build(infra: &Infra) -> Ci {
             ..Default::default()
         });
     }
-    for ((host, state), slots) in quiet {
+    for ((host, pool, state), slots) in quiet {
         let note = match state {
             "standby" => format!(
                 "governor {}",
@@ -359,6 +380,7 @@ pub fn build(infra: &Infra) -> Ci {
         rows.push(Slot {
             host,
             slot: ranges(slots),
+            pool: pool.into(),
             state: state.into(),
             note,
             ..Default::default()
@@ -381,6 +403,7 @@ pub fn build(infra: &Infra) -> Ci {
             .cmp(&host_rank[&a.host])
             .then_with(|| a.host.cmp(&b.host))
             .then_with(|| order(&a.state).cmp(&order(&b.state)))
+            .then_with(|| a.pool.cmp(&b.pool))
             .then_with(|| b.ran.cmp(&a.ran))
             .then_with(|| a.slot.cmp(&b.slot))
     });
@@ -390,6 +413,11 @@ pub fn build(infra: &Infra) -> Ci {
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
     ci.red = ci.red_lines();
+    ci.finished = finished(infra);
+    ci.done = ci
+        .finished
+        .iter()
+        .fold(Tally::default(), |t, f| t.add(&f.all));
     ci
 }
 
@@ -413,6 +441,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
             ])
             .or_insert_with(|| Queued {
                 job: job_name(s),
+                pool: s.label("pool").into(),
                 repo: s.label("repo").into(),
                 pr: s.label("pr").into(),
                 branch: s.label("branch").into(),
@@ -470,15 +499,14 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
             .unwrap_or(9)
     };
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
-        let host = r.s.label("host");
         let state = match r.s.label("state") {
             "running" => "busy",
             "idle" if r.held => "withheld",
             "idle" => "idle",
-            _ if off.contains_key(host) => "standby",
+            _ if off.contains_key(r.s.label("host")) => "standby",
             _ => continue,
         };
-        let e = by.entry(host).or_insert(state);
+        let e = by.entry(r.host.as_str()).or_insert(state);
         if rank(state) < rank(e) {
             *e = state;
         }
@@ -575,6 +603,278 @@ pub fn pool_match_rows(infra: &Infra, min_wait: i64) -> String {
         })
         .map(|l| l + "\n")
         .collect()
+}
+
+/// Runs that passed, failed (or timed out) and were cancelled; a skipped or neutral run counts
+/// in none, so `runs` can be more than their sum.
+#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq)]
+pub struct Tally {
+    pub runs: u32,
+    pub ok: u32,
+    pub bad: u32,
+    pub can: u32,
+}
+
+impl Tally {
+    fn add(self, o: &Tally) -> Tally {
+        Tally {
+            runs: self.runs + o.runs,
+            ok: self.ok + o.ok,
+            bad: self.bad + o.bad,
+            can: self.can + o.can,
+        }
+    }
+
+    /// Passed of passed and failed; a cancel is neither.
+    pub fn pass(&self) -> Option<f64> {
+        (self.ok + self.bad > 0).then(|| self.ok as f64 / (self.ok + self.bad) as f64)
+    }
+}
+
+/// One workflow's last day of finished runs (`github_runs_finished`), split by where they ran:
+/// a red on main is everyone's problem, a red gate on a work branch is usually the gate working.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Finished {
+    pub repo: String,
+    pub workflow: String,
+    pub all: Tally,
+    pub main: Tally,
+    pub branch: Tally,
+}
+
+/// Main's pass rate leads: worst first, then the overall rate, then the most failures; the
+/// workflows with nothing failed or cancelled after them, the busiest first.
+fn finished(infra: &Infra) -> Vec<Finished> {
+    let mut by: BTreeMap<(String, String), Finished> = BTreeMap::new();
+    for s in infra.get("finished") {
+        let f = by
+            .entry((s.label("repo").into(), s.label("workflow").into()))
+            .or_insert_with(|| Finished {
+                repo: s.label("repo").into(),
+                workflow: s.label("workflow").into(),
+                ..Default::default()
+            });
+        let n = s.value.unwrap_or(0.0).round().max(0.0) as u32;
+        let scope = match s.label("scope") {
+            "main" => Some(&mut f.main),
+            "branch" => Some(&mut f.branch),
+            _ => None,
+        };
+        let add = |t: &mut Tally| {
+            t.runs += n;
+            match s.label("conclusion") {
+                "success" => t.ok += n,
+                "failure" | "timed_out" => t.bad += n,
+                "cancelled" => t.can += n,
+                _ => {}
+            }
+        };
+        if let Some(t) = scope {
+            add(t);
+        }
+        add(&mut f.all);
+    }
+    let mut out: Vec<Finished> = by.into_values().collect();
+    let worst = |p: Option<f64>| p.unwrap_or(2.0);
+    out.sort_by(|a, b| {
+        b.red()
+            .cmp(&a.red())
+            .then_with(|| {
+                if a.red() {
+                    worst(a.main.pass())
+                        .total_cmp(&worst(b.main.pass()))
+                        .then_with(|| worst(a.all.pass()).total_cmp(&worst(b.all.pass())))
+                        .then_with(|| b.all.bad.cmp(&a.all.bad))
+                } else {
+                    b.all.runs.cmp(&a.all.runs)
+                }
+            })
+            .then_with(|| (&a.repo, &a.workflow).cmp(&(&b.repo, &b.workflow)))
+    });
+    out
+}
+
+impl Finished {
+    /// Something failed or was cancelled.
+    pub fn red(&self) -> bool {
+        self.all.bad + self.all.can > 0
+    }
+}
+
+fn opt(v: Option<i64>) -> Val {
+    v.map_or(Val::None, |n| Val::Num(n as f64))
+}
+
+/// What a job or slot runs for: `repo#pr`, else its branch, else its repo.
+fn reference(repo: &str, pr: &str, branch: &str) -> String {
+    if !pr.is_empty() {
+        format!("{repo}#{pr}")
+    } else if !branch.is_empty() {
+        branch.to_string()
+    } else {
+        repo.to_string()
+    }
+}
+
+impl Slot {
+    pub fn reference(&self) -> String {
+        reference(&self.repo, &self.pr, &self.branch)
+    }
+}
+
+impl Queued {
+    pub fn reference(&self) -> String {
+        reference(&self.repo, &self.pr, &self.branch)
+    }
+}
+
+/// The CI runners table on both surfaces: each slot with the job it runs, idle and held runs of
+/// slots folded to one row each.
+impl Row for Slot {
+    const COLUMNS: &'static [&'static str] = &[
+        "host", "slot", "state", "pool", "ran", "usual", "job", "ref",
+    ];
+    const STATES: &'static [&'static str] =
+        &["all", "busy", "idle", "withheld", "standby", "off", "late"];
+    const FACETS: &'static [&'static str] = &["host", "state", "pool"];
+    const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "host";
+    const GLANCE: &'static [&'static str] = &["state", "ran", "job"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| {
+            if s.is_empty() {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
+        };
+        match col {
+            "host" => text(&self.host),
+            "slot" => text(&self.slot),
+            "state" => text(&self.state),
+            "pool" => text(&self.pool),
+            "ran" => opt(self.ran),
+            "usual" => opt(self.usual),
+            "job" if self.state == "busy" => text(&self.job),
+            "job" => text(&self.note),
+            "ref" => text(&self.reference()),
+            _ => Val::None,
+        }
+    }
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "late" => self.late,
+            s => self.state == s,
+        }
+    }
+    fn rank(&self, col: &str) -> Val {
+        match col {
+            // `2-5` sorts by its first slot.
+            "slot" => self
+                .slot
+                .split(['-', ','])
+                .next()
+                .and_then(|n| n.parse::<f64>().ok())
+                .map_or_else(|| self.val(col), Val::Num),
+            c => self.val(c),
+        }
+    }
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "host" => Some(Link::to(Kind::Machine, &self.host)),
+            "pool" if !self.pool.is_empty() => Some(Link::to(Kind::Pool, &self.pool)),
+            _ => None,
+        }
+    }
+}
+
+/// The queued jobs on both surfaces: what each needs and the hosts that can take it, the ones no
+/// online runner can take under `stuck`.
+impl Row for Queued {
+    const COLUMNS: &'static [&'static str] = &["job", "pool", "ref", "n", "wait", "needs", "can"];
+    const STATES: &'static [&'static str] = &["all", "stuck", "free"];
+    const FACETS: &'static [&'static str] = &["pool", "needs", "can"];
+    const LEAD: &'static str = "job";
+    const GLANCE: &'static [&'static str] = &["wait", "can"];
+
+    fn val(&self, col: &str) -> Val {
+        match col {
+            "job" => Val::Text(self.job.clone()),
+            "pool" if self.pool.is_empty() => Val::None,
+            "pool" => Val::Text(self.pool.clone()),
+            "ref" => Val::Text(self.reference()),
+            "n" => Val::Num(self.n as f64),
+            "wait" => Val::Num(self.wait as f64),
+            "needs" => Val::Text(self.needs.join(", ")),
+            "can" if self.can.is_empty() => Val::None,
+            "can" => Val::Text(
+                self.can
+                    .iter()
+                    .map(|f| format!("{} {}", f.host, f.state))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            _ => Val::None,
+        }
+    }
+    fn vals(&self, col: &str) -> Vec<Val> {
+        match col {
+            "needs" => self.needs.iter().map(|n| Val::Text(n.clone())).collect(),
+            "can" => self.can.iter().map(|f| Val::Text(f.host.clone())).collect(),
+            c => vec![self.val(c)],
+        }
+    }
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "stuck" => self.stuck,
+            "free" => self.can.iter().any(|f| f.state == "idle"),
+            _ => false,
+        }
+    }
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "pool" if !self.pool.is_empty() => Some(Link::to(Kind::Pool, &self.pool)),
+            _ => None,
+        }
+    }
+}
+
+/// The finished-runs table on both surfaces: one row per workflow over the last day.
+impl Row for Finished {
+    const COLUMNS: &'static [&'static str] = &[
+        "repo",
+        "workflow",
+        "main",
+        "branches",
+        "runs",
+        "failed",
+        "cancelled",
+    ];
+    const STATES: &'static [&'static str] = &["all", "red", "green"];
+    const FACETS: &'static [&'static str] = &["repo"];
+    const LEAD: &'static str = "workflow";
+    const GLANCE: &'static [&'static str] = &["repo", "main", "failed"];
+
+    fn val(&self, col: &str) -> Val {
+        match col {
+            "repo" => Val::Text(self.repo.clone()),
+            "workflow" => Val::Text(self.workflow.clone()),
+            "main" => self.main.pass().into(),
+            "branches" => self.branch.pass().into(),
+            "runs" => Val::Num(self.all.runs as f64),
+            "failed" => Val::Num(self.all.bad as f64),
+            "cancelled" => Val::Num(self.all.can as f64),
+            _ => Val::None,
+        }
+    }
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "red" => self.red(),
+            "green" => !self.red(),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -845,6 +1145,46 @@ mod tests {
     }
 
     #[test]
+    fn a_local_gate_by_the_nodes_hostname_is_its_machines_row() {
+        let mut i = board();
+        i.instant.insert(
+            "uname",
+            series(vec![(
+                json!({"host": "workstation", "nodename": "cachyos-x8664-main"}),
+                "1",
+            )]),
+        );
+        i.instant.insert(
+            "gates",
+            series(vec![(
+                json!({"host": "cachyos-x8664-main", "repo": "game", "branch": "main", "platform": "unity"}),
+                "300",
+            )]),
+        );
+        let ci = build(&i);
+        assert!(ci.rows.iter().any(|r| r.host == "workstation"));
+        assert!(!ci.rows.iter().any(|r| r.host == "cachyos-x8664-main"));
+        assert_eq!(ci.hosts, 4);
+    }
+
+    #[test]
+    fn a_finished_count_rounds_and_a_negative_one_counts_nothing() {
+        let mut i = board();
+        let run = |c: &str, v: &'static str| {
+            (
+                json!({"repo": "game", "workflow": "Tests", "scope": "main", "conclusion": c}),
+                v,
+            )
+        };
+        i.instant.insert(
+            "finished",
+            series(vec![run("success", "2.9999"), run("failure", "-1")]),
+        );
+        let ci = build(&i);
+        assert_eq!((ci.done.runs, ci.done.ok, ci.done.bad), (3, 3, 0));
+    }
+
+    #[test]
     fn two_pods_reporting_one_runner_count_it_once_the_running_one_winning() {
         let mut i = board();
         i.instant.insert(
@@ -925,6 +1265,64 @@ mod tests {
         assert!(
             pool_match(&i, 3600).is_empty(),
             "no runner read, so no match"
+        );
+    }
+
+    #[test]
+    fn finished_runs_fold_by_workflow_with_a_red_on_main_first() {
+        let mut i = board();
+        let run = |wf: &str, scope: &str, c: &str, v: &'static str| {
+            (
+                json!({"repo": "game", "workflow": wf, "scope": scope, "conclusion": c}),
+                v,
+            )
+        };
+        i.instant.insert(
+            "finished",
+            series(vec![
+                run("Tests", "main", "success", "9"),
+                run("Tests", "branch", "success", "30"),
+                run("Multi", "main", "failure", "1"),
+                run("Multi", "main", "success", "1"),
+                run("Multi", "branch", "cancelled", "2"),
+                run("Lint", "branch", "failure", "3"),
+                run("Lint", "branch", "success", "1"),
+            ]),
+        );
+        let ci = build(&i);
+        let names: Vec<&str> = ci.finished.iter().map(|f| f.workflow.as_str()).collect();
+        // Multi failed on main; Lint only on branches, so it follows; Tests is green.
+        assert_eq!(names, ["Multi", "Lint", "Tests"]);
+        let multi = &ci.finished[0];
+        assert_eq!((multi.main.pass(), multi.all.can), (Some(0.5), 2));
+        assert_eq!(multi.branch.pass(), None);
+        assert_eq!((ci.done.runs, ci.done.ok, ci.done.bad), (47, 41, 4));
+        let (red, _) = crate::table::View::new::<Finished>("", "red", "", "").summary(&ci.finished);
+        assert_eq!(red.len(), 2);
+    }
+
+    #[test]
+    fn slots_and_queued_jobs_link_their_machine_and_pool() {
+        let ci = build(&board());
+        let (rows, s) = crate::table::View::new::<Slot>("", "busy", "", "").summary(&ci.rows);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(s.links[0]["host"], "#infra/machines/razer");
+        assert_eq!(s.links[0]["pool"], "#infra/pools/unity");
+        let (_, s) = crate::table::View::new::<Queued>("", "", "", "").summary(&ci.queue);
+        assert!(s.links.iter().all(|l| l["pool"] == "#infra/pools/unity"));
+        let can: Vec<String> = s
+            .facets
+            .iter()
+            .find(|f| f.key == "can")
+            .unwrap()
+            .values
+            .iter()
+            .map(|v| v.value.clone())
+            .collect();
+        assert!(
+            can.iter()
+                .all(|h| ["razer", "aws", "spot"].contains(&h.as_str())),
+            "{can:?}"
         );
     }
 }

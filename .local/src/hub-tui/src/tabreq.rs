@@ -44,9 +44,11 @@ pub fn parse(s: &str) -> Option<Req> {
         .filter(|q| !q.is_empty())
         .or_else(|| hub_core::layout::section(t).map(String::from));
     let tab = Tab::parse(t)?;
-    // A section that moved to another tab (`fleet tokens`) asks for it there.
+    // A section that moved to another tab (`fleet tokens`) asks for it there; one that opens a
+    // table under a chip (`infra governor`) keeps its word, which the tab knows.
     if let Some((to, sec)) = q
         .as_deref()
+        .filter(|q| hub_core::layout::moved_chip(tab.title(), q).is_none())
         .and_then(|q| hub_core::layout::moved(tab.title(), q))
     {
         return Some((Tab::parse(to.title)?, Some(sec.to_string())));
