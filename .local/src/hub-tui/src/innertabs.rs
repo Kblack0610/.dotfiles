@@ -91,6 +91,7 @@ mod tests {
         assert!(!shut.style.add_modifier.contains(Modifier::REVERSED));
         // negative control: NO_COLOR keeps the reverse, which is not colour
         let l = strip(costs, "spend", &[], Palette { no_color: true }, 80);
-        assert!(l.spans[1].style.add_modifier.contains(Modifier::REVERSED));
+        let open = l.spans.iter().find(|s| s.content == "[Spend]").unwrap();
+        assert!(open.style.add_modifier.contains(Modifier::REVERSED));
     }
 }

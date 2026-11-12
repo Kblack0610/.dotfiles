@@ -215,7 +215,7 @@ const JOBS_SHOWN: usize = 8;
 /// Lines an opened run's log keeps under its detail, however many jobs the detail lists.
 const BUILD_LOG_MIN: usize = 6;
 
-/// Infra's layout entry: its pinned sections and inner tabs.
+/// Infra's layout entry: its sections and inner tabs.
 fn infra_tab() -> &'static hub_core::layout::Tab {
     hub_core::layout::resolve("infra").expect("infra is a tab")
 }
@@ -2434,7 +2434,7 @@ impl App {
             _ => None,
         };
         if self.tab == Tab::Infra {
-            // A section on another inner tab switches to it; a pinned one keeps the one shown.
+            // A section on another inner tab switches to it.
             if let Some(id) = crate::innertabs::named(infra_tab(), sec) {
                 self.infra_inner = id;
             }
@@ -4268,8 +4268,7 @@ impl App {
                 }
                 (l, vec![])
             }
-            // Infra: the strip first, while Prometheus is read too, then the pinned sections and
-            // the inner tab shown, each section in hub_core::layout order with a blank line
+            // Infra: the strip first, while Prometheus is read too, then the inner tab shown, each section in hub_core::layout order with a blank line
             // between them.
             (_, _, None) => {
                 let tab = infra_tab();
@@ -4286,9 +4285,8 @@ impl App {
             }
             (_, _, Some(i)) => {
                 let tab = infra_tab();
-                // The layout lists the pinned sections first, then each inner tab's in turn.
                 let shown = if self.infra_all {
-                    &tab.sections[tab.pinned.len()..]
+                    tab.sections
                 } else {
                     hub_core::layout::inner_tab(tab, Some(self.infra_inner))
                         .map_or(&[][..], |i| i.sections)
@@ -4322,7 +4320,7 @@ impl App {
                         l.append(lines);
                     }
                 };
-                for name in tab.pinned.iter().chain(shown) {
+                for name in shown {
                     put(name, &mut l);
                 }
                 // The selected row of the table with the keys, kept in view after a key moves it.
@@ -7190,10 +7188,13 @@ mod tests {
         let k = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('K'))));
         let mut a = costs_app(true);
         assert_eq!(a.cv.consumers, None);
-        // Every section starts open, so the first K folds it and the second opens it.
+        // Costs opens on Spend: the first K switches to Limits with Consumers open, the second
+        // folds it and the third opens it again.
+        assert_eq!(a.cv.inner, "spend");
+        a.handle(k());
+        assert_eq!((a.cv.inner, a.cv.consumers), ("limits", Some(true)));
         a.handle(k());
         assert_eq!(a.cv.consumers, Some(false));
-        assert_eq!(a.cv.inner, "limits");
         a.handle(k());
         assert_eq!(a.cv.consumers, Some(true));
     }
@@ -7202,10 +7203,14 @@ mod tests {
     fn left_and_right_switch_costs_inner_tabs_and_hub_tab_names_one() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
-        assert_eq!(a.cv.inner, "limits");
-        a.handle(k(KeyCode::Right));
-        assert_eq!(a.cv.inner, "spend");
+        assert_eq!(a.cv.inner, "spend", "Costs opens on Spend");
         assert!(screen(&mut a, 100, 60).contains("window:"));
+        a.handle(k(KeyCode::Right));
+        assert_eq!(a.cv.inner, "limits");
+        assert!(
+            !screen(&mut a, 100, 60).contains("FLEET 24H"),
+            "the fleet figure is Spend's"
+        );
         a.handle(k(KeyCode::Left));
         a.handle(k(KeyCode::Left));
         assert_eq!(a.cv.inner, "budget");

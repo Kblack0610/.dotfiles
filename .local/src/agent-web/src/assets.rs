@@ -326,7 +326,10 @@ mod tests {
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
         assert_eq!(keys, all[..all.len() - 5]);
-        assert_eq!(all[all.len() - 5..], ["forge", "event", "title", "id", "pr"]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
@@ -503,10 +506,7 @@ mod tests {
                 .iter()
                 .map(|i| serde_json::json!([i.id, i.title, i.sections]))
                 .collect();
-            want.insert(
-                t.id.to_string(),
-                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
-            );
+            want.insert(t.id.to_string(), serde_json::json!({ "tabs": tabs }));
         }
         let line = APP_JS
             .lines()

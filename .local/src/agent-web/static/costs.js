@@ -75,24 +75,30 @@ function directTile(dr) {
   return tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
 }
 
+// The Spend tile row on the shared tile(): the whole fleet's 24h (hub_core::fleet_cost, the TUI's
+// `fleet_head`), then the outcomes windows and direct Lazer use, each sub saying what it counts.
 function costsTiles(d) {
-  return `<div class="tiles roomy">` + (d.totals || []).map((t) =>
+  return `<div class="tiles roomy" id="sec-totals">` + fleetTile(d.fleet_cost || { why: "nothing read" }) + (d.totals || []).map((t) =>
     tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `outcomes, ${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
     directTile(d.direct || {}) + `</div>` + (d.totals_note ? `<div class="muted fold">${esc(d.totals_note)}</div>` : "");
 }
 
-// The whole fleet's 24h cost: hub_core::fleet_cost builds every row and word, the TUI's `fleet`
-// draws the same ones. Every percentage is of the whole-fleet total.
-function fleetCostSection(d) {
-  const f = d.fleet_cost || { why: "nothing read" };
-  const title = `<h2 class="sec" id="sec-fleet">Fleet cost 24h`;
-  if (f.why) return `${title}</h2><div class="panel"><span class="warn">${esc(f.why)}</span></div>`;
+function fleetTile(f) {
+  if (f.why) return tile("FLEET 24H", "-", "var(--c2)", `<span class="warn">${esc(f.why)}</span>`);
   const age = f.stale ? `<span class="warn">stale, as of ${when(f.as_of)}</span>` : `as of ${when(f.as_of)}`;
+  return tile("FLEET 24H", esc(f.usd), "var(--c2)", `whole fleet, measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}`);
+}
+
+// Who spent the fleet's 24h: hub_core::fleet_cost builds every row and word, the TUI's `fleet`
+// draws the same ones. Every percentage is of the whole-fleet total, which leads the tile row.
+function fleetCostSection(d) {
+  const f = d.fleet_cost;
+  if (!f || f.why) return "";
   // Every column is on a phone's row too: "estimated" is never behind a tap.
   const row = (r) => `<tr><td>${esc(r.name)}</td><td class="n">${esc(r.cost)}</td><td class="n">${esc(r.share)}</td><td class="muted">${esc(r.basis)}</td></tr>` +
     (r.detail ? `<tr><td></td><td colspan="3" class="muted wrap">${esc(r.detail)}</td></tr>` : "");
-  return `${title} ${esc(f.usd)} <span class="muted">measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}</span></h2>` +
-    pfold("cost-fleet", `Who spent it <span class="muted">${f.rows.length} rows</span>`, `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
+  return `<h2 class="sec" id="sec-fleet">Who spent the 24h</h2>` +
+    pfold("cost-fleet", `${f.rows.length} rows`, `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
     `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
     `<div class="muted">${esc(f.foot)}</div></div>`);
@@ -157,7 +163,7 @@ function dayTable(dv, dq) {
     `<div id="spend-series">${columns(spendBars(dv.series.bars, 7), { height: 80, sel: dv.day, yfmt: usd })}</div></div>` : "";
   const rows = dv.rows.map((r) => `<tr data-sid="${esc(r.sid)}" class="${dv.series && dv.series.sid === r.sid ? "sel" : ""}">` +
     Object.keys(SESS_COLS).map((k) => sessCell(r, k)).join("") + `</tr>`).join("");
-  return `<div class="tbar" data-id="spend-dq"><input class="tsearch" data-dq data-free placeholder="search the day, or project:dotfiles origin:runner" value="${esc(dq)}"> <span class="muted">${t.shown} of ${t.total}, ${esc(dv.shown_usd)}</span></div>` +
+  return `<div class="card bfilter qcfilter" data-id="spend-dq"><div class="opts"><input data-dq data-free placeholder="search the day, or project:dotfiles origin:runner" value="${esc(dq)}"> <span class="muted">${t.shown} of ${t.total}, ${esc(dv.shown_usd)}</span></div></div>` +
     series + `<div class="panel scroll"><table class="tbl">${tblHead(t, SESS_COLS, "d")}${rows}</table>` +
     (dv.more ? `<div class="muted">+${dv.more} more under this query: narrow it to see them</div>` : "") + `</div>`;
 }
@@ -359,16 +365,17 @@ function costsSections(d) {
     `<div class="muted fold">${b.notes.map(esc).join(" ")}</div></details>`;
 }
 
-// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first,
-// the fleet figure pinned under it, then each section inside its inner tab's group in the layout's order
-// (Limits: burn, consumers; Spend: history, totals, the table; Models: tokens, langfuse, sections).
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first, then
+// each section inside its inner tab's group in the layout's order (Spend: the tile row, burn per
+// session, who spent the 24h, the history chart, the table; Limits: burn, consumers; Models:
+// tokens, langfuse, sections; Budget).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
+  const totals = costsTiles(d) + `<div class="muted fold">as of: ${asOf}${g}</div>`;
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
-  let html = innerStrip("costs", d.amber) + fleetCostSection(d) + innerWrap("costs", "burn", costsBurn(d)) +
-    innerWrap("costs", "consumers", costsConsumers(d)) + innerWrap("costs", "sessions", sessionsSection(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
+  let html = innerStrip("costs", d.amber) + innerWrap("costs", "totals", totals) + innerWrap("costs", "sessions", sessionsSection(d)) +
+    innerWrap("costs", "fleet", fleetCostSection(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -380,8 +387,9 @@ function costsTail(d) {
     ? ` Landed, redo, rev and $/PR are fleet-bench models${d.eval_days ? ` over ${d.eval_days}d` : ""}, per family (opus), queue items only.` : "";
   const note = `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
-  // The Models sections follow the table in the page, as the layout lists them.
-  return innerWrap("costs", "table", note) + innerWrap("costs", "tokens", tokensSection(d)) +
+  // The Limits and Models sections follow the table in the page, as the layout lists them.
+  return innerWrap("costs", "table", note) + innerWrap("costs", "burn", costsBurn(d)) + innerWrap("costs", "consumers", costsConsumers(d)) +
+    innerWrap("costs", "tokens", tokensSection(d)) +
     innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d)) +
     innerWrap("costs", "budget", budgetSection(d));
 }
