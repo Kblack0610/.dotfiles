@@ -50,6 +50,29 @@ def state(root, before=None):
     return files
 
 
+def upstream(root):
+    """Path -> [mode, blob] on the remote's default branch, or None when there is none.
+
+    A path whose state now matches it came in from upstream (another session's PR, pulled
+    by a merge or by agent-land's fast-forward of the main checkout), not from this session.
+    2026-11-11 (ar-1652): one landed SKILL.md made every open session in the repo re-run
+    its picked bats files at each Stop, on a box already at load 2.6x.
+    """
+    for ref in ("origin/HEAD", "origin/main", "origin/master"):
+        try:
+            rows = git(root, "ls-tree", "-r", "-z", "--full-tree", ref + "^{tree}")
+        except subprocess.CalledProcessError:
+            continue
+        tree = {}
+        for row in rows.split(b"\0"):
+            if row:
+                meta, path = row.split(b"\t", 1)
+                mode, _, blob = meta.decode().split()
+                tree[os.fsdecode(path)] = [mode, blob]
+        return tree
+    return None
+
+
 def main():
     action, directory, sid = sys.argv[1:]
     root = Path(os.fsdecode(git(directory, "rev-parse", "--show-toplevel")).strip())
@@ -65,9 +88,13 @@ def main():
     elif action == "changed":
         before = json.loads(baseline.read_text())
         current = state(root, before)
-        for path in sorted(before.keys() | current.keys()):
-            if (before.get(path) or [])[:3] != (current.get(path) or [])[:3]:
-                print(path)
+        changed = [p for p in sorted(before.keys() | current.keys())
+                   if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
+        tree = upstream(root) if changed else None
+        for path in changed:
+            if tree is not None and (current.get(path) or [None, None])[:2] == tree.get(path, [None, None]):
+                continue
+            print(path)
     else:
         raise ValueError("unknown action")
 
