@@ -77,7 +77,7 @@ function releaseHistory(a) {
     `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
     `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td>` +
     `<td class="wrap${s.prs.length ? "" : " muted"}">${esc(s.prs_text)}</td><td class="wrap${s.rows.length ? "" : " muted"}">${esc(s.rows_text)}</td></tr>`).join("");
-  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th class="n" data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
   return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
 }
 
@@ -87,10 +87,10 @@ function appBuilds(a) {
   const b = a.builds || [];
   if (!b.length) return `<div class="cline"><b>Builds</b> <span class="muted">no build run joined to a tag in the last 30 days</span></div>`;
   const rows = b.map((x) => `<tr><td>${esc(x.tag)}</td><td>${esc(x.workflow)}</td><td class="${levelClass(x.level)}">${esc(x.state_text)}</td>` +
-    `<td>${esc(x.started_text)}</td><td${x.live ? ' class="muted"' : ""}>${esc(x.ended_text)}</td>` +
+    `<td class="n">${esc(x.started_text)}</td><td class="n${x.live ? " muted" : ""}">${esc(x.ended_text)}</td>` +
     `<td>${/^https:/.test(x.url || "") ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">run</a>` : ""}</td></tr>`).join("");
   const live = b.filter((x) => x.live).length;
-  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">tag</th><th>workflow</th><th data-role="glance">state</th><th data-role="glance">started</th><th>finished</th><th>link</th></tr>${rows}</table></div>`;
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">tag</th><th>workflow</th><th data-role="glance">state</th><th class="n" data-role="glance">started</th><th class="n">finished</th><th>link</th></tr>${rows}</table></div>`;
   return cfold(`rel-builds:${a.project}`, `<b>Builds</b> <span class="muted">${b.length} run${b.length === 1 ? "" : "s"}${live ? `, ${live} in progress` : ""}</span>`, body, REL_OPEN, true);
 }
 
