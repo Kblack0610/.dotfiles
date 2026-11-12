@@ -351,6 +351,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::pipelines::Pipeline>(),
         phone_table::<crate::junit::Suite>(),
+        phone_table::<crate::junit::Case>(),
         phone_table::<crate::quarantine::Entry>(),
         phone_table::<crate::sections::Section>(),
         phone_table::<crate::spend_history::SessRow>(),
