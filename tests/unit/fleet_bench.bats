@@ -5511,7 +5511,7 @@ STUB
   assert_failure 2
 }
 
-@test "canary lanes: a harness with a projects allowlist queues only those projects' tasks; an unreadable map skips none" {
+@test "canary lanes: a harness with a projects allowlist queues only those projects' tasks, and one whose list is malformed queues none" {
   canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_HARNESSES="$SANDBOX/harnesses.json"
@@ -5528,6 +5528,12 @@ STUB
   # A harness the map does not have is not filtered here: fleet-dispatch refuses it at start.
   run "$SUBJECT" canary queue --harness ghost --model x
   assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (ghost/x)"
+  # A malformed list queues nothing (fail closed), and says why.
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","projects":"dotfiles"}}}' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary queue --harness ocfree --model longcat
+  assert_failure 1
+  assert_output --partial 'queues nothing: its projects in'
+  [ -z "$(ls "$CQ" | grep -e '-longcat')" ] || fail "a lane whose list cannot be read queued a canary"
 }
 
 @test "canary lanes: retro queues each lane in canary-lanes whose source has room, and says why it skips one with no room or no source" {

@@ -638,18 +638,29 @@ load 'fleet_dispatch/common'
   assert_output --partial 'not a list of project names'
 }
 
-@test "an allowlisted harness starts only with a config_dir, which keeps every private rule out of its run" {
+@test "an allowlisted harness starts only as opencode with a config_dir, in its item's own repo, so no private rule or repo reaches its run" {
   harness_ready
   # A projects list with no config_dir would load ~/.config/opencode (the private global rules,
   # agents and plugins): refused before any worktree is made.
   harness_set '.harnesses.glm.projects = ["dotfiles", "game"]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure 2
-  assert_output --partial 'glm has a projects allowlist and no config_dir'
-  assert_not_called 'opencode run'
-  assert_not_called 'wt new'
-  # Positive control: with a config_dir it starts, and no Claude Code or above-worktree rules load.
+  assert_output --partial 'glm has a projects allowlist, so it must be an opencode harness with a config_dir'
+  # Nor may a codex harness carry one, config_dir or not: its run would load ~/.codex.
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.codex.projects = ["game"] | .harnesses.codex.config_dir = $d'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_failure 2
+  assert_output --partial 'codex has a projects allowlist, so it must be an opencode harness'
+  # A hand --cwd cannot point an allowlisted harness at another repo than the item's own.
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.config_dir = $d'
+  mkdir -p "$SANDBOX/client-repo"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm --cwd "$SANDBOX/client-repo"
+  assert_failure 2
+  assert_output --partial "glm runs only in game's own repo, not $SANDBOX/client-repo"
+  assert_not_called 'opencode run'
+  assert_not_called 'agent-codex'
+  assert_not_called 'wt new'
+  # Positive control: in its own repo it starts, and no Claude Code or above-worktree rules load.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_success
   assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 timeout 180m opencode run"

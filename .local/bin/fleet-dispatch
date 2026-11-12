@@ -1476,15 +1476,24 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
   # The backstop to route(): a hand --harness start reaches here without it.
-  pwhy=$(harness_project_why "$HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$it")") ||
+  proj=$(jq -r '.project // ""' <<<"$it")
+  pwhy=$(harness_project_why "$HARNESSES" "$harness" "$proj") ||
     { say "start: $harness refuses $(jq -r .slug <<<"$it"): $pwhy"; return 2; }
+  # A harness with a project allowlist is public-only: an opencode run under its own config_dir (the
+  # launch below), in the item's own repo. cwd is cmd_start's, so a hand --cwd cannot take it elsewhere.
+  if [ "$(jq -r --arg h "$harness" '.harnesses[$h] | has("projects")' "$HARNESSES")" = true ]; then
+    [ "$(harness_launcher "$harness")" = opencode ] && [ -n "$(jq -r --arg h "$harness" '.harnesses[$h].config_dir // empty' "$HARNESSES")" ] ||
+      { say "start: $harness has a projects allowlist, so it must be an opencode harness with a config_dir, or its run would load the private rules"; return 2; }
+    [ "$(realpath -m -- "$cwd")" = "$(realpath -m -- "$(repo_dir "$proj")")" ] ||
+      { say "start: $harness runs only in $proj's own repo, not $cwd"; return 2; }
+  fi
   # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
   # account, picked at launch, so it asks for any account with room.
   if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
@@ -1513,10 +1522,7 @@ gateway_launch() {
       # config_dir stands in for ~/.config/opencode, whose global rules, agents, commands and plugins
       # are private: a public-only harness (ocfree) loads none of them, nor Claude Code's (~/.claude),
       # nor an AGENTS.md found above the worktree (~/AGENTS.md is the private overlay's).
-      # A harness with a project allowlist is public-only, so it must have one.
       cdir=$(jq -r --arg h "$harness" '.harnesses[$h].config_dir // empty | sub("^~"; env.HOME)' "$HARNESSES")
-      [ -n "$cdir" ] || [ "$(jq -r --arg h "$harness" '.harnesses[$h] | has("projects")' "$HARNESSES")" = false ] ||
-        { say "start: $harness has a projects allowlist and no config_dir, so its run would load the private rules"; return 2; }
       if [ -n "$cdir" ]; then
         mkdir -p "$cdir" || { say "start: no config_dir $cdir for $harness"; return 1; }
         cmd="$cmd OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
