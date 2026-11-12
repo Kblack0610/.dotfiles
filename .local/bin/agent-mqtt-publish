@@ -126,7 +126,20 @@ hand_fired() {
 }
 
 snapshot() {
-    local f name st
+    local f name st dfd='' ofd='' sent
+    sent="$(tfile "agents/$HOST_ID/summary/overview")"
+
+    # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle), start here and
+    # run while the runner and watch loops do, so a run costs the slowest part, not the sum.
+    # Serial, the --full run took 46-49s at load 63 and one crossed the timer unit's 60s (ar-1753).
+    # Each prints only on success, as the `$(...) &&` it replaces did.
+    command -v fleet-dispatch >/dev/null 2>&1 &&
+        exec {dfd}< <(out="$(fleet-dispatch stats 2>/dev/null)" && printf '%s' "$out")
+    # A run within OVERVIEW_TTL of the last send repeats it (see the Overview block below).
+    if command -v hub >/dev/null 2>&1 &&
+        ! { [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < OVERVIEW_TTL)); }; then
+        exec {ofd}< <(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)
+    fi
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do
@@ -196,9 +209,10 @@ snapshot() {
     # Dispatch: runnable queue work, starts and reaps in the last hour, flapping items, as
     # fleet-dispatch itself counts them (`fleet-dispatch stats`); nothing is derived here. A queue
     # it cannot read publishes nothing, so the sensor goes unavailable at expire_after.
-    if command -v fleet-dispatch >/dev/null 2>&1; then
+    if [ -n "$dfd" ]; then
         local dstats
-        dstats="$(fleet-dispatch stats 2>/dev/null)" && jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
+        dstats="$(cat <&"$dfd")"; exec {dfd}<&-
+        jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
             emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
     fi
 
@@ -225,12 +239,11 @@ snapshot() {
     # last send repeats it: hooks fire many times a minute, and hub reads Prometheus, which must not
     # cost a hooked run its budget (PROM_TIMEOUT keeps a dead one inside agentctl's five seconds).
     if command -v hub >/dev/null 2>&1; then
-        local overview sent
-        sent="$(tfile "agents/$HOST_ID/summary/overview")"
-        if [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < OVERVIEW_TTL)); then
-            overview="$(cat "$sent")"
+        local overview
+        if [ -n "$ofd" ]; then
+            overview="$(cat <&"$ofd")"; exec {ofd}<&-
         else
-            overview="$(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)"
+            overview="$(cat "$sent")"
         fi
         jq -e '.rows | arrays' <<< "$overview" >/dev/null 2>&1 &&
             emit summary overview mdi:view-dashboard "$overview"
