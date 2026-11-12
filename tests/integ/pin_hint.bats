@@ -1,14 +1,15 @@
 #!/usr/bin/env bats
 # pin-hint.sh: the leader's which-key popup is the submap's described binds, read from
-# `hyprctl binds -j`, so leader.conf is the only list of leader keys. What these pin: an
+# `hyprctl binds -j`, so leader.lua is the only list of leader keys. What these pin: an
 # undescribed bind never shows; keys sharing a description share an entry; a submap with no
-# described binds says so instead of an empty popup; and every key in the real leader.conf's
+# described binds says so instead of an empty popup; and every key in the real leader.lua's
 # submaps has exactly one described bind, so a leaf added without one fails here.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/hypr'
   sandbox_init basic
   HINT="$REPO_ROOT/.config/waybar/pin-hint.sh"
   export FX="$BATS_TEST_TMPDIR"
@@ -63,23 +64,20 @@ u utils >               esc/q exit"
   assert_failure 2
 }
 
-# undescribed <leader.conf>: each submap key whose described-bind count is not exactly one.
+# undescribed [config-dir]: each leader submap key whose described-bind count is not exactly one.
 undescribed() {
-  awk '
-    /^submap = / { sm = $3; next }
-    sm != "" && sm != "reset" && /^bindp?d? = / {
-      split($0, p, ","); k = sm " " p[2]; n[k] += 0; if ($1 ~ /d$/) n[k]++
-    }
-    END { for (k in n) if (n[k] != 1) { print k ": " n[k] " described"; bad = 1 } exit bad }
-  ' "$1"
+  hypr_dump binds "$@" | awk -F'\t' '
+    $1 ~ /^pinbar/ { k = $1 " " $2; n[k] += 0; if ($3 != "") n[k]++ }
+    END { for (k in n) if (n[k] != 1) { print k ": " n[k] " described"; bad = 1 } exit bad }'
 }
 
-@test "every key in the real leader.conf submaps has exactly one described bind" {
-  run undescribed "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
+@test "every key in the real leader submaps has exactly one described bind" {
+  run undescribed
   assert_success
   # The same check fails a leaf with no description.
-  sed '0,/^bindpd = ,a, agent panel,/s//bindp = ,a,/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf" > "$FX/leader.conf"
-  run undescribed "$FX/leader.conf"
+  cp -r "$REPO_ROOT/.config/hypr" "$FX/hypr"
+  sed -i 's/leaf("a", "agent panel",/leaf("a", "",/' "$FX/hypr/conf/leader.lua"
+  run undescribed "$FX/hypr"
   assert_failure
   assert_output "pinbar-agents a: 0 described"
 }

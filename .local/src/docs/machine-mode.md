@@ -46,7 +46,7 @@ The waybar chip shows in every mode, `open` included, as the mode's initial (F, 
 | `Super+A m o` | open |
 | `Super+A m f` | full |
 
-The leaves call `machine-mode <mode>`, the only writer, as the command line does (`.config/hypr/conf.d/leader.conf`, submap `pinbar-mode`).
+The leaves call `machine-mode <mode>`, the only writer, as the command line does (`.config/hypr/conf/leader.lua`, submap `pinbar-mode`).
 
 ## Clock hours
 

@@ -28,12 +28,12 @@ jq -cn '{text: "<b>OK</b> 3", tooltip: "<b>Head</b> <span color='"'"'#ff0000'"'"
 EOF
   printf '#!/usr/bin/env bash\necho "prometheus down" >&2\nexit 4\n' > "$FX/bad.sh"
   chmod +x "$FX/ok.sh" "$FX/bad.sh"
-  # hyprctl: `binds -j` serves $FX/binds.json (no binds unless a test writes some), anything
-  # else is logged, so no test reaches the live compositor.
+  # hyprctl: `repl` serves the bind registry from $FX/binds.json (no binds unless a test writes
+  # some), anything else is logged, so no test reaches the live compositor.
   echo '[]' > "$FX/binds.json"
   cat > "$SANDBOX/bin/hyprctl" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "binds -j" ] && exec cat "$FX/binds.json"
+[ "$*" = "repl return hypr_binds_json()" ] && exec cat "$FX/binds.json"
 printf '%s\n' "$*" >> "$FX/dispatched"
 EOF
   chmod +x "$SANDBOX/bin/hyprctl"
@@ -124,7 +124,6 @@ write_binds() {
     {submap: "", modmask: 64, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
     {submap: "", modmask: 5, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
     {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "kitty -e agent-panel", has_description: true, description: "agent panel"},
-    {submap: "pinbar", modmask: 0, key: "a", dispatcher: "exec", arg: "pin-hint.sh close", has_description: false, description: ""},
     {submap: "pinbar", modmask: 0, key: "t", dispatcher: "submap", arg: "pinbar-timebox", has_description: true, description: "timebox >"},
     {submap: "pinbar-timebox", modmask: 0, key: "escape", dispatcher: "submap", arg: "pinbar", has_description: true, description: "back"},
     {submap: "pinbar-timebox", modmask: 0, key: "p", dispatcher: "exec", arg: "timebox pause", has_description: true, description: "pause"}
@@ -144,14 +143,14 @@ write_binds() {
   refute_output --partial "timebox >"
 }
 
-@test "a window row's Enter runs its bind through hyprctl dispatch exec; its preview names it" {
+@test "a window row's Enter runs its bind through hyprctl dispatch exec_cmd; its preview names it" {
   write_binds
   run "$MENU" preview win "timebox pause"
   assert_success
   assert_line "timebox pause"
   run "$MENU" click win left "timebox pause"
   assert_success
-  assert_equal "$(cat "$FX/dispatched")" "dispatch exec timebox pause"
+  assert_equal "$(cat "$FX/dispatched")" "dispatch hl.dsp.exec_cmd([==[timebox pause]==])"
   run "$MENU" click win left
   assert_failure
 }
