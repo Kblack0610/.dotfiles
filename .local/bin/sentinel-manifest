@@ -32,7 +32,8 @@ Verbs
                  watches) carries an expect_cmd that is not valid bash.
   validate --strict FILE
                  the above, plus the four legibility fields (what/why/where/
-                 action). This is a LINT, deliberately not part of plain
+                 action) and an explicit expiry (`null` for a standing
+                 watch). This is a LINT, deliberately not part of plain
                  `validate`: the loop runs `validate` on every pass and sends a
                  manifest that fails it to ERROR *and notifies*, so promoting a
                  documentation gap to a runtime fault would have paged eleven
@@ -220,6 +221,21 @@ def legibility_errors(doc):
     return errors
 
 
+def expiry_errors(path, doc):
+    """--strict only: expiry is the literal `null` (standing) or a value.
+
+    A missing key, a bare `expiry:`, `~` or `''` all read as standing at runtime, so a
+    forgotten bake-window expiry leaves a zombie watch. fleet-bench triage --coverage
+    also reads `null` as the standing marker when it asks for a route line.
+    """
+    if scalar(doc.get("expiry")):
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        if re.search(r"^expiry:[ \t]*null[ \t]*(#.*)?$", fh.read(), re.M):
+            return []
+    return ["missing 'expiry' -- write 'expiry: null' for a standing watch"]
+
+
 def cmd_validate(path, strict=False):
     try:
         doc = load(path)
@@ -230,6 +246,7 @@ def cmd_validate(path, strict=False):
     errors = []
     if strict:
         errors.extend(legibility_errors(doc))
+        errors.extend(expiry_errors(path, doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
