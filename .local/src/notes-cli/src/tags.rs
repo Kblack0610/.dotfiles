@@ -25,7 +25,7 @@ struct Hit {
 /// Recursively collect `.md` files under `dir`, skipping hidden dirs (e.g. `.git`).
 /// A missing dir is silently ignored (like `index::collect`), so an unset/partial
 /// profile never panics.
-fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,

@@ -197,6 +197,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // behind another's while both looked healthy.
     check_build(&mut r);
 
+    // 10. Knowledge lookup: the eval set in `.search/eval.tsv`, held to the floor it states.
+    check_find(&mut r, p);
+
     println!();
     let code = if r.fails > 0 { 1 } else { 0 };
     let summary = format!("{} fail, {} warn", r.fails, r.warns);
@@ -207,6 +210,41 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         log.info("doctor", &summary);
     }
     Ok(code)
+}
+
+/// Score `notes find` against the vault's own eval set, when it has one. Below the file's
+/// `# floor:` recall@5, or slower per lookup than its `ms`, is a WARN: ranking drifted as the
+/// notes grew, and the misses (`notes find --eval`) say where.
+fn check_find(r: &mut Report, p: &Profile) {
+    let path = crate::find::eval_path(p);
+    if !path.is_file() {
+        return;
+    }
+    let s = match crate::find::eval(p, &path) {
+        Ok(s) => s,
+        Err(e) => return r.add(Status::Warn, "knowledge lookup", &e.to_string()),
+    };
+    let floor = crate::find::read_floor(&path);
+    let detail = format!(
+        "recall@5 {:.1}% over {} queries, {:.0} ms per lookup",
+        s.recall5 * 100.0,
+        s.cases,
+        s.millis_per_query
+    );
+    let low = floor.recall5.is_some_and(|f| s.recall5 < f);
+    let slow = floor.ms.is_some_and(|m| s.millis_per_query > m);
+    if low || slow {
+        r.add(
+            Status::Warn,
+            "knowledge lookup",
+            &format!(
+                "{detail}, under its floor; `notes find --eval {}`",
+                path.display()
+            ),
+        );
+    } else {
+        r.add(Status::Pass, "knowledge lookup", &detail);
+    }
 }
 
 /// Compare the running executable against the newest file in the source tree it was compiled
