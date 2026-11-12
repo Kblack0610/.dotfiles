@@ -10,6 +10,7 @@ const WORK_COLOR = { failed: "var(--b-needs)", waiting: "var(--b-stalled)", acti
 
 const wrk = tblTab({
   tab: "log", id: "work", el: "log-work", pre: "w", api: "/api/log/work", pages: true, wait: "Loading.",
+  shown: () => logShows("work"),
   hint: "search, or project:notes state:done when:2026-11-08",
   params: (p, t) => { if (workDay()) p.set("wday", workDay()); if (t.all) p.set("all", "1"); },
   days: () => ({ key: "day", on: workDay(), windows: WORK_WINDOWS, date: true }),

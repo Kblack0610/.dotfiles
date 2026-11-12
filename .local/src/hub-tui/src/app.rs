@@ -2853,6 +2853,8 @@ impl App {
             KeyCode::Char('V') if self.log_shows("verdicts") => {
                 self.ask_filter = (self.ask_filter + 1) % ASK_FILTERS.len();
             }
+            // The day's keys step the day Day shows; on another inner tab they are not Log's.
+            KeyCode::Char('[' | ']' | 't') if !self.log_shows("day") => return false,
             _ => return self.today_key(k),
         }
         true
@@ -3991,9 +3993,17 @@ impl App {
             Tab::Log if self.log_days => {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
+            // Each inner tab's own keys only where they act: the day's on Day, a table's on
+            // Work and Actions, the verdict filter on Judges.
             Tab::Log => format!(
-                "<-/-> view  [ ] day{}  h days  Enter table  W work  A actions  a c s v w f go to  V verdict filter  n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
-                if self.day.is_some() { "  t today" } else { "" }
+                "<-/-> view  {}h days  {}W work  A actions  a c s v w f go to  {}n/N section  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
+                match (self.log_shows("day"), self.day.is_some()) {
+                    (true, true) => "[ ] day  t today  ",
+                    (true, false) => "[ ] day  ",
+                    _ => "",
+                },
+                if self.log_shows("work") || self.log_shows("actions") { "Enter table  " } else { "" },
+                if self.log_shows("verdicts") { "V verdict filter  " } else { "" },
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
             Tab::Queue if self.qv.table.typing.is_some() => {
@@ -5546,6 +5556,31 @@ mod tests {
     }
 
     #[test]
+    fn the_days_keys_act_only_on_day() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.runner = Arc::new(Fake::default());
+        a.boards.as_mut().unwrap().days = vec!["2026-11-04".into(), "2026-11-05".into()];
+        a.scroll = 5;
+        for c in ['[', ']', 't'] {
+            a.handle(key(c));
+        }
+        assert_eq!(
+            (a.day.as_deref(), a.scroll),
+            (None, 5),
+            "on Work they move neither the day nor the page"
+        );
+        assert!(
+            !screen(&mut a, 400, 40).contains("[ ] day"),
+            "nor are they in the hint"
+        );
+        a.log_go("day");
+        a.handle(key('['));
+        assert!(a.day.is_some(), "on Day [ steps back a day");
+        assert!(screen(&mut a, 400, 40).contains("[ ] day  t today"));
+    }
+
+    #[test]
     fn capital_v_steps_the_verdict_filter_only_while_judges_shows() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
@@ -5554,7 +5589,7 @@ mod tests {
             |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
         key(&mut a, 'V');
         assert_eq!(a.ask_filter, 0);
-        a.log_inner = "judges";
+        a.log_go("judges");
         key(&mut a, 'V');
         assert_eq!(ASK_FILTERS[a.ask_filter], "answered");
         for _ in 1..ASK_FILTERS.len() {

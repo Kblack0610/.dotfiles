@@ -71,7 +71,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | Esc | Jobs table: close the log, then history, then clear the view |
 | `/`, `f`, `s` / `S`, `x`, Esc | Home: the query, state chip, sort and clear on the table with the keys, NEEDS YOU until Tab gives them to RUNNING; `kind:ask` matches a row's kind, `project:hub` its project. Esc clears the view first, then on RUNNING gives the keys back to NEEDS YOU |
 | Tab, `j`/`k`, Enter | Home, RUNNING with the keys: pick a row, open its session's page (Sessions), else its queue item's record (Queue) |
-| `[` / `]`, `t` | Log: the day before / after, back to today. Daily: the day before / after that has a note, back to today |
+| `[` / `]`, `t` | Log, on Day: the day before / after, back to today. Daily: the day before / after that has a note, back to today |
 | `o`, Esc, Enter | Daily: show the outbox, `o` or Esc back to the note; on the outbox, Enter opens it in `$EDITOR` in a new tmux window |
 | `j`/`k`, Enter, `z` | Fleet: pick a row, open it (a runner's page, or a session on Sessions), fold a tier 1 row's sessions; on a runner's page `[` / `]` step to the previous / next runner and Esc goes back |
 | `u`, `U`, `l` | Costs: open or fold Where the tokens go, switch its window between 7d and yesterday, open or fold What Langfuse sees (typing a query, they are text) |

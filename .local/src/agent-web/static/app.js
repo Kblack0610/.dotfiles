@@ -421,6 +421,10 @@ function route(hash) {
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);
   if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
+  // A bare `#log` link carrying Actions' view (`#log?q=actor:shepherd&hours=72`, from before the
+  // strip) opens Actions: its keys are the table's plain ones and `hours`, Work's are w-prefixed.
+  const p = new URLSearchParams(query);
+  if (tab === "log" && !arg && [...TBL_KEYS, "hours"].some((k) => p.get(k))) return innerRoute({ name, tab, arg: "actions", query });
   return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),

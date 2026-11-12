@@ -16,16 +16,18 @@ const el = () => new Proxy({}, {
 const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const boxes = { "log-day": box };
 const doc = { getElementById: (id) => (boxes[id] ||= el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+// Every URL the page asked for, so a test can say which inner tab read.
+const fetched = [];
 const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
   URLSearchParams,
-  fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
+  fetch: async (u) => (fetched.push(String(u)), { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
 // watch.js loads before log.js in the page; its target helper is all the Sessions table uses.
 vm.runInContext('const shortTarget = (t) => String(t).split("/").pop();', ctx);
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js", "log.js", "work.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const pr = (repo, project, number, at, o = {}) => ({ repo, project, number, title: `t${number}`, url: `https://x/${number}`, merged_at: at, area: "hub", group: "web", ...o });
 // Six projects merged, so two of them share Other; dotfiles has ten rows, so two fold.
@@ -127,4 +129,33 @@ test("Log reads only the inner tab it shows, and an event for a hidden one waits
   vm.runInContext(`TABS.log.onEvent({ kind: "x" }); innerGo("log", "judges")`, ctx);
   assert.equal(reads(), "work work verdicts work verdicts", "the event while Judges was hidden is read when it opens");
   assert.match(vm.runInContext(`$("log-strip").innerHTML`, ctx), /data-itab="work".*data-itab="judges".*data-itab="ranked"/);
+});
+
+test("an old #log link with Actions' view opens Actions; Work's keys and an inner tab's name keep theirs", () => {
+  const arg = (h) => vm.runInContext(`route(${JSON.stringify(h)}).arg`, ctx);
+  assert.equal(arg("#log?q=actor:shepherd&hours=72"), "actions", "a saved Actions link");
+  assert.equal(arg("#log?hours=12"), "actions", "a window alone is Actions'");
+  assert.equal(arg("#log?wq=state:failed&wday=2026-11-04"), "", "Work's own keys open Work");
+  assert.equal(arg("#log"), "", "a bare link opens the first inner tab");
+  assert.equal(arg("#log/work?q=x"), "work", "a named inner tab wins");
+});
+
+test("a day step on Day reads the day, not Work, and Work paints only on its own inner tab", async () => {
+  vm.runInContext(`showUrl = () => {}; st.tab = "log"; st.arg = "day"; st.views.log = ""; $("log-work").innerHTML = "kept"`, ctx);
+  fetched.length = 0;
+  vm.runInContext(`goDay("2026-11-04")`, ctx);
+  await new Promise((r) => setImmediate(r));
+  assert.match(vm.runInContext("st.views.log", ctx), /wday=2026-11-04/, "the step is Work's wday, so Work opens on that day");
+  assert.equal(vm.runInContext("lst.day", ctx), "2026-11-04");
+  assert.ok(fetched.some((u) => u.startsWith("/api/log?date=2026-11-04")), fetched.join(" "));
+  assert.ok(!fetched.some((u) => u.startsWith("/api/log/work")), `Work was not read: ${fetched.join(" ")}`);
+  vm.runInContext("wrk.render()", ctx);
+  assert.equal(vm.runInContext(`$("log-work").innerHTML`, ctx), "kept", "a hidden Work table does not repaint");
+});
+
+test("the day's history is drawn inside Day's group, whichever inner tab is open", () => {
+  vm.runInContext(`st.tab = "log"; st.arg = "work"`, ctx);
+  assert.match(draw(rec()), /<div data-in="day" hidden><div id="sec-history">/, "drawn while Work shows, it is hidden with Day");
+  vm.runInContext(`st.arg = "day"`, ctx);
+  assert.match(draw(rec()), /<div data-in="day"><div id="sec-history">/);
 });

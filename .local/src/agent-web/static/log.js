@@ -24,7 +24,8 @@ const shownDay = () => (lst.rec && lst.rec.date) || lst.day;
 const workDay = () => new URLSearchParams(st.views.log || "").get("wday") || "";
 const urlDay = () => { const d = workDay(); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null; };
 function syncDay() { const d = urlDay(); if (d !== lst.day) { lst.day = d; refreshLog(); } }
-function goDay(d) { wrk.view({ day: d || "today" }); }
+// A day step writes Work's `wday` and syncs Day; Work reads that day when it next shows.
+function goDay(d) { setQuery(tblSet(st.views.log, { day: d || "today" }, "w")); syncDay(); }
 function stepDay(n) {
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(shownDay());
   const j = i + n;
@@ -120,7 +121,7 @@ function renderLog() {
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
     tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
-  html += `<div id="sec-history">${historyCharts(day)}</div>`;
+  html += innerWrap("log", "history", `<div id="sec-history">${historyCharts(day)}</div>`);
   const hours = byHour(rec);
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += waiting(nWait);
@@ -158,7 +159,8 @@ function logInner(id) {
 TABS.log = {
   show() {
     $("log-strip").innerHTML = innerStrip("log");
-    for (const [, , secs] of INNER_TABS.log.tabs) for (const s of secs) innerHide("log", s, $("sec-" + s));
+    // index.html's sections; the day's history is drawn with renderLog, which groups it there.
+    for (const el of $("log").querySelectorAll(':scope > [id^="sec-"]')) innerHide("log", el.id.slice(4), el);
     logInner(innerOf("log", st.arg)[0]);
     seekSection();
   },
