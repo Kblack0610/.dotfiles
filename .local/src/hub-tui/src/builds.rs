@@ -627,7 +627,6 @@ pub mod tests {
                         row("ucp-1", 2, "2026-11-10", -1),
                         row("ucp-2", 3, "2026-11-30", 19),
                     ],
-                    ..Default::default()
                 }),
                 nightly: Some(Nightly {
                     created_at: Some("2026-11-11T08:00:00Z".into()),

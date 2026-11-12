@@ -326,7 +326,10 @@ mod tests {
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
         assert_eq!(keys, all[..all.len() - 5]);
-        assert_eq!(all[all.len() - 5..], ["forge", "event", "title", "id", "pr"]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]

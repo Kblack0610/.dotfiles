@@ -1017,7 +1017,7 @@ fn gaps(rows: &[Release]) -> String {
 }
 
 /// `4 ok, 1 released, 2 not read`, worst first, each word with its count and none with no rows.
-fn counts<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+pub(crate) fn counts<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
     let mut n: Vec<(&str, usize)> = vec![];
     for w in words {
         match n.iter_mut().find(|(s, _)| *s == w) {
@@ -1136,21 +1136,25 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
-pub fn badge(rows: &[Release]) -> Option<Badge> {
+/// One project's channels as its app row, read alone (no graph, builds or stage).
+pub fn app_of(rows: &[Release]) -> Option<App> {
     apps(rows, &HashMap::new(), &HashMap::new(), None, 0)
         .into_iter()
         .next()
-        .map(|a| {
-            let live = if blank(&a.live_text) {
-                String::new()
-            } else {
-                format!("{}, ", a.live_text)
-            };
-            Badge {
-                says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
-                level: a.level,
-            }
-        })
+}
+
+pub fn badge(rows: &[Release]) -> Option<Badge> {
+    app_of(rows).map(|a| {
+        let live = if blank(&a.live_text) {
+            String::new()
+        } else {
+            format!("{}, ", a.live_text)
+        };
+        Badge {
+            says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
+            level: a.level,
+        }
+    })
 }
 
 /// What one tag of a project shipped, from `release-state changelog --json`: the tag's

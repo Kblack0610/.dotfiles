@@ -231,7 +231,7 @@ impl Account {
     /// claude-acct publishes the time it is back on pace as now when it already is, so the
     /// verdict is read off the series and not derived again from used and gone.
     pub fn is_ahead(&self, now: i64) -> bool {
-        !self.idle_at.is_some_and(|t| t <= now)
+        self.idle_at.is_none_or(|t| t > now)
     }
 
     /// A back-on-pace cell: `on pace` when it already is, the time, or `after reset` when the

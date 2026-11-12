@@ -224,17 +224,17 @@ const dayBars = (days) => `<div class="appdays">${columns(days.map((d) => ({
   key: "d" + d.at, label: "", segs: [{ v: 1, color: dayColor(d) }],
   tip: `${dayLabel(d.at)}: ${d.text}${d.fail ? `, ${d.fail} failed of ${d.ok + d.fail}` : ""}`,
 })), { height: 34, yfmt: () => "" })}<div class="appdx muted"><span class="appd90">${days.length} days ago</span><span class="appd30">30 days ago</span><span>today</span></div></div>`;
-// The last 24 hours' response time, one column an hour ending with this one, each the worst
-// 5-minute sample in it; an hour with none is an empty column.
+// The last 24 hours' response time, one column an hour ending with this one, each that hour's
+// average result (hub_core::app_status); an hour with none is an empty column.
 const LATENCY_HOURS = 24;
 function latencyBars(pts, now) {
   if (!pts.length) return `<div class="muted">No response times in 24 hours.</div>`;
   const last = Math.floor(now / 3600) * 3600, hours = new Map();
-  for (const [t, ms] of pts) { const h = Math.floor(t / 3600) * 3600; hours.set(h, Math.max(hours.get(h) || 0, ms)); }
+  for (const [t, ms] of pts) hours.set(Math.floor(t / 3600) * 3600, ms);
   const cols = Array.from({ length: LATENCY_HOURS }, (_, i) => {
     const h = last - (LATENCY_HOURS - 1 - i) * 3600, ms = hours.get(h);
     return { key: "h" + h, label: i % 6 === 0 ? clock(h * 1e3) : "", segs: [{ v: ms || 0, color: "var(--c1)" }],
-      tip: `${clock(h * 1e3)}: ${ms === undefined ? "no result" : `worst ${Math.round(ms)} ms`}` };
+      tip: `${clock(h * 1e3)}: ${ms === undefined ? "no result" : `average ${Math.round(ms)} ms`}` };
   });
   return columns(cols, { height: 70, yfmt: (v) => `${Math.round(v)} ms` });
 }
@@ -243,7 +243,7 @@ function appCheck(c, now) {
   return `<div class="panel appchk"><div class="bhead"><span><b>${esc(c.name)}</b> <span class="muted">${esc(c.group)}</span></span>` +
     `<span class="chip sm" style="--c:${LEVEL_COLOR[c.level] || APP_DAY_COLOR.none}">${esc(c.state.toUpperCase())}</span></div>` +
     `<div class="cline appups">${up}<span class="appup"><span class="muted">latency</span> ${esc(c.latency_text)}</span></div>` +
-    dayBars(c.days) + `<div class="cline muted">Response time, 24 hours</div>` + latencyBars(c.latency, now) + `</div>`;
+    dayBars(c.days) + `<div class="cline muted">Response time, hourly average, 24 hours</div>` + latencyBars(c.latency, now) + `</div>`;
 }
 const LEVEL_COLOR = { ok: "var(--idle)", warn: "var(--busy)", bad: "var(--wait)" };
 function appIncidents(list) {
@@ -263,7 +263,9 @@ function appPageHtml() {
     d.context.map(pagePart).join("") + `</div>`;
   const errs = apst.err ? [`refresh failed, showing the last read: ${apst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  h += `<h2 class="sec">Checks <span class="muted">${esc(d.groups.join(", "))}</span></h2>`;
+  const probed = d.groups.filter((g) => !d.unchecked.includes(g));
+  h += `<h2 class="sec">Checks <span class="muted">${esc(probed.join(", "))}</span></h2>`;
+  if (d.checks.length && d.unchecked.length) h += `<div class="cline muted">No Gatus check yet: ${esc(d.unchecked.join(", "))}</div>`;
   h += d.checks.length ? d.checks.map((c) => appCheck(c, d.at)).join("") : `<div class="panel muted">No check reports for ${esc(d.groups.join(" or "))} yet.</div>`;
   return h + `<h2 class="sec">Incidents <span class="muted">two failed results in a row, until two pass</span></h2>` + appIncidents(d.incidents);
 }

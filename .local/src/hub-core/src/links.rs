@@ -269,14 +269,14 @@ mod tests {
         );
         assert_eq!(
             both(Kind::App, "shop"),
-            (
-                "#releases/apps/shop".into(),
-                a("releases", "apps/shop")
-            )
+            ("#releases/apps/shop".into(), a("releases", "apps/shop"))
         );
         assert_eq!(
             both(Kind::AppChannels, "binks"),
-            ("#releases?q=project:=binks".into(), a("releases", "project:=binks"))
+            (
+                "#releases?q=project:=binks".into(),
+                a("releases", "project:=binks")
+            )
         );
         assert_eq!(
             both(Kind::CiRun, "4412"),

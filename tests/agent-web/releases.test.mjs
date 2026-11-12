@@ -426,7 +426,7 @@ test("#releases/apps/<app> opens the app's status page in place of the table: ba
   const day = (i, ok, fail, text) => ({ at: at - (89 - i) * 86400, ok, fail, text });
   const days = Array.from({ length: 90 }, (_, i) => (i < 80 ? day(i, 0, 0, "No data") : i === 85 ? day(i, 287, 1, "99.65%") : day(i, 288, 0, "100%")));
   body = {
-    app: "binks", groups: ["binks", "binks-chat"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
+    app: "binks", groups: ["binks", "binks-chat", "binks-beta"], unchecked: ["binks", "binks-beta"], banner: "Partial outage: chat", level: "bad", newest: at - 60,
     context: [{ label: "Live", text: "v1.2.0 on prod", link: "#releases?q=project:=binks", warn: false }],
     checks: [{ name: "chat", group: "binks-chat", state: "Down", level: "bad", uptime: [["24h", "50%"], ["7d", "99.9%"]], days, latency: [[at - 7200, 120.5], [at - 3600, 80]], latency_text: "80 ms" }],
     incidents: [{ check: "chat", from: at - 600, to: null, fails: 3, text: "3 failed" }],
@@ -441,6 +441,8 @@ test("#releases/apps/<app> opens the app's status page in place of the table: ba
   assert.match(h, /^<div class="seg fseg istrip"/, "the strip stays above the page");
   assert.match(h, /href="#releases\/apps">All apps<\/a>/);
   assert.match(h, /Partial outage: chat/);
+  assert.match(h, /Checks <span class="muted">binks-chat<\/span>/, "the heading names only the groups that report");
+  assert.match(h, /No Gatus check yet: binks, binks-beta/);
   assert.match(h, /<a href="#releases\?q=project:=binks">v1\.2\.0 on prod<\/a>/);
   assert.equal(h.match(/class="cc"/g).length, 90 + 24, "90 day bars and 24 hourly latency columns");
   assert.equal(h.match(/background:var\(--c-other\)/g).length, 80, "a day with no results is grey, never green");

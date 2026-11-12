@@ -91,6 +91,8 @@ pub struct AppStatus {
     pub app: String,
     /// The Gatus groups read: the key, and `<key>-<channel>` per non-prod channel.
     pub groups: Vec<String>,
+    /// The groups with no check reporting: a channel nothing probes yet.
+    pub unchecked: Vec<String>,
     /// `Operational`, `Partial outage: <names>`, `Down`, `Waiting for every check to report`,
     /// `Monitor stopped reporting at <t>` or `not read: <why>`.
     pub banner: String,
@@ -222,11 +224,6 @@ pub fn incidents(steps: &[(i64, u64, u64)]) -> (Vec<(i64, Option<i64>, u64)>, bo
 }
 
 /// The value at `p` (0..1) of `v`, sorted in place.
-fn quantile(v: &mut [f64], p: f64) -> f64 {
-    v.sort_by(f64::total_cmp);
-    v[((v.len() - 1) as f64 * p).round() as usize]
-}
-
 fn hm(t: i64) -> String {
     Local
         .timestamp_opt(t, 0)
@@ -278,7 +275,10 @@ pub fn banner(checks: &[Check], newest: Option<i64>, now: i64) -> (String, Level
         .map(|c| c.name.as_str())
         .collect();
     if !failing.is_empty() {
-        return (format!("Failing check: {}", failing.join(", ")), Level::Warn);
+        return (
+            format!("Failing check: {}", failing.join(", ")),
+            Level::Warn,
+        );
     }
     ("Operational".into(), Level::Ok)
 }
@@ -293,12 +293,26 @@ pub fn context(app: &str, channels: &Result<Vec<Release>, String>) -> Vec<Part> 
                 .warn(true)]
         }
     };
-    let mut out = vec![match releases::badge(rows) {
-        Some(b) => Part::new("Live", b.says)
-            .link(Link::to(Kind::AppChannels, app))
-            .warn(b.level != Level::Ok),
-        None => Part::new("Live", "no channel recorded").link(Link::to(Kind::AppChannels, app)),
-    }];
+    let channels_link = Link::to(Kind::AppChannels, app);
+    let mut out = match releases::app_of(rows) {
+        Some(a) => vec![
+            Part::new("Live", a.live_text)
+                .link(channels_link.clone())
+                .warn(a.level != Level::Ok),
+            Part::new(
+                "Channels",
+                format!(
+                    "{} channel{}: {}",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" },
+                    releases::counts(rows.iter().map(|r| r.status.as_str()))
+                ),
+            )
+            .link(channels_link)
+            .warn(a.level != Level::Ok),
+        ],
+        None => vec![Part::new("Live", "no channel recorded").link(channels_link)],
+    };
     let mut watches: BTreeMap<&str, &str> = BTreeMap::new();
     for r in rows {
         for w in &r.telemetry {
@@ -344,8 +358,10 @@ pub struct Answers {
     pub days: Result<Vec<Series>, String>,
     /// The same over 5m, at a 5m step for 30 days.
     pub steps: Result<Vec<Series>, String>,
-    /// `max by (group,name)` response time in seconds, at a 5m step for 24h.
+    /// Each hour's average response time in seconds, at a 1h step for 24h.
     pub latency: Result<Vec<Series>, String>,
+    /// The p50 and p95 response time over 24h, each series labelled `q` = `50` or `95`.
+    pub pct: Result<Vec<Series>, String>,
     /// The newest result's time.
     pub newest: Result<Vec<Series>, String>,
 }
@@ -376,6 +392,7 @@ pub fn build(
     let day = split(&take("daily bars", a.days));
     let steps = split(&take("incidents", a.steps));
     let latency = take("latency", a.latency);
+    let pct = take("latency percentiles", a.pct);
     let newest = take("newest result", a.newest)
         .iter()
         .filter_map(|s| s.value)
@@ -437,20 +454,24 @@ pub fn build(
                 },
             });
         }
+        let mine = |s: &&Series| s.label("group") == key.0 && s.label("name") == key.1;
+        // A point at t averages the hour before it, so it is drawn at that hour's start.
         let lat: Vec<(i64, f64)> = latency
             .iter()
-            .filter(|s| s.label("group") == key.0 && s.label("name") == key.1)
-            .flat_map(|s| s.points.iter().map(|(t, v)| (*t as i64, v * 1000.0)))
+            .filter(mine)
+            .flat_map(|s| s.points.iter().map(|(t, v)| (*t as i64 - 3600, v * 1000.0)))
             .collect();
-        let latency_text = if lat.is_empty() {
-            NO_DATA.into()
-        } else {
-            let mut v: Vec<f64> = lat.iter().map(|p| p.1).collect();
-            format!(
-                "p50 {:.0}ms, p95 {:.0}ms",
-                quantile(&mut v, 0.5),
-                quantile(&mut v, 0.95)
-            )
+        let q = |p: &str| {
+            pct.iter()
+                .filter(mine)
+                .find(|s| s.label("q") == p)
+                .and_then(|s| s.value)
+        };
+        let latency_text = match (q("50"), q("95")) {
+            (Some(p50), Some(p95)) => {
+                format!("p50 {:.0}ms, p95 {:.0}ms", p50 * 1000.0, p95 * 1000.0)
+            }
+            _ => NO_DATA.into(),
         };
         checks.push(Check {
             level: match state {
@@ -473,9 +494,15 @@ pub fn build(
         Some(e) => (format!("not read: {e}"), Level::Warn),
         None => banner(&checks, newest, now),
     };
+    let unchecked = groups
+        .iter()
+        .filter(|g| !checks.iter().any(|c| &c.group == *g))
+        .cloned()
+        .collect();
     AppStatus {
         app: app.into(),
         groups,
+        unchecked,
         banner,
         level,
         newest,
@@ -494,13 +521,23 @@ fn selector(groups: &[String]) -> String {
 }
 
 /// The PromQL each answer asks, over `sel`.
-fn queries(sel: &str) -> (Vec<String>, String, String, String, String) {
-    let inc = |w: &str| format!("sum by (group,name,success) (increase(gatus_results_total{sel}[{w}]))");
+fn queries(sel: &str) -> (Vec<String>, String, String, String, String, String) {
+    let inc =
+        |w: &str| format!("sum by (group,name,success) (increase(gatus_results_total{sel}[{w}]))");
     (
         WINDOWS.iter().map(|(w, _)| inc(w)).collect(),
         inc("1d"),
         inc("5m"),
-        format!("max by (group,name) (max_over_time(gatus_results_duration_seconds{sel}[5m]))"),
+        // The gauge holds the latest result; scraped at the checks' own cadence, its samples
+        // are the results.
+        format!("avg by (group,name) (avg_over_time(gatus_results_duration_seconds{sel}[1h]))"),
+        [("50", "0.5"), ("95", "0.95")]
+            .map(|(l, q)| {
+                format!(
+                    r#"label_set(max by (group,name) (quantile_over_time({q}, gatus_results_duration_seconds{sel}[24h])), "q", "{l}")"#
+                )
+            })
+            .join(" or "),
         format!("max(tlast_over_time(gatus_results_total{sel}[7d]))"),
     )
 }
@@ -513,13 +550,15 @@ pub fn read(runner: &dyn Runner, app: &str, now: i64) -> Result<AppStatus, Strin
     }
     let channels = releases::channels(runner, app);
     let groups = groups(app, channels.as_deref().unwrap_or(&[]));
-    let (windows, day, step, lat, newest) = queries(&selector(&groups));
+    let (windows, day, step, lat, pct, newest) = queries(&selector(&groups));
     let q = |s: &str, r| prom::vm(s, r);
     let a = Answers {
         windows: windows.iter().map(|w| q(w, None)).collect(),
         days: q(&day, Some((now - (DAYS as i64 - 1) * 86_400, now, 86_400))),
         steps: q(&step, Some((now - INCIDENT_SECS, now, STEP))),
-        latency: q(&lat, Some((now - 86_400, now, STEP))),
+        // Hour-aligned, so each point averages exactly one clock hour.
+        latency: q(&lat, Some(((now - 86_400) / 3600 * 3600, now, 3600))),
+        pct: q(&pct, None),
         newest: q(&newest, None),
     };
     let mut page = build(app, groups, &channels, a, now);
@@ -567,8 +606,21 @@ mod tests {
         Answers {
             windows: vec![w(), w(), w(), w()],
             days: Ok(vec![series("pmp", "api", Some(true), &[(NOW, ok)])]),
-            steps: Ok(vec![series("pmp", "api", Some(true), &[(NOW - 300, 5.0), (NOW, 5.0)])]),
+            steps: Ok(vec![series(
+                "pmp",
+                "api",
+                Some(true),
+                &[(NOW - 300, 5.0), (NOW, 5.0)],
+            )]),
             latency: Ok(vec![series("pmp", "api", None, &[(NOW, 0.18)])]),
+            pct: Ok(["50", "95"]
+                .map(|q| {
+                    let mut s = instant("pmp", "api", true, 0.18);
+                    s.labels.remove("success");
+                    s.labels.insert("q".into(), q.into());
+                    s
+                })
+                .to_vec()),
             newest: Ok(vec![Series {
                 value: Some(newest as f64),
                 ..series("", "", None, &[])
@@ -590,6 +642,27 @@ mod tests {
         assert_eq!(d[0].text, "No data");
         assert_eq!(d[DAYS - 2].at, NOW - 86_400);
         assert_eq!(uptime(0, 0), "No data");
+    }
+
+    #[test]
+    fn latency_reads_the_percentiles_and_a_group_with_no_check_is_named() {
+        let p = build(
+            "pmp",
+            vec!["pmp".into(), "pmp-beta".into()],
+            &Ok(vec![]),
+            answers(10.0, 0.0, NOW - 30),
+            NOW,
+        );
+        assert_eq!(p.checks[0].latency_text, "p50 180ms, p95 180ms");
+        assert_eq!(
+            p.checks[0].latency,
+            [(NOW - 3600, 180.0)],
+            "an hour's point sits at its start"
+        );
+        assert_eq!(p.unchecked, ["pmp-beta"]);
+        let mut a = answers(10.0, 0.0, NOW - 30);
+        a.pct = Ok(vec![]);
+        assert_eq!(page(a).checks[0].latency_text, "No data");
     }
 
     #[test]
@@ -617,13 +690,21 @@ mod tests {
         let (runs, failing) = incidents(&[(0, 5, 0), (300, 0, 1)]);
         assert!(runs.is_empty() && failing, "one fail: failing, not down");
         let (runs, _) = incidents(&[(0, 0, 1), (300, 1, 0), (600, 0, 1), (900, 2, 0)]);
-        assert_eq!(runs, vec![(0, Some(900), 2)], "one good result does not end a run");
+        assert_eq!(
+            runs,
+            vec![(0, Some(900), 2)],
+            "one good result does not end a run"
+        );
     }
 
     #[test]
     fn a_silent_monitor_says_so_before_its_last_results() {
         let p = page(answers(100.0, 0.0, NOW - STALE_SECS - 1));
-        assert!(p.banner.starts_with("Monitor stopped reporting at "), "{}", p.banner);
+        assert!(
+            p.banner.starts_with("Monitor stopped reporting at "),
+            "{}",
+            p.banner
+        );
         assert_eq!(page(answers(100.0, 0.0, NOW - 30)).banner, "Operational");
     }
 
@@ -643,6 +724,7 @@ mod tests {
             days: Ok(vec![]),
             steps: Ok(vec![]),
             latency: Ok(vec![]),
+            pct: Ok(vec![]),
             newest: Ok(vec![]),
         };
         assert_eq!(page(a).banner, "Waiting for every check to report");
@@ -675,10 +757,7 @@ mod tests {
         ];
         assert_eq!(groups("binks", &rows), ["binks"]);
         assert_eq!(groups("binks-chat", &rows), ["binks-chat"]);
-        assert_eq!(
-            groups("shop", &rows),
-            ["shop", "shop-preview"]
-        );
+        assert_eq!(groups("shop", &rows), ["shop", "shop-preview"]);
         assert_eq!(selector(&groups("binks", &rows)), r#"{group=~"^(binks)$"}"#);
     }
 

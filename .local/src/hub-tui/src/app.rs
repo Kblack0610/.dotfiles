@@ -367,6 +367,8 @@ pub enum Msg {
     ReleaseFile,
     /// One project's changelog for the ask numbered first, or why it could not be read.
     Changelog(Result<Changelog, String>),
+    /// One app's checks (`hub_core::app_status`), for the project named.
+    AppStatus(String, Box<Result<hub_core::app_status::AppStatus, String>>),
     Builds(Box<Builds>),
     /// schedules-sync appended to the run ledger.
     BuildFile,
@@ -925,16 +927,31 @@ impl App {
         });
     }
 
-    /// With the pane open, the changelog is the selected app's: read it when the
-    /// selection came to rest on another (a key, a re-sort, a new snapshot, an answer that landed).
+    /// With the pane open, the changelog and the checks are the selected app's: read each when
+    /// the selection came to rest on another (a key, a re-sort, a new snapshot, an answer that
+    /// landed).
     fn sync_changelog(&mut self) {
-        let other = self
-            .selected_release()
-            .is_some_and(|r| r.project != self.rv.cl.project);
-        if self.rv.open && other {
+        let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
+            return;
+        };
+        if !self.rv.open {
+            return;
+        }
+        if project != self.rv.cl.project {
             // Another app's pane starts open and at its top.
             self.rv.others = true;
             self.read_changelog(None);
+        }
+        if project != self.rv.st.project && !self.rv.st.busy {
+            self.rv.st.busy = true;
+            self.rv.st.project = project.clone();
+            self.rv.st.read = None;
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let now = chrono::Utc::now().timestamp();
+                let r = hub_core::app_status::read(runner.as_ref(), &project, now);
+                let _ = tx.send(Msg::AppStatus(project, Box::new(r)));
+            });
         }
     }
 
@@ -1745,6 +1762,13 @@ impl App {
                 self.rv.cl.read = Some(r);
                 self.sync_changelog();
             }
+            Msg::AppStatus(project, r) => {
+                self.rv.st.busy = false;
+                if project == self.rv.st.project {
+                    self.rv.st.read = Some(*r);
+                }
+                self.sync_changelog();
+            }
             Msg::Builds(b) => {
                 let key = |v: &bv::BuildsView| {
                     self.builds
@@ -2398,6 +2422,16 @@ impl App {
             Kind::Job => {
                 self.open_jobs();
                 self.jobs_history(Some(id.to_string()));
+            }
+            // `#releases/apps/<app>`: the app alone in the table, its pane open on its checks.
+            Kind::App => {
+                self.go(Tab::Releases);
+                self.rv.open_view(format!("project:={id}"));
+                self.rv.open = true;
+                self.rv.others = true;
+                self.rv.cl.project.clear();
+                self.rv.st.project.clear();
+                self.sync_changelog();
             }
             _ => {}
         }
@@ -4552,7 +4586,14 @@ impl App {
                 .read
                 .as_ref()
                 .filter(|_| self.rv.cl.project == r.project);
-            let lines = releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl);
+            let st = self
+                .rv
+                .st
+                .read
+                .as_ref()
+                .filter(|_| self.rv.st.project == r.project);
+            let lines =
+                releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl, st);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -6998,13 +7039,19 @@ mod tests {
     }
 
     /// `release-state`: two projects' channels, and for `changelog` the tags v3 v2 v1 with the one
-    /// asked for (the newest when none), every argv recorded.
+    /// asked for (the newest when none), every `changelog` argv recorded. The pane's app status
+    /// read (`release-state show`, then kubectl, which answers not read) is not what these count.
     #[derive(Default)]
     struct Rel(std::sync::Mutex<Vec<String>>);
 
     impl Runner for Rel {
         fn run(&self, argv: &[String]) -> Result<String, String> {
-            self.0.lock().unwrap().push(argv.join(" "));
+            if argv.first().map(String::as_str) != Some("release-state") {
+                return Err("no cluster in tests".into());
+            }
+            if argv.get(1).map(String::as_str) == Some("changelog") {
+                self.0.lock().unwrap().push(argv.join(" "));
+            }
             let row = |p: &str| {
                 serde_json::json!({"project": p, "id": format!("{p}-prod"), "channel": "prod",
                     "pinned": {"value": "v2", "source": "manifest"}, "status": "drift"})
@@ -7028,15 +7075,23 @@ mod tests {
         let rel = Arc::new(Rel::default());
         a.runner = rel.clone();
         a.releases = Some(hub_core::releases::read(rel.as_ref(), &[]));
-        rel.0.lock().unwrap().clear();
         (a, rel, rx)
     }
 
-    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(m @ Msg::Changelog(..)) => a.handle(m),
-            _ => panic!("no changelog answer"),
+    /// The next changelog answer; app status answers on the way are handled, not counted.
+    fn changelog(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) -> Msg {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(m @ Msg::Changelog(..)) => return m,
+                Ok(m @ Msg::AppStatus(..)) => a.handle(m),
+                _ => panic!("no changelog answer"),
+            }
         }
+    }
+
+    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        let m = changelog(a, rx);
+        a.handle(m);
     }
 
     #[test]
@@ -7058,7 +7113,12 @@ mod tests {
         answer(&mut a, &rx);
         assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
         press(&mut a, KeyCode::Char(']'));
-        assert!(rx.try_recv().is_err(), "nothing newer than the newest tag");
+        while let Ok(m) = rx.try_recv() {
+            assert!(
+                matches!(m, Msg::AppStatus(..)),
+                "nothing newer than the newest tag"
+            );
+        }
         let log = rel.0.lock().unwrap().clone();
         let cl = [
             "release-state changelog --json alpha",
@@ -7094,7 +7154,7 @@ mod tests {
         press(&mut a, KeyCode::Char('k'));
         press(&mut a, KeyCode::Char('j'));
         assert!(a.rv.cl.busy, "one worker, however many moves");
-        let alpha = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let alpha = changelog(&mut a, &rx);
         a.handle(alpha);
         assert_eq!(
             a.rv.cl.project, "beta",

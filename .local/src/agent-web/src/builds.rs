@@ -300,7 +300,6 @@ mod tests {
                         ends: "2026-11-12".into(),
                         days_left: 1,
                     }],
-                    ..Default::default()
                 }),
                 nightly: Some(Nightly {
                     url: Some("https://x/runs/9".into()),

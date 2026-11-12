@@ -54,7 +54,14 @@ pub fn get(setting: &str, p: &str) -> Result<String, String> {
     let svc = service(&svc).ok_or_else(|| format!("{setting} is not namespace/name:port"))?;
     run(
         "kubectl",
-        &["--context", &ctx, REQUEST_TIMEOUT, "get", "--raw", &path(svc, p)],
+        &[
+            "--context",
+            &ctx,
+            REQUEST_TIMEOUT,
+            "get",
+            "--raw",
+            &path(svc, p),
+        ],
     )
 }
 
