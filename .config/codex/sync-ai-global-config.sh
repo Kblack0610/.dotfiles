@@ -231,12 +231,15 @@ opencode_stage = read_json(opencode_stage_path)
 def opencode_v2_mcp(v1: dict) -> dict:
     # rulesync emits opencode's V1 map ({name: {..., enabled, timeout: ms}}); opencode 2.x
     # reads mcp.servers with `disabled` and a per-phase timeout object.
+    if "servers" in v1:  # rulesync already emits the 2.x shape
+        return v1
     servers = {}
     for name, server in v1.items():
         server = dict(server)
         if "enabled" in server:
             server["disabled"] = not server.pop("enabled")
-        if isinstance(server.get("timeout"), int):
+        timeout = server.get("timeout")
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
             server["timeout"] = {"execution": server["timeout"]}
         servers[name] = server
     return {"servers": servers}

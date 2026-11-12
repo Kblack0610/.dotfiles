@@ -68,7 +68,7 @@ T
   assert_success
 }
 
-@test "opencode: the rulesync V1 mcp map lands as V2 mcp.servers, other keys stay" {
+@test "opencode: the rulesync V1 mcp map lands as V2 mcp.servers, other keys stay; a 2.x stage passes through" {
   cat > "$RULESYNC_BIN" <<'SH'
 #!/bin/sh
 mkdir -p .codex
@@ -82,6 +82,17 @@ SH
   assert_success
   run python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["model"], json.dumps(d["mcp"], sort_keys=True))' "$OPENCODE_HOME/opencode.json"
   assert_output 'litellm/m {"servers": {"ctx": {"command": ["npx"], "disabled": false, "timeout": {"execution": 9000}, "type": "local"}, "off": {"disabled": true, "type": "remote", "url": "https://x"}}}'
+  cat > "$RULESYNC_BIN" <<'SH'
+#!/bin/sh
+mkdir -p .codex
+echo rules > AGENTS.md
+echo '{"mcp": {"servers": {"ctx": {"type": "local", "command": ["npx"], "disabled": false}, "off": {"type": "remote", "url": "https://x"}}}}' > opencode.jsonc
+: > .codex/config.toml
+SH
+  run "$SUBJECT"
+  assert_success
+  run python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["mcp"], sort_keys=True))' "$OPENCODE_HOME/opencode.json"
+  assert_output '{"servers": {"ctx": {"command": ["npx"], "disabled": false, "type": "local"}, "off": {"type": "remote", "url": "https://x"}}}'
 }
 
 @test "config: a human copy of an owned key spread over lines goes whole; an owned file with no keys keeps the human's" {
