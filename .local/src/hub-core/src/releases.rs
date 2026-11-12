@@ -46,15 +46,7 @@ fn shown(status: &str) -> &str {
 /// by name.
 const ENVS: [&str; 6] = ["prod", "release", "beta", "alpha", "internal", "preview"];
 
-/// What one row's state means, for its colour (docs/dashboards.md rule 5).
-#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Bad,
-    Warn,
-    #[default]
-    Ok,
-}
+pub use crate::vocab::Level;
 
 /// One side of a channel: the version pinned there or the version running there.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]

@@ -368,6 +368,8 @@ pub enum Msg {
     /// One project's changelog for the ask numbered first, or why it could not be read.
     Changelog(Result<Changelog, String>),
     Builds(Box<Builds>),
+    /// The Pipelines view's sources, read with the runs on Infra.
+    Pipes(Box<hub_core::pipelines::Sources>),
     /// schedules-sync appended to the run ledger.
     BuildFile,
     /// The Sessions table's ended rows, then its header.
@@ -471,7 +473,13 @@ pub struct App {
     /// view in `Scope::Release`).
     pub builds: Option<Builds>,
     pub ci: bv::BuildsView,
-    /// A run's record asked for (`hub tab 'infra ci/<repo>/<run>'`) before a ledger read has it:
+    /// Infra's Pipelines table and its opened row (`pipetab`).
+    pub plv: crate::pipetab::PipelinesView,
+    /// What the Pipelines view is built from (state.json, the night runners and their starts),
+    /// read with the runs on Infra; `pipes` is it over the runs read, rebuilt when either lands.
+    pipe_src: Option<hub_core::pipelines::Sources>,
+    pub pipes: Option<hub_core::pipelines::Pipelines>,
+    /// A run's record asked for (`hub tab 'infra runs/<repo>/<run>'`) before a ledger read has it:
     /// it opens when one does, unless the page moved first.
     run_want: Option<String>,
     /// A session asked for (a Home Running row, `hub tab 'sessions <id>'`) before the sessions
@@ -654,6 +662,9 @@ impl App {
             releases: None,
             builds: None,
             ci: bv::BuildsView::default(),
+            plv: crate::pipetab::PipelinesView::default(),
+            pipe_src: None,
+            pipes: None,
             run_want: None,
             session_want: None,
             files: BoardFiles::from_env(),
@@ -946,6 +957,8 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             let paths = self.files.builds.clone();
             let items = self.queue_items();
+            // Only Infra draws Pipelines, and its sources list systemd's timers.
+            let pipes = self.tab == Tab::Infra;
             std::thread::spawn(move || {
                 let join = builds::Join {
                     runner: runner.as_ref(),
@@ -953,8 +966,73 @@ impl App {
                 };
                 let b = builds::read(&paths, Some(join), jobs::now());
                 let _ = tx.send(Msg::Builds(Box::new(b)));
+                if pipes {
+                    let s = hub_core::pipelines::sources(runner.as_ref());
+                    let _ = tx.send(Msg::Pipes(Box::new(s)));
+                }
             });
         }
+    }
+
+    /// Pipelines over the sources and runs last read, the same row kept selected and an opened
+    /// row's detail rebuilt from them.
+    fn build_pipes(&mut self) {
+        let (Some(s), Some(b)) = (&self.pipe_src, &self.builds) else {
+            return;
+        };
+        let p = hub_core::pipelines::pipelines(s, &b.rows);
+        let id = self
+            .pipes
+            .as_ref()
+            .and_then(|old| self.plv.selected(old))
+            .map(crate::pipetab::row_id);
+        self.plv.reselect(&p, id);
+        if let Some(d) = &self.plv.open {
+            self.plv.open = hub_core::pipelines::detail(s, &b.rows, &d.row.repo, &d.row.file);
+        }
+        self.pipes = Some(p);
+    }
+
+    /// The Pipelines inner tab's keys: its table's, j/k on its rows, Enter the selected row's
+    /// detail (again, closes it) and Esc closes the detail, then clears the view. False for the
+    /// rest, the page's keys.
+    fn pipes_key(&mut self, k: KeyEvent) -> bool {
+        let Some(p) = &self.pipes else {
+            return false;
+        };
+        // Esc is the table's only while a query is typed.
+        if self.plv.table.key::<hub_core::pipelines::Pipeline>(k.code) != Took::No {
+            return true;
+        }
+        let n = self.plv.shown(p).len();
+        if !k
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.plv.table.moves(k, n, self.page)
+        {
+            return true;
+        }
+        match k.code {
+            KeyCode::Enter => {
+                let id = self.plv.selected(p).map(crate::pipetab::row_id);
+                let same = self
+                    .plv
+                    .open
+                    .as_ref()
+                    .map(|d| crate::pipetab::row_id(&d.row))
+                    == id;
+                self.plv.open = match (&self.pipe_src, &self.builds, id) {
+                    (Some(s), Some(b), Some((repo, file))) if !same => {
+                        hub_core::pipelines::detail(s, &b.rows, &repo, &file)
+                    }
+                    _ => None,
+                };
+            }
+            KeyCode::Esc if self.plv.open.is_some() => self.plv.open = None,
+            KeyCode::Esc if !self.plv.table.is_default() => self.plv.table.clear(),
+            _ => return false,
+        }
+        true
     }
 
     /// Each app's build runs are the builds read's rows: put them on whichever read lands last.
@@ -1757,10 +1835,15 @@ impl App {
                 self.rv.runs.reselect(&b, rel);
                 self.builds = Some(*b);
                 self.put_builds();
+                self.build_pipes();
                 self.open_wanted_run();
                 if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
+            }
+            Msg::Pipes(s) => {
+                self.pipe_src = Some(*s);
+                self.build_pipes();
             }
             Msg::Fleet(f) => {
                 self.fleet = Some(*f);
@@ -2403,7 +2486,7 @@ impl App {
         let v = &mut self.ci;
         v.table.clear();
         v.table.view.q = q;
-        (v.times, v.log, v.detail) = (None, None, None);
+        (v.log, v.detail) = (None, None);
     }
 
     fn open_wanted_run(&mut self) {
@@ -3154,9 +3237,10 @@ impl App {
 
     /// Infra's own keys. The summary: Left/Right switch the inner tab, n/N jump between
     /// sections, the table keys (/ f s S x, Esc) go to the inner tab's table that has them and
-    /// `c` passes them on (`infratables`); on CI, Enter opens the runs table and `t` it with Run
-    /// times; elsewhere Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs
-    /// tables: their keys, and Esc with nothing to clear goes back to the summary.
+    /// `c` passes them on (`infratables`); on Runs, Enter opens the runs table; on Pipelines the
+    /// table keys and j/k are its table's and Enter opens the selected row's detail; elsewhere
+    /// Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs tables: their
+    /// keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
         // A page: Esc back to the tables, `o` its Grafana board, Left/Right another inner tab;
         // the rest scroll it.
@@ -3181,15 +3265,9 @@ impl App {
         }
         if self.infra_open == Some(Opened::Runs) {
             let v = &self.ci;
-            let root = v.table.is_default() && v.log.is_none() && v.times.is_none();
+            let root = v.table.is_default() && v.log.is_none();
             if root && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
                 self.infra_open = None;
-                return true;
-            }
-            if k.code == KeyCode::Char('t') && self.ci.table.typing.is_none() {
-                self.ci.times = self.ci.times.xor(Some(0));
-                self.ci.log = None;
-                self.ci.detail = None;
                 return true;
             }
             return self.builds_key(k);
@@ -3220,13 +3298,12 @@ impl App {
                     }
                 }
             }
-            // CI's runs table is one key away, as Jobs is from the rest: Enter opens it, `t`
-            // with Run times.
-            if self.infra_inner == "ci" && matches!(k.code, KeyCode::Enter | KeyCode::Char('t')) {
+            // The runs table is one key away, as Jobs is from the rest.
+            if self.infra_inner == "runs" && k.code == KeyCode::Enter {
                 self.infra_open = Some(Opened::Runs);
-                if k.code == KeyCode::Char('t') {
-                    self.ci.times = Some(0);
-                }
+                return true;
+            }
+            if self.infra_inner == "pipelines" && self.pipes_key(k) {
                 return true;
             }
             match k.code {
@@ -3482,7 +3559,6 @@ impl App {
         self.log_gen += 1;
         let gen = self.log_gen;
         let v = self.runs_mut();
-        v.times = None;
         v.log = Some(LogPane {
             title,
             text: None,
@@ -3532,11 +3608,6 @@ impl App {
             .builds
             .as_ref()
             .map_or(0, |b| self.runs().shown(b).len());
-        // Run times is every workflow's, on Infra's table alone.
-        let last = self
-            .builds
-            .as_ref()
-            .map_or(0, |b| bv::times_rows(b).saturating_sub(1));
         let n = self.page.max(1);
         let bv = self.runs_mut();
         match k.code {
@@ -3551,23 +3622,7 @@ impl App {
                     };
                 }
             }
-            c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
-                if bv.times.is_some() =>
-            {
-                let top = bv.times.unwrap_or_default();
-                let step = if matches!(c, KeyCode::Char('J' | 'K')) {
-                    1
-                } else {
-                    n
-                };
-                // Stored clamped, so scrolling back up past the end moves at once.
-                bv.times = Some(match c {
-                    KeyCode::PageDown | KeyCode::Char('J') => (top + step).min(last),
-                    _ => top.saturating_sub(step),
-                });
-            }
             KeyCode::Enter => self.open_build_log(),
-            KeyCode::Esc if bv.times.is_some() => bv.times = None,
             KeyCode::Esc => {
                 if bv.log.is_some() {
                     bv.log = None;
@@ -3838,17 +3893,24 @@ impl App {
                 self.infra_page.as_ref().map_or(String::new(), InfraPage::back)
             ),
             Tab::Infra if runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Infra if runs && self.ci.times.is_some() => {
-                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  q quit".into()
-            }
             Tab::Infra if runs && self.ci.log.is_some() => {
                 "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  q quit".into()
             }
             Tab::Infra if runs => format!(
-                "Enter log  t run times, quarantine  / query  f state  s sort  S asc/desc  x clear  o open run  Esc back  r refresh  {tabs} tabs  q quit"
+                "Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  Esc back  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.infra_open.is_none() && self.infra_inner == "ci" => format!(
-                "<-/-> view  n/N section  Enter runs table  t run times  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+            Tab::Infra if self.infra_open.is_none() && self.infra_inner == "runs" => format!(
+                "<-/-> view  Enter runs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+            ),
+            Tab::Infra
+                if self.infra_open.is_none()
+                    && self.infra_inner == "pipelines"
+                    && self.plv.table.typing.is_some() =>
+            {
+                QUERY_HINT.into()
+            }
+            Tab::Infra if self.infra_open.is_none() && self.infra_inner == "pipelines" => format!(
+                "<-/-> view  j/k pick  Enter detail  / query  f state  s sort  S asc/desc  x clear  Esc close  PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra
                 if self.infra_open != Some(Opened::Jobs)
@@ -4032,6 +4094,9 @@ impl App {
         if i.is_some_and(|i| !i.ci.red.is_empty()) {
             out.push("ci");
         }
+        if self.pipes.as_ref().is_some_and(|p| p.red > 0) {
+            out.push("pipelines");
+        }
         if self
             .builds
             .as_ref()
@@ -4056,9 +4121,7 @@ impl App {
         out.extend(table);
         out.push(crate::fit::clip_line(
             Line::styled(
-                format!(
-                    "  {rows} rows; Enter opens the table (/ search, f state, Enter log), t run times and quarantine"
-                ),
+                format!("  {rows} rows; Enter opens the table (/ search, f state, Enter log)"),
                 self.p.dim(),
             ),
             w,
@@ -4285,7 +4348,9 @@ impl App {
                     hub_core::layout::inner_tab(tab, Some(self.infra_inner))
                         .map_or(&[][..], |i| i.sections)
                 };
-                let mut secs = board::infra(i, self.p, now, w, &self.itab, self.infra_inner);
+                let failed = self.builds.as_ref().map(|b| b.counts.recent_red);
+                let mut secs =
+                    board::infra(i, self.p, now, w, &self.itab, self.infra_inner, failed);
                 // Jobs is read on its own, and built only on the inner tab that shows it: the
                 // jobs table walks every job in the window on each draw.
                 if shown.contains(&"jobs") {
@@ -4294,8 +4359,25 @@ impl App {
                 if shown.contains(&"runs") {
                     secs.push(("runs", self.runs_section(w)));
                 }
+                if shown.contains(&"pipelines") {
+                    let on = self.infra_inner == "pipelines";
+                    let mut l = self.plv.lines(self.pipes.as_ref(), self.p, w);
+                    // The selection is drawn only where the keys are.
+                    if !on {
+                        for x in &mut l {
+                            if x.style == self.p.sel() {
+                                x.style = ratatui::style::Style::default();
+                            }
+                        }
+                    }
+                    secs.push(("pipelines", l));
+                }
                 if shown.contains(&"tests") {
-                    secs.push(("tests", bv::tests_note(self.p, w)));
+                    let mut tests = bv::tests_note(self.p, w);
+                    if let Some(b) = &self.builds {
+                        tests.extend(bv::quarantine(b, self.p, w, JOBS_SHOWN));
+                    }
+                    secs.push(("tests", tests));
                 }
                 let strip = crate::innertabs::strip(
                     tab,
@@ -4552,8 +4634,8 @@ impl App {
         }
     }
 
-    /// The tab's runs table (`runs`) under its `title`, with the opened run's detail and log, or
-    /// Run times, in a pane under it.
+    /// The tab's runs table (`runs`) under its `title`, with the opened run's detail and log in a
+    /// pane under it.
     fn draw_runs(&mut self, f: &mut Frame, area: Rect, title: &str) {
         let infra = self.tab == Tab::Infra;
         let v = if infra {
@@ -4569,7 +4651,7 @@ impl App {
             );
             return;
         };
-        let pane = v.log.is_some() || v.times.is_some();
+        let pane = v.log.is_some();
         let (list, pane) = if pane {
             let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(area);
@@ -4588,10 +4670,6 @@ impl App {
         f.render_widget(Paragraph::new(lines), list);
         let Some(area) = pane else { return };
         let (w, h) = (area.width as usize, area.height as usize);
-        if let Some(top) = v.times {
-            f.render_widget(Paragraph::new(bv::times(b, self.p, w, h, top)), area);
-            return;
-        }
         // The run's detail on top, as tall as it is up to all but the log's few lines.
         let mut rest = area;
         if let Some(d) = &mut v.detail {
@@ -6846,9 +6924,6 @@ mod tests {
         a.rv.open = true;
         press(&mut a, KeyCode::Right);
         assert!(!a.rv.open);
-        // Run times is Infra's: `t` on Releases is the runs' query key no more.
-        press(&mut a, KeyCode::Char('t'));
-        assert!(a.rv.runs.times.is_none());
         // `hub --tab 'releases runs'` and the section words land on the inner tab holding them;
         // any other word is the apps' query, on Apps.
         for (word, on, q) in [
@@ -6863,34 +6938,40 @@ mod tests {
         }
     }
 
-    /// Infra on its CI inner tab, with every run read.
+    /// Infra on its Runs inner tab, with every run read.
     fn ci_app() -> App {
         let mut a = infra_app();
         a.tab = Tab::Infra;
-        a.infra_inner = "ci";
+        a.infra_inner = "runs";
         a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
         a.builds = Some(release_fixture());
         a
     }
 
     #[test]
-    fn infra_ci_shows_every_run_and_the_tests_note_and_counts_a_red() {
+    fn infra_runs_shows_every_run_and_counts_a_red_and_tests_its_note() {
         let mut a = ci_app();
         let s = screen(&mut a, 160, 80);
-        assert!(s.contains("[CI 1]") || s.contains("[CI 2]"), "{s}");
+        assert!(s.contains("[Runs 1]") || s.contains("[Runs 2]"), "{s}");
         assert!(
             s.contains("RUNS  3 runs in 30 days: 0 running, 1 queued, 1 red"),
             "{s}"
         );
         assert!(s.contains("dotfiles"), "a run of no release is listed: {s}");
-        assert!(s.contains("TESTS") && s.contains("Infra, CI, Tests"), "{s}");
-        assert!(!s.contains("Releases, Builds"), "{s}");
+        assert!(
+            !s.contains("Releases, Builds") && !s.contains("run times"),
+            "{s}"
+        );
+        a.infra_inner = "tests";
+        let s = screen(&mut a, 160, 80);
+        assert!(s.contains("TESTS") && s.contains("Infra, Tests"), "{s}");
+        a.infra_inner = "runs";
         a.builds = None;
         assert!(screen(&mut a, 160, 80).contains("Reading runs..."));
     }
 
     #[test]
-    fn enter_on_infra_ci_opens_the_runs_table_and_t_its_run_times_without_money() {
+    fn enter_on_infra_runs_opens_the_runs_table_and_t_is_no_key() {
         let mut a = ci_app();
         press(&mut a, KeyCode::Enter);
         assert_eq!(a.infra_open, Some(Opened::Runs));
@@ -6902,17 +6983,15 @@ mod tests {
         press(&mut a, KeyCode::Char('j'));
         assert_eq!(a.ci.table.sel, 1);
         assert_eq!(a.rv.runs.table.sel, 0, "Infra's table is its own");
-        press(&mut a, KeyCode::Char('t'));
-        assert_eq!(a.ci.times, Some(0));
-        let s = screen(&mut a, 120, 40);
-        assert!(s.contains("Run times") && !s.contains("$/RUN"), "{s}");
-        press(&mut a, KeyCode::Char('t'));
-        assert!(a.ci.times.is_none());
         press(&mut a, KeyCode::Esc);
         assert_eq!(a.infra_open, None, "Esc with nothing open goes back");
-        // `t` from the CI summary opens the table with Run times.
+        // Run times retired to Pipelines: `t` on Runs opens nothing.
         press(&mut a, KeyCode::Char('t'));
-        assert!(a.infra_open == Some(Opened::Runs) && a.ci.times == Some(0));
+        assert_eq!(a.infra_open, None);
+        // Runners has no runs table under Enter: its tables have the keys.
+        a.infra_inner = "runners";
+        press(&mut a, KeyCode::Enter);
+        assert_ne!(a.infra_open, Some(Opened::Runs));
         // A key from the Jobs inner tab still opens the jobs table.
         let mut b = ci_app();
         b.infra_inner = "jobs";
@@ -6921,15 +7000,67 @@ mod tests {
     }
 
     #[test]
-    fn the_moved_releases_sections_open_infra_ci() {
-        for (req, runs) in [("releases builds", true), ("releases tests", false)] {
+    fn pipelines_keys_pick_a_row_and_enter_opens_its_detail() {
+        let mut a = ci_app();
+        a.infra_inner = "pipelines";
+        let ci = hub_core::schedules::ci_state(
+            &serde_json::json!({"repos": [{
+                "repo": "Org/game", "base": "main",
+                "workflows": [
+                    {"path": ".github/workflows/scan.yml", "name": "Vuln scan",
+                     "crons": ["0 9 * * 1"], "purpose": "Scan the lockfiles"},
+                    {"path": ".github/workflows/gates.yml", "name": "Drop gates",
+                     "crons": ["0 6 * * *"]}
+                ]
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        a.handle(Msg::Pipes(Box::new(hub_core::pipelines::Sources {
+            ci,
+            at: jobs::now(),
+            ..Default::default()
+        })));
+        // The two from state.json, and a row for each workflow the runs read names.
+        assert!(a.pipes.as_ref().is_some_and(|p| p.rows.len() >= 2));
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("PIPELINES") && s.contains("Vuln scan"), "{s}");
+        // j picks the next row; Enter opens it, Enter again closes it.
+        let first = a.pipes.as_ref().and_then(|p| a.plv.selected(p)).cloned();
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.plv.table.sel, 1);
+        press(&mut a, KeyCode::Char('k'));
+        press(&mut a, KeyCode::Enter);
+        let open = a.plv.open.as_ref().map(|d| d.row.pipeline.clone());
+        assert_eq!(open, first.map(|r| r.pipeline));
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("> ") && s.contains("File"), "{s}");
+        press(&mut a, KeyCode::Enter);
+        assert!(a.plv.open.is_none());
+        // Esc closes the detail first, then clears the view, then is the page's.
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('f'));
+        assert!(!a.plv.table.is_default());
+        press(&mut a, KeyCode::Esc);
+        assert!(a.plv.open.is_none() && !a.plv.table.is_default());
+        press(&mut a, KeyCode::Esc);
+        assert!(a.plv.table.is_default());
+        assert_eq!(a.infra_open, None, "Enter on Pipelines opens no runs table");
+    }
+
+    #[test]
+    fn the_moved_releases_sections_open_infra_runs_and_tests() {
+        for (req, inner, runs) in [
+            ("releases builds", "runs", true),
+            ("releases tests", "tests", false),
+        ] {
             let (t, q) = crate::tabreq::parse(req).unwrap();
             assert_eq!(t, Tab::Infra, "{req}");
             let mut a = ci_app();
             a.infra_inner = "machines";
             a.open_query(q);
             let opened = a.infra_open == Some(Opened::Runs);
-            assert_eq!((a.infra_inner, opened), ("ci", runs), "{req}");
+            assert_eq!((a.infra_inner, opened), (inner, runs), "{req}");
         }
     }
 
@@ -6950,7 +7081,7 @@ mod tests {
         c.handle(Msg::BuildFile);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(Msg::Builds(_))),
-            "Infra's CI shows the runs too"
+            "Infra's Runs shows the runs too"
         );
         let (tx, rx) = std::sync::mpsc::channel();
         let mut b = builds_app();
@@ -7700,7 +7831,9 @@ mod tests {
             "POOLS  all",
             "CI RUNNERS",
             "RUNNERS  all",
-            "FINISHED 24H  ",
+            "WAITING  all",
+            "LOCAL UNITY",
+            "PIPELINES",
             "Enter opens",
         ]
         .windows(2)
@@ -7720,7 +7853,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            top(&s).starts_with("[Machines] CI  Jobs   <- -> switch"),
+            top(&s).starts_with("[Machines] Runners  Runs  Pipelines  Tests  Jobs   <- -> switch"),
             "the strip is the first line: {s}"
         );
         // What is red is Alerts' now: no health, red now or fixes here.
@@ -7738,11 +7871,25 @@ mod tests {
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with(" Machines [CI]"), "{s}");
+        assert!(top(&s).starts_with(" Machines [Runners]"), "{s}");
         assert!(s.contains("CI RUNNERS") && !s.contains("POOLS  all"), "{s}");
+        // Runs, Pipelines and Tests, then Jobs.
+        for (inner, title) in [
+            ("runs", "RUNS"),
+            ("pipelines", "PIPELINES"),
+            ("tests", "TESTS"),
+        ] {
+            a.handle(right());
+            assert_eq!(a.infra_inner, inner);
+            let s = screen(&mut a, 160, 200);
+            assert!(s.contains(title) && !s.contains("CI RUNNERS"), "{s}");
+        }
         a.handle(right());
         let s = screen(&mut a, 160, 200);
-        assert!(top(&s).starts_with(" Machines  CI [Jobs]"), "{s}");
+        assert!(
+            top(&s).starts_with(" Machines  Runners  Runs  Pipelines  Tests [Jobs]"),
+            "{s}"
+        );
         assert!(
             s.contains("Enter opens the table") && !s.contains("POOLS  all"),
             "{s}"
@@ -7756,6 +7903,20 @@ mod tests {
         let (t, q) = crate::tabreq::parse("infra machines").unwrap();
         a.handle(Msg::Tab(t, q));
         assert_eq!(a.infra_inner, "machines");
+        // The old CI inner tab's words land on Runners; each new inner tab's name opens it.
+        for (req, inner) in [
+            ("infra ci", "runners"),
+            ("ci", "runners"),
+            ("infra runners", "runners"),
+            ("infra pipelines", "pipelines"),
+            ("infra runs", "runs"),
+            ("infra tests", "tests"),
+        ] {
+            let (t, q) = crate::tabreq::parse(req).unwrap();
+            a.handle(Msg::Tab(t, q));
+            assert_eq!((a.tab, a.infra_inner), (Tab::Infra, inner), "{req}");
+            a.infra_open = None;
+        }
         a.alerts_read.busy = true;
         a.reds_read.busy = true;
         let (t, q) = crate::tabreq::parse("infra red").unwrap();
@@ -7804,12 +7965,15 @@ mod tests {
         let mut a = app(Tab::Infra);
         a.infra = None;
         let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
-        assert!(body[0].starts_with("[Machines] CI  Jobs"), "{body:?}");
+        assert!(
+            body[0].starts_with("[Machines] Runners  Runs  Pipelines  Tests  Jobs"),
+            "{body:?}"
+        );
         assert_eq!(body[1], "Reading Prometheus...");
     }
 
     #[test]
-    fn infra_strip_counts_red_ci_lines_on_ci() {
+    fn infra_strip_counts_red_ci_lines_on_runners_and_red_pipelines() {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
@@ -7821,7 +7985,7 @@ mod tests {
                 .unwrap()
         };
         assert!(
-            strip(&a).starts_with("[Machines] CI  Jobs"),
+            strip(&a).starts_with("[Machines] Runners  Runs  Pipelines  Tests  Jobs"),
             "{}",
             strip(&a)
         );
@@ -7829,10 +7993,16 @@ mod tests {
             i.ci.red = vec!["queued job needs gpu".into()];
         }
         assert!(
-            strip(&a).starts_with("[Machines] CI 1  Jobs"),
+            strip(&a).starts_with("[Machines] Runners 1  Runs"),
             "{}",
             strip(&a)
         );
+        // A red pipeline counts on Pipelines.
+        a.pipes = Some(hub_core::pipelines::Pipelines {
+            red: 2,
+            ..Default::default()
+        });
+        assert!(strip(&a).contains("  Pipelines 1  "), "{}", strip(&a));
     }
 
     #[test]

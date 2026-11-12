@@ -205,7 +205,7 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .more { padding: 4px 8px; }
 .qitem .btn.quiet { margin-left: auto; border-color: transparent; background: none; color: var(--muted); }
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
-.qadd select, .qitem select, .bfilter select, .qcfilter input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.qadd select, .qitem select, .tqbar select, .tqbar input[data-tsearch], .qcfilter input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
 .board { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
 /* Sessions (static/watch.js, shepherd.js, sessions.js): the overview row, the open session's folded
@@ -312,6 +312,18 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .fr:last-child { border-bottom: 0; }
 /* Log tab */
 .stiles { margin-bottom: 10px; }
+/* A table's head (table.js tblBar): its state tiles in their hue (hub-core Chip.tone, rule 5), a
+   tile at zero dimmed, then the query bar fused to the top of the table under it. */
+.tile { --c: var(--c-other); }
+.tile.t-ok { --c: var(--b-done); } .tile.t-warn { --c: var(--b-stalled); } .tile.t-bad { --c: var(--b-needs); }
+.tile.zero:not(.on) { opacity: .55; }
+.tqbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+.tqbar:has(+ [id$="-body"] > .panel:first-child) { border-bottom: 0; border-radius: 10px 10px 0 0; }
+.tqbar + [id$="-body"] > .panel:first-child { border-top-left-radius: 0; border-top-right-radius: 0; }
+.tqbar input[data-tsearch] { flex: 1 1 10em; min-width: 0; padding: 6px 10px; }
+.tqbar input[data-tsearch]:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.tqf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tqf:empty { display: none; }
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }
@@ -369,7 +381,6 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tfacet.busy .tfmenu { cursor: progress; }
 .tfacet.busy .tfmenu label, .tfacet.busy .tfclear { opacity: .5; }
 .tfclear { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 3px 6px; font-size: 12px; color: var(--accent); cursor: pointer; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
-.bfilter .tfacet { margin: 0 2px; }
 .tbl tr.click { cursor: pointer; } .tbl td.wrap { white-space: normal; }
 .tbl .m { width: 30%; }
 .tbl .m .meter { width: 100%; }
@@ -454,8 +465,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .pr { flex-wrap: wrap; }
   .pr .pt { flex: 1 1 60%; white-space: normal; overflow-wrap: anywhere; }
   .pfold[open] > summary { margin-bottom: 8px; }
-  /* Sessions' filters and spend as chips, so the table starts in the first screen. */
-  .stiles { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* A table's state tiles are one scrolling row on a phone, so the table starts in the first screen. */
+  .stiles { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 6px; scrollbar-width: none; }
+  .stiles > * { flex: 0 0 auto; }
+  /* The row scrolls, so what is broken, then what needs attention, leads it (rule 4). */
+  .stiles > .t-bad { order: -2; } .stiles > .t-warn { order: -1; }
   .stiles .tile { flex-direction: row; align-items: center; gap: 6px; min-height: 40px; padding: 4px 10px 4px 12px; }
   .stiles .tv { font-size: 15px; }
   .stiles .ts1 { display: none; }
@@ -492,7 +506,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.rdjobs tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
   .tbl.rdjobs td { border: 0; padding: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .tbl.rdjobs td::before { content: attr(data-label) " "; color: var(--muted); }
-  .seg button, .tsort, .bfilter select, .tdate { min-height: 40px; }
+  .seg button, .tsort, .tqbar select, .tdate { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }

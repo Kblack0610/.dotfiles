@@ -1,10 +1,16 @@
 //! Infra's CI Tests section: the suites of one finished run of a repo's declared test workflow
-//! (`testWorkflows` in the registry), from hub-core's `junit`. The run is the newest finished one
-//! unless the page names another (`trun`); its artifacts are fetched when it is first read and
-//! kept, so only the first look at a run waits on GitHub. The suites are filtered and sorted here
-//! by `hub_core::table`, so the page only draws. The view keys carry a `t` prefix (`tq`, `ts`,
-//! `tsort`, `tdir`). An opened suite reads its tests from `/api/tests/cases`, which uses the same
-//! kept read.
+//! (`testWorkflows` in the registry), from hub-core's `junit`, and the Quarantine table, one row
+//! per quarantined test of every repo, from hub-core's `quarantine`. The run is the newest
+//! finished one of the repo the page names (`trepo`, else the repo of the newest finished run)
+//! unless the page names another run (`trun`); each repo offers its own last `PICK_RUNS`, and
+//! `repos` lists the repos a picker can switch to. Its artifacts are fetched when it is first
+//! read and kept, so only the first look at a run waits on GitHub. A failure of a test the run's
+//! repo holds in quarantine counts as quarantined, applied on each read so a quarantine change
+//! shows without a re-fetch. Both tables are filtered and sorted here by `hub_core::table`, so the
+//! page only draws. The suites' view keys carry a `t` prefix (`tq`, `ts`, `tsort`, `tdir`), the
+//! Quarantine's a `q` (`qq`, `qs`, `qsort`, `qdir`). An opened suite reads its tests from
+//! `/api/tests/cases`, which uses the same kept read. The quarantine rides the builds read, so its
+//! file's change pushes the `builds` event the section already listens to.
 
 use std::sync::Arc;
 
@@ -12,7 +18,9 @@ use axum::http::StatusCode;
 use hub_core::builds::{Builds, STALE_SECS};
 use hub_core::jobs;
 use hub_core::junit::{self, Case, Loaded, PickRun, Suite, Totals};
+use hub_core::quarantine::{self, Entry, Lane};
 use hub_core::queue::Item;
+use hub_core::releases::Level;
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +41,12 @@ pub struct Query {
     pub tsort: String,
     pub tdir: String,
     pub trun: String,
+    /// The repo whose runs the picker offers: its slug or project name.
+    pub trepo: String,
+    pub qq: String,
+    pub qs: String,
+    pub qsort: String,
+    pub qdir: String,
 }
 
 /// An opened suite: its tier and file name.
@@ -48,7 +62,11 @@ pub struct CasesQuery {
 struct Shown<'a> {
     at: i64,
     stale_after: i64,
-    runs: &'a [PickRun],
+    /// The repos with runs to pick from, the one with the newest run first.
+    repos: Vec<&'a str>,
+    /// The repo whose runs `runs` are.
+    repo: Option<&'a str>,
+    runs: Vec<&'a PickRun>,
     run: Option<&'a PickRun>,
     totals: Totals,
     rows: Vec<&'a Suite>,
@@ -57,6 +75,60 @@ struct Shown<'a> {
     note: Option<String>,
     errors: Vec<String>,
     table: Summary,
+    quarantine: Held<'a>,
+}
+
+/// The Quarantine table: each lane's line over one row per quarantined test.
+#[derive(Serialize)]
+struct Held<'a> {
+    lanes: Vec<HeldLane<'a>>,
+    rows: Vec<&'a Entry>,
+    more: usize,
+    /// Why quarantine.json did not parse: the table's red line.
+    error: Option<&'a str>,
+    table: Summary,
+}
+
+#[derive(Serialize)]
+struct HeldLane<'a> {
+    repo: String,
+    says: String,
+    level: Level,
+    /// The nightly the counts came from.
+    url: Option<&'a str>,
+}
+
+fn held<'a>(b: &'a Builds, entries: &'a [Entry], q: &Query) -> Held<'a> {
+    let view = View::new::<Entry>(&q.qq, &q.qs, &q.qsort, &q.qdir);
+    let (mut rows, mut table) = view.summary(entries);
+    let more = rows.len().saturating_sub(junit::LIST_ROWS);
+    rows.truncate(junit::LIST_ROWS);
+    table.links = hub_core::table::links(&rows);
+    Held {
+        lanes: b
+            .quarantine
+            .iter()
+            .map(|l| HeldLane {
+                repo: project_map::canonical(&l.repo),
+                says: l.says(),
+                level: l.level(),
+                url: l.url(),
+            })
+            .collect(),
+        rows,
+        more,
+        error: b.quarantine_error.as_deref(),
+        table,
+    }
+}
+
+/// The run's results with the failures its repo's quarantine holds marked quarantined.
+fn applied(b: &Builds, run: &PickRun, l: &Loaded) -> Loaded {
+    let lane = b
+        .quarantine
+        .iter()
+        .find(|l| l.repo.eq_ignore_ascii_case(&run.repo));
+    l.quarantined(&lane.map(Lane::held).unwrap_or_default())
 }
 
 /// What a read of the ledger and one run produced.
@@ -70,17 +142,29 @@ struct Read<'a> {
 
 fn render(r: &Read, q: &Query) -> String {
     let view = View::new::<Suite>(&q.tq, &q.ts, &q.tsort, &q.tdir);
-    let suites: &[Suite] = r.loaded.map_or(&[], |l| &l.suites);
+    let applied = match (r.run, r.loaded) {
+        (Some(run), Some(l)) => Some(applied(r.builds, run, l)),
+        _ => None,
+    };
+    let suites: &[Suite] = applied.as_ref().map_or(&[], |l| &l.suites);
     let (rows, table) = view.summary(suites);
     let totals = junit::totals(suites);
     let (rows, fold) = junit::fold(&view, rows, &totals);
     let (rows, more) = junit::cap(rows);
+    let entries = quarantine::entries(&r.builds.quarantine);
     let mut errors = r.errors.clone();
     errors.extend(r.loaded.iter().flat_map(|l| l.errors.clone()));
+    let repo = r.run.map(|p| p.repo.as_str());
     let out = Shown {
         at: r.builds.at,
         stale_after: STALE_SECS,
-        runs: r.runs,
+        repos: junit::repos(r.runs),
+        repo,
+        runs: r
+            .runs
+            .iter()
+            .filter(|p| Some(p.repo.as_str()) == repo)
+            .collect(),
         run: r.run,
         totals,
         rows,
@@ -89,6 +173,7 @@ fn render(r: &Read, q: &Query) -> String {
         note: r.loaded.and_then(|l| l.note.clone()),
         errors,
         table,
+        quarantine: held(r.builds, &entries, q),
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
 }
@@ -98,18 +183,46 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "runs": [], "errors": [e] }).to_string()
 }
 
-/// The run `id` names among `runs`, else the newest; the second value says when the one asked
-/// for was not there.
-fn choose<'a>(runs: &'a [PickRun], id: &str) -> (Option<&'a PickRun>, Option<String>) {
-    let Ok(want) = id.parse::<u64>() else {
-        return (runs.first(), None);
+/// The run `id` names among `repo`'s runs, else that repo's newest. No repo, or one with no runs,
+/// is the repo of the run `id` names, else of the newest run. The second value says when the repo
+/// or run asked for was not there.
+fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>, Option<String>) {
+    let want = id.parse::<u64>().ok();
+    let mine = |r: &&PickRun| {
+        r.repo.eq_ignore_ascii_case(repo)
+            || project_map::canonical(&r.repo).eq_ignore_ascii_case(repo)
     };
-    match runs.iter().find(|r| r.id == want) {
-        Some(r) => (Some(r), None),
+    let asked = want.and_then(|w| runs.iter().find(|r| r.id == w));
+    let mut why = None;
+    let of_repo: Vec<&PickRun> = if repo.is_empty() {
+        vec![]
+    } else {
+        runs.iter().filter(mine).collect()
+    };
+    let pool: Vec<&PickRun> = match (of_repo.is_empty(), asked) {
+        (false, _) => of_repo,
+        (true, Some(r)) => runs.iter().filter(|o| o.repo == r.repo).collect(),
+        (true, None) => {
+            if !repo.is_empty() {
+                why = Some(format!(
+                    "{repo} has no finished test runs; showing the newest"
+                ));
+            }
+            let first = runs.first().map(|r| r.repo.as_str());
+            runs.iter()
+                .filter(|r| Some(r.repo.as_str()) == first)
+                .collect()
+        }
+    };
+    let Some(want) = want else {
+        return (pool.first().copied(), why);
+    };
+    match pool.iter().find(|r| r.id == want) {
+        Some(r) => (Some(r), why),
         None => (
-            runs.first(),
+            pool.first().copied(),
             Some(format!(
-                "run {want} is not among the last {} finished runs; showing the newest",
+                "run {want} is not among the last {} finished runs of its repo; showing the newest",
                 junit::PICK_RUNS
             )),
         ),
@@ -135,7 +248,7 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
         Err(e) => return failed(e),
     };
     let runs = junit::pickable(&b, project_map::cached().as_deref());
-    let (run, missing) = choose(&runs, &q.trun);
+    let (run, missing) = choose(&runs, &q.trepo, &q.trun);
     let mut errors: Vec<String> = missing.into_iter().collect();
     let kept = match run {
         Some(run) => match loaded(run).await {
@@ -179,7 +292,7 @@ pub async fn cases(
     let run = runs.iter().find(|r| r.id == q.run).ok_or_else(|| {
         none("that run is not among the finished runs of a declared test workflow")
     })?;
-    let l = loaded(run).await.map_err(bad)?;
+    let l = applied(&b, run, &*loaded(run).await.map_err(bad)?);
     let (cases, more) = l
         .cases(&q.tier, &q.suite)
         .ok_or_else(|| none("that suite is not in the run's results"))?;
@@ -216,6 +329,7 @@ mod tests {
             started: 0,
             prs: vec![],
             url: String::new(),
+            artifacts: vec![],
         }
     }
 
@@ -342,12 +456,200 @@ mod tests {
     #[test]
     fn the_run_asked_for_wins_and_one_that_aged_out_falls_back_with_a_word() {
         let runs = [pick(7), pick(6)];
-        assert_eq!(choose(&runs, "6").0.unwrap().id, 6);
-        assert_eq!(choose(&runs, "").0.unwrap().id, 7);
-        let (r, why) = choose(&runs, "99");
+        assert_eq!(choose(&runs, "", "6").0.unwrap().id, 6);
+        assert_eq!(choose(&runs, "", "").0.unwrap().id, 7);
+        let (r, why) = choose(&runs, "", "99");
         assert_eq!(r.unwrap().id, 7);
         assert!(why.unwrap().contains("run 99"));
-        assert!(choose(&[], "5").0.is_none());
+        assert!(choose(&[], "", "5").0.is_none());
+    }
+
+    #[test]
+    fn the_repo_asked_for_scopes_the_picker_else_the_newest_runs_repo() {
+        let mut quiet = pick(3);
+        quiet.repo = "Org/quiet".into();
+        let runs = [pick(7), pick(6), quiet];
+        assert_eq!(choose(&runs, "org/QUIET", "").0.unwrap().id, 3);
+        assert_eq!(
+            choose(&runs, "", "3").0.unwrap().id,
+            3,
+            "a run names its repo"
+        );
+        let (r, why) = choose(&runs, "Org/quiet", "7");
+        assert_eq!(r.unwrap().id, 3, "a run of another repo is not this repo's");
+        assert!(why.unwrap().contains("run 7"));
+        let (r, why) = choose(&runs, "Org/gone", "");
+        assert_eq!(r.unwrap().id, 7);
+        assert!(why.unwrap().contains("Org/gone has no finished test runs"));
+        // the body offers every repo and only the chosen repo's runs
+        let b = Builds::default();
+        let r = Read {
+            builds: &b,
+            runs: &runs,
+            run: Some(&runs[2]),
+            loaded: None,
+            errors: vec![],
+        };
+        let v: serde_json::Value = serde_json::from_str(&render(&r, &Query::default())).unwrap();
+        assert_eq!(v["repos"], serde_json::json!(["Org/app", "Org/quiet"]));
+        assert_eq!(v["repo"], "Org/quiet");
+        assert_eq!(v["runs"].as_array().unwrap().len(), 1);
+    }
+
+    fn quarantined_builds() -> Builds {
+        use hub_core::quarantine::{Held, Nightly, OwnerRow, Report};
+        let held = |test: &str, row: &str, days_left: i64| Held {
+            test: test.into(),
+            ends: "2026-11-20".into(),
+            row: row.into(),
+            owner: format!("{row} fix: it"),
+            days_left,
+        };
+        Builds {
+            at: 300,
+            quarantine: vec![Lane {
+                repo: "org/APP".into(),
+                report: Some(Report {
+                    entries: 3,
+                    rows: vec![OwnerRow {
+                        row: "ucp-2".into(),
+                        entries: 1,
+                        ends: "2026-11-11".into(),
+                        days_left: -1,
+                    }],
+                    tests: vec![
+                        held("A.t1", "ucp-1", 8),
+                        held("A.gone", "ucp-2", -1),
+                        held("B.t0", "", 2),
+                    ],
+                }),
+                nightly: Some(Nightly {
+                    url: Some("https://github.com/org/APP/actions/runs/9".into()),
+                    known: 2,
+                    now_passing: Some(1),
+                    now_passing_tests: vec!["B.t0".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn held_body(l: &Loaded, q: Query) -> serde_json::Value {
+        let b = quarantined_builds();
+        let runs = [pick(7)];
+        let r = Read {
+            builds: &b,
+            runs: &runs,
+            run: Some(&runs[0]),
+            loaded: Some(l),
+            errors: vec![],
+        };
+        serde_json::from_str(&render(&r, &q)).unwrap()
+    }
+
+    #[test]
+    fn a_failure_the_runs_repo_holds_in_quarantine_is_amber_not_red() {
+        let mut a = suite("playmode", "A", &["passed", "failed"]);
+        a.cases[1].fullname = "A.t1".into();
+        let mut gone = suite("playmode", "G", &["failed"]);
+        gone.cases[0].fullname = "A.gone".into();
+        let l = Loaded {
+            suites: vec![
+                Suite::new("playmode", "A", a.cases),
+                Suite::new("playmode", "G", gone.cases),
+            ],
+            ..Default::default()
+        };
+        let v = held_body(&l, Query::default());
+        let row = |name: &str| {
+            v["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["suite"] == name)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(row("A")["state"], "quarantined");
+        assert_eq!(row("A")["level"], "warn");
+        assert_eq!(row("A")["quarantined"], 1);
+        assert_eq!(
+            row("G")["state"],
+            "failed",
+            "a test past its end is red again"
+        );
+        assert_eq!(v["totals"]["failed"], 1);
+        assert_eq!(v["totals"]["quarantined"], 1);
+        assert_eq!(v["totals"]["failed_suites"], 1);
+        let chip = v["table"]["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "quarantined")
+            .cloned()
+            .unwrap();
+        assert_eq!(chip["n"], 1);
+        // negative control: the same results with no quarantine are both red
+        let v = body(Some(&l), Query::default());
+        assert_eq!(v["totals"]["failed"], 2);
+        assert_eq!(v["totals"]["quarantined"], 0);
+    }
+
+    #[test]
+    fn the_quarantine_table_lists_each_held_test_with_its_lane_line() {
+        let v = held_body(&Loaded::default(), Query::default());
+        let q = &v["quarantine"];
+        assert_eq!(
+            q["lanes"][0]["url"],
+            "https://github.com/org/APP/actions/runs/9"
+        );
+        assert_eq!(q["lanes"][0]["level"], "bad");
+        assert!(q["lanes"][0]["says"]
+            .as_str()
+            .unwrap()
+            .contains("2 known red"));
+        let tests: Vec<&str> = q["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["test"].as_str().unwrap())
+            .collect();
+        assert_eq!(tests, ["A.gone", "B.t0", "A.t1"], "the soonest end first");
+        assert_eq!(q["rows"][1]["nightly"], "now passing");
+        assert_eq!(q["rows"][0]["left"], "ended");
+        assert_eq!(q["table"]["total"], 3);
+        assert_eq!(q["table"]["links"][0]["row"], "#board?q=id:=ucp-2");
+        let v = held_body(
+            &Loaded::default(),
+            Query {
+                qs: "ended".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["quarantine"]["rows"].as_array().unwrap().len(), 1);
+        let v = held_body(
+            &Loaded::default(),
+            Query {
+                qq: "nightly:failing".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["quarantine"]["rows"].as_array().unwrap().len(), 2);
+        // the suites' view keys leave the Quarantine table alone
+        let v = held_body(
+            &Loaded::default(),
+            Query {
+                ts: "failed".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["quarantine"]["rows"].as_array().unwrap().len(), 3);
+        // no file: no lanes, no rows, no error
+        let v = body(None, Query::default());
+        assert!(v["quarantine"]["lanes"].as_array().unwrap().is_empty());
+        assert_eq!(v["quarantine"]["error"], serde_json::Value::Null);
     }
 
     #[test]

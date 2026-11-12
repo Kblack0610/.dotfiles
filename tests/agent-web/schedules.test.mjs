@@ -18,7 +18,7 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "sched-head": part(), "sched-facets": part(), "sched-chips": part(), "sched-body": part() };
+const parts = { "sched-head": part(), "sched-facets": part(), "sched-tiles": part(), "sched-body": part() };
 const doc = { getElementById: (id) => (id === "schedules" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 const asked = [];
 let body = {};
@@ -71,7 +71,7 @@ test("the table draws its head, the mock's columns and a missing purpose", () =>
   assert.match(h, /<td class="">green 9<\/td>/);
   assert.match(h, /journal-sync <span class="warn"[^>]*>no purpose<\/span>/, "a missing purpose is amber");
   assert.match(h, /queued nightly-triage-1/);
-  assert.match(h, /<button class="on" data-ts="red">red <span class="n">2<\/span><\/button>/);
+  assert.match(h, /<button class="tile on" data-ts=""><span class="tl">RED<\/span><span class="tv">2<\/span><\/button>/);
   assert.match(h, /id="sched-q"/);
 });
 

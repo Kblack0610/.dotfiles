@@ -21,7 +21,9 @@ const ctx = vm.createContext({
   URLSearchParams,
   setInterval: () => 0,
   clearInterval() {},
-  fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
+  // Infra's show reads /api/pipelines too (ci.js), whose table the page draws: an empty one.
+  fetch: async (url) => ({ ok: true, status: 200, headers: { get: () => "application/json" },
+    json: async () => (url.startsWith("/api/pipelines") ? { rows: [], red: 0, errors: [], table: { q: "", state: "", sort: "", dir: "", total: 0, shown: 0, states: [], columns: [], facets: [] } } : {}) }),
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "table.js", "infra.js", "jobs.js", "ci.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
@@ -33,54 +35,59 @@ const col = (key) => ({ key, sort: "", next_sort: key, next_dir: "desc" });
 const tbl = (rows, keys) => ({ table: { q: "", state: "", sort: "", dir: "", total: rows.length, shown: rows.length, states: [{ name: "all", n: rows.length }], columns: keys.map(col), facets: [] }, rows });
 const SLOT_KEYS = ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"];
 const QUEUED_KEYS = ["job", "pool", "ref", "n", "wait", "needs", "can"];
+const LOCAL_KEYS = ["last", "repo", "branch", "platform", "result", "failed"];
 const tables = (ci) => ({
   machines: tbl([], ["machine", "state"]), pools: tbl([], ["pool"]),
-  runners: tbl(ci.rows, SLOT_KEYS), queued: tbl(ci.queue, QUEUED_KEYS), finished: tbl([], ["repo"]),
+  runners: tbl(ci.rows, SLOT_KEYS), queued: tbl(ci.queue, QUEUED_KEYS), local: tbl(ci.local || [], LOCAL_KEYS),
 });
-const done = { runs: 0, ok: 0, bad: 0, can: 0 };
+// Runners' three sections as drawInfra stacks them.
 const section = (c) => {
   ist.data = { ok: true, tables: tables(c) };
-  return run(`ciSection({}, Date.now(), ${JSON.stringify(c)})`);
+  return run(`runnersSection(${JSON.stringify(c)}) + waitingSection() + localSection({}, Date.now())`);
 };
 
-test("the CI runners section lists no runs: they are the Runs section under it (ci.js)", () => {
+test("the Runners inner tab lists no runs and no finished table: they are Runs and Pipelines (ci.js)", () => {
   Object.assign(ist, { open: {} });
-  const h = section({ hosts: 0, slots: 0, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], done });
+  const h = section({ hosts: 0, slots: 0, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], local: [] });
   assert.ok(!h.includes("Recent runs"), "the runs are ci.js's");
+  assert.doesNotMatch(h, /Finished 24h|Failed, last 24h/, "the finished table is Pipelines', the failed list Runs' red chip");
   assert.doesNotMatch(h, /releases\/builds/, "no link to the retired Releases Builds section");
+  assert.match(h, /<h3 class="sec" id="sec-local">Local Unity [\s\S]*No local Unity gate failed in 24h\./);
+});
+
+test("Runners' head links the runs that failed in 24h to Runs' red chip, once the Runs read is in", () => {
+  Object.assign(ist, { open: {} });
+  const bld = run("bld");
+  const was = bld.data;
+  bld.data = { counts: { total: 9, running: 0, queued: 0, red: 2, recent_red: 2 } };
+  const c = { hosts: 1, slots: 1, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], local: [] };
+  assert.match(section(c), /^<h2 class="sec warn" id="sec-ci">Runners <span class="n">0<\/span><\/h2><div class="cline warn"><a href="#infra\/runs\?bs=red" [^>]*>2 failed in 24h<\/a><\/div>/);
+  bld.data = { counts: { total: 9, running: 0, queued: 0, red: 0, recent_red: 0 } };
+  assert.match(section(c), /^<h2 class="sec" id="sec-ci">Runners <span class="n">0<\/span><\/h2><div data-tbl/, "none failed: a plain head and no line");
+  bld.data = was;
+});
+
+test("the Local Unity table lists each failed gate by branch and platform, newest first", () => {
+  Object.assign(ist, { open: {} });
+  const local = [{ repo: "unity-core-playground", branch: "feat/yard", platform: "android", result: "failure", n: 3, last: 1762900000 }];
+  const h = section({ hosts: 0, slots: 0, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [], local });
+  assert.match(h, /<td class="muted">unity-core-playground<\/td><td class="wrap">feat\/yard<\/td><td>android<\/td><td class="bad">failure<\/td><td class="n">3<\/td>/);
 });
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", pool: "unity", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });
 const queued = (o) => ({ job: "HD tests", pool: "unity", repo: "unity", pr: "", branch: "main", n: 1, wait: 900, needs: ["unity-full", "hd-library"], can: [], missing: ["hd-library"], stuck: true, ...o });
-const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, done: { runs: 10, ok: 8, bad: 1, can: 1 }, rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"] };
+const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"] };
 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
   const h = section(ci);
-  assert.match(h, /^<h2 class="sec bad" id="sec-ci">CI runners <span class="n">3<\/span><\/h2><div class="panel down">/, "a job nobody can take hues the head red");
+  assert.match(h, /^<h2 class="sec bad" id="sec-ci">Runners <span class="n">3<\/span><\/h2>/, "a job nobody can take hues the head red");
   assert.match(h, /<div class="panel down">[\s\S]*HD tests \(unity\) needs \[unity-full, hd-library\]: no online runner holds hd-library/);
   assert.match(h, /<td class="n warn">1h 57m!<\/td>/);
   assert.match(h, /<td class="bad">off<\/td>/);
   assert.match(h, /<td class="muted">idle<\/td>/);
   assert.match(h, /<td class="bad">HD tests<\/td>/, "a stuck queued job is red");
   assert.match(h, /<td class="wrap">nobody<\/td>/);
-  assert.match(h, /<h3 class="sec">Waiting for a runner <span class="n">1<\/span><\/h3>/);
-  assert.match(h, /<h3 class="sec">Finished 24h <span class="n">10<\/span><\/h3>/);
-  // The pass rate is a tile after the Finished table's state tiles (its tblTab's tiles).
-  assert.match(run("finishedTiles")(ci.done), /<span class="tl">PASS<\/span><span class="tv">89%<\/span><span class="ts1">1 failed, 1 cancelled<\/span>/);
-  assert.equal(run("finishedTiles")(done), "", "no finished run, no tile");
-});
-
-test("CI runners: a failure in the last 24h is a warn line under the head while it holds", () => {
-  Object.assign(ist, { open: {} });
-  ist.data = { ok: true, tables: tables(ci) };
-  const inst = { local_failed: [{ labels: { repo: "unity", branch: "feat", platform: "linux", result: "fail", hour: "1700000000" }, value: 2 }] };
-  const h = run(`ciSection(${JSON.stringify(inst)}, Date.now(), ${JSON.stringify({ ...ci, red: [] })})`);
-  assert.match(h, /^<h2 class="sec warn" id="sec-ci">CI runners <span class="n">3<\/span><\/h2><div class="cline warn">2 failed in 24h<\/div>/);
-  assert.match(h, /<h3 class="sec bad">Failed, last 24h <span class="n">2<\/span><\/h3>/);
-  const quiet = section({ ...ci, red: [] });
-  assert.match(quiet, /^<h2 class="sec" id="sec-ci">CI runners <span class="n">3<\/span><\/h2>/, "nothing failed: a plain head and no line");
-  assert.doesNotMatch(quiet, /cline warn|Failed, last 24h/);
 });
 
 test("CI runners: a queued job some host can take names it, and is not red", () => {
@@ -104,14 +111,17 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   const at = (s) => main.indexOf(s);
   assert.ok(main.startsWith('<div class="seg fseg istrip" role="tablist">'), main);
   for (const gone of ['id="sec-red"', 'id="sec-fixes"', 'id="sec-health"', 'data-itab="reds"']) assert.equal(at(gone), -1, `${gone} moved to Alerts`);
-  // The count: the red CI line on CI; none on Machines, Jobs or Cloud.
-  assert.match(main, /data-itab="ci" [^>]*>CI <span class="pill warn">1<\/span>/);
+  // The count: the red CI line on Runners; none on Machines or Jobs.
+  assert.match(main, /data-itab="runners" [^>]*>Runners <span class="pill warn">1<\/span>/);
+  assert.match(main, /data-itab="runs" [^>]*>Runs<\/button><button [^>]*data-itab="pipelines" [^>]*>Pipelines<\/button><button [^>]*data-itab="tests" [^>]*>Tests<\/button><button [^>]*data-itab="jobs"/, "the strip's order");
   assert.match(main, /data-itab="machines" class="on" [^>]*>Machines<\/button>/);
   assert.match(main, /data-itab="jobs" [^>]*>Jobs<\/button>/);
   // The open inner tab shows; another one's sections are in the page, hidden.
   assert.match(main, /<div data-in="machines"><div class="tiles roomy">[\s\S]*<h2 class="sec" id="sec-machines">/);
   assert.match(main, /href="#alerts\/watches"/, "the watches tile opens Alerts' Watches");
-  assert.match(main, /<div data-in="ci" hidden><h2 class="sec bad" id="sec-ci">/);
+  assert.match(main, /<div data-in="runners" hidden><h2 class="sec bad" id="sec-ci">Runners /);
+  assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-waiting">/);
+  assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-local">/);
   // The governor and cloud sections folded into Machines' columns (layout::MOVED); Pools joins Machines.
   for (const gone of ['id="sec-governor"', 'id="sec-cloud"']) assert.equal(at(gone), -1, `${gone} folded into Machines`);
   assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">Pools <span class="n">0<\/span><\/h2>/);
@@ -121,7 +131,9 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   run(`st.arg = "jobs"; renderInfra()`);
   assert.equal(els.jobs.hidden, false);
   // "Done today" starts open like every section; a fold the reader closed stays closed.
-  run(`st.arg = "ci"; renderInfra()`);
+  // Runs, Pipelines and Tests are ci.js's elements, each in its own group.
+  for (const [id, inner] of [["ci-runs", "runs"], ["ci-pipelines", "pipelines"], ["ci-tests", "tests"]]) assert.equal(els[id].dataset.in, inner, id);
+  run(`st.arg = "runners"; renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open><summary><h3 class="sec">Done today<\/h3><\/summary>/, "the fold's summary is its head alone");
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
@@ -154,7 +166,11 @@ test("a failed Prometheus read still draws the strip, so Jobs stays reachable", 
 test("old Infra links open the inner tab holding their section", () => {
   const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.section]; };
   assert.deepEqual(r("#infra"), ["infra", "", undefined]);
-  assert.deepEqual(r("#infra/ci"), ["infra", "ci", undefined]);
+  // The retired CI inner tab is Runners, at its head; Runs, Pipelines and Tests are inner tabs.
+  assert.deepEqual(r("#infra/ci"), ["infra", "runners", "ci"]);
+  assert.deepEqual(r("#infra/runners"), ["infra", "runners", undefined]);
+  assert.deepEqual(r("#infra/pipelines"), ["infra", "pipelines", undefined]);
+  assert.deepEqual(r("#infra/local"), ["infra", "runners", "local"]);
   // The governor and cloud sections are Machines under a chip (layout::MOVED's view).
   assert.deepEqual(r("#infra/governor"), ["infra", "machines", "machines"]);
   assert.equal(ctx.route("#infra/governor").query, "ms=governed");
@@ -166,7 +182,7 @@ test("old Infra links open the inner tab holding their section", () => {
   assert.deepEqual(r("#infra/red"), ["alerts", "", "firing"]);
   assert.deepEqual(r("#infra/health"), ["alerts", "", "health"]);
   // The retired #ci, #machines and #jobs tabs (layout::section) land on their inner tab too.
-  assert.deepEqual(r("#ci"), ["infra", "ci", "ci"]);
+  assert.deepEqual(r("#ci"), ["infra", "runners", "ci"]);
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);
   assert.deepEqual(r("#jobs"), ["infra", "jobs", "jobs"]);
 });
@@ -175,7 +191,8 @@ test("a record's page inside an inner tab keeps its id: the route opens the inne
   const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.page]; };
   assert.deepEqual(r("#infra/machines/razer-laptop"), ["infra", "machines", "machines/razer-laptop"]);
   assert.deepEqual(r("#infra/pools/unity"), ["infra", "machines", "pools/unity"], "a pool's page is on Machines");
-  assert.deepEqual(r("#infra/ci/4412"), ["infra", "ci", "ci/4412"]);
+  assert.deepEqual(r("#infra/runs/4412"), ["infra", "runs", "runs/4412"]);
+  assert.deepEqual(r("#infra/ci/4412"), ["infra", "runs", "ci/4412"], "the retired run URL still opens the run, on Runs");
   assert.deepEqual(r("#infra/jobs/agentctl-dream"), ["infra", "jobs", "jobs/agentctl-dream"]);
   assert.deepEqual(r("#infra/machines"), ["infra", "machines", undefined], "no id: the inner tab alone");
   assert.deepEqual(r("#infra/machines/a%2Fb"), ["infra", "machines", "machines/a/b"], "an id keeps its slash");
@@ -187,8 +204,8 @@ test("a record's page inside an inner tab keeps its id: the route opens the inne
     run(`st.tab = "infra"; st.views.infra = ""; st.arg = ${JSON.stringify(x.arg)}; st.page = ${JSON.stringify(x.page)}; showUrl()`);
     assert.equal(urls.at(-1), h, "the URL a page shows is the one that opened it");
   }
-  run(`innerGo("infra", "ci")`);
-  assert.equal(urls.at(-1), "#infra/ci", "another inner tab leaves the page");
+  run(`innerGo("infra", "runs")`);
+  assert.equal(urls.at(-1), "#infra/runs", "another inner tab leaves the page");
   delete ctx.history;
 });
 
@@ -261,13 +278,6 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
-  // The breadcrumb is the machine alone; when it was read is a fact in its panel.
-  assert.match(h, /<div class="bhead"><span>workstation, local, up<\/span><a class="btn sm"/);
-  assert.match(h, /<span class="pgk">Read<\/span>/);
-  assert.match(h, /<h3 class="sec">7 days <span class="n">1 reading<\/span><\/h3>/);
-  assert.match(h, /<h3 class="sec">Downtime <span class="n">1<\/span><\/h3>/);
-  assert.match(h, /<h3 class="sec">Recent CI jobs <span class="n">1<\/span><\/h3>/);
-  assert.match(h, /<h3 class="sec">Alerts <span class="n">0<\/span><\/h3>/);
 });
 
 test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {

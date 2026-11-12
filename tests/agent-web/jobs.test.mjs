@@ -18,7 +18,7 @@ const on = {};
 const fire = (e) => on[e.type].forEach((f) => f(e));
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
-const parts = { "jobs-head": part(), "jobs-facets": part(), "jobs-chips": part(), "jobs-body": part(), "jobs-tail": part() };
+const parts = { "jobs-head": part(), "jobs-facets": part(), "jobs-tiles": part(), "jobs-body": part(), "jobs-tail": part() };
 const doc = { getElementById: (id) => (id === "jobs" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -64,8 +64,8 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.doesNotMatch(h, /in 24h, read/, "no sentence after the title");
   assert.match(h, /<th class="n" aria-sort="ascending"[^>]*><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
   assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
-  assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
-  assert.match(h, /<button class="" data-ts="failed">failed <span class="n">1<\/span><\/button>/);
+  assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
+  assert.match(h, /<button class="tile" data-ts="failed"><span class="tl">FAILED<\/span><span class="tv">1<\/span><\/button>/);
   assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source" data-fq="source:ci">/, "the filter row sits under the headers, a cell per column");
   assert.match(h, /<details class="tfacet on" data-fkey="source"[^>]*><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
   assert.match(h, /<button type="button" class="tfclear" data-tqc="">clear source<\/button>/, "a filtering column can be cleared");
@@ -94,7 +94,7 @@ test("a job not started reads waiting in STATE, the word its chip and legend use
   const h = box.innerHTML;
   assert.match(h, /<td>waiting<\/td><td class="muted">ci<\/td>/);
   assert.doesNotMatch(h, /<td>queued<\/td>/);
-  assert.match(h, /tlegend">waiting: the job has not started</);
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">waiting: the job has not started<\/div>/, "the legend is a fold under the table");
 });
 
 test("CI runs are one count line that links to Infra's CI runs", () => {
@@ -142,7 +142,7 @@ test("a refresh while the search box has focus leaves the box alone", () => {
   doc.activeElement = null;
   assert.equal(box.innerHTML, "KEEP");
   assert.match(parts["jobs-body"].innerHTML, /playground \/ Tests/);
-  assert.match(parts["jobs-chips"].innerHTML, /data-ts="failed"/);
+  assert.match(parts["jobs-tiles"].innerHTML, /data-ts="failed"/);
   assert.match(parts["jobs-facets"].innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
   assert.doesNotMatch(parts["jobs-facets"].innerHTML, /tfacet/, "the facets are in the body's filter row");
   assert.match(parts["jobs-body"].innerHTML, /data-fkey="source"/);

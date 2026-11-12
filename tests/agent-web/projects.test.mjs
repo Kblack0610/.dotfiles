@@ -110,8 +110,9 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, /<h2 class="sec" id="sec-projects">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /All rows/, "every project's rows are the Board tab");
-  assert.match(cards, /id="projects-q".*id="projects-chips"/s);
-  assert.match(cards, />all <.*>in flight <.*>waiting </s);
+  assert.match(cards, /id="projects-tiles".*id="projects-q"/s);
+  assert.match(cards, />IN FLIGHT<.*>WAITING</s);
+  assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
@@ -143,7 +144,7 @@ test("a re-read keeps the search box the human is typing in", () => {
   vm.runInContext(`renderProjects()`, ctx);
   ctx.document.activeElement = undefined;
   assert.equal(box("p-cards").innerHTML, "the box in use");
-  assert.match(box("projects-chips").innerHTML, /in flight/);
+  assert.match(box("projects-tiles").innerHTML, /in flight/);
   assert.match(box("projects-facets").innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
   assert.doesNotMatch(box("projects-facets").innerHTML, /data-fkey="stage"/, "stage's dropdown is in the filter row under its header, not again in the bar");
 });
@@ -281,7 +282,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td class="btitle"><div class="bt"><span class="qtag">ui<\/span> fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
-  assert.match(read().rows, /id="board-q".*id="board-chips"/s);
+  assert.match(read().rows, /id="board-tiles".*id="board-q"/s);
 });
 
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
@@ -405,8 +406,8 @@ test("Deliverables is a table over the project list: the head, one row per epic,
   const html = await drawDeliv(deliv());
   assert.match(html, /^<div data-tbl="d"><div id="p-del-head"><h2 class="sec warn" id="sec-deliverables">Deliverables <span class="n">2<\/span><\/h2>/, "an epic behind hues the head");
   assert.match(await drawDeliv(deliv({ behind: 0 })), /<h2 class="sec" id="sec-deliverables">/, "the control: none behind, a plain head");
-  assert.match(html, /id="p-del-q".*id="p-del-chips"/s);
-  assert.match(html, />all <.*>behind <.*>on track <.*>verify </s);
+  assert.match(html, /id="p-del-tiles".*id="p-del-q"/s);
+  assert.match(html, />BEHIND<.*>ON TRACK<.*>VERIFY</s);
   assert.match(html, /data-tsort="project".*data-tsort="epic".*data-tsort="sys".*data-tsort="done".*data-tsort="eta".*data-tsort="track"/s);
   assert.match(html, /home-config; percent is by size, then rows done\/all/);
   assert.match(html, /<tr class="jr" tabindex="0" data-open="bnb\/demo" data-epic="de-9" data-sys="ui"><td>demo<\/td><td class="wrap" title="de-9">Menus &lt;fast&gt;<\/td><td>ui<\/td><td class="n" title="3 of 4 rows done; the percent is by size">75% 3\/4<\/td><td class="n">11-13<\/td><td class="warn">behind<\/td><\/tr>/);

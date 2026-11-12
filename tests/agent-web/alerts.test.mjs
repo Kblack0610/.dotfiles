@@ -65,7 +65,7 @@ test("the sections come in the layout's order: health, firing, fixes, history, w
   assert.match(h, /cchip bad">FIRING<\/span>/);
   // Each fold's head is its title and count, toned by its own level; the state chips break the firing count down.
   assert.match(h, /<summary><h2 class="sec bad">Firing <span class="n">2<\/span><\/h2><\/summary>/);
-  assert.match(h, /data-ts="trip">trip <span class="n">1<\/span>/);
+  assert.match(h, /data-ts="trip"[^>]*><span class="tl">TRIP<\/span><span class="tv">1<\/span>/);
   assert.match(h, /<span class="cchip bad">FIRING<\/span><\/span><\/div>/, "the tab's head row is the level chip alone");
   assert.match(show(data({ level: "ok" })), /<summary><h2 class="sec">Firing <span class="n">2<\/span><\/h2>/);
 });
