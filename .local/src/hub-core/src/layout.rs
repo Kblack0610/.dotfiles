@@ -309,6 +309,21 @@ pub const TABS: [Tab; 13] = [
 /// (static/ui.js) is this number; its assets test checks.
 pub const FOLD_ROWS: usize = 50;
 
+/// A Log section whose rows stand taller than a line lists fewer than `FOLD_ROWS`, so its inner
+/// tab stays under three screens at 1400x900 on live data (render.mjs): Work's rows wrap to two
+/// lines, a rundown is a card, and Judges holds two tables. Read 2026-11-12, when Work was
+/// 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. agent-web's `SECTION_ROWS`
+/// (static/ui.js) is this list; its assets test checks.
+pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
+
+/// How many rows a section lists before its `+N` line: its `SECTION_ROWS` entry, else `FOLD_ROWS`.
+pub fn fold_rows(section: &str) -> usize {
+    SECTION_ROWS
+        .iter()
+        .find(|(s, _)| *s == section)
+        .map_or(FOLD_ROWS, |(_, n)| *n)
+}
+
 /// Retired tab names and the tab that took their place, so a bookmark, a waybar `on-click` or
 /// `hub --tab <old>` still lands somewhere. Keep a name here for good once it has shipped.
 pub const RETIRED: &[(&str, &str)] = &[
@@ -766,6 +781,17 @@ mod tests {
         }
         assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 6);
+    }
+
+    #[test]
+    fn a_tall_section_lists_fewer_rows_and_every_other_folds_at_fold_rows() {
+        let log = resolve("log").unwrap();
+        for (s, n) in SECTION_ROWS {
+            assert!(log.sections.contains(s), "{s} is no Log section");
+            assert!(*n < FOLD_ROWS, "{s} lists {n}, not fewer than FOLD_ROWS");
+            assert_eq!(fold_rows(s), *n);
+        }
+        assert_eq!(fold_rows("actions"), FOLD_ROWS);
     }
 
     #[test]

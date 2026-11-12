@@ -317,3 +317,24 @@ test("an open session's facts are its fleet-state card, open until folded to one
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);
 });
+
+test("Log's Rundowns list the section's rows, every card shut until opened, and +N older shows the rest", async () => {
+  const shst = vm.runInContext("shst", ctx), cap = vm.runInContext('foldRows("rundowns")', ctx);
+  const rundowns = Array.from({ length: cap + 3 }, (_, i) => ({ file: `r${i}.md`, title: `rundown-${i}`, stamp: "2026-11-12 12:00 UTC", body: "a long sum-up" }));
+  const fetch0 = ctx.fetch;
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rundowns, stats: null, ledger: { due: [] } }) });
+  await run("refreshShepherd()");
+  ctx.fetch = fetch0;
+  run('st.tab = "log"');
+  ctx.renderLogRundowns();
+  const h = boxes["log-rundowns"].innerHTML;
+  assert.equal((h.match(/<details class="card rd"/g) || []).length, cap);
+  assert.doesNotMatch(h, /<details class="card rd" open/, "the newest starts shut too (dashboards rule 4)");
+  assert.match(h, />\+3 older</);
+  shst.all = true;
+  ctx.renderLogRundowns();
+  assert.match(boxes["log-rundowns"].innerHTML, new RegExp(`rundown-${cap + 2}<`));
+  assert.doesNotMatch(boxes["log-rundowns"].innerHTML, /older</);
+  Object.assign(shst, { all: false, data: null });
+  run('st.tab = "sessions"');
+});

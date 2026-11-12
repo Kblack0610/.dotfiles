@@ -322,7 +322,8 @@ pub struct Boards {
     pub days: Vec<String>,
     pub rec: Option<serde_json::Value>,
     pub hist: Vec<DayRow>,
-    /// The shepherd's kept rundowns, newest first, at most `FOLD_ROWS`, and how many there are.
+    /// The shepherd's kept rundowns, newest first, at most `layout::fold_rows("rundowns")`, and
+    /// how many there are.
     pub rundowns: Vec<boards::Rundown>,
     pub rundowns_total: usize,
 }
@@ -334,7 +335,7 @@ impl Boards {
             days: boards::days(&f.daylog),
             rec: boards::record(&f.daylog, day),
             hist: boards::history(&f.daylog, boards::HISTORY_MAX_DAYS),
-            rundowns: boards::rundowns(&f.rundowns(), hub_core::layout::FOLD_ROWS),
+            rundowns: boards::rundowns(&f.rundowns(), hub_core::layout::fold_rows("rundowns")),
             rundowns_total: boards::rundown_files(&f.rundowns()).len(),
         }
     }
@@ -4486,7 +4487,7 @@ impl App {
         let cap = if self.log_work {
             hub_core::worklog::SHOWN
         } else {
-            hub_core::layout::FOLD_ROWS
+            hub_core::layout::fold_rows("work")
         };
         let day = today.format("%Y-%m-%d").to_string();
         let window = hub_core::worklog::Window::parse(asked, today);

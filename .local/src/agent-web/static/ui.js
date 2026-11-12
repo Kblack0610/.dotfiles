@@ -226,6 +226,10 @@ function poll(tab, refresh, ms) {
 // A folded Log section lists at most this many rows, then says how many older ones it left out.
 const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
+// A section whose rows stand taller than a line lists fewer (hub_core::layout::SECTION_ROWS, the
+// same JSON; its assets test checks), so its inner tab stays under three screens.
+const SECTION_ROWS = {"work":40,"rundowns":30,"verdicts":20};
+const foldRows = (sec) => SECTION_ROWS[sec] ?? LOG_ROWS;
 
 function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;

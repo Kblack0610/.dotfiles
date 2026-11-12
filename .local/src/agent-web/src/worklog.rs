@@ -7,7 +7,7 @@ use axum::Json;
 use chrono::NaiveDate;
 use hub_core::session_actions::System;
 use hub_core::table::View;
-use hub_core::worklog::{self, Gathered, Window, Work, SHOWN};
+use hub_core::worklog::{self, Gathered, Window, Work};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -45,13 +45,17 @@ impl Cache {
     }
 }
 
-/// The rows the window and the view keep, past `SHOWN` only when asked for them all.
+/// The rows the window and the view keep, past Work's `layout::fold_rows` only when asked for them all.
 fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let window = Window::parse(&q.wday, today);
     let inside: Vec<&Work> = g.rows.iter().filter(|r| window.keeps(r)).collect();
     let view = View::new::<&Work>(&q.wq, &q.ws, &q.wsort, &q.wdir);
     let (rows, table) = view.summary(&inside);
-    let cap = if q.all.is_some() { rows.len() } else { SHOWN };
+    let cap = if q.all.is_some() {
+        rows.len()
+    } else {
+        hub_core::layout::fold_rows("work")
+    };
     json!({
         "rows": rows.iter().take(cap).collect::<Vec<_>>(),
         "more": rows.len().saturating_sub(cap),
@@ -126,22 +130,23 @@ mod tests {
 
     #[test]
     fn past_the_cap_it_says_how_many_more_until_asked_for_them_all() {
+        let cap = hub_core::layout::fold_rows("work");
         let g = Gathered {
-            rows: (0..SHOWN + 5)
+            rows: (0..cap + 5)
                 .map(|_| row("done", "2026-11-09T01:00", "a"))
                 .collect(),
             ..Gathered::default()
         };
         let v = shown(&g, &Q::default(), today());
-        assert_eq!(v["rows"].as_array().unwrap().len(), SHOWN);
+        assert_eq!(v["rows"].as_array().unwrap().len(), cap);
         assert_eq!(v["more"], 5);
-        assert_eq!(v["table"]["shown"], SHOWN + 5);
+        assert_eq!(v["table"]["shown"], cap + 5);
         let q = Q {
             all: Some("1".into()),
             ..Q::default()
         };
         let v = shown(&g, &q, today());
-        assert_eq!(v["rows"].as_array().unwrap().len(), SHOWN + 5);
+        assert_eq!(v["rows"].as_array().unwrap().len(), cap + 5);
         assert_eq!(v["more"], 0);
     }
 }

@@ -93,6 +93,28 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
   pick("all");
 });
 
+test("Log's verdict lists stop at the section's rows, clamp long text, and +N older shows the rest", () => {
+  const fs = vm.runInContext("fst", ctx);
+  const cap = vm.runInContext('foldRows("verdicts")', ctx);
+  assert.ok(cap < vm.runInContext("LOG_ROWS", ctx), "Judges lists fewer than LOG_ROWS");
+  const verdicts = Array.from({ length: cap + 4 }, (_, i) => ({ ...judge.verdicts[0], id: `v${i}`, question: `question-${i}?` }));
+  const recent = Array.from({ length: cap + 2 }, (_, i) => ({ ts: 1793942659, project: "p", key: `row-${i}`, verdict: "skip", reason: "tier 3", tier: 3, clear: false }));
+  fs.data = { ...data, judge: { ...judge, verdicts }, dispatch: { ...data.dispatch, recent } };
+  ctx.renderLogVerdicts();
+  const shown = logBox.innerHTML;
+  assert.match(shown, />\+2 older</);
+  assert.match(shown, />\+4 older</);
+  assert.match(shown, new RegExp(`question-${cap - 1}\\?`));
+  assert.doesNotMatch(shown, new RegExp(`question-${cap}\\?`));
+  assert.match(shown, /<td class="wrap"><div class="c2" title="question-0\?">question-0\?<\/div><\/td>/);
+  logClick({ target: { closest: (sel) => (sel === "[data-all]" ? {} : null) } });
+  assert.match(logBox.innerHTML, new RegExp(`question-${cap + 3}\\?`));
+  assert.match(logBox.innerHTML, new RegExp(`row-${cap + 1}<`));
+  assert.doesNotMatch(logBox.innerHTML, /older</);
+  fs.verdictsAll = false;
+  fs.data = data;
+});
+
 
 
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.

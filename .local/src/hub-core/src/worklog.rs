@@ -14,7 +14,8 @@ use crate::queue::{self, Item, State};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 
-/// The rows a page is sent unless it asks for all of them.
+/// The rows the TUI's Work lists once it has the keys; unfocused, and on agent-web, Work lists
+/// `layout::fold_rows("work")` until asked for all of them.
 pub const SHOWN: usize = 200;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
