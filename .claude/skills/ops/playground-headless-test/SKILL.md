@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
-  reviewed: 2026-11-06
+  reviewed: 2026-11-12
   # The hand-typed forms this skill's scripts replace; hand_methods.py denies them.
   replaces:
     - match: 'Logs/gate\.txt.*pr-body|pr-body.*Logs/gate\.txt'
