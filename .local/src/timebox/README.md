@@ -33,9 +33,10 @@ timebox status                      # human view of all stopwatches
 timebox switch email                # stop the active op, start "email" in one step
 timebox pause                       # pause the active op (laps pause with it)
 timebox resume
-timebox cycle practice              # run a named cycle from config (see Cycles)
-timebox cycle                       # list configured cycles
-timebox lap                         # manually close the current lap window now (in a cycle: next step)
+timebox queue add guitar 5m         # queue a task (see Queue)
+timebox queue go                    # start the head task
+timebox done                        # finish the head task, start the next
+timebox lap                         # manually close the current lap window now
 timebox stats                       # per-operation time today (+ lap counts)
 timebox stop --all
 timebox toggle sound                # flip an alert (or: toggle flash off)
@@ -45,20 +46,40 @@ timebox config                      # show resolved paths + settings
 `--lap` accepts `25m | 1h | 90s | 1500`. `--sound` plays a beep on each boundary
 (bundled `assets/switch.wav`, or set `sound_file` / `sound = true` in config).
 
-## Cycles
+## Queue
 
-A cycle is a named, looping list of steps, each an op and a length, defined in config:
+A queue of tasks, each an op and a length. The head task runs as a normal stopwatch with
+its length as the lap. When the lap runs out you get the usual alerts (three red flashes,
+a notification, the sound) and the same task starts again; the bar chip turns red and shows
+the misses (`guitar 4:12 x2 (+3)`: missed twice, three tasks waiting). Only `timebox done`
+moves on: the head leaves the queue and the next task starts. The last `done` goes idle.
+
+```sh
+timebox queue                       # list (`--json` for the panel)
+timebox queue add work at desk 10m  # the op may have spaces; the last word is the length
+timebox queue rm 2                  # positions start at 1
+timebox queue mv 3 1                # a new head starts at once if the queue is on
+timebox queue go                    # start the head
+timebox queue load practice         # replace the queue with a preset, then `queue go`
+timebox queue clear                 # empty it (stops the head)
+```
+
+Starting or switching to another op by hand turns the queue off (its tasks stay; `queue go`
+picks it up again), and so does stopping the head. Pause and resume hold it. Every change is
+an event in `events.jsonl` (`queue_add`, `queue_rm`, `queue_mv`, `queue_done` with its miss
+count, `queue_clear`, `queue_load`).
+
+Presets live in config:
 
 ```toml
-[cycles]
+[presets]
 practice = ["work 5m", "guitar 3m", "computer 10m"]
 ```
 
-`timebox cycle practice` starts `work` with a 5m lap; at the boundary it switches to
-`guitar` for 3m, then `computer` for 10m, then back to `work`. Each op keeps its own
-stopwatch, so `timebox stats` shows the time each got. The switch happens at the boundary
-timestamp, so a late poll replays missed steps exactly. A manual `lap` skips to the next
-step, `pause`/`resume` hold the cycle, and `start`/`switch`/`stop` end it.
+The panel (`timebox-panel`, Super+A t t, or a left-click on the chip) is an fzf float over
+the queue, with `timebox status` beside it: `a` add, `d` done, `r` remove, `J`/`K` move,
+Enter go, `p` pause or resume, `l` load a preset, `x` clear all, `q` close. Its keys are
+plain commands too (`timebox-panel act <verb> [pos]`).
 
 ## Alerts
 
@@ -66,7 +87,8 @@ Four layers, most-to-least passive:
 
 - Waybar countdown (`custom/timebox`) - always visible (shows `idle_text` when nothing is
   running); its class walks `ready` -> `active` -> `urgent` as the switch approaches, and is
-  `final` in the last 10 seconds, which `layout.css` blinks red.
+  `final` in the last 10 seconds, which `layout.css` blinks red. A queue task that timed out
+  is `overdue` (solid red) until `timebox done`.
 - Desktop notification via `agent-notify` at each boundary.
 - Sound - opt-in per stopwatch (`--sound`) or globally (`sound = true`).
 - Screen flash - three red pulses via Hyprland's `screen_shader` (`flash = true`, runs
@@ -75,18 +97,19 @@ Four layers, most-to-least passive:
 
 `timebox toggle sound|flash [on|off]` overrides `sound` / `flash` at runtime (stored in
 `state.json`, shown in the tooltip and `timebox status`). `flash` covers both the screen
-flash and the final-10s bar blink. Both are also in `timebox-menu`.
+flash and the final-10s bar blink. Both are also on the leader (Super+A t m, Super+A t b).
 
 ## Waybar interaction
 
 The `custom/timebox` module is clickable:
 
-- Left-click -> `timebox-menu` (wofi/rofi): start / switch / pause / resume / lap / stop /
-  stats without a terminal.
+- Left-click -> `timebox-panel`, the task queue (see Queue).
 - Right-click -> pause the active stopwatch.
-- Middle-click -> manual lap (in a cycle: next step).
+- Middle-click -> `timebox done`.
 
-Helper scripts (in `~/.local/bin`): `timebox-menu`, `timebox-flash`. The flash shader is
+The leader has the rest under Super+A t (`PIN.md`): start or switch a one-off op, pause,
+resume, stop, status, the alert toggles. Helper scripts (in `~/.local/bin`): `timebox-panel`,
+`timebox-flash`. The flash shader is
 `~/.config/hypr/shaders/flash.frag`.
 
 Note: because firing rides the Waybar poll, if the bar is not running the "switch now"
@@ -105,7 +128,7 @@ planned upgrade (a systemd user timer, or the Phase-2 daemon).
 ## Config
 
 See `~/.dotfiles/.config/timebox/config.toml`. Keys: `state_dir`, `default_lap`, `sound`,
-`sound_file`, `flash`, `flash_cmd`, `icon`, `idle_text`, `[cycles]`. All optional.
+`sound_file`, `flash`, `flash_cmd`, `icon`, `idle_text`, `[presets]`. All optional.
 
 ## Roadmap
 
