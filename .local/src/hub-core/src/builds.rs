@@ -1,11 +1,11 @@
 //! Infra's CI runs, both surfaces: every CI run of the last 30 days on GitHub and Forgejo, from
 //! `schedules-sync`'s run ledger (`~/.local/state/ci/runs.jsonl`), each with the session that owns
-//! its branch. The ledger is append-only (a run is written again each time
-//! it changes), so a run is its last line. A failed run's log is fetched only when the row is
-//! opened (docs/dashboards.md rule 10), through the fetch and cache `jobs::read_log` already has.
-//! The opened run's jobs, steps and cost are `detail` (`run_detail`), read from local files only.
-//! Releases' Release runs are the same read cut to the runs the graph tied to a release
-//! (`Builds::releases`). Money is the Infra Cloud card's and Costs', so the Run times fold has none.
+//! its branch. The ledger is append-only (a run is written again each time it changes), so a run is
+//! its last line. A failed run's log is fetched only when the row is opened (docs/dashboards.md
+//! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs, steps
+//! and cost are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
+//! same read cut to the runs the graph tied to a release (`Builds::releases`). Money is a cloud
+//! machine's POWER cell on Infra Machines and Costs', so the Run times fold has none.
 //!
 //! | fact                | home                                                           |
 //! |---------------------|----------------------------------------------------------------|

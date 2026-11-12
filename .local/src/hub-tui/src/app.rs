@@ -4189,8 +4189,6 @@ impl App {
         }
     }
 
-    /// Infra's CI runs table, opened from its Runs section.
-
     /// The tab's runs table (`runs`) under its `title`, with the opened run's detail and log, or
     /// Run times, in a pane under it.
     fn draw_runs(&mut self, f: &mut Frame, area: Rect, title: &str) {

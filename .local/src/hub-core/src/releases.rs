@@ -2,7 +2,8 @@
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
-//! exceptions-first order. The Release runs inner tab beside the apps is `builds`' reader, cut by `Builds::releases`.
+//! exceptions-first order. The Release runs inner tab beside the apps is `builds`' reader, cut by
+//! `Builds::releases`.
 
 use std::collections::HashMap;
 

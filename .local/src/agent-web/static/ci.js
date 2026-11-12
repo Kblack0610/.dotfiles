@@ -137,8 +137,8 @@ function runJobs(o, folds) {
     cfold(`bld-cover:${k}`, `<b>Coverage</b> <span class="muted">${esc(d.coverage)}</span>`, cover, folds);
 }
 
-// The Run times fold: each workflow's usual time over the window, from the same read. Money is
-// the Cloud card's (per host today) and Costs' (the month), so this has none.
+// The Run times fold: each workflow's usual time over the window, from the same read. Money is a
+// cloud machine's POWER cell on Machines (per host today) and Costs' (the month), so this has none.
 function runTimes(d, folds) {
   const t = d.times || [];
   if (!t.length) return "";

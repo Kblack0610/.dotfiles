@@ -1,9 +1,10 @@
 //! Infra's CI Tests section: the suites of one finished run of a repo's declared test workflow
-//! (`testWorkflows` in the registry), from hub-core's `junit`. The run is the newest finished one unless the page names another (`trun`); its
-//! artifacts are fetched when it is first read and kept, so only the first look at a run waits
-//! on GitHub. The suites are filtered and sorted here by `hub_core::table`, so the page only
-//! draws. The view keys carry a `t` prefix (`tq`, `ts`, `tsort`, `tdir`). An opened suite reads
-//! its tests from `/api/tests/cases`, which uses the same kept read.
+//! (`testWorkflows` in the registry), from hub-core's `junit`. The run is the newest finished one
+//! unless the page names another (`trun`); its artifacts are fetched when it is first read and
+//! kept, so only the first look at a run waits on GitHub. The suites are filtered and sorted here
+//! by `hub_core::table`, so the page only draws. The view keys carry a `t` prefix (`tq`, `ts`,
+//! `tsort`, `tdir`). An opened suite reads its tests from `/api/tests/cases`, which uses the same
+//! kept read.
 
 use std::sync::Arc;
 

@@ -1,8 +1,9 @@
-//! One CI run opened on Infra's CI runs (or Releases' Release runs), both surfaces: its jobs, their steps and what each
-//! cost, from `schedules-sync`'s job archive joined to the run ledger on `RunKey`, priced with the
-//! governor's rates. `builds::detail` reads it only when a run is opened (docs/dashboards.md rule
-//! 10), and only from local files and the rates its caller passes, so neither a list render nor
-//! an open asks GitHub anything, and a complete record is never fetched again.
+//! One CI run opened on Infra's CI runs (or Releases' Release runs), both surfaces: its jobs, their
+//! steps and what each cost, from `schedules-sync`'s job archive joined to the run ledger on
+//! `RunKey`, priced with the governor's rates. `builds::detail` reads it only when a run is opened
+//! (docs/dashboards.md rule 10), and only from local files and the rates its caller passes, so
+//! neither a list render nor an open asks GitHub anything, and a complete record is never fetched
+//! again.
 //!
 //! | fact                    | home                                                              |
 //! |-------------------------|-------------------------------------------------------------------|

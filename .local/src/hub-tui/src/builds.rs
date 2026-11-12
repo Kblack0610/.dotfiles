@@ -3,7 +3,7 @@
 //! `Builds::releases`), on the shared data table (`datatable`), with the selected run's detail
 //! (header, jobs and their cost, from `hub_core::builds::detail`) and failed-job log under it,
 //! both read when the row is opened. `t` opens each workflow's usual run time and the
-//! quarantine in the same pane; money is the Cloud card's and Costs', not this table's.
+//! quarantine in the same pane; money is a cloud machine's POWER cell and Costs', not this table's.
 
 use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
 use hub_core::releases::Level;
