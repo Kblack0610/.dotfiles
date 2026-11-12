@@ -73,7 +73,7 @@ pub struct Row {
     pub due: Option<String>,
     /// The id its `#of/<id>` names.
     pub parent: Option<String>,
-    /// What a board leads the row with, a few words ([`title_of`]); set by [`feed`].
+    /// What a board leads the row with, a few words ([`title_and_rest`]); set by [`feed`].
     pub title: String,
     /// What the title leaves out of the text ([`title_and_rest`]); set by [`feed`].
     pub summary: String,
@@ -94,25 +94,21 @@ pub struct Row {
 }
 
 /// The most words a row's title keeps before it is cut.
-pub const TITLE_WORDS: usize = 8;
+const TITLE_WORDS: usize = 8;
 /// Words past TITLE_WORDS a title may keep rather than cut: a summary of one word reads as noise.
-pub const TITLE_SLACK: usize = 3;
+const TITLE_SLACK: usize = 3;
 
-/// A row's text as a few words a board leads with: without its `type(area):` prefix and any
-/// `#tag`, up to the first clause break (`: `, `, `, `; `, ` - `, ` (`) that leaves two words or
-/// more, at most [`TITLE_WORDS`] words. Counted from the text, never written by a model
-/// (dashboards rule 6), so it is the same on every surface and every read.
-pub fn title_of(text: &str) -> String {
-    title_and_rest(text).0
-}
-
-/// [`title_of`] and what the title leaves out of the text, its clause break trimmed: the
-/// summary line a board draws under the title, empty when the title is all of it. A title cut
-/// past [`TITLE_WORDS`] (plus [`TITLE_SLACK`]) leaves the rest from the word it stopped at, so no word is lost.
-pub fn title_and_rest(text: &str) -> (String, String) {
+/// A row's text as a few words a board leads with, and what the title leaves out: the summary
+/// line a board draws under it, empty when the title is all of it. The title is the text without
+/// its `type(area):` prefix (`typed`: notes parsed one into `type`) and any `#tag`, up to the
+/// first clause break (`: `, `, `, `; `, ` - `, ` (`) that leaves two words or more, at most
+/// [`TITLE_WORDS`] words (plus [`TITLE_SLACK`]); a cut title leaves the rest from the word it
+/// stopped at, so no word is lost. Counted from the text, never written by a model (dashboards
+/// rule 6), so it is the same on every surface and every read.
+pub fn title_and_rest(text: &str, typed: bool) -> (String, String) {
     let text = text.trim();
     let body = match text.split_once(": ") {
-        Some((head, rest)) if is_prefix(head) => rest,
+        Some((_, rest)) if typed => rest,
         _ => text,
     };
     let line = body
@@ -132,7 +128,8 @@ pub fn title_and_rest(text: &str) -> (String, String) {
     let words: Vec<&str> = line[..end].split_whitespace().collect();
     // A tail of a few words reads better kept than moved alone to the summary.
     let cut = words.len() > TITLE_WORDS + TITLE_SLACK;
-    let title = words[..if cut { TITLE_WORDS } else { words.len() }].join(" ");
+    let n = if cut { TITLE_WORDS } else { words.len() };
+    let title = words[..n].join(" ");
     let title = title.trim_end_matches([',', ';', ':', '.']);
     if cut {
         let rest: Vec<&str> = line.split_whitespace().skip(TITLE_WORDS).collect();
@@ -146,18 +143,6 @@ pub fn title_and_rest(text: &str) -> (String, String) {
         _ => rest,
     };
     (title.to_string(), rest.trim().to_string())
-}
-
-/// `feat`, `epic(ci)` or `fix(ui)!`: a conventional-commit head, one word with an optional area.
-fn is_prefix(head: &str) -> bool {
-    let head = head.trim_end_matches('!');
-    let (kind, area) = match head.split_once('(') {
-        Some((k, a)) => (k, a.strip_suffix(')')),
-        None => (head, Some("")),
-    };
-    !kind.is_empty()
-        && kind.chars().all(|c| c.is_ascii_lowercase())
-        && area.is_some_and(|a| !a.contains(' '))
 }
 
 /// The sections in sheet order, then a row in none (a playtest check).
@@ -444,10 +429,10 @@ impl Feed {
         rows
     }
 
-    /// Give every row its [`title_of`], and each row under an epic that epic's title.
+    /// Give every row its [`title_and_rest`], and each row under an epic that epic's title.
     pub fn titles(&mut self) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
-            (r.title, r.summary) = title_and_rest(&r.text);
+            (r.title, r.summary) = title_and_rest(&r.text, r.r#type.is_some());
         }
         let by: std::collections::HashMap<(String, String), String> = self
             .rows
@@ -968,6 +953,8 @@ mod tests {
 
     #[test]
     fn a_title_is_the_few_words_before_the_first_clause() {
+        // notes sets `type` on exactly these `type(area): ` rows.
+        let title = |t: &str| title_and_rest(t, t.split_once("): ").is_some());
         // The board rows as they stand on unity-core-playground (2026-11-12).
         for (text, want) in [
             (
@@ -1002,9 +989,14 @@ mod tests {
                 "Ship the trailer for DodginBalls",
             ),
             ("the two sheets: merge them", "the two sheets"),
+            // A playtest check's head is its own word, not a type.
+            (
+                "headset: menu text readable at 1.5 m, quests list Active",
+                "headset: menu text readable at 1.5 m",
+            ),
             ("", ""),
         ] {
-            assert_eq!(title_of(text), want, "{text}");
+            assert_eq!(title(text).0, want, "{text}");
         }
         // The summary is what the title leaves out, never the title again.
         for (text, rest) in [
@@ -1027,7 +1019,7 @@ mod tests {
                 "...and one tick for all",
             ),
         ] {
-            assert_eq!(title_and_rest(text).1, rest, "{text}");
+            assert_eq!(title(text).1, rest, "{text}");
         }
     }
 
@@ -1035,8 +1027,8 @@ mod tests {
     fn a_row_under_an_epic_carries_its_title_and_links_it() {
         let fake = Fake {
             out: Ok(r#"{"today":"2026-11-12","rows":[
-                {"project":"ucp","lane":"human","id":"ucp-1","text":"epic(net): netcode to standard"},
-                {"project":"ucp","lane":"human","id":"ucp-2","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
                 {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
                 {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
             calls: RefCell::default(),

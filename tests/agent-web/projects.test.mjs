@@ -57,7 +57,7 @@ const listTable = (kept, total = kept.length, o = {}) => ({
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
   { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", area: "ui", epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
-  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
+  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", title: "water the beds", summary: "", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({

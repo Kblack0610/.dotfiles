@@ -95,7 +95,7 @@ function bRow(r, i) {
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
-    r.epic ? "epic " + tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : "",
+    r.epic ? "epic " + bEpic(r, i) : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (r.state === "done") {
@@ -151,20 +151,21 @@ function bRow(r, i) {
 const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
+// The row's epic as a link to that row, or "" when it is under none.
+const bEpic = (r, i) => r.epic ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : "";
 
 // One line of the table, and the opened record under it. The title cell holds the row's area,
 // its title and what the title leaves out (hub_core::tasks::title_and_rest); the epic cell opens
 // the epic. The opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
-  const title = r.title || r.text;
   const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
   const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
   // An epic is the deliverable itself; any other row under none says so, for triage.
-  const epic = r.epic ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic) : r.section === "epics" ? "" : `<span class="muted">no epic</span>`;
+  const epic = bEpic(r, i) || (r.section === "epics" ? "" : `<span class="muted">no epic</span>`);
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
     `<td><b>${esc(r.label || "")}</b></td>` +
-    `<td class="btitle"><div class="bt">${area}${esc(title)}</div>${sum}</td>` +
+    `<td class="btitle"><div class="bt">${area}${esc(r.title)}</div>${sum}</td>` +
     `<td class="bepic">${epic}</td>` +
     `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
     `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td class="bwhen">${bDash(r.when)}</td>` +
