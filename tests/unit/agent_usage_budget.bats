@@ -220,3 +220,17 @@ aws projects to $650 this month, past its $600 cap'
   run b '.lines[] | select(.name == "aws") | .status'
   assert_output '"ok"'
 }
+
+@test "an aws budget action below the limit is the cap: AWS stops the hosts there" {
+  echo '[{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"197"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"limit"},"value":[0,"600"]},{"metric":{"__name__":"ci_governor_budget_action_usd","type":"RUN_SSM_DOCUMENTS"},"value":[0,"550"]}]' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.cap, .projected, .note]'
+  assert_output '[550,591,"AWS stops the hosts at $550"]'
+  "$AU" budget --json > "$BUDGET_JSON"
+  run "$AU" budget check
+  assert_failure
+  assert_output --partial 'aws projects to $591 this month, past its $550 cap'
+  # negative control: an action above the limit leaves the limit as the cap, and no note
+  echo '[{"metric":{"__name__":"ci_governor_budget_usd","kind":"actual"},"value":[0,"100"]},{"metric":{"__name__":"ci_governor_budget_usd","kind":"limit"},"value":[0,"600"]},{"metric":{"__name__":"ci_governor_budget_action_usd","type":"RUN_SSM_DOCUMENTS"},"value":[0,"700"]}]' > "$FIX/aws"
+  run b '.lines[] | select(.name == "aws") | [.cap, .note]'
+  assert_output '[600,""]'
+}
