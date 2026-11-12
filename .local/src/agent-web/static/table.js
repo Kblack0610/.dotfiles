@@ -236,7 +236,7 @@ function tblTab(o) {
 // A phone row: lead, glance, the rest on a tap. tblHead wrote each column's role on its header; each
 // draw is plain innerHTML, so every table the page gains is stamped from its own headers. A row with
 // another cell count (a detail, a colspan) is left as it is, and a table with no lead keeps its columns.
-const TBL_OPENS = "tr.jr, tr.wr, tr.qr, tr.prop, tr.click, tr[data-open], tr[data-row]";
+const TBL_OPENS = "tr.jr, tr.wr, tr.qr, tr.prop, tr.click, tr[data-open], tr[data-row], tr[data-ch]";
 const tblExpanded = new Set();
 
 function tblStamp(table) {
