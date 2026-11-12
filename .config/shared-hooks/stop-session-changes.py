@@ -50,12 +50,16 @@ def state(root, before=None):
     return files
 
 
-def upstream(root, paths):
-    """Path -> [mode, blob] on the remote's default branch for `paths`, or None with no such ref.
+DELETED = "deleted"
 
-    A changed path whose content now matches it came in from upstream (a merge of the
-    default branch, or agent-land's fast-forward of the main checkout), not from this
-    session. Only the changed paths are read, in batches, so a large tree costs nothing.
+
+def upstream(root, present, gone):
+    """Path -> [mode, blob] (or DELETED) on the remote's default branch, or None with no such ref.
+
+    A changed path whose content now matches it, or a gone path that branch deleted, came in
+    from upstream (a merge of the default branch, or agent-land's fast-forward of the main
+    checkout), not from this session. A gone path the branch never deleted is the session's.
+    Only the changed paths are read, in batches, so a large tree costs nothing.
     """
     for ref in ("origin/HEAD", "origin/main", "origin/master"):
         try:
@@ -63,13 +67,20 @@ def upstream(root, paths):
         except subprocess.CalledProcessError:
             continue
         tree = {}
-        for i in range(0, len(paths), 500):
-            rows = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-tree", ref, "--", *paths[i:i + 500])
+        for i in range(0, len(present), 500):
+            rows = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-tree", ref, "--", *present[i:i + 500])
             for row in rows.split(b"\0"):
                 if row:
                     meta, path = row.split(b"\t", 1)
                     mode, _, blob = meta.decode().split()
                     tree[os.fsdecode(path)] = [mode, blob]
+        for i in range(0, len(gone), 500):
+            rows = git(root, "--literal-pathspecs", "log", "-z", "--format=", "--name-only",
+                       "--diff-filter=D", ref, "--", *gone[i:i + 500])
+            for name in filter(None, rows.split(b"\0")):
+                name = os.fsdecode(name.strip(b"\n"))
+                if name in gone and name not in tree:
+                    tree[name] = DELETED
         return tree
     return None
 
@@ -91,10 +102,9 @@ def main():
         current = state(root, before)
         changed = [p for p in sorted(before.keys() | current.keys())
                    if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
-        tree = upstream(root, [p for p in changed if p in current]) if changed else None
+        tree = upstream(root, [p for p in changed if p in current], [p for p in changed if p not in current]) if changed else None
         for path in changed:
-            # a deletion always counts: an absent path cannot say where its change came from
-            if tree is not None and path in current and current[path][:2] == tree.get(path):
+            if tree is not None and tree.get(path) == (current[path][:2] if path in current else DELETED):
                 continue
             print(path)
     else:

@@ -462,6 +462,20 @@ snapshot() {
   assert_output "$(printf 'landed.txt\nmine.txt')"
 }
 
+@test "a file the default branch deleted, pulled in by a merge, is not the session's deletion (ar-1652)" {
+  echo doomed > "$REPO/doomed.txt"
+  git -C "$REPO" add doomed.txt
+  git -C "$REPO" commit -qm doomed
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  snapshot gone
+  git -C "$REPO" rm -q doomed.txt
+  git -C "$REPO" commit -qm 'upstream deletes it'
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" gone
+  assert_success
+  assert_output ""
+}
+
 @test "a session's deletion of a file upstream never had still counts (ar-1652)" {
   echo branch-only > "$REPO/branch.txt"
   git -C "$REPO" add branch.txt
