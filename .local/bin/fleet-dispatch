@@ -269,6 +269,8 @@ pr_repo_dir() {
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 # shellcheck source=../lib/pr-ci.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
+# shellcheck source=../lib/harness-projects.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/harness-projects.sh"   # harness_project_why: route, gateway_launch
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
 # dispatch_event <action> <project> <text> [record flags...] -> this runner's start, reap or
@@ -1474,12 +1476,15 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
+  # The launch every non-claude start goes through, so a hand --harness start is held to the allowlist too.
+  left=$(harness_project_why "$HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$it")") ||
+    { say "start: $harness refuses $(jq -r .slug <<<"$it"): $left"; return 2; }
   # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
   # account, picked at launch, so it asks for any account with room.
   if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
@@ -1505,6 +1510,14 @@ gateway_launch() {
       # can name the run for the outcome join, so the id is chosen here.
       sid="ses_eval$(date +%s%N)"
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(jq -r --arg h "$harness" '.harnesses[$h].config | sub("^~"; env.HOME) | @sh' "$HARNESSES") env -u LITELLM_MASTER_KEY"
+      # config_dir stands in for ~/.config/opencode, whose global rules, agents, commands and plugins
+      # are private: a public-only harness (ocfree) loads none of them, nor Claude Code's (~/.claude),
+      # nor an AGENTS.md found above the worktree (~/AGENTS.md is the private overlay's).
+      cdir=$(jq -r --arg h "$harness" '.harnesses[$h].config_dir // empty | sub("^~"; env.HOME)' "$HARNESSES")
+      if [ -n "$cdir" ]; then
+        mkdir -p "$cdir" || { say "start: no config_dir $cdir for $harness"; return 1; }
+        cmd="$cmd OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
+      fi
       cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
       ;;
@@ -3119,13 +3132,15 @@ item_pinned() {
 # its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
 # hold (takes_plan: a headless one that cannot resume takes no plan item), on a headless one never an
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
-# all while that list is unreadable), and, when routed rather than pinned, a tier within the unattended
-# ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
+# all while that list is unreadable), an item of a project its `projects` allowlist names when it has
+# one (harness_project_why, pinned or not: ocfree carries public input only), and, when routed rather
+# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
-  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl pwhy project why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
+  project=$(jq -r '.project // ""' <<<"$it")
   item_pinned "$it" && pinned=1
   if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
   else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
@@ -3141,6 +3156,7 @@ route() {
     [ "$hl" = 0 ] || [ -n "$erc" ] || { excl=$(excluded_kind "$it"); erc=$?; }   # once, and only for a headless one
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")

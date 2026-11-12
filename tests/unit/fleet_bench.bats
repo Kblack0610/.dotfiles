@@ -5511,6 +5511,25 @@ STUB
   assert_failure 2
 }
 
+@test "canary lanes: a harness with a projects allowlist queues only those projects' tasks; an unreadable map skips none" {
+  canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_HARNESSES="$SANDBOX/harnesses.json"
+  jq '.id = "pub" | .project = "dotfiles"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/pub.json"
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","projects":["dotfiles"]}}}' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary queue --harness ocfree --model beam
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued, 1 outside ocfree's projects for $week (ocfree/beam)"
+  [ -f "$CQ/canary-pub-$week-ocfree-beam.json" ]
+  [ ! -f "$CQ/canary-greet-$week-ocfree-beam.json" ] || fail "a private-project canary was queued on ocfree"
+  # The claude lane is never held by a list.
+  run "$SUBJECT" canary queue
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week"
+  # A harness the map does not have is not filtered here: fleet-dispatch refuses it at start.
+  run "$SUBJECT" canary queue --harness ghost --model x
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (ghost/x)"
+}
+
 @test "canary lanes: retro queues each lane in canary-lanes whose source has room, and says why it skips one with no room or no source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)

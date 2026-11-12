@@ -714,6 +714,40 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
 }
 
+# ocfree: a free harness whose provider may train on prompts, allowlisted to the public project only.
+ocfree_ready() {
+  printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
+  jq --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" '.harnesses.ocfree = {launcher: "opencode", source: "ocfree",
+    headless: true, config: $c, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}' \
+    "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+}
+
+@test "negative control: a private-project item never picks ocfree, pinned or routed, though ocfree has room and ranks first" {
+  route_ready; ocfree_ready
+  srcs ocfree:ok:0.1 codex:ok:5
+  # model-lane offers ocfree first; it has room at the lowest rank.
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
+case "$1" in log) echo run-9 ;; classify)
+  echo "{\"lane\":\"sonnet\",\"by\":\"rule\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"candidates\":[{\"harness\":\"ocfree\",\"model\":\"beam\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0}]}" ;; esac'
+  # Pinned by hand to ocfree: refused with the reason, and it stays queued.
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Fix the private menu" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "queue item pin-free has no source with room it may run on: ocfree: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
+  [ -n "$(qitem queued pin-free)" ] || fail "the pinned private item left the queue"
+  # Routed: the item behind it skips ocfree and goes to the next fit.
+  assert_output --partial 'started queue item fix-menu on codex (sol), routed by model-lane'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_not_called 'opencode run'
+  assert_not_called 'room --source ocfree'
+  # Positive control: the same pinned item starts on ocfree once its project is on the list, so the
+  # refusal above came from the allowlist and nothing else.
+  jq '.harnesses.ocfree.projects = ["dotfiles", "game"]' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-free on ocfree (beam), the harness it is pinned to'
+  assert_called "OPENCODE_CONFIG='$SANDBOX/eval-ocfree.json'"
+}
+
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"

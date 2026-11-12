@@ -621,6 +621,39 @@ load 'fleet_dispatch/common'
   assert_not_called 'opencode run'
 }
 
+@test "a hand --harness start of a private-project item on an allowlisted harness is refused before any room or launch" {
+  harness_ready
+  jq '.harnesses.glm.projects = ["dotfiles"]' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial "glm refuses fix-menu: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
+  assert_not_called 'claude-acct room'
+  assert_not_called 'opencode run'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
+  # An unreadable list refuses too, never reads as "no list".
+  jq '.harnesses.glm.projects = "dotfiles"' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial 'not a list of project names'
+  # Positive control: the project on the list starts. Its config_dir stands in for ~/.config/opencode
+  # (the private global rules, agents and plugins), and no Claude Code or above-worktree rules load.
+  jq --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["dotfiles", "game"] | .harnesses.glm.config_dir = $d' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_success
+  assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 timeout 180m opencode run"
+  [ -d "$SANDBOX/oc-public" ] || fail "the config_dir was not made"
+}
+
+@test "an opencode harness with no config_dir keeps ~/.config/opencode: no isolation env on its launch" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model qwen
+  assert_success
+  assert_called 'opencode run'
+  assert_not_called 'OPENCODE_CONFIG_DIR'
+  assert_not_called 'OPENCODE_DISABLE_PROJECT_CONFIG'
+}
+
 @test "a source with no room, and a harness with no source, both refuse the start" {
   harness_ready
   src_shut eval 'eval: its pool lazer is spent or inside its reserve'
