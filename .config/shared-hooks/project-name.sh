@@ -427,20 +427,27 @@ project_visible() {
     "$PROJECT_VISIBLE_JQ"' $k | visible($m)' >/dev/null
 }
 
-# project_keys -> every registered project key this machine lists, sorted, one per line: the `paths` names
+# project_all_keys -> every registered project key, sorted, one per line: the `paths` names
 # plus the object-valued tracker keys. `default` is the tracker fallback, not a project,
 # and a string-valued `_comment*` key is documentation. The one definition of "the
-# projects": project-map-doctor checks against it and `regen-anchor.sh --all` walks it. A work
-# project off its work machine is not one of them (project_visible).
+# projects": project-map-doctor checks the registry's references against it, on any machine.
+project_all_keys() {
+  local map_file; map_file="$(project_map_file)"
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r '[(.paths // {}) | .[]]
+    + [(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key
+       | select(. != "default")]
+    | unique[]' "$map_file" 2>/dev/null || true
+}
+
+# project_keys -> the project_all_keys this machine lists: a work project off its work machine
+# is not one (project_visible). `regen-anchor.sh --all` walks it.
 project_keys() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
   project_machine_profile >/dev/null
-  jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" "$PROJECT_VISIBLE_JQ"'
-    [(.paths // {}) | .[]]
-    + [(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key
-       | select(. != "default")]
-    | unique[] | select(visible($m))' "$map_file" 2>/dev/null || true
+  project_all_keys | jq -rR --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
+    "$PROJECT_VISIBLE_JQ"' select(visible($m))' 2>/dev/null || true
 }
 
 # project_anchor_keys -> the keys that get an anchor at ~/.agent/anchors/<key>.md: every

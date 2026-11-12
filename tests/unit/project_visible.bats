@@ -37,6 +37,13 @@ setup() {
   assert_output "$(printf '%s\n' acme-platform acme_kiosk dotfiles finance)"
 }
 
+@test "project_all_keys lists work projects on every machine; project_keys filters it" {
+  PROJECT_MACHINE_PROFILE=personal run project_all_keys
+  assert_output --partial acme_kiosk
+  PROJECT_MACHINE_PROFILE=personal run project_keys
+  refute_output --partial acme_kiosk
+}
+
 @test "project_machine_profile: notes decides, personal when notes cannot say" {
   unset PROJECT_MACHINE_PROFILE
   notes() { [ "$*" = "config --machine-profile" ] && echo acmework; }
