@@ -1,8 +1,8 @@
 "use strict";
 // The answer cards for what waits on you: a live session's open dialog or permission prompt
 // (read from its transcript by the server) and a pending ask, the one record of a question to
-// the human. Home (home.js) draws them on its Needs you rows, the one place they are answered;
-// a Queue row counts its own and links there. Answering a session's card types the answer into
+// the human. Home (home.js) draws them on its Needs you rows, an opened Queue row draws its own
+// session's, and a session's conversation pins its dialog; each answers in place. Answering a session's card types the answer into
 // its pane.
 
 // Which folds are open, by data-k: a section (`sec:<name>`) or a card's details. `sending` holds
@@ -46,6 +46,9 @@ const NEED_KINDS = {
 // The band a Needs you card opens with: its kind, then where and how long, as quiet text.
 const needBand = (k, meta) =>
   `<div class="nband"><span class="nkind">${NEED_KINDS[k]}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
+
+// The Needs you kind of a session's open dialog, as hub-core's home::NeedKind::of_dialog gives it.
+const dialogKind = (q) => ({ choice: "ask", tool: "perm", plan: "plan" })[q.kind] || "turn";
 
 // A live session's open dialog: what the session is, what it wants and for how long, then the
 // question and its answers. `k` is its row's kind. The tmux target is the title's tooltip and sits

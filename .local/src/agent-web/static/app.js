@@ -158,8 +158,7 @@ function renderPin() {
   const key = a.target + "|" + a.question.kind + "|" + a.question.text;
   if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
   el.dataset.key = key;
-  // The row kind hub-core's home::NeedKind::of_dialog gives the same dialog.
-  el.innerHTML = sessionCard(a, { choice: "ask", tool: "perm", plan: "plan" }[a.question.kind] || "turn", true);
+  el.innerHTML = sessionCard(a, dialogKind(a.question), true);
 }
 $("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
 $("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
