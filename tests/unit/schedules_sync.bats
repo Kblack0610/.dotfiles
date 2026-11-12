@@ -757,6 +757,36 @@ feedruns() {
   assert_output 1
 }
 
+@test "feed runs: a retitled PR's run agrees once the feed serves it again, and an exporter repo with no agreed run holds the gate" {
+  game_files
+  old="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed success 1 pull_request 7 'fix: before')"
+  new="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed success 1 pull_request 7 'fix: after')"
+  # the poll reads the run after its PR was retitled; the feed still has the title it finished with
+  feedruns 0 e1 1 false "$old"
+  runs "$new" | page1
+  run "$SUBJECT"
+  assert_success
+  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
+  assert_failure 1
+  run jq -c '.repos["o/game"].differ' <<<"$output"
+  assert_output '[{"id":30,"fields":{"title":["fix: after","fix: before"]}}]'
+  # the exporter serves the run again with its new title (home-config #868): the shadow takes it
+  feedruns 1 e1 2 false "$new"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
+  assert_success
+  run jq -c '[.ok, .unproven, .repos["o/game"]]' <<<"$output"
+  assert_output '[true,[],{"agree":1,"open":0,"differ":[]}]'
+  # o/empty joins the exporter's repos with no run: nothing proves its rows, so the gate holds
+  feedruns 2 e1 2 false
+  jq -c '.repos += ["O/Empty"]' "$KD/feed-2" > "$KD/feed-2.new" && mv "$KD/feed-2.new" "$KD/feed-2"
+  SCHEDULES_NOW=1762431600 run "$SUBJECT"
+  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
+  assert_failure 1
+  run jq -c '[.ok, .unproven, .repos["o/empty"]]' <<<"$output"
+  assert_output '[false,["o/empty"],{"agree":0,"open":0,"differ":[]}]'
+}
+
 @test "negative control: compare-feed names a run whose conclusion differs or that one side lacks, and skips runs still settling" {
   game_files
   run "$SUBJECT" compare-feed
