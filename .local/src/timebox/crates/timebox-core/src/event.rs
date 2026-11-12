@@ -33,6 +33,8 @@ pub enum EventKind {
     QueueClear,
     #[serde(rename = "queue_load")]
     QueueLoad,
+    #[serde(rename = "queue_go")]
+    QueueGo,
     /// Any kind a future version writes that this build doesn't know — kept so old
     /// binaries can still read (and fold over) a newer log.
     #[serde(other)]

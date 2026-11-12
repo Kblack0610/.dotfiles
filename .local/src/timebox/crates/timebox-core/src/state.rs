@@ -181,7 +181,7 @@ impl Snapshot {
     }
 
     /// Start (create-or-resume) a stopwatch and make it active. Starting any op but the
-    /// queue head by hand takes the queue off (its tasks stay).
+    /// queue head, or the head with another lap, takes the queue off (its tasks stay).
     pub fn start(
         &mut self,
         now: DateTime<Local>,
@@ -189,7 +189,7 @@ impl Snapshot {
         lap_len_s: Option<u64>,
         sound: Option<bool>,
     ) -> Vec<Event> {
-        self.leave_queue_unless(op);
+        self.leave_queue_unless(op, lap_len_s);
         self.start_inner(now, op, lap_len_s, sound)
     }
 
@@ -293,13 +293,14 @@ impl Snapshot {
             sw.started_at = now;
             sw.state = RunState::Running;
             self.active_sw = Some(op.to_string());
-            self.leave_queue_unless(op);
+            self.leave_queue_unless(op, None);
             return vec![Event::new(now, EventKind::Resume, op)];
         }
         vec![]
     }
 
-    /// Manually close the current lap window now and restart the cadence from here.
+    /// Manually close the current lap window now and restart the cadence from here. On
+    /// the queue head it restarts the task's window without counting a miss.
     pub fn lap(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
         let Some(sw) = self.stopwatches.get_mut(op) else {
             return vec![];
@@ -309,11 +310,14 @@ impl Snapshot {
         sw.lap_index += 1;
         let idx = sw.lap_index;
         let len = sw.lap_len_s;
+        if self.on_queue_head(op) {
+            self.queue.lap_base += 1;
+        }
         vec![Event::new(now, EventKind::Lap, op).with_lap(idx, len)]
     }
 
     /// Stop/leave the active stopwatch and start `to` in one atomic step. Switching to
-    /// any op but the queue head takes the queue off (its tasks stay).
+    /// any op but the queue head, or the head with another lap, takes the queue off.
     pub fn switch(
         &mut self,
         now: DateTime<Local>,
@@ -321,7 +325,7 @@ impl Snapshot {
         lap_len_s: Option<u64>,
         sound: Option<bool>,
     ) -> Vec<Event> {
-        self.leave_queue_unless(to);
+        self.leave_queue_unless(to, lap_len_s);
         self.switch_inner(now, to, lap_len_s, sound)
     }
 
@@ -343,9 +347,28 @@ impl Snapshot {
         evs
     }
 
-    fn leave_queue_unless(&mut self, op: &str) {
-        if self.queue.head().map(|t| t.op.as_str()) != Some(op) {
+    /// Anything but the head task at its own length takes the queue off.
+    fn leave_queue_unless(&mut self, op: &str, lap_len_s: Option<u64>) {
+        let keeps = self
+            .queue
+            .head()
+            .is_some_and(|t| t.op == op && lap_len_s.is_none_or(|l| l == t.len_s));
+        if !keeps {
             self.queue.active = false;
+        }
+    }
+
+    fn on_queue_head(&self, op: &str) -> bool {
+        self.queue.active && self.queue.head().is_some_and(|t| t.op == op)
+    }
+
+    /// The head task is about to change: stop the old one so the new head starts a fresh
+    /// window and miss count, even when it is the same op at the same length.
+    fn retire_head(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
+        if self.queue.active {
+            self.stop_inner(now, op)
+        } else {
+            vec![]
         }
     }
 
@@ -418,6 +441,9 @@ impl Snapshot {
             &t.op,
             serde_json::json!({ "pos": i }),
         )];
+        if i == 0 {
+            evs.extend(self.retire_head(now, &t.op));
+        }
         evs.extend(self.sync_head(now, sound));
         evs
     }
@@ -438,6 +464,7 @@ impl Snapshot {
         if from == to {
             return vec![];
         }
+        let old_head = self.queue.tasks[0].op.clone();
         let t = self.queue.tasks.remove(from);
         let op = t.op.clone();
         self.queue.tasks.insert(to, t);
@@ -447,17 +474,31 @@ impl Snapshot {
             &op,
             serde_json::json!({ "from": from, "to": to }),
         )];
+        if from == 0 || to == 0 {
+            evs.extend(self.retire_head(now, &old_head));
+        }
         evs.extend(self.sync_head(now, sound));
         evs
     }
 
-    /// Start working the queue: the head runs with its own lap.
+    /// Start working the queue: the head runs with its own lap, and misses count from now.
     pub fn queue_go(&mut self, now: DateTime<Local>, sound: bool) -> Vec<Event> {
-        if self.queue.tasks.is_empty() {
+        let Some(h) = self.queue.head().cloned() else {
             return vec![];
+        };
+        let mut evs = vec![];
+        if !self.queue.active {
+            self.queue.active = true;
+            self.queue.lap_base = self.stopwatches.get(&h.op).map_or(0, |s| s.lap_index);
+            evs.push(Self::qev(
+                now,
+                EventKind::QueueGo,
+                &h.op,
+                serde_json::Value::Null,
+            ));
         }
-        self.queue.active = true;
-        self.sync_head(now, sound)
+        evs.extend(self.sync_head(now, sound));
+        evs
     }
 
     /// Finish the head task: it leaves the queue and, if the queue is on, the next starts.
@@ -473,9 +514,7 @@ impl Snapshot {
             &t.op,
             serde_json::json!({ "misses": misses }),
         )];
-        if self.queue.active {
-            evs.extend(self.stop_inner(now, &t.op));
-        }
+        evs.extend(self.retire_head(now, &t.op));
         evs.extend(self.sync_head(now, sound));
         evs
     }
@@ -590,7 +629,7 @@ mod tests {
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.state, RunState::Paused);
         assert_eq!(sw.elapsed_s(at(t, 999)), 100); // frozen at pause
-        // resume and run 50 more -> 150 total
+                                                   // resume and run 50 more -> 150 total
         s.resume(at(t, 200), "op");
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.elapsed_s(at(t, 250)), 150);
@@ -601,7 +640,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(5), None); // 5s laps
-        // at 12s, two boundaries (5,10) are due
+                                         // at 12s, two boundaries (5,10) are due
         let laps = s.catch_up(at(t, 12));
         assert_eq!(laps.len(), 2);
         assert_eq!(laps[0].lap_index, Some(1));
@@ -670,7 +709,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(100), None); // boundary at 100
-        // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
+                                           // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
         s.start(at(t, 40), "op", Some(100), None);
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.next_lap_countdown_s(at(t, 40)), Some(100));
@@ -898,8 +937,69 @@ mod tests {
         s.resume(at(t, 20), "email");
         assert!(!s.queue.active);
         assert_eq!(s.queue.tasks.len(), 1); // the task stays queued
-        // email's own lap fires as a plain lap; nothing switches back to the head
+                                            // email's own lap fires as a plain lap; nothing switches back to the head
         s.catch_up(at(t, 80));
         assert_eq!(s.active_sw.as_deref(), Some("email"));
+    }
+
+    #[test]
+    fn go_on_a_head_started_by_hand_turns_the_queue_on_and_counts_misses_from_there() {
+        let mut s = queued();
+        let t = t0();
+        s.start(t, "guitar", Some(300), None);
+        s.catch_up(at(t, 601)); // two laps before the queue was on
+        let evs = s.queue_go(at(t, 601), false);
+        assert!(evs.iter().any(|e| e.kind == EventKind::QueueGo));
+        assert!(s.queue.active);
+        assert_eq!(s.queue_misses(), 0);
+    }
+
+    #[test]
+    fn a_manual_lap_on_the_head_is_not_a_miss() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.lap(at(t, 100), "guitar");
+        assert_eq!(s.queue_misses(), 0);
+        s.catch_up(at(t, 401)); // its own timeout still counts
+        assert_eq!(s.queue_misses(), 1);
+    }
+
+    #[test]
+    fn removing_the_head_onto_an_identical_task_starts_it_fresh() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.queue_add(t, task("guitar", 300));
+        s.queue_add(t, task("guitar", 300));
+        s.queue_go(t, false);
+        s.catch_up(at(t, 301));
+        assert_eq!(s.queue_misses(), 1);
+        s.queue_rm(at(t, 350), 0, false);
+        assert_eq!(s.queue_misses(), 0);
+        assert_eq!(
+            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 350)),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn moving_a_task_onto_the_head_starts_it_fresh() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.queue_mv(at(t, 50), 2, 0, false);
+        assert_eq!(s.active_sw.as_deref(), Some("reading"));
+        assert_eq!(s.stopwatches["guitar"].state, RunState::Stopped);
+    }
+
+    #[test]
+    fn switching_to_the_head_with_another_lap_takes_the_queue_off() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.switch(at(t, 10), "guitar", Some(1500), None);
+        assert!(!s.queue.active);
+        s.queue_go(at(t, 20), false); // go puts it back on its own 5m
+        assert_eq!(s.stopwatches["guitar"].lap_len_s, Some(300));
     }
 }

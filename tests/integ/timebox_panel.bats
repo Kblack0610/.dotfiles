@@ -72,6 +72,17 @@ resume"
 1  guitar  5m"
 }
 
+@test "J and K move the task and put the cursor on its new row" {
+  run "$PANEL" move down 2
+  assert_success
+  assert_output --regexp '^reload-sync\(.*timebox-panel rows\)\+refresh-preview\+pos\(3\)$'
+  run "$PANEL" move up 1
+  assert_output --partial 'pos(1)'
+  run "$PANEL" move up -
+  assert_output ''
+  assert_equal "$(calls)" "queue mv 2 3"
+}
+
 @test "an unknown verb fails" {
   run "$PANEL" act teleport
   assert_failure 2

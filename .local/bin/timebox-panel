@@ -4,6 +4,7 @@
 #   timebox-panel                    the panel: the queue on the left, `timebox status` on the right
 #   timebox-panel rows               the list: `timebox queue`, its first line the header
 #   timebox-panel act <verb> [pos]   one panel key as a plain command (verbs: the case in act)
+#   timebox-panel move <down|up> <pos>  J/K: move a task, print the fzf actions that follow it
 #
 # It holds no state: the queue lives in timebox, so the bar, the leader keys and this panel all
 # write the same queue. Keys and verbs: .local/src/timebox/README.md, "Queue".
@@ -51,6 +52,20 @@ act() {
     return 0
 }
 
+# J/K: move the task, then reload and put the cursor on its new row, so a second J moves the
+# same task. `reload-sync` finishes before `pos`, which plain `reload` does not promise.
+move() {
+    local dir="$1" n="${2:-}"
+    case "$n" in '' | *[!0-9]*) return 0 ;; esac
+    act "$dir" "$n" >/dev/null 2>&1
+    if [ "$dir" = down ]; then
+        n=$((n + 1))
+    elif [ "$n" -gt 1 ]; then
+        n=$((n - 1))
+    fi
+    printf 'reload-sync(%s rows)+refresh-preview+pos(%s)\n' "$SELF" "$n"
+}
+
 panel() {
     command -v fzf >/dev/null 2>&1 || { echo "timebox-panel needs fzf" >&2; exit 2; }
     local r="reload($SELF rows)+refresh-preview"
@@ -61,8 +76,8 @@ panel() {
         --bind="a:execute($SELF act add)+$r" \
         --bind="d:execute-silent($SELF act done)+$r" \
         --bind="r:execute-silent($SELF act rm {1})+$r" \
-        --bind="J:execute-silent($SELF act down {1})+$r+down" \
-        --bind="K:execute-silent($SELF act up {1})+$r+up" \
+        --bind="J:transform($SELF move down {1})" \
+        --bind="K:transform($SELF move up {1})" \
         --bind="enter:execute-silent($SELF act go)+$r" \
         --bind="p:execute-silent($SELF act pause)+$r" \
         --bind="l:execute($SELF act load)+$r" \
@@ -74,5 +89,6 @@ case "${1:-panel}" in
     panel) panel ;;
     rows) rows ;;
     act) shift; act "$@" ;;
-    *) echo "usage: timebox-panel [rows | act <verb> [pos]]" >&2; exit 2 ;;
+    move) shift; move "$@" ;;
+    *) echo "usage: timebox-panel [rows | act <verb> [pos] | move <down|up> <pos>]" >&2; exit 2 ;;
 esac

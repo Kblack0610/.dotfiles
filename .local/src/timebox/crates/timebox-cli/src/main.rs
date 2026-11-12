@@ -568,10 +568,6 @@ fn queue_json(snap: &Snapshot, now: DateTime<Local>) -> String {
 }
 
 fn print_status(snap: &Snapshot, now: DateTime<Local>) {
-    if !snap.queue.tasks.is_empty() {
-        print_queue(snap, now);
-        println!();
-    }
     if snap.stopwatches.is_empty() {
         println!("no stopwatches");
         return;
