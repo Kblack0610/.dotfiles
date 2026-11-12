@@ -5536,6 +5536,29 @@ STUB
   [ -z "$(ls "$CQ" | grep -e '-longcat')" ] || fail "a lane whose list cannot be read queued a canary"
 }
 
+@test "canary lanes: a harness in its own lane sandbox gets a brief of the task alone and the item's canary id; fleet-dispatch runs the steps" {
+  canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_HARNESSES="$SANDBOX/harnesses.json"
+  jq '.id = "pub" | .project = "dotfiles"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/pub.json"
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","projects":["dotfiles"],"sandbox":"ocfree"}}}' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary queue --harness ocfree --model beam
+  assert_success
+  f="$CQ/canary-pub-$week-ocfree-beam.json"
+  assert_equal "$(jq -c '[.canary, .model]' "$f")" '["pub","beam"]'
+  run cat "$CQ/add.log"
+  assert_output --partial 'Your shell sees this worktree and nothing else of the machine.'
+  refute_output --partial 'fleet-bench canary start'
+  refute_output --partial 'agent-queue move'
+  # Control: the same lane unsandboxed carries the steps itself and no canary id.
+  rm "$f" "$CQ/add.log"
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","projects":["dotfiles"]}}}' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary queue --harness ocfree --model beam
+  assert_equal "$(jq -r '.canary // "none"' "$f")" none
+  run cat "$CQ/add.log"
+  assert_output --partial 'fleet-bench canary start pub'
+}
+
 @test "canary lanes: retro queues each lane in canary-lanes whose source has room, and says why it skips one with no room or no source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)

@@ -1476,7 +1476,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1487,12 +1487,15 @@ gateway_launch() {
   pwhy=$(harness_project_why "$HARNESSES" "$harness" "$proj") ||
     { say "start: $harness refuses $(jq -r .slug <<<"$it"): $pwhy"; return 2; }
   # A harness with a project allowlist is public-only: an opencode run under its own config_dir (the
-  # launch below), in the item's own repo. cwd is cmd_start's, so a hand --cwd cannot take it elsewhere.
+  # launch below) and its own lane sandbox, in the item's own repo. cwd is cmd_start's, so a hand --cwd
+  # cannot take it elsewhere. Without the sandbox its shell could read every private path and the pane env.
   if [ "$(jq -r --arg h "$harness" '.harnesses[$h] | has("projects")' "$HARNESSES")" = true ]; then
     [ "$(harness_launcher "$harness")" = opencode ] && [ -n "$(jq -r --arg h "$harness" '.harnesses[$h].config_dir // empty' "$HARNESSES")" ] ||
       { say "start: $harness has a projects allowlist, so it must be an opencode harness with a config_dir, or its run would load the private rules"; return 2; }
     [ "$(realpath -m -- "$cwd")" = "$(realpath -m -- "$(repo_dir "$proj")")" ] ||
       { say "start: $harness runs only in $proj's own repo, not $cwd"; return 2; }
+    [ -n "$(harness_sandbox "$harness")" ] ||
+      { say "start: $harness has a projects allowlist, so it must name a lane sandbox (sandbox:), or its shell could read the private paths and the pane env"; return 2; }
   fi
   # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
   # account, picked at launch, so it asks for any account with room.
@@ -1507,6 +1510,11 @@ gateway_launch() {
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
   takes_plan "$harness" || [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: $harness runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
+  sbx=$(harness_sandbox "$harness")
+  if [ -n "$sbx" ]; then
+    [ "$(harness_launcher "$harness")" = opencode ] || { say "start: $harness names lane sandbox '$sbx', which only an opencode harness holds; nothing started"; return 2; }
+    pwhy=$(sandbox_item_why "$it") || { say "start: $harness $pwhy, and $slug is not one"; return 2; }
+  fi
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
@@ -1518,7 +1526,8 @@ gateway_launch() {
       # Standalone: the background service would not see this run's env or config. Nothing else
       # can name the run for the outcome join, so the id is chosen here.
       sid="ses_eval$(date +%s%N)"
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(jq -r --arg h "$harness" '.harnesses[$h].config | sub("^~"; env.HOME) | @sh' "$HARNESSES") env -u LITELLM_MASTER_KEY"
+      cfg=$(jq -r --arg h "$harness" '.harnesses[$h].config | sub("^~"; env.HOME)' "$HARNESSES")
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") env -u LITELLM_MASTER_KEY"
       # config_dir stands in for ~/.config/opencode, whose global rules, agents, commands and plugins
       # are private: a public-only harness (ocfree) loads none of them, nor Claude Code's (~/.claude),
       # nor an AGENTS.md found above the worktree (~/AGENTS.md is the private overlay's).
@@ -1527,8 +1536,36 @@ gateway_launch() {
         mkdir -p "$cdir" || { say "start: no config_dir $cdir for $harness"; return 1; }
         cmd="$cmd OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
       fi
-      cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m opencode run --standalone --auto --session $sid"
+      if [ -n "$sbx" ]; then
+        # The lane sandbox (lib/sandbox.sh, srt): the shell opencode gives the model sees the worktree,
+        # the harness's config and key, and its config_dir (the run dir inside it); its network is the
+        # profile's hosts alone (no host loopback, where the unsandboxed opencode service listens) and its
+        # env SANDBOX_ENV_KEEP. Data, cache, state and srt's sockets live in the run dir, so the shared
+        # opencode.db (other harnesses' sessions) and auth.json stay masked. No srt refuses the start.
+        [ -n "$cdir" ] || { say "start: $harness names lane sandbox '$sbx' but no config_dir to keep its runs in; nothing started"; return 2; }
+        run=$(harness_run_dir "$HARNESSES" "$harness")
+        cfg=$(realpath -e -- "$cfg") || { say "start: no config $cfg for $harness"; return 1; }
+        mkdir -p "$run/data" "$run/cache" "$run/state" "$run/tmp" || { say "start: no run dir $run for $harness"; return 1; }
+        (role_die() { say "$*"; exit 78; }
+          cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load && pwhy=$(sandbox_srt_refusal) &&
+            { [ -z "$pwhy" ] || role_die "lane sandbox '$sbx' cannot hold $harness: $pwhy"; } &&
+            sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
+          { say "start: lane sandbox '$sbx' cannot be applied to $harness; nothing started"; return 1; }
+        cid=$(jq -r .canary <<<"$it")
+        cmd="$(sandbox_env_clear) AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
+        cmd="$cmd OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$(printf '%q' "$run/data") XDG_CACHE_HOME=$(printf '%q' "$run/cache")"
+        cmd="$cmd XDG_STATE_HOME=$(printf '%q' "$run/state") TMPDIR=$(printf '%q' "$run/tmp") srt --settings $(printf '%q' "$run/srt-$sid.json") --"
+        # The canary steps the brief leaves out read and write fleet state, so they run here, outside
+        # the sandbox, before and after it; the run can neither reach its oracle nor write its score.
+        # A start that fails skips the run and the score: the tree was never put at base, so a score
+        # there would grade the merged code.
+        cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
+      else
+        cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m"
+      fi
+      cmd="$cmd opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
+      [ -z "$sbx" ] || cmd="$cmd; AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
@@ -1599,6 +1636,18 @@ harness_flag() { jq -e --arg h "$1" --arg k "$2" '.harnesses[$h][$k] == true' "$
 
 # is_canary <item json> -- the item is a fleet-bench canary: it replays a merged PR and is scored fresh.
 is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
+
+# harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
+harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
+
+# sandbox_item_why <item json> -> why a sandboxed harness cannot run the item, or nothing. Its run sees
+# its worktree alone (no skills, queue, gh or push), so it takes only a canary item that names its task
+# (`canary`, fleet-bench canary queue sets it): fleet-dispatch runs the canary steps around the run.
+sandbox_item_why() {
+  is_canary "$1" && [ -n "$(jq -r '.canary // empty' <<<"$1")" ] && return 0
+  echo "runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:)"
+  return 1
+}
 
 # takes_plan <harness> -- it can run a plan item: a pane that waits on the human at its plan, or a
 # headless run that resumes, which posts the plan as an ask and is resumed on the answer (item_brief).
@@ -3142,7 +3191,8 @@ item_pinned() {
 # hold (takes_plan: a headless one that cannot resume takes no plan item), on a headless one never an
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
 # all while that list is unreadable), an item of a project its `projects` allowlist names when it has
-# one (harness_project_why, pinned or not: ocfree carries public input only), and, when routed rather
+# one (harness_project_why, pinned or not: ocfree carries public input only), only a canary item when
+# it runs in its own lane sandbox (sandbox_item_why), and, when routed rather
 # than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
@@ -3166,6 +3216,7 @@ route() {
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
+    elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")

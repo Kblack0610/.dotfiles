@@ -660,11 +660,87 @@ load 'fleet_dispatch/common'
   assert_not_called 'opencode run'
   assert_not_called 'agent-codex'
   assert_not_called 'wt new'
-  # Positive control: in its own repo it starts, and no Claude Code or above-worktree rules load.
+  # In its own repo, with no lane sandbox, its shell could still read every private path: refused.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial 'glm has a projects allowlist, so it must name a lane sandbox (sandbox:)'
+  assert_not_called 'opencode run'
+  # Positive control: in its own repo, sandboxed, it starts, and no Claude Code or above-worktree rules load.
+  harness_sandboxed glm
+  canary_item fix-menu c-1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_success
-  assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 timeout 180m opencode run"
+  assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
   [ -d "$SANDBOX/oc-public" ] || fail "the config_dir was not made"
+}
+
+@test "a sandboxed harness runs its opencode launch inside srt, under a cleared env, with the canary steps outside" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
+  harness_sandboxed glm
+  ln -s "$SANDBOX/eval-glm.json" "$SANDBOX/glm-link.json"
+  harness_set --arg c "$SANDBOX/glm-link.json" '.harnesses.glm.config = $c'
+  canary_item fix-menu c-7
+  git init -q "$SANDBOX/repos/game"
+  export LITELLM_MASTER_KEY=sk-master
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_success
+  run="$SANDBOX/oc-public/run" qr=$(printf %q "$SANDBOX/oc-public/run")
+  line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
+  # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
+  # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
+  [[ "$line" == *":: fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
+  [[ "$line" == *"; AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; }; rm -f $qr/srt-ses_eval"*".json" ]] || fail "no canary score after: $line"
+  [[ "$line" == *"XDG_DATA_HOME=$qr/data "*"TMPDIR=$qr/tmp srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
+  # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
+  [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-glm.json") "* ]] || fail "config not by its target: $line"
+  [[ "$line" != *LITELLM_MASTER_KEY* ]] || fail "the master key reached the line"
+  # The settings: the profile's masks and hosts, strict; the worktree, config_dir and git common dir
+  # writable, the config and key readable, the common dir's hooks and config not writable.
+  s=$(cat "$run"/srt-ses_eval*.json)
+  assert_equal "$(jq -c .network <<<"$s")" '{"allowedDomains":["gw.test"],"deniedDomains":[],"strictAllowlist":true}'
+  assert_equal "$(jq -c .filesystem.denyRead <<<"$s")" '["~/","/tmp"]'
+  assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX/oc-public\",\"$SANDBOX/repos/game/.git\"]"
+  jq -e --arg c "$SANDBOX/eval-glm.json" --arg k "$SANDBOX/glm.key" '.filesystem.allowRead | index($c) and index($k)' <<<"$s" >/dev/null || fail "config or key not readable: $s"
+  assert_equal "$(jq -c .filesystem.denyWrite <<<"$s")" "[\"$SANDBOX/repos/game/.git/hooks\",\"$SANDBOX/repos/game/.git/config\"]"
+  # The pane line as a shell runs it: a start that fails runs neither the session nor the score.
+  pane="$SANDBOX/pane" && mkdir -p "$pane"
+  printf '#!/usr/bin/env bash\necho "fleet-bench $*" >> %q; [ "$2" != start ] || [ -z "${START_FAILS:-}" ]\n' "$pane/log" > "$pane/fleet-bench"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
+  chmod +x "$pane"/*
+  START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_equal "$(cat "$pane/log")" 'fleet-bench canary start c-7'
+  run ls "$run"; refute_output --partial srt-ses_eval
+  : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
+  run cut -d' ' -f1-3 "$pane/log"
+  assert_output "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-bench canary score' 'agent-queue move fix-menu')"
+}
+
+@test "a sandboxed harness refuses an item that is not a canary, a non-opencode harness holds no sandbox, and a missing srt starts nothing" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
+  harness_sandboxed glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), and fix-menu is not one'
+  # A canary tag without its task id is refused too: the score step would have nothing to score.
+  agent-queue set fix-menu tags=canary >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial 'takes only a canary item with its task id'
+  canary_item fix-menu c-1
+  harness_set '.harnesses.codex.sandbox = "pub"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_failure 2
+  assert_output --partial "codex names lane sandbox 'pub', which only an opencode harness holds"
+  export SANDBOX_SRT_NEEDS="srt no-such-tool-here"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure
+  assert_output --partial "lane sandbox 'pub' cannot hold glm: no-such-tool-here is not on PATH"
+  assert_not_called 'opencode run'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
 }
 
 @test "an opencode harness with no config_dir keeps ~/.config/opencode: no isolation env on its launch" {

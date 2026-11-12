@@ -4635,9 +4635,17 @@ canary_oracle() {
   (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${cmd[@]}") >>"$3" 2>&1
 }
 
-# canary_brief <task> <slug> -> the night item's whole task: no /one-shot, no PR (fleet-dispatch
-# starts a `canary` item on this text as it is)
+# canary_brief <task> <slug> [sandboxed] -> the night item's whole task: no /one-shot, no PR (fleet-dispatch
+# starts a `canary` item on this text as it is). A run in its harness's own lane sandbox sees its
+# worktree alone, so fleet-dispatch runs the start, score and done steps around it and its brief is
+# the task alone.
 canary_brief() {
+  [ -z "${3:-}" ] || { jq -r '
+    "Canary eval \(.id): a fixed task from \(.pr // "a merged PR"), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, and read nothing later than that PR (not git log past HEAD, not origin/main, not the PR).",
+    "This worktree is already at the commit before that PR, and it is scored by that PR'"'"'s own tests once you end. Your shell sees this worktree and nothing else of the machine.",
+    "Do this task here, as you would on main: \(.task)",
+    (if (.accept // []) | length > 0 then "Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
+    "Then end the session."' <<<"$1"; return; }
   jq -r --arg slug "$2" '
     "Canary eval \(.id): a fixed task from \(.pr // "a merged PR"), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, touch no board or sheet row, and read nothing later than that PR (not git log past HEAD, not origin/main, not the PR).",
     "1. Run `fleet-bench canary start \(.id)` here: it puts this worktree at the commit before that PR.",
@@ -4695,10 +4703,12 @@ canary_queue() {
   # public input only) only those projects', and with a malformed one nothing, since fleet-dispatch
   # would refuse every one on every pass. A claude lane, and a harness the map lacks (fleet-dispatch
   # refuses it at start), are held by no list here.
-  local held=''
+  local held='' sbx=''
   if [ -n "$harness" ] && [ "$harness" != claude ] &&
     jq -e --arg h "$harness" '.harnesses[$h] | type == "object"' "$BENCH_HARNESSES" >/dev/null 2>&1; then
     held=1
+    # A harness in its own lane sandbox: fleet-dispatch runs the steps around it by the item's canary id.
+    sbx=$(jq -r --arg h "$harness" '.harnesses[$h].sandbox // empty' "$BENCH_HARNESSES")
     why=$(harness_project_why "$BENCH_HARNESSES" "$harness" "")
     [ $? != 2 ] || { say "canary: $label queues nothing: $why"; return 1; }
   fi
@@ -4712,9 +4722,9 @@ canary_queue() {
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
-      -- "$(canary_brief "$t" "$slug")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
-    [ -z "$model" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" "model=$model" ${effort:+"effort=$effort"} >/dev/null ||
-      { say "canary: queued $slug, but could not set its model"; return 1; }
+      -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
+    [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
+      { say "canary: queued $slug, but could not set its model and canary id"; return 1; }
     added=$((added + 1))
   done <<<"$tasks"
   local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
