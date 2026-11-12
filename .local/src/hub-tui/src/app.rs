@@ -471,8 +471,8 @@ pub struct App {
     /// view in `Scope::Release`).
     pub builds: Option<Builds>,
     pub ci: bv::BuildsView,
-    /// A run's record asked for (`hub tab 'infra ci/<run>'`) before the ledger was read: it opens
-    /// when the read lands, unless the page moved first.
+    /// A run's record asked for (`hub tab 'infra ci/<repo>/<run>'`) before a ledger read has it:
+    /// it opens when one does, unless the page moved first.
     run_want: Option<String>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
@@ -2354,7 +2354,7 @@ impl App {
         }
         match kind {
             Kind::CiRun => {
-                self.open_runs(format!("id:={id}"));
+                self.open_runs(hub_core::builds::run_query(id));
                 self.run_want = Some(id.to_string());
                 self.open_wanted_run();
             }
@@ -2379,9 +2379,12 @@ impl App {
         if self.run_want.is_none() || self.builds.is_none() || self.tab != Tab::Infra {
             return;
         }
-        self.run_want = None;
+        // The runs table narrowed to the run: its first row is its newest attempt, once read.
         self.ci.table.sel = 0;
-        self.open_build_log();
+        if self.selected_build().is_some() {
+            self.run_want = None;
+            self.open_build_log();
+        }
     }
 
     /// Show one section of the tab: Infra's Jobs opens the jobs table and its Runs the runs
@@ -4935,12 +4938,29 @@ mod tests {
             a.ci.log.is_some() && a.ci.detail.is_some(),
             "the read opens it"
         );
-        a.follow(&Link::to(Kind::CiRun, "3"));
+        let page = |id: u64| {
+            let b = bv::tests::fixture();
+            let r = b.rows.iter().find(|r| r.id == id).unwrap();
+            Link::to(Kind::CiRun, format!("{}/{}", r.project(), r.id))
+        };
+        a.follow(&page(3));
         assert_eq!(a.selected_build().map(|r| r.id), Some(3));
         assert!(
             a.ci.log.is_some(),
             "with the ledger on hand it opens at once"
         );
+
+        // A run the ledger does not have yet waits for the read that brings it.
+        let mut a = app(Tab::Home);
+        a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
+        a.follow(&page(1));
+        let mut b = bv::tests::fixture();
+        b.rows.retain(|r| r.id != 1);
+        a.handle(Msg::Builds(Box::new(b)));
+        assert!(a.ci.log.is_none() && a.run_want.is_some());
+        a.handle(Msg::Builds(Box::new(bv::tests::fixture())));
+        assert_eq!(a.selected_build().map(|r| r.id), Some(1));
+        assert!(a.ci.log.is_some() && a.run_want.is_none());
 
         // NEGATIVE CONTROL: a page left before the read does not open the run there.
         let mut a = app(Tab::Home);

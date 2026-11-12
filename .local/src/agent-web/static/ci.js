@@ -6,7 +6,7 @@
 // (hub_core::junit), the newest unless the picker names another. Each is the shared table
 // (table.js) under its own view keys (bq, bs, bsort, bdir; tq, ts, tsort, tdir, trun), so it sits
 // beside another table on its tab. A run's jobs and log, and a suite's tests, are read when the
-// row opens, never before; a run's workflow opens its own page, `#infra/ci/<run>`.
+// row opens, never before; a run's workflow opens its own page, `#infra/ci/<repo>/<run>`.
 
 const RUNS_PRE = "b";
 const RUNS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests release:v1";
@@ -93,11 +93,12 @@ function runsTable(o) {
 // both say Loading at once, so a paint straight after the call shows that.
 async function readRun(o, r) {
   const key = bldKey(r);
-  o.log = { key, text: "Loading..." };
-  o.detail = { key, d: null };
+  // The objects this read fills: a reset of o while it runs leaves them, not the new ones.
+  const log = (o.log = { key, text: "Loading..." });
+  const detail = (o.detail = { key, d: null });
   const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
-  const got = api("/api/builds/detail?" + q).then((d) => { o.detail.d = d; }, (e) => { o.detail.err = e.message; });
-  try { o.log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { o.log.text = e.message; }
+  const got = api("/api/builds/detail?" + q).then((d) => { detail.d = d; }, (e) => { detail.err = e.message; });
+  try { log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { log.text = e.message; }
   await got;
 }
 
@@ -115,16 +116,22 @@ function runDetail(r, o, folds) {
     line("Release", rel) + (o.detail && o.detail.key === bldKey(r) ? runJobs(o.detail, folds) : "") + log + `</div>`;
 }
 
-// `#infra/ci/<run>` (hub_core::links Kind::CiRun, which the hub opens too): one run's record, found
-// by its id through the runs read (`id:=`), its newest attempt with its jobs and log. infra.js
+// `#infra/ci/<repo>/<run>` (hub_core::links Kind::CiRun, which the hub opens too): one run's record,
+// found through the runs read (runQuery), its newest attempt with its jobs and log. infra.js
 // draws it in place of CI's sections while the URL names it.
 const runFresh = (id) => ({ id, data: null, run: null, err: null, log: null, detail: null });
 const runst = runFresh("");
 const ciRunId = () => pageId("infra", "ci");
+// The runs query a run's page names, as hub_core::builds::run_query: `<repo>/<id>` is that repo's
+// run (a Forgejo run id is an index within its repo), a bare id that id in any repo.
+const runQuery = (page) => {
+  const at = page.lastIndexOf("/");
+  return at < 0 ? `id:=${page}` : `repo:=${page.slice(0, at)} id:=${page.slice(at + 1)}`;
+};
 const refreshRunPage = coalesce(async () => {
   const id = ciRunId();
   if (!id) return;
-  try { runst.data = await api("/api/builds?" + new URLSearchParams({ [RUNS_PRE + "q"]: `id:=${id}` })); runst.err = null; } catch (e) { runst.err = e.message; }
+  try { runst.data = await api("/api/builds?" + new URLSearchParams({ [RUNS_PRE + "q"]: runQuery(id) })); runst.err = null; } catch (e) { runst.err = e.message; }
   if (ciRunId() !== id) return;
   // The ledger's own order (hub_core::builds, live then newest) puts the newest attempt first, the row the hub opens too.
   const run = runst.data?.rows?.[0];

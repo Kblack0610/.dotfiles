@@ -1029,18 +1029,12 @@ impl crate::table::Row for QueueRow<'_> {
         }
     }
 
-    /// The project opens its page, the PR its page on the forge (the first of `Item::links`).
+    /// The project opens its page (queue.js draws the PR cell from the item's own link).
     fn link(&self, col: &str) -> Option<Link> {
         match col {
             "project" => Some(self.item.project.trim())
                 .filter(|p| !p.is_empty())
                 .map(|p| Link::to(Kind::Project, p)),
-            "pr" => self
-                .item
-                .pr_refs()
-                .into_iter()
-                .find_map(|p| pr_link_of(p)?.1)
-                .map(Link::Url),
             _ => None,
         }
     }
@@ -1531,10 +1525,10 @@ mod tests {
             Some(Link::to(Kind::Project, "dotfiles"))
         );
         assert_eq!(
-            row.link("pr").map(|l| l.href()),
-            Some("https://github.com/Kblack0610/.dotfiles/pull/1930".into())
+            row.link("pr"),
+            None,
+            "queue.js draws the PR cell from the item"
         );
-        assert_eq!(row.link("title"), None);
         assert!(Item::default().links().is_empty());
     }
 

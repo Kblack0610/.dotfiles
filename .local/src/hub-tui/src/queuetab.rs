@@ -45,8 +45,9 @@ pub struct QueueView {
     pub table: DataTable,
     /// The selected row's detail replaces the table.
     pub detail: bool,
-    /// The detail's marked link (`l`), an index into the item's `links`; Enter opens it.
-    pub link: Option<usize>,
+    /// The detail's marked link (`l`): the item it was marked on and an index into its `links`;
+    /// Enter opens it. A refresh that puts another item under the selection drops the mark.
+    pub link: Option<(String, usize)>,
     pub cands_open: bool,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
@@ -132,6 +133,14 @@ impl QueueView {
         self.shown_cands(c).get(i)
     }
 
+    /// The marked link's index, when it was marked on this item.
+    fn mark(&self, i: &Item) -> Option<usize> {
+        self.link
+            .as_ref()
+            .filter(|(s, _)| *s == i.slug)
+            .map(|(_, at)| *at)
+    }
+
     /// A new read keeps the selection on the same slug when it is still shown, and otherwise
     /// in range of the rows and shown candidates.
     pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate], now: i64) {
@@ -189,13 +198,15 @@ impl QueueView {
         let busy = || Some(Err("an action is still running".to_string()));
         let item = rows.get(self.table.sel).map(|r| r.item);
         let links = item.filter(|_| self.detail).map_or(vec![], Item::links);
+        let mark = item.and_then(|i| self.mark(i));
         match k.code {
             KeyCode::Char('l') if !links.is_empty() => {
-                self.link = Some(self.link.map_or(0, |at| (at + 1) % links.len()));
+                let at = mark.map_or(0, |at| (at + 1) % links.len());
+                self.link = item.map(|i| (i.slug.clone(), at));
             }
-            KeyCode::Enter if self.link.is_some_and(|at| at < links.len()) => {
-                let at = self.link.take().unwrap_or_default();
-                return Ask::Follow(links[at].link.clone());
+            KeyCode::Enter if mark.is_some_and(|at| at < links.len()) => {
+                self.link = None;
+                return Ask::Follow(links[mark.unwrap_or_default()].link.clone());
             }
             KeyCode::Enter if item.is_some() => {
                 (self.detail, self.link) = (!self.detail, None);
@@ -507,7 +518,7 @@ pub fn page(
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
-        out.extend(detail(r.item, r.timing, v.link, p, now, w));
+        out.extend(detail(r.item, r.timing, v.mark(r.item), p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
             if all.is_empty() {
@@ -923,6 +934,13 @@ pub(crate) mod tests {
             !v.detail,
             "Enter with nothing marked closes the detail as before"
         );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        press(&mut v, &q, &[], 'l');
+        // A refresh that puts another item under the selection: its mark is not this item's.
+        v.link.as_mut().unwrap().0 = "another-item".into();
+        assert!(!text(&q, &v, 160).contains("> session"));
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(!v.detail, "Enter follows no other item's mark");
     }
 
     #[test]

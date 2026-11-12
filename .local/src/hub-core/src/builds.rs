@@ -266,7 +266,10 @@ impl Row for Run {
     /// The workflow opens the run's record; the repo its project.
     fn link(&self, col: &str) -> Option<Link> {
         match col {
-            "workflow" => Some(Link::to(Kind::CiRun, self.id.to_string())),
+            "workflow" => Some(Link::to(
+                Kind::CiRun,
+                format!("{}/{}", self.project(), self.id),
+            )),
             "repo" => Some(Link::to(Kind::Project, self.project())),
             _ => None,
         }
@@ -837,6 +840,16 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
 /// The cap on the rows a surface draws at once; the rest are one search or chip away.
 pub const LIST_ROWS: usize = 100;
 
+/// The runs query a run's page names (`links::Kind::CiRun`, `<repo>/<id>`, the repo as its column
+/// reads): its repo and id, as a Forgejo run id is an index within its repo. A bare id is that id
+/// in any repo.
+pub fn run_query(page: &str) -> String {
+    match page.trim().rsplit_once('/') {
+        Some((repo, id)) => format!("repo:={repo} id:={id}"),
+        None => format!("id:={}", page.trim()),
+    }
+}
+
 /// The first `LIST_ROWS` of `rows`, and how many were left out.
 pub fn cap(rows: Vec<&Run>) -> (Vec<&Run>, usize) {
     let more = rows.len().saturating_sub(LIST_ROWS);
@@ -985,10 +998,17 @@ mod tests {
         assert!(ids("pr:=Org/app#70").is_empty());
         let r = &rows[0];
         assert_eq!(r.pr_refs(), ["Org/app#7"]);
+        let page = format!("{}/{}", r.project(), r.id);
         assert_eq!(
             r.link("workflow"),
-            Some(Link::to(Kind::CiRun, r.id.to_string()))
+            Some(Link::to(Kind::CiRun, page.clone()))
         );
+        assert_eq!(ids(&run_query(&page)), [r.id], "its repo and id");
+        assert!(
+            ids(&run_query("Other/app/41")).is_empty(),
+            "another repo's run 41 is not this one"
+        );
+        assert_eq!(run_query(" 4 "), "id:=4");
         assert_eq!(r.link("repo"), Some(Link::to(Kind::Project, r.project())));
         assert_eq!(r.link("branch"), None);
     }
