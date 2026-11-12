@@ -461,8 +461,8 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
-    /// The view over Home's Needs you table.
-    pub hv: DataTable,
+    /// The views over Home's Needs you and Running tables, and which has the keys.
+    pub hv: hometab::HomeView,
     pub sv: SchedulesView,
     pub schedules: Option<Schedules>,
     pub rv: ReleasesView,
@@ -474,6 +474,9 @@ pub struct App {
     /// A run's record asked for (`hub tab 'infra ci/<repo>/<run>'`) before a ledger read has it:
     /// it opens when one does, unless the page moved first.
     run_want: Option<String>,
+    /// A session asked for (a Home Running row, `hub tab 'sessions <id>'`) before the sessions
+    /// feed has it: it opens when the feed does, unless the page moved first.
+    session_want: Option<String>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -644,7 +647,7 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
-            hv: DataTable::default(),
+            hv: hometab::HomeView::default(),
             sv: SchedulesView::default(),
             schedules: None,
             rv: ReleasesView::default(),
@@ -652,6 +655,7 @@ impl App {
             builds: None,
             ci: bv::BuildsView::default(),
             run_want: None,
+            session_want: None,
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -1842,6 +1846,11 @@ impl App {
             }
             Msg::SessionFeed(f) => {
                 self.controls.read_feed(*f);
+                if let Some(id) = self.session_want.take() {
+                    if self.tab == Tab::Sessions {
+                        self.show_session(&id);
+                    }
+                }
                 self.read_page();
             }
             Msg::SessionPage(p) => self.controls.read_page(p.0, p.1),
@@ -2182,13 +2191,40 @@ impl App {
         }
     }
 
-    /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web.
+    /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web:
+    /// now, or once the sessions feed has it.
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
-        if let Some(i) = self.controls.position(target) {
-            self.controls.table.sel = i;
-            self.controls.open = true;
-            self.seek = Some(DETAIL);
+        if !self.show_session(target) {
+            self.session_want = Some(target.to_string());
+        }
+    }
+
+    /// Select the session `target` and open its page, when the feed has it.
+    fn show_session(&mut self, target: &str) -> bool {
+        let Some(i) = self.controls.position(target) else {
+            return false;
+        };
+        self.controls.table.sel = i;
+        self.controls.open = true;
+        self.seek = Some(DETAIL);
+        true
+    }
+
+    /// `hub tab 'queue <word>'`: the Queue table under that word; an item's slug also selects
+    /// the item and opens its record, as `#queue/<slug>` does on the web.
+    fn open_queue(&mut self, q: &str) {
+        self.qv.open(q);
+        let slug = q.trim();
+        let at = self.queue.as_ref().and_then(|queue| {
+            self.qv
+                .shown(queue, jobs::now())
+                .iter()
+                .position(|r| r.item.slug == slug)
+        });
+        if let Some(i) = at {
+            self.qv.table.sel = i;
+            self.qv.detail = true;
         }
     }
 
@@ -2334,7 +2370,7 @@ impl App {
                     self.seek = Some(sec);
                 }
             }
-            (Tab::Queue, Some(q)) => self.qv.open(&q),
+            (Tab::Queue, Some(q)) => self.open_queue(&q),
             (Tab::Sessions, Some(q)) => self.open_session(q.trim()),
             // An inner tab's or a section's name shows that inner tab; any other word is the query.
             (Tab::Releases, Some(q)) => match crate::innertabs::named(releases::tab(), &q) {
@@ -2431,6 +2467,7 @@ impl App {
         self.log_work = false;
         self.seek = None;
         self.run_want = None;
+        self.session_want = None;
         if t == Tab::Log {
             self.read_log_folds();
         }
@@ -2619,8 +2656,7 @@ impl App {
                     flowline::Took::No => {}
                     flowline::Took::Moved => return true,
                     flowline::Took::Open(slug) => {
-                        self.qv.open(&slug);
-                        self.qv.detail = true;
+                        self.open_queue(&slug);
                         self.scroll = 0;
                         return true;
                     }
@@ -2948,9 +2984,11 @@ impl App {
         }
     }
 
-    /// Home's own keys. The page: the Needs you table's keys (/ f s S x, Esc clears its view
-    /// first), F queues a fix for Since last night's next bad area, a flow key opens its chip,
-    /// and Enter opens the proposals table. The proposals table: the table keys, j/k, Enter the
+    /// Home's own keys. The page: Tab and BackTab move the keys between the Needs you and
+    /// Running tables, F queues a fix for Since last night's next bad area and a flow key opens
+    /// its chip, whichever has them. Needs you: its table keys (/ f s S x, Esc clears its view
+    /// first) and Enter opens the proposals table. Running (`home_running_key`): its table keys,
+    /// j/k pick a row and Enter opens it. The proposals table: the table keys, j/k, Enter the
     /// record, a accept, d reject; Esc steps back out.
     /// Home from the reads held, as the page draws it.
     fn home_build(&self) -> hub_core::home::Home {
@@ -2966,7 +3004,7 @@ impl App {
 
     fn home_key(&mut self, k: KeyEvent) -> bool {
         if !self.prv.open {
-            if self.hv.typing.is_none() {
+            if !self.hv.typing() {
                 if k.code == KeyCode::Char('F') {
                     self.queue_fix();
                     return true;
@@ -2977,24 +3015,34 @@ impl App {
                         return true;
                     }
                 }
+                if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
+                    self.hv.on_running = !self.hv.on_running;
+                    self.hv.follow = self.hv.on_running;
+                    return true;
+                }
+            }
+            if self.hv.on_running {
+                return self.home_running_key(k);
+            }
+            if self.hv.needs.typing.is_none() {
                 if k.code == KeyCode::Enter && !open_rows(&self.proposals).is_empty() {
                     self.prv.open = true;
                     return true;
                 }
-                if k.code == KeyCode::Esc && !self.hv.is_default() {
-                    self.hv.clear();
+                if k.code == KeyCode::Esc && !self.hv.needs.is_default() {
+                    self.hv.needs.clear();
                     self.scroll = 0;
                     return true;
                 }
                 // Needs you hides its empty chips, so `f` steps over the ones drawn.
                 if k.code == KeyCode::Char('f') {
                     let needs = self.home_build().needs;
-                    self.hv.view.cycle_shown(&needs);
+                    self.hv.needs.view.cycle_shown(&needs);
                     self.scroll = 0;
                     return true;
                 }
             }
-            return match self.hv.key::<Need>(k.code) {
+            return match self.hv.needs.key::<Need>(k.code) {
                 Took::View => {
                     self.scroll = 0;
                     true
@@ -3021,6 +3069,70 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Home's Running table with the keys: its table keys (`f` steps over the chips drawn), j/k,
+    /// g/G and Home/End pick a row, Enter opens it as the web's row click does (its session's page,
+    /// else its queue item), Esc clears the view and then gives the keys back to Needs you.
+    fn home_running_key(&mut self, k: KeyEvent) -> bool {
+        if k.modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        let h = self.home_build();
+        if self.hv.running.typing.is_none() {
+            let rv = &mut self.hv.running;
+            match k.code {
+                KeyCode::Enter => {
+                    let l = self
+                        .hv
+                        .running_rows(&h)
+                        .get(self.hv.running.sel)
+                        .and_then(|r| DataTable::opens(*r));
+                    if let Some(l) = l {
+                        self.follow(&l);
+                    }
+                    return true;
+                }
+                KeyCode::Esc if rv.is_default() => {
+                    self.hv.on_running = false;
+                    return true;
+                }
+                KeyCode::Esc => rv.clear(),
+                KeyCode::Char('f') => {
+                    rv.view.cycle_shown(&h.running);
+                    rv.sel = 0;
+                }
+                _ => {}
+            }
+            if matches!(k.code, KeyCode::Esc | KeyCode::Char('f')) {
+                self.hv.follow = true;
+                return true;
+            }
+        }
+        match self.hv.running.key::<hub_core::home::Running>(k.code) {
+            Took::View => {
+                self.hv.follow = true;
+                return true;
+            }
+            Took::Typing => return true,
+            Took::No => {}
+        }
+        let n = self.hv.running_rows(&h).len();
+        if matches!(
+            k.code,
+            KeyCode::Char('j' | 'k' | 'g' | 'G')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        ) && self.hv.running.moves(k, n, self.page)
+        {
+            self.hv.follow = true;
+            return true;
+        }
+        false
     }
 
     /// A flow chip's view: the Queue on its state chip, or the Projects tab for the board chip.
@@ -3626,6 +3738,7 @@ impl App {
             // section for n/N.
             let mut sections = sections;
             let pick = match self.tab {
+                Tab::Home => Some((crate::datatable::ROW, &mut self.hv.follow)),
                 Tab::Alerts => Some((alertstab::ROW, &mut self.av.follow)),
                 Tab::Infra => Some((crate::infratables::ROW, &mut self.itab.follow)),
                 _ => None,
@@ -3717,7 +3830,7 @@ impl App {
         let tabs = "0-9";
         let runs = self.infra_open == Some(Opened::Runs);
         match self.tab {
-            Tab::Home if self.hv.typing.is_some() || self.prv.table.typing.is_some() => {
+            Tab::Home if self.hv.typing() || self.prv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Home if self.prv.open => format!(
@@ -3864,8 +3977,11 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Home if self.hv.on_running => format!(
+                "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  u w n e m b flow  F fix  {tabs} pages  r refresh  q quit"
+            ),
             Tab::Home => format!(
-                "/ query  f state  s/S sort  x clear  u w n e m b flow  F fix  {}{tabs}/Tab pages  j/k scroll  r refresh  o Grafana  q quit",
+                "/ query  f state  s/S sort  x clear  Tab Running  u w n e m b flow  F fix  {}{tabs} pages  j/k scroll  r refresh  o Grafana  q quit",
                 if open_rows(&self.proposals).is_empty() { "" } else { "Enter proposals  " }
             ),
         }
@@ -3974,9 +4090,10 @@ impl App {
                 };
                 let graph = i.as_ref().is_some_and(|i| i.grafana.is_some());
                 let flow = (self.pipeline.is_none(), graph);
+                let (l, sel) = hometab::page(&home, &self.hv, &night, self.p, now, w, flow);
                 (
-                    hometab::page(&home, &self.hv, &night, self.p, now, w, flow),
-                    vec![],
+                    l,
+                    sel.map_or(vec![], |at| vec![(crate::datatable::ROW, at)]),
                 )
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
@@ -5985,6 +6102,123 @@ mod tests {
         }
     }
 
+    /// Home with two running items: `fix-menu` in the live session `lab/dotfiles-agent-3:2`
+    /// (`boards()`), `no-session` in none.
+    fn home_running() -> App {
+        let mut a = app(Tab::Home);
+        a.boards = Some(boards());
+        let jsonl = concat!(
+            r#"{"slug":"fix-menu","project":"game","mode":"oneshot","queued":"2026-11-03T10:10:00Z","started":"2026-11-03T10:20:00Z","session":"lab:dotfiles-agent-3","state":"running","task":"Fix the menu"}"#,
+            "\n",
+            r#"{"slug":"no-session","project":"dotfiles","mode":"oneshot","queued":"2026-11-03T10:30:00Z","started":"2026-11-03T10:40:00Z","state":"running","task":"Sweep the logs"}"#,
+            "\n",
+        );
+        a.queue = Some(Queue {
+            items: hub_core::queue::parse(jsonl),
+            stats: None,
+            errors: vec![],
+        });
+        a
+    }
+
+    /// Put Running's selection on `slug` with j/k, as the human would.
+    fn pick_running(a: &mut App, slug: &str) {
+        let at =
+            a.hv.running_rows(&a.home_build())
+                .iter()
+                .position(|r| r.slug == slug)
+                .unwrap_or_else(|| panic!("{slug} is not drawn"));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('g')))));
+        for _ in 0..at {
+            a.handle(key('j'));
+        }
+        assert_eq!(a.hv.running.sel, at);
+    }
+
+    #[test]
+    fn tab_moves_the_keys_to_running_and_enter_opens_its_session_else_its_queue_item() {
+        let tab = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab)));
+        let enter = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter)));
+        let mut a = home_running();
+        let s = screen(&mut a, 120, 60);
+        assert!(
+            s.contains("RUNNING (2)") && s.contains("Sweep the logs"),
+            "{s}"
+        );
+
+        // Negative control: with Needs you holding the keys, Enter opens no running row and j
+        // scrolls the page, not Running's selection.
+        a.handle(key('j'));
+        a.handle(enter());
+        assert_eq!((a.tab, a.hv.running.sel), (Tab::Home, 0));
+        assert!(!a.hints().contains("Running:"), "{}", a.hints());
+
+        // Tab gives Running the keys and stays on Home.
+        a.handle(tab());
+        assert!(a.hv.on_running && a.tab == Tab::Home);
+        assert!(a.hints().starts_with("Running: j/k pick  Enter open"));
+
+        // No session: Enter opens the queue item's record.
+        pick_running(&mut a, "no-session");
+        a.handle(enter());
+        assert_eq!(a.tab, Tab::Queue);
+        let now = jobs::now();
+        let q = a.queue.as_ref().unwrap();
+        let shown = a.qv.shown(q, now);
+        assert!(a.qv.detail, "the item's record is open");
+        assert_eq!(shown[a.qv.table.sel].item.slug, "no-session");
+
+        // A live session: Enter opens its page on Sessions, once the feed has it.
+        a.handle(key('1'));
+        assert!(a.hv.on_running, "Running keeps the keys across pages");
+        pick_running(&mut a, "fix-menu");
+        a.handle(enter());
+        assert_eq!(a.tab, Tab::Sessions);
+        assert_eq!(a.session_want.as_deref(), Some("lab/dotfiles-agent-3:2"));
+        a.controls.set(crate::controls::tests::fixture());
+        a.handle(Msg::SessionFeed(Box::default()));
+        assert!(a.controls.open && a.session_want.is_none());
+        assert_eq!(
+            a.controls.position("lab/dotfiles-agent-3:2"),
+            Some(a.controls.table.sel)
+        );
+
+        // Tab again gives the keys back to Needs you; Esc does too.
+        a.handle(key('1'));
+        a.handle(tab());
+        assert!(!a.hv.on_running);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::BackTab))));
+        assert!(a.hv.on_running && a.tab == Tab::Home);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(!a.hv.on_running);
+    }
+
+    #[test]
+    fn running_has_its_own_view_and_a_session_left_behind_is_not_opened() {
+        let mut a = home_running();
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
+        a.handle(key('f'));
+        assert_eq!(a.hv.running.view.state, "No session");
+        assert!(a.hv.needs.is_default(), "Needs you's view is untouched");
+        let s = screen(&mut a, 120, 60);
+        let running = &s[s
+            .find("RUNNING (1 of 2)")
+            .expect("the view counts what it keeps")..];
+        assert!(
+            running.contains("Sweep the logs") && !running.contains("Fix the menu"),
+            "{s}"
+        );
+        // A session asked for before the feed read is dropped once the page moves on.
+        a.follow(&hub_core::links::Link::to(
+            hub_core::links::Kind::Session,
+            "lab/dotfiles-agent-3:2",
+        ));
+        a.handle(key('1'));
+        a.controls.set(crate::controls::tests::fixture());
+        a.handle(Msg::SessionFeed(Box::default()));
+        assert!(!a.controls.open && a.session_want.is_none());
+    }
+
     #[test]
     fn home_says_nothing_about_proposals_before_the_read_answers() {
         let mut a = app(Tab::Home);
@@ -6029,12 +6263,12 @@ mod tests {
             key(&mut a, KeyCode::Char(c));
         }
         // The flow key u is typed into the query, not taken as a chip.
-        assert_eq!(a.hv.typing.as_deref(), Some("u"));
+        assert_eq!(a.hv.needs.typing.as_deref(), Some("u"));
         key(&mut a, KeyCode::Enter);
-        assert!(!a.prv.open && a.prv.table.is_default() && !a.hv.is_default());
+        assert!(!a.prv.open && a.prv.table.is_default() && !a.hv.needs.is_default());
         // Esc clears the Needs you view first; Enter then opens the proposals table.
         key(&mut a, KeyCode::Esc);
-        assert!(a.hv.is_default() && !a.prv.open);
+        assert!(a.hv.needs.is_default() && !a.prv.open);
         key(&mut a, KeyCode::Enter);
         assert!(a.prv.open);
     }

@@ -6,13 +6,38 @@
 use std::collections::BTreeMap;
 
 use hub_core::briefing::{self, Fix, Night};
-use hub_core::home::{Chip, Home, Level, Need};
+use hub_core::home::{Chip, Home, Level, Need, Running};
 use hub_core::vitals::Vitals;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Table};
 use crate::fmt::{clock, dur, Palette};
+
+/// Home's two tables and which has the keys: Needs you, or Running once Tab moves them there.
+#[derive(Debug, Default)]
+pub struct HomeView {
+    pub needs: DataTable,
+    pub running: DataTable,
+    /// Running has the keys: j/k pick a row and Enter opens it.
+    pub on_running: bool,
+    /// A key moved Running's selection, so the next draw keeps it in view.
+    pub follow: bool,
+}
+
+impl HomeView {
+    /// A query is being typed into either table.
+    pub fn typing(&self) -> bool {
+        self.needs.typing.is_some() || self.running.typing.is_some()
+    }
+
+    /// Running's rows as drawn: its view over them, at most `h.shown`.
+    pub fn running_rows<'a>(&self, h: &'a Home) -> Vec<&'a Running> {
+        let mut rows = self.running.view.apply(&h.running);
+        rows.truncate(h.shown);
+        rows
+    }
+}
 
 pub(crate) fn age(since: Option<i64>, now: i64) -> String {
     since.map_or("-".into(), |t| dur((now - t).max(0) as f64))
@@ -251,16 +276,17 @@ pub const FLOW_KEYS: [(char, &str); 6] = [
     ('b', "board"),
 ];
 
-/// Home as lines. `flow` is (the snapshot has not been read yet, the `o graph` hint applies).
+/// Home as lines, and the line Running's selected row starts on while Running has the keys.
+/// `flow` is (the snapshot has not been read yet, the `o graph` hint applies).
 pub fn page(
     h: &Home,
-    view: &DataTable,
+    view: &HomeView,
     night: &NightView,
     p: Palette,
     now: i64,
     w: usize,
     flow: (bool, bool),
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = vec![];
     for e in &h.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -285,7 +311,7 @@ pub fn page(
     }
     out.push(Line::raw(""));
 
-    out.extend(needs(h, view, p, now, w));
+    out.extend(needs(h, &view.needs, p, now, w));
 
     out.push(Line::raw(""));
     night_section(&mut out, night, p, w);
@@ -358,6 +384,7 @@ pub fn page(
             out.push(clip_line(Line::styled(format!("  {counts}"), p.dim()), w));
         }
     };
+    let mut sel = None;
     if h.running.is_empty() {
         running_head(
             vec![
@@ -367,24 +394,45 @@ pub fn page(
             &mut out,
         );
     } else {
+        let rv = &view.running;
+        let kept = rv.view.apply(&h.running);
+        let all = kept.len();
+        let count = if all == h.running.len() {
+            all.to_string()
+        } else {
+            format!("{all} of {}", h.running.len())
+        };
         running_head(
-            vec![Span::styled(
-                format!("RUNNING ({})", h.running.len()),
-                p.head(),
-            )],
+            vec![Span::styled(format!("RUNNING ({count})"), p.head())],
             &mut out,
         );
+        out.push(clip_line(Line::from(rv.chips::<Running>(&h.running, p)), w));
+        let asked = rv.asked::<Running>(p);
+        if !asked.is_empty() {
+            out.push(clip_line(Line::from(asked), w));
+        }
+        let rows = &kept[..all.min(h.shown)];
+        if rows.is_empty() {
+            out.push(Line::styled(
+                "no running item matches (/ query, f state, x clears)",
+                p.dim(),
+            ));
+            return (out, None);
+        }
         let t = Table {
-            mark: None,
+            // The sort column in `Row::COLUMNS` order, moved past NEXT; SINCE is not drawn.
+            mark: rv.mark::<Running>().and_then(|(i, m)| match i {
+                0..=4 => Some((i, m)),
+                5..=7 => Some((i + 1, m)),
+                _ => None,
+            }),
             // `hub_core::table::Row::COLUMNS` for Running, with NEXT after PHASE (the web prints it
             // under the item) and without SINCE, which the session page carries.
             header: vec![
                 "ITEM", "PROJECT", "ROW", "EPIC", "PHASE", "NEXT", "ETA", "PR", "CI",
             ],
-            rows: h
-                .running
+            rows: rows
                 .iter()
-                .take(h.shown)
                 .map(|r| {
                     let ph = r.phases.as_ref();
                     // Late by `overdue`, the clock the web's Overdue chip counts by.
@@ -424,17 +472,21 @@ pub fn page(
             right: vec![4],
             cap: vec![(1, 22), (3, 12), (5, 40)],
         };
-        out.extend(t.fit_wrapped(w, p.dim()).0);
-        more(
-            &mut out,
-            h.running.len(),
-            h.shown,
-            "more on the Queue tab",
-            p,
-        );
+        let (mut lines, starts) = t.fit_wrapped(w, p.dim());
+        // While Running has the keys its selected row is marked, every line it wraps onto.
+        if view.on_running {
+            let i = rv.sel.min(starts.len() - 1);
+            let end = starts.get(i + 1).copied().unwrap_or(lines.len());
+            for l in &mut lines[starts[i]..end] {
+                l.style = p.sel();
+            }
+            sel = Some(out.len() + starts[i]);
+        }
+        out.extend(lines);
+        more(&mut out, all, h.shown, "more on the Queue tab", p);
     }
 
-    out
+    (out, sel)
 }
 
 /// The HEALTH line, Home's and Infra's: green collapses to one line, and only the chips that
@@ -515,14 +567,14 @@ mod tests {
     }
 
     fn night_text(h: &Home, n: Option<&Night>, fixes: &Fixes) -> String {
-        viewed_at(h, &DataTable::default(), n, fixes, 120)
+        viewed_at(h, &HomeView::default(), n, fixes, 120)
     }
 
-    fn viewed(h: &Home, view: &DataTable, w: usize) -> String {
+    fn viewed(h: &Home, view: &HomeView, w: usize) -> String {
         viewed_at(h, view, None, &Fixes::new(), w)
     }
 
-    fn viewed_at(h: &Home, view: &DataTable, n: Option<&Night>, fixes: &Fixes, w: usize) -> String {
+    fn viewed_at(h: &Home, view: &HomeView, n: Option<&Night>, fixes: &Fixes, w: usize) -> String {
         let v = NightView { night: n, fixes };
         page(
             h,
@@ -533,6 +585,7 @@ mod tests {
             w,
             (false, false),
         )
+        .0
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -586,8 +639,8 @@ mod tests {
     #[test]
     fn a_view_narrows_the_rows_and_says_how_many_of_how_many() {
         let h = three();
-        let mut v = DataTable::default();
-        typed(&mut v, "project:hub");
+        let mut v = HomeView::default();
+        typed(&mut v.needs, "project:hub");
         let out = viewed(&h, &v, 120);
         assert!(out.contains("NEEDS YOU (1 of 3)"), "{out}");
         assert!(
@@ -595,7 +648,7 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("/project:hub"), "{out}");
-        typed(&mut v, "nothing-here");
+        typed(&mut v.needs, "nothing-here");
         let out = viewed(&h, &v, 120);
         assert!(out.contains("no need matches"), "{out}");
     }
@@ -603,9 +656,9 @@ mod tests {
     #[test]
     fn a_sort_is_asked_for_and_marks_its_header() {
         let h = three();
-        let mut v = DataTable::default();
+        let mut v = HomeView::default();
         for _ in 0..4 {
-            v.key::<Need>(KeyCode::Char('s'));
+            v.needs.key::<Need>(KeyCode::Char('s'));
         }
         let out = viewed(&h, &v, 120);
         assert!(out.contains("WAITED v") && !out.contains("RANK v"), "{out}");
@@ -620,9 +673,9 @@ mod tests {
             n.need = need;
             h.needs.push(n);
         }
-        let mut v = DataTable::default();
-        v.key::<Need>(KeyCode::Char('/'));
-        v.key::<Need>(KeyCode::Char('k'));
+        let mut v = HomeView::default();
+        v.needs.key::<Need>(KeyCode::Char('/'));
+        v.needs.key::<Need>(KeyCode::Char('k'));
         let out = viewed(&h, &v, 80);
         assert!(out.lines().all(|l| l.chars().count() <= 80), "{out}");
         assert!(out.contains("/k_"), "{out}");
@@ -670,7 +723,7 @@ mod tests {
 
     #[test]
     fn narrow_session_counts_drop_under_the_running_heading_whole() {
-        let out = viewed(&home(), &DataTable::default(), 60);
+        let out = viewed(&home(), &HomeView::default(), 60);
         assert!(
             out.contains("RUNNING  nothing running from the queue\n  sessions: 3 working, 1 need you, 0 stalled"),
             "{out}"
@@ -691,7 +744,7 @@ mod tests {
             ci: Some("fail".into()),
             ..Default::default()
         }];
-        let out = viewed(&h, &DataTable::default(), 160);
+        let out = viewed(&h, &HomeView::default(), 160);
         assert!(
             out.contains("ROW")
                 && out.contains("EPIC")
@@ -705,15 +758,54 @@ mod tests {
                 .all(|s| out.contains(s)),
             "{out}"
         );
-        let narrow = viewed(&h, &DataTable::default(), 50);
+        let narrow = viewed(&h, &HomeView::default(), 50);
         assert!(
             narrow.contains("fail") && !narrow.contains("ar-1292"),
             "{narrow}"
         );
         // A title wider than the page wraps under ITEM instead of pushing CI off.
         h.running[0].title = "fix(red): ".to_string() + &"word ".repeat(30);
-        let long = viewed(&h, &DataTable::default(), 80);
+        let long = viewed(&h, &HomeView::default(), 80);
         assert!(long.contains("fail") && long.contains("#1871"), "{long}");
+    }
+
+    #[test]
+    fn running_marks_its_selected_row_only_while_it_has_the_keys() {
+        let mut h = home();
+        h.running = ["fix(a): one", "fix(b): two"]
+            .iter()
+            .map(|t| hub_core::home::Running {
+                slug: t.to_string(),
+                title: t.to_string(),
+                project: "dotfiles".into(),
+                ..Default::default()
+            })
+            .collect();
+        let at = |v: &HomeView| {
+            let (lines, sel) = page(
+                &h,
+                v,
+                &NightView {
+                    night: None,
+                    fixes: &Fixes::new(),
+                },
+                Palette { no_color: true },
+                1_000,
+                120,
+                (false, false),
+            );
+            sel.map(|i| (plain(&lines[i]), lines[i].style))
+        };
+        let mut v = HomeView::default();
+        assert_eq!(at(&v), None, "Needs you has the keys: no row is marked");
+        v.on_running = true;
+        v.running.sel = 1;
+        let (line, style) = at(&v).unwrap();
+        assert!(line.contains("fix(b): two"), "{line}");
+        assert_eq!(style, Palette { no_color: true }.sel());
+        // A selection past the rows a re-read left is drawn on the last.
+        v.running.sel = 9;
+        assert!(at(&v).unwrap().0.contains("fix(b): two"));
     }
 
     #[test]

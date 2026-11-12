@@ -20,9 +20,7 @@ const HEADER: [&str; 7] = [
 ];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
-/// The selected firing row's line, a section only so the app can keep it in view; the app takes
-/// it out of the sections `n`/`N` step through.
-pub const ROW: &str = "row";
+pub use crate::datatable::ROW;
 
 #[derive(Default)]
 pub struct AlertsView {
