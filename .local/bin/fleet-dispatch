@@ -2720,7 +2720,7 @@ settle_sessionless() {
 # present trickle has room (runnable), and start_items counts the trickle down. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
-# each one published NOOP, which every dashboard showed green. A human's dispatch hold is NOOP.
+# each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
 run_queue() {
   local items="$1" head why
   head=$(head -n 1 <<<"$items")
@@ -2744,7 +2744,6 @@ run_queue() {
       PROJECT_PASS=1 FLOOR_GATE=$why; start_items "$idle_items" "$2"
       local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
     fi
-    # A human's agent-hold is BLOCKED too, so the Stopped line and the runners row show it.
     settle BLOCKED "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
@@ -3421,8 +3420,6 @@ cmd_stopped() {
   held=$(( $(date +%s) - since ))
   [ "$held" -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || return 0
   why=$(held_short "$why"); clears=$(held_clears "$why")
-  # The human's hold: its own reason says why, which the gate's bare "held" does not.
-  [ "$why" != held ] || why="held: $(agent-hold list 2>/dev/null | awk -F'\t' '$1 == "dispatch" { print $4; exit }')"
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
   head="Dispatch stopped $(prom_dur "$held"): "
   max=$(( 160 - ${#head} - ${#clears} - 3 ))
@@ -4012,8 +4009,10 @@ machine_why() {
 # Every gate is read and every closed one named, joined by "; ": naming the first only hid a load
 # hold behind an account hold for a whole day. A hold stops the reading: nothing else matters then.
 gate() {
-  local load infra github idle rc out why=()
-  agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
+  local load infra github idle rc out hold why=()
+  # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
+  hold=$(agent-hold check dispatch 2>/dev/null) ||
+    { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
   # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
   acct_room; rc=$?
   case $rc in

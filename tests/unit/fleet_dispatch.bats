@@ -1715,6 +1715,9 @@ J
   stub agent-hold 'exit 1'
   run gate
   assert_output 'held (agent-hold dispatch)'
+  stub agent-hold 'echo "held: dispatch since 2026-11-12T09:04:57-0800 by binks: load 72.9; no new sessions"; exit 1'
+  run gate
+  assert_output 'held (agent-hold dispatch) by binks: load 72.9; no new sessions'
 }
 
 @test "red: a red item merges its own PR: no --pr-only, and its brief names fix-red" {
@@ -1948,11 +1951,10 @@ J
 }
 
 @test "stopped: the human's agent-hold reads as held with its own reason and how to release it" {
-  hold_for 120 'queued 1 for the night; held (agent-hold dispatch), queue item x waits'
-  stub agent-hold 'printf "dispatch\t2026-11-12T09:04:57-0800\tdotfiles\thuman: until the next queue is set up\n"'
+  hold_for 120 'queued 1 for the night; held (agent-hold dispatch) by dotfiles: human: until the next queue is set up, queue item x waits'
   run cmd_stopped
   assert_failure
-  assert_output 'Dispatch stopped 2h00m: held: human: until the next queue is set up. Clears with agent-hold release dispatch.'
+  assert_output 'Dispatch stopped 2h00m: held by dotfiles: human: until the next queue is set up. Clears with agent-hold release dispatch.'
 }
 
 @test "stopped: every pass note ahead of the gate is dropped, and a judge budget stop alone clears at its reset" {

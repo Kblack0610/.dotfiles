@@ -494,11 +494,13 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queue item fix-game waits'
   assert_equal "$(outcome)" BLOCKED
-  stub agent-hold 'echo "dispatch held"; exit 1'
+  stub agent-hold 'echo "held: dispatch since 2026-11-12T09:04:57-0800 by dotfiles: until the queue is set up"; exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'held (agent-hold'
+  assert_output --partial 'held (agent-hold dispatch) by dotfiles: until the queue is set up'
   assert_equal "$(outcome)" BLOCKED
-  [ -s "$HOME/.local/state/agentctl/fleet-dispatch/held_since" ] || fail "the human's hold set no held_since"
+  DISPATCH_STARVED_MIN=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --regexp '^Dispatch stopped [0-9]+s: held by dotfiles: until the queue is set up\. Clears with agent-hold release dispatch\.$'
   assert_not_called 'wt new'
 }
 
