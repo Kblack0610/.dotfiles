@@ -209,7 +209,7 @@ function qPrCell(i) {
   if (!i.pr) return `<td class="muted">-</td>`;
   const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label || i.pr)}</a>` : esc(i.pr_label || i.pr);
   const flag = i.state === "done" && i.pr_label && !i.pr_merged ? ` <span class="muted" title="merge not recorded">?</span>` : "";
-  return `<td title="${esc(i.pr)}">${link}${flag}</td>`;
+  return `<td title="${esc(i.pr)}"><div class="clamp">${link}${flag}</div></td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column.
@@ -220,7 +220,7 @@ function qRow(i, n) {
   return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
-    `${qPrCell(i)}<td class="muted">${dash(i.plan_label)}</td><td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>` +
+    `${qPrCell(i)}<td class="muted">${dash(i.plan_label)}</td><td class="wrap"><div class="clamp" title="${esc(i.title || i.slug)}">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</div></td></tr>` +
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
@@ -342,7 +342,7 @@ function qCandRow([c, i], n) {
   const busy = qst.promoting === c.key;
   const blocked = (c.blocked || []).map((b) => `<span class="cchip ${c.prio === 0 ? "bad" : "warn"}">${esc(b)}</span>`).join(" ");
   return `<tr><td class="n">${n + 1}</td><td>${esc(c.project)}</td><td>${esc(c.key)}</td>` +
-    `<td class="wrap">${esc(c.title)}</td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted"><div class="clamp" title="${esc(c.why)}">${esc(c.why)}</div>${blocked ? `<div>${blocked}</div>` : ""}</td>` +
+    `<td class="wrap"><div class="clamp" title="${esc(c.title)}">${esc(c.title)}</div></td><td class="${cls}">${esc(c.start_label)}</td><td class="wrap muted"><div class="clamp" title="${esc(c.why)}">${esc(c.why)}</div>${blocked ? `<div>${blocked}</div>` : ""}</td>` +
     `<td><button class="btn sm" data-promote="${i}"${qst.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td></tr>`;
 }
 

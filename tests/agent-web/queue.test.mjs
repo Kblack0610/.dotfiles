@@ -494,7 +494,7 @@ test("a PR with no recorded merge says so, and a bare older number keeps its wor
 
 test("a row with a PR links it in the PR cell", () => {
   load();
-  assert.match(draw(), /<td title="o\/r#7"><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/, "every ref on hover");
+  assert.match(draw(), /<td title="o\/r#7"><div class="clamp"><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/div><\/td>/, "held to two lines, every ref on hover");
 });
 
 test("an opened item links its session, project, row, PR and the PR's CI runs; the project cell links too", () => {
