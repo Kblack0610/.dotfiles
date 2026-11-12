@@ -1821,6 +1821,37 @@ EOF
   [ "$(field "$(item queued x-first)" priority)" = high ]
 }
 
+# A test that leaves a writer waiting on a held lock: a failed assert must not leave it behind.
+teardown() {
+  exec 7>&-
+  [ -z "${WRITER:-}" ] || kill "$WRITER" 2>/dev/null || true
+}
+
+@test "a waiting writer holds the gate, so overlapping reads cannot starve it" {
+  "$AQ" add --project game "one item" >/dev/null
+  # A read already in holds .lock shared; a writer arrives and waits on it.
+  exec 7> "$AGENT_QUEUE_DIR/.lock"
+  flock -s 7
+  "$AQ" add --project game "two item" >/dev/null 2>&1 &
+  WRITER=$!   # teardown frees it if an assert fails first
+  # No event says another process took a flock, so sample it: one bounded loop, 50ms cadence.
+  local i
+  for i in $(seq 100); do flock -n "$AGENT_QUEUE_DIR/.gate" true || break; sleep 0.05; done
+  run flock -n "$AGENT_QUEUE_DIR/.gate" true
+  assert_failure
+  # A new read queues behind the waiting writer instead of joining the shared hold.
+  run timeout 1 "$AQ" list --json
+  [ "$status" -eq 124 ]
+  flock -u 7; exec 7>&-
+  wait "$WRITER"
+  run "$AQ" list --json
+  assert_success
+  [ "$(jq -sr 'map(.slug) | sort | join(",")' <<<"$output")" = one-item,two-item ]
+  # Once in, a taker drops the gate: nothing holds it after the writer is done.
+  run flock -n "$AGENT_QUEUE_DIR/.gate" true
+  assert_success
+}
+
 @test "a read waits for a writer, so a list never misses an item mid-move" {
   "$AQ" add --project game "one item" >/dev/null
   # Hold the writers' lock; a read must block on it, not read a half-moved store.

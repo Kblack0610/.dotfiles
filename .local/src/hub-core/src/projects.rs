@@ -464,7 +464,7 @@ pub fn build(
                 Some(k) => {
                     let c = &mut cards[k];
                     c.queued += 1;
-                    if i.hold.is_some() {
+                    if i.is_held() {
                         c.held += 1;
                     } else if let Some(m) = i.ready_min(now) {
                         c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));

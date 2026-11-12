@@ -916,7 +916,13 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             let items = self.queue_items();
             std::thread::spawn(move || {
-                let s = hub_core::releases::read(runner.as_ref(), &items);
+                let mut s = hub_core::releases::read(runner.as_ref(), &items);
+                let now = jobs::now();
+                s.with_checks(&hub_core::app_status::badges(
+                    runner.as_ref(),
+                    &s.check_groups(),
+                    now,
+                ));
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
@@ -1565,7 +1571,9 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                let pg = hub_core::page::read(runner.as_ref(), &name, &stage, jobs::now());
+                let now = jobs::now();
+                let mut pg = hub_core::page::read(runner.as_ref(), &name, &stage, now);
+                pg.read_checks(runner.as_ref(), now);
                 let _ = tx.send(Msg::ProjPage(Box::new(pg)));
             });
         }
@@ -1574,7 +1582,10 @@ impl App {
     /// Read the open card's page here and now, for `--once`.
     pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
         if let Some((name, stage)) = self.open_card() {
-            self.proj_page = Some(hub_core::page::read(runner, &name, &stage, jobs::now()));
+            let now = jobs::now();
+            let mut pg = hub_core::page::read(runner, &name, &stage, now);
+            pg.read_checks(runner, now);
+            self.proj_page = Some(pg);
         }
     }
 
@@ -5086,11 +5097,11 @@ mod tests {
             s.contains("Pick a side") && !s.contains("Fix the menu"),
             "{s}"
         );
-        // Any other word is the query, from the table's own view.
+        // Any other word is the query, over every state.
         a.open_query(Some("project:dotfiles".into()));
         assert_eq!(
             (a.qv.table.view.state.as_str(), a.qv.table.view.q.as_str()),
-            ("", "project:dotfiles")
+            ("all", "project:dotfiles")
         );
         let s = screen(&mut a, 140, 30);
         assert!(s.contains("Next") && !s.contains("Pick a side"), "{s}");
@@ -5160,7 +5171,7 @@ mod tests {
         hub_core::queue::Queue {
             items: hub_core::queue::parse(&jsonl.join("\n")),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         }
     }
 
@@ -5993,7 +6004,7 @@ mod tests {
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
             s.contains("QUEUE  2 queued, 1 running")
-                && s.contains("Running 1  On a PR 0  Up next 1  Held 1")
+                && s.contains("Running 1  On a PR 0  Ready 1  Held 1")
                 && s.contains("SESSIONS  - reading"),
             "{s}"
         );
@@ -6007,7 +6018,9 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
+            s.contains(
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+            ),
             "{s}"
         );
         assert!(
@@ -6080,7 +6093,7 @@ mod tests {
         );
         assert!(screen(&mut a, 160, 40).contains("- CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        for _ in 0..5 {
+        for _ in 0..4 {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 160, 40);
@@ -6401,7 +6414,7 @@ mod tests {
         a.queue = Some(Queue {
             items: hub_core::queue::parse(jsonl),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         a
     }
@@ -6532,7 +6545,7 @@ mod tests {
         a.queue = Some(Queue {
             items: vec![],
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         assert!(!a.hints().starts_with("Running:"), "{}", a.hints());
         let before = a.scroll;
