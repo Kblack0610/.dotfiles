@@ -55,6 +55,7 @@ pass "map is valid JSON ($MAP_FILE)"
 # shared, so its references hold on every machine.
 export PROJECT_MAP_FILE="$MAP_FILE"
 KNOWN="$(project_all_keys)"
+LISTED="$(project_keys)"  # the keys this machine lists (project_visible)
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
 
 # --- 1. every `path` has a `repo` ----------------------------------------------------
@@ -313,7 +314,8 @@ fi
 # session with no key facts, plans or lessons digest. One past the budget overflows Claude
 # Code's ~10 KB hook-output cap with the rest of the preflight, which then reaches the model
 # as a 2 KB preview. The budget counts what is injected: anchor-lib.sh swaps the decisions
-# log for a pointer line, so it is left out.
+# log for a pointer line, so it is left out. Only the projects this machine lists need one: a
+# work project's anchor lives on its work machine.
 ANCHOR_MAX=6144 FACTS_MAX=2048
 if [ -d "$AGENT_DIR/anchors" ]; then
   n=0; bad=0
@@ -544,7 +546,7 @@ while IFS=$'\037' read -r name lab type; do
   fi
   [ -n "$profiles" ] || continue
   # A work project this machine does not list has its profile hidden too; its own machine checks it.
-  project_visible "$name" || continue
+  grep -qxF -- "$name" <<<"$LISTED" || continue
   if ! printf '%s\n' "$profiles" | grep -qxF -- "$lab"; then
     fail "trackers.$name has lab \"$lab\", which is not a notes profile ($(printf '%s' "$profiles" | tr '\n' ' '))"
     bad=$((bad + 1))
