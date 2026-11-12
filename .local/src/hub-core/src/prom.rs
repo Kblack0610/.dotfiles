@@ -48,7 +48,9 @@ pub fn flatten(resp: &Value) -> Result<Vec<Series>, String> {
             .unwrap_or("not a Prometheus answer")
             .to_string());
     }
-    let result = resp["data"]["result"].as_array().ok_or("no data.result")?;
+    let result = resp["data"]["result"]
+        .as_array()
+        .ok_or("the answer has no data.result")?;
     Ok(result
         .iter()
         .map(|r| Series {

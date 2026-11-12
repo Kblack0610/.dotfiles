@@ -3,7 +3,8 @@
 # (Prefix y): the list, the selected card beside it (ctrl-/ moves it under, then hides it),
 # and the answer right there: a number then enter sends that option, t types an answer,
 # d then enter drops it, p then enter parks it until its revisit date (or puts a parked one back),
-# g goes to the asking session (reopening it when it has ended). Data and delivery are
+# g goes to the asking session (reopening it when it has ended), P shows or hides the parked
+# asks (hidden when the panel opens: the human does not want them in view). Data and delivery are
 # agent-ask's (list, card, answer, cancel, park, target).
 #
 # Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
@@ -20,7 +21,7 @@
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
 #                     then the live asks oldest first, then the sessions with a dialog open
 #                     (id @<target>), then the dead asks oldest first, then the parked asks
-#                     soonest back first
+#                     soonest back first; in the panel the parked ones only after P
 #   count             how many rows rows prints less the parked ones, one number: the pending asks
 #                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
 #                     never disagree
@@ -42,7 +43,10 @@ FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/flee
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
 # picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
-QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
+# The panel's parked toggle: a file reading "show" once P shows the parked asks. Unset (outside the
+# panel) rows lists them all; the picker makes it empty, so they start hidden.
+QUESTIONS_PARKED="${QUESTIONS_PARKED:-}"
+QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P parked . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
 # A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
 # session is (its registry title): short enough for the list column beside the card (a third of
@@ -164,6 +168,17 @@ cmd_rows() {
       }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
+# parked_shown: true outside the panel, and in it once P showed the parked asks.
+parked_shown() { [ -z "$QUESTIONS_PARKED" ] || [ "$(cat "$QUESTIONS_PARKED" 2>/dev/null)" = show ]; }
+# PARK_ROW: the awk rule that sets park=1 on a parked ask's row, one row per record with its lines
+# joined by \037 (an ask row, not an @ dialog, whose first line's tag is park). parked_filter and
+# rows_count both read it, so the hidden rows and the header's parked count cannot disagree.
+PARK_ROW='{ t = $0; sub(/\037.*/, "", t); gsub(/\033\[[0-9;]*m/, "", t); park = !/^@/ && t ~ /^[^\t]*\tpark / }'
+# parked_filter: the rows on stdin less the parked asks while the panel hides them.
+parked_filter() {
+  if parked_shown; then cat; return 0; fi
+  tr '\n\000' '\037\n' | awk "$PARK_ROW"' park { next } { print }' | tr '\n\037' '\000\n'
+}
 # cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
 # without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows
 # selects; tests/integ/questions_panel.bats holds the two equal). A status bar ticks every 3 s,
@@ -180,8 +195,8 @@ cmd_count() {
 # rows_count: "<asks> <plans> <questions> <prompts> <parked>" in what cmd_rows printed (a row is
 # NUL-ended; a dialog's id starts with @ and its first line names its kind; a parked ask's tag is park).
 rows_count() {
-  tr '\n\000' '\037\n' | awk '{ split($0, L, "\037"); t = L[1]; gsub(/\033\[[0-9;]*m/, "", t) }
-    !/^@/ && t ~ /^[^\t]*\tpark / { k++; next }
+  tr '\n\000' '\037\n' | awk "$PARK_ROW"'{ split($0, L, "\037") }
+    park { k++; next }
     !/^@/ { a++; next } L[1] ~ /plan waiting for approval/ { p++; next }
     L[1] ~ /question waiting for an answer/ { q++; next } { o++ }
     END { print a + 0, p + 0, q + 0, o + 0, k + 0 }'
@@ -258,7 +273,9 @@ waiting() {
     n="${counts[i]}"
     ((n > 0)) && out+="${out:+ . }$n ${kinds[i]}$( ((n == 1)) || echo s)"
   done
-  echo "${out:-no questions} waiting$( ((${5:-0} > 0)) && echo " . $5 parked")"
+  local hint=""
+  [ -n "$QUESTIONS_PARKED" ] && { parked_shown && hint=" (P hides)" || hint=" (P shows)"; }
+  echo "${out:-no questions} waiting$( ((${5:-0} > 0)) && echo " . $5 parked$hint")"
 }
 
 # prompt_card <target>: the card for a dialog agent-panel cannot read (a permission prompt):
@@ -360,6 +377,16 @@ cmd_key() {
       printf 'execute-silent(agent-panel jump %s)+abort' "$(printf '%q' "$to")"
     else footer "${to:-no session to go to}"; fi
     ;;
+  P)
+    if [ "$mode" = typing ]; then printf 'put(P)'; return 0; fi
+    [ -n "$QUESTIONS_PARKED" ] || return 0
+    # A choice armed on a row P is about to hide must not ride a later enter.
+    st_write ""
+    if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
+    printf 'reload(%s rows)+' "$(printf '%q' "$SELF")"
+    header_count
+    if parked_shown; then footer "parked asks shown . P hides them"; else footer "parked asks hidden . P shows them"; fi
+    ;;
   [1-9] | d | p | t)
     if [ "$mode" = typing ]; then printf 'put(%s)' "$k"; return 0; fi
     [ -n "$id" ] || return 0
@@ -443,11 +470,13 @@ cmd_pick() {
   local me rows k binds=()
   me="$(printf '%q' "$SELF")"
   QUESTIONS_STATE="$(mktemp)"
+  QUESTIONS_PARKED="$(mktemp)"
   rows="$(mktemp)"
-  export QUESTIONS_STATE
-  trap 'rm -f "$QUESTIONS_STATE" "$rows"' EXIT
-  cmd_rows >"$rows"
-  for k in 1 2 3 4 5 6 7 8 9 d p t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
+  export QUESTIONS_STATE QUESTIONS_PARKED
+  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_PARKED" "$rows" "$rows.all"' EXIT
+  cmd_rows >"$rows.all"
+  parked_filter <"$rows.all" >"$rows"
+  for k in 1 2 3 4 5 6 7 8 9 d p P t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
 
   # --no-input --disabled: no search box (a handful of rows), which frees the digit keys;
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row
@@ -456,7 +485,7 @@ cmd_pick() {
   fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" <"$rows" \
     --read0 --no-wrap --no-input --disabled --with-nth=2.. \
     --border-label=' questions ' --border-label-pos=3 \
-    --header="$(waiting $(rows_count <"$rows"))" \
+    --header="$(waiting $(rows_count <"$rows.all"))" \
     --footer="$QUESTIONS_KEYS" \
     --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $me card {1}" \
     "${binds[@]}" \
@@ -471,7 +500,7 @@ cmd_pick() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
-rows) cmd_rows ;;
+rows) cmd_rows | parked_filter ;;
 count) cmd_count ;;
 key) shift; cmd_key "$@" ;;
 card) shift; cmd_card "$@" ;;

@@ -267,7 +267,7 @@ const runHead = (h) => secHead("running", "Running", tblCount(h.running_table));
 // its counted states, the labelled counts and where to look first. The title, each count and the
 // arrow open the tab; a look-first row opens its record when it has one.
 const HUE = { ok: "ok", warn: "warn", red: "bad", nodata: "" };
-const LEVEL = { ok: "ok", warn: "needs a look", red: "broken", nodata: "no data" };
+const LEVEL = { ok: "ok", warn: "needs a look", red: "broken", nodata: NO_DATA };
 function cardHtml(c) {
   const to = esc(c.link), hue = HUE[c.level];
   const total = c.bar.reduce((n, s) => n + s.n, 0);
