@@ -1,11 +1,11 @@
 //! The CI runs table: Infra's CI runs (every run of the last 30 days from
 //! `hub_core::builds::read`) and Releases' Release runs (the same rows scoped by
-//! `Builds::releases`), on the shared data table (`datatable`), with the selected run's detail
+//! `Scope::Release`), on the shared data table (`datatable`), with the selected run's detail
 //! (header, jobs and their cost, from `hub_core::builds::detail`) and failed-job log under it,
 //! both read when the row is opened. `t` opens each workflow's usual run time and the
 //! quarantine in the same pane; money is a cloud machine's POWER cell and Costs', not this table's.
 
-use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
+use hub_core::builds::{self, Builds, Run, RunKey, RunTime, Scope};
 use hub_core::releases::Level;
 use hub_core::run_detail::RunDetail;
 use ratatui::text::{Line, Span};
@@ -23,6 +23,8 @@ const HEADER: [&str; 10] = [
 
 #[derive(Default)]
 pub struct BuildsView {
+    /// Which runs the table lists: every run (Infra's CI) or the ones tied to a release.
+    pub scope: Scope,
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
     /// The opened run's log, read in a worker. `Esc` closes it.
@@ -36,9 +38,22 @@ pub struct BuildsView {
 use crate::releases::level;
 
 impl BuildsView {
-    /// The rows the view keeps, in its sort or the ledger's newest-first order, capped as the page is.
+    pub fn of(scope: Scope) -> BuildsView {
+        BuildsView {
+            scope,
+            ..Default::default()
+        }
+    }
+
+    /// The scope's rows the query and chip keep, in its sort or the ledger's newest-first order.
+    fn kept<'a>(&self, b: &'a Builds) -> Vec<&'a Run> {
+        let rows = b.rows_in(self.scope);
+        self.table.view.apply(&rows).into_iter().copied().collect()
+    }
+
+    /// The rows the view keeps, capped as the page is.
     pub fn shown<'a>(&self, b: &'a Builds) -> Vec<&'a Run> {
-        builds::cap(self.table.view.apply(&b.rows)).0
+        builds::cap(self.kept(b)).0
     }
 
     /// The selected run, among the rows shown.
@@ -56,9 +71,10 @@ impl BuildsView {
     /// The section's heading (`title`) with how the runs divide, the view and what stopped a
     /// read.
     pub fn status(&self, title: &str, b: &Builds, p: Palette, now: i64) -> Vec<Line<'static>> {
+        let s = b.scoped(self.scope);
         let mut head = vec![
             Span::styled(format!("{title}  "), p.head()),
-            Span::styled(b.summary(), level(b.counts.level(), p)),
+            Span::styled(s.summary(), level(s.counts.level(), p)),
         ];
         if b.stale(now) {
             head.push(Span::styled(
@@ -66,10 +82,10 @@ impl BuildsView {
                 p.warn(),
             ));
         }
-        let all = self.table.view.apply(&b.rows).len();
-        let mut spans = self.table.status(&b.rows, p);
+        let all = self.kept(b).len();
+        let mut spans = self.table.status(&s.rows, p);
         spans.push(Span::styled(
-            format!("    {} of {}", self.shown(b).len(), b.rows.len()),
+            format!("    {} of {}", all.min(builds::LIST_ROWS), s.rows.len()),
             p.dim(),
         ));
         if all > builds::LIST_ROWS {
@@ -79,15 +95,15 @@ impl BuildsView {
             ));
         }
         let mut out = vec![Line::from(head), Line::from(spans)];
-        for l in &b.quarantine {
+        for l in s.quarantine {
             out.push(Line::from(vec![
                 Span::styled("Quarantine  ", p.head()),
                 Span::styled(l.says(), level(l.level(), p)),
             ]));
         }
-        if !b.errors.is_empty() {
+        if !s.errors.is_empty() {
             out.push(Line::styled(
-                format!("unread: {}", b.errors.join("; ")),
+                format!("unread: {}", s.errors.join("; ")),
                 p.warn(),
             ));
         }
@@ -103,10 +119,37 @@ impl BuildsView {
         sel: bool,
         now: i64,
     ) -> Vec<Line<'static>> {
-        let rows = self.shown(b);
+        self.lines(b, self.shown(b), p, w, sel, now)
+    }
+
+    /// The first `n` shown runs as the table draws them, fitted to those rows only, and how
+    /// many runs the view keeps: a section's preview of the table one key opens.
+    pub fn preview(
+        &self,
+        b: &Builds,
+        n: usize,
+        p: Palette,
+        w: usize,
+        now: i64,
+    ) -> (Vec<Line<'static>>, usize) {
+        let mut rows = self.kept(b);
+        let all = rows.len();
+        rows.truncate(n);
+        (self.lines(b, rows, p, w, false, now), all)
+    }
+
+    fn lines(
+        &self,
+        b: &Builds,
+        rows: Vec<&Run>,
+        p: Palette,
+        w: usize,
+        sel: bool,
+        now: i64,
+    ) -> Vec<Line<'static>> {
         if rows.is_empty() {
             return vec![Line::styled(
-                if b.rows.is_empty() {
+                if !b.rows.iter().any(|r| self.scope.keeps(r)) {
                     "no runs in the ledger"
                 } else {
                     "no run matches (/ query, f state, x clears)"
@@ -508,6 +551,24 @@ pub mod tests {
             "no owner reads a dash: {green}"
         );
         assert!(out.iter().any(|r| r.contains("wait 2m")), "{out:?}");
+    }
+
+    #[test]
+    fn a_preview_draws_only_its_rows_and_counts_every_run_the_view_keeps() {
+        let mut b = fixture();
+        b.rows[0].release = Some(hub_core::release_graph::RunRelease {
+            project: "binks".into(),
+            tag: "v1.2.0".into(),
+        });
+        let p = Palette { no_color: true };
+        let (out, all) = BuildsView::default().preview(&b, 2, p, 100, 1300);
+        assert_eq!((out.len(), all), (3, 3), "a header and 2 of 3 runs");
+        // The release scope keeps the one tied run: a preview of it, and its table.
+        let rel = BuildsView::of(Scope::Release);
+        let (out, all) = rel.preview(&b, 2, p, 100, 1300);
+        assert_eq!((out.len(), all), (2, 1));
+        assert_eq!(rel.shown(&b).len(), 1);
+        assert!(plain(&out[1]).contains("v1.2.0"));
     }
 
     #[test]

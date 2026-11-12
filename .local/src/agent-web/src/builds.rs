@@ -1,12 +1,12 @@
 //! Infra's CI runs section, and Releases' Release runs: CI runs of the last 30 days from hub-core's
 //! `builds`, `scope=release` cutting them to the runs the graph tied to a release
-//! (`Builds::releases`). The list is filtered and sorted here by `hub_core::table`, so the page
+//! (`Scope::Release`). The list is filtered and sorted here by `hub_core::table`, so the page
 //! only draws. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`) because the table
 //! beside it on either tab keeps the plain ones. A new ledger line pushes the `builds` event; a
 //! run's log and its detail (jobs, steps, cost) are read when it is opened, priced with the rates
 //! the Infra tab's answer carries.
 
-use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
+use hub_core::builds::{self, Builds, Paths, Run, RunKey, Scope, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::quarantine::{Lane, OwnerRow};
 use hub_core::queue::Item;
@@ -50,7 +50,7 @@ struct Shown<'a> {
     /// The Quarantine fold: a lane per repo whose base carries a quarantine, and its worst.
     quarantine: Vec<Quarantined<'a>>,
     quarantine_level: Level,
-    /// `Builds::needs_look`: the count on the inner tab the runs are on.
+    /// `Scoped::needs_look`: the count on the inner tab the runs are on.
     look: bool,
     table: Summary,
 }
@@ -95,32 +95,26 @@ fn quarantined(l: &Lane) -> Quarantined<'_> {
 }
 
 fn render(b: &Builds, q: &Query) -> String {
-    let scoped;
-    let b = if q.scope == "release" {
-        scoped = b.releases(now());
-        &scoped
-    } else {
-        b
-    };
+    let s = b.scoped(Scope::named(&q.scope));
     let view = View::new::<Run>(&q.bq, &q.bs, &q.bsort, &q.bdir);
-    let (rows, table) = view.summary(&b.rows);
-    let (rows, more) = builds::cap(rows);
+    let (rows, table) = view.summary(&s.rows);
+    let (rows, more) = builds::cap(rows.into_iter().copied().collect());
     let out = Shown {
         at: b.at,
-        summary: b.summary(),
+        summary: s.summary(),
         stale_after: STALE_SECS,
         rows,
         more,
-        times: &b.times,
-        errors: &b.errors,
-        quarantine: b.quarantine.iter().map(quarantined).collect(),
-        quarantine_level: b
+        times: s.times,
+        errors: s.errors,
+        quarantine: s.quarantine.iter().map(quarantined).collect(),
+        quarantine_level: s
             .quarantine
             .iter()
             .map(Lane::level)
             .min()
             .unwrap_or_default(),
-        look: b.needs_look(),
+        look: s.needs_look(),
         table,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
@@ -244,6 +238,11 @@ mod tests {
             project: "app".into(),
             tag: "v1.0.0".into(),
         });
+        // What the read counts the release scope with.
+        b.released = builds::Counts {
+            total: 1,
+            ..Default::default()
+        };
         let v: serde_json::Value = serde_json::from_str(&render(
             &b,
             &Query {

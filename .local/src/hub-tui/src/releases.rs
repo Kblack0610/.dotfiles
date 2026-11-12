@@ -1,10 +1,10 @@
 //! The Releases page: every app from `hub_core::releases::read` on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), one row each with what is live
 //! where it matters most. The opened app's pane lists its headline env's channels, its other envs
-//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps, Builds,
-//! Tests, `hub_core::layout`), switched with Left/Right.
+//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps and Release
+//! runs, `hub_core::layout`), switched with Left/Right.
 
-use hub_core::builds::Builds;
+use hub_core::builds::{Builds, Scope};
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
@@ -59,7 +59,6 @@ pub struct ChangelogRead {
     pub read: Option<Result<Changelog, String>>,
 }
 
-#[derive(Default)]
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
@@ -69,10 +68,24 @@ pub struct ReleasesView {
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
     pub cl: ChangelogRead,
-    /// The Release runs inner tab's table and pane, over `Builds::releases`.
+    /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
+}
+
+impl Default for ReleasesView {
+    fn default() -> Self {
+        ReleasesView {
+            table: DataTable::default(),
+            open: false,
+            down: 0,
+            others: false,
+            cl: ChangelogRead::default(),
+            runs: crate::builds::BuildsView::of(Scope::Release),
+            inner: "",
+        }
+    }
 }
 
 /// Releases' layout entry: its inner tabs.
@@ -81,13 +94,13 @@ pub fn tab() -> &'static layout::Tab {
 }
 
 /// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
-/// red release run of the last day (`b` is `Builds::releases`).
+/// red release run of the last day (`b` is the builds read, cut here to `Scope::Release`).
 pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     let mut out = vec![];
     if s.needs_look() {
         out.push("table");
     }
-    if b.is_some_and(Builds::needs_look) {
+    if b.is_some_and(|b| b.scoped(Scope::Release).needs_look()) {
         out.push("runs");
     }
     out

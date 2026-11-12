@@ -156,7 +156,7 @@ function releasesHead(d) {
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
 }
-// The Release runs inner tab: the CI runs the release graph tied to a release (Builds::releases,
+// The Release runs inner tab: the CI runs the release graph tied to a release (Scope::Release,
 // scope=release), drawn by ci.js's run table under this tab's own view keys (bq, bs, bsort, bdir).
 // It draws inside this tab's page, so its render is the tab's. Every run is Infra's CI runs.
 const relRuns = runsTable({

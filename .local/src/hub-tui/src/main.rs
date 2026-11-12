@@ -670,7 +670,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
-        let mut b = read_runs(&a, &items, now).releases(now);
+        let mut b = read_runs(&a, &items, now);
         s.errors.extend(queue_error.clone());
         b.errors.extend(queue_error);
         let on = a.rv.on();
