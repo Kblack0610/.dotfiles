@@ -115,8 +115,12 @@ pub struct Job {
     pub finished: Option<i64>,
     /// How long it ran, or for a queued job how long it has waited.
     pub secs: Option<i64>,
-    /// One line of context: branch, host, project, worktree.
+    /// One line of context: branch, project, worktree.
     pub detail: String,
+    /// The machine it ran on, where the source says (a Unity gate's `host` label); blank for the
+    /// rest.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,6 +145,7 @@ impl Job {
             finished: None,
             secs: None,
             detail: String::new(),
+            host: String::new(),
             url: None,
             log: None,
             runs: 1,
@@ -162,10 +167,10 @@ impl State {
 /// The Jobs table on both surfaces: Infra's Jobs section in the hub and on agent-web.
 impl crate::table::Row for Job {
     const COLUMNS: &'static [&'static str] = &[
-        "state", "source", "name", "started", "took", "result", "detail",
+        "state", "source", "name", "started", "took", "result", "host", "detail",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "done", "failed"];
-    const FACETS: &'static [&'static str] = &["state", "source", "result"];
+    const FACETS: &'static [&'static str] = &["state", "source", "result", "host"];
     const LEAD: &'static str = "name";
     const GLANCE: &'static [&'static str] = &["state", "started", "result"];
 
@@ -182,7 +187,19 @@ impl crate::table::Row for Job {
             "result" if self.result.is_empty() => Val::None,
             "result" => text(&self.result),
             "detail" => text(&self.detail),
+            "host" if self.host.is_empty() => Val::None,
+            "host" => text(&self.host),
             _ => Val::None,
+        }
+    }
+
+    /// The name opens every run of the job, the host its machine.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        match col {
+            "name" => Some(Link::to(Kind::Job, self.name.clone())),
+            "host" if !self.host.is_empty() => Some(Link::to(Kind::Machine, self.host.clone())),
+            _ => None,
         }
     }
 
@@ -197,6 +214,7 @@ impl crate::table::Row for Job {
         [
             self.name.as_str(),
             &self.detail,
+            &self.host,
             &self.result,
             self.source.name(),
         ]
@@ -426,6 +444,22 @@ mod tests {
         j.finished = Some(fin);
         j.ok = Some(ok);
         j
+    }
+
+    #[test]
+    fn a_job_opens_its_runs_and_the_machine_it_ran_on() {
+        use crate::links::{Kind, Link};
+        use crate::table::Row;
+        let mut j = done(Source::Unity, "pg-agent-9 EditMode", 100, true);
+        assert_eq!(
+            j.link("name"),
+            Some(Link::to(Kind::Job, "pg-agent-9 EditMode"))
+        );
+        assert_eq!(j.link("host"), None, "no host, no link");
+        j.host = "workstation".into();
+        assert_eq!(j.link("host"), Some(Link::to(Kind::Machine, "workstation")));
+        let v = crate::table::View::new::<Job>("host:=workstation", "", "", "");
+        assert_eq!(v.apply(std::slice::from_ref(&j)).len(), 1);
     }
 
     #[test]

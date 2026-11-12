@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{self, LogRef};
+use crate::links::{Kind, Link};
 use crate::quarantine;
 use crate::releases::Level;
 use crate::run_detail::{self, Rates, RunDetail};
@@ -172,6 +173,14 @@ impl RunTime {
 }
 
 impl Run {
+    /// Each PR the run built as `owner/repo#N`, the id a queue item's PR carries.
+    pub fn pr_refs(&self) -> Vec<String> {
+        self.prs
+            .iter()
+            .map(|n| format!("{}#{n}", self.repo))
+            .collect()
+    }
+
     pub fn key(&self) -> RunKey {
         RunKey {
             forge: self.forge.clone(),
@@ -205,12 +214,13 @@ pub struct RunKey {
 }
 
 impl Row for Run {
-    // `forge`, `event`, `title`, `sha` and `url` filter without a column on the page: the first two
-    // are dropdowns, the third is the open row's heading. `release` is the tag the run deployed or
-    // ran on (`release_graph`), `-` for the rest.
+    // `forge`, `event`, `title`, `id` and `pr` filter without a column on the page: the first two
+    // are dropdowns, the third is the open row's heading, `id:=` is one run's record
+    // (`links::Kind::CiRun`) and `pr:=owner/repo#N` a PR's runs (`Kind::PrRuns`). `release` is the
+    // tag the run deployed or ran on (`release_graph`), `-` for the rest.
     const COLUMNS: &'static [&'static str] = &[
         "started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner",
-        "release", "forge", "event", "title",
+        "release", "forge", "event", "title", "id", "pr",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "red", "green"];
     const FACETS: &'static [&'static str] = &["repo", "forge", "event", "state"];
@@ -236,12 +246,30 @@ impl Row for Run {
             "owner" => text(&self.owner),
             "title" => text(&self.title),
             "release" => self.release.as_ref().map_or(Val::None, |r| text(&r.tag)),
+            "id" => Val::Text(self.id.to_string()),
+            "pr" => text(&self.pr_refs().join(" ")),
             _ => Val::None,
+        }
+    }
+
+    fn vals(&self, col: &str) -> Vec<Val> {
+        match col {
+            "pr" => self.pr_refs().into_iter().map(Val::Text).collect(),
+            _ => vec![self.val(col)],
         }
     }
 
     fn in_state(&self, state: &str) -> bool {
         self.state == state || state == "all"
+    }
+
+    /// The workflow opens the run's record; the repo its project.
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "workflow" => Some(Link::to(Kind::CiRun, self.id.to_string())),
+            "repo" => Some(Link::to(Kind::Project, self.project())),
+            _ => None,
+        }
     }
 
     /// A bare word searches what the row says: the owner, the sha, the PR numbers and the
@@ -924,6 +952,38 @@ mod tests {
         let one = rows.iter().find(|r| r.id == 1).unwrap();
         assert_eq!((one.state.as_str(), one.took), ("red", Some(90)));
         assert_eq!(one.level, Level::Bad);
+    }
+
+    #[test]
+    fn a_run_is_found_by_its_id_and_its_pr_and_opens_its_record() {
+        use crate::table::View;
+        let text = [
+            line(41, "completed", Some("success"), 100, "a"),
+            line(4, "completed", Some("failure"), 50, "b"),
+        ]
+        .join("\n");
+        let (mut rows, _) = parse(&text, NOW);
+        for r in &mut rows {
+            r.prs = vec![7];
+        }
+        let ids = |q: &str| -> Vec<u64> {
+            View::new::<Run>(q, "", "", "")
+                .apply(&rows)
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(ids("id:=4"), [4], "exact: 41 is another run");
+        assert_eq!(ids("pr:=org/app#7").len(), 2, "both built PR 7");
+        assert!(ids("pr:=Org/app#70").is_empty());
+        let r = &rows[0];
+        assert_eq!(r.pr_refs(), ["Org/app#7"]);
+        assert_eq!(
+            r.link("workflow"),
+            Some(Link::to(Kind::CiRun, r.id.to_string()))
+        );
+        assert_eq!(r.link("repo"), Some(Link::to(Kind::Project, r.project())));
+        assert_eq!(r.link("branch"), None);
     }
 
     #[test]
