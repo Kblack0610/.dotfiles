@@ -66,7 +66,27 @@ except ImportError:
 # Keep ISO timestamps as plain strings — the caller passes them to `date -d`,
 # and a round-trip through datetime would silently rewrite the format.
 class Loader(yaml.SafeLoader):
-    pass
+    # A repeated key is valid YAML to PyYAML, which keeps the last value. Three
+    # `signal:` lines in a manifest therefore ran one signal of three with no
+    # error (ar-1825), so a repeated key is refused here, for env and validate.
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue  # `<<:` overrides are the point of a merge, not a repeat
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                repeated = key in seen
+            except TypeError:
+                continue  # unhashable; the base constructor reports it
+            if repeated:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found repeated key {key!r}; only its last value would be kept, "
+                    "so write several values as a YAML list", key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 Loader.yaml_implicit_resolvers = {

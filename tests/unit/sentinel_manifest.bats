@@ -312,3 +312,37 @@ projmap() {
   assert_output --partial 'cannot check project'
   refute_output --partial Traceback
 }
+
+@test "a repeated key is refused by validate and env, naming the key and its line" {
+  # PyYAML keeps the last of a repeated key, so three `signal:` lines ran one
+  # signal of three with no error (ar-1825).
+  base
+  cat >> "$M" <<'EOF2'
+signal: one
+signal: two
+EOF2
+  run "$SM" validate "$M"
+  assert_failure
+  assert_output --partial "repeated key 'signal'"
+  assert_output --partial 'line 12'
+  run "$SM" env "$M"
+  assert_failure
+  assert_output --partial "repeated key 'signal'"
+}
+
+@test "signal as a YAML list keeps every value" {
+  # Control for the refusal above: the list form is the way to write several.
+  base
+  cat >> "$M" <<'EOF2'
+signal:
+  - one
+  - two
+  - three
+EOF2
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" env "$M"
+  assert_success
+  assert_line 'W_signal_count=3'
+  assert_line 'W_signal_2=three'
+}
