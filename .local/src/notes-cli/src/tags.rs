@@ -116,8 +116,9 @@ fn all_hits(p: &Profile) -> Vec<Hit> {
 /// name), so row state like `#high` cannot bury the topics. `only` keeps one kind.
 fn ranked(hits: &[Hit], only: Option<TagKind>) -> Vec<(String, usize)> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    // Created, due and done tags (`#c1026`, `#due1031`, `#d261026`) are dates, one per day: counted here they
-    // would bury every real tag. `notes tags c1026` still finds a day's tasks, `rg '#c10'` a month's.
+    // Created, due and done tags (`#c1026`, `#due1031`, `#d261031`) are dates, one per day:
+    // counted here they would bury every real tag. `notes tags c1026` still finds a day's
+    // tasks, `rg '#c10'` a month's.
     for h in hits {
         let t = h.tag.trim_start_matches('#');
         if !md::is_created_tag(t) && !md::is_due_tag(t) && !md::is_done_tag(t) {

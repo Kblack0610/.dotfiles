@@ -1,6 +1,6 @@
 //! `notes backlog <fun|carryover>` — tidy a standing backlog file and print its
-//! path (for editor integration). Tidying = sweep checked items into `## Done`, stamped `#dYYMMDD`,
-//! and recompute day-counts on remaining active items.
+//! path (for editor integration). Tidying = sweep checked items into `## Done`,
+//! stamped `#dYYMMDD`, and recompute day-counts on remaining active items.
 
 use crate::config::Profile;
 use crate::logging::Logger;
@@ -242,7 +242,8 @@ mod tests {
             ensure_done_stamp("- [x] a #d260501", d("2026-06-05")),
             "- [x] a #d260501"
         );
-        // the tag goes before a trailing marker, where task_text still sees it
+        // the tag goes before a trailing marker, as add_tag places every tag
+        assert_eq!(md::task_text("- [x] finished #d260605"), "finished");
         assert_eq!(
             ensure_done_stamp("- [x] b <!-- id:x-1 -->", d("2026-06-05")),
             "- [x] b #d260605 <!-- id:x-1 -->"
