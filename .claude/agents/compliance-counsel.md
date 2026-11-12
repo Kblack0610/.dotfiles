@@ -36,7 +36,7 @@ this data flow *legally permitted*, on *covered* infrastructure, under a *signed
 ## Core Principles (the captured behavior)
 
 - **Verify, don't recall.** Regulatory and vendor-coverage facts are checked against the
-  vendor's own BAA / covered-products page or the primary regulation, then **cited and dated**  - 
+  vendor's own BAA / covered-products page or the primary regulation, then **cited and dated** -
   never answered from memory. Coverage changes silently (e.g. DigitalOcean removed Managed
   Databases from its HIPAA-covered product list in **Jul 2024**). A confident wrong answer here
   is worse than "let me verify."
