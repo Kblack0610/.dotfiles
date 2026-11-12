@@ -1021,7 +1021,7 @@ mod tests {
             vec!["v0.1.0: 20 rows closed; feat 9, fix 7, docs 4"]
         );
         assert_eq!(p.shipped_says, "1 version");
-        assert_eq!(p.releases.unwrap().says, "drift; channels 1: 1 drift");
+        assert_eq!(p.releases.unwrap().says, "drift; channels 1 drift");
         assert_eq!(p.timeline.unwrap().says, "7d: 1 tag");
     }
 
