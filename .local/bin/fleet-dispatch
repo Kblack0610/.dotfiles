@@ -2725,7 +2725,8 @@ run_queue() {
       PROJECT_PASS=1 FLOOR_GATE=$why; start_items "$idle_items" "$2"
       local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
     fi
-    settle "$(held_outcome "$why")" "$why, queue item $(jq -r .slug <<<"$head") waits"
+    # A human's agent-hold is BLOCKED too, so the Stopped line and the runners row show it.
+    settle BLOCKED "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
   start_items "$items" "$2"
@@ -2791,10 +2792,6 @@ start_items() {
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
 }
-
-# held_outcome <gate reason> -> the outcome of a pass that left runnable work: NOOP when the human
-# held dispatch on purpose (agent-hold), else BLOCKED.
-held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
 TAKEN_JQ='(.waits | not)'
@@ -3380,6 +3377,7 @@ held_short() {
 # held_clears <why> -> what ends the hold, in the words of the gate that holds.
 held_clears() {
   case "$1" in
+    "held"*) echo "Clears with agent-hold release dispatch" ;;
     "no account has room"*) echo "Clears when an account is back under its pace" ;;
     "account usage unreadable"*) echo "Clears when claude-acct reads usage again" ;;
     "finding firing"*) echo "Clears when its finding stops firing" ;;
@@ -3402,6 +3400,8 @@ cmd_stopped() {
   held=$(( $(date +%s) - since ))
   [ "$held" -ge $(( DISPATCH_STARVED_MIN * 60 )) ] || return 0
   why=$(held_short "$why"); clears=$(held_clears "$why")
+  # The human's hold: its own reason says why, which the gate's bare "held" does not.
+  [ "$why" != held ] || why="held: $(agent-hold list 2>/dev/null | awk -F'\t' '$1 == "dispatch" { print $4; exit }')"
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
   head="Dispatch stopped $(prom_dur "$held"): "
   max=$(( 160 - ${#head} - ${#clears} - 3 ))

@@ -487,7 +487,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "run publishes BLOCKED when a gate leaves a queue item waiting, NOOP when the human held dispatch" {
+@test "run publishes BLOCKED when a gate leaves a queue item waiting, the human's dispatch hold included, so its Stopped line and runner row show it" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
@@ -497,7 +497,8 @@ load 'fleet_dispatch/common'
   stub agent-hold 'echo "dispatch held"; exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'held (agent-hold'
-  assert_equal "$(outcome)" NOOP
+  assert_equal "$(outcome)" BLOCKED
+  [ -s "$HOME/.local/state/agentctl/fleet-dispatch/held_since" ] || fail "the human's hold set no held_since"
   assert_not_called 'wt new'
 }
 

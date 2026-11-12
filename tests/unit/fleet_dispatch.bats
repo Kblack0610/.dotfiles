@@ -1947,6 +1947,14 @@ J
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
 }
 
+@test "stopped: the human's agent-hold reads as held with its own reason and how to release it" {
+  hold_for 120 'queued 1 for the night; held (agent-hold dispatch), queue item x waits'
+  stub agent-hold 'printf "dispatch\t2026-11-12T09:04:57-0800\tdotfiles\thuman: until the next queue is set up\n"'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 2h00m: held: human: until the next queue is set up. Clears with agent-hold release dispatch.'
+}
+
 @test "stopped: every pass note ahead of the gate is dropped, and a judge budget stop alone clears at its reset" {
   hold_for 90 'could not judge the new rows (stopped at its budget); tagged 1 for a plan; queued 2 for the night; no account has room; bnb is the closest, 4 points over its weekly pace, queue item x waits'
   run cmd_stopped
