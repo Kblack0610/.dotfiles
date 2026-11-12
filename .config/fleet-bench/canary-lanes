@@ -2,7 +2,9 @@
 # A lane runs only when the source its harness spends from (harnesses.json `source`) has room; a claude
 # lane, when a Claude account has. An effort overrides the harness's own default for that lane's runs;
 # with none, the harness's default. A claude lane names one, which keeps it out of the claude baseline.
+# A harness with a `projects` allowlist replays only those projects' tasks (ocfree: public input only).
 codex sol medium
 codex sol high
 claude haiku max
 claude sonnet medium
+ocfree beam

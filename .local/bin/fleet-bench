@@ -154,6 +154,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+# shellcheck source=../lib/harness-projects.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/harness-projects.sh"   # harness_project_why: canary queue
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # The forecast names each open phase from its plan with the one checklist parser.
@@ -4672,7 +4674,7 @@ canary_slug() {
 }
 
 canary_queue() {
-  local tasks t id slug week lane="" label="" harness="" model="" effort="" added=0 had=0
+  local tasks t id slug week why lane="" label="" harness="" model="" effort="" added=0 had=0 off=0
   local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4689,8 +4691,21 @@ canary_queue() {
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
+  # A harness lane replays only the tasks its harness may run: with a project allowlist (ocfree:
+  # public input only) only those projects', and with a malformed one nothing, since fleet-dispatch
+  # would refuse every one on every pass. A claude lane, and a harness the map lacks (fleet-dispatch
+  # refuses it at start), are held by no list here.
+  local held=''
+  if [ -n "$harness" ] && [ "$harness" != claude ] &&
+    jq -e --arg h "$harness" '.harnesses[$h] | type == "object"' "$BENCH_HARNESSES" >/dev/null 2>&1; then
+    held=1
+    why=$(harness_project_why "$BENCH_HARNESSES" "$harness" "")
+    [ $? != 2 ] || { say "canary: $label queues nothing: $why"; return 1; }
+  fi
   while IFS= read -r t; do
     id=$(jq -r .id <<<"$t")
+    [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$t")" >/dev/null ||
+      { off=$((off + 1)); continue; }
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
@@ -4702,7 +4717,8 @@ canary_queue() {
       { say "canary: queued $slug, but could not set its model"; return 1; }
     added=$((added + 1))
   done <<<"$tasks"
-  say "canary: $added queued, $had already queued for $week${label:+ ($label)}"
+  local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
+  say "canary: $added queued, $had already queued$note for $week${label:+ ($label)}"
 }
 
 # canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model [effort]` a

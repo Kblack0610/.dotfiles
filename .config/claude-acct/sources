@@ -16,6 +16,8 @@
 # the rest). Gateway teams and key priorities: home-config apps/litellm/README.md.
 # `go` is the gateway key fleet-go on the OpenCode Go flat plan (no team, its own 5h and week budgets).
 # `nim` is the gateway key fleet-nim on the NVIDIA NIM free tier (no team, no budget: max_live is its only cap).
+# `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
+# are priced 0). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
 codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
@@ -26,3 +28,4 @@ reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 par
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
 go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
 nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=1 priority=low
+ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=1 priority=low
