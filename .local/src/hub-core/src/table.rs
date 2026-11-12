@@ -69,6 +69,9 @@ pub trait Row {
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
     const GLANCE: &'static [&'static str] = &[];
+    /// What a state word the rows show means, one `(word, meaning)` per state, drawn under the
+    /// chips on both surfaces (`hub_core::vocab`). Empty draws none.
+    const LEGEND: &'static [(&'static str, &'static str)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -108,6 +111,7 @@ impl<T: Row> Row for &T {
     const FACETS: &'static [&'static str] = T::FACETS;
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
+    const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -383,6 +387,15 @@ pub struct Summary {
     /// view (Fleet's folds) sends `links` of what it reshaped to.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<BTreeMap<&'static str, String>>,
+    /// `Row::LEGEND` as one line ([`legend`]); absent when the table has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legend: Option<String>,
+}
+
+/// `ready: starts when ...; held: waits on ...`, the line both surfaces draw under the chips.
+pub fn legend<R: Row>() -> Option<String> {
+    let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 /// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
@@ -630,6 +643,7 @@ impl View {
             columns,
             facets: self.facets(rows),
             links: links(&shown),
+            legend: legend::<R>(),
         };
         (shown, s)
     }

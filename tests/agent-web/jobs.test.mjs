@@ -41,7 +41,7 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 // The shape hub_core::table::Summary serializes to, for `source:ci` sorted by start, oldest first.
 const table = {
   q: "source:ci", state: "", sort: "started", dir: "asc", total: 3, shown: 2,
-  states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "queued", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
+  states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "waiting", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
   columns: [col("state"), col("source"), col("name"), col("started", "asc", ["", "desc"]), col("took"), col("result"), col("detail")],
   facets: [
     { key: "source", on: ["ci"], clear: "", values: [{ value: "agentctl", n: 1, on: false, q: "source:ci source:agentctl" }, { value: "ci", n: 2, on: true, q: "" }] },
@@ -73,6 +73,17 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.equal((h.match(/data-fkey="source"/g) || []).length, 1, "a facet whose column is drawn is not also in the bar");
   assert.match(h, /id="jobs-q" data-tsearch placeholder="[^"]*" value="source:ci"/);
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
+});
+
+test("a job not started reads waiting in STATE, the word its chip and legend use", () => {
+  run("st.tab = 'infra'");
+  const waiting = job("gate", { state: "queued", ok: null, result: "", secs: 90 });
+  Object.assign(jst, { data: { ...data, jobs: [waiting], table: { ...table, legend: "waiting: the job has not started" } }, err: null, hist: null, log: null, all: false });
+  run("jst.render()");
+  const h = box.innerHTML;
+  assert.match(h, /<td>waiting<\/td><td class="muted">ci<\/td>/);
+  assert.doesNotMatch(h, /<td>queued<\/td>/);
+  assert.match(h, /tlegend">waiting: the job has not started</);
 });
 
 test("CI runs are one count line that links to Infra's CI runs", () => {

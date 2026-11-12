@@ -223,7 +223,7 @@ mod tests {
         assert!(t.contains("2 jobs, the oldest 15m"), "{t}");
         assert!(t.contains("MACHINES") && t.contains("workstation"), "{t}");
         assert!(
-            t.contains("QUEUED") && t.contains("Tests") && t.contains("nobody"),
+            t.contains("WAITING") && t.contains("Tests") && t.contains("nobody"),
             "{t}"
         );
         assert!(

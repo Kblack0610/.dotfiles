@@ -635,7 +635,7 @@ mod tests {
         // The flow strip leads, then health and spend; the queue's counts are the strip's.
         assert!(
             out.starts_with(
-                "FLOW  inbox - | board - | queued 2 | running 1 | on a PR 0 | needs you 1"
+                "FLOW  inbox - | board - | up next 1 ready, 1 held | running 1 | on a PR 0 | needs you 1"
             ),
             "{out}"
         );

@@ -57,7 +57,7 @@ const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, done: { runs: 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
   const h = section(ci);
-  assert.match(h, /CI runners <span class="muted">2 hosts, 3 slots, 1 busy, 1 queued \(oldest 15m\)/);
+  assert.match(h, /CI runners <span class="muted">2 hosts, 3 slots, 1 busy, 1 waiting \(oldest 15m\)/);
   assert.match(h, /<div class="panel down">[\s\S]*HD tests \(unity\) needs \[unity-full, hd-library\]: no online runner holds hd-library/);
   assert.match(h, /<td class="n warn">1h 57m!<\/td>/);
   assert.match(h, /<td class="bad">off<\/td>/);

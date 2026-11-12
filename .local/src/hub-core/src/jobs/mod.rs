@@ -158,7 +158,7 @@ impl State {
     pub fn name(self) -> &'static str {
         match self {
             State::Running => "running",
-            State::Queued => "queued",
+            State::Queued => "waiting",
             State::Done => "done",
         }
     }
@@ -169,10 +169,11 @@ impl crate::table::Row for Job {
     const COLUMNS: &'static [&'static str] = &[
         "state", "source", "name", "started", "took", "result", "host", "detail",
     ];
-    const STATES: &'static [&'static str] = &["all", "running", "queued", "done", "failed"];
+    const STATES: &'static [&'static str] = &["all", "running", "waiting", "done", "failed"];
     const FACETS: &'static [&'static str] = &["state", "source", "result", "host"];
     const LEAD: &'static str = "name";
     const GLANCE: &'static [&'static str] = &["state", "started", "result"];
+    const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::JOBS;
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;

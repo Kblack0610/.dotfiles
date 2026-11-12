@@ -1,6 +1,6 @@
 "use strict";
 // The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
-// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), CI (slots, queued, failed and finished runs) and Jobs
+// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), CI (slots, waiting, failed and finished runs) and Jobs
 // (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
 // Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
@@ -214,7 +214,7 @@ const INFRA_T = {
   machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search, or machines:razer-laptop", "No pool reports."),
   runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
-  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing queued."),
+  queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing waiting."),
   finished: infraTable("finished", FIN_COLS, FIN_CELLS, "search, or repo:unity-core-playground", "No finished-run series yet.", { cap: FINISHED_ROWS }),
 };
 
@@ -287,20 +287,20 @@ function doneToday(inst, t1) {
   return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
 }
 
-// The CI runners section: the slots of hub_core::ci, the queued jobs with what each needs and the
+// The CI runners section: the slots of hub_core::ci, the jobs waiting for a runner with what each needs and the
 // hosts that can take it, the day's failures, then the finished runs by workflow and the day's
 // tiles. Each pool's queue and last day are the Pools table on Machines; the runs themselves
 // (hub_core::builds) and the Tests are the sections under it (ci.js).
-const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
+const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} waiting${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
 function ciSection(inst, t1, ci) {
   const failed = failedCount(inst), done = ci.done;
   const fin = `${done.runs} runs, ${pct(passOf(done))} pass, ${done.bad} failed, ${done.can} cancelled`;
   const green = !ci.busy && !ci.queued && !failed;
-  let html = `<h2 class="sec" id="sec-ci">CI runners <span class="muted">${esc(ciHead(ci))}${failed ? `, failed 24h ${failed}` : green ? `; green: nothing queued or failed in 24h` : ""}</span></h2>`;
-  // A queued job no online runner can take: hub_core::ci words the line, once for both surfaces.
+  let html = `<h2 class="sec" id="sec-ci">CI runners <span class="muted">${esc(ciHead(ci))}${failed ? `, failed 24h ${failed}` : green ? `; green: nothing waiting or failed in 24h` : ""}</span></h2>`;
+  // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
   html += INFRA_T.runners.html();
-  html += `<h3 class="sec">Queued</h3>${INFRA_T.queued.html()}`;
+  html += `<h3 class="sec">Waiting for a runner</h3>${INFRA_T.queued.html()}`;
   if (failed) html += `<h3 class="sec">Failed, last 24h</h3>${failedList(inst)}`;
   html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin)}</span></h3>${INFRA_T.finished.html()}`;
   const open = secOpen(ist.open, "ci-more") ? " open" : "";
@@ -515,7 +515,7 @@ function poolChart(h) {
 function poolBody(d) {
   let h = `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
   h += `<h3 class="sec">Machines <span class="muted">with a slot in it</span></h3>${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
-  h += `<h3 class="sec">Waiting <span class="muted">CI jobs queued for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
+  h += `<h3 class="sec">Waiting <span class="muted">CI jobs waiting for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
   const hist = d.history;
   if (hist) h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${poolChart(hist)}`;
   return h;

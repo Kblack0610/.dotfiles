@@ -11,6 +11,7 @@ use hub_core::table::{Dir, Row, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 
+use crate::fit::wrap;
 use crate::fmt::Palette;
 
 /// What a key did to the table.
@@ -189,6 +190,19 @@ impl DataTable {
         out
     }
 
+    /// What the table's state words mean (`Row::LEGEND`, `hub_core::table::legend`), dim lines
+    /// for under its chips, wrapped between words to `w` (0: one line); none for a table without.
+    pub fn legend<R: Row>(p: Palette, w: usize) -> Vec<Line<'static>> {
+        let Some(text) = hub_core::table::legend::<R>() else {
+            return vec![];
+        };
+        let words: Vec<&str> = text.split(' ').collect();
+        wrap(&words, " ", w)
+            .into_iter()
+            .map(|l| Line::styled(l, p.dim()))
+            .collect()
+    }
+
     /// The state chips with their counts, the one in force in the head style.
     pub fn chips<R: Row>(&self, rows: &[R], p: Palette) -> Vec<Span<'static>> {
         let mut out = vec![];
@@ -249,7 +263,7 @@ mod tests {
         assert!(t.view.q.is_empty(), "typing applies on Enter");
         assert_eq!(
             status(&t),
-            "all 2  running 1  queued 0  done 1  failed 1 | /source:unity_"
+            "all 2  running 1  waiting 0  done 1  failed 1 | /source:unity_"
         );
         assert_eq!(t.key::<Job>(KeyCode::Enter), Took::View);
         assert_eq!(t.view.q, "source:unity");

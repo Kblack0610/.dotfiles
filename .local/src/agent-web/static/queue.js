@@ -156,7 +156,9 @@ function qState(i) {
     const s = i.status || "ok";
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;
   }
-  return `<td>${i.state === "queued" ? (i.hold ? "held" : "ready") : esc(i.state)}</td>`;
+  // Not started is ready or held (hub_core::vocab::QUEUE, the table's legend); a held cell names its hold.
+  if (i.state === "queued") return i.hold ? `<td class="warn" title="held: ${esc(i.hold)}">held</td>` : `<td>ready</td>`;
+  return `<td>${esc(i.state)}</td>`;
 }
 
 // The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.

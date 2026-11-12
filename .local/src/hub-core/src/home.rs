@@ -1287,7 +1287,7 @@ mod tests {
         assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
         assert_eq!(h.spend, None, "no Prometheus read, no spend");
         assert_eq!(h.flow.chips[3].text(), "running 1");
-        assert_eq!(h.flow.chips[2].text(), "queued 0");
+        assert_eq!(h.flow.chips[2].text(), "up next 0 ready, 0 held");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
