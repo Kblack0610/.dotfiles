@@ -723,8 +723,16 @@ changelog_section() {
     END { for (i = 1; i <= last; i++) print buf[i] }'
 }
 
+# _cl_list <subjects> -> them as a markdown list, cut at CHANGELOG_LINES with a line saying so.
+_cl_list() {
+  [ -n "$1" ] || return 0
+  sed 's/^/- /' <<<"$1" | head -n "$CHANGELOG_LINES"
+  if [ "$(wc -l <<<"$1")" -gt "$CHANGELOG_LINES" ]; then echo "- ... and older PRs, not shown"; fi
+}
+
 cmd_changelog() {
   local json=0 list=0 proj="" tag="" repo path branch glob all prev ver text="" source="" range ref file root_changelog
+  local own elsewhere n said
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -769,9 +777,19 @@ cmd_changelog() {
   done
   if [ -z "$source" ]; then
     source="merged PRs"
-    text="$(git_tag_changes "$repo" "$prev" "$tag" "$path" "$((CHANGELOG_LINES + 1))" | sed 's/^/- /')"
-    if [ "$(wc -l <<<"$text")" -gt "$CHANGELOG_LINES" ]; then
-      text="$(head -n "$CHANGELOG_LINES" <<<"$text")"$'\n'"- ... and older PRs, not shown"
+    # Whole, not cut: a PR of its own past the cut must not list again as one elsewhere.
+    own="$(git_tag_changes "$repo" "$prev" "$tag" "$path" 100000)"
+    text="$(_cl_list "$own")"
+    # A product in a monorepo ships what the whole repo merged (its engine, packages, CI), so the
+    # PRs that touch nothing under its folder list too, counted, never dropped unsaid.
+    if [ "$_PTS_SCOPED" = 1 ] && [ -n "$path" ]; then
+      elsewhere="$(git_tag_changes "$repo" "$prev" "$tag" "" 100000 | grep -Fxvf <(printf '%s\n' "$own") || true)"
+      if [ -n "$elsewhere" ]; then
+        n="$(wc -l <<<"$elsewhere")"
+        said="$n merged PR$([ "$n" = 1 ] || echo s) elsewhere in the repo, touching nothing under $path:"
+        if [ -n "$text" ]; then text="$text"$'\n\n'"$said"; else text="No merged PR touches $path. $said"; fi
+        text="$text"$'\n\n'"$(_cl_list "$elsewhere")"
+      fi
     fi
   fi
   range="${prev:+$prev..}$tag"
