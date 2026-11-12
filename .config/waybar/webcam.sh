@@ -30,12 +30,12 @@ shown=0 last='' watcher='' pending=0
 
 # holders: one "comm (pid)" line per process with a video node open. A process that exits between
 # the fd walk and its comm read is gone, so it holds nothing: naming it would keep the pill up with
-# no later event to clear it (a CI red on 594b9f75 showed "Webcam in use by: (pid)").
+# no later event to clear it.
 holders() {
   local pid comm
   find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -lname "$dev_dir/video*" -printf '%h\n' 2>/dev/null \
     | cut -d/ -f3 | sort -un | while read -r pid; do
-      comm=$(cat "/proc/$pid/comm" 2>/dev/null) || continue
+      { read -r comm < "/proc/$pid/comm"; } 2>/dev/null || continue
       printf '%s (%s)\n' "$comm" "$pid"
     done
 }
