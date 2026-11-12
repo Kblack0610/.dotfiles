@@ -326,13 +326,14 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
-// hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
-// the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"},"releases":{"apps":"apps"}};
+// hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
+// `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
+// assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one

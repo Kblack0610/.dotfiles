@@ -134,21 +134,22 @@ const runner = (i) => ({ labels: { name: `runner-${i}`, host: pick(["asus-laptop
 const infra = {
   ok: true, at: NOW, grafana: home.grafana, down: [],
   instant: { cc: [{ labels: { __name__: "cc:overall_status" }, value: 0 }, { labels: { __name__: "cc:asks_open" }, value: 2 },
-    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], finished: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_cores: [], withheld: [] },
-  // agent-web's infra.rs sends the CI board less its lists, and each list as its table's view.
-  ci: { hosts: 3, slots: 6, busy: 2, queued: 0, oldest: 0, done: { runs: 20, ok: 18, bad: 1, can: 1 }, red: [] },
-  tables: Object.fromEntries(Object.entries({
-    machines: ["machine", "where", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "pools", "running", "governor", "power", "up"],
-    pools: ["pool", "slots", "busy", "withheld", "waiting", "oldest", "done", "pass", "machines"],
-    runners: ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"],
-    queued: ["job", "pool", "ref", "n", "wait", "needs", "can"],
-    finished: ["repo", "workflow", "main", "branches", "runs", "failed", "cancelled"],
-  }).map(([name, cols]) => [name, { table: table(0, cols), rows: [] }])),
+    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_cores: [], withheld: [] },
 };
 const jobs = {
   table: table(7, ["state", "source", "name", "started", "took", "result", "host", "detail"], ["all", "running", "queued", "done", "failed"], { source: ["forgejo", "github", "local"], result: ["ok", "failed"] }),
   jobs: rows(7, (i) => ({ state: pick(["running", "done", "failed"], i), source: pick(["forgejo", "github", "local"], i), name: `Tests (EditMode) ${SLUGS[i]}`, started: ago(10 + i * 11), finished: i % 3 ? ago(i * 3) : null, secs: 240 + i * 90, result: pick(["", "ok", "failed"], i), ok: i % 3 === 1, host: pick(["workstation", "asus-laptop", "mac-mini"], i), runs: 1, next: null, url: "https://github.com/Kblack0610/.dotfiles/actions/runs/1", log: null, detail: TEXT[i] })),
   window_secs: 86400, at: NOW, ci: { level: "ok", says: "CI green" }, errors: [],
+};
+// Runners: hub_core::ci's head and its tables, each under its view as infra.rs renders them.
+const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
+infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
+infra.tables = {
+  machines: { rows: [], table: table(0, ["machine", "where", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "pools", "running", "governor", "power", "up"]) },
+  pools: { rows: [], table: table(0, ["pool", "slots", "busy", "withheld", "waiting", "oldest", "done", "pass", "machines"]) },
+  runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
+  queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
+  local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },
 };
 
 // Log: the day, and the actions table from hub_core::actions.
@@ -281,6 +282,25 @@ const builds = {
   table: table(6, ["started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "release", "forge", "event", "title", "id", "pr"], ["all", "running", "queued", "red", "green"], { repo: REPOS.slice(0, 2), forge: ["github"], event: ["push", "pull_request"], state: ["green", "red"] }),
   rows: rows(6, (i) => ({ forge: "github", repo: pick(REPOS, i), id: 9000 + i, attempt: 1, started: ago(20 + i * 30), state: pick(["running", "green", "red"], i), level: pick(["warn", "ok", "bad"], i), workflow: "ci", branch: `feat/${SLUGS[i]}`, took: 300 + i * 60, usual: { median: 280 + i * 30, p90: 520 + i * 40 }, eta: pick([NOW + 240, null, null], i), owner: "agent", release: i === 1 ? { project: PROJECTS[1], tag: "v1.1.0" } : null, event: pick(["push", "pull_request"], i), title: TEXT[i], url: "https://github.com/Kblack0610/.dotfiles/actions/runs/1", prs: [] })),
   more: 0, summary: "6 builds, 1 red", at: NOW, stale_after: 3600, errors: [],
+  counts: { total: 6, running: 2, queued: 0, red: 2, recent_red: 2 }, look: true,
+};
+// Pipelines: hub_core::pipelines rows, one per workflow of each repo.
+const PIPE_STATE = ["red", "amber", "ok", "off"];
+const pipeline = (i) => ({ state: pick(PIPE_STATE, i), why: `${pick(["last run on main failed", "late for its 02:00 start", "last run on main passed", "held from the night"], i)} 11-11 22:04`, forge: "github", repo: pick(REPOS, i), project: pick(PROJECTS, i), pipeline: pick(["Tests (all)", "Multi (all)", "Checks", "Vuln scan", "Nightly build", "Release"], i), file: `.github/workflows/${pick(["test", "multi", "checks", "vuln-scan", "nightly", "release"], i)}.yml`, trigger: pick(["dispatch, cron", "pr, push", "cron"], i), nightly: pick(["on", "held", ""], i), schedule: pick(["02:00 daily", "09:00 Mon", ""], i), next: i % 3 === 2 ? null : NOW + 3600 * (i + 1), runner: i % 3 === 0 ? "playground-night" : null, last: ago(60 + i * 200), last_id: 42000 + i, last_result: pick(["failure", "success"], i), pass: 40 + i * 10, runs: 12 + i, usual: 1500 + i * 60, p90: 2400 + i * 60, running: i % 2 });
+const pipelines = {
+  at: NOW, summary: "6 pipelines in 5 repos, 2 red, 1 held from the night", red: 2, errors: [],
+  rows: rows(6, pipeline),
+  table: { ...table(6, ["state", "repo", "pipeline", "file", "trigger", "nightly", "schedule", "next", "last", "pass", "runs", "usual", "p90", "running"], ["all", "red", "amber", "ok", "off"], { repo: PROJECTS.slice(0, 5), trigger: ["dispatch", "cron", "pr"], nightly: ["on", "held"] }), links: [] },
+};
+// Tests: hub_core::junit's suites of the picked run of one repo's test workflow, and the quarantine.
+const testRun = (id, o = {}) => ({ repo: "studio/game-core-playground", id, attempt: 1, branch: "main", sha: "abc1234", title: TEXT[4], state: "red", level: "bad", started: ago(90), prs: [], url: "https://github.com/studio/game-core-playground/actions/runs/1", ...o });
+const suite = (i) => ({ tier: pick(["EditMode", "PlayMode"], i), suite: `Game.Core.${pick(["Lobby", "HostMigration", "Inventory", "Yard"], i)}Tests`, tests: 40 + i, passed: 38 + i - (i % 2), failed: i % 2, quarantined: 0, skipped: 1, time: 60 + i * 12.5, state: i % 2 ? "failed" : "passed", level: i % 2 ? "bad" : "ok" });
+const tests = {
+  at: NOW, stale_after: 1800, repos: ["studio/game-core-playground", "Kblack0610/.dotfiles"], repo: "studio/game-core-playground",
+  runs: [testRun(43001), testRun(43000, { state: "green", level: "ok", branch: "feat/yard" })], run: testRun(43001),
+  summary: "main abc1234: 166 tests in 4 suites: 2 failed, 4 skipped, 160 passed", totals: { suites: 4, tests: 166, passed: 160, failed: 2, skipped: 4, failed_suites: 2, time: 315 },
+  rows: rows(4, suite), more: 0, fold: null, note: null, errors: [],
+  table: table(4, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], { tier: ["EditMode", "PlayMode"] }),
 };
 
 export const FIXTURES = {
@@ -292,4 +312,5 @@ export const FIXTURES = {
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
   "/api/fleet": fleet, "/api/schedules": schedules, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
+  "/api/pipelines": pipelines, "/api/tests": tests,
 };

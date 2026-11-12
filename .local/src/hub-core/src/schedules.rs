@@ -278,14 +278,21 @@ fn fits(field: &str, v: u32, first: u32) -> bool {
     })
 }
 
-/// A UTC cron's next start after `at`, by walking its minutes.
-fn cron_next(cron: &str, at: i64) -> Option<i64> {
+/// A UTC cron's starts walking minute by minute from `at` (exclusive) in the direction `step`
+/// (60 forward, -60 back), up to `NEXT_MINUTES` of them: the one matcher `cron_next` and
+/// `cron_prev` share.
+fn cron_walk(cron: &str, at: i64, step: i64) -> Option<i64> {
     let f: Vec<&str> = cron.split_whitespace().collect();
     let [m, h, dom, mon, dow] = f[..] else {
         return None;
     };
-    let start = at - at.rem_euclid(60) + 60;
-    (0..NEXT_MINUTES).map(|i| start + i * 60).find(|&t| {
+    let floor = at - at.rem_euclid(60);
+    let start = match (step > 0, floor < at) {
+        (true, _) => floor + 60,
+        (false, true) => floor,
+        (false, false) => floor - 60,
+    };
+    (0..NEXT_MINUTES).map(|i| start + i * step).find(|&t| {
         DateTime::from_timestamp(t, 0).is_some_and(|d| {
             let w = d.weekday().num_days_from_sunday();
             let on_date = fits(dom, d.day(), 1);
@@ -299,6 +306,16 @@ fn cron_next(cron: &str, at: i64) -> Option<i64> {
             fits(m, d.minute(), 0) && fits(h, d.hour(), 0) && fits(mon, d.month(), 1) && on_day
         })
     })
+}
+
+/// A UTC cron's next start after `at`.
+pub fn cron_next(cron: &str, at: i64) -> Option<i64> {
+    cron_walk(cron, at, 60)
+}
+
+/// A UTC cron's last start before `at`: when a run was last due.
+pub fn cron_prev(cron: &str, at: i64) -> Option<i64> {
+    cron_walk(cron, at, -60)
 }
 
 /// A systemd `OnCalendar` in words: it is already local. Shapes with no short wording stay as
@@ -351,53 +368,83 @@ pub fn calendar_words(spec: &str) -> String {
     }
 }
 
-#[derive(Deserialize, Default)]
+/// `schedules-sync`'s state.json: the one parse of it, which the Schedules rows and
+/// `pipelines` both read.
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
-struct CiState {
-    generated_at: Option<String>,
-    repos: Vec<CiRepo>,
+pub struct CiState {
+    pub generated_at: Option<String>,
+    pub repos: Vec<CiRepo>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
-struct CiRepo {
-    repo: String,
-    error: Option<String>,
-    workflows: Vec<CiWorkflow>,
+pub struct CiRepo {
+    pub repo: String,
+    pub base: String,
+    pub error: Option<String>,
+    /// The scheduled workflows on the base.
+    pub workflows: Vec<CiWorkflow>,
+    /// The other workflow files on the base, path to blob sha.
+    pub unscheduled: BTreeMap<String, String>,
+    /// The repo's night set (`scripts/night.json`); None when it has none.
+    pub night: Option<NightSet>,
 }
 
-#[derive(Deserialize, Default)]
+/// `scripts/night.json` on a repo's base: workflow file name to the run title the nightly starts
+/// (`night`) or holds back (`held`).
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
-struct CiWorkflow {
-    path: String,
-    name: String,
-    crons: Vec<String>,
-    purpose: Option<String>,
-    jobs: Vec<CiJob>,
-    runs: Vec<CiRun>,
+pub struct NightSet {
+    pub night: BTreeMap<String, String>,
+    pub held: BTreeMap<String, String>,
+    pub sha: String,
+    /// Why the file did not read as a night set.
+    pub error: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
-struct CiJob {
-    id: String,
-    name: Option<String>,
-    needs: Vec<String>,
+pub struct CiWorkflow {
+    pub path: String,
+    pub name: String,
+    pub crons: Vec<String>,
+    pub purpose: Option<String>,
+    pub jobs: Vec<CiJob>,
+    pub runs: Vec<CiRun>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default)]
-struct CiRun {
-    url: String,
-    created_at: Option<String>,
-    ended_at: Option<String>,
-    status: String,
-    conclusion: Option<String>,
-    failed_jobs: Vec<String>,
+pub struct CiJob {
+    pub id: String,
+    pub name: Option<String>,
+    pub needs: Vec<String>,
+}
+
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(default)]
+pub struct CiRun {
+    pub url: String,
+    pub created_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub failed_jobs: Vec<String>,
+}
+
+/// state.json's text parsed, or why it did not.
+pub fn ci_state(text: &str) -> Result<CiState, String> {
+    serde_json::from_str(text).map_err(|e| format!("state.json: {e}"))
+}
+
+/// Where `schedules-sync` writes state.json: `$SCHEDULES_STATE`, else under `home`.
+pub fn state_path(home: &str) -> PathBuf {
+    path("SCHEDULES_STATE", home, ".local/state/schedules/state.json")
 }
 
 /// The job graph as its layers: `Plan -> PlayMode -> PlayMode report`.
-fn layers(jobs: &[CiJob]) -> String {
+pub fn layers(jobs: &[CiJob]) -> String {
     let mut depth: HashMap<&str, usize> = HashMap::new();
     // One pass settles at least one more layer, and there are at most as many layers as jobs.
     for _ in 0..jobs.len() {
@@ -427,7 +474,7 @@ type CiRead = (Vec<Schedule>, Option<i64>, Vec<String>);
 /// The GitHub rows, and when the state file was written. A workflow with no cron is not a
 /// schedule; a run still going has no result yet.
 fn ci_rows(text: &str, at: i64, off: i32) -> Result<CiRead, String> {
-    let st: CiState = serde_json::from_str(text).map_err(|e| format!("state.json: {e}"))?;
+    let st = ci_state(text)?;
     let mut rows = vec![];
     let mut errors = vec![];
     for repo in st.repos {
@@ -806,7 +853,7 @@ fn join(
     }
 }
 
-fn local(t: i64, off: i32, fmt: &str) -> String {
+pub(crate) fn local(t: i64, off: i32, fmt: &str) -> String {
     let zone = FixedOffset::east_opt(off).unwrap_or(FixedOffset::east_opt(0).expect("UTC"));
     DateTime::from_timestamp(t, 0)
         .map(|d| d.with_timezone(&zone).format(fmt).to_string())
@@ -921,6 +968,63 @@ fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
     (k8s_rows(&cron, &runs, off), errors)
 }
 
+/// Every timer systemd lists.
+fn list_timers(runner: &dyn Runner) -> Result<Vec<Listed>, String> {
+    runner
+        .run(&["systemctl", "--user", "list-timers", "--all", "-o", "json"].map(String::from))
+        .and_then(|o| serde_json::from_str(&o).map_err(|e| format!("list-timers: {e}")))
+}
+
+/// When an agentctl runner starts, as its Schedules row says it.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Starts {
+    pub name: String,
+    /// Its `OnCalendar` in words.
+    pub schedule: String,
+    pub next: Option<i64>,
+    /// When its timer last fired.
+    pub fired: Option<i64>,
+}
+
+/// The runners `names`' starts, from their confs and systemd's timers alone: the part of `read`
+/// another view needs without its Prometheus, triage and queue reads. A runner that is not
+/// there, or has no schedule, is named in the errors.
+pub fn runner_starts(
+    paths: &fleet::Paths,
+    runner: &dyn Runner,
+    names: &[&str],
+) -> (Vec<Starts>, Vec<String>) {
+    if names.is_empty() {
+        return (vec![], vec![]);
+    }
+    let mut errors = vec![];
+    let listed = noted(list_timers(runner), "timers", &mut errors);
+    let (confs, e) = fleet::read_confs(&paths.agents, &paths.jobs.agentctl);
+    tagged(e, "agentctl", &mut errors);
+    let confs = confs
+        .into_iter()
+        .filter(|c| names.contains(&c.name.as_str()))
+        .collect();
+    let out: Vec<Starts> = agentctl_rows(confs, &[], &listed)
+        .into_iter()
+        .map(|r| Starts {
+            fired: listed
+                .iter()
+                .find(|t| t.activates == r.unit)
+                .and_then(|t| secs(t.last)),
+            name: r.name,
+            schedule: r.schedule,
+            next: r.next,
+        })
+        .collect();
+    for n in names.iter().filter(|n| !out.iter().any(|s| s.name == **n)) {
+        errors.push(format!(
+            "agentctl: {n} is not an enabled runner with a schedule"
+        ));
+    }
+    (out, errors)
+}
+
 /// Every timer systemd lists, the rows of those agentctl does not own, and what went wrong.
 fn read_timers(
     runner: &dyn Runner,
@@ -928,10 +1032,7 @@ fn read_timers(
     home: &str,
 ) -> (Vec<Listed>, Vec<Schedule>, Vec<String>) {
     let mut errors = vec![];
-    let list = runner
-        .run(&["systemctl", "--user", "list-timers", "--all", "-o", "json"].map(String::from))
-        .and_then(|o| serde_json::from_str(&o).map_err(|e| format!("list-timers: {e}")));
-    let listed: Vec<Listed> = noted(list, "timers", &mut errors);
+    let listed: Vec<Listed> = noted(list_timers(runner), "timers", &mut errors);
     let plain: Vec<&Listed> = listed
         .iter()
         .filter(|t| !t.activates.starts_with("agentctl@"))
@@ -983,11 +1084,7 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
         )
     });
 
-    let state = path(
-        "SCHEDULES_STATE",
-        &home,
-        ".local/state/schedules/state.json",
-    );
+    let state = state_path(&home);
     let ci = std::fs::read_to_string(&state)
         .map_err(|e| format!("{}: {e}", state.display()))
         .and_then(|t| ci_rows(&t, at, off));
@@ -1120,6 +1217,20 @@ mod tests {
         assert_eq!(cron_next("bad", AT), None);
         // Sunday is 7 as well as 0.
         assert_eq!(cron_next("15 4 * * 7", AT), Some(AT + 30 * 3600 + 15 * 60));
+    }
+
+    #[test]
+    fn cron_prev_finds_the_last_due_minute_before_now() {
+        // AT is 22:00 UTC on a Friday
+        assert_eq!(cron_prev("0 10 * * *", AT), Some(AT - 12 * 3600));
+        assert_eq!(
+            cron_prev("0 22 * * *", AT),
+            Some(AT - 86400),
+            "now is not before now"
+        );
+        assert_eq!(cron_prev("0 22 * * *", AT + 30), Some(AT));
+        assert_eq!(cron_prev("*/15 * * * *", AT), Some(AT - 15 * 60));
+        assert_eq!(cron_prev("bad", AT), None);
     }
 
     #[test]

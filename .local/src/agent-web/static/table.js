@@ -85,7 +85,8 @@ function tblBar(id, t, hint, chips = true, days = "") {
     (t.legend ? `<div class="muted fold tlegend">${esc(t.legend)}</div>` : "");
 }
 
-// The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
+// The header row. `labels` maps a column key to [text, class, named]; a column it leaves out is not
+// drawn, and a named one is worded with its label on a phone row ("pass 84%").
 // `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
 // on a tab sorts apart from the first by naming its own.
 function tblHead(t, labels, pre = "t") {
@@ -98,10 +99,10 @@ function tblHead(t, labels, pre = "t") {
   const filters = mine.length ? `<tr class="tfilters" data-phone="filters">` +
     cols.map((c) => (facet.has(c.key) ? `<th>${tblFacet(facet.get(c.key), t.q)}</th>` : `<td></td>`)).join("") + "</tr>" : "";
   return "<tr>" + cols.map((c) => {
-    const [label, cls] = labels[c.key];
+    const [label, cls, named] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>" + filters;
 }
 
@@ -124,7 +125,8 @@ function tblPatch(e) {
     return { sort, dir: dir === "asc" ? "asc" : "" };
   }
   if (e.type === "change" && t.dataset.tq != null) return { q: t.value };
-  if (e.type === "change" && t.dataset.twin != null) return { [t.dataset.twin]: t.value };
+  // `data-tclear` names a key the pick makes stale (Tests' run, once another repo is picked).
+  if (e.type === "change" && t.dataset.twin != null) return { [t.dataset.twin]: t.value, ...(t.dataset.tclear ? { [t.dataset.tclear]: "" } : {}) };
   if (e.type !== "click" || !t.closest) return null;
   const clear = t.closest("[data-tqc]");
   if (clear) return { q: clear.dataset.tqc };

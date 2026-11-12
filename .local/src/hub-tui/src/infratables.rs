@@ -1,10 +1,10 @@
-//! Infra's five tables (Machines: machines and pools; CI: runners, queued, finished), drawn from
+//! Infra's five tables (Machines: machines and pools; Runners: runners, queued, local), drawn from
 //! the rows `hub_core` builds once for both surfaces (`hub_core::machines`, `hub_core::ci`) on the
 //! shared data table. Each table keeps its own view; the tables of the inner tab shown take the
 //! table keys (`/ f s S x`) one at a time, and `c` passes them to the next. agent-web draws the
 //! same rows from the same summary.
 
-use hub_core::ci::{Finished, Queued, Slot, Tally};
+use hub_core::ci::{LocalFail, Queued, Slot};
 use hub_core::infra::Infra;
 use hub_core::links::Link;
 use hub_core::machines::{Machine, Pool};
@@ -18,10 +18,7 @@ use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::{clock, dur, pct, Palette};
 
 /// The tables in `hub_core::layout` section order; an index here is a table's view.
-pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "finished"];
-
-/// Finished rows drawn before `+N more`, as on the web.
-const FINISHED_ROWS: usize = 25;
+pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "local"];
 
 /// Each table's view, and which one has the keys.
 #[derive(Debug, Default)]
@@ -37,13 +34,13 @@ impl InfraTables {
     pub fn on(inner: &str) -> &'static [usize] {
         match inner {
             "machines" => &[0, 1],
-            "ci" => &[2, 3, 4],
+            "runners" => &[2, 3, 4],
             _ => &[],
         }
     }
 
-    /// Its rows are picked with j/k and opened with Enter: Machines only, since CI's Enter opens
-    /// its runs table (P5 makes its rows open).
+    /// Its rows are picked with j/k and opened with Enter: Machines only; Runners' rows open
+    /// nothing (a slot's run is on Runs).
     pub fn picks(inner: &str) -> bool {
         inner == "machines"
     }
@@ -103,7 +100,7 @@ impl InfraTables {
                 1 => v.cycle_shown(&r.pools),
                 2 => v.cycle_shown(&r.ci.rows),
                 3 => v.cycle_shown(&r.ci.queue),
-                _ => v.cycle_shown(&r.ci.finished),
+                _ => v.cycle_shown(&r.ci.local),
             }
             t.sel = 0;
             return Took::View;
@@ -113,7 +110,7 @@ impl InfraTables {
             1 => t.key::<Pool>(code),
             2 => t.key::<Slot>(code),
             3 => t.key::<Queued>(code),
-            _ => t.key::<Finished>(code),
+            _ => t.key::<LocalFail>(code),
         }
     }
 
@@ -125,7 +122,7 @@ impl InfraTables {
             1 => v.apply(&infra.pools).len(),
             2 => v.apply(&infra.ci.rows).len(),
             3 => v.apply(&infra.ci.queue).len(),
-            _ => v.apply(&infra.ci.finished).len().min(FINISHED_ROWS),
+            _ => v.apply(&infra.ci.local).len(),
         }
     }
 
@@ -170,7 +167,7 @@ impl InfraTables {
             1 => sel(t, &infra.pools),
             2 => sel(t, &infra.ci.rows),
             3 => sel(t, &infra.ci.queue),
-            _ => sel(t, &infra.ci.finished),
+            _ => sel(t, &infra.ci.local),
         }
     }
 
@@ -201,7 +198,7 @@ impl InfraTables {
             1 => pools(&d, &infra.pools),
             2 => runners(&d, &infra.ci.rows),
             3 => queued(&d, &infra.ci.queue),
-            _ => finished(&d, &infra.ci.finished, &infra.ci.done),
+            _ => local(&d, &infra.ci.local, now),
         }
     }
 }
@@ -528,56 +525,32 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
     )
 }
 
-const FINISHED_HEAD: [&str; 7] = [
-    "REPO",
-    "WORKFLOW",
-    "MAIN",
-    "BRANCHES",
-    "RUNS",
-    "FAILED",
-    "CANCELLED",
-];
+const LOCAL_HEAD: [&str; 6] = ["LAST", "REPO", "BRANCH", "PLATFORM", "RESULT", "FAILED"];
 
-/// The last day of runs per workflow, a red on main first, the first `FINISHED_ROWS` drawn.
-fn finished(d: &Draw, rows: &[Finished], done: &Tally) -> Vec<Line<'static>> {
+/// The local Unity gate runs that failed in the last day, one row per branch and platform, the
+/// newest first (`hub_core::ci::local`). A red CI run is Runs' red chip, not a row here.
+fn local(d: &Draw, rows: &[LocalFail], now: i64) -> Vec<Line<'static>> {
     let p = d.p;
-    let title = if done.runs == 0 {
-        "FINISHED 24H".to_string()
-    } else {
-        format!(
-            "FINISHED 24H  {} runs, {} pass, {} failed, {} cancelled",
-            done.runs,
-            pct(done.pass()),
-            done.bad,
-            done.can
-        )
-    };
     d.table(
-        title,
+        "LOCAL UNITY".to_string(),
         rows,
-        "no finished-run series yet (runner exporter)",
-        Some(FINISHED_ROWS),
+        "no local Unity gate failed in 24h",
+        None,
         |f| {
-            let (main, branch) = (f.main.pass(), f.branch.pass());
             vec![
-                f.repo.clone().into(),
-                f.workflow.clone().into(),
-                cell(pct(main), p.pass(main)),
-                cell(pct(branch), p.dim()),
-                f.all.runs.to_string().into(),
-                if f.all.bad > 0 {
-                    cell(f.all.bad.to_string(), p.bad())
-                } else {
-                    "0".into()
-                },
-                f.all.can.to_string().into(),
+                clock(f.last, now).into(),
+                cell(f.repo.clone(), p.dim()),
+                f.branch.clone().into(),
+                f.platform.clone().into(),
+                cell(f.result.clone(), p.bad()),
+                f.n.to_string().into(),
             ]
         },
         Table {
-            header: FINISHED_HEAD.to_vec(),
-            keep: vec![1, 2, 5, 0, 4, 3, 6],
-            right: vec![2, 3, 4, 5, 6],
-            cap: vec![(0, 28), (1, 36)],
+            header: LOCAL_HEAD.to_vec(),
+            keep: vec![2, 5, 0, 3, 4, 1],
+            right: vec![5],
+            cap: vec![(1, 28), (2, 40)],
             ..Default::default()
         },
     )
@@ -618,13 +591,11 @@ mod tests {
         let p = text(&t, &i, "pools", "machines", 200);
         assert!(p.starts_with("POOLS  all ") && !p.contains("[/ f"), "{p}");
         assert!(p.contains("WAITING") && p.contains("unity"), "{p}");
-        let r = text(&t, &i, "runners", "ci", 200);
+        let r = text(&t, &i, "runners", "runners", 200);
         assert!(r.starts_with("RUNNERS  all ") && r.contains("[/ f"), "{r}");
-        let f = text(&t, &i, "finished", "ci", 200);
+        let f = text(&t, &i, "local", "runners", 200);
         assert!(
-            f.starts_with("FINISHED 24H  171 runs")
-                && f.contains("  all 6")
-                && f.contains("WORKFLOW"),
+            f.starts_with("LOCAL UNITY  all ") && f.contains("PLATFORM") && f.contains("android"),
             "{f}"
         );
     }
@@ -646,8 +617,8 @@ mod tests {
         assert_eq!(t.focus("machines"), Some(1));
         t.cycle("machines");
         assert_eq!(t.focus("machines"), Some(0), "c wraps");
-        // On CI the keys are its own tables'; Esc clears a view, then is the page's.
-        assert_eq!(t.focus("ci"), Some(2));
+        // On Runners the keys are its own tables'; Esc clears a view, then is the page's.
+        assert_eq!(t.focus("runners"), Some(2));
         assert_eq!(t.key(Some(&i), "machines", KeyCode::Esc), Took::View);
         assert!(t.views[0].view.is_default());
         assert_eq!(t.key(Some(&i), "machines", KeyCode::Esc), Took::No);
