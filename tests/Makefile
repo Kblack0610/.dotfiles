@@ -20,6 +20,9 @@ SHELL     := /bin/bash
 HERE      := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 VENDOR    := $(HERE)vendor
 BATS      := $(VENDOR)/bats-core/bin/bats
+# Every host-tier run goes through run-bats.sh, which owns the bats run dir and removes it
+# however the run ends.
+RUN_BATS  := $(HERE)run-bats.sh
 ARTIFACTS := $(HERE)artifacts
 
 # Pinned so a CI run and a laptop run agree.
@@ -103,16 +106,16 @@ FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
 	@$(if $(FAST_PAR),echo "==> unit tier: bats $(FAST_PAR)",echo "==> unit tier: serial (no GNU parallel)")
-	@$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,unit) $(HERE)unit
+	@$(call junit_mk,unit) $(RUN_BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,unit) $(HERE)unit
 
 test-integ: $(BATS)
-	@$(call junit_mk,integ) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,integ) $(HERE)integ
+	@$(call junit_mk,integ) $(RUN_BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,integ) $(HERE)integ
 
 # The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
 # One bats run over every file, in parallel like test-unit and test-integ, so one report names
 # every red.
 test-files: $(BATS)
-	@$(call junit_mk,files) $(BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,files) $(FILES)
+	@$(call junit_mk,files) $(RUN_BATS) $(BATS_FLAGS) $(FAST_PAR) $(call junit,files) $(FILES)
 
 # The local gate: the fast-tier files tests/pick.sh picks for the change from PR_BASE to the
 # working tree (untracked files too), the set the PR's CI gate runs. Why: sessions ran the whole

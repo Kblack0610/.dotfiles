@@ -30,7 +30,7 @@ setup() {
 
 @test "a change the picker cannot judge runs the whole tier, and says why" {
   local c
-  for c in tests/helpers/sandbox.bash tests/shard.sh tests/broad.txt .github/workflows/tests.yml .local/lib/test-pick.sh; do
+  for c in tests/helpers/sandbox.bash tests/run-bats.sh tests/shard.sh tests/broad.txt .github/workflows/tests.yml .local/lib/test-pick.sh; do
     PICK_CHANGED=$c run --separate-stderr "$SUBJECT" unit HEAD
     assert_success
     [ "$output" = "$ALL_UNIT" ]

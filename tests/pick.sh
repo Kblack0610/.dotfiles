@@ -85,7 +85,7 @@ if [ "$tier" = rust ]; then
   exit 0
 fi
 
-harness='^(tests/(helpers|fixtures|vendor)/|tests/(Makefile|shard\.sh|pick\.sh|broad\.txt)$|\.github/workflows/tests\.yml$|\.local/lib/test-pick\.sh$)'
+harness='^(tests/(helpers|fixtures|vendor)/|tests/(Makefile|run-bats\.sh|shard\.sh|pick\.sh|broad\.txt)$|\.github/workflows/tests\.yml$|\.local/lib/test-pick\.sh$)'
 grep -qE "$harness" <<<"$changed" && full "the change touches the test harness"
 
 # shellcheck source=../.local/lib/test-pick.sh
