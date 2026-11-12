@@ -143,7 +143,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'nudge DONE: a f-a'
 }
 
-@test "due nudges a DONE row only on a close-now verdict: a hand-active or worker row is left alone" {
+@test "due nudges a DONE row only on a close-now verdict: a keep or worker row is left alone" {
   doc "[$(row a DONE false false '[]' keep), $(row b DONE false false '[]' now), $(row c DONE true false '[]' keep)]"
   run "$SH" due
   assert_line 'nudge DONE: b f-b'
