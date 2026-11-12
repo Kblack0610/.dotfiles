@@ -375,7 +375,11 @@ impl CostsView {
             &self.q,
             &self.sort,
             dir,
-            (&self.ssort, sdir),
+            hub_core::table::Keys {
+                sort: &self.ssort,
+                dir: sdir,
+                ..Default::default()
+            },
             &pick,
         )
     }
@@ -905,7 +909,7 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
         ];
     }
     // the month and the day halves of the headline on their own lines, so the warning and the key fit 80 columns
-    let (month, day) = h.head.split_once("; ").unwrap_or((&h.head, ""));
+    let (month, day) = (&h.month, &h.last_day);
     let mut head = vec![title];
     if h.stale {
         head.push(Span::styled("STALE: no snapshot for yesterday  ", p.warn()));

@@ -295,6 +295,16 @@ mod tests {
     }
 
     #[test]
+    fn the_candidates_headers_are_hub_cores_columns() {
+        // qCandRow writes its cells in this order, so the map must be COLUMNS, in order.
+        use hub_core::table::Row;
+        assert_eq!(
+            col_keys(include_str!("../static/queue.js"), "const CAND_COLS = {"),
+            hub_core::queue::Candidate::COLUMNS
+        );
+    }
+
+    #[test]
     fn the_releases_headers_are_hub_cores_columns() {
         // Rule 8, less `channel` and `id`: they only filter, an opened app lists its channels.
         use hub_core::table::Row;

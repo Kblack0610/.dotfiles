@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
+use crate::table::{Row, Summary, Val, View};
 
 pub mod runner;
 pub mod who;
@@ -324,10 +325,25 @@ pub struct Judge {
     pub prompt: String,
     /// The last 7 days under any prompt, what a reader asks first.
     pub week: JudgeWeek,
-    /// Every verdict, newest first and under any prompt, as judge-eval lists them.
+    /// Every verdict, newest first and under any prompt, as judge-eval lists them; after
+    /// [`Judge::view`], the ones a surface lists.
     pub verdicts: Vec<AskVerdict>,
     /// One per type and impact level under the current prompt, as judge-eval scores them.
     pub cells: Vec<Cell>,
+    /// The verdicts' table controls, counted over every verdict: set by [`Judge::view`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<Summary>,
+}
+
+impl Judge {
+    /// The verdicts `view` keeps, cut to the first `cap`, with the summary over all of them.
+    pub fn view(&mut self, view: &View, cap: usize) {
+        let all = std::mem::take(&mut self.verdicts);
+        let (mut shown, mut table) = view.summary(&all);
+        crate::table::cap(&mut shown, &mut table, cap);
+        self.verdicts = shown.into_iter().cloned().collect();
+        self.table = Some(table);
+    }
 }
 
 /// judge-eval's numbers for one type at one impact level (self, repo, fleet, critical): what a
@@ -362,7 +378,7 @@ pub struct JudgeWeek {
     pub precision: Option<f64>,
 }
 
-/// The answer judge's filters on its verdict list, the first showing them all.
+/// The answer judge's filters on its verdict list, the first showing them all: its state tiles.
 pub const ASK_FILTERS: [&str; 5] = ["all", "answered", "would answer", "passed", "wrong"];
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -397,6 +413,49 @@ impl AskVerdict {
             "wrong" => self.score == "wrong",
             said => self.said == said,
         }
+    }
+}
+
+impl Row for AskVerdict {
+    const COLUMNS: &'static [&'static str] =
+        &["when", "project", "type", "said", "question", "why", "you"];
+    const STATES: &'static [&'static str] = &ASK_FILTERS;
+    const FACETS: &'static [&'static str] = &[];
+    const LEAD: &'static str = "question";
+    const GLANCE: &'static [&'static str] = &["said", "why", "you"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        ("answered", "the judge answered the ask"),
+        ("would answer", "it would have answered, had it been live"),
+        ("passed", "it left the ask to you"),
+        ("wrong", "your answer was not the judge's"),
+    ];
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("wrong", crate::vocab::Level::Bad)];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| Val::Text(s.to_string());
+        match col {
+            "when" => self.at.map_or(Val::None, |t| Val::Num(t as f64)),
+            "project" => text(&self.project),
+            "type" => text(if self.kind.is_empty() {
+                &self.rule
+            } else {
+                &self.kind
+            }),
+            "said" => text(&self.said),
+            "question" => text(&self.question),
+            "why" => Val::Text(
+                [&self.rule, &self.evidence, &self.reason]
+                    .map(|s| s.as_str())
+                    .join(" "),
+            ),
+            "you" => text(&self.you),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, state: &str) -> bool {
+        self.shown(state)
     }
 }
 
@@ -1091,6 +1150,7 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         week: a.week,
         verdicts: a.verdicts,
         cells: a.cells,
+        table: None,
     };
     Ok((judge, evals, scores))
 }
@@ -1435,6 +1495,45 @@ mod tests {
                 "{filter}"
             );
         }
+    }
+
+    #[test]
+    fn the_verdict_tiles_count_every_verdict_past_the_cap() {
+        let v = |said: &str, score: &str, question: &str| AskVerdict {
+            said: said.into(),
+            score: score.into(),
+            question: question.into(),
+            ..Default::default()
+        };
+        let mut j = Judge {
+            verdicts: (0..55)
+                .map(|_| v("would answer", "wrong", "ship it?"))
+                .collect(),
+            ..Default::default()
+        };
+        j.verdicts
+            .extend((0..5).map(|_| v("passed", "-", "deploy now?")));
+        let mut cut = j.clone();
+        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 10);
+        assert_eq!(cut.verdicts.len(), 10);
+        let t = cut.table.as_ref().unwrap();
+        assert_eq!((t.total, t.shown), (60, 55));
+        let n = |name: &str| t.states.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(
+            [
+                ASK_FILTERS[0],
+                ASK_FILTERS[2],
+                ASK_FILTERS[3],
+                ASK_FILTERS[4]
+            ]
+            .map(|f| n(f).n),
+            [60, 55, 5, 55]
+        );
+        assert_eq!(n("wrong").tone, Some(crate::vocab::Level::Bad));
+        assert_eq!(n("answered").n, 0);
+        // a word searches the question
+        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 10);
+        assert_eq!(j.verdicts.len(), 5);
     }
 
     #[test]
