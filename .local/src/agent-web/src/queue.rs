@@ -106,7 +106,8 @@ pub struct QueueQuery {
 }
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
-/// then filtered and sorted by `hub_core::table` so the page only draws (`render`).
+/// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
+/// dispatch pass's verdict (`dispatch`: its line and whether it is amber), the line over the table.
 pub async fn list(
     State(s): State<Shared>,
     Query(q): Query<QueueQuery>,
@@ -114,7 +115,12 @@ pub async fn list(
     s.queue
         .recent()
         .await
-        .map(|items| Json(render(items, &q, chrono::Utc::now())))
+        .map(|items| {
+            let mut v = render(items, &q, chrono::Utc::now());
+            let d = hub_core::capacity::Dispatch::now();
+            v["dispatch"] = serde_json::json!({ "line": d.line(), "warn": d.warn() });
+            Json(v)
+        })
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
@@ -144,12 +150,29 @@ fn render(
         .collect();
     serde_json::json!({
         "at": now.timestamp(),
-        "items": shown.iter().map(|r| item_view(r.item, now)).collect::<Vec<_>>(),
+        "items": shown.iter().map(|r| row_view(r, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
         "open_rows": hub_queue::TABLE_OPEN_ROWS,
         "section_aliases": aliases,
     })
+}
+
+/// A table row: its item (`item_view`) plus `start` (its place in the start order, ready items
+/// only) and the cells the row's own columns hold (`Row::val`, what a filter on them matches):
+/// `held_on`, `source` and `row_id`.
+fn row_view(r: &QueueRow, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
+    use hub_core::table::Row;
+    let mut v = item_view(r.item, now);
+    if let Some(n) = r.start {
+        v["start"] = n.into();
+    }
+    for (key, col) in [("held_on", "hold"), ("source", "from"), ("row_id", "row")] {
+        if let Some(t) = r.val(col).shown() {
+            v[key] = t.into();
+        }
+    }
+    v
 }
 
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
@@ -376,8 +399,22 @@ mod tests {
         let v = render(items.clone(), &QueueQuery::default(), now);
         assert_eq!(
             slugs(&v),
-            ["w1", "r1", "q1", "d1"],
-            "needs you, running, up next, done"
+            ["w1", "r1", "q1"],
+            "needs you, running, ready; done is one chip away"
+        );
+        assert_eq!(v["items"][2]["start"], 1, "q1 starts first");
+        assert!(
+            v["items"][0]["start"].is_null(),
+            "only a ready item has a place"
+        );
+        assert_eq!(v["section_aliases"]["queued"], "ready");
+        let every = QueueQuery {
+            s: "all".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            slugs(&render(items.clone(), &every, now)),
+            ["w1", "r1", "q1", "d1"]
         );
         assert_eq!(v["table"]["total"], 4);
         assert_eq!(v["needs_you"], 1);

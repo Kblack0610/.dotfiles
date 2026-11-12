@@ -135,6 +135,7 @@ A cell with nothing to show names why, in one of these words (`hub_core::release
 | `manual` | A channel moved by hand (`deployed: "manual"`) |
 | `not read` | The read failed; the row's `error` says why |
 | `none merged` | A tag with no merged PRs since the one before it |
+| `no check` | CHECKS only: no Gatus group of the app reported in a week (project-map-doctor warns for an app with a prod web target) |
 
 History cells also say `first tag` for a release with none before it, and `before 2026-11-11` (above). Each app, and the Apps head, carries counted coverage per column (`prev 2/2, deployed 0/1 (1 none declared), reached 1/2`): how many of its channels or releases hold a value, with the causes of the rest counted.
 
