@@ -1835,6 +1835,8 @@ world_lost() {
   n=${n:-0}
   if [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
   logline "tmux server $srv died with $n conversation(s) on it"
+  # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
+  [ ! -e "${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}" ] || return 0
   agent-notify -p high -t "tmux $srv server died" "$n conversation(s) were on it. Reopen them: fleet-dispatch restore" ||
     say "could not page: tmux server $srv died"
 }

@@ -1158,6 +1158,18 @@ OUT
   assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 1
 }
 
+@test "a planned reboot (the session-snapshot marker) keeps the lost record and does not page" {
+  record_setup
+  : > "$HOME/.agent/maintenance"
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  [ -f "$LOST" ] || fail "record not kept as lost"
+  ! grep -q 'agent-notify' "$NOTES_FIXTURE/calls.log" || fail "a planned reboot paged"
+}
+
 @test "record sees a server restarted between two records, and a later empty death keeps the lost record" {
   record_setup
   world '10 1000' "$PANE1"

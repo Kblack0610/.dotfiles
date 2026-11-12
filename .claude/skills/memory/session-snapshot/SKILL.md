@@ -1,11 +1,11 @@
 ---
 name: session-snapshot
 description: >-
-  Snapshot what dies on reboot (tmux and Claude sessions, dev servers, services, containers, dirty repos), then restore it. Use for "what's running before I reboot", "save my session state", "restore my sessions".
+  Spin the fleet down before a reboot or upgrade and back up after boot, plus a snapshot of what dies (sessions, servers, containers, dirty repos). Use for "spin everything down", "I want to reboot", "what's running before I reboot", "restore my sessions". One session: wind-down.
 metadata:
   category: memory
-  tags: [session, reboot, inventory]
-  reviewed: "2026-11-07"
+  tags: [session, reboot, upgrade, inventory]
+  reviewed: "2026-11-11"
 ---
 
 # session-snapshot
@@ -16,11 +16,26 @@ its own" from "you must restart it manually", flags **uncommitted/unpushed git w
 thing genuinely at risk), writes it all to a dated file in the **notes inbox**, and on the next
 boot helps you bring the right things back.
 
-Two verbs: **`snapshot`** (default) and **`restore`**.
+Verbs: **`down`** and **`up`** (the planned reboot), **`snapshot`** (default) and **`restore`** (the inventory and the hand restore).
 
 ## Scope and triggers
 
-Snapshot every live working process before a reboot/logout and restore it after. Capture the things that DIE on reboot - tmux/Claude sessions (cwd + branch), dev servers (command line + port), `systemd --user` services split into auto-start-vs-manual, docker containers (with restart policy), and dirty/unpushed git repos - into a dated checklist in the notes inbox, then offer to recreate them. Use when the user says "snapshot running agents/tasks/processes", "what's running before I reboot", "what do I need to bring back up", "save my session state", "restore my sessions", or before any planned reboot/logout. Verbs: snapshot | restore. It OBSERVES and REPORTS, and on restore only acts with confirmation - it never kills sessions or force-restarts on its own.
+Before a planned reboot or upgrade, spin the fleet down with one command and let it come back on its own at boot; around that, inventory what dies on reboot (tmux/Claude sessions, dev servers, manual `systemd --user` services, docker containers, dirty/unpushed repos) into a dated checklist in the notes inbox. Use when the user says "spin everything down", "I want to upgrade/reboot this machine", "what's running before I reboot", "save my session state", "restore my sessions". `down` and `up` act; `snapshot` observes; `restore` acts only with confirmation.
+
+## down and up: the planned reboot
+
+```bash
+session-snapshot down "kernel upgrade"   # --dry-run first to see what it would set
+# ... upgrade, reboot ...
+session-snapshot status                  # after boot: "up: no planned reboot in progress" when it came back
+```
+
+- `down` holds dispatch (`agent-hold set dispatch`), pauses the agentctl runners (`agentctl pause`), takes a final pane record (`fleet-dispatch record`), and writes the marker `~/.agent/maintenance` with what it set. It sets only what is not already set, so a hold or pause someone else put up is never lifted by `up`. It parks and kills nothing: the reboot stops the sessions.
+- At boot, `session-snapshot-up.service` runs `session-snapshot up` only while the marker exists: `fleet-dispatch restore` reopens every recorded conversation, then it resumes agentctl, releases dispatch, clears the marker, and pages one "back up after" line (normal priority when a reopen failed; rerun `fleet-dispatch restore`).
+- While the marker exists, `fleet-dispatch record` does not page "tmux server died": the `up` page replaces it.
+- Not rebooting after all: `session-snapshot up` by hand undoes it the same way.
+- Run `down` last, right before the reboot, after `snapshot` below if the user wants the checklist. Commit or push the dirty repos first; the reboot does not wait for them.
+- Unit failed at boot (Sentinel's `systemd-user-failed` pages it): `systemctl --user status session-snapshot-up`, then `session-snapshot up`.
 
 ## Where the artifact lives
 
@@ -109,7 +124,7 @@ list them as action items. Ephemeral `mcp/filesystem` containers are noise - Cla
 
 ## restore
 
-After reboot:
+After an unplanned reboot (a planned one used `up`), or for what `up` does not bring back:
 
 ```bash
 ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklist
@@ -128,5 +143,5 @@ Never auto-kill or auto-restart without an explicit go-ahead. Confirm the batch,
 ## Notes
 
 - The skill may use real `date`; in a sandboxed agent context, accept the date as an argument.
-- Don't touch auth tokens, sqlite, or other runtime state - this is read-only inventory + opt-in restart.
+- Don't touch auth tokens, sqlite, or other runtime state.
 - Pairs with `wind-down` (single-session teardown). This skill is host-wide: every session at once.
