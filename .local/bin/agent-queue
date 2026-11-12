@@ -166,14 +166,24 @@ prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; low) echo 2 ;; *) r
 # The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
 lock() {
   mkdir -p "$AQ_DIR" || die "cannot create $AQ_DIR"
-  exec 8> "$AQ_DIR/.lock"
-  flock -w 10 8 || die "the queue is locked by another writer"
+  take_lock
 }
 # Reads share the lock, so a list never sees an item a writer is moving between states.
 lock_read() {
   [ -d "$AQ_DIR" ] || return 0
-  exec 8> "$AQ_DIR/.lock"
-  flock -s -w 10 8 || die "the queue is locked by another writer"
+  take_lock -s
+}
+# take_lock [-s]: every taker passes through .gate and closes it once in, all within one 10s
+# deadline. A waiting writer holds the gate, so a new read queues behind it and the writer waits
+# only for the reads already in. Why: flock lets a shared taker in while an exclusive one waits, so
+# overlapping lists (agent-web, hub, panel, dispatch, about 16 at once under load) held .lock
+# shared without a gap and every write timed out (2026-11-12). As with any writer-first lock, a
+# holder must not wait on a child that takes the lock again.
+take_lock() {
+  local gate end=$((SECONDS + 10))
+  exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
+  flock -w 10 "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 || die "the queue is locked by another writer"
+  exec {gate}>&-
 }
 
 items_in() { # state-dir -> item files, oldest first
