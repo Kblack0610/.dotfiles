@@ -11,7 +11,7 @@ setup() {
   SIDF="$BATS_TEST_TMPDIR/sid"
   JOBS=()
   # With GNU parallel each job sets its own process group, the case that leaked: cover it.
-  command -v parallel >/dev/null && JOBS=(--jobs 2)
+  if command -v parallel >/dev/null; then JOBS=(--jobs 2); fi
 }
 
 own_sid() { ps -o sid= -p $$ | tr -d ' '; }
@@ -27,8 +27,9 @@ teardown() {
 }
 
 # inner <bats args...>: run-bats.sh in a clean environment, since the outer run's exported BATS_*
-# variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself.
-inner() { exec env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$RUN" "${JOBS[@]}" "$@"; }
+# variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
+# restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
+inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$RUN" "${JOBS[@]}" "$@"; }
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
 # straggler running in the background, then runs that line.
@@ -46,14 +47,15 @@ EOT
   } > "$BATS_TEST_TMPDIR/$1.bats"
 }
 
-# no_leftovers: no run dir under TMPDIR, and no process left in the run's session.
+# no_leftovers: no run dir under TMPDIR, and no live process left in the run's session (a killed
+# orphan can stay a zombie until init reaps it, holding no file).
 no_leftovers() {
   run ls -A "$TMPDIR"
   assert_output ""
   sid=$(cat "$SIDF")
   [ -n "$sid" ]
   [ "$sid" != "$(own_sid)" ]
-  run pgrep -s "$sid"
+  run pgrep -r D,R,S,T,t -s "$sid"
   assert_failure 1
 }
 
@@ -64,11 +66,31 @@ no_leftovers() {
   wrapper=$!
   # The test is running once it writes the fifo; the timeout only bounds a run that never starts.
   timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
-  ls -d "$TMPDIR"/bats-run-*
+  ls -d "$TMPDIR"/bats-run-*/bats-run-*
   kill -TERM "$wrapper"
   rc=0
   wait "$wrapper" || rc=$?
   [ "$rc" -eq 143 ]
+  no_leftovers
+}
+
+@test "a Ctrl-C reaches bats, which reports the interrupted run, and leaves nothing behind" {
+  mkfifo "$BATS_TEST_TMPDIR/up"
+  fixture slow "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); sleep 600"
+  inner "$BATS_TEST_TMPDIR/slow.bats" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+  wrapper=$!
+  timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
+  kill -INT "$wrapper"
+  # A Ctrl-C that never reaches bats leaves the run going: the guard TERMs it, so the test fails
+  # on the status instead of hanging.
+  { sleep 60 && kill -TERM "$wrapper"; } 3>&- &
+  guard=$!
+  rc=0
+  wait "$wrapper" || rc=$?
+  kill "$guard"
+  [ "$rc" -eq 130 ]
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "Received SIGINT, aborting"
   no_leftovers
 }
 
