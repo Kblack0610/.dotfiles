@@ -242,7 +242,7 @@ async function navCheck(browser, page0) {
     } catch (e) {
       errors.push(`${name}: ${e.message.split("\n")[0]}`);
     }
-    errors.push(...seen.errors.filter((e) => !noKit).map((e) => `${name}: ${e}`));
+    errors.push(...[...seen.errors, ...seen.drift].filter(() => !noKit).map((e) => `${name}: ${e}`));
     await context.close();
   }
   return errors;
