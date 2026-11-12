@@ -41,7 +41,9 @@ judge_rules() { sed -n 's/^- (\([a-z][a-z0-9-]*\)) .*/\1/p' "$1" 2>/dev/null; }
 JUDGE_LEVELS='self repo fleet critical'
 
 # judge_floor <policy> <heading>: the names its `### <heading>` lists as `- \`name\``, one per line.
+# No policy lists none: awk given an empty file name reads stdin, which hangs a post on an open pipe.
 judge_floor() {
+  [ -n "$1" ] || return 0
   awk -v h="### $2" '$0 == h { on = 1; next } /^#/ { on = 0 }
     on && /^- `[^`]+`$/ { s = $0; sub(/^- `/, "", s); sub(/`$/, "", s); print s }' "$1" 2>/dev/null
 }

@@ -10,6 +10,8 @@
 #                       It opens with one plain-words line defining every session term the
 #                       question, options and --why use; post refuses a term it never names
 #     --session s       the asking session; default the caller's tmux session
+#     --audit-of <id>   the live judge answer this ask audits (audit_sample posts these); its
+#                       answer is that answer's review, not a decision of its own
 #   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
 #   agent-ask answer-names <id>         each option the human's answer names, one per line; none: free text
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
@@ -54,7 +56,8 @@
 #   agent-ask judge <id>                the answer judge: score a pending ask and record what it
 #                                       would answer (judge, judge_rule, judge_type, judge_reason,
 #                                       judge_evidence, judge_call), replacing any older verdict;
-#                                       post runs it and answers a type DELAY_RULES lists at 0
+#                                       post runs it and answers a type DELAY_RULES lists at
+#                                       its level at 0
 #   agent-ask sweep [project|--all]     judge every pending ask again and answer each live one as
 #                                       the judge, through `answer`'s delivery, or arm its wait;
 #                                       one line per ask. Run it after the policy or DELAY_RULES
@@ -124,8 +127,9 @@
 # (`judge_type`), the criteria that held (`judge_met`), `judge_reason`, the quote behind the rule
 # (`judge_evidence`), and `judge_call`, its line in calls.jsonl. The human's latest disagreements
 # (`precedents`) go in with the ask, so a past answer changes the next verdict. A type listed in
-# the conf's DELAY_RULES is answered live (`answered_by: judge`, see "live answers" below), at
-# once or after its wait; every other rule is shadow, and the human answers. A gate or approval
+# the conf's DELAY_RULES, at or under that row's impact level, is answered live (`answered_by:
+# judge`, see "live answers" below), at once or after its wait, and a sample of those answers goes
+# back to the human as an audit; every other rule is shadow, and the human answers. A gate or approval
 # is never sent to the model; it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the
 # test sandbox sets it), AGENT_ASK_JUDGE_CMD replaces it, and AGENT_ASK_DELAY_RULES replaces the
 # conf's table (tests).
@@ -147,6 +151,8 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
+# The audit sample's count of live answers per level (audit_sample).
+: "${AGENT_ASK_AUDIT_DIR:=$HOME/.local/state/agent-ask/audit}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # PARK_DAYS: how long `park` with no --until keeps an ask off the boards, by the held item's priority.
 : "${AGENT_ASK_PARK_CONF:=$HOME/.config/agent-ask/park.conf}"
@@ -391,7 +397,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" why="" resume="" wait=0 question="" context=""
+        options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -405,6 +411,7 @@ cmd_post() {
       --why)     why="$2"; shift 2 ;;
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
+      --audit-of) audit_of="$2"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
       -*) echo "agent-ask post: unknown flag $1" >&2; return 2 ;;
@@ -542,6 +549,7 @@ cmd_post() {
     # empty until somebody actually RUNS `resume`. An ask that is answered but not
     # resumed is a decision the system has not acted on yet - see the header.
     printf 'resumed_at: \n'
+    [ -z "$audit_of" ] || printf 'audit_of: %s\n' "$(oneline "$audit_of")"
   } > "$file"
   queue_changed
 
@@ -697,6 +705,8 @@ cmd_answer() {
   [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd] <id> <answer...>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  local of; of="$(field "$f" audit_of)"
+  if [ -n "$of" ]; then audit_answer "$f" "$of" "$answer" "$by"; return; fi
 
   # A human answer is the review of any judge answer. One given after the judge's stands beside
   # it: the judge's stays what judge-eval and the precedents read, so the override is what counts.
@@ -738,6 +748,7 @@ record_answer() {
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
   [ "$by" != human ] || settle_queue "$(field "$f" id)"
+  [ "$by" != judge ] || audit_sample "$f"
 }
 
 # start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
@@ -774,38 +785,54 @@ judge_conf() {
   ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/ask-judge.conf" 2>/dev/null; printf '%s' "${!1:-$2}" )
 }
 
-# ask-judge.conf's DELAY_RULES is `<type>=<minutes>` per type the judge may answer; a type it does
-# not list stays shadow. At 0 the judge answers at post: the asker gets the answer in place of the
-# question and goes on. Above 0 the ask is armed: the human keeps the question and its deadline
-# until `assume-due` fires the answer. Either way the human's messages review it
-# (review_judge_answer): naming another option records judge_override, and enough overrides demote
-# the type (judge_demote_check). A demote is runtime state, not a conf edit: a script writing the
-# tracked conf would leave the private repo's main checkout dirty, so the demote list subtracts
-# from DELAY_RULES until the human re-promotes or drops the type from the conf by PR.
+# ask-judge.conf's DELAY_RULES is `<type>@<level>=<minutes>` per type the judge may answer, and
+# the level is its ceiling: the row answers that type at every impact level up to it (self, repo,
+# fleet; JUDGE_LEVELS), so a type is proven where a wrong answer reaches least before it answers
+# where it reaches most. `critical` is never a ceiling. A type it does not list stays shadow. At
+# 0 the judge answers at post: the asker gets the answer in place of the question and goes on.
+# Above 0 the ask is armed: the human keeps the question and its deadline until `assume-due`
+# fires the answer. Either way the human's messages review it (review_judge_answer), and so does
+# the audit sample (audit_sample): naming another option records judge_override, and enough
+# overrides demote the cell, its type at its level (judge_demote_check). A demote is runtime
+# state, not a conf edit: a script writing the tracked conf would leave the private repo's main
+# checkout dirty, so the demote list subtracts from DELAY_RULES until the human re-promotes or
+# drops the row from the conf by PR.
 
-# delay_rows: the waits in force as `<type> <minutes>`, one per line; the one reader of
-# DELAY_RULES (space or comma separated). A hard stop (JUDGE_HARD_STOPS) or a row that is not
-# `<type>=<minutes>` is refused, never read as 0, and a demoted type is left out.
+# delay_rows: the live cells as `<type> <level> <minutes>`, one per line; the one reader of
+# DELAY_RULES (space or comma separated). A hard stop (JUDGE_HARD_STOPS), a row that is not
+# `<type>@<level>=<minutes>`, a level the judge may not answer at (critical, or none of
+# JUDGE_LEVELS) and a second row for one type are refused, never read as 0, and a demoted cell
+# (`<type>@<level>` in the demote list) is left out.
 delay_rows() {
-  local row type wait demoted
+  local row type level wait demoted l seen=" "
   demoted=" $(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null | tr '\n' ' ') "
   for row in $(tr ',' ' ' <<<"$(judge_conf DELAY_RULES "")"); do
-    type="${row%%=*}"; wait="${row#*=}"
+    type="${row%%[@=]*}"
     case " $JUDGE_HARD_STOPS " in
       *" $type "*) echo "agent-ask: DELAY_RULES refuses $type: a hard stop is the human's" >&2; continue ;;
     esac
-    [[ "$row" =~ ^[^=]+=[0-9]+$ ]] ||
-      { echo "agent-ask: DELAY_RULES refuses '$row': a row is <type>=<minutes>" >&2; continue; }
-    case "$demoted" in *" $type "*) continue ;; esac
-    printf '%s %d\n' "$type" "$((10#$wait))"
+    [[ "$row" =~ ^[^=@]+@([a-z]+)=([0-9]+)$ ]] ||
+      { echo "agent-ask: DELAY_RULES refuses '$row': a row is <type>@<level>=<minutes>" >&2; continue; }
+    level="${BASH_REMATCH[1]}"; wait="${BASH_REMATCH[2]}"
+    case " ${JUDGE_LEVELS% critical} " in
+      *" $level "*) ;;
+      *) echo "agent-ask: DELAY_RULES refuses '$row': the judge answers at ${JUDGE_LEVELS% critical}, never $level" >&2; continue ;;
+    esac
+    case "$seen" in *" $type "*) echo "agent-ask: DELAY_RULES refuses '$row': $type has one row" >&2; continue ;; esac
+    seen+="$type "
+    for l in $JUDGE_LEVELS; do
+      case "$demoted" in *" $type@$l "*) ;; *) printf '%s %s %d\n' "$type" "$l" "$((10#$wait))" ;; esac
+      [ "$l" = "$level" ] && break
+    done
   done
 }
 
-# live_rules: the types the judge answers now, one per line.
-live_rules() { delay_rows | cut -d' ' -f1; }
+# live_rules: the cells the judge answers now, `<type>@<level>`, one per line.
+live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 
-# delay_of <rule>: the minutes that type waits; fails when the judge does not answer it.
-delay_of() { delay_rows | awk -v r="$1" '$1 == r { print $2; found = 1 } END { exit !found }'; }
+# delay_of <rule> <level>: the minutes that type waits at that level; fails when the judge does
+# not answer it there, an ask with no level included.
+delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l { print $3; found = 1; exit } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
 # anything else: a gate, a human or error call, a shadow rule, an ask the human disarmed. The one
@@ -821,7 +848,7 @@ live_answer() {
     answer:*) ans="${judge#answer:}" ;;
     *) return 1 ;;
   esac
-  [ -n "$ans" ] && [ -n "$rule" ] && delay_of "$rule" >/dev/null || return 1
+  [ -n "$ans" ] && [ -n "$rule" ] && delay_of "$rule" "$(field "$f" judge_level)" >/dev/null || return 1
   printf '%s\n' "$ans"
 }
 
@@ -830,7 +857,7 @@ live_answer() {
 # its clock, a different one starts a full window. `assume_at` stays on a fired ask as its record.
 live_due() {
   local f="$1" ans="$2" wait
-  wait="$(delay_of "$(field "$f" judge_rule)" 2>/dev/null)"
+  wait="$(delay_of "$(field "$f" judge_rule)" "$(field "$f" judge_level)" 2>/dev/null)"
   [ "${wait:-0}" -gt 0 ] || return 0
   [ -n "$(field "$f" assume_at)" ] && [ "$(field "$f" assume_answer)" = "$ans" ] && return 1
   set_field "$f" assume_answer "$ans" assume_at "$(now_iso "+$wait minutes")"
@@ -897,41 +924,101 @@ cmd_assume_due() {
     xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
 }
 
-# judge_demote_check <file>: after an override on this live answer, take its rule out of the
-# live set when precision over the type's last AGENT_ASK_LIVE_BAR live answers is under
-# AGENT_ASK_DEMOTE_PRECISION, once there are AGENT_ASK_DEMOTE_MIN of them. A window, not a
-# lifetime count, so one early miss does not end a type that is right 9 times in 10. A human
-# answer inside a wait counts when it was reviewed, agreeing or not, so the window is not all
-# misses; the review runs before that answer is written, hence the fallback to the override's time.
-# Pages once and files one board row.
+# judge_demote_check <file>: after an override on this live answer, take its cell (its type at
+# its level, `<type>@<level>`) out of the live set when precision over the cell's last
+# AGENT_ASK_LIVE_BAR live answers is under AGENT_ASK_DEMOTE_PRECISION, once there are
+# AGENT_ASK_DEMOTE_MIN of them. A window, not a lifetime count, so one early miss does not end a
+# cell that is right 9 times in 10. A cell, not a type, so misses where a wrong answer reaches
+# far do not end the answers where it reaches least. A human answer inside a wait counts when it
+# was reviewed, agreeing or not, so the window is not all misses; the review runs before that
+# answer is written, hence the fallback to the override's time. Pages once and files one board row.
 judge_demote_check() {
-  local f="$1" rule id n over
-  rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
-  [ -n "$rule" ] && delay_of "$rule" >/dev/null || return 0
-  # The type's reviewed live answers (kept or overridden; silence is not a review, as in
+  local f="$1" rule level id n over
+  rule="$(field "$f" judge_rule)"; level="$(field "$f" judge_level)"; id="$(field "$f" id)"
+  [ -n "$rule" ] && delay_of "$rule" "$level" >/dev/null || return 0
+  # The cell's reviewed live answers (kept or overridden; silence is not a review, as in
   # judge-eval) as "<answered_at> <0|1 overridden>", newest last, then the window.
-  read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
+  read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" -v level="$level" '
     function out() {
       if (when == "") when = oat
-      if (ov != "" && ov != "none" && r == rule && when != "") print when, (ov != "kept")
+      if (ov != "" && ov != "none" && r == rule && lv == level && when != "") print when, (ov != "kept")
     }
-    FNR == 1 { if (NR > 1) out(); by = r = when = ov = oat = "" }
+    FNR == 1 { if (NR > 1) out(); by = r = lv = when = ov = oat = "" }
     /^answered_by: / && by == "" { by = substr($0, 14) }
     /^judge_rule: / && r == "" { r = substr($0, 13) }
+    /^judge_level: / && lv == "" { lv = substr($0, 14) }
     /^answered_at: / && when == "" { when = substr($0, 14) }
     /^judge_override: / && ov == "" { ov = substr($0, 17) }
     /^judge_override_at: / && oat == "" { oat = substr($0, 20) }
     END { out() }' 2>/dev/null | sort | tail -n "$AGENT_ASK_LIVE_BAR" | awk '{ n++; o += $2 } END { print n + 0, o + 0 }')
   [ "${n:-0}" -ge "$AGENT_ASK_DEMOTE_MIN" ] || return 0
   [ $(( (n - over) * 100 )) -lt $(( n * AGENT_ASK_DEMOTE_PRECISION )) ] || return 0
-  local why="$over of its last $n live answers overridden, under ${AGENT_ASK_DEMOTE_PRECISION}%"
+  local cell="$rule@$level" why="$over of its last $n live answers overridden, under ${AGENT_ASK_DEMOTE_PRECISION}%"
   mkdir -p "$(dirname "$AGENT_ASK_DEMOTED")" 2>/dev/null
-  printf '%s\t%s\t%s\n' "$rule" "$(now_iso)" "override on ask $id: $why" >> "$AGENT_ASK_DEMOTED"
+  printf '%s\t%s\t%s\n' "$cell" "$(now_iso)" "override on ask $id: $why" >> "$AGENT_ASK_DEMOTED"
   agent-notify -p high -t 'Judge demoted' \
-    "The ask judge no longer answers $rule asks: $why. A board row says how to undo it." >/dev/null 2>&1 || true
+    "The ask judge no longer answers $rule asks at level $level: $why. A board row says how to undo it." >/dev/null 2>&1 || true
   notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
-    "check(judge): ask-judge $rule went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or drop it from DELAY_RULES in ask-judge.conf by PR #size/s" \
+    "check(judge): ask-judge $cell went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or lower or drop the $rule row in DELAY_RULES in ask-judge.conf by PR #size/s" \
     >/dev/null 2>&1 || true
+}
+
+# audit_sample <file>: after a live answer, every Nth one at its level goes back to the human as an
+# approval offering the ask's own options (audit_answer reads the pick), so a live cell keeps a
+# label once nobody answers its asks by hand: a live cell's precision counts reviewed answers
+# only, never silence. N is AUDIT_RATES in ask-judge.conf, `<level>=<N>`; a level it does not
+# name is audited every time. Only an answer that is one of the ask's options can be reviewed,
+# so only those are counted. The count per level is runtime state beside the demote list.
+audit_sample() {
+  local f="$1" level ans opts n rate kv id q
+  level="$(field "$f" judge_level)"; ans="$(field "$f" answer)"; opts="$(field "$f" options)"
+  [ -n "$level" ] && [ -n "$ans" ] && [[ "|${opts,,}|" == *"|${ans,,}|"* ]] || return 0
+  rate=1
+  for kv in $(tr ',' ' ' <<<"$(judge_conf AUDIT_RATES "")"); do
+    [[ "$kv" =~ ^$level=([1-9][0-9]*)$ ]] && rate="${BASH_REMATCH[1]}"
+  done
+  mkdir -p "$AGENT_ASK_AUDIT_DIR" 2>/dev/null || return 0
+  n="$( (
+    command -v flock >/dev/null 2>&1 && flock 9
+    n="$(cat "$AGENT_ASK_AUDIT_DIR/$level" 2>/dev/null)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo $((n + 1)) > "$AGENT_ASK_AUDIT_DIR/$level"; echo $((n + 1))
+  ) 9>"$AGENT_ASK_AUDIT_DIR/.lock")"
+  [[ "$n" =~ ^[0-9]+$ ]] && [ $((n % rate)) -eq 0 ] || return 0
+  id="$(field "$f" id)"
+  # The asker's question in double quotes, which post reads as quoted text, cut to fit one line.
+  q="$(field "$f" question | tr '"' "'")"
+  local head="The judge answered \"" tail="\" with \"$ans\"; your pick?"
+  local room=$((AGENT_ASK_QUESTION_MAX - ${#head} - ${#tail}))
+  [ "${#q}" -le "$room" ] || q="${q:0:$((room - 3))}..."
+  local o notes=() parts=() options=""
+  IFS='|' read -r -a parts <<<"$opts"; IFS='|' read -r -a notes <<<"$(field "$f" option_notes)"
+  for o in "${!parts[@]}"; do options+="${options:+|}${parts[$o]}=${notes[$o]:-as the asker offered it}"; done
+  local audit
+  audit="$( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE AGENTCTL_NAME
+    cmd_post --project "$(field "$f" project)" --profile "$(field "$f" profile)" --kind approval \
+      --task "audit of the judge's live answer on ask $id" --audit-of "$id" --options "$options" \
+      --context "An audit of the answer judge: it answered ask $id on its own ($(field "$f" judge_rule) at level $level, 1 in $rate of its live answers there is checked). Pick what you would have answered; the judge's own option keeps it, another one overrides it and goes to the asker. $(field "$f" context)" \
+      "$head$q$tail" 2>/dev/null)" || return 0
+  [ -n "$audit" ] && set_field "$f" judge_audit "$audit"
+  return 0
+}
+
+# audit_answer <audit file> <id of the ask it audits> <answer> <by>: the audit's answer is the
+# review of that live answer, and nothing else: no session, board row or resume of its own. The
+# judge's option records `kept`; another records the override (the demote check runs) and goes to
+# the asker as the human's answer beside the judge's (cmd_answer). Only the human reviews, and an
+# answer naming no option scores nothing.
+audit_answer() {
+  local f="$1" of="$2" answer="$3" by="$4" g before after
+  record_answer "$f" "$by" "$answer" || return 1
+  echo "answered $(field "$f" id): $answer" >&2
+  [ "$by" = human ] || return 0
+  g="$(find_ask "$of")"
+  [ -n "$g" ] || { echo "agent-ask: ask $of, which this audits, is gone; nothing reviewed" >&2; return 0; }
+  before="$(field "$g" judge_override)"
+  review_judge_answer "$g" "$answer" audit
+  after="$(field "$g" judge_override)"
+  case "$after" in "$before"|kept|none) ;; *) cmd_answer "$of" "$after" ;; esac
 }
 
 # cmd_target [--reopen] <id>: the live asking session's `<server>/<session>:<window>`, for a
