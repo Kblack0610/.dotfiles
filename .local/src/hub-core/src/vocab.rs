@@ -9,10 +9,13 @@ use serde::Serialize;
 
 /// An agent-queue item that has not started (`queue::State::Queued`), the Queue table's STATE.
 pub const QUEUE: &[(&str, &str)] = &[
-    ("ready", "starts when dispatch has a slot for it"),
+    (
+        "ready",
+        "starts when dispatch has a slot for it; # is agent-queue's order, which dispatch may pass over for load, a lane's tier or a host in use",
+    ),
     (
         "held",
-        "waits on its hold: after another item, until a PR merges, until night or a set time; the opened row says which",
+        "waits on its hold: after another item, until a PR merges, until night or a set time; HOLD says which",
     ),
 ];
 

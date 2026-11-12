@@ -46,15 +46,15 @@ pub async fn page(Path(name): Path<String>) -> ApiResult<Json<Value>> {
     let chains = tokio::spawn(crate::epics::chains());
     let rt = tokio::runtime::Handle::current();
     let p = tokio::task::spawn_blocking(move || {
-        page::named_with(
-            &hub_core::session_actions::System,
-            &name,
-            hub_core::jobs::now(),
-            || {
-                let all = rt.block_on(chains).map_err(|e| e.to_string())??;
-                hub_core::epics::pick(&all, &name)
-            },
-        )
+        let (runner, now) = (&hub_core::session_actions::System, hub_core::jobs::now());
+        let mut p = page::named_with(runner, &name, now, || {
+            let all = rt.block_on(chains).map_err(|e| e.to_string())??;
+            hub_core::epics::pick(&all, &name)
+        })?;
+        if let Some(groups) = p.check_read() {
+            p.with_checks(&crate::releases::checks(&groups));
+        }
+        Ok::<_, String>(p)
     })
     .await
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

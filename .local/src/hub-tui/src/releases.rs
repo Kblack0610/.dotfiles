@@ -28,11 +28,12 @@ pub(crate) fn alert(l: Level, p: Palette) -> Style {
 /// `App::COLUMNS` in capitals, in its order, the sort mark placed by that index; `project` is
 /// drawn as APP and `live` as DEPLOYED (a deploy is not the app being live). `channel` and `id`
 /// filter without a column: the pane says them.
-const HEADER: [&str; 7] = [
+const HEADER: [&str; 8] = [
     "APP",
     "STAGE",
     "DEPLOYED",
     "STATUS",
+    "CHECKS",
     "CHANNELS",
     "RELEASED",
     "LAST DEPLOY",
@@ -46,6 +47,8 @@ const LIVE_FIT: (usize, usize) = (16, 28);
 /// `draft`, `alpha`: the ladder's longest word.
 const STAGE_CAP: usize = 5;
 const STATUS_CAP: usize = 10;
+/// `Partial outage: chat`; more names clip, the app page lists them.
+const CHECKS_CAP: usize = 22;
 /// `2 not read, 4 ok, 1 released`.
 const CHANNELS_CAP: usize = 28;
 /// `v1.19.0 10-27 15:02`; a longer build tag clips.
@@ -269,16 +272,17 @@ impl ReleasesView {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|a| row(a, p)).collect(),
             // Columns drop from the end of `keep` when narrow: LAST DEPLOY (blank until a recorder writes), then RELEASED.
-            keep: vec![0, 3, 2, 1, 4, 5, 6],
+            keep: vec![0, 3, 4, 2, 1, 5, 6, 7],
             right: vec![],
             cap: vec![
                 (0, fit(APP_FIT)),
                 (1, STAGE_CAP),
                 (2, fit(LIVE_FIT)),
                 (3, STATUS_CAP),
-                (4, CHANNELS_CAP),
-                (5, RELEASED_CAP),
-                (6, LAST_DEPLOY_CAP),
+                (4, CHECKS_CAP),
+                (5, CHANNELS_CAP),
+                (6, RELEASED_CAP),
+                (7, LAST_DEPLOY_CAP),
             ],
             mark,
             ..Default::default()
@@ -310,6 +314,12 @@ fn row(a: &App, p: Palette) -> Vec<Cell> {
         },
         a.live_text.clone().into(),
         cell(a.status_text.clone(), level(a.level, p)),
+        // `no check` is the blank; `not read` is a failed read and keeps its amber.
+        if a.checks.says == "no check" {
+            cell(a.checks.says.clone(), p.dim())
+        } else {
+            tinted(&a.checks.says, a.checks.level)
+        },
         channels,
         cell(a.released_text.clone(), p.dim()),
         tinted(&a.last_deploy_text, a.deploy_level),
@@ -811,11 +821,21 @@ mod tests {
     fn a_channel_not_read_tints_the_channels_cell_amber_and_drift_the_status_red() {
         let (s, p) = (sample(), Palette::default());
         let cells = row(app(&s, "binks"), p);
-        assert_eq!(cells[4].style, p.warn());
+        assert_eq!(cells[5].style, p.warn());
         assert_eq!(cells[3].style, p.good());
         let drift = row(app(&s, "kenneth-black-portfolio"), p);
         assert_eq!(drift[3].style, p.bad());
-        assert_eq!(drift[4].style, Style::default());
+        assert_eq!(drift[5].style, Style::default());
+        // CHECKS not read is amber, never dimmed to look like a blank; `no check` is the blank.
+        assert_eq!(cells[4].style, p.warn());
+        let mut down = app(&s, "binks").clone();
+        down.checks.says = "no check".into();
+        assert_eq!(row(&down, p)[4].style, p.dim());
+        down.checks = hub_core::releases::Badge {
+            says: "Down".into(),
+            level: Level::Bad,
+        };
+        assert_eq!(row(&down, p)[4].style, p.bad());
     }
 
     #[test]

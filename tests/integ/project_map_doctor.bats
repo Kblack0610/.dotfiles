@@ -632,3 +632,44 @@ EOF2
   run "$DOCTOR" "$MAP"
   refute_output --partial 'testWorkflows'
 }
+
+# gatus_map: one app with a prod k8s target, and one game whose prod server is on k8s too: a
+# game server is UDP and sleeps until played, so it needs no HTTP check.
+gatus_map() {
+  cat > "$MAP" <<'JSON'
+{
+  "channels": { "prod": "beta" },
+  "trackers": {
+    "shop": { "type": "app", "targets": [ { "id": "shop-prod", "channel": "prod", "pinned": { "tag": true },
+      "live": { "k8s": { "context": "c", "namespace": "n", "deployment": "d" } } } ] },
+    "game": { "type": "game", "targets": [ { "id": "game-server", "channel": "prod", "pinned": { "tag": true },
+      "live": { "k8s": { "context": "c", "namespace": "g", "deployment": "d" } } } ] }
+  }
+}
+JSON
+  mkdir -p "$HOME/gatus/api/v1/endpoints"
+  # The sandbox home has a space, which a URL spells %20; a file URL drops the query.
+  export CC_GATUS_URL="file://${HOME// /%20}/gatus"
+}
+
+@test "gatus: an app with a prod web target and no Gatus group warns and names it; a game needs none" {
+  gatus_map
+  echo '[{"group":"other","name":"x"}]' > "$HOME/gatus/api/v1/endpoints/statuses"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'WARN  app "shop" has a prod web target but no Gatus check in group "shop"'
+  refute_output --partial '"game"'
+}
+
+@test "gatus: an app whose group reports passes" {
+  gatus_map
+  echo '[{"group":"shop","name":"web"}]' > "$HOME/gatus/api/v1/endpoints/statuses"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial "PASS  every app with a prod web target has a Gatus group (1 apps)"
+}
+
+@test "gatus: an unreachable Gatus is a SKIP, never a PASS" {
+  gatus_map
+  run "$DOCTOR" "$MAP"
+  assert_output --partial "SKIP  Gatus at $CC_GATUS_URL did not answer"
+  refute_output --partial "Gatus group ("
+}
