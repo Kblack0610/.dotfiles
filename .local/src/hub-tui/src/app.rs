@@ -3930,7 +3930,10 @@ impl App {
         } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
             self.draw_history(f, body);
         } else {
-            let (lines, sections) = self.body(body.width as usize);
+            let (lines, sections) = self.body(
+                body.width as usize,
+                Some((self.scroll, body.height as usize)),
+            );
             // Clamped first, so a jump to the end (G) is the last page before the selection is
             // kept in view on it.
             let max = lines.len().saturating_sub(body.height as usize);
@@ -4302,7 +4305,13 @@ impl App {
     }
 
     /// A page as lines (or what is being waited for), and where its sections start.
-    pub fn body(&self, w: usize) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
+    /// `win` is the scroll and the body's height when drawing a frame: a page that can run to
+    /// thousands of lines (Queue) formats only what can show. None is the whole page.
+    pub fn body(
+        &self,
+        w: usize,
+        win: Option<(usize, usize)>,
+    ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let now = jobs::now();
         let reading = |what: &str| {
             (
@@ -4406,6 +4415,7 @@ impl App {
                         self.p,
                         now,
                         w,
+                        win,
                     );
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
@@ -4719,7 +4729,7 @@ impl App {
     }
 
     pub fn page_lines(&self, w: usize) -> Vec<Line<'static>> {
-        self.body(w).0
+        self.body(w, None).0
     }
 
     /// The day list keeps its header and scrolls its rows to keep the selection in view.
@@ -8355,7 +8365,7 @@ mod tests {
     fn infra_draws_its_strip_first_while_prometheus_is_still_read() {
         let mut a = app(Tab::Infra);
         a.infra = None;
-        let body: Vec<String> = a.body(160).0.iter().map(crate::fit::plain).collect();
+        let body: Vec<String> = a.body(160, None).0.iter().map(crate::fit::plain).collect();
         assert!(
             body[0].starts_with("[Machines] Runners  Runs  Pipelines  Tests  Jobs"),
             "{body:?}"
@@ -8368,7 +8378,7 @@ mod tests {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         let strip = |a: &App| {
-            a.body(160)
+            a.body(160, None)
                 .0
                 .iter()
                 .map(crate::fit::plain)
@@ -8402,7 +8412,7 @@ mod tests {
         let mut a = infra_app();
         a.tab = Tab::Infra;
         a.infra_inner = "jobs";
-        let lines = a.body(80).0;
+        let lines = a.body(80, None).0;
         assert!(lines
             .iter()
             .any(|l| crate::fit::plain(l).contains("Enter opens")));

@@ -12,9 +12,7 @@
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
 use hub_core::links::Link;
-use hub_core::queue::{
-    money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
-};
+use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing};
 use hub_core::table::Row;
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -102,17 +100,14 @@ impl QueueView {
         }
     }
 
-    /// The rows the table draws, from every row in the table's own order: the view applied, then
-    /// capped at `TABLE_OPEN_ROWS`; and how many the cap left out.
-    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
-        let mut rows: Vec<QueueRow<'a>> = self.table.view.apply(all).into_iter().copied().collect();
-        let older = rows.len().saturating_sub(TABLE_OPEN_ROWS);
-        rows.truncate(TABLE_OPEN_ROWS);
-        (rows, older)
+    /// The rows the table holds, from every row in the table's own order: every one the view
+    /// keeps, one line each, so j/k reaches every row; `page` formats only those on screen.
+    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> Vec<QueueRow<'a>> {
+        self.table.view.apply(all).into_iter().copied().collect()
     }
 
     pub fn shown<'a>(&self, q: &'a Queue, now: i64) -> Vec<QueueRow<'a>> {
-        self.drawn(&q.rows(at(now))).0
+        self.drawn(&q.rows(at(now)))
     }
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
@@ -515,6 +510,12 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
     .fit(w, p.head())
 }
 
+/// The page, one line per table row. `win` is the app's scroll and the body's height: a row line
+/// outside both that window and a body's height around the selection (where the app scrolls to
+/// keep it in view) is left blank, so a frame formats a screen of rows, not thousands; the line
+/// count stays, so the scroll and every row's place are the same. None formats every row
+/// (`hub --once`).
+#[allow(clippy::too_many_arguments)]
 pub fn page(
     q: &Queue,
     v: &QueueView,
@@ -523,6 +524,7 @@ pub fn page(
     p: Palette,
     now: i64,
     w: usize,
+    win: Option<(usize, usize)>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = flowline::lines(flow.0, &v.line, flow.1, p, w);
     for e in &q.errors {
@@ -542,14 +544,15 @@ pub fn page(
     }
     out.push(status_line(v, p, w));
     let all = q.rows(at(now));
-    let (rows, older) = v.drawn(&all);
+    let rows = v.drawn(&all);
     let mut chips = v.table.status(&all, p);
     chips.push(Span::styled(
-        format!("    {} of {}", rows.len() + older, all.len()),
+        format!("    {} of {}", rows.len(), all.len()),
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
     out.extend(DataTable::legend::<QueueRow>(p, w));
+    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
@@ -565,16 +568,37 @@ pub fn page(
             p.dim(),
         ));
     } else {
-        let mut t = table(&rows, v, p, w);
+        // The header is at `out.len()`, row i one line under it, the fold two under the last.
+        let head = out.len();
+        let total = head + 1 + rows.len() + 1 + more.len();
+        let on_screen = |i: usize| match win {
+            None => true,
+            Some((scroll, h)) => {
+                let top = scroll.min(total.saturating_sub(h));
+                let line = head + 1 + i;
+                (top..top + h).contains(&line) || i.abs_diff(v.table.sel) <= h + 2
+            }
+        };
+        let kept: Vec<QueueRow> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| on_screen(*i))
+            .map(|(_, r)| *r)
+            .collect();
+        let mut fitted = table(&kept, v, p, w).into_iter();
+        let mut t: Vec<Line<'static>> = fitted.next().into_iter().collect();
+        t.extend((0..rows.len()).map(|i| {
+            if on_screen(i) {
+                fitted.next().unwrap_or_default()
+            } else {
+                Line::default()
+            }
+        }));
         at_line = v.table.style(&mut t, p).map(|i| out.len() + i);
         out.append(&mut t);
-        if older > 0 {
-            out.push(Line::styled(format!("+{older} older"), p.dim()));
-        }
     }
     out.push(Line::raw(""));
     let top = out.len();
-    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     out.extend(more);
     (out, at_line.or(cand_at.map(|a| a + top)))
 }
@@ -599,7 +623,7 @@ fn candidates(
         Some(Err(_)) => (String::new(), String::new()),
         Some(Ok(c)) => (
             format!(" ({}, {} auto)", c.rows.len(), c.auto),
-            match c.as_of.as_str() {
+            match c.as_of(chrono::Local::now()).as_str() {
                 "" => hint.into(),
                 t => format!("as of {t}  {hint}"),
             },
@@ -774,6 +798,7 @@ pub(crate) mod tests {
             Palette { no_color: true },
             now(),
             w,
+            None,
         )
         .0
         .iter()
@@ -901,6 +926,7 @@ pub(crate) mod tests {
                 p,
                 now(),
                 160,
+                None,
             )
             .0;
             let l = lines
@@ -1242,8 +1268,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_the_cap_of_rows_is_drawn_and_the_rest_are_counted_older() {
-        let n = TABLE_OPEN_ROWS + 5;
+    fn every_row_the_view_keeps_is_drawn_and_a_frame_formats_one_screen() {
+        let n = 200;
         let jsonl: Vec<String> = (0..n)
             .map(|i| {
                 format!(
@@ -1258,13 +1284,49 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let v = all();
-        assert_eq!(v.shown(&q, now()).len(), TABLE_OPEN_ROWS);
+        assert_eq!(v.shown(&q, now()).len(), n);
         let s = text(&q, &v, 120);
-        assert!(s.contains("+5 older"), "{s}");
+        assert!(!s.contains("older"), "{s}");
         assert!(
             s.contains(&format!("{n} of {n}")) && s.contains(&format!("done {n}")),
             "{s}"
         );
+        let frame = |v: &QueueView, win| {
+            page(
+                &q,
+                v,
+                None,
+                (&Rail::build(Some(&q), None, now()), false),
+                Palette { no_color: true },
+                now(),
+                120,
+                win,
+            )
+        };
+        let row = |l: &Line| plain(l).contains(" T");
+        let (every, _) = frame(&v, None);
+        let (top, at) = frame(&v, Some((0, 20)));
+        assert_eq!(
+            top.len(),
+            every.len(),
+            "the same lines, so the scroll means the same"
+        );
+        let formatted = top.iter().filter(|l| row(l)).count();
+        assert!(formatted < 50, "one screen of rows, not {n}: {formatted}");
+        let at = at.unwrap();
+        assert_eq!(
+            plain(&top[at]),
+            plain(&every[at]),
+            "the selected row is drawn"
+        );
+        let mut far = all();
+        for _ in 0..150 {
+            far.key(KeyEvent::from(KeyCode::Char('j')), Some(&q), &[], 20, now());
+        }
+        let (l, at) = frame(&far, Some((0, 20)));
+        let at = at.unwrap();
+        assert!(row(&l[at]), "a row far down is drawn once selected");
+        assert_eq!(plain(&l[at]), plain(&every[at]));
     }
 
     #[test]
@@ -1369,7 +1431,11 @@ pub(crate) mod tests {
         assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
             .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
         let mut stamped = cands();
-        stamped.as_of = "08:07".into();
+        let today = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(8, 7, 0)
+            .unwrap();
+        stamped.written = Some(today.and_local_timezone(chrono::Local).unwrap().into());
         let s = text_with(&q, &shut, Some(&Ok(stamped)), 200);
         assert!(
             s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
