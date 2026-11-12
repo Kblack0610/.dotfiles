@@ -1514,7 +1514,8 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
     let landed_items = queue::list_since(&System, "done", &date_before(now, 1))
         .map_err(|e| errors.push(format!("agent-queue list --since yesterday: {e}")))
         .ok();
-    let rel = crate::releases::read(&System);
+    // Channel rows only: the briefing says drift and deploys, no release's rows.
+    let rel = crate::releases::read(&System, &[]);
     errors.extend(rel.errors.iter().cloned());
     let releases = rel.errors.is_empty().then_some(rel.rows);
     let sources = sources

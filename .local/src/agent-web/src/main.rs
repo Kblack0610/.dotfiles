@@ -1307,18 +1307,19 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
-async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
+async fn releases_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        releases::get(q).await,
+        releases::get(q, s.queue.items().await).await,
     )
         .into_response()
 }
 
 async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
+    let (rates, items) = tokio::join!(s.infra.rates(), s.queue.items());
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q, s.infra.rates().await).await,
+        builds::get(q, rates, items).await,
     )
         .into_response()
 }
@@ -1342,17 +1343,22 @@ async fn build_detail(
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
-async fn tests_list(Query(q): Query<suites::Query>) -> Response {
+async fn tests_list(State(s): State<Shared>, Query(q): Query<suites::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        suites::get(q).await,
+        suites::get(q, s.queue.items().await).await,
     )
         .into_response()
 }
 
 /// A suite is named by its run and its place in that run's results, never by a path.
-async fn tests_cases(Query(q): Query<suites::CasesQuery>) -> ApiResult<Response> {
-    let body = suites::cases(q).await.map_err(|(code, e)| bad(code, e))?;
+async fn tests_cases(
+    State(s): State<Shared>,
+    Query(q): Query<suites::CasesQuery>,
+) -> ApiResult<Response> {
+    let body = suites::cases(q, s.queue.items().await)
+        .await
+        .map_err(|(code, e)| bad(code, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 

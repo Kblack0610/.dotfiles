@@ -362,6 +362,16 @@ pub fn detail(
             Line::styled(format!("  channels {}", a.channels_text), p.dim()),
             w,
         ),
+        clip_line(
+            Line::styled(
+                format!("  stage {}", a.stage_text),
+                match a.stage_level {
+                    Level::Ok => p.dim(),
+                    l => level(l, p),
+                },
+            ),
+            w,
+        ),
     ];
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
@@ -413,11 +423,13 @@ pub fn detail(
         ));
         for h in a.history.iter().take(HISTORY_LINES) {
             let line = format!(
-                "    {}  {}  prev {}  reached {}",
+                "    {}  {}  prev {}  reached {}  prs {}  rows {}",
                 h.tag,
                 h.at_text,
                 h.prev.as_deref().unwrap_or("-"),
-                h.reached_text
+                h.reached_text,
+                h.prs_text,
+                h.rows_text
             );
             let style = if h.reached.is_empty() { p.dim() } else { plain };
             out.push(clip_line(Line::styled(line, style), w));
@@ -511,7 +523,7 @@ mod tests {
             "generated_epoch": AT,
             "rows": [green, steam, row("kenneth-black-portfolio", "portfolio-preview-eu-west", "drift")],
         });
-        read(&Fake(raw.to_string()))
+        read(&Fake(raw.to_string()), &[])
     }
 
     fn app<'a>(s: &'a Releases, project: &str) -> &'a App {
@@ -668,6 +680,7 @@ mod tests {
         let shut = pane(binks, false, None, 80);
         assert_eq!(shut[0], "> binks  v1.2.3 prod, ok");
         assert_eq!(shut[1], "  channels 2: 1 not read, 1 ok");
+        assert_eq!(shut[2], "  stage not read");
         assert!(
             shut.iter().any(|l| l.starts_with("  prod binks-prod")),
             "{shut:?}"

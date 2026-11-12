@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::pipeline::stamp;
 
 use crate::layout;
-use crate::release_graph::{self, Line, Shipment};
+use crate::queue::Item;
+use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 
@@ -318,6 +319,13 @@ pub struct App {
     pub history: Vec<Shipment>,
     /// The RELEASED cell: the newest tag and when it was made, `v1.19.0 10-27`; `-` with none.
     pub released_text: String,
+    /// The lab stage (`draft` .. `prod`), empty when the snapshot names none.
+    pub stage: String,
+    /// What the stage asks of the deploys: `draft: CI only, no deploy expected`,
+    /// `alpha: no alpha target live`, `draft: live above it: bnb-studios-prod`
+    /// (`docs/stages.md`, The ladder; facts from `release-state`).
+    pub stage_text: String,
+    pub stage_level: Level,
 }
 
 impl App {
@@ -460,26 +468,64 @@ impl Releases {
     }
 }
 
+/// `release-state show --json`: the collector's raw facts, before any join.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct Snapshot {
-    generated_epoch: i64,
-    rows: Vec<Release>,
+pub struct Snapshot {
+    pub generated_epoch: i64,
+    pub rows: Vec<Release>,
     /// Each project's tag history, keyed by project (`release-state refresh`).
-    releases: HashMap<String, Line>,
+    pub releases: HashMap<String, Line>,
+    /// What each lab project's stage asks of its deploys, keyed by project.
+    stages: HashMap<String, StageFacts>,
+    /// Why `stages` is empty: `notes` could not say.
+    stages_error: Option<String>,
+}
+
+/// One project's stage against its deploys, as `release-state refresh` computed it: the rungs its
+/// live targets serve, the rungs its stage needs and nothing serves, the targets above the stage.
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+struct StageFacts {
+    /// None when the lab sheet names no stage on the ladder.
+    stage: Option<String>,
+    needs: Vec<String>,
+    ahead: Vec<String>,
+}
+
+/// The stage cell and its level. A project with no stage on its lab sheet says so; one the
+/// snapshot has no facts for (the read failed, which `errors` names) says `not read`.
+fn staged(f: Option<&StageFacts>) -> (String, String, Level) {
+    let Some(f) = f else {
+        return (String::new(), "not read".into(), Level::Warn);
+    };
+    let Some(stage) = f.stage.as_deref() else {
+        return (String::new(), "none on the lab sheet".into(), Level::Ok);
+    };
+    let mut says: Vec<String> = vec![];
+    if !f.ahead.is_empty() {
+        says.push(format!("live above it: {}", f.ahead.join(", ")));
+    }
+    if !f.needs.is_empty() {
+        says.push(format!("no {} target live", f.needs.join(" or ")));
+    }
+    let (text, level) = match (says.is_empty(), stage) {
+        (true, "draft" | "dev") => ("CI only, no deploy expected".to_string(), Level::Ok),
+        (true, _) => ("deploys match".to_string(), Level::Ok),
+        (false, _) => (says.join("; "), Level::Warn),
+    };
+    (stage.to_string(), format!("{stage}: {text}"), level)
 }
 
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
 fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     let now = chrono::Local::now().timestamp();
-    let mut pins: HashMap<String, String> = HashMap::new();
-    for prod in [true, false] {
-        for r in rows.iter().filter(|r| (r.channel == "prod") == prod) {
-            pins.entry(r.project.clone())
-                .or_insert_with(|| r.pinned.value.clone().unwrap_or_default());
-        }
-    }
-    for r in &mut rows {
+    let deps: Vec<String> = rows
+        .iter()
+        .map(|r| release_graph::deps_text(&r.deps, &rows))
+        .collect();
+    for (r, deps_text) in rows.iter_mut().zip(deps) {
+        r.deps_text = deps_text;
         for w in &mut r.telemetry {
             w.level = w.judged();
         }
@@ -508,18 +554,6 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             let ok = r.telemetry.iter().filter(|w| w.state == "OK").count();
             format!("{ok}/{}", r.telemetry.len())
         };
-        r.deps_text = if r.deps.is_empty() {
-            "-".into()
-        } else {
-            r.deps
-                .iter()
-                .map(|d| match pins.get(d) {
-                    Some(pin) if !pin.is_empty() => format!("{d} {pin}"),
-                    _ => d.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
     }
     rows.sort_by(|a, b| {
         let key = |r: &Release| (r.level, rank(&r.status));
@@ -529,7 +563,13 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
 }
 
 /// One project's settled channels as its app, with its tag history joined to them.
-fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
+fn app(
+    project: &str,
+    mut channels: Vec<Release>,
+    line: Option<&Line>,
+    graph: Option<&Graph>,
+    stage: Option<&StageFacts>,
+) -> App {
     channels.sort_by(|a, b| {
         let key = |r: &Release| (r.unread(), r.level, rank(&r.status));
         (env_rank(&a.channel), key(a), &a.id).cmp(&(env_rank(&b.channel), key(b), &b.id))
@@ -591,9 +631,12 @@ fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
-    let history = line.map_or(vec![], |l| {
-        release_graph::history(l, &channels, chrono::Local::now().timestamp())
-    });
+    let now = chrono::Local::now().timestamp();
+    let history = match (graph, line) {
+        (Some(g), _) => g.history(project, &channels, now),
+        (None, Some(l)) => release_graph::history(l, &channels, now),
+        (None, None) => vec![],
+    };
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {
@@ -601,6 +644,7 @@ fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
             format!("{} {words}", env[0].channel)
         })
         .collect();
+    let (stage, stage_text, stage_level) = staged(stage);
     App {
         project: project.to_string(),
         status_text: shown(&status).to_string(),
@@ -629,11 +673,19 @@ fn app(project: &str, mut channels: Vec<Release>, line: Option<&Line>) -> App {
         }),
         history,
         channels,
+        stage,
+        stage_text,
+        stage_level,
     }
 }
 
 /// The settled channels grouped into apps, exceptions first, then by name.
-fn apps(rows: &[Release], lines: &HashMap<String, Line>) -> Vec<App> {
+fn apps(
+    rows: &[Release],
+    lines: &HashMap<String, Line>,
+    stages: &HashMap<String, StageFacts>,
+    graph: Option<&Graph>,
+) -> Vec<App> {
     let mut names: Vec<&str> = rows.iter().map(|r| r.project.as_str()).collect();
     names.sort_unstable();
     names.dedup();
@@ -641,7 +693,7 @@ fn apps(rows: &[Release], lines: &HashMap<String, Line>) -> Vec<App> {
         .into_iter()
         .map(|p| {
             let channels = rows.iter().filter(|r| r.project == p).cloned().collect();
-            app(p, channels, lines.get(p))
+            app(p, channels, lines.get(p), graph, stages.get(p))
         })
         .collect();
     out.sort_by(|a, b| {
@@ -702,6 +754,11 @@ fn says(apps: &[App]) -> String {
     }
 }
 
+/// Every channel's and every project's raw facts, unjoined: what the release graph reads.
+pub fn snapshot(runner: &dyn Runner) -> Result<Snapshot, String> {
+    show(runner, None)
+}
+
 fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> {
     let mut argv: Vec<String> = ["release-state", "show", "--json"]
         .map(String::from)
@@ -714,15 +771,26 @@ fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> 
 }
 
 /// The tab: every app, or what stopped the read. Nothing is carried over from an earlier read, so
-/// a failed probe is never shown as the last good value.
-pub fn read(runner: &dyn Runner) -> Releases {
+/// a failed probe is never shown as the last good value. `items` are the queue's, which join a
+/// release's PRs to their rows; none leaves the ROWS cell `-`.
+pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
     let question = layout::resolve("releases")
         .map(|t| t.question.to_string())
         .unwrap_or_default();
     match show(runner, None) {
         Ok(s) => {
             let rows = settle(s.rows);
-            let apps = apps(&rows, &s.releases);
+            let registry = project_map::cached();
+            let none = HashMap::new();
+            let graph = Graph::new(Inputs {
+                lines: &s.releases,
+                channels: &rows,
+                items,
+                prs: &[],
+                live: &none,
+                registry: registry.as_deref(),
+            });
+            let apps = apps(&rows, &s.releases, &s.stages, Some(&graph));
             Releases {
                 at: s.generated_epoch,
                 question,
@@ -730,7 +798,11 @@ pub fn read(runner: &dyn Runner) -> Releases {
                 gaps: gaps(&rows),
                 apps,
                 rows,
-                errors: vec![],
+                errors: s
+                    .stages_error
+                    .map(|e| format!("release-state stages: {e}"))
+                    .into_iter()
+                    .collect(),
             }
         }
         Err(e) => Releases {
@@ -763,17 +835,20 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    apps(rows, &HashMap::new()).into_iter().next().map(|a| {
-        let live = if a.live_text == "-" {
-            String::new()
-        } else {
-            format!("{}, ", a.live_text)
-        };
-        Badge {
-            says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
-            level: a.level,
-        }
-    })
+    apps(rows, &HashMap::new(), &HashMap::new(), None)
+        .into_iter()
+        .next()
+        .map(|a| {
+            let live = if a.live_text == "-" {
+                String::new()
+            } else {
+                format!("{}, ", a.live_text)
+            };
+            Badge {
+                says: format!("{live}{}; channels {}", a.status_text, a.channels_text),
+                level: a.level,
+            }
+        })
 }
 
 /// What one tag of a project shipped, from `release-state changelog --json`: the tag's
@@ -839,6 +914,11 @@ pub fn changelog(
 mod tests {
     use super::*;
     use crate::table::View;
+
+    /// The tab with no queue items: the joins these tests pin need none.
+    fn read(runner: &dyn Runner) -> Releases {
+        super::read(runner, &[])
+    }
 
     struct Fake(Result<String, String>);
     impl Runner for Fake {
@@ -1339,5 +1419,61 @@ mod tests {
         assert_eq!(a.history[0].reached[0].how, "pin");
         assert_eq!(a.history[1].reached_text, "not recorded");
         assert_eq!(r.rows[0].pinned.prev.as_deref(), Some("v1.18.0"));
+    }
+
+    #[test]
+    fn each_app_says_what_its_stage_asks_of_its_deploys() {
+        let row = |p: &str| {
+            format!(
+                r#"{{"project": "{p}", "id": "{p}-prod", "channel": "prod", "status": "ok",
+                  "pinned": {{"value": "v1"}}, "live": {{"value": "v1"}}}}"#
+            )
+        };
+        let raw = format!(
+            r#"{{"generated_epoch": 7, "rows": [{}, {}, {}, {}, {}],
+              "stages": {{"site": {{"stage": "draft", "rungs": ["prod"],
+                  "needs": [], "ahead": ["site-prod"]}},
+                "tool": {{"stage": "draft", "rungs": [], "needs": [], "ahead": []}},
+                "new": {{"stage": null, "rungs": ["prod"], "needs": [], "ahead": []}},
+                "game": {{"stage": "prod", "rungs": ["prod"],
+                  "needs": ["alpha", "beta"], "ahead": []}}}}}}"#,
+            row("site"),
+            row("tool"),
+            row("game"),
+            row("new"),
+            row("lone")
+        );
+        let r = read(&Fake(Ok(raw)));
+        let says = |p: &str| {
+            let a = r.apps.iter().find(|a| a.project == p).unwrap();
+            (a.stage.as_str(), a.stage_text.as_str(), a.stage_level)
+        };
+        assert_eq!(
+            says("site"),
+            ("draft", "draft: live above it: site-prod", Level::Warn)
+        );
+        assert_eq!(
+            says("tool"),
+            ("draft", "draft: CI only, no deploy expected", Level::Ok)
+        );
+        assert_eq!(
+            says("game"),
+            ("prod", "prod: no alpha or beta target live", Level::Warn)
+        );
+        assert_eq!(says("new"), ("", "none on the lab sheet", Level::Ok));
+        // No facts at all is a read that failed, never a quiet blank.
+        assert_eq!(says("lone"), ("", "not read", Level::Warn));
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn a_stage_the_collector_could_not_read_is_an_error_not_a_blank() {
+        let raw = r#"{"generated_epoch": 7, "rows": [], "stages": {},
+          "stages_error": "notes projects --stages printed nothing"}"#;
+        let r = read(&Fake(Ok(raw.into())));
+        assert_eq!(
+            r.errors,
+            ["release-state stages: notes projects --stages printed nothing"]
+        );
     }
 }
