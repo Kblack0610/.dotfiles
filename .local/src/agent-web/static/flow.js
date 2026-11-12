@@ -1,34 +1,14 @@
 "use strict";
-// The flow strip on Home: hub-core's `flow::Strip` (inbox | board | up next | running | needs you |
-// done 24h | drain), received ready-made (`flow` in /api/home). A chip opens the Queue on its filter, the board
-// chip opens Projects' All rows; a step past its age bound is amber, the only colour. A count the reader
-// did not return is `-`, never 0 (the strip words it so).
-
-function flowHref(to) {
-  return "#" + to.tab + (to.state ? "?s=" + encodeURIComponent(to.state) : "");
-}
-
-function flowChip(c) {
-  const text = esc(`${c.label} ${c.value ?? "-"}`);
-  const cls = "cchip fchip" + (c.hot ? " warn" : "");
-  return c.to ? `<a class="${cls}" href="${esc(flowHref(c.to))}" data-flow="${esc(c.key)}">${text}</a>` : `<span class="${cls}" data-flow="${esc(c.key)}">${text}</span>`;
-}
-
-function flowHtml(strip, grafana) {
-  if (!strip) return '<div class="flow muted">reading</div>';
-  const note = strip.error ? `<span class="warn">inbox, board: ${esc(strip.error)}</span>`
-    : strip.as_of ? `inbox, board as of ${esc(strip.as_of)}`
-    : strip.absent ? "inbox, board: no snapshot" : "";
-  const graph = grafana ? ` <a class="glink" href="${esc(grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
-  return `<div class="flow">${strip.chips.map(flowChip).join(" ")}` +
-    (strip.bottleneck ? `<div class="qwarn">! ${esc(strip.bottleneck)}</div>` : "") +
-    (note || graph ? `<div class="muted fnote">${note}${graph}</div>` : "") + `</div>`;
-}
-
 // The pipeline line that leads the Queue tab: hub-core's `flow::Rail` (`line` in /api/flow), one
 // point per step on a rail, the open step's detail after it. A click picks a step; the worst
 // starts open. Amber is past its age bound, red is nothing can leave, and a problem alone is
 // neither. The hub draws the same builder (`flowline.rs`).
+
+// A step's view: the Queue on its state, or the tab it names.
+function flowHref(to) {
+  return "#" + to.tab + (to.state ? "?s=" + encodeURIComponent(to.state) : "");
+}
+
 function railNode(n, open) {
   const cls = "rnode" + (n.stopped ? " stopped" : n.hot ? " hot" : "") + (open ? " sel" : "");
   const mark = n.stopped || n.hot ? "!" : "";

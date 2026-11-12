@@ -1,6 +1,6 @@
 //! The Home tab for both surfaces: what needs the human, what is running
-//! (with the session counts), the spend
-//! line and the health chips. It joins what the other readers already read (fleet-sessions'
+//! (with the session counts), the vitals and the health chips the briefing reads; the status
+//! grid over it is `cards`, one card per tab. It joins what the other readers already read (fleet-sessions'
 //! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
 //! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
@@ -502,16 +502,13 @@ pub struct Home {
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
     pub running: Vec<Running>,
-    /// Where work sits from inbox to done; `set_pipeline` adds the snapshot's half.
-    pub flow: crate::flow::Strip,
     /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
     /// fleet-sessions' state has no counts.
     pub sessions: String,
-    /// What the fleet spent on Claude in 24h (`claude $573 in 24h`), the line that links to
-    /// Costs; None when Prometheus did not answer (its error is in `errors`).
-    pub spend: Option<String>,
     /// The fleet's front page, one row per question; None when Prometheus did not answer.
     pub vitals: Option<crate::vitals::Vitals>,
+    /// The `cc:domain_status` chips: the briefing's overnight line reads them; the pages show
+    /// them on Alerts.
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
@@ -1004,11 +1001,6 @@ pub fn needs(
 }
 
 impl Home {
-    /// The snapshot's half of the flow strip (inbox, board, the amber step).
-    pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
-        self.flow.set_pipeline(read);
-    }
-
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
         match open {
@@ -1043,7 +1035,7 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
-/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the spend line and the chips.
+/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
 pub fn build(
     state: &Value,
     queue: Option<&Queue>,
@@ -1052,7 +1044,6 @@ pub fn build(
 ) -> Home {
     let mut h = Home {
         shown: SHOWN,
-        flow: crate::flow::Strip::build(queue),
         ..Home::default()
     };
     if state.is_null() {
@@ -1100,10 +1091,6 @@ pub fn build(
             i.error.as_deref().unwrap_or("did not answer")
         )),
         Some(i) => {
-            let v = i.cc_values();
-            if let Some(x) = v.get("cc:claude_code_cost_24h_usd") {
-                h.spend = Some(format!("claude ${x:.0} in 24h"));
-            }
             h.health = i.health();
             h.vitals = crate::vitals::read(i);
         }
@@ -1289,11 +1276,8 @@ mod tests {
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        // The queue's counts are the flow strip's; the session counts head Running.
+        // The session counts head Running.
         assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
-        assert_eq!(h.spend, None, "no Prometheus read, no spend");
-        assert_eq!(h.flow.chips[3].text(), "running 1");
-        assert_eq!(h.flow.chips[2].text(), "up next 0 ready, 0 held");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
@@ -1632,13 +1616,8 @@ mod tests {
     }
 
     #[test]
-    fn spend_is_one_worded_line_and_a_missing_series_or_counts_read_as_nothing() {
-        let cost =
-            json!({"metric": {"__name__": "cc:claude_code_cost_24h_usd"}, "value": [0, "573.4"]});
-        let h = build(&state(), None, None, Some(&infra(vec![cost], &[])));
-        assert_eq!(h.spend.as_deref(), Some("claude $573 in 24h"));
+    fn no_state_reads_as_no_session_counts() {
         let none = build(&Value::Null, None, None, Some(&infra(vec![], &[])));
-        assert_eq!(none.spend, None, "a series Prometheus lacks is not $0");
         assert_eq!(none.sessions, "", "no state, no counts");
     }
 

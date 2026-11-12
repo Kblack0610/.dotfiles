@@ -666,7 +666,7 @@ fn inner_count(pg: Option<&Page>, id: &str) -> usize {
 }
 
 /// The opened project, as agent-web's project page: a header (the card, its goal, the Flow
-/// line, releases, alerts and the next stage), the inner tab strip (`layout::PROJECT_PAGE`), then
+/// line, releases, checks, alerts and the next stage), the inner tab strip (`layout::PROJECT_PAGE`), then
 /// the inner tab shown; Rows draws nothing here, the app puts the rows under it. Task lines are
 /// never drawn: they are Rows. `page` is None while it is read. Returns the line the selection
 /// is on, for the app to keep in view.
@@ -692,6 +692,15 @@ pub fn open_lines(
         if let Some(b) = &pg.releases {
             out.extend(wrapped(
                 "  releases ",
+                &format!("{} (R opens)", b.says),
+                crate::releases::alert(b.level, p),
+                p,
+                w,
+            ));
+        }
+        if let Some(b) = &pg.checks {
+            out.extend(wrapped(
+                "  checks   ",
                 &format!("{} (R opens)", b.says),
                 crate::releases::alert(b.level, p),
                 p,
@@ -1048,6 +1057,8 @@ pub(crate) mod tests {
             project: "garden".into(),
             releases: None,
             alerts: None,
+            checks: None,
+            check_groups: vec![],
             flow_line: Some(
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
@@ -1164,6 +1175,19 @@ pub(crate) mod tests {
                 .any(|l| l == "  alerts   2 watches, 1 firing (A opens)"),
             "the count line leads to Alerts"
         );
+        watched.checks = Some(hub_core::releases::Badge {
+            says: "Partial outage: api".into(),
+            level: hub_core::releases::Level::Bad,
+        });
+        let lines = draw(&pr.cards[0], Some(&watched), &pv);
+        let at = |want: &str| lines.iter().position(|l| l.starts_with(want));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "  checks   Partial outage: api (R opens)"),
+            "the checks line leads to the app's page under Releases: {lines:?}"
+        );
+        assert!(at("  checks").unwrap() < at("  alerts").unwrap());
         assert_eq!(
             draw(&pr.cards[0], None, &pv).last().unwrap(),
             "  reading the page..."

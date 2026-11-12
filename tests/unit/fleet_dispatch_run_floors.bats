@@ -487,17 +487,20 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "run publishes BLOCKED when a gate leaves a queue item waiting, NOOP when the human held dispatch" {
+@test "run publishes BLOCKED when a gate leaves a queue item waiting, the human's dispatch hold included, so its Stopped line and runner row show it" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queue item fix-game waits'
   assert_equal "$(outcome)" BLOCKED
-  stub agent-hold 'echo "dispatch held"; exit 1'
+  stub agent-hold 'echo "held: dispatch since 2026-11-12T09:04:57-0800 by dotfiles: until the queue is set up"; exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'held (agent-hold'
-  assert_equal "$(outcome)" NOOP
+  assert_output --partial 'held (agent-hold dispatch) by dotfiles: until the queue is set up'
+  assert_equal "$(outcome)" BLOCKED
+  DISPATCH_STARVED_MIN=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --regexp '^Dispatch stopped [0-9]+s: held by dotfiles: until the queue is set up\. Clears with agent-hold release dispatch\.$'
   assert_not_called 'wt new'
 }
 

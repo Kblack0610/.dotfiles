@@ -17,7 +17,7 @@
 // a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
 // --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
@@ -105,14 +105,20 @@ function chromium(pw) {
   return path;
 }
 
-// The page and CSP exactly as the server fills them, never a dump left over from another checkout.
-// CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
+// The page and CSP exactly as the server fills them, never a dump left over from another checkout:
+// each run dumps into its own directory, so harness runs from two worktrees at once never read each
+// other's page. CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
-  const path = join(SCRATCH, "index.html");
+  const dir = mkdtempSync(join(SCRATCH, "dump-"));
+  const path = join(dir, "index.html");
   const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(SCRATCH, "target") }, encoding: "utf8" });
-  if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
-  return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
+  try {
+    if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
+    return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // The server's Column carries each column's phone role; the fixtures name only the keys, so the
