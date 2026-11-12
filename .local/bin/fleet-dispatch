@@ -1633,6 +1633,7 @@ cmd_start() {
   [ -z "$harness" ] || [ -z "$resume" ] || { say "start: --harness starts an item; a resume stays on what it ran"; return 2; }
   [ -z "$harness" ] || [ -n "$item" ] || { say "start: --harness needs --item"; return 2; }
   [ -z "$prompt" ] || [ -n "$resume" ] || { say "start: --prompt is the first message of a --resume"; return 2; }
+  [[ "$prompt" != -* ]] || { say "start: --prompt cannot start with -: claude would read it as a flag"; return 2; }
   case "$qmode" in '' | oneshot | plan) ;; *) say "start: --mode is oneshot or plan, not $qmode"; return 2 ;; esac
   [ -z "$qmode" ] || [ -n "$brief_file" ] || { say "start: --mode sets the item --brief makes; a queued item keeps its own"; return 2; }
   if [ -n "$host" ]; then

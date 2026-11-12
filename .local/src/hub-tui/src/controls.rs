@@ -429,7 +429,7 @@ impl Controls {
                     "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 10, 1, 14, 9, 11, 12],
+                keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 1, 14, 9, 10, 11, 12],
                 flex: Some(17),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,

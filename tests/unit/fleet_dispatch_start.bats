@@ -224,6 +224,10 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --item x --prompt hi
   assert_failure 2
   assert_output --partial 'first message of a --resume'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session fix-crash \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --prompt "-x"
+  assert_failure 2
+  assert_output --partial 'cannot start with -'
 }
 
 @test "start --resume --item re-attaches the started item to the new session; a queued item or a --row is refused" {

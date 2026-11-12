@@ -614,11 +614,12 @@ answer_said() {
   else echo "$2"; fi
 }
 
-# answer_row <ask file> <answer> <by>: the board row for an answer no session or queue item takes.
-# Boards list pending asks only, so a row for a judge answer says how to disagree with it.
+# answer_row <ask file> <answer> <by> [note]: the board row for an answer no session or queue item
+# takes, the note appended. Boards list pending asks only, so a row for a judge answer says how to
+# disagree with it.
 answer_row() {
   local how=""; [ "$3" = judge ] && how=" (the judge; to override: agent-ask answer $(field "$1" id) <option>)"
-  file_board_row "$1" "$(field "$1" question) -> answered: $2$how"
+  file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
 cmd_answer() {
@@ -944,7 +945,7 @@ cmd_reopen() {
   [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; return 0; }
   [ -z "$(queue_holders "$id")" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
   session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && return 0
-  answer_row "$f" "$answer" "$by"
+  answer_row "$f" "$answer" "$by" "its session ended and did not reopen: claude --resume $sid"
   return 1
 }
 

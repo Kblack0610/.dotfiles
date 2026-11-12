@@ -884,6 +884,14 @@ outcomes_cli() {
   assert_success
   assert_output --partial 'a queue item holds it'
   assert_not_called 'fleet-dispatch start'
+  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
+  "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  run "$AGENT_ASK" reopen "$failed"
+  assert_failure
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
   # Refused: an ask that already resumes some other way, one with no session, one not pending.
   other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
   run "$AGENT_ASK" reopen-on-answer "$other"

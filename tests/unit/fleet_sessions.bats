@@ -3110,6 +3110,22 @@ verdict() {
   [[ "$stderr" == *"no live session sid-9"* ]]
 }
 
+@test "close --self collects only its own row, and no repo rows" {
+  local since=$(( $(date +%s) - 3600 ))
+  row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
+  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$(row 1 7)" "$(row 2 8)" > "$SANDBOX/bin/agent-panel"
+  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/gh"
+  CACHE="$(mktemp -d)"
+  run collect
+  assert_success
+  [ "$(cut -f3 <<<"$output" | grep -c '^sid-')" = 2 ]
+  CLOSE_SELF=sid-2 run collect
+  assert_success
+  assert_equal "$(cut -f3 <<<"$output")" sid-2
+  rm -rf "$CACHE"
+}
+
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
   [ "$(jq -c --argjson hand 60 --argjson chat 1440 --arg world lab \
        '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
