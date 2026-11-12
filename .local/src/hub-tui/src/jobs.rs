@@ -11,8 +11,8 @@ use crate::fit::{cell, Cell, Table};
 use crate::fmt::{clock, dur, Palette};
 
 /// `Job::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const HEADER: [&str; 7] = [
-    "STATE", "SOURCE", "NAME", "STARTED", "TOOK", "RESULT", "DETAIL",
+const HEADER: [&str; 8] = [
+    "STATE", "SOURCE", "NAME", "STARTED", "TOOK", "RESULT", "HOST", "DETAIL",
 ];
 
 /// The log of one row, read in a worker. `back` counts lines up from the end: 0 follows the tail.
@@ -118,11 +118,11 @@ impl JobsView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![0, 2, 3, 4, 5, 1],
-            flex: Some(6),
+            keep: vec![0, 2, 3, 4, 5, 1, 6],
+            flex: Some(7),
             flexmin: 10,
             right: vec![4],
-            cap: vec![(2, 40), (5, 12)],
+            cap: vec![(2, 40), (5, 12), (6, 16)],
             mark: self.table.mark::<Job>(),
             ..Default::default()
         }
@@ -168,6 +168,11 @@ fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
         j.started.map_or("-".into(), |t| clock(t, now)).into(),
         took.into(),
         result,
+        if j.host.is_empty() {
+            "-".into()
+        } else {
+            j.host.clone().into()
+        },
         if j.detail.is_empty() {
             "-".into()
         } else {

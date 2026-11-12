@@ -472,6 +472,9 @@ pub struct App {
     /// view in `Scope::Release`).
     pub builds: Option<Builds>,
     pub ci: bv::BuildsView,
+    /// A run's record asked for (`hub tab 'infra ci/<run>'`) before the ledger was read: it opens
+    /// when the read lands, unless the page moved first.
+    run_want: Option<String>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -658,6 +661,7 @@ impl App {
             releases: None,
             builds: None,
             ci: bv::BuildsView::default(),
+            run_want: None,
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -1792,6 +1796,7 @@ impl App {
                 self.rv.runs.reselect(&b, rel);
                 self.builds = Some(*b);
                 self.put_builds();
+                self.open_wanted_run();
                 if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
@@ -2219,8 +2224,6 @@ impl App {
                 self.open_runner(id);
             }
             (Link::To(Kind::Session, id), _) => self.open_session(id),
-            (Link::To(Kind::Machine, id), _) => self.open_machine(id),
-            (Link::To(Kind::Pool, id), _) => self.open_pool(id),
             (_, Some((tab, arg))) => {
                 if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
@@ -2234,7 +2237,7 @@ impl App {
     /// Open the session `target` on the Sessions tab, as a click on a Fleet row does on the web.
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
-        if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
+        if let Some(i) = self.controls.position(target) {
             self.controls.table.sel = i;
             self.controls.open = true;
             self.seek = Some(DETAIL);
@@ -2324,21 +2327,20 @@ impl App {
 
     /// A request's query: the outbox on Daily, a section on Infra and Log, else a project name.
     pub fn open_query(&mut self, q: Option<String>) {
+        // `hub tab 'infra machines/<host>'` and each other record's page (links::PAGES).
+        let tab = self.tab.title();
+        if let Some((kind, id)) = q.as_deref().and_then(|q| hub_core::links::page_of(tab, q)) {
+            return self.open_page(kind, id);
+        }
         match (self.tab, q) {
             (Tab::Daily, q) => {
                 if q.is_some_and(|q| q.trim().eq_ignore_ascii_case("outbox")) {
                     self.show_outbox(true);
                 }
             }
-            // `hub tab 'infra machines/<host>'`: that machine's page, as its link opens.
-            (Tab::Infra, Some(q)) if q.trim().starts_with("machines/") => {
-                let host = q.trim().trim_start_matches("machines/").to_string();
-                self.open_machine(&host);
-            }
-            // `hub tab 'infra pools/<pool>'`: that pool's page, as its link opens.
-            (Tab::Infra, Some(q)) if q.trim().starts_with("pools/") => {
-                let name = q.trim().trim_start_matches("pools/").to_string();
-                self.open_pool(&name);
+            // `hub tab 'infra runs pr:=o/r#7'`: the runs table under that query (a PR's CI runs).
+            (Tab::Infra, Some(q)) if q.trim().starts_with("runs ") => {
+                self.open_runs(q.trim()["runs ".len()..].trim().to_string());
             }
             (Tab::Alerts | Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
@@ -2395,6 +2397,45 @@ impl App {
         }
     }
 
+    /// A record's page on its tab (`links::PAGES`): a machine's or a pool's page, a CI run's
+    /// record (the runs table narrowed to it, its newest attempt opened with its jobs and log,
+    /// now or once the ledger is read), or every run of one job, as `h` on its row lists.
+    fn open_page(&mut self, kind: hub_core::links::Kind, id: &str) {
+        use hub_core::links::Kind;
+        match kind {
+            Kind::Machine => self.open_machine(id),
+            Kind::Pool => self.open_pool(id),
+            Kind::CiRun => {
+                self.open_runs(format!("id:={id}"));
+                self.run_want = Some(id.to_string());
+                self.open_wanted_run();
+            }
+            Kind::Job => {
+                self.open_jobs();
+                self.jobs_history(Some(id.to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    /// The runs table under one query, from its top, with no run open.
+    fn open_runs(&mut self, q: String) {
+        self.open_section("runs");
+        let v = &mut self.ci;
+        v.table.clear();
+        v.table.view.q = q;
+        (v.times, v.log, v.detail) = (None, None, None);
+    }
+
+    fn open_wanted_run(&mut self) {
+        if self.run_want.is_none() || self.builds.is_none() || self.tab != Tab::Infra {
+            return;
+        }
+        self.run_want = None;
+        self.ci.table.sel = 0;
+        self.open_build_log();
+    }
+
     /// Show one section of the tab: Infra's Jobs opens the jobs table and its Runs the runs
     /// table, Log's History its day list and a Log fold opens; any other scrolls to its heading
     /// at the next draw.
@@ -2438,6 +2479,7 @@ impl App {
         self.log_actions = false;
         self.log_work = false;
         self.seek = None;
+        self.run_want = None;
         if t == Tab::Log {
             self.read_log_folds();
         }
@@ -2657,6 +2699,10 @@ impl App {
             }
             queuetab::Ask::Promote(label, w) => {
                 self.queue_act(label, move |r| hub_core::tasks::apply(r, &w));
+                true
+            }
+            queuetab::Ask::Follow(l) => {
+                self.follow(&l);
                 true
             }
         }
@@ -3188,6 +3234,13 @@ impl App {
         self.infra_inner = "jobs";
     }
 
+    /// Every run of one job, or with None the folded list again, from its top.
+    fn jobs_history(&mut self, name: Option<String>) {
+        self.jv.history = name;
+        self.jv.table.sel = 0;
+        self.read_jobs();
+    }
+
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
         if self.jv.table.key::<Job>(k.code) != Took::No {
             return true;
@@ -3211,13 +3264,7 @@ impl App {
             }
             KeyCode::Char('h') => {
                 let name = self.selected().map(|j| j.name.clone());
-                self.jv.history = if self.jv.history.is_some() {
-                    None
-                } else {
-                    name
-                };
-                self.jv.table.sel = 0;
-                self.read_jobs();
+                self.jobs_history(name.filter(|_| self.jv.history.is_none()));
             }
             KeyCode::Char('o') => {
                 if let Some(u) = self.selected().and_then(|j| j.url.clone()) {
@@ -3872,7 +3919,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Queue if self.qv.detail => format!(
-                "j/k another row  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
+                "j/k another row  l link, Enter opens it  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Queue => format!(
                 "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
@@ -4952,9 +4999,21 @@ mod tests {
         assert_eq!(a.tab, Tab::Projects, "the Board is the Projects tab's rows");
         a.follow(&Link::to(Kind::CiRun, "4412"));
         assert_eq!(
-            a.tab,
-            Tab::Infra,
-            "a page the TUI lacks opens the inner tab that will hold it"
+            (a.tab, a.ci.table.view.q.as_str()),
+            (Tab::Infra, "id:=4412")
+        );
+        assert!(
+            a.infra_open == Some(Opened::Runs),
+            "a run's record is the runs table at that run"
+        );
+        a.follow(&Link::to(Kind::PrRuns, "o/r#7"));
+        assert_eq!(a.ci.table.view.q, "pr:=o/r#7", "a PR's CI runs");
+        assert!(a.infra_open == Some(Opened::Runs) && a.run_want.is_none());
+        a.follow(&Link::to(Kind::Job, "agentctl-dream"));
+        assert_eq!(a.jv.history.as_deref(), Some("agentctl-dream"));
+        assert!(
+            a.infra_open == Some(Opened::Jobs) && a.infra_inner == "jobs",
+            "a job's page is every run of it"
         );
         a.follow(&Link::tab("nope"));
         assert_eq!(
@@ -4962,6 +5021,50 @@ mod tests {
             Tab::Infra,
             "a link to no tab leaves the page where it is"
         );
+    }
+
+    #[test]
+    fn a_run_link_opens_its_record_now_or_once_the_ledger_is_read() {
+        use hub_core::links::{Kind, Link};
+        let mut a = app(Tab::Home);
+        a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
+        a.follow(&Link::to(Kind::CiRun, "2"));
+        assert!(a.ci.log.is_none(), "no ledger read yet: nothing to open");
+        a.handle(Msg::Builds(Box::new(bv::tests::fixture())));
+        assert_eq!(a.selected_build().map(|r| r.id), Some(2));
+        assert!(
+            a.ci.log.is_some() && a.ci.detail.is_some(),
+            "the read opens it"
+        );
+        a.follow(&Link::to(Kind::CiRun, "3"));
+        assert_eq!(a.selected_build().map(|r| r.id), Some(3));
+        assert!(
+            a.ci.log.is_some(),
+            "with the ledger on hand it opens at once"
+        );
+
+        // NEGATIVE CONTROL: a page left before the read does not open the run there.
+        let mut a = app(Tab::Home);
+        a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
+        a.follow(&Link::to(Kind::CiRun, "2"));
+        a.follow(&Link::to(Kind::Queue, "x"));
+        a.handle(Msg::Builds(Box::new(bv::tests::fixture())));
+        assert!(a.ci.log.is_none() && a.run_want.is_none());
+    }
+
+    #[test]
+    fn a_session_link_opens_by_its_target_or_its_queue_item() {
+        use hub_core::links::{Kind, Link};
+        let mut a = app(Tab::Queue);
+        a.controls.set(crate::controls::tests::fixture());
+        a.follow(&Link::to(Kind::Session, "fix-the-thing"));
+        assert_eq!(a.tab, Tab::Sessions);
+        assert!(a.controls.open, "the item's session opens");
+        let sel = a.controls.rows()[a.controls.table.sel].row.target.clone();
+        assert_eq!(sel, "lab/dotfiles-agent-3:2");
+        a.controls.open = false;
+        a.follow(&Link::to(Kind::Session, "no-such-item"));
+        assert!(!a.controls.open, "no row names it: nothing opens");
     }
 
     fn app(tab: Tab) -> App {
