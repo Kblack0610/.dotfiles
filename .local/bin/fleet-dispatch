@@ -782,14 +782,17 @@ live_units() { live_runs | units_on ''; }
 
 # pace_target -- TARGET is the live sessions the fleet fills to now, TARGET_WHEN which one:
 # DISPATCH_TARGET_BURST while the human is away, else DISPATCH_TARGET_PRESENT. TOTAL_LIVE is every
-# live Claude session in the fleet state document but the parked ones, hand starts included: they
-# count toward the target and are never refused. It is empty when the document is missing or older
-# than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
+# Claude session in the fleet state document, hand starts included (they count toward the target
+# and are never refused), but parked ones, finished ones (its vocab.finished, which the close
+# verdict winds down) and the shepherd pass, which its own .counts leaves out too. It is empty when
+# the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
 pace_target() {
   if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
   else TARGET=$DISPATCH_TARGET_BURST TARGET_WHEN=away; fi
   TOTAL_LIVE=$(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
-    select($now - (.generated_epoch // 0) <= $fresh) | [.sessions[] | select(.bucket != "PARKED")] | length' "$FLEET_STATE_FILE" 2>/dev/null)
+    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
+    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
+    | length' "$FLEET_STATE_FILE" 2>/dev/null)
 }
 
 # floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
@@ -3958,15 +3961,20 @@ cmd_run() {
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
-  # The target counts every live session, hand starts too: a fleet at it is working, not blocked.
-  if [ "$TOTAL_LIVE" -ge "$TARGET" ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET, starting nothing"; return 0; fi
-  [ "$room" -le $(( TARGET - TOTAL_LIVE )) ] || room=$(( TARGET - TOTAL_LIVE ))
+  # The target counts every live session, hand starts too. At it no unit is free, so only an urgent
+  # item that parks a runner session for itself starts (preempt_pick): the total stays where it is.
+  local gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
+  [ "$room" -le "$gap" ] || room=$gap
   [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
   if [ -n "$urgent" ] && [ -z "$(gate)" ]; then start_items "$urgent" 1; return; fi
-  if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then
+    local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
+    [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
+    PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
+  fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held

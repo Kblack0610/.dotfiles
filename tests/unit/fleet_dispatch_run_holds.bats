@@ -216,6 +216,23 @@ load 'fleet_dispatch/common'
   grep -q 'preempted l2 (lab/game-agent-l2) for urgent now-one' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
 }
 
+@test "preempt: at the pace target with run units free, an urgent item still parks a runner session and starts; a high one waits" {
+  six_of_six_units
+  export DISPATCH_TARGET_BURST=10
+  fleet_state 10
+  agent-queue add --project game --slug later-one --priority high "later one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'at 10 live sessions, the away pace target is 10, starting nothing'
+  assert_not_called 'claude-acct park'
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for now-one'
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item waited behind the pace target"
+  [ -n "$(qitem queued later-one)" ] || fail "the high item started past the pace target"
+}
+
 @test "preempt: a heavy urgent item among light sessions parks one a pass, lowest priority first, and starts once two are free" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_BURST=2

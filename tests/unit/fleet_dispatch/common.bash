@@ -379,10 +379,13 @@ held_game_app_row() {
 }
 
 # fleet_state <live sessions> [<age in minutes>] -- the fleet state document fleet-sessions writes,
-# holding that many live sessions (one parked on top, which the pace target never counts), written that long ago.
+# holding that many live sessions, written that long ago. On top sit a parked, a finished and the
+# shepherd's session, which the pace target never counts.
 fleet_state() {
   jq -cn --argjson n "$1" --argjson at "$(( $(date +%s) - ${2:-0} * 60 ))" \
-    '{generated_epoch: $at, sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}] + [{target: "lab/p", bucket: "PARKED"}])}' > "$FLEET_STATE_FILE"
+    '{generated_epoch: $at, vocab: {finished: ["DONE", "LANDED"]},
+      sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}]
+        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
 }
 
 # outcome: what the pass told fleet-liveness, through the real agent-proof.sh the sandbox links.
