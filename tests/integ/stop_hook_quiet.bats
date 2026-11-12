@@ -436,6 +436,44 @@ snapshot() {
   refute_output --partial old.txt
 }
 
+@test "files that arrived from origin's default branch are not the session's changes (ar-1652)" {
+  dirty
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  snapshot work
+  # another session's PR lands upstream, and this checkout merges it in
+  git -C "$REPO" stash -q -u
+  echo theirs > "$REPO/landed.txt"
+  git -C "$REPO" add landed.txt
+  git -C "$REPO" commit -qm landed
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  git -C "$REPO" stash pop -q
+  # and this session makes its own edits: a new file, and a mode change upstream lacks
+  echo mine > "$REPO/mine.txt"
+  chmod +x "$REPO/landed.txt"
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" work
+  assert_success
+  assert_output "$(printf 'landed.txt\nmine.txt')"
+  chmod -x "$REPO/landed.txt"
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" work
+  assert_output mine.txt
+  # with no origin ref at all, every change since the snapshot still counts
+  git -C "$REPO" update-ref -d refs/remotes/origin/main
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" work
+  assert_output "$(printf 'landed.txt\nmine.txt')"
+}
+
+@test "a session's deletion of a file upstream never had still counts (ar-1652)" {
+  echo branch-only > "$REPO/branch.txt"
+  git -C "$REPO" add branch.txt
+  git -C "$REPO" commit -qm branch
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD~1
+  snapshot del
+  git -C "$REPO" rm -q branch.txt
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" del
+  assert_success
+  assert_output branch.txt
+}
+
 @test "a second session starts with its own baseline and resume preserves the first" {
   dirty
   snapshot first
