@@ -247,7 +247,7 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue's admission: automated adds it held
-: "${BENCH_VITALS:=output=merged_prs flow=queue_net_24h,step_age_p90_queued quality=rework_candidate_7d,first_pass_share you=human_answered_per_day,buzzes_per_day cost=points_per_pr trust=ledger_coverage,loop_dark_7d outcome=requested_unstarted_h,landed_unverified}"   # the front page: question=kpi,kpi in order; every view reads this list
+: "${BENCH_VITALS:=you=human_answered_per_day,buzzes_per_day outcome=requested_unstarted_h,landed_unverified quality=rework_candidate_7d,first_pass_share cost=cost_per_merged_item}"   # the front page: question=kpi,kpi in order; every view reads this list. Only what the human acts on: flow lives in the FLOW strip, trust in kpi --check
 : "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome

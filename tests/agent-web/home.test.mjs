@@ -336,22 +336,22 @@ test("Home has no Numbers heading: the session counts head Running and the spend
   assert.doesNotMatch(none, /Spend|sessions<\/a>/, "the control: no spend and no counts, no lines for them");
 });
 
-const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Flow", all_ok: false, rows: [
-  { question: "Output", level: "ok", parts: ["1633 PRs merged in 7d"] },
-  { question: "Flow", level: "warn", parts: ["Queue -200 in 24h", "queued p90 53h, limit 12h"] },
+const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
+  { question: "Cost", level: "ok", parts: ["$12.54 per merged PR"] },
+  { question: "Outcome", level: "warn", parts: ["Oldest request 340h, limit 72h", "12 unverified, limit 0"] },
 ], ...o });
 
 test("Vitals sits under Spend and above Needs you, a row per question, the off ones marked", () => {
   const html = draw(home({ spend: "claude $573 in 24h", vitals: vitals() }));
   assert.match(html, /Vitals <span class="muted">1 of 2 off target<\/span><\/h2>/);
-  assert.match(html, /<div class="cline vital"><b>Output<\/b> 1633 PRs merged in 7d<\/div>/);
-  assert.match(html, /<div class="cline vital warn"><b>Flow<\/b> Queue -200 in 24h; queued p90 53h, limit 12h<\/div>/);
+  assert.match(html, /<div class="cline vital"><b>Cost<\/b> \$12.54 per merged PR<\/div>/);
+  assert.match(html, /<div class="cline vital warn"><b>Outcome<\/b> Oldest request 340h, limit 72h; 12 unverified, limit 0<\/div>/);
   assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
 });
 
 test("an unread vital is dim, so it never looks like a healthy row", () => {
-  const rows = [{ question: "Trust", level: "nodata", parts: ["Ledger ?"] }];
-  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Trust<\/b> Ledger \?<\/div>/);
+  const rows = [{ question: "Cost", level: "nodata", parts: ["? per merged PR"] }];
+  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Cost<\/b> \? per merged PR<\/div>/);
 });
 
 test("Vitals folds to its head when all are on target, and shows nothing until it is read", () => {

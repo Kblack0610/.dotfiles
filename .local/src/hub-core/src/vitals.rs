@@ -1,4 +1,4 @@
-//! The fleet's front page: one row per question (output, flow, quality, you, cost, trust, outcome),
+//! The fleet's front page: one row per question (you, outcome, quality, cost),
 //! each counted by fleet-bench and read here from its gauges. fleet-bench judges and picks the
 //! rows (`BENCH_VITALS`); this only words them, so Home, `hub vitals` and whatever reads that
 //! say the same thing. No model and no composite score: a row names what is off.
@@ -17,24 +17,19 @@ const WINDOW: &str = "7d";
 #[derive(Clone, Copy)]
 enum Unit {
     Plain,
-    Signed,
+    Usd,
     Share,
     Hours,
     Minutes,
 }
 
 /// Each KPI's words, `{}` standing for its number. A key with none reads as its own name.
-const WORDS: [(&str, &str, Unit); 12] = [
-    ("merged_prs", "{} PRs merged in 7d", Unit::Plain),
-    ("queue_net_24h", "Queue {} in 24h", Unit::Signed),
-    ("step_age_p90_queued", "queued p90 {}", Unit::Minutes),
+const WORDS: [(&str, &str, Unit); 7] = [
     ("rework_candidate_7d", "Rework {}", Unit::Share),
     ("first_pass_share", "first pass {}", Unit::Share),
     ("human_answered_per_day", "{} answers a day", Unit::Plain),
     ("buzzes_per_day", "{} buzzes a day", Unit::Plain),
-    ("points_per_pr", "{} points per PR", Unit::Plain),
-    ("ledger_coverage", "Ledger {}", Unit::Share),
-    ("loop_dark_7d", "{} dark episodes in 7d", Unit::Plain),
+    ("cost_per_merged_item", "{} per merged PR", Unit::Usd),
     ("requested_unstarted_h", "Oldest request {}", Unit::Hours),
     ("landed_unverified", "{} unverified", Unit::Plain),
 ];
@@ -50,7 +45,7 @@ pub struct Row {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Vitals {
-    /// "5 of 7 off target".
+    /// "2 of 4 off target".
     pub head: String,
     /// The head and the questions it counts, for the surfaces that carry one line.
     pub line: String,
@@ -83,8 +78,7 @@ fn plain(x: f64) -> String {
 fn number(x: f64, unit: Unit) -> String {
     match unit {
         Unit::Plain => plain(x),
-        Unit::Signed if x > 0.0 => format!("+{}", plain(x)),
-        Unit::Signed => plain(x),
+        Unit::Usd => format!("${x:.2}"),
         Unit::Share => format!("{}%", plain((x * 1000.0).round() / 10.0)),
         Unit::Hours => number(x * 60.0, Unit::Minutes),
         Unit::Minutes if x < 60.0 => format!("{x:.0}m"),
@@ -96,7 +90,7 @@ fn gauge(infra: &Infra, name: &str, key: &str) -> Option<f64> {
     kpi(infra, name, key, "")
 }
 
-/// "Queue -200 in 24h", then ", limit 12h" while it is past that limit; "?" for no reading.
+/// "Oldest request 340h", then ", limit 72h" while it is past that limit; "?" for no reading.
 fn clause(infra: &Infra, key: &str, past: bool) -> String {
     let (words, unit) = WORDS
         .iter()
@@ -268,16 +262,6 @@ mod tests {
     fn fleet() -> Infra {
         let mut rows = vec![];
         for (i, (q, k, v, l)) in [
-            ("output", "merged_prs", Some(1633.0), None),
-            ("flow", "queue_net_24h", Some(-200.0), None),
-            (
-                "flow",
-                "step_age_p90_queued",
-                Some(3198.0),
-                Some((720.0, 1.0)),
-            ),
-            ("quality", "rework_candidate_7d", Some(0.254), None),
-            ("quality", "first_pass_share", Some(0.438), Some((0.7, 1.0))),
             (
                 "you",
                 "human_answered_per_day",
@@ -285,9 +269,6 @@ mod tests {
                 Some((5.0, 1.0)),
             ),
             ("you", "buzzes_per_day", Some(61.3), Some((15.0, 1.0))),
-            ("cost", "points_per_pr", Some(0.22), None),
-            ("trust", "ledger_coverage", Some(0.492), Some((0.95, 1.0))),
-            ("trust", "loop_dark_7d", Some(23.0), None),
             (
                 "outcome",
                 "requested_unstarted_h",
@@ -295,6 +276,9 @@ mod tests {
                 Some((72.0, 1.0)),
             ),
             ("outcome", "landed_unverified", Some(12.0), Some((0.0, 1.0))),
+            ("quality", "rework_candidate_7d", Some(0.254), None),
+            ("quality", "first_pass_share", Some(0.438), Some((0.7, 1.0))),
+            ("cost", "cost_per_merged_item", Some(12.537), None),
         ]
         .into_iter()
         .enumerate()
@@ -315,20 +299,14 @@ mod tests {
         assert_eq!(
             said,
             [
-                "Output   1633 PRs merged in 7d",
-                "Flow ! Queue -200 in 24h; queued p90 53h, limit 12h",
-                "Quality ! Rework 25.4%; first pass 43.8%, limit 70%",
                 "You ! 35.9 answers a day, limit 5; 61.3 buzzes a day, limit 15",
-                "Cost   0.22 points per PR",
-                "Trust ! Ledger 49.2%, limit 95%; 23 dark episodes in 7d",
                 "Outcome ! Oldest request 340h, limit 72h; 12 unverified, limit 0",
+                "Quality ! Rework 25.4%; first pass 43.8%, limit 70%",
+                "Cost   $12.54 per merged PR",
             ]
         );
-        assert_eq!(v.head, "5 of 7 off target");
-        assert_eq!(
-            v.line,
-            "5 of 7 off target: Flow, Quality, You, Trust, Outcome"
-        );
+        assert_eq!(v.head, "3 of 4 off target");
+        assert_eq!(v.line, "3 of 4 off target: You, Outcome, Quality");
         assert!(!v.all_ok);
     }
 
@@ -350,8 +328,8 @@ mod tests {
 
     #[test]
     fn a_missing_reading_is_a_question_mark_and_never_an_all_clear() {
-        let v = read(&infra(vital(0.0, "cost", "points_per_pr", None, None))).unwrap();
-        assert_eq!(v.rows[0].text(), "? points per PR");
+        let v = read(&infra(vital(0.0, "cost", "cost_per_merged_item", None, None))).unwrap();
+        assert_eq!(v.rows[0].text(), "? per merged PR");
         assert_eq!(v.rows[0].level, Level::Nodata);
         assert_eq!(v.head, "0 of 1 on target, 1 unread");
         assert_eq!(v.line, "0 of 1 on target, 1 unread: Cost");
@@ -360,13 +338,13 @@ mod tests {
 
     #[test]
     fn a_past_kpi_outranks_an_unread_one_in_the_same_row() {
-        let mut rows = vital(0.0, "trust", "loop_dark_7d", None, None);
+        let mut rows = vital(0.0, "outcome", "landed_unverified", None, None);
         rows.extend(vital(
             1.0,
-            "trust",
-            "ledger_coverage",
-            Some(0.5),
-            Some((0.95, 1.0)),
+            "outcome",
+            "requested_unstarted_h",
+            Some(100.0),
+            Some((72.0, 1.0)),
         ));
         assert_eq!(read(&infra(rows)).unwrap().rows[0].level, Level::Warn);
     }
@@ -404,9 +382,8 @@ mod tests {
     }
 
     #[test]
-    fn the_signed_unit_says_growth_and_zero_plainly() {
-        assert_eq!(number(240.0, Unit::Signed), "+240");
-        assert_eq!(number(0.0, Unit::Signed), "0");
-        assert_eq!(number(-200.0, Unit::Signed), "-200");
+    fn dollars_read_to_the_cent() {
+        assert_eq!(number(12.537, Unit::Usd), "$12.54");
+        assert_eq!(number(5.0, Unit::Usd), "$5.00");
     }
 }
