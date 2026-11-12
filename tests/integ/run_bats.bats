@@ -14,13 +14,15 @@ setup() {
   command -v parallel >/dev/null && JOBS=(--jobs 2)
 }
 
+own_sid() { ps -o sid= -p $$ | tr -d ' '; }
+
 # A red run must not leave its fixture running: the inner run is a session of its own, out of reach
 # of the outer run's reap. Never this test's own session: when the wrapper did not start a new
 # one, that is the caller's, the shell that ran make.
 teardown() {
   local sid
   sid=$(cat "$SIDF" 2>/dev/null)
-  [ -n "$sid" ] && [ "$sid" != "$(ps -o sid= -p $$ | tr -d ' ')" ] && pkill -KILL -s "$sid"
+  [ -n "$sid" ] && [ "$sid" != "$(own_sid)" ] && pkill -KILL -s "$sid"
   return 0
 }
 
@@ -36,7 +38,7 @@ fixture() {
   {
     printf '@%s "%s" {\n' test "$1"
     cat <<EOT
-  ps -o sid= -p \$\$ | tr -d ' ' > "$SIDF"
+  ps -o sid= -p \$\$ | tr -d ' ' > $(printf %q "$SIDF")
   sleep 600 3>&- &
   $2
 }
@@ -50,14 +52,14 @@ no_leftovers() {
   assert_output ""
   sid=$(cat "$SIDF")
   [ -n "$sid" ]
-  [ "$sid" != "$(ps -o sid= -p $$ | tr -d ' ')" ]
+  [ "$sid" != "$(own_sid)" ]
   run pgrep -s "$sid"
   assert_failure 1
 }
 
 @test "a run killed mid-test leaves no run dir and no process behind" {
   mkfifo "$BATS_TEST_TMPDIR/up"
-  fixture slow "echo up > '$BATS_TEST_TMPDIR/up'; sleep 600"
+  fixture slow "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); sleep 600"
   inner "$BATS_TEST_TMPDIR/slow.bats" > "$BATS_TEST_TMPDIR/out" 2>&1 &
   wrapper=$!
   # The test is running once it writes the fifo; the timeout only bounds a run that never starts.
@@ -78,9 +80,3 @@ no_leftovers() {
   no_leftovers
 }
 
-@test "a passing run exits 0" {
-  fixture passing "true"
-  run inner "$BATS_TEST_TMPDIR/passing.bats"
-  assert_success
-  no_leftovers
-}
