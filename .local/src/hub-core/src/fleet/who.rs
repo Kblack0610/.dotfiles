@@ -93,6 +93,9 @@ impl Row for Who {
     const FACETS: &'static [&'static str] = &["kind", "state", "project"];
     const LEAD: &'static str = "doing";
     const GLANCE: &'static [&'static str] = &["who", "state", "for"];
+    /// A held runner is stopped until its budget or hold lifts, so it reads red like its cell.
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("held", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
         let text = |t: &str| {
@@ -626,6 +629,13 @@ mod tests {
         let chips = View::default().states(&r);
         let n = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.n);
         assert_eq!((n("held"), n("failed")), (Some(1), Some(1)));
+        let tone = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.tone);
+        // Fleet's held runner is stopped, so its tile is red where Queue's held item is amber.
+        assert_eq!(tone("held"), Some(Some(crate::vocab::Level::Bad)));
+        assert_eq!(
+            crate::vocab::tone(&[], "held"),
+            Some(crate::vocab::Level::Warn)
+        );
     }
 
     #[test]

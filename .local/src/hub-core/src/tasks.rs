@@ -42,6 +42,8 @@ pub struct Row {
     pub game: Option<String>,
     /// The row's `type(area):` type (`feat`, `run`, ...), when its title has a well-formed one.
     pub r#type: Option<String>,
+    /// That prefix's area (`ci`, `gameplay`, ...).
+    pub area: Option<String>,
     pub state: String,
     pub priority: String,
     pub tier: Option<u8>,
@@ -71,6 +73,12 @@ pub struct Row {
     pub due: Option<String>,
     /// The id its `#of/<id>` names.
     pub parent: Option<String>,
+    /// What a board leads the row with, a few words ([`crate::text::title`]); set by [`feed`].
+    pub title: String,
+    /// What the title leaves out of the text ([`crate::text::title`]); set by [`feed`].
+    pub summary: String,
+    /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
+    pub epic: Option<String>,
     /// The `#size/` weight, 1 unsized.
     pub weight: u32,
     /// The day a closed row closed.
@@ -109,17 +117,29 @@ pub fn section_title(section: Option<&str>) -> &'static str {
 
 /// Each row's section cell on a board: `NEXT UP (10)` over the first row of a section and blank
 /// under it, the way the sheet reads, while the rows are in the sheet's order; under any other
-/// sort each row names its own. The hub and agent-web both draw these.
+/// sort each row names its own. Closed rows run by the day they closed (`DONE 11-07 (12)`, or
+/// `DONE no day` for a row ticked with no `done:` marker), so the Done chip reads as a day log;
+/// under another sort a closed row still names its day. The hub and agent-web both draw these.
 pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
-    fn of(r: &Row) -> Option<&str> {
-        r.section.as_deref()
+    /// A row's run: its section and, on a closed row, the day it closed (None: no marker).
+    fn of(r: &Row) -> (Option<&str>, Option<Option<&str>>) {
+        let day = (r.state == "done").then_some(r.closed.as_deref());
+        (r.section.as_deref(), day)
     }
     rows.iter()
         .enumerate()
         .map(|(i, r)| {
-            let title = section_title(r.section.as_deref());
+            let title = match of(r).1 {
+                Some(Some(d)) => format!(
+                    "{} {}",
+                    section_title(r.section.as_deref()),
+                    crate::text::short_day(d)
+                ),
+                Some(None) => format!("{} no day", section_title(r.section.as_deref())),
+                None => section_title(r.section.as_deref()).to_string(),
+            };
             if sorted {
-                return title.to_string();
+                return title;
             }
             if i > 0 && of(rows[i - 1]) == of(r) {
                 return String::new();
@@ -181,14 +201,21 @@ impl Row {
 /// are query keys, not drawn; `tag:` takes any of a row's tags.
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
-        "section", "priority", "project", "lane", "state", "id", "version", "size", "tier",
-        "since", "when", "text", "profile", "tag",
+        "section", "title", "epic", "priority", "state", "when", "project", "lane", "id",
+        "version", "size", "tier", "since", "text", "profile", "tag",
     ];
-    const STATES: &'static [&'static str] =
-        &["all", "in progress", "filed today", "urgent", "requested"];
-    const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority", "state"];
-    const LEAD: &'static str = "text";
-    const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        "in progress",
+        "filed today",
+        "urgent",
+        "requested",
+        "done",
+    ];
+    const FACETS: &'static [&'static str] =
+        &["section", "epic", "project", "lane", "priority", "state"];
+    const LEAD: &'static str = "title";
+    const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());
@@ -209,6 +236,8 @@ impl crate::table::Row for Row {
                 w => Val::Text(w),
             },
             "text" => text(&self.text),
+            "title" => text(&self.title),
+            "epic" => some(self.epic.as_deref()),
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,
             "tag" => Val::Text(self.tags.join(" ")),
@@ -223,6 +252,8 @@ impl crate::table::Row for Row {
             // Asks of work still open: a closed row is Done's, not the chip's.
             "urgent" => self.state != "done" && self.priority == "urgent",
             "requested" => self.state != "done" && self.requested,
+            // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
+            "done" => self.state == "done",
             _ => false,
         }
     }
@@ -231,6 +262,15 @@ impl crate::table::Row for Row {
     fn text(&self) -> String {
         let project = self.project.as_deref().unwrap_or_default();
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
+    }
+
+    /// The epic cell opens the epic's row.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        match col {
+            "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Row, e)),
+            _ => None,
+        }
     }
 
     fn vals(&self, col: &str) -> Vec<Val> {
@@ -351,10 +391,39 @@ impl Feed {
             b.closed
                 .cmp(&a.closed)
                 .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.profile.cmp(&b.profile))
         });
         let mut rows = self.open_rows(scope);
         rows.extend(done);
         rows
+    }
+
+    /// Give every row its [`crate::text::title`], and each row under an epic that epic's title.
+    pub fn titles(&mut self) {
+        for r in self.rows.iter_mut().chain(&mut self.done) {
+            let t = crate::text::title(&r.text);
+            (r.title, r.summary) = (t.title, t.summary);
+            if r.title.is_empty() {
+                r.title = r.text.trim().to_string();
+            }
+        }
+        let by: std::collections::HashMap<(String, String), String> = self
+            .rows
+            .iter()
+            .chain(&self.done)
+            .filter_map(|r| {
+                Some((
+                    (r.project.clone()?.to_lowercase(), r.id.clone()?),
+                    r.title.clone(),
+                ))
+            })
+            .collect();
+        for r in self.rows.iter_mut().chain(&mut self.done) {
+            r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
+                (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
+                _ => None,
+            };
+        }
     }
 
     /// Put each active queue item's state on the rows its `row:` (`<project>:<id>`) names.
@@ -389,6 +458,7 @@ pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
     for r in &mut f.rows {
         r.filed_today = r.filed.as_deref() == Some(f.today.as_str());
     }
+    f.titles();
     for r in focus {
         match f.focus.iter_mut().find(|c| c.profile == r.profile) {
             Some(c) => c.open += 1,
@@ -814,6 +884,43 @@ mod tests {
         let closed: Vec<&Row> = closed.iter().collect();
         let on = |s: &str| View::new::<Row>("", s, "", "").apply(&closed).len();
         assert_eq!((on("urgent"), on("requested")), (0, 0));
+        // The Done chip is the reverse: closed rows only.
+        assert_eq!((shown("", "done"), on("done")), (0, 4));
+    }
+
+    #[test]
+    fn closed_rows_run_by_the_day_they_closed_then_by_project() {
+        let done = |project: &str, closed: Option<&str>| Row {
+            state: "done".into(),
+            section: Some("done".into()),
+            project: Some(project.into()),
+            closed: closed.map(Into::into),
+            text: project.into(),
+            ..Default::default()
+        };
+        let f = Feed {
+            rows: rows().rows,
+            done: vec![
+                done("old", None),
+                done("garden", Some("2026-11-05")),
+                done("demo", Some("2026-11-07")),
+                done("arena", Some("2026-11-07")),
+            ],
+            ..Default::default()
+        };
+        let all = f.board_rows(None);
+        let closed = &all[all.len() - 4..];
+        let names: Vec<&str> = closed.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(names, ["arena", "demo", "garden", "old"]);
+        assert_eq!(
+            section_labels(closed, false),
+            ["DONE 11-07 (2)", "", "DONE 11-05 (1)", "DONE no day (1)"]
+        );
+        // Under another sort each row names its own section and day, with no count.
+        assert_eq!(
+            section_labels(&[closed[0], closed[3]], true),
+            ["DONE 11-07", "DONE no day"]
+        );
     }
 
     #[test]
@@ -852,6 +959,116 @@ mod tests {
         };
         let f = feed(&fake).unwrap();
         assert!(f.rows[0].filed_today && !f.rows[1].filed_today);
+    }
+
+    #[test]
+    fn a_title_is_the_few_words_before_the_first_clause() {
+        // notes sets `type` on exactly these `type(area): ` rows.
+        let title = |t: &str| {
+            let t = crate::text::title(t);
+            (t.title, t.summary)
+        };
+        // The board rows as they stand on unity-core-playground (2026-11-12).
+        for (text, want) in [
+            (
+                "epic(gameplay): Apociseum coliseum mode: rounds with a red end #new",
+                "Apociseum coliseum mode",
+            ),
+            (
+                "epic(ci): Golden CI for tests: one owner, one checklist",
+                "Golden CI for tests",
+            ),
+            ("epic(gameplay): Space Raiders (v0.3.2)", "Space Raiders"),
+            (
+                "epic(save): Home: the player room, plus saves for every game",
+                "Home: the player room",
+            ),
+            (
+                "BrainMush: press X: the squad holds, and X frees it",
+                "BrainMush: press X",
+            ),
+            (
+                "feat(net): bot mode for testing networking, bots plus a real client",
+                "bot mode for testing networking",
+            ),
+            ("epic(ui): ui to standard", "ui to standard"),
+            (
+                "perf(perf): run scenes with 1000s of objects on pools and one tick for all",
+                "run scenes with 1000s of objects on pools...",
+            ),
+            // No prefix: a sentence keeps its own head, a colon in prose is not a prefix.
+            (
+                "Ship the trailer for DodginBalls",
+                "Ship the trailer for DodginBalls",
+            ),
+            ("the two sheets: merge them", "the two sheets"),
+            (
+                "bump the slot #urgent past #1980",
+                "bump the slot past #1980",
+            ),
+            // A playtest check's head is its own word, not a type.
+            (
+                "headset: menu text readable at 1.5 m, quests list Active",
+                "headset: menu text readable at 1.5 m",
+            ),
+            ("", ""),
+        ] {
+            assert_eq!(title(text).0, want, "{text}");
+        }
+        // The summary is what the title leaves out, never the title again.
+        for (text, rest) in [
+            (
+                "epic(ci): Golden CI for tests: one owner, one checklist",
+                "one owner, one checklist",
+            ),
+            ("epic(gameplay): Space Raiders (v0.3.2)", "v0.3.2"),
+            (
+                "feat(net): bot mode for testing networking, bots plus a client #low",
+                "bots plus a client",
+            ),
+            ("epic(ui): ui to standard", ""),
+            (
+                "feat(ui): end-of-run victory/defeat panel (UITK) now that round text is debug-only",
+                "(UITK) now that round text is debug-only",
+            ),
+            (
+                "perf(perf): run scenes with 1000s of objects on pools and one tick for all",
+                "...and one tick for all",
+            ),
+        ] {
+            assert_eq!(title(text).1, rest, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_row_under_an_epic_carries_its_title_and_links_it() {
+        let fake = Fake {
+            out: Ok(r#"{"today":"2026-11-12","rows":[
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
+                {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
+                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
+            calls: RefCell::default(),
+        };
+        let f = feed(&fake).unwrap();
+        assert_eq!(f.rows[1].title, "bot mode");
+        assert_eq!(f.rows[1].epic.as_deref(), Some("netcode to standard"));
+        assert_eq!(f.rows[0].epic, None, "an epic is under nothing");
+        assert_eq!(f.rows[2].epic, None, "an id is the project's own");
+        assert_eq!(
+            f.rows[3].epic, None,
+            "a parent not on the board names nothing"
+        );
+        use crate::table::Row as _;
+        assert_eq!(
+            f.rows[1].val("epic"),
+            Val::Text("netcode to standard".into())
+        );
+        assert_eq!(
+            f.rows[1].link("epic").map(|l| l.href()),
+            Some("#board?q=id:=ucp-1".to_string())
+        );
+        assert!(f.rows[0].link("epic").is_none());
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {

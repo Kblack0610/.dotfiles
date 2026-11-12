@@ -95,6 +95,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes seed-backlogs [--from N] [--force]` | One-time migration of inline `## Fun`/`## Carry Over` sections into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
+| `notes find <words>` | Ranked knowledge lookup across knowledge/, zettels, refs, employment/ and lab/: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
 | `notes knowledge init\|due\|apply` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log). Hand edits to articles are fine; an engine update loses to an edit made during its run. |
 | `notes doctor` | Diagnose: profile/dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. Alias: `ndoctor`. **Run this first when "notes are broken".** |
 | `notes log [--id ID] [--project P] [--days N]` | What happened to a row or sheet: every CLI write, with who and when. Hand edits are in vault git history instead. |
@@ -112,7 +113,7 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 - **Vocabulary (three levels):** `#low`, `#high`, `#urgent`. No `#medium`.
 - **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
 - **nvim keymap:** in a markdown buffer `<leader>tP` raises and `<leader>tp` lowers the current line (or a visual selection, converging to one level) along `#low -> #high -> #urgent`, stopping at either end; a task always has a priority, so there is no untagged step. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
-- **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
+- **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them, `<leader>nk` (`notes find`, also tmux Prefix+k) ranks notes by any words plus a `#tag`; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
 - **Two kinds of tag:** task tags (row state, end of the row) and topic tags (what a note is about, in frontmatter or prose); `notes tags --kind task|topic` splits them and typing `#` in nvim offers them. Rule: `.local/src/notes-cli/README.md`, "The task row".
 
 ## Project board

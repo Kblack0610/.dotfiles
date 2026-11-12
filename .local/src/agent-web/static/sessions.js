@@ -11,7 +11,7 @@ const sst = tblTab({
   tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
   shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
-  chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+  tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
 const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
@@ -33,18 +33,6 @@ function capPart(p) {
     ? ` <span class="capask">${esc(p.confirm)} <button class="btn sm" data-go="${esc(p.start)}">Start</button> <button class="btn sm" data-keep>Cancel</button></span>`
     : ` <button class="btn sm" data-start="${esc(p.start)}">Start</button>`;
   return `<span class="${p.warn ? "capwarn" : ""}">${esc(p.text)}</span>${start}`;
-}
-
-// The overview row: the table's state chips as tiles, and what the shown rows cost. A tile is the
-// chip it replaces, so a tap filters the table and a tap on the one in force clears it.
-const TILE_COLOR = { running: "var(--b-working)", "needs you": "var(--b-needs)", stalled: "var(--b-stalled)", "done today": "var(--b-done)" };
-function sessionsTiles(d) {
-  const t = d.table;
-  const states = t.states.slice(1).map((c) => {
-    const on = c.name === t.state;
-    return `<button class="tile${on ? " on" : ""}" data-ts="${on ? "" : esc(c.name)}" style="--c:${TILE_COLOR[c.name] || "var(--c-other)"}"><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
-  });
-  return `<div class="tiles stiles">${states.join("")}${tile("SPEND", usd(d.spend_usd), "var(--accent)", `${t.shown} shown`)}</div>`;
 }
 
 function sessionsHead() {

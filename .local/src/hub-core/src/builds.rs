@@ -4,8 +4,8 @@
 //! its last line. A failed run's log is fetched only when the row is opened (docs/dashboards.md
 //! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs, steps
 //! and cost are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
-//! same read cut to the runs the graph tied to a release (`Builds::scoped`). Money is a cloud
-//! machine's POWER cell on Infra Machines and Costs', so the Run times fold has none.
+//! same read cut to the runs the graph tied to a release (`Builds::scoped`). Each workflow's times
+//! and pass rate are Infra Pipelines' (`pipelines`, through `time_of`).
 //!
 //! | fact                | home                                                           |
 //! |---------------------|----------------------------------------------------------------|
@@ -149,7 +149,7 @@ pub struct Usual {
 /// drawn as a number reads as a fact.
 pub const USUAL_MIN: usize = 3;
 
-/// One workflow's run times over the window: the Builds section's Run times fold.
+/// One set of runs' times over the window: a pipeline's USUAL, P90 and PASS (`time_of`).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct RunTime {
     pub forge: String,
@@ -358,12 +358,12 @@ pub struct Builds {
     /// The counts of the runs tied to a release (`Scope::Release`), taken with `counts`.
     pub released: Counts,
     pub rows: Vec<Run>,
-    /// Each workflow's run times, by repo, the most-run first.
-    pub times: Vec<RunTime>,
     /// Why the ledger or a repo could not be read: a red line, never a silent blank.
     pub errors: Vec<String>,
-    /// Each repo's test quarantine: the Quarantine fold, none when no repo has one.
+    /// Each repo's test quarantine: Tests' Quarantine table, none when no repo has one.
     pub quarantine: Vec<quarantine::Lane>,
+    /// Why quarantine.json did not parse: Tests' red line, not the runs'.
+    pub quarantine_error: Option<String>,
 }
 
 /// Which runs a runs table lists: every CI run (Infra's) or the runs the graph tied to a release
@@ -390,13 +390,10 @@ impl Scope {
     }
 }
 
-/// One scope's runs, borrowed from the read: what a runs table and its heading draw. Run times
-/// and the quarantine are Infra's, so the `Release` scope carries none.
+/// One scope's runs, borrowed from the read: what a runs table and its heading draw.
 pub struct Scoped<'a> {
     pub rows: Vec<&'a Run>,
     pub counts: &'a Counts,
-    pub times: &'a [RunTime],
-    pub quarantine: &'a [quarantine::Lane],
     pub errors: &'a [String],
 }
 
@@ -422,15 +419,9 @@ impl Builds {
 
     /// The read cut to `scope`, with that scope's counts; `All` is the read as it is.
     pub fn scoped(&self, scope: Scope) -> Scoped<'_> {
-        let (times, quarantine): (&[RunTime], &[quarantine::Lane]) = match scope {
-            Scope::All => (&self.times, &self.quarantine),
-            Scope::Release => (&[], &[]),
-        };
         Scoped {
             rows: self.rows_in(scope),
             counts: self.counts_in(scope),
-            times,
-            quarantine,
             errors: &self.errors,
         }
     }
@@ -626,14 +617,14 @@ pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
         run_tags: &run_tags,
     })
     .join(&mut out.rows);
-    // The quarantine is absent until a repo has one: no file is no fold, not an error.
+    // The quarantine is absent until a repo has one: no file is no table, not an error.
     if let Ok(text) = read_text(&paths.quarantine) {
         match quarantine::parse(&text) {
             Ok(lanes) => out.quarantine = lanes,
-            Err(e) => out.errors.push(e),
+            Err(e) => out.quarantine_error = Some(e),
         }
     }
-    out.times = time(&mut out.rows);
+    time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
     out.released = Counts::of(out.rows_in(Scope::Release), now);
     out
@@ -680,7 +671,7 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
 /// (failure, timeout, startup failure), `None` it is left out: still running, or cancelled,
 /// skipped, abandoned (a Forgejo job no runner took), neutral, stale or waiting on approval,
 /// which stopped before saying pass or fail.
-/// Each attempt is a run, so a red re-run to green is one red and one green. Builds' Run times
+/// Each attempt is a run, so a red re-run to green is one red and one green. Pipelines' PASS
 /// and `hub ci pass` (day-log's CI numbers) count with this and nothing else.
 pub fn verdict(conclusion: Option<&str>) -> Option<bool> {
     match conclusion? {
@@ -753,22 +744,12 @@ fn rank(v: &[i64], q: f64) -> i64 {
     v[((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
 }
 
-/// Each workflow's run times and pass rate (`verdict`) from `rows`, and each row's usual time
-/// and, running, its ETA. Only a run `verdict` counts is timed: a cancelled or skipped run
-/// stopped early and would pull the median down. A running run past its workflow's p90 turns amber.
-pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
-    type Key = (String, String, String);
-    let key = |r: &Run| {
-        (
-            r.forge.clone(),
-            r.repo.clone(),
-            timed_as(&r.workflow, &r.path),
-        )
-    };
-    let mut by: HashMap<Key, (Vec<i64>, Pass, usize)> = HashMap::new();
-    for r in rows.iter() {
-        let (took, pass, running) = by.entry(key(r)).or_default();
-        *running += usize::from(r.state == "running");
+/// The run times and pass rate (`verdict`) of one set of runs, its names left blank: `time`'s
+/// per workflow, and any other grouping a view times (a pipeline's runs).
+pub fn time_of<'a>(runs: impl IntoIterator<Item = &'a Run>) -> RunTime {
+    let (mut took, mut pass, mut running) = (vec![], Pass::default(), 0);
+    for r in runs {
+        running += usize::from(r.state == "running");
         if !r.done() {
             continue;
         }
@@ -783,26 +764,46 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
             took.push(t);
         }
     }
+    took.sort_unstable();
+    let usual = (took.len() >= USUAL_MIN).then(|| Usual {
+        median: rank(&took, 0.5),
+        p90: rank(&took, 0.9),
+    });
+    RunTime {
+        runs: took.len(),
+        usual,
+        longest: took.last().copied().unwrap_or_default(),
+        pass: pass.percent(),
+        running,
+        ..Default::default()
+    }
+}
+
+/// Each row's usual time and, running, its ETA, from its workflow's runs in `rows`; it returns
+/// those per-workflow times (`RunTime`), which only its tests read now. Only a run `verdict` counts is timed: a cancelled or skipped run
+/// stopped early and would pull the median down. A running run past its workflow's p90 turns amber.
+pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
+    type Key = (String, String, String);
+    let key = |r: &Run| {
+        (
+            r.forge.clone(),
+            r.repo.clone(),
+            timed_as(&r.workflow, &r.path),
+        )
+    };
+    let mut by: HashMap<Key, Vec<&Run>> = HashMap::new();
+    for r in rows.iter() {
+        by.entry(key(r)).or_default().push(r);
+    }
     let mut out: Vec<RunTime> = by
         .into_iter()
-        .filter(|(_, (took, _, running))| !took.is_empty() || *running > 0)
-        .map(|((forge, repo, workflow), (mut took, pass, running))| {
-            took.sort_unstable();
-            let usual = (took.len() >= USUAL_MIN).then(|| Usual {
-                median: rank(&took, 0.5),
-                p90: rank(&took, 0.9),
-            });
-            RunTime {
-                forge,
-                repo,
-                workflow,
-                runs: took.len(),
-                usual,
-                longest: took.last().copied().unwrap_or_default(),
-                pass: pass.percent(),
-                running,
-            }
+        .map(|((forge, repo, workflow), runs)| RunTime {
+            forge,
+            repo,
+            workflow,
+            ..time_of(runs)
         })
+        .filter(|t| t.runs > 0 || t.running > 0)
         .collect();
     // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
     out.sort_by_cached_key(|t| {
@@ -1215,11 +1216,7 @@ mod tests {
         );
         let none = read(&p, None, NOW);
         assert!(none.quarantine.is_empty());
-        assert!(
-            !none.errors.iter().any(|e| e.contains("quarantine")),
-            "{:?}",
-            none.errors
-        );
+        assert_eq!(none.quarantine_error, None);
         std::fs::write(
             &p.quarantine,
             r#"{"repos":[{"repo":"Org/app","base":"main","report":{"entries":3,"rows":[]}}]}"#,
@@ -1233,8 +1230,15 @@ mod tests {
         assert_eq!(some.quarantine[0].report.as_ref().unwrap().entries, 3);
         assert!(bad.quarantine.is_empty());
         assert!(
-            bad.errors.iter().any(|e| e.starts_with("quarantine.json:")),
+            bad.quarantine_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("quarantine.json:")),
             "{:?}",
+            bad.quarantine_error
+        );
+        assert!(
+            !bad.errors.iter().any(|e| e.contains("quarantine")),
+            "the runs stay clean: {:?}",
             bad.errors
         );
     }
@@ -1390,15 +1394,12 @@ mod tests {
             project: "app".into(),
             tag: "v1.2.0".into(),
         });
-        b.quarantine = vec![Default::default()];
         b.released = Counts::of(b.rows_in(Scope::Release), NOW);
         let r = b.scoped(Scope::Release);
         assert_eq!(r.rows.len(), 1);
         assert_eq!(r.counts.total, 1);
-        assert!(r.times.is_empty() && r.quarantine.is_empty());
         let all = b.scoped(Scope::All);
         assert_eq!((all.rows.len(), all.counts.total), (3, 3));
-        assert!(!all.times.is_empty() && all.quarantine.len() == 1);
         assert_eq!(r.rows[0].val("release"), Val::Text("v1.2.0".into()));
         assert!(r.rows[0].text().contains("v1.2.0"));
         assert_eq!(b.rows[0].val("release"), Val::None);

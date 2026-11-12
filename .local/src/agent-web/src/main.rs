@@ -17,6 +17,7 @@ mod board;
 mod briefing;
 mod builds;
 mod cache;
+mod cards;
 mod cli;
 mod cloud;
 mod costs;
@@ -29,6 +30,7 @@ mod infra;
 mod jobs;
 mod outbox;
 mod outcomes;
+mod pipelines;
 mod projects;
 mod proposals;
 mod queue;
@@ -90,6 +92,8 @@ struct AppState {
     infra: infra::Cache,
     machines: infra::Pages,
     pools: infra::Pages,
+    /// `#releases/apps/<app>`'s read (`hub_core::app_status`).
+    apps: infra::Pages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -132,6 +136,7 @@ async fn main() -> Result<()> {
         infra: infra::Cache::default(),
         machines: infra::Pages::default(),
         pools: infra::Pages::default(),
+        apps: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -159,6 +164,7 @@ async fn main() -> Result<()> {
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
         .route("/api/home/proposals", get(proposals::list))
+        .route("/api/home/cards", get(cards::get))
         .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
@@ -174,10 +180,13 @@ async fn main() -> Result<()> {
         .route("/api/schedules", get(schedules_list))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
+        .route("/api/releases/app", get(releases_app))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
         .route("/api/tests", get(tests_list))
+        .route("/api/pipelines", get(pipelines_list))
+        .route("/api/pipelines/detail", get(pipelines_detail))
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/deliverables", get(deliverables::get))
@@ -345,7 +354,9 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             match classify(p) {
                 // Costs and Builds keep their read, so the task below drops it before it tells
                 // the page; a refresh that raced ahead would get the old snapshots back.
-                Some(msg) if msg == COSTS_EVENT || msg == BUILDS_EVENT => {
+                Some(msg)
+                    if [COSTS_EVENT, BUILDS_EVENT, PIPELINES_EVENT].contains(&msg.as_str()) =>
+                {
                     let _ = cached_events.send(msg);
                 }
                 Some(msg) => {
@@ -391,6 +402,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     targets.push((snapshots, flat));
     // schedules-sync's run ledger and its sync record: the Releases tab's Builds section.
     if let Some(dir) = hub_core::builds::Paths::from_env().ledger.parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
+    // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
+    if let Some(dir) = schedules_state().parent() {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
@@ -453,6 +469,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 Some(msg) = cached_rx.recv() => {
                     if msg == BUILDS_EVENT {
                         builds::forget().await;
+                    } else if msg == PIPELINES_EVENT {
+                        pipelines::forget().await;
                     } else {
                         costs::forget().await;
                     }
@@ -474,6 +492,12 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
 const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
+/// schedules-sync wrote state.json: the Pipelines section reads afresh.
+const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
+
+fn schedules_state() -> PathBuf {
+    hub_core::schedules::state_path(&session::home().to_string_lossy())
+}
 /// A Sentinel watch changed state: the Alerts tab reads afresh.
 const ALERTS_EVENT: &str = r#"{"kind":"alerts"}"#;
 
@@ -493,6 +517,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if hub_core::builds::Paths::from_env().is_ledger_file(p) {
         return Some(BUILDS_EVENT.to_string());
+    }
+    if p == schedules_state() {
+        return Some(PIPELINES_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1277,7 +1304,6 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await
@@ -1314,6 +1340,17 @@ async fn infra_machine(
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
     let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+}
+
+#[derive(Deserialize)]
+struct AppQuery {
+    app: String,
+}
+
+/// One app's status page, read only when `#releases/apps/<app>` opens. An unknown name is a 404.
+async fn releases_app(State(s): State<Shared>, Query(q): Query<AppQuery>) -> ApiResult<Response> {
+    let json = s.apps.app(q.app).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1370,7 +1407,7 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
-async fn releases_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
+async fn releases_list(State(s): State<Shared>, Query(q): Query<releases::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
         releases::get(q, s.queue.items().await).await,
@@ -1411,6 +1448,24 @@ async fn tests_list(State(s): State<Shared>, Query(q): Query<suites::Query>) -> 
         suites::get(q, s.queue.items().await).await,
     )
         .into_response()
+}
+
+async fn pipelines_list(State(s): State<Shared>, Query(q): Query<pipelines::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        pipelines::get(q, s.queue.items().await).await,
+    )
+        .into_response()
+}
+
+async fn pipelines_detail(
+    State(s): State<Shared>,
+    Query(q): Query<pipelines::DetailQuery>,
+) -> ApiResult<Response> {
+    let body = pipelines::detail(q, s.queue.items().await)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 /// A suite is named by its run and its place in that run's results, never by a path.
@@ -1751,6 +1806,7 @@ mod tests {
             Some(r#"{"kind":"queue"}"#)
         );
         assert_eq!(classify(Path::new("/h/.agent/queue/.lock")), None);
+        assert_eq!(classify(Path::new("/h/.agent/queue/.gate")), None);
         assert_eq!(
             classify(Path::new("/h/.agent/queue/queued/.add.AbC123")),
             None
@@ -1793,6 +1849,10 @@ mod tests {
         assert_eq!(classify(&ci.ledger).as_deref(), Some(BUILDS_EVENT));
         assert_eq!(classify(&ci.sync).as_deref(), Some(BUILDS_EVENT));
         assert_eq!(classify(&ci.sync.with_file_name("other.json")), None);
+        // Its state.json is the Pipelines section's; a temp file beside it is not.
+        let state = schedules_state();
+        assert_eq!(classify(&state).as_deref(), Some(PIPELINES_EVENT));
+        assert_eq!(classify(&state.with_file_name(".state.json.tmp")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

@@ -122,6 +122,13 @@ const tile = (l, v, c, sub, href) => {
   return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
 };
 
+// A section head: its title and its count, nothing else (docs/dashboards.md, Section head). A problem
+// the section holds is a line under the head while it holds, and level (warn, bad) hues the title,
+// so a shut fold still says so; detail is a fold; what the section is for is hub_core::layout's.
+const secHead = (id, title, n, level, tag = "h2") =>
+  `<${tag} class="sec${level === "warn" || level === "bad" ? ` ${level}` : ""}"${id ? ` id="sec-${id}"` : ""}>${esc(title)}` +
+  `${n == null || n === "" ? "" : ` <span class="n">${esc(n)}</span>`}</${tag}>`;
+
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already
 // escaped; text arguments are escaped here.
@@ -149,8 +156,10 @@ const PHONE_WIDTH = "(max-width: 760px)";
 const isPhone = () => typeof matchMedia === "function" && matchMedia(PHONE_WIDTH).matches;
 const PFOLD = {};
 const pfoldOpen = (k) => !isPhone() || !!PFOLD[k];
-const pfold = (k, summary, inner) =>
-  `<details class="pfold" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+// `head`: the summary is the part's section head, so a wide screen shows it as the head (app.css .hfold)
+// and a phone taps it; one markup for both sides, so crossing the width needs no redraw.
+const pfold = (k, summary, inner, head = false) =>
+  `<details class="pfold${head ? " hfold" : ""}" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
 // Crossing the width: every drawn fold, on every tab, takes the state for the new side.
 const pfoldFit = () => document.querySelectorAll("details.pfold").forEach((d) => { d.open = pfoldOpen(d.dataset.pf); });
 // The facts (text) that have a value, as a name/value grid for a fold.
@@ -192,6 +201,17 @@ function paint(el, html, open) {
   if (open) el.querySelectorAll("details[data-k]").forEach((d) => { open[d.dataset.k] = d.open; });
   el.innerHTML = html;
   el.scrollTop = y;
+  stripInView(el);
+}
+// A phone shows a few of an inner tab strip's tabs (Infra has six), so a repaint scrolls the open
+// one into its strip; the strip is new html each paint and starts scrolled to its left end.
+function stripInView(el) {
+  for (const s of el.querySelectorAll ? el.querySelectorAll(".istrip") : []) {
+    const b = s.querySelector?.("button.on");
+    if (!b?.getBoundingClientRect) continue;
+    const r = s.getBoundingClientRect(), o = b.getBoundingClientRect();
+    if (o.right > r.right || o.left < r.left) s.scrollLeft += o.left - r.left - (r.width - o.width) / 2;
+  }
 }
 
 // A tab whose source pushes nothing (Prometheus, journald) re-reads on a timer while it is
@@ -209,19 +229,22 @@ function poll(tab, refresh, ms) {
 }
 
 // A tab whose source pushes file events re-reads on them (`kinds`, plus resync) only while it
-// is open; one that changed while closed is read once, the next time it is shown. show(force)
+// is open (`shown`; a Log part, while its inner tab is); one that changed while closed is read
+// once, the next time it is shown. show(force)
 // also reads when the tab has nothing yet, so a failed first read is retried on the next visit.
 // A folded Log section lists at most this many rows, then says how many older ones it left out.
 const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
+// A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
+const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
 
-function pushed(tab, kinds, refresh) {
+function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;
   return {
     show(force) { if (stale || force) { stale = false; refresh(); } },
     onEvent(ev) {
       if (ev.kind !== "resync" && !kinds.includes(ev.kind)) return;
-      if (st.tab === tab) refresh(); else stale = true;
+      if (shown()) refresh(); else stale = true;
     },
   };
 }

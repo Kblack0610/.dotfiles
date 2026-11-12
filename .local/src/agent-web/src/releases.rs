@@ -1,7 +1,10 @@
-//! The Releases tab: every app with what is live where, its channels on open, from hub-core's
+//! The Releases tab: every app with what is deployed where, its channels on open, from hub-core's
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
-//! No read cache of its own: the read is one small file, and a new snapshot pushes the `releases`
-//! event. The apps' build runs come from the builds read and its cache.
+//! No read cache for the snapshot: it is one small file, and a new snapshot pushes the `releases`
+//! event. The apps' build runs come from the builds read and its cache; their CHECKS cell from
+//! `app_status::badges`, two VictoriaMetrics calls kept `CHECKS_SECS` per set of groups, since the
+//! page re-reads every minute while it shows (Prometheus has no push); a project page's checks
+//! line reads through the same keep.
 
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
@@ -11,15 +14,52 @@ use hub_core::releases::{self, App, Releases, STALE_SECS};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
-use crate::schedules::Query;
+/// How long one read of a set of apps' checks answers again.
+const CHECKS_SECS: i64 = 30;
+type Groups = Vec<(String, Vec<String>)>;
+type Checks = Result<HashMap<String, releases::Badge>, String>;
+/// Each asked-for set of groups (every app's for the tab, one app's for its project page) with
+/// when it was read and what it said.
+static CHECKS: Mutex<BTreeMap<Groups, (i64, Checks)>> = Mutex::new(BTreeMap::new());
+
+/// The checks of `groups` (`hub_core::app_status::badges`), from the last read of the same groups
+/// while it is under `CHECKS_SECS` old. The lock is held through a read, so requests that arrive
+/// together make one read and the rest take its answer.
+pub fn checks(groups: &[(String, Vec<String>)]) -> Checks {
+    let now = hub_core::jobs::now();
+    let mut held = CHECKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, r)) = held.get(groups) {
+        if now - at < CHECKS_SECS {
+            return r.clone();
+        }
+    }
+    let r = hub_core::app_status::badges(&System, groups, now);
+    held.retain(|_, (at, _)| now - *at < CHECKS_SECS);
+    held.insert(groups.to_vec(), (now, r.clone()));
+    r
+}
+
+/// The table view (`q`, `s`, `sort`, `dir`, the keys the page keeps in its URL) and the app whose
+/// page is open (`#releases/apps/<name>`, links::Kind::App), read whatever the view hides.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct Query {
+    pub q: String,
+    pub s: String,
+    pub sort: String,
+    pub dir: String,
+    pub app: String,
+}
 
 /// The read with the view applied: the apps drawn, the channels it could not read, the controls.
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    question: &'a str,
-    summary: &'a str,
     gaps: &'a str,
     /// `Releases::coverage`: how full each history column is, over every app.
     coverage: &'a str,
@@ -29,15 +69,28 @@ struct Shown<'a> {
     /// `Releases::needs_look`: the count on the Apps inner tab.
     look: bool,
     table: Summary,
+    /// The words a cell says when the fact is absent (`releases::BLANKS`), which the page dims.
+    blanks: &'static [&'static str],
+    /// The app this read was asked for (`Query::app`), so a page can tell a read still on its way
+    /// from an app the snapshot does not have.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    asked: &'a str,
+    /// The app `Query::app` names, absent when none is asked or no app has that name, and the
+    /// records its cells link to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<&'a App>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_links: Option<BTreeMap<&'static str, String>>,
 }
 
 fn render(s: &Releases, q: &Query) -> String {
     let view = View::new::<App>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&s.apps);
+    let app = (!q.app.is_empty())
+        .then(|| s.apps.iter().find(|a| a.project == q.app))
+        .flatten();
     let out = Shown {
         at: s.at,
-        question: &s.question,
-        summary: &s.summary,
         gaps: &s.gaps,
         coverage: &s.coverage,
         stale_after: STALE_SECS,
@@ -45,6 +98,10 @@ fn render(s: &Releases, q: &Query) -> String {
         errors: &s.errors,
         look: s.needs_look(),
         table,
+        blanks: &releases::BLANKS,
+        asked: &q.app,
+        app,
+        app_links: app.map(|a| hub_core::table::links(&[a]).pop().unwrap_or_default()),
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
 }
@@ -61,6 +118,7 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     let read = move || {
         let mut r = releases::read(&System, &items);
         r.errors.extend(queue_error);
+        r.with_checks(&checks(&r.check_groups()));
         match runs {
             Ok(b) => r.with_builds(&b.rows),
             Err(e) => r.errors.push(format!("build runs: {e}")),
@@ -70,6 +128,22 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     match tokio::task::spawn_blocking(read).await {
         Ok(s) => render(&s, &q),
         Err(e) => failed(e.to_string()),
+    }
+}
+
+impl crate::infra::Pages {
+    /// `#releases/apps/<app>`'s read (`hub_core::app_status`): release-state and eight
+    /// VictoriaMetrics queries, so it is kept `CACHE_SECS` like a machine's page.
+    pub async fn app(&self, app: String) -> Result<String, (StatusCode, String)> {
+        let a = app.clone();
+        self.get(app, async move {
+            let now = hub_core::jobs::now();
+            move || {
+                hub_core::app_status::read(&System, &a, now)
+                    .and_then(|p| serde_json::to_string(&p).map_err(|e| e.to_string()))
+            }
+        })
+        .await
     }
 }
 
@@ -155,10 +229,10 @@ mod tests {
     fn sample() -> Releases {
         Releases {
             at: 300,
-            question: "What is live where?".into(),
+            question: "What is deployed where?".into(),
             summary: "2 apps: 1 drift, 1 ok".into(),
             gaps: "1 channel not read: steam 403 (1)".into(),
-            coverage: "coverage: prev 2/2, deployed 1/2".into(),
+            coverage: "prev 2/2, deployed 1/2".into(),
             apps: vec![
                 app("game", releases::Level::Bad),
                 app("site", releases::Level::Ok),
@@ -187,9 +261,8 @@ mod tests {
         );
         assert!(v.get("fold").is_none());
         assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
-        assert_eq!(v["coverage"], "coverage: prev 2/2, deployed 1/2");
+        assert_eq!(v["coverage"], "prev 2/2, deployed 1/2");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(v["question"], "What is live where?");
         assert_eq!(v["stale_after"], STALE_SECS);
     }
 
@@ -201,6 +274,33 @@ mod tests {
         });
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["project"], "site");
+    }
+
+    #[test]
+    fn an_app_page_reads_its_app_whatever_the_view_hides_and_links_its_project() {
+        let v = body(Query {
+            s: "ok".into(),
+            app: "game".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            v["rows"].as_array().unwrap().len(),
+            1,
+            "the view still applies"
+        );
+        assert_eq!(v["app"]["project"], "game");
+        assert_eq!(v["app_links"]["project"], "#projects/game");
+        assert_eq!(v["blanks"][0], "none declared");
+        let none = body(Query {
+            app: "nope".into(),
+            ..Default::default()
+        });
+        assert!(none.get("app").is_none() && body(Query::default()).get("app").is_none());
+        assert_eq!(
+            none["asked"], "nope",
+            "an unknown app's read says what it was asked"
+        );
+        assert!(body(Query::default()).get("asked").is_none());
     }
 
     #[test]

@@ -14,7 +14,6 @@ mod fit;
 mod fleet;
 mod fleettab;
 mod flowline;
-mod flowstrip;
 mod fmt;
 mod focustab;
 mod forecast;
@@ -26,6 +25,7 @@ mod jobs;
 mod logtab;
 mod machinetab;
 mod outboxtab;
+mod pipetab;
 mod pooltab;
 mod projtab;
 mod proptab;
@@ -438,6 +438,12 @@ fn releases_cmd(args: Vec<String>) -> i32 {
         ["--json"] => {
             let (items, queue_error) = hub_core::actions::queue_items();
             let mut r = hub_core::releases::read(&sys, &items);
+            let groups = r.check_groups();
+            r.with_checks(&hub_core::app_status::badges(
+                &sys,
+                &groups,
+                hub_core::jobs::now(),
+            ));
             let join = hub_core::builds::Join {
                 runner: &sys,
                 items: &items,
@@ -586,7 +592,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.proposals = Some(hub_core::proposals::read(
             &hub_core::session_actions::System,
         ));
-        // Home leads with the flow strip, whose inbox and board are the snapshot's.
+        // The Queue card's bottleneck is the snapshot's.
         a.pipeline = Some(hub_core::pipeline::read());
         // RUNNING joins each item to its session (phase, ETA, PR, CI) through the fleet state,
         // which the live app reads in a worker.
@@ -679,6 +685,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         let (items, queue_error) = hub_core::actions::queue_items();
         let mut s = hub_core::releases::read(&sys, &items);
         let now = hub_core::jobs::now();
+        s.with_checks(&hub_core::app_status::badges(&sys, &s.check_groups(), now));
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
@@ -730,6 +737,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if matches!(tab, None | Some(Tab::Infra)) {
         let (items, _) = hub_core::actions::queue_items();
         a.builds = Some(read_runs(&a, &items, hub_core::jobs::now()));
+        // Pipelines joins its sources to those runs; the live app sends them from read_builds.
+        let s = hub_core::pipelines::sources(&hub_core::session_actions::System);
+        a.handle(Msg::Pipes(Box::new(s)));
     }
     // The reds and the Alerts join are read off-thread in the live app; a printed page has no
     // next frame, so read them here or Alerts prints "reading".
@@ -740,7 +750,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.reds = Some(reds);
         // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
         failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
+        // `--tab 'alerts fixes'` prints that inner tab; with none named, every one prints.
         a.tab = Tab::Alerts;
+        a.av.all = section.is_none();
         a.open_query(section.clone());
     }
     if matches!(tab, None | Some(Tab::Infra)) {
@@ -759,6 +771,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     // Home's NEEDS YOU joins the human-sheet rows.
     if matches!(tab, None | Some(Tab::Home)) {
         a.tasks = Some(hub_core::tasks::feed(&hub_core::session_actions::System));
+        // The live app reads each card's tab off-thread; a printed page waits for them here.
+        a.read_home_cards_now();
     }
     let tabs = match tab {
         Some(t) => vec![t],

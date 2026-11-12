@@ -13,7 +13,7 @@ const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {} };
+const hst = { data: null, err: null, cards: null, cardsErr: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {} };
 
 const refreshNight = async () => {
   try {
@@ -47,7 +47,7 @@ const runT = tblTab({
 });
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
-  body: () => propBody(hst.data), render: () => renderHome(),
+  head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
 const refreshHome = coalesce(async () => {
@@ -55,6 +55,7 @@ const refreshHome = coalesce(async () => {
   const seq = ++homeSeq;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
+  const cards = refreshCards().then(() => { if (st.tab === "home") renderHome(); });
   try {
     const d = await api("/api/home" + (view ? "?" + view : ""));
     if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
@@ -64,8 +65,14 @@ const refreshHome = coalesce(async () => {
     for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
   } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
-  await night;
+  await Promise.all([night, cards]);
 });
+
+// The status grid (/api/home/cards, hub_core::cards) reads eight tabs, so it is its own read:
+// Needs you draws without it, and the last good grid stays up under a failed read.
+const refreshCards = async () => {
+  try { hst.cards = await api("/api/home/cards"); hst.cardsErr = null; } catch (e) { hst.cardsErr = e.message; }
+};
 
 // A search keystroke or a sort changes only the Proposals section, so it asks for that alone:
 // /api/home also reads the queue, its stats, the board and Prometheus (about 1.6s at load 20).
@@ -110,11 +117,14 @@ function propBody(h) {
     : `<div class="panel">No proposal matches.</div>`);
 }
 
+// A failed read hues the title, so the reason at the top of the page is not the only sign.
+const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? tblCount(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
+
 function propSection(h) {
   const t = h.proposals_table;
-  if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
   const body = tblBodyFirst(t, () => propBody(h));
-  return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
+  return `<div id="home-prop-head">${propHead(h)}</div>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
 
@@ -239,34 +249,52 @@ function runRow(r, l) {
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
 
-// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab.
+// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab,
+// which the last line links filtered to the running ones, after the fleet's session counts.
 function runBody(h) {
   const t = h.running_table, rows = h.running;
-  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>`;
+  const foot = `<div class="cline muted">${h.sessions ? `<b>Sessions</b> ${esc(h.sessions)} ` : ""}<a href="#sessions?s=running">all running in Sessions</a></div>`;
+  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>${foot}`;
   const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
-    tblMore(more, "more") + `</div>`;
+    tblMore(more, "more") + foot + `</div>`;
 }
 
-// The session counts head the list they count, linking to the tab that lists the sessions.
-function runHead(h) {
-  const t = h.running_table;
-  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
-  return sec("Running", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "", counts + ` <a class="muted" href="#sessions?s=running">all in Sessions -&gt;</a>`);
+// A table's head count: its rows, or "N of M" while a search or state narrows them.
+const runHead = (h) => secHead("running", "Running", tblCount(h.running_table));
+
+// One card per tab, as hub_core::cards words it: the big number in the card's hue, the bar of
+// its counted states, the labelled counts and where to look first. The title, each count and the
+// arrow open the tab; a look-first row opens its record when it has one.
+const HUE = { ok: "ok", warn: "warn", red: "bad", nodata: "" };
+const LEVEL = { ok: "ok", warn: "needs a look", red: "broken", nodata: "no data" };
+function cardHtml(c) {
+  const to = esc(c.link), hue = HUE[c.level];
+  const total = c.bar.reduce((n, s) => n + s.n, 0);
+  const bar = total ? c.bar.map((s) => `<i class="${HUE[s.level]}" style="flex:${s.n}"></i>`).join("") : "<i></i>";
+  const parts = c.parts.map((p) => `<a class="kp" href="${to}"><span>${esc(p.label)}</span><b class="${HUE[p.level]}">${esc(p.value)}</b></a>`).join("");
+  const first = c.first.map((f) => `<a class="kf" href="${esc(f.link || c.link)}"><span><b>${esc(f.text)}</b>${f.sub ? `<small>${esc(f.sub)}</small>` : ""}</span>${f.level !== "ok" ? `<em class="${HUE[f.level]}">${LEVEL[f.level]}</em>` : ""}</a>`).join("");
+  return `<section class="kcard" data-card="${esc(c.tab)}">` +
+    `<a class="kt" href="${to}" title="${esc(c.counted)}">${esc(c.title)}<span aria-hidden="true">-&gt;</span></a>` +
+    `<div class="kbig ${hue}">${esc(c.big)}<span class="ku">${esc(c.unit)}</span></div>` +
+    `<div class="kbar" title="${esc(LEVEL[c.level])}">${bar}</div>` +
+    (parts ? `<div class="kparts">${parts}</div>` : "") +
+    (c.error ? `<div class="cline warn">${esc(c.error)}</div>` : "") +
+    (first ? `<div class="kfh">${esc(c.first_head)}</div>${first}` : "") + "</section>";
+}
+// A refresh that failed while cards are held says so, so the last grid never reads as current.
+const staleSaid = () => `cards not refreshed: ${hst.cardsErr}`;
+const cardsHtml = (cards) => (hst.cardsErr ? `<div class="cline warn">${esc(staleSaid())}</div>` : "") + `<div class="kgrid">${cards.map(cardHtml).join("")}</div>`;
+// The phone's one status line: green collapses to one chip, only what is not green is named.
+function cardsLine(cards) {
+  if (!cards) return `<span class="muted">${esc(hst.cardsErr || "reading")}</span>`;
+  const bad = cards.filter((c) => c.level !== "ok");
+  const stale = hst.cardsErr ? ` <span class="warn">${esc(staleSaid())}</span>` : "";
+  if (!bad.length) return cchip("ok", `all green (${cards.length})`) + stale;
+  return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ") + stale;
 }
 
-// Green collapses to one chip; only what is not green is named.
-const LEVEL = { ok: ["ok", "OK"], warn: ["warn", "WARN"], red: ["bad", "RED"], nodata: ["", "NO DATA"] };
-function healthHtml(chips) {
-  if (!chips.length) return `<span class="muted">no data</span>`;
-  const bad = chips.filter((c) => c.level !== "ok");
-  if (!bad.length) return cchip("ok", `all green (${chips.length})`);
-  return bad.map((c) => cchip(LEVEL[c.level][0], `${esc(c.name)} ${LEVEL[c.level][1]}`)).join(" ") +
-    ` <span class="muted">${chips.length - bad.length} green</span>`;
-}
-
-const sec = (title, n, body, extra = "") => `<h2 class="sec" id="sec-${title.split(" ")[0].toLowerCase()}">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
-const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
+const needsHead = (t) => secHead("needs", "Needs you", tblCount(t));
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
 // its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).
@@ -279,13 +307,15 @@ function nightRow(r) {
   return `<div class="cline"><a href="${esc(r.link)}">${esc(r.name)}</a> ${cchip(r.level, r.level)} ${esc(r.line)} ${act}</div>${det}`;
 }
 
+// A bad area or a read error hues the title; the window's start is the last line.
 function nightSection() {
   const n = hst.night;
-  const head = (extra) => `<h2 class="sec" id="sec-night">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
-  if (!n) return head("") + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
+  const head = (level) => secHead("night", "Since last night", null, level);
+  if (!n) return head(hst.nightErr ? "warn" : null) + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
   const errs = [hst.nightErr, ...n.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const ok = n.ok_line ? `<div class="cline muted">${esc(n.ok_line)}</div>` : "";
-  return head(`since ${esc(n.since_label)} <a href="#daily">briefing</a>`) + errs + n.rows.map(nightRow).join("") + ok;
+  const level = n.rows.some((r) => r.level === "bad") ? "bad" : errs || n.rows.length ? "warn" : null;
+  return head(level) + errs + n.rows.map(nightRow).join("") + ok + `<div class="cline muted"><b>Since</b> ${esc(n.since_label)}</div>`;
 }
 
 // Queue a fix: the area's task, worded by hub-core, through the Queue tab's own POST.
@@ -308,20 +338,23 @@ function drawHome() {
   const rt = h.running_table;
   const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
   const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
-  const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
-  const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
-    `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
-    h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
+  // Vitals: its tally (warn while any is off or unread) and the Grafana trend, then a row per
+  // question unless all are on target (dashboards rule 4).
+  const v = h.vitals;
+  const vitals = v ? secHead("vitals", "Vitals", null, v.all_ok ? null : "warn") +
+    `<div class="cline${v.all_ok ? "" : " warn"}">${esc(v.head)}${h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : ""}</div>` +
+    (v.all_ok ? "" : v.rows.map((r) =>
+      `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join("")) : "";
   const t = h.table;
   const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
-  // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.
-  // On a phone they are one line saying whether anything is wrong, so Needs you comes first.
+  // Wide, the cards and vitals lead, so a long Needs list never buries them. On a phone they are
+  // one line saying whether anything is wrong, so Needs you comes first.
   const warn = (t) => `<span class="warn">${esc(t)}</span>`;
-  const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
-  paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)} <a href="#alerts">Alerts</a></div>`) + spend + vitals) + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
+  const status = [cardsLine(hst.cards), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
+  const grid = hst.cards ? cardsHtml(hst.cards) : `<div class="empty">${esc(hst.cardsErr || "Reading the tabs.")}</div>`;
+  paint(el, errs + pfold("home-status", status, grid + vitals) + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

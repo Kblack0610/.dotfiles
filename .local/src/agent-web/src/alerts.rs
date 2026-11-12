@@ -49,7 +49,7 @@ impl Cache {
     }
 
     /// The read, or why it panicked. A failed fixes read is shown and not kept.
-    async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
+    pub(crate) async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
         let fixes = self
             .0
             .get_if((), || reds::read(&System), Result::is_ok)
@@ -68,9 +68,9 @@ impl Cache {
         }
     }
 
-    /// What fires now, for a machine page's alerts.
+    /// What fires now, one alert a place, for a machine page's alerts.
     pub async fn firing(&self, infra: &infra::Cache) -> Result<Vec<Alert>, String> {
-        self.read(infra).await.map(|a| a.firing)
+        self.read(infra).await.map(|a| a.pages().cloned().collect())
     }
 }
 

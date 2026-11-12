@@ -17,7 +17,7 @@ const el = () => new Proxy({}, {
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
-const parts = { "work-head": part(), "work-facets": part(), "work-chips": part(), "work-body": part(), "work-tail": part() };
+const parts = { "work-head": part(), "work-facets": part(), "work-tiles": part(), "work-body": part(), "work-tail": part() };
 const doc = { getElementById: (id) => (id === "log-work" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -56,7 +56,7 @@ test("a row reads state, time, project, the work, its PR and cost, and escapes t
   assert.match(h, />01-03 08:05<\/td>/, "an older one keeps its date");
   assert.match(h, /fix &lt;it&gt;/);
   assert.match(h, /<a href="https:\/\/x\/7"[^>]*>notes#7<\/a>/);
-  assert.match(h, /2 of 3/);
+  assert.match(h, /<h2 class="sec">Work <span class="n">2 of 3<\/span><\/h2>/);
   assert.match(h, /queue items from 2026-11-04, merged PRs from 2026-10-14/);
   assert.match(h, /<a href="#board">Board<\/a>/);
 });

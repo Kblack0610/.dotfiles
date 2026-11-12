@@ -142,6 +142,12 @@ impl Controls {
             .collect()
     }
 
+    /// Every row before the view, as Home's Sessions card counts them; None until the first
+    /// snapshot, so the card reads as reading and never as no sessions.
+    pub fn all(&self) -> Option<&[SessionRow]> {
+        self.snap.as_ref().map(|_| self.all.as_slice())
+    }
+
     /// The shown row a session page id names (`hub_core::session_page::find`): a session id, a
     /// live row's target or an ended row's item, as `#sessions/<id>` resolves on the web.
     pub fn position(&self, id: &str) -> Option<usize> {
@@ -432,8 +438,9 @@ impl Controls {
                 mark: self.table.mark::<SessionRow>(),
                 // The first fourteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST",
+                    "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU",
+                    "ASK", "WHY",
                 ],
                 rows: cells,
                 keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 1, 14, 9, 10, 11, 12],

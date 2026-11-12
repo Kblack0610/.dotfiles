@@ -1,15 +1,13 @@
 "use strict";
 // The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
-// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), CI (slots, waiting, failed and finished runs) and Jobs
-// (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
+// verdict and cloud power, then the pools; one machine's page is `#infra/machines/<host>`), Runners
+// (slots, waiting jobs, local Unity failures), Runs, Pipelines and Tests (ci.js), and Jobs (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
 // Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
 // (REFRESH_SECS=60): the rules evaluate every minute, and faster only redraws the same numbers.
 const INFRA_REFRESH_MS = 60e3;
-// A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
-const FAILED_OPEN = 25;
-// Each failed group's folded state, which outlives the re-render on every refresh.
+// Each fold's open state, which outlives the re-render on every refresh.
 const ist = { data: null, err: null, open: {} };
 
 const refreshInfra = coalesce(async () => {
@@ -66,9 +64,7 @@ function kpis(cc) {
 // The tab's tables, each with its view keys' prefix in the URL; agent-web infra.rs TABLES names the
 // same. The rows, their order, chips, facets and links are hub_core's (machines.rs, ci.rs), which the
 // TUI draws too; this file only draws the cells.
-const INFRA_TABLES = { machines: "m", pools: "p", runners: "r", queued: "w", finished: "f" };
-// Finished runs past this many rows wait behind a "+N more" button.
-const FINISHED_ROWS = 25;
+const INFRA_TABLES = { machines: "m", pools: "p", runners: "r", queued: "w", local: "u" };
 
 // One bar per core, in core order, from cc:host_core_busy_ratio; amber past 90% as the cpu meter.
 function coreStrip(cores) {
@@ -179,19 +175,16 @@ const QUEUED_CELLS = {
   can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
 };
 
-// Main's pass rate leads: a red on the default branch is everyone's problem, while a red gate on
-// a work branch is usually the gate doing its job (github_runs_finished's scope label).
-const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
-const runSeg = (f) => `<span class="stack" data-tip="${esc(`${f.repo} ${f.workflow}\nmain: ${f.main.ok} passed, ${f.main.bad} failed, ${f.main.can} cancelled\nbranches: ${f.branch.ok} passed, ${f.branch.bad} failed, ${f.branch.can} cancelled`)}">${[[f.all.ok, "var(--b-done)"], [f.all.bad, "var(--b-needs)"], [f.all.can, "var(--c-other)"]].filter(([n]) => n).map(([n, c]) => `<i style="flex:${n};background:${c}"></i>`).join("")}</span>`;
-const FIN_COLS = { repo: ["repo"], workflow: ["workflow"], main: ["main", "n"], branches: ["branches", "n"], runs: ["runs"], failed: ["failed", "n"], cancelled: ["cancelled", "n"] };
-const FIN_CELLS = {
-  repo: (f) => td("", esc(f.repo)),
-  workflow: (f) => td("wrap", esc(f.workflow)),
-  main: (f) => td(`n ${passCls(passOf(f.main))}`, pct(passOf(f.main))),
-  branches: (f) => td("n muted", pct(passOf(f.branch))),
-  runs: (f) => td("m", `${runSeg(f)} ${f.all.runs}`),
-  failed: (f) => td("n", f.all.bad),
-  cancelled: (f) => td("n", f.all.can),
+// A local Unity gate's failures (hub_core::ci LocalFail): a gate run on a workstation never
+// reaches GitHub, so the Runs table cannot show it. `last` is the start of its last failed hour.
+const LOCAL_COLS = { last: ["last", "n"], repo: ["repo"], branch: ["branch"], platform: ["platform"], result: ["result"], failed: ["failed", "n"] };
+const LOCAL_CELLS = {
+  last: (f) => td("n", stamp(f.last)),
+  repo: (f) => td("muted", esc(f.repo)),
+  branch: (f) => td("wrap", esc(f.branch)),
+  platform: (f) => td("", esc(f.platform)),
+  result: (f) => td("bad", esc(f.result)),
+  failed: (f) => td("n", f.n),
 };
 
 // One table's rows from the read: `cap` rows until its "+N more".
@@ -208,18 +201,20 @@ const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
   tab: "infra", id: "infra-" + INFRA_TABLES[name], el: "infra-main", pre: INFRA_TABLES[name], hint,
   refresh: () => refreshInfra(), render: () => renderInfra(), table: () => ist.data?.tables?.[name]?.table,
   wrap: (h) => `<div data-tbl="${INFRA_TABLES[name]}">${h}</div>`,
-  body: () => infraBody(name, labels, cells, empty, o),
+  body: () => infraBody(name, labels, cells, empty, o), tiles: o && o.tiles,
 });
+// A table's head count: its rows, or "N of M" while the view hides some.
+const infraN = (name) => { const t = ist.data?.tables?.[name]?.table; return t && tblCount(t); };
 const INFRA_T = {
   machines: infraTable("machines", MACH_COLS, MACH_CELLS, "search, or where:cloud pools:unity -state:up", "No machine reports."),
   pools: infraTable("pools", POOL_COLS, POOL_CELLS, "search, or machines:razer-laptop", "No pool reports."),
   runners: infraTable("runners", SLOT_COLS, SLOT_CELLS, "search, or host:razer-laptop pool:unity", "No runner reports."),
   queued: infraTable("queued", QUEUED_COLS, QUEUED_CELLS, "search, or pool:unity can:aws-burst-1", "Nothing waiting."),
-  finished: infraTable("finished", FIN_COLS, FIN_CELLS, "search, or repo:unity-core-playground", "No finished-run series yet.", { cap: FINISHED_ROWS }),
+  local: infraTable("local", LOCAL_COLS, LOCAL_CELLS, "search, or platform:android branch:feat", "No local Unity gate failed in 24h."),
 };
 
 // Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
-// A conclusion that is none of these (skipped, neutral) counts in no column, as in hub_core::ci Tally.
+// A conclusion that is none of these (skipped, neutral) counts in no column, as builds::verdict counts.
 const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
 const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
 const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
@@ -229,50 +224,13 @@ function tally(rows) {
   for (const r of rows) if (r.out) t[r.out] += r.n;
   return t;
 }
-const hh = (hour) => String(new Date(hour * 1e3).getHours()).padStart(2, "0");
 
-// What failed, like the Log tab's merged list: main first because a red there is everyone's
-// problem, then each repo, then the local Unity runs by branch.
-function failedList(inst) {
-  const runs = (inst.failed || []).slice().sort((a, b) => b.value - a.value);
-  const group = (key, name, n, body) => {
-    const open = ist.open[key] ?? (key === "main" || n <= FAILED_OPEN);
-    return `<details class="panel area" data-k="${esc(key)}"${open ? " open" : ""}><summary>${esc(name)} <span class="muted">${n}</span></summary>${body}</details>`;
-  };
-  const row = (s) => {
-    const l = s.labels, what = l.pr ? "#" + l.pr : "run";
-    const text = l.pr ? l.title : `${l.branch}${l.title ? ": " + l.title : ""}`;
-    return `<div class="pr" data-tip="${esc(`${l.repo} ${l.workflow}\n${l.branch}\n${l.conclusion} ${clock(s.value * 1e3)}`)}"><span class="ft">${clock(s.value * 1e3)}</span><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(what)}</a><span class="pt">${esc(text)}</span>${l.conclusion === "timed_out" ? '<b class="ci fail">timeout</b>' : ""}</div>`;
-  };
-  const byWorkflow = (rows, name) => {
-    const g = {};
-    for (const s of rows) (g[name(s.labels)] ||= []).push(s);
-    return Object.entries(g).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([w, rs]) => `<div class="grp">${esc(w)}</div>${rs.map(row).join("")}`).join("");
-  };
-  const main = runs.filter((s) => s.labels.scope === "main");
-  const branch = {};
-  for (const s of runs.filter((s) => s.labels.scope !== "main")) (branch[s.labels.repo] ||= []).push(s);
-  let html = main.length ? group("main", "On main", main.length, byWorkflow(main, (l) => `${l.repo} ${l.workflow}`)) : "";
-  html += Object.entries(branch).sort((a, b) => b[1].length - a[1].length).map(([repo, rs]) => group("repo:" + repo, repo, rs.length, byWorkflow(rs, (l) => l.workflow))).join("");
-  // The ledger counts per hour, so a whole day folds one branch's runs into one row.
-  const local = {};
-  for (const s of inst.local_failed || []) {
-    const l = s.labels, k = [l.repo, l.branch, l.platform, l.result].join("\t");
-    const a = (local[k] ||= { l, n: 0, last: 0 });
-    a.n += s.value || 0; a.last = Math.max(a.last, +l.hour);
-  }
-  const lrows = Object.values(local).sort((a, b) => b.last - a.last || b.n - a.n);
-  if (lrows.length) {
-    html += group("local", "Local Unity", lrows.reduce((x, a) => x + a.n, 0), lrows.map((a) =>
-      `<div class="pr"><span class="ft">${hh(a.last)}:00</span><span class="pt">${esc(a.l.branch)}</span><span class="by">${esc(a.l.platform)} ${esc(a.l.result)}${a.n > 1 ? " x" + a.n : ""}</span></div>`).join(""));
-  }
-  return html || `<div class="panel">Nothing failed.</div>`;
-}
-const failedCount = (inst) => (inst.failed || []).length + (inst.local_failed || []).reduce((x, s) => x + (s.value || 0), 0);
+// Passed of passed and failed; a cancel is neither.
+const passOf = (t) => (t.ok + t.bad ? t.ok / (t.ok + t.bad) : null);
 
 function doneToday(inst, t1) {
   const ci = ciRows(inst), local = localRows(inst);
-  if (!ci.length && !local.length) return `<h3 class="sec">Done today</h3><div class="panel">No hourly data yet.</div>`;
+  if (!ci.length && !local.length) return `<div class="panel">No hourly data yet.</div>`;
   const midnight = new Date(t1).setHours(0, 0, 0, 0) / 1e3, today = (r) => r.hour >= midnight;
   const tc = tally(ci.filter(today)), tl = tally(local.filter(today));
   const failed = (scope) => tally(ci.filter((r) => today(r) && r.scope === scope)).bad;
@@ -284,28 +242,30 @@ function doneToday(inst, t1) {
     tile("CANCELLED", tc.can, "var(--c-other)")}${
     tile("LOCAL UNITY", tl.ok + tl.bad, "var(--c3)", `${pct(passOf(tl))} pass`)}</div>`;
   const note = `Tiles count from midnight; CI is read every 10 minutes. Runs per hour and the 24h status lanes are in Grafana ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-command-center", "Command Center")}.`;
-  return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
+  return `${tiles}<div class="muted fold">${note}</div>`;
 }
 
-// The CI runners section: the slots of hub_core::ci, the jobs waiting for a runner with what each needs and the
-// hosts that can take it, the day's failures, then the finished runs by workflow and the day's
-// tiles. Each pool's queue and last day are the Pools table on Machines; the runs themselves
-// (hub_core::builds) and the Tests are the sections under it (ci.js).
-const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} waiting${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
-function ciSection(inst, t1, ci) {
-  const failed = failedCount(inst), done = ci.done;
-  const fin = `${done.runs} runs, ${pct(passOf(done))} pass, ${done.bad} failed, ${done.can} cancelled`;
-  const green = !ci.busy && !ci.queued && !failed;
-  let html = `<h2 class="sec" id="sec-ci">CI runners <span class="muted">${esc(ciHead(ci))}${failed ? `, failed 24h ${failed}` : green ? `; green: nothing waiting or failed in 24h` : ""}</span></h2>`;
+// Runners: the slots of hub_core::ci, the jobs waiting for a runner with what each needs and the
+// hosts that can take it, the local Unity gate failures, and the day's tiles. Each pool's queue and
+// last day are the Pools table on Machines; the runs themselves (hub_core::builds) are Runs.
+// The CI runs that went red in the last day (Counts::recent_red, the Runs read's), as a line that
+// opens Runs on its red state; none until that read is in.
+function failed24h() {
+  const n = bld.data?.counts?.recent_red;
+  return n ? `<div class="cline warn"><a href="#infra/runs?bs=red" title="the red runs, newest first">${n} failed in 24h</a></div>` : "";
+}
+function runnersSection(ci) {
+  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
-  html += INFRA_T.runners.html();
-  html += `<h3 class="sec">Waiting for a runner</h3>${INFRA_T.queued.html()}`;
-  if (failed) html += `<h3 class="sec">Failed, last 24h</h3>${failedList(inst)}`;
-  html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin)}</span></h3>${INFRA_T.finished.html()}`;
+  return html + INFRA_T.runners.html();
+}
+const waitingSection = () => secHead("waiting", "Waiting for a runner", infraN("queued"), "", "h3") + INFRA_T.queued.html();
+function localSection(inst, t1) {
   const open = secOpen(ist.open, "ci-more") ? " open" : "";
-  html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today</summary>${doneToday(inst, t1)}</details>`;
-  return html;
+  const n = infraN("local");
+  return secHead("local", "Local Unity", n, n ? "bad" : "", "h3") + INFRA_T.local.html() +
+    `<details class="sec-d" data-k="ci-more"${open}><summary>${secHead("", "Done today", null, "", "h3")}</summary>${doneToday(inst, t1)}</details>`;
 }
 
 // The governor's global series: whether it is up and saw every source, its queue, and the budget
@@ -386,7 +346,7 @@ function infraPageHtml() {
   const back = `<a class="btn sm" href="#infra/${ENTITY_PAGES.infra[o.p.word]}${st.views.infra ? "?" + st.views.infra : ""}">${o.p.back}</a>`;
   const d = pgst.data;
   if (!d) return `<div class="bhead"><span>${esc(o.name)}</span>${back}</div><div class="${pgst.err ? "panel down" : "empty"}">${pgst.err ? esc(pgst.err) : "Loading..."}</div>`;
-  let h = `<div class="bhead"><span>${esc(d.head)} <span class="muted">read ${clock(d.at * 1e3)}</span></span>${back}</div>`;
+  let h = `<div class="bhead"><span>${esc(d.head)}</span>${back}</div>`;
   const errs = pgst.err ? [`refresh failed, showing the last read: ${pgst.err}`, ...d.errors] : d.errors;
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return h + o.p.body(d);
@@ -466,7 +426,7 @@ function powerHistory(p) {
   const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
   const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
   const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
-  return `<h3 class="sec">Power <span class="muted">run per UTC day, counted from ${p.step / 60}-minute samples of the governor's power state</span></h3><div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
 }
 
 // The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
@@ -485,18 +445,18 @@ function cloudButtons(p) {
 
 function machineBody(d) {
   const colors = poolColors(d);
-  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
-  h += `<h3 class="sec">Share <span class="muted">cores by runner pool now, then other work, then idle</span></h3>${shareBar(d, colors)}`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  h += secHead("", "Share", null, "", "h3") + shareBar(d, colors);
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
-  h += `<h3 class="sec">Running</h3>${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
+  h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   const hist = d.history;
   if (hist) {
-    h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${historyChart(hist, d.cores, colors)}`;
-    h += `<h3 class="sec">Downtime <span class="muted">stretches with no CPU reading, newest first</span></h3>${pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.")}`;
+    h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors);
+    h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.");
     if (hist.power) h += powerHistory(hist.power);
   }
-  h += `<h3 class="sec">Recent CI jobs <span class="muted">the newest ${d.tables.recent.rows.length} in the jobs archive</span></h3>${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
-  h += `<h3 class="sec">Alerts <span class="muted">firing now and naming it</span></h3>${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
+  h += `${secHead("", "Recent CI jobs", d.tables.recent.rows.length, "", "h3")}${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
+  h += `${secHead("", "Alerts", d.tables.alerts?.rows.length, d.tables.alerts?.rows.length ? "warn" : "", "h3")}${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
   return h;
 }
 
@@ -513,11 +473,11 @@ function poolChart(h) {
 }
 
 function poolBody(d) {
-  let h = `<div class="panel">${d.parts.map(pagePart).join("")}</div>`;
-  h += `<h3 class="sec">Machines <span class="muted">with a slot in it</span></h3>${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
-  h += `<h3 class="sec">Waiting <span class="muted">CI jobs waiting for it, as the CI section has them</span></h3>${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
+  let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}</div>`;
+  h += `${secHead("", "Machines", d.tables.machines?.rows.length, "", "h3")}${pageTable(d.tables.machines, MACH_COLS, MACH_CELLS, "No machine has a slot in it.")}`;
+  h += `${secHead("", "Waiting", d.tables.waiting?.rows.length, "", "h3")}${pageTable(d.tables.waiting, QUEUED_COLS, QUEUED_CELLS, "Nothing waits for it.")}`;
   const hist = d.history;
-  if (hist) h += `<h3 class="sec">7 days <span class="muted">${hist.readings ? `${hist.readings} readings` : "no reading in the window"}</span></h3>${poolChart(hist)}`;
+  if (hist) h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + poolChart(hist);
   return h;
 }
 
@@ -548,19 +508,21 @@ function drawInfra() {
   const el = $("infra-main");
   const d = ist.data;
   // The strip comes first on every path, then each section in its inner tab's group
-  // (hub_core::layout, app.js INNER_TABS). CI's runs and Tests (ci.js) and Jobs (jobs.js) are
-  // elements of their own under main, each painted by its own read.
+  // (hub_core::layout, app.js INNER_TABS). Runs, Pipelines and Tests with its Quarantine (ci.js)
+  // and Jobs (jobs.js) are elements of their own under main, each painted by its own read.
   innerHide("infra", "runs", $("ci-runs"));
+  innerHide("infra", "pipelines", $("ci-pipelines"));
   innerHide("infra", "tests", $("ci-tests"));
+  innerHide("infra", "quarantine", $("ci-tests"));
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
   if (infraPage()) { paint(el, strip + infraPageHtml()); return; }
-  // A run's own page stands in for CI's sections, as a machine's does for Machines.
-  if (ciRunId()) { $("ci-runs").hidden = $("ci-tests").hidden = true; paint(el, strip + runPage()); return; }
-  if (!d) { el.innerHTML = strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`; return; }
+  // A run's own page stands in for the Runs table, as a machine's does for Machines.
+  if (ciRunId()) { $("ci-runs").hidden = true; paint(el, strip + runPage()); return; }
+  if (!d) { paint(el, strip + `<div class="empty">${ist.err ? esc(ist.err) : "Loading..."}</div>`); return; }
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
-  if (!d.ok) { el.innerHTML = strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`; seekSection(); return; }
+  if (!d.ok) { paint(el, strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`); seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
@@ -568,9 +530,10 @@ function drawInfra() {
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc)}<h2 class="sec" id="sec-machines">Machines</h2>${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
-  html += innerWrap("infra", "pools", `<h2 class="sec" id="sec-pools">Pools <span class="muted">each pool's slots and the last day of its queue</span></h2>${INFRA_T.pools.html()}`);
-  html += innerWrap("infra", "ci", ciSection(inst, t1, d.ci));
+  html += innerWrap("infra", "machines", `${kpis(cc)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "pools", secHead("pools", "Pools", infraN("pools")) + INFRA_T.pools.html());
+  html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
+    innerWrap("infra", "local", localSection(inst, t1));
   paint(el, html, ist.open);
   seekSection();
 }
@@ -583,25 +546,30 @@ function renderInfra() {
   drawInfra();
 }
 
-// The sections whose inner tab carries a count: CI lines hub_core::ci judged red (a queued job no
-// online runner can take), runs that need a look (Builds::needs_look) and a failed suite in the
-// Tests run on show (ci.js); the hub's App::infra_flagged reads the same.
-const infraFlagged = (d) => [d && d.ci && (d.ci.red || []).length && "ci", bld.data?.look && "runs", tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
+// The sections whose inner tab carries a count: Runners' lines hub_core::ci judged red (a queued
+// job no online runner can take), runs that need a look (Builds::needs_look), a red pipeline
+// (Pipelines::red) and a failed suite in the Tests run on show (ci.js); the hub's
+// App::infra_flagged reads the same.
+const infraFlagged = (d) => [d && d.ci && (d.ci.red || []).length && "ci", bld.data?.look && "runs", pip.data?.red > 0 && "pipelines",
+  tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
 const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 
 TABS.infra = {
-  // The Jobs section (jobs.js) reads its own source on its own timer; CI's runs and Tests (ci.js)
-  // read on show and again on each new ledger line.
+  // The Jobs section (jobs.js) reads its own source on its own timer; Runs, Pipelines and Tests
+  // (ci.js) read on show and again on each new ledger line (and Pipelines on a state.json write).
   show() {
     const page = infraPage() ? st.page : "";
     if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
     showRunPage();
-    renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); tstFeed.show(!tst.data || tst.moved());
+    renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); pipFeed.show(!pip.data || pip.moved()); tstFeed.show(!tst.data || tst.moved());
+    // A section not read yet says so at once: its read paints it only when it answers (a cold
+    // /api/pipelines takes seconds), and an empty element reads as a broken tab.
+    for (const t of [bld, pip, tst]) if (!t.data) t.render();
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
   onEvent(ev) {
     if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
-    bldFeed.onEvent(ev); tstFeed.onEvent(ev); runFeed.onEvent(ev);
+    bldFeed.onEvent(ev); pipFeed.onEvent(ev); tstFeed.onEvent(ev); runFeed.onEvent(ev);
   },
 };

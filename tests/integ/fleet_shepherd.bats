@@ -28,6 +28,7 @@ case "$*" in
   *new-window*) echo %9 ;;
   *" list-panes "*) printf "%b" "${STUB_PANES:-}" ;;
   *list-clients*) printf "%b" "${STUB_CLIENTS:-}" ;;
+  *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
@@ -143,7 +144,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'nudge DONE: a f-a'
 }
 
-@test "due nudges a DONE row only on a close-now verdict: a hand-active or worker row is left alone" {
+@test "due nudges a DONE row only on a close-now verdict: a keep or worker row is left alone" {
   doc "[$(row a DONE false false '[]' keep), $(row b DONE false false '[]' now), $(row c DONE true false '[]' keep)]"
   run "$SH" due
   assert_line 'nudge DONE: b f-b'
@@ -252,6 +253,67 @@ chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --ar
   run "$SH" due
   assert_failure
   assert_output ''
+}
+
+# crow <sid> <bucket> <verdict> [extra json]: a session row close_sample reads, in pane %<sid> of server lab
+crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}" \
+  '{session_id:$s, target:"lab/\($s):1", pane:"%\($s)", bucket:$b, nudged:false, escalated:false, labels:[],
+    own_asks:0, fact:"\($b) f-\($s)", reason:"r-\($s)", close:{verdict:$v, why:"w"}} + $x'; }
+# An idle Claude prompt: the top rule carries the session name, the box holds the glyph and an NBSP.
+IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
+typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
+
+@test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
+  doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  # Typed, it writes the document again, so cmd_due reads those rows as nudged and hands a pass nothing.
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  assert_line '-L lab send-keys -t %2 -l /wind-down'
+  assert_line '-L lab send-keys -t %3 -l /wind-down auto'
+  [ "$(grep -c 'send-keys -t %. Enter' "$HOME/tmux.calls")" = 3 ]
+  # Each is claimed through the one-per-fact mark first.
+  grep -qx 'mark 1 DONE f-1' "$HOME/sessions.calls"
+  grep -qx 'mark 3 NEEDS f-3' "$HOME/sessions.calls"
+  grep -q 'close: lab/1:1 DONE: typed /wind-down auto (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/3:1 CLOSE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check types nothing into a draft, copy mode, a busy or unreadable screen, and leaves the line for the pass" {
+  doc "[$(crow 1 DONE now)]"
+  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
+  for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" 'just a shell prompt $' ''; do
+    STUB_PANE="$screen" run checked
+    assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+  done
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" run checked
+  assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+  [ -z "$(typed)" ]
+  ! grep -q '^mark ' "$HOME/sessions.calls"
+  # Nothing typed, nothing to refresh: one write per check.
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 5 ]
+  # The same row with an empty prompt is typed into: the screen alone held it back.
+  STUB_PANE="$IDLE" run checked
+  [ -n "$(typed)" ]
+}
+
+@test "check types nothing for a manual, nudged, keep or after row, a row another writer marked, or a session off the lease" {
+  doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"nudged":true}'), $(crow 3 DONE keep),
+        $(crow 4 CHAT after), $(crow 5 LANDED now), $(crow 6 NEEDS after '{"own_asks":1}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(typed)" ]
+  # mark exits 1 when the fact was already nudged: the pass got there first.
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"; [ "$1" != mark ]'
+  doc "[$(crow 7 DONE now)]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(typed)" ]
+  # A session that is not the lease holder never acts for the shepherd.
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
+  printf 'x %s other-pass x\n' "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.lease"
+  printf 'other-pass %s 1 %%9\n' "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
+  CLAUDE_CODE_SESSION_ID=me STUB_PANE="$IDLE" "$SH" check >/dev/null 2>&1 || true
+  [ -z "$(typed)" ]
 }
 
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given

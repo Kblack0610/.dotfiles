@@ -1,6 +1,6 @@
 //! The Infra tab: the hub board's infra pages (`hub`, Prefix i) for the browser. The questions
 //! and the judging of the answer are hub-core's `infra::gather`, shared with the TUI, and so are
-//! its tables (machines, pools, CI slots, queued jobs, finished runs); this module caches the
+//! its tables (machines, pools, CI slots, queued jobs, local Unity failures); this module caches the
 //! answer and applies each table's view from the page's URL.
 
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ pub const TABLES: [(&str, &str); 5] = [
     ("pools", "p"),
     ("runners", "r"),
     ("queued", "w"),
-    ("finished", "f"),
+    ("local", "u"),
 ];
 
 /// The page's URL query: every table's view keys, by their prefix.
@@ -58,7 +58,7 @@ fn with_base(infra: Infra) -> (Infra, Map<String, Value>) {
             .unwrap_or_default(),
     };
     if let Some(ci) = base.get_mut("ci").and_then(Value::as_object_mut) {
-        for k in ["rows", "queue", "finished"] {
+        for k in ["rows", "queue", "local"] {
             ci.remove(k);
         }
     }
@@ -82,7 +82,7 @@ pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String
             "pools" => shown(&infra.pools, q, pre),
             "runners" => shown(&infra.ci.rows, q, pre),
             "queued" => shown(&infra.ci.queue, q, pre),
-            _ => shown(&infra.ci.finished, q, pre),
+            _ => shown(&infra.ci.local, q, pre),
         };
         tables.insert(name.into(), t);
     }
@@ -120,7 +120,7 @@ impl Cache {
     }
 }
 
-/// One Infra page cache (a machine's, a pool's), kept for the name last asked for: each page's
+/// One record page cache (a machine's, a pool's, an app's), kept for the name last asked for: each page's
 /// history is three week-long range queries (a machine's recent jobs also a pass over the jobs
 /// archive), so a reload or the page's own refresh inside `CACHE_SECS` is served the last read.
 /// The app keeps one per kind of page, so opening a pool does not drop the machine read.
@@ -187,7 +187,7 @@ impl Pages {
     /// `name`'s page: `inputs` reads what the page is made from, only on a miss, and hands back
     /// the read that makes it off the async threads. A name its reader does not know is a 404,
     /// and is not kept.
-    async fn get<F>(
+    pub(crate) async fn get<F>(
         &self,
         name: String,
         inputs: impl Future<Output = F>,
@@ -322,6 +322,6 @@ mod tests {
             assert!(out["tables"][name]["table"].is_object(), "{name}");
         }
         assert!(out["ci"].get("rows").is_none());
-        assert!(out["ci"]["done"].is_object());
+        assert!(out["ci"]["red"].is_array());
     }
 }

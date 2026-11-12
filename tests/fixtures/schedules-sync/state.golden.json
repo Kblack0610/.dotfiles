@@ -94,7 +94,8 @@
    ],
    "unscheduled": {
     ".github/workflows/checks.yml": "s2"
-   }
+   },
+   "night_absent": "2025-11-06T12:00:00Z"
   },
   {
    "repo": "o/empty",
@@ -102,7 +103,8 @@
    "synced_at": "2025-11-06T12:00:00Z",
    "error": null,
    "workflows": [],
-   "unscheduled": {}
+   "unscheduled": {},
+   "night_absent": "2025-11-06T12:00:00Z"
   }
  ]
 }

@@ -138,11 +138,20 @@ impl Pipeline {
     /// `name` words the step as the surface calls it.
     pub fn bottleneck_text(&self, name: impl Fn(&str) -> String) -> Option<String> {
         let b = self.bottleneck.as_ref()?;
-        let detail = match (b.age_p90_min, b.bound_min) {
-            (Some(a), Some(bd)) => format!(", age p90 {} (bound {})", mins(a), mins(bd)),
-            _ => String::new(),
-        };
+        let detail = self
+            .bottleneck_age()
+            .map_or(String::new(), |a| format!(", {a}"));
         Some(format!("bottleneck: {}{detail}", name(&b.step)))
+    }
+
+    /// The bottleneck's age against its bound, `age p90 9h (bound 4h)`, when the snapshot has both.
+    pub fn bottleneck_age(&self) -> Option<String> {
+        let b = self.bottleneck.as_ref()?;
+        Some(format!(
+            "age p90 {} (bound {})",
+            mins(b.age_p90_min?),
+            mins(b.bound_min?)
+        ))
     }
 
     /// When the snapshot was written, if known; a date is added from an earlier day.

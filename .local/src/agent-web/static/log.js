@@ -24,7 +24,8 @@ const shownDay = () => (lst.rec && lst.rec.date) || lst.day;
 const workDay = () => new URLSearchParams(st.views.log || "").get("wday") || "";
 const urlDay = () => { const d = workDay(); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null; };
 function syncDay() { const d = urlDay(); if (d !== lst.day) { lst.day = d; refreshLog(); } }
-function goDay(d) { wrk.view({ day: d || "today" }); }
+// A day step writes Work's `wday` and syncs Day; Work reads that day when it next shows.
+function goDay(d) { setQuery(tblSet(st.views.log, { day: d || "today" }, "w")); syncDay(); }
 function stepDay(n) {
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(shownDay());
   const j = i + n;
@@ -97,7 +98,7 @@ function benchTable(rec) {
   const h = (label, role, n) => `<th${n ? ' class="n"' : ""}${role ? ` data-role="${role}"${role === "glance" ? " data-named" : ""}` : ""}>${label}</th>`;
   const head = h("what", "lead") + h("phase", "glance", 1) + h("PRs", "glance", 1) + h("working", "", 1) + h("waiting", "", 1) + h("stalled", "", 1) + h("CI reds", "", 1) + h("peak ctx", "", 1) + h("cost", "glance", 1) + h("session");
   const row = (s) => `<tr><td class="wrap" title="${esc(s.plan || "")}">${esc(s.name || s.plan || shortTarget(s.target))}</td><td class="n">${esc(s.phase || "-")}</td><td class="n">${s.prs_merged ?? "-"}</td><td class="n">${s.working_h ?? "-"}h</td><td class="n">${s.waiting_h ?? "-"}h</td><td class="n">${s.stalled_h ?? "-"}h</td><td class="n">${s.ci_reds ?? "-"}</td><td class="n">${s.peak_k ?? "-"}k</td><td class="n">${usd(s.cost_usd)}</td><td class="muted" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 30))}</td></tr>`;
-  return `<h2 class="sec">Sessions <span class="muted">${ss.length}</span></h2><div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
+  return secHead("", "Sessions", ss.length) + `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${ss.map(row).join("")}</table></div>`;
 }
 
 function renderLog() {
@@ -120,13 +121,13 @@ function renderLog() {
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
     tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
-  html += `<div id="sec-history">${historyCharts(day)}</div>`;
+  html += innerWrap("log", "history", `<div id="sec-history">${historyCharts(day)}</div>`);
   const hours = byHour(rec);
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
   html += waiting(nWait);
   html += benchTable(rec);
   const tl = rec.timeline || [];
-  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary><h2 class="sec">Timeline <span class="muted">${tl.length}</span></h2></summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
+  if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary>${secHead("", "Timeline", tl.length)}</summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
   paint(el, html, lst.open);
 }
 
@@ -140,15 +141,29 @@ $("log").addEventListener("click", (e) => {
   if (t.closest("[data-asks]")) { e.preventDefault(); setTab("home"); }
 });
 document.addEventListener("keydown", (e) => {
-  if (st.tab !== "log" || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select")) return;
+  if (!logShows("day") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select")) return;
   if (e.key === "[") stepDay(-1);
   else if (e.key === "]") stepDay(1);
   else if (e.key === "t") goDay(null);
 });
 
 // Any record written changes the history charts, so a log event refetches both.
-const logFeed = pushed("log", ["log"], refreshLog);
+const logFeed = pushed("log", ["log"], refreshLog, () => logShows("day"));
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS), one per record: the
+// strip first, each section in its inner tab's group. An inner tab reads its own sections' data
+// when it shows (dashboards rule 10), so opening Log reads Work alone.
+function logInner(id) {
+  if (id === "day") { syncDay(); renderLog(); logFeed.show(!lst.rec); }
+  for (const p of LOG_PARTS) if (homeOf("log", p.sec)[0] === id) p.show();
+}
 TABS.log = {
-  show() { syncDay(); renderLog(); logFeed.show(!lst.rec); for (const p of LOG_PARTS) p.show(); seekSection(); },
+  show() {
+    $("log-strip").innerHTML = innerStrip("log");
+    // index.html's sections; the day's history is drawn with renderLog, which groups it there.
+    for (const el of $("log").querySelectorAll(':scope > [id^="sec-"]')) innerHide("log", el.id.slice(4), el);
+    logInner(innerOf("log", st.arg)[0]);
+    seekSection();
+  },
+  inner: logInner,
   onEvent(ev) { logFeed.onEvent(ev); for (const p of LOG_PARTS) p.onEvent(ev); },
 };

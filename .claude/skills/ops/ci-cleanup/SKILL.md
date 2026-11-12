@@ -20,7 +20,7 @@ It composes three skills and restates none of them: `ci-failures` counts reds, `
 - Nightlies stay red for days and single-red triage has not moved them.
 - Local or gate pass rate is low and nobody can say which part is the tests and which the harness.
 
-Not for one PR's red (`/my:fix-ci`), not for one recurring red (`ci-failures` then its owner), not for cutting minutes alone (`ci-cost`).
+Not for one PR's red (`fix-ci`), not for one recurring red (`ci-failures` then its owner), not for cutting minutes alone (`ci-cost`).
 
 ## Steps
 

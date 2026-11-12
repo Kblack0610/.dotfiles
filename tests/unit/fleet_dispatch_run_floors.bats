@@ -316,6 +316,26 @@ load 'fleet_dispatch/common'
   assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
 }
 
+@test "run while the human is here promotes only what the trickle can start, not a pass's whole room" {
+  game_ready
+  local a; for a in save menu audio sound; do
+    row game human "fix crash on $a" "- [ ] fix crash on $a #high $T"
+    verdict game human "fix crash on $a" dispatch S 1 "$a"
+  done
+  stub fleet-presence 'echo "here 3 desktop"'
+  export DISPATCH_PER_PASS=5 DISPATCH_LOW_WATER=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
+  # Away, the same room promotes every row it can start (negative control).
+  stub fleet-presence 'echo "away 45 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(( $(grep -c 'wt new' "$NOTES_FIXTURE/calls.log") + $(ls "$AGENT_QUEUE_DIR/queued" | wc -l) ))" 5
+}
+
 @test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
   game_ready
   stub fleet-presence 'echo "here 3 desktop"'
@@ -467,17 +487,20 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "run publishes BLOCKED when a gate leaves a queue item waiting, NOOP when the human held dispatch" {
+@test "run publishes BLOCKED when a gate leaves a queue item waiting, the human's dispatch hold included, so its Stopped line and runner row show it" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queue item fix-game waits'
   assert_equal "$(outcome)" BLOCKED
-  stub agent-hold 'echo "dispatch held"; exit 1'
+  stub agent-hold 'echo "held: dispatch since 2026-11-12T09:04:57-0800 by dotfiles: until the queue is set up"; exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'held (agent-hold'
-  assert_equal "$(outcome)" NOOP
+  assert_output --partial 'held (agent-hold dispatch) by dotfiles: until the queue is set up'
+  assert_equal "$(outcome)" BLOCKED
+  DISPATCH_STARVED_MIN=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --regexp '^Dispatch stopped [0-9]+s: held by dotfiles: until the queue is set up\. Clears with agent-hold release dispatch\.$'
   assert_not_called 'wt new'
 }
 

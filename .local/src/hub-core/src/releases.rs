@@ -1,4 +1,4 @@
-//! The Releases tab, both surfaces: one row per app, what is live where it matters most and its
+//! The Releases tab, both surfaces: one row per app, what is deployed where it matters most and its
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
@@ -13,6 +13,7 @@ use crate::builds::{self, Run};
 use crate::pipeline::{dated, stamp};
 
 use crate::layout;
+use crate::links::{Kind, Link};
 use crate::queue::Item;
 use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
@@ -45,15 +46,7 @@ fn shown(status: &str) -> &str {
 /// by name.
 const ENVS: [&str; 6] = ["prod", "release", "beta", "alpha", "internal", "preview"];
 
-/// What one row's state means, for its colour (docs/dashboards.md rule 5).
-#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Bad,
-    Warn,
-    #[default]
-    Ok,
-}
+pub use crate::vocab::Level;
 
 /// One side of a channel: the version pinned there or the version running there.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -76,14 +69,15 @@ pub struct Side {
 }
 
 /// The words a blank cell says, one per cause: nothing declares the fact, nothing recorded it,
-/// it moves by hand, its read failed, or the release merged nothing. A surface sorts and
-/// filters them as no value. docs/operations/release-state.md, "Blank cells".
-pub const BLANKS: [&str; 5] = [
+/// it moves by hand, its read failed, the release merged nothing, or the app has no Gatus check.
+/// A surface sorts and filters them as no value. docs/operations/release-state.md, "Blank cells".
+pub const BLANKS: [&str; 6] = [
     "none declared",
     "not recorded",
     "manual",
     "not read",
     "none merged",
+    "no check",
 ];
 
 /// A cell with no value: `-` or one of [`BLANKS`].
@@ -313,7 +307,7 @@ fn env_rank(env: &str) -> (usize, &str) {
     )
 }
 
-/// One app: every channel of one project, what is live where it matters most, and the worst of
+/// One app: every channel of one project, what is deployed where it matters most, and the worst of
 /// what the channels it could read say. A channel the collector could not read is counted, but it
 /// never sets the app's word: a missing store key must not hide a prod that reads fine.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -363,11 +357,17 @@ pub struct App {
     pub coverage_text: String,
     /// The lab stage (`draft` .. `prod`), empty when the snapshot names none.
     pub stage: String,
-    /// What the stage asks of the deploys: `draft: CI only, no deploy expected`,
-    /// `alpha: no alpha target live`, `draft: live above it: bnb-studios-prod`
+    /// What the stage asks of the deploys: `draft: no deploy needed`,
+    /// `alpha: no alpha target deployed`
     /// (`docs/stages.md`, The ladder; facts from `release-state`).
     pub stage_text: String,
     pub stage_level: Level,
+    /// Where the stage sits on the ladder, lowest first: what the STAGE column sorts by.
+    #[serde(skip)]
+    pub stage_rank: Option<usize>,
+    /// The CHECKS cell: its Gatus checks' banner (`hub_core::app_status::badges`), `no check`
+    /// when it has none and `not read` until [`Releases::with_checks`] ran or when it failed.
+    pub checks: Badge,
 }
 
 /// One build run of an app: a CI run the release graph joins to one of its tags (its run name, its
@@ -419,7 +419,45 @@ fn released_text(
     }
 }
 
+/// One app's checks badge from [`crate::app_status::badges`]: its banner, `no check` when no
+/// Gatus group of it reported in a week, `not read` when the read failed.
+pub fn check_badge(read: &Result<HashMap<String, Badge>, String>, app: &str) -> Badge {
+    match read {
+        Ok(m) => m.get(app).cloned().unwrap_or(Badge {
+            says: "no check".into(),
+            level: Level::Ok,
+        }),
+        Err(_) => Badge {
+            says: "not read".into(),
+            level: Level::Warn,
+        },
+    }
+}
+
 impl Releases {
+    /// Each app's CHECKS cell from [`crate::app_status::badges`]: its banner, `no check` for an
+    /// app without one, and `not read` on every row (with the reason in `errors`) when the read
+    /// failed. Safe to call again on a newer read.
+    pub fn with_checks(&mut self, read: &Result<HashMap<String, Badge>, String>) {
+        for a in &mut self.apps {
+            a.checks = check_badge(read, &a.project);
+        }
+        if let Err(e) = read {
+            self.errors.push(format!("app checks: {e}"));
+        }
+    }
+
+    /// Each app with its Gatus groups, what [`crate::app_status::badges`] reads.
+    pub fn check_groups(&self) -> Vec<(String, Vec<String>)> {
+        self.apps
+            .iter()
+            .map(|a| {
+                let g = crate::app_status::groups(&a.project, &a.channels);
+                (a.project.clone(), g)
+            })
+            .collect()
+    }
+
     /// Each app's build runs: the builds read's `runs` the release graph tied to one of its tags
     /// (the rows Release runs lists), the newest attempt of each, newest first. The RELEASED cell
     /// then says when one is running. Safe to call again on a newer read.
@@ -484,8 +522,10 @@ impl Row for App {
     // `channel:prod` and an id still find the app.
     const COLUMNS: &'static [&'static str] = &[
         "project",
+        "stage",
         "live",
         "status",
+        "checks",
         "channels",
         "released",
         "last_deploy",
@@ -493,9 +533,9 @@ impl Row for App {
         "id",
     ];
     const STATES: &'static [&'static str] = &["all", "attention", "ok"];
-    const FACETS: &'static [&'static str] = &["project", "status"];
+    const FACETS: &'static [&'static str] = &["project", "stage", "status"];
     const LEAD: &'static str = "project";
-    const GLANCE: &'static [&'static str] = &["live", "status"];
+    const GLANCE: &'static [&'static str] = &["stage", "live", "status"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -512,9 +552,11 @@ impl Row for App {
         };
         match col {
             "project" => text(&self.project),
+            "stage" => text(&self.stage),
             "live" => text(&self.live_text),
             // `not read` is a status word here, not a blank.
             "status" => Val::Text(self.status_text.clone()),
+            "checks" => text(&self.checks.says),
             "channels" => text(&self.channels_text),
             "released" => text(&self.released_text),
             "last_deploy" => text(&self.last_deploy_text),
@@ -543,6 +585,7 @@ impl Row for App {
             self.project.clone(),
             self.live_text.clone(),
             self.status_text.clone(),
+            self.checks.says.clone(),
             self.channels_text.clone(),
             self.released_text.clone(),
             self.last_deploy_text.clone(),
@@ -575,6 +618,8 @@ impl Row for App {
     fn rank(&self, col: &str) -> Val {
         match col {
             "status" => Val::Num(-(rank(&self.status) as f64)),
+            // Up the ladder (draft, dev, alpha, beta, prod), not by the word's spelling.
+            "stage" => self.stage_rank.map_or(Val::None, |r| Val::Num(r as f64)),
             // Newest release first on the first click, by when, not by the tag's spelling.
             "released" => self
                 .history
@@ -583,6 +628,11 @@ impl Row for App {
                 .map_or(Val::None, |a| Val::Num(a as f64)),
             _ => self.val(col),
         }
+    }
+
+    /// The app's name leads to its project page; the row itself opens the app's own page.
+    fn link(&self, col: &str) -> Option<Link> {
+        (col == "project").then(|| Link::to(Kind::Project, &self.project))
     }
 }
 
@@ -721,25 +771,15 @@ pub struct Snapshot {
     pub links: crate::release_graph::Links,
 }
 
-impl Snapshot {
-    /// Project -> its lab stage, for the projects whose sheet names one on the ladder.
-    pub fn stage_names(&self) -> HashMap<String, String> {
-        self.stages
-            .iter()
-            .filter_map(|(p, f)| Some((p.clone(), f.stage.clone()?)))
-            .collect()
-    }
-}
-
 /// One project's stage against its deploys, as `release-state refresh` computed it: the rungs its
-/// live targets serve, the rungs its stage needs and nothing serves, the targets above the stage.
+/// live targets serve and the rungs its stage needs and nothing serves. A target above the stage is
+/// fine: a deploy is not the app being live.
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 struct StageFacts {
     /// None when the lab sheet names no stage on the ladder.
     stage: Option<String>,
     needs: Vec<String>,
-    ahead: Vec<String>,
 }
 
 /// The stage cell and its level. A project with no stage on its lab sheet says so; one the
@@ -751,17 +791,13 @@ fn staged(f: Option<&StageFacts>) -> (String, String, Level) {
     let Some(stage) = f.stage.as_deref() else {
         return (String::new(), "none on the lab sheet".into(), Level::Ok);
     };
-    let mut says: Vec<String> = vec![];
-    if !f.ahead.is_empty() {
-        says.push(format!("live above it: {}", f.ahead.join(", ")));
-    }
-    if !f.needs.is_empty() {
-        says.push(format!("no {} target live", f.needs.join(" or ")));
-    }
-    let (text, level) = match (says.is_empty(), stage) {
-        (true, "draft" | "dev") => ("CI only, no deploy expected".to_string(), Level::Ok),
+    let (text, level) = match (f.needs.is_empty(), stage) {
+        (true, "draft" | "dev") => ("no deploy needed".to_string(), Level::Ok),
         (true, _) => ("deploys match".to_string(), Level::Ok),
-        (false, _) => (says.join("; "), Level::Warn),
+        (false, _) => (
+            format!("no {} target deployed", f.needs.join(" or ")),
+            Level::Warn,
+        ),
     };
     (stage.to_string(), format!("{stage}: {text}"), level)
 }
@@ -943,11 +979,7 @@ fn app(
         status,
         level,
         live_text,
-        channels_text: format!(
-            "{}: {}",
-            channels.len(),
-            counts(channels.iter().map(|r| r.status.as_str()))
-        ),
+        channels_text: counts(channels.iter().map(|r| r.status.as_str())),
         unread,
         last_deploy_text: last.map_or(no_deploy.into(), |r| r.last_deploy_text.clone()),
         deploy_level: last.map_or(Level::Ok, |r| r.deploy_level),
@@ -964,6 +996,11 @@ fn app(
         stage,
         stage_text,
         stage_level,
+        stage_rank: None,
+        checks: Badge {
+            says: "not read".into(),
+            level: Level::Warn,
+        },
     }
 }
 
@@ -972,6 +1009,7 @@ fn apps(
     rows: &[Release],
     lines: &HashMap<String, Line>,
     stages: &HashMap<String, StageFacts>,
+    ladder: &[String],
     graph: Option<&Graph>,
     since: i64,
 ) -> Vec<App> {
@@ -982,7 +1020,9 @@ fn apps(
         .into_iter()
         .map(|p| {
             let channels = rows.iter().filter(|r| r.project == p).cloned().collect();
-            app(p, channels, lines.get(p), graph, stages.get(p), since)
+            let mut a = app(p, channels, lines.get(p), graph, stages.get(p), since);
+            a.stage_rank = ladder.iter().position(|s| *s == a.stage);
+            a
         })
         .collect();
     out.sort_by(|a, b| {
@@ -1082,7 +1122,14 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 since: s.links.since,
                 run_tags: &[],
             });
-            let apps = apps(&rows, &s.releases, &s.stages, Some(&graph), s.links.since);
+            let apps = apps(
+                &rows,
+                &s.releases,
+                &s.stages,
+                &s.ladder,
+                Some(&graph),
+                s.links.since,
+            );
             let mut total = Coverage::default();
             for a in &apps {
                 total.add(&a.coverage);
@@ -1093,11 +1140,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
                 question,
                 summary: says(&apps),
                 gaps: gaps(&rows),
-                coverage: if coverage.is_empty() {
-                    coverage
-                } else {
-                    format!("coverage: {coverage}")
-                },
+                coverage,
                 apps,
                 rows,
                 errors: s
@@ -1119,7 +1162,7 @@ pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
 /// One project's app as the Projects card's badge, linking to this tab (rule 2).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Badge {
-    /// `v1.19.0 prod, ok; channels 7: 4 ok, 1 released, 2 not read`.
+    /// `v1.19.0 prod, ok; channels 4 ok, 1 released, 2 not read`.
     pub says: String,
     pub level: Level,
 }
@@ -1137,7 +1180,7 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    apps(rows, &HashMap::new(), &HashMap::new(), None, 0)
+    apps(rows, &HashMap::new(), &HashMap::new(), &[], None, 0)
         .into_iter()
         .next()
         .map(|a| {
@@ -1323,7 +1366,10 @@ mod tests {
         let apps: Vec<&str> = r.apps.iter().map(|x| x.project.as_str()).collect();
         assert_eq!(apps, ["d", "e", "c", "a", "b"]);
         assert_eq!(r.at, 100);
-        assert_eq!(r.question, "What is live where, and which builds made it?");
+        assert_eq!(
+            r.question,
+            "What is deployed where, and which builds made it?"
+        );
     }
 
     #[test]
@@ -1526,7 +1572,7 @@ mod tests {
         let app = r.apps.iter().find(|a| a.project == "app").unwrap();
         assert_eq!(app.live_text, "v1.19.0 prod");
         assert_eq!((app.status_text.as_str(), app.level), ("ok", Level::Ok));
-        assert_eq!(app.channels_text, "6: 2 not read, 3 ok, 1 released");
+        assert_eq!(app.channels_text, "2 not read, 3 ok, 1 released");
         assert_eq!(app.unread, 2);
         let ids: Vec<&str> = app.channels.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(
@@ -1704,7 +1750,7 @@ mod tests {
         )
         .unwrap();
         let b = badge(&rows).unwrap();
-        assert_eq!(b.says, "v1 prod, drift; channels 2: 1 drift, 1 ok");
+        assert_eq!(b.says, "v1 prod, drift; channels 1 drift, 1 ok");
         assert_eq!(b.level, Level::Bad);
         assert_eq!(badge(&channels(&snapshot(vec![]), "a").unwrap()), None);
     }
@@ -1755,7 +1801,7 @@ mod tests {
             a.coverage_text,
             "prev 2/2, deployed 0/1 (1 none declared), reached 1/2"
         );
-        assert_eq!(r.coverage, "coverage: prev 2/2, deployed 0/1, reached 1/2");
+        assert_eq!(r.coverage, "prev 2/2, deployed 0/1, reached 1/2");
         assert_eq!(a.history[1].prs_text, "none merged");
     }
 
@@ -1909,12 +1955,11 @@ mod tests {
         };
         let raw = format!(
             r#"{{"generated_epoch": 7, "rows": [{}, {}, {}, {}, {}],
-              "stages": {{"site": {{"stage": "draft", "rungs": ["prod"],
-                  "needs": [], "ahead": ["site-prod"]}},
-                "tool": {{"stage": "draft", "rungs": [], "needs": [], "ahead": []}},
-                "new": {{"stage": null, "rungs": ["prod"], "needs": [], "ahead": []}},
+              "stages": {{"site": {{"stage": "draft", "rungs": ["prod"], "needs": []}},
+                "tool": {{"stage": "draft", "rungs": [], "needs": []}},
+                "new": {{"stage": null, "rungs": ["prod"], "needs": []}},
                 "game": {{"stage": "prod", "rungs": ["prod"],
-                  "needs": ["alpha", "beta"], "ahead": []}}}}}}"#,
+                  "needs": ["alpha", "beta"]}}}}}}"#,
             row("site"),
             row("tool"),
             row("game"),
@@ -1926,17 +1971,22 @@ mod tests {
             let a = r.apps.iter().find(|a| a.project == p).unwrap();
             (a.stage.as_str(), a.stage_text.as_str(), a.stage_level)
         };
+        // A draft deployed to prod is fine: a deploy is not the app being live.
         assert_eq!(
             says("site"),
-            ("draft", "draft: live above it: site-prod", Level::Warn)
+            ("draft", "draft: no deploy needed", Level::Ok)
         );
         assert_eq!(
             says("tool"),
-            ("draft", "draft: CI only, no deploy expected", Level::Ok)
+            ("draft", "draft: no deploy needed", Level::Ok)
         );
         assert_eq!(
             says("game"),
-            ("prod", "prod: no alpha or beta target live", Level::Warn)
+            (
+                "prod",
+                "prod: no alpha or beta target deployed",
+                Level::Warn
+            )
         );
         assert_eq!(says("new"), ("", "none on the lab sheet", Level::Ok));
         // No facts at all is a read that failed, never a quiet blank.
@@ -1953,5 +2003,31 @@ mod tests {
             r.errors,
             ["release-state stages: notes projects --stages printed nothing"]
         );
+    }
+
+    #[test]
+    fn an_app_without_a_badge_says_no_check_and_a_failed_read_says_not_read() {
+        let app = |p: &str| App {
+            project: p.into(),
+            ..App::default()
+        };
+        let mut r = Releases {
+            apps: vec![app("pmp"), app("shop")],
+            ..Releases::default()
+        };
+        let up = Badge {
+            says: "Operational".into(),
+            level: Level::Ok,
+        };
+        r.with_checks(&Ok(HashMap::from([("pmp".to_string(), up.clone())])));
+        assert_eq!(r.apps[0].checks, up);
+        assert_eq!(r.apps[1].checks.says, "no check");
+        assert!(blank(&r.apps[1].checks.says));
+        r.with_checks(&Err("vm: refused".into()));
+        assert!(r
+            .apps
+            .iter()
+            .all(|a| a.checks.says == "not read" && a.checks.level == Level::Warn));
+        assert_eq!(r.errors, ["app checks: vm: refused"]);
     }
 }

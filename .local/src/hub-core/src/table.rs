@@ -35,6 +35,16 @@ impl From<Option<f64>> for Val {
 }
 
 impl Val {
+    /// The cell as a surface draws it: text as written, a whole number without its `.0`.
+    pub fn shown(&self) -> Option<String> {
+        match self {
+            Val::Text(t) => Some(t.clone()),
+            Val::Num(n) if n.fract() == 0.0 => Some(format!("{n:.0}")),
+            Val::Num(n) => Some(n.to_string()),
+            Val::None => None,
+        }
+    }
+
     /// The lower-case text a `key:value` term matches by prefix.
     fn text(&self) -> Option<String> {
         match self {
@@ -58,7 +68,7 @@ impl Val {
 pub trait Row {
     /// The column keys in display order. Each is what the query, the sort and the URL name.
     const COLUMNS: &'static [&'static str];
-    /// The state chips; the first keeps every row.
+    /// The state chips; the first is the view a table opens on, and keeps the rows `in_default` does.
     const STATES: &'static [&'static str];
     /// The columns whose values the web offers as dropdowns, each value a `key:value` term.
     const FACETS: &'static [&'static str];
@@ -69,13 +79,21 @@ pub trait Row {
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
     const GLANCE: &'static [&'static str] = &[];
-    /// What a state word the rows show means, one `(word, meaning)` per state, drawn under the
-    /// chips on both surfaces (`hub_core::vocab`). Empty draws none.
+    /// What a state word the rows show means, one `(word, meaning)` per state (`hub_core::vocab`):
+    /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
+    /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
+    /// Fleet's held runner is stopped (red) where a held Queue item only waits (amber).
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
     fn in_state(&self, state: &str) -> bool;
+    /// Whether the first chip, the view the table opens on, keeps the row: every row, unless the
+    /// table opens on less (Queue's `active` leaves done out, one chip away).
+    fn in_default(&self) -> bool {
+        true
+    }
     /// What a bare word searches: every text column unless the table says otherwise.
     fn text(&self) -> String {
         Self::COLUMNS
@@ -112,12 +130,16 @@ impl<T: Row> Row for &T {
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
+    const TONES: &'static [(&'static str, crate::vocab::Level)] = T::TONES;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
     }
     fn in_state(&self, state: &str) -> bool {
         (*self).in_state(state)
+    }
+    fn in_default(&self) -> bool {
+        (*self).in_default()
     }
     fn text(&self) -> String {
         (*self).text()
@@ -268,11 +290,17 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
     })
 }
 
-/// A state chip and how many rows the query leaves under it.
+/// A state chip and how many rows the query leaves under it, with its hue while it holds any
+/// row (`vocab::tone`; a chip at zero is plain) and what its word means when the table's
+/// legend defines it (`Row::LEGEND`).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Chip {
     pub name: &'static str,
     pub n: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<crate::vocab::Level>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub means: Option<&'static str>,
 }
 
 /// A column header: whether it is the sort, and the sort a click on it gives.
@@ -339,13 +367,17 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::schedules::Schedule>(),
         phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
+        phone_table::<crate::pipelines::Pipeline>(),
+        phone_table::<crate::junit::Suite>(),
+        phone_table::<crate::quarantine::Entry>(),
         phone_table::<crate::sections::Section>(),
+        phone_table::<crate::spend_history::SessRow>(),
         phone_table::<crate::worklog::Work>(),
         phone_table::<crate::machines::Machine>(),
         phone_table::<crate::machines::Pool>(),
         phone_table::<crate::ci::Slot>(),
         phone_table::<crate::ci::Queued>(),
-        phone_table::<crate::ci::Finished>(),
+        phone_table::<crate::ci::LocalFail>(),
     ];
     rows.into_iter().chain(cuts).collect()
 }
@@ -392,7 +424,7 @@ pub struct Summary {
     pub legend: Option<String>,
 }
 
-/// `ready: starts when ...; held: waits on ...`, the line both surfaces draw under the chips.
+/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))
@@ -448,9 +480,14 @@ impl View {
     /// The rows the query and chip keep: in the sort, or in the table's own order without one.
     pub fn apply<'a, R: Row>(&self, rows: &'a [R]) -> Vec<&'a R> {
         let ts = terms::<R>(&self.q);
-        let kept = rows
-            .iter()
-            .filter(|r| keeps(&ts, *r) && (self.state.is_empty() || r.in_state(&self.state)));
+        let kept = rows.iter().filter(|r| {
+            keeps(&ts, *r)
+                && if self.state.is_empty() {
+                    r.in_default()
+                } else {
+                    r.in_state(&self.state)
+                }
+        });
         if self.sort.is_empty() {
             return kept.collect();
         }
@@ -477,13 +514,22 @@ impl View {
         R::STATES
             .iter()
             .enumerate()
-            .map(|(i, s)| Chip {
-                name: s,
-                n: if i == 0 {
-                    kept.len()
+            .map(|(i, s)| {
+                let n = if i == 0 {
+                    kept.iter().filter(|r| r.in_default()).count()
                 } else {
                     kept.iter().filter(|r| r.in_state(s)).count()
-                },
+                };
+                Chip {
+                    name: s,
+                    n,
+                    tone: if n > 0 {
+                        crate::vocab::tone(R::TONES, s)
+                    } else {
+                        None
+                    },
+                    means: R::LEGEND.iter().find(|(w, _)| w == s).map(|(_, m)| *m),
+                }
             })
             .enumerate()
             .filter(|(i, c)| !R::HIDE_EMPTY || *i == 0 || c.n > 0 || c.name == self.state)

@@ -24,7 +24,7 @@ const LOCAL_FRESH: &str =
 /// error instead of numbers: a board blanks rather than leave stale values up.
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
-    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|kpi_subject|vital)"}"#;
 
 /// What CI time costs: each host's rate and basis and its registered slots, which
 /// `run_detail::Rates` prices jobs from (`Infra::rates`).
@@ -35,7 +35,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
-        ("finished", format!("sum by (repo, workflow, conclusion, scope) ({W} (github_runs_finished))")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
         // runner rows may be missing.
@@ -54,6 +53,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
+        // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
+        // shown as lent, with `to` tests or build.
+        ("lent", format!("{W} (ci_governor_lent) == 1")),
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
@@ -67,10 +69,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
         ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
-        // Done today: when runs finished, and which failed. An absent metric is an empty answer,
-        // so the tab says "no data" rather than an error until the exporters publish them.
+        // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
+        // absent metric is an empty answer, so the tab says "no data" rather than an error until
+        // the exporters publish them.
         ("hourly", format!("sum by (hour, conclusion, scope) ({W} (github_runs_by_hour))")),
-        ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
@@ -96,6 +98,7 @@ pub const OPTIONAL: &[&str] = &[
     "cores",
     "runner_cores",
     "withheld",
+    "lent",
     "power",
     "disk",
     "governor",
@@ -263,6 +266,21 @@ impl Infra {
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The withheld runners the governor says are lent to their pair, by name, with whom to:
+    /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
+    /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
+    /// never both a slot and lent. Any other withheld runner is held back for load, a pin, a
+    /// drain or no work.
+    pub fn lent(&self) -> HashMap<&str, &str> {
+        let held: std::collections::HashSet<&str> =
+            self.get("withheld").iter().map(|s| s.label("name")).collect();
+        self.get("lent")
+            .iter()
+            .filter(|s| held.contains(s.label("name")))
+            .map(|s| (s.label("name"), s.label("to")))
+            .collect()
     }
 
     /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
@@ -469,6 +487,7 @@ mod tests {
                 "cores",
                 "runner_cores",
                 "withheld",
+                "lent",
                 "power",
                 "disk",
                 "governor",

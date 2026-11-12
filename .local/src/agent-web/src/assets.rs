@@ -326,7 +326,10 @@ mod tests {
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
         assert_eq!(keys, all[..all.len() - 5]);
-        assert_eq!(all[all.len() - 5..], ["forge", "event", "title", "id", "pr"]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
@@ -452,10 +455,14 @@ mod tests {
 
     #[test]
     fn entity_pages_are_the_links() {
-        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
-        // keeps the id of every page Link::href draws inside an inner tab.
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES (and the old
+        // words it still reads), so the router keeps the id of every page Link::href draws inside
+        // an inner tab, and of a saved link to one.
         let mut want = serde_json::Map::new();
-        for p in hub_core::links::PAGES {
+        for p in hub_core::links::PAGES
+            .iter()
+            .chain(hub_core::links::RETIRED_PAGES)
+        {
             let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
             tab[p.word] = p.inner.into();
         }
@@ -491,6 +498,32 @@ mod tests {
     }
 
     #[test]
+    fn project_page_is_the_layout() {
+        // Rule 8 for an opened project: app.js's PROJECT_PAGE is hub_core::layout::PROJECT_PAGE.
+        let want: Vec<serde_json::Value> = hub_core::layout::PROJECT_PAGE
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const PROJECT_PAGE = "))
+            .expect("app.js has PROJECT_PAGE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
+        assert_eq!(got, serde_json::Value::Array(want));
+        // Every section a group names is an anchor projects.js draws.
+        let js = include_str!("../static/projects.js");
+        for i in hub_core::layout::PROJECT_PAGE {
+            for s in i.sections {
+                assert!(
+                    js.contains(&format!("\"{s}\"")),
+                    "projects.js never names {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn inner_tabs_are_the_layout() {
         // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
         let mut want = serde_json::Map::new();
@@ -503,10 +536,7 @@ mod tests {
                 .iter()
                 .map(|i| serde_json::json!([i.id, i.title, i.sections]))
                 .collect();
-            want.insert(
-                t.id.to_string(),
-                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
-            );
+            want.insert(t.id.to_string(), serde_json::json!({ "tabs": tabs }));
         }
         let line = APP_JS
             .lines()
@@ -519,12 +549,13 @@ mod tests {
         // section never shows under every inner tab or under none. Releases is checked per
         // inner tab below: its table and detail share one group.
         let pages = [
+            ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "log"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -539,6 +570,23 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Log's sections are index.html's `sec-` anchors, which log.js puts in their inner tab's
+        // group by id; one log.js draws (the day's history) it wraps where it draws it. The
+        // forecast is the TUI's alone, as `log_folds_are_the_layout` says.
+        let log_js = include_str!("../static/log.js");
+        assert!(
+            log_js.contains(r#"innerHide("log", el.id.slice(4), el)"#),
+            "log.js never puts Log's sections in their inner tabs"
+        );
+        let index = include_str!("index.html");
+        for s in hub_core::layout::resolve("log").expect("log").sections {
+            let id = format!("id=\"sec-{s}\"");
+            let drawn = log_js.contains(&format!("innerWrap(\"log\", \"{s}\", `<div {id}"));
+            assert!(
+                *s == "forecast" || index.contains(&id) || drawn,
+                "Log's {s} has no {id} in its inner tab's group"
+            );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
         let releases = include_str!("../static/releases.js");

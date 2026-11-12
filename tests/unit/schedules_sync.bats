@@ -22,7 +22,7 @@ setup() {
   # gh-stub api [-i] [-H "If-None-Match: <etag>"] <path>: serves $GHD/<path with / ? & = as _>,
   # with -i behind an ETag of the file's md5 (and a 304, exit 1, when the caller already has it).
   # A missing file is GitHub's 404; $GHD/fail-<owner>_<name> fails every call for that repo
-  # with its content as the error, HTTP 502 when empty.
+  # with its content as the error, HTTP 502 when empty; $GHD/<path>.fail fails that one path.
   cat > "$SANDBOX/bin/gh-stub" <<EOF
 #!/usr/bin/env bash
 shift; inc=; inm=
@@ -31,6 +31,7 @@ echo "\$1\${inm:+ (conditional)}" >> "$GHD/calls"
 r="\$(echo "\$1" | cut -d/ -f2-3 | tr / _)"
 [ -e "$GHD/fail-\$r" ] && { [ -s "$GHD/fail-\$r" ] && cat "$GHD/fail-\$r" >&2 || echo "HTTP 502" >&2; exit 1; }
 f="$GHD/\$(echo "\$1" | tr '/?&=' '____')"
+[ -e "\$f.fail" ] && { echo "HTTP 502" >&2; exit 1; }
 if [ -f "\$f" ]; then
   if [ -n "\$inc" ]; then
     tag="W/\\"\$(md5sum < "\$f" | cut -c1-32)\\""
@@ -59,12 +60,12 @@ EOF
 [ "\$2" = forgejo_repo_admin ] && echo fjtok
 EOF
   # kube-stub get --raw <path>: the exporter feed. Serves $KD/feed-<cursor>, else an empty feed
-  # that collects no repo; $KD/down fails every call. Calls are logged to $KD/calls.
+  # that collects no repo; $KD/down fails every call, $KD/down-<cursor> that page's. Calls are logged to $KD/calls.
   cat > "$SANDBOX/bin/kube-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$3" >> "$KD/calls"
-[ -e "$KD/down" ] && { echo "Error from server (ServiceUnavailable): no endpoints available" >&2; exit 1; }
 c="\$(echo "\$3" | sed -n 's/.*cursor=\([0-9]*\).*/\1/p')"
+[ -e "$KD/down" ] || [ -e "$KD/down-\$c" ] && { echo "Error from server (ServiceUnavailable): no endpoints available" >&2; exit 1; }
 [ -f "$KD/feed-\$c" ] && exec cat "$KD/feed-\$c"
 echo '{"epoch":"e0","next":0,"more":false,"repos":[],"window_secs":86400,"records":[]}'
 EOF
@@ -376,7 +377,7 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   assert_output '["2025-11-06T12:10:00Z",[30]]'
 }
 
-@test "ledger: state.json is byte-for-byte what the schedule-only fetch wrote (golden from main)" {
+@test "ledger: state.json is byte-for-byte what the schedule-only fetch wrote (golden from main, plus night_absent)" {
   game_files
   # The golden was written by the event=schedule version of this script from these runs alone;
   # the all-events page adds a push run on the same workflow and a run of another workflow.
@@ -637,8 +638,14 @@ lrow() {
   assert_failure 1
 }
 
-# feed <cursor> <epoch> <next> <more> <records json>: one page of the exporter feed, collecting o/game
-feed() { printf '{"epoch":"%s","next":%s,"more":%s,"repos":["O/Game"],"window_secs":86400,"records":[%s]}' "$2" "$3" "$4" "$5" > "$KD/feed-$1"; }
+# feed <cursor> <epoch> <next> <more> <records json> [<run json>...]: one page of the exporter feed,
+# collecting o/game; each run json is one of its runs as GitHub lists it
+feed() {
+  local c=$1 e=$2 n=$3 m=$4 recs=$5; shift 5
+  local IFS=, runs=() r
+  for r in "$@"; do runs+=("{\"forge\":\"github\",\"repo\":\"O/Game\",\"run\":$r}"); done
+  printf '{"epoch":"%s","next":%s,"more":%s,"repos":["O/Game"],"window_secs":86400,"records":[%s],"runs":[%s]}' "$e" "$n" "$m" "$recs" "${runs[*]}" > "$KD/feed-$c"
+}
 # frec <run> <attempt> <complete> <created> <job json>...: one feed record
 frec() {
   local run=$1 att=$2 done=$3 at=$4; shift 4
@@ -649,10 +656,10 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
 
 @test "feed: the exporter's records reach the archive, paged by cursor; its repos are not asked of GitHub in its window, older runs are" {
   game_files
-  feed 0 e1 2 true "$(frec 30 1 true 2025-11-06T10:01:00Z "$JOB")"
+  feed 0 e1 2 true "$(frec 30 1 true 2025-11-06T10:01:00Z "$JOB")" \
+    "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" \
+    "$(gh_run 10 .github/workflows/checks.yml 2025-11-04T10:00:00Z completed success 1 push)"
   feed 2 e1 3 false "$(frec 31 1 false 2025-11-06T11:00:00Z)"
-  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" \
-       "$(gh_run 10 .github/workflows/checks.yml 2025-11-04T10:00:00Z completed success 1 push)" | page1
   echo '{"jobs":[{"id":1,"name":"a","conclusion":"success","steps":[]}],"total_count":1}' | serve 'repos/o/game/actions/runs/10/attempts/1/jobs?per_page=100'
   run "$SUBJECT"
   assert_success
@@ -696,117 +703,112 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output 1
 }
 
-@test "negative control: a feed that is down is recorded, and its repos' runs wait instead of being read from GitHub" {
+@test "negative control: a feed that is down is recorded, and its repos' runs and jobs wait instead of being read from GitHub" {
   game_files
-  feed 0 e1 1 false "$(frec 30 1 true 2025-11-06T10:01:00Z "$JOB")"
-  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  feed 0 e1 1 false "$(frec 30 1 true 2025-11-06T10:01:00Z "$JOB")" "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)"
   run "$SUBJECT"
+  assert_success
   touch "$KD/down"
-  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" \
-       "$(gh_run 32 .github/workflows/test.yml 2025-11-06T11:40:00Z completed failure)" | page1
+  runs "$(gh_run 32 .github/workflows/test.yml 2025-11-06T11:40:00Z completed failure)" | page1
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
-  assert_success
-  run jq -r '.exporter.error' "$XDG_STATE_HOME/ci/sync.json"
-  assert_output --partial 'no endpoints available'
-  run grep -c '/jobs' "$GHD/calls"
+  assert_failure 1
+  assert_output --partial 'o/game: exporter feed'
+  run jq -r '.exporter.error, .repos["github:o/game"].error, .repos["github:o/game"].synced_at' "$XDG_STATE_HOME/ci/sync.json"
+  assert_line --index 0 --partial 'no endpoints available'
+  assert_line --index 1 --partial 'exporter feed'
+  assert_line --index 2 2025-11-06T12:00:00Z
+  run grep -cE '/jobs|o/game/actions/runs' "$GHD/calls"
   assert_output 0
-  run jq -c '.repos[0].workflows[0].runs | map([.id, .failed_jobs])' "$STATE"
-  assert_output '[[32,null],[30,["Feed fail"]]]'
-  # and with no feed ever read, the exporter's repos are unknown: nothing is read directly
+  run jq -sc 'map(.id)' "$LEDGER"
+  assert_output '[30]'
+  run jq -c '.repos[0] | [.error != null, (.workflows[0].runs | map([.id, .failed_jobs]))]' "$STATE"
+  assert_output '[true,[[30,["Feed fail"]]]]'
+  # with no feed ever read, the exporter's repos are unknown: o/game's runs are read from GitHub, no jobs
   rm "$JOBS" "$XDG_STATE_HOME/ci/sync.json"
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431600 run "$SUBJECT"
+  run grep -c 'o/game/actions/runs?per_page' "$GHD/calls"
+  assert_output 1
   run grep -c '/jobs' "$GHD/calls"
   assert_output 0
 }
 
-# feedruns <cursor> <epoch> <next> <more> <run json>...: one feed page of run records for O/Game
-feedruns() {
-  local c=$1 e=$2 n=$3 m=$4; shift 4
-  local IFS=, recs=() r
-  for r in "$@"; do recs+=("{\"forge\":\"github\",\"repo\":\"O/Game\",\"run\":$r}"); done
-  printf '{"epoch":"%s","next":%s,"more":%s,"repos":["O/Game"],"window_secs":86400,"records":[],"runs":[%s]}' "$e" "$n" "$m" "${recs[*]}" > "$KD/feed-$c"
+@test "negative control: a feed that fails after a page keeps that page's runs in the ledger and the state, and records the error" {
+  game_files
+  feed 0 e1 2 true '' "$(gh_run 40 .github/workflows/test.yml 2025-11-06T11:50:00Z in_progress null)"
+  touch "$KD/down-2"
+  run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'o/game: exporter feed'
+  run jq -sc 'map([.id, .status])' "$LEDGER"
+  assert_output '[[40,"in_progress"]]'
+  run jq -c '.repos[0] | [.error != null, (.workflows[0].runs | map(.id))]' "$STATE"
+  assert_output '[true,[40]]'
+  run jq -c '[.exporter.cursor, .repos["github:o/game"].error != null]' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '[2,true]'
+  # the page answers again: the error clears and run 40 stays
+  rm "$KD/down-2"; feed 2 e1 2 false ''
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.error, (.workflows[0].runs | map(.id))]' "$STATE"
+  assert_output '[null,[40]]'
 }
 
-@test "feed runs: the exporter's runs reach the shadow ledger as the run ledger's own rows, and compare-feed agrees" {
+@test "feed runs: a run the ledger holds open since before the feed's window is read by id and closes; a fresh open one is not" {
   game_files
-  R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)"
-  feedruns 0 e1 1 false "$R30"
-  jq -c '.runs += [{"forge":"github","repo":"O/Game"}]' "$KD/feed-0" > "$KD/feed-0.new" && mv "$KD/feed-0.new" "$KD/feed-0"
-  runs "$R30" | page1
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z in_progress null)" \
+    "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)"
+  gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z completed success | serve 'repos/o/game/actions/runs/20'
   run "$SUBJECT"
   assert_success
-  FEEDL="$XDG_STATE_HOME/ci/runs-feed.jsonl"
-  run diff <(jq -c 'del(.repo)' "$LEDGER") <(jq -c 'del(.repo)' "$FEEDL")
-  assert_success
-  run jq -r '.exporter.runs_since' "$XDG_STATE_HOME/ci/sync.json"
-  assert_output 2025-11-06T12:00:00Z
-  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
-  assert_success
-  run jq -c '[.ok, .repos["o/game"]]' <<<"$output"
-  assert_output '[true,{"agree":1,"open":0,"differ":[]}]'
-  # by default it counts from runs_since, after this run: nothing compared is not agreement
-  run "$SUBJECT" compare-feed
-  assert_failure 3
-  assert_output --partial 'no settled run to compare'
-  # warm, unchanged: the shadow gains no row
+  run grep -c 'actions/runs/2[01]$' "$GHD/calls"
+  assert_output 0   # served this pass by the feed: not asked
   feed 1 e1 1 false ''
+  : > "$GHD/calls"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
-  run wc -l < "$FEEDL"
+  assert_success
+  run grep -c 'actions/runs/20$' "$GHD/calls"
   assert_output 1
+  run grep -c 'actions/runs/21$' "$GHD/calls"
+  assert_output 0
+  run "$SUBJECT" runs o/game
+  run jq -c 'map([.id, .status])' <<<"$output"
+  assert_output '[[20,"completed"],[21,"in_progress"]]'
 }
 
-@test "feed runs: a retitled PR's run agrees once the feed serves it again, and an exporter repo with no agreed run holds the gate" {
+@test "feed runs: an exporter repo's runs come from the feed alone, and its scheduled runs reach the state; a repo it does not collect is polled" {
   game_files
-  old="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed success 1 pull_request 7 'fix: before')"
-  new="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed success 1 pull_request 7 'fix: after')"
-  # the poll reads the run after its PR was retitled; the feed still has the title it finished with
-  feedruns 0 e1 1 false "$old"
-  runs "$new" | page1
+  R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z in_progress null)"
+  P31="$(gh_run 31 .github/workflows/checks.yml 2025-11-06T10:05:00Z completed success 1 push)"
+  feed 0 e1 1 false '' "$R30" "$P31"
+  # a runs page GitHub would serve: never asked, so run 99 never lands
+  runs "$(gh_run 99 .github/workflows/test.yml 2025-11-06T11:00:00Z completed success)" | page1
   run "$SUBJECT"
   assert_success
-  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
-  assert_failure 1
-  run jq -c '.repos["o/game"].differ' <<<"$output"
-  assert_output '[{"id":30,"fields":{"title":["fix: after","fix: before"]}}]'
-  # the exporter serves the run again with its new title (home-config #868): the shadow takes it
-  feedruns 1 e1 2 false "$new"
+  run grep -c 'o/game/actions/runs?' "$GHD/calls"
+  assert_output 0
+  run grep -c 'o/empty/actions/runs?' "$GHD/calls"
+  assert_output 1
+  run jq -sc 'map([.repo, .id, .status, .path, .title, .event])' "$LEDGER"
+  assert_output '[["o/game",30,"in_progress",".github/workflows/test.yml","t30","schedule"],["o/game",31,"completed",".github/workflows/checks.yml","t31","push"]]'
+  run jq -c '.repos[0].workflows[0].runs | map([.id, .status])' "$STATE"
+  assert_output '[[30,"in_progress"]]'
+  run "$SUBJECT" runs o/game
+  assert_success
+  run jq -c 'map(.id)' <<<"$output"
+  assert_output '[30,31]'
+  # the run finishes and the feed serves its new state: the ledger and the state take it
+  feed 1 e1 2 false '' "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
   assert_success
-  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
-  assert_success
-  run jq -c '[.ok, .unproven, .repos["o/game"]]' <<<"$output"
-  assert_output '[true,[],{"agree":1,"open":0,"differ":[]}]'
-  # o/empty joins the exporter's repos with no run: nothing proves its rows, so the gate holds
-  feedruns 2 e1 2 false
-  jq -c '.repos += ["O/Empty"]' "$KD/feed-2" > "$KD/feed-2.new" && mv "$KD/feed-2.new" "$KD/feed-2"
-  SCHEDULES_NOW=1762431600 run "$SUBJECT"
-  assert_success
-  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
-  assert_failure 1
-  run jq -c '[.ok, .unproven, .repos["o/empty"]]' <<<"$output"
-  assert_output '[false,["o/empty"],{"agree":0,"open":0,"differ":[]}]'
-}
-
-@test "negative control: compare-feed names a run whose conclusion differs or that one side lacks, and skips runs still settling" {
-  game_files
+  run "$SUBJECT" runs o/game --branch main
+  run jq -c 'map([.id, .status, .conclusion])' <<<"$output"
+  assert_output '[[30,"completed","failure"],[31,"completed","success"]]'
+  run jq -c '.repos[0].workflows[0].runs | map([.id, .conclusion])' "$STATE"
+  assert_output '[[30,"failure"]]'
+  [ ! -e "$XDG_STATE_HOME/ci/runs-feed.jsonl" ]
   run "$SUBJECT" compare-feed
-  assert_failure 3
-  feedruns 0 e1 1 false "$(gh_run 31 .github/workflows/test.yml 2025-11-06T10:00:00Z completed failure)" \
-    "$(gh_run 32 .github/workflows/test.yml 2025-11-06T10:10:00Z completed success)" \
-    "$(gh_run 33 .github/workflows/test.yml 2025-11-06T10:20:00Z in_progress null)" \
-    "$(gh_run 34 .github/workflows/test.yml 2025-11-06T11:50:00Z completed success)"
-  runs "$(gh_run 31 .github/workflows/test.yml 2025-11-06T10:00:00Z completed success)" \
-       "$(gh_run 33 .github/workflows/test.yml 2025-11-06T10:20:00Z in_progress null)" \
-       "$(gh_run 34 .github/workflows/test.yml 2025-11-06T11:50:00Z in_progress null)" | page1
-  run "$SUBJECT"
-  assert_success
-  run "$SUBJECT" compare-feed --since 2025-11-06T00:00:00Z
-  assert_failure 1
-  run jq -c '[.ok, .settled_before, .repos["o/game"]]' <<<"$output"
-  assert_output '[false,"2025-11-06T11:30:00Z",{"agree":0,"open":2,"differ":[{"id":31,"fields":{"conclusion":["success","failure"]}},{"id":32,"missing":"ledger"}]}]'
-  run "$SUBJECT" compare-feed --since yesterday
   assert_failure 2
 }
 
@@ -918,10 +920,15 @@ EOF
 FAIL  B  ==> 1/3 passed, 1 failed, 1 known red, 0 skipped
 NOT RUN C  never started' durations.txt '12 P.A'
   zip_art 8 suite-1/A.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
+  KNOWN    P.B.four (2.5s)
+  Passed   P.A.one (0.3s)
 ==> 3/5 passed' suite-1/batch-1.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.one
 ==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.A.two' \
-    run/editor.log '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.Log.ignored'
-  zip_art 9 suite-2/E.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.E.three("a b")'
+    run/editor.log '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.Log.ignored
+  KNOWN    P.Log.ignored (1.0s)'
+  zip_art 9 suite-2/E.txt '==> known red now passes, take it off /w/scripts/test/quarantine.txt: P.E.three("a b")
+  KNOWN    P.E.five("x (y)") (10.0s)
+  KNOWN    P.B.four (2.4s)'
 }
 
 nightly_runs() {
@@ -941,6 +948,9 @@ nightly_runs() {
   # an expired artifact is not asked for, and a test named in a batch and alone counts once.
   run jq -c '.repos[0] | [.nightly.run_id, .nightly.known, .nightly.now_passing, .nightly.now_passing_tests, .nightly.logs, .no_summary]' "$QUAR"
   assert_output '[50,3,3,["P.A.one","P.A.two","P.E.three(\"a b\")"],2,["51:1"]]'
+  # the quarantined tests results.py marked KNOWN (failed), once each; a test in neither list did not run
+  run jq -c '.repos[0].nightly.known_tests' "$QUAR"
+  assert_output '["P.B.four","P.E.five(\"x (y)\")"]'
   # a repo with no quarantine is no lane, and is asked again a day later, not every pass
   run jq -c '.absent' "$QUAR"
   assert_output '{"o/empty":"2025-11-06T12:00:00Z"}'
@@ -983,6 +993,60 @@ nightly_runs() {
   assert_success
   run jq -c '.repos[0] | [.report.entries, .error]' "$QUAR"
   assert_output '[2,"quarantine.py report: quarantine.txt:3: needs a date"]'
+}
+
+# night_file <sha> <json>: o/game's scripts/night.json on main, as the contents API answers it
+night_file() {
+  printf '{"sha":"%s","content":"%s"}' "$1" "$(printf '%s' "$2" | base64 -w0)" | serve 'repos/o/game/contents/scripts/night.json?ref=main'
+}
+
+@test "night set: scripts/night.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
+  game_files; runs | page1
+  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "held": {"multi.yml": "Multi (all)"}}'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | map([.repo, .night.night, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,"2025-11-06T12:00:00Z"]]'
+
+  # warm: the same file is a conditional 304 and keeps its night; o/empty is not asked for a day
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run grep night.json "$GHD/calls"
+  assert_output 'repos/o/game/contents/scripts/night.json?ref=main (conditional)'
+  run jq -c '.repos[0].night | [.night, .sha]' "$STATE"
+  assert_output '[{"test.yml":"Tests (all)"},"n1"]'
+
+  # a moved sha is read again; a day on, o/empty is asked again and still has none
+  night_file n2 '{"night": {"test.yml": "Tests (all)", "soak.yml": "Soak (all)"}}'
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | map([.night.night, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[[{"test.yml":"Tests (all)","soak.yml":"Soak (all)"},{},"n2",null],[null,null,null,"2025-11-07T12:00:00Z"]]'
+  run grep -c 'o/empty/contents/scripts/night.json' "$GHD/calls"
+  assert_output 1
+}
+
+@test "night set: a failed read of night.json keeps the last set with its error, and the repo's sync stays good" {
+  game_files; runs | page1
+  night_file n1 '{"night": {"test.yml": "Tests (all)"}}'
+  run "$SUBJECT"
+  assert_success
+  touch "$GHD/repos_o_game_contents_scripts_night.json_ref_main.fail"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.error, .night.night, .night.sha, .night.error]' "$STATE"
+  assert_output '[null,{"test.yml":"Tests (all)"},"n1","HTTP 502"]'
+}
+
+@test "negative control: a night.json that is not a JSON object is kept with its error, never read as an empty night" {
+  game_files; runs | page1
+  night_file n3 '["test.yml"]'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0].night | [.night, .held, .sha, .error]' "$STATE"
+  assert_output '[{},{},"n3","scripts/night.json: not a JSON object"]'
 }
 
 # ---- PR store ----

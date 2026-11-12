@@ -316,7 +316,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "an after: successor off focus stays queued when its item closes; on focus it starts" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project app --slug first --running "a" >/dev/null
   "$AQ" add --project app --slug second --after first "b" >/dev/null
   printf 'game\tonly\n' > "$NOTES_FIXTURE/prios"
@@ -408,7 +407,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project game --slug a --running "a" >/dev/null
   "$AQ" add --project game --slug b --running "b" >/dev/null
   "$AQ" add --project game --slug both --after a,b "both" >/dev/null
@@ -547,6 +545,14 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   ask o1 answered 'B, the other' human
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = go ]
+  # 2026-11-12: a free-text answer, whose first word names no option, is the human's own answer and releases.
+  ask o1 answered 'Neither: shape the whole bowl' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = go ]
+  # Negative control: an empty answer still holds.
+  ask o1 answered '' human
+  run "$AQ" next --json
+  assert_failure
 }
 
 @test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
@@ -1294,7 +1300,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
-@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
+@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -1315,10 +1321,16 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -f "$(item queued lp)" ]
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
+  # 2026-11-12: an urgent plan item started under the human's dispatch hold.
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
+  assert_success
+  assert_output --partial 'so held stays queued for the next dispatch pass'
+  assert_not_called 'start --item held'
+  [ -f "$(item queued held)" ]
 }
 
 @test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
-  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
   "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
   "$AQ" add --project game --slug other "unrelated" >/dev/null
@@ -1349,11 +1361,13 @@ notes --profile bnb ptask game --agent run gm-9"
   # A dispatch hold keeps it queued for the pass.
   "$AQ" add --project game --running --slug h1 "held parent" >/dev/null
   "$AQ" add --project game --slug h2 --after h1 "held next" >/dev/null
-  HOLD_EXIT=1 run "$AQ" move h1 done --status ok
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  run "$AQ" move h1 done --status ok
   assert_success
-  assert_output --partial 'dispatch is held, so h2 stays queued'
+  assert_output --partial 'by human: next queue), so h2 stays queued'
   assert_not_called 'start --item h2'
   [ -f "$(item queued h2)" ]
+  "$REPO_ROOT/.local/bin/agent-hold" release dispatch >/dev/null
   # A start that fails leaves it queued.
   "$AQ" add --project game --running --slug x1 "parent" >/dev/null
   "$AQ" add --project game --slug x2 --after x1 "next" >/dev/null
@@ -1807,6 +1821,37 @@ EOF
   [ "$(field "$(item queued x-first)" priority)" = high ]
 }
 
+# A test that leaves a writer waiting on a held lock: a failed assert must not leave it behind.
+teardown() {
+  exec 7>&-
+  [ -z "${WRITER:-}" ] || kill "$WRITER" 2>/dev/null || true
+}
+
+@test "a waiting writer holds the gate, so overlapping reads cannot starve it" {
+  "$AQ" add --project game "one item" >/dev/null
+  # A read already in holds .lock shared; a writer arrives and waits on it.
+  exec 7> "$AGENT_QUEUE_DIR/.lock"
+  flock -s 7
+  "$AQ" add --project game "two item" >/dev/null 2>&1 &
+  WRITER=$!   # teardown frees it if an assert fails first
+  # No event says another process took a flock, so sample it: one bounded loop, 50ms cadence.
+  local i
+  for i in $(seq 100); do flock -n "$AGENT_QUEUE_DIR/.gate" true || break; sleep 0.05; done
+  run flock -n "$AGENT_QUEUE_DIR/.gate" true
+  assert_failure
+  # A new read queues behind the waiting writer instead of joining the shared hold.
+  run timeout 1 "$AQ" list --json
+  [ "$status" -eq 124 ]
+  flock -u 7; exec 7>&-
+  wait "$WRITER"
+  run "$AQ" list --json
+  assert_success
+  [ "$(jq -sr 'map(.slug) | sort | join(",")' <<<"$output")" = one-item,two-item ]
+  # Once in, a taker drops the gate: nothing holds it after the writer is done.
+  run flock -n "$AGENT_QUEUE_DIR/.gate" true
+  assert_success
+}
+
 @test "a read waits for a writer, so a list never misses an item mid-move" {
   "$AQ" add --project game "one item" >/dev/null
   # Hold the writers' lock; a read must block on it, not read a half-moved store.
@@ -1901,7 +1946,6 @@ EOF
 }
 
 @test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   plan_fixture
   "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
   "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null

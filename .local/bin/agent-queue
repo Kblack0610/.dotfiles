@@ -44,7 +44,7 @@
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
-# with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
+# with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -78,6 +78,7 @@ AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
+AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
 # only the first.
@@ -165,14 +166,24 @@ prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; low) echo 2 ;; *) r
 # The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
 lock() {
   mkdir -p "$AQ_DIR" || die "cannot create $AQ_DIR"
-  exec 8> "$AQ_DIR/.lock"
-  flock -w 10 8 || die "the queue is locked by another writer"
+  take_lock
 }
 # Reads share the lock, so a list never sees an item a writer is moving between states.
 lock_read() {
   [ -d "$AQ_DIR" ] || return 0
-  exec 8> "$AQ_DIR/.lock"
-  flock -s -w 10 8 || die "the queue is locked by another writer"
+  take_lock -s
+}
+# take_lock [-s]: every taker passes through .gate and closes it once in, all within one 10s
+# deadline. A waiting writer holds the gate, so a new read queues behind it and the writer waits
+# only for the reads already in. Why: flock lets a shared taker in while an exclusive one waits, so
+# overlapping lists (agent-web, hub, panel, dispatch, about 16 at once under load) held .lock
+# shared without a gap and every write timed out (2026-11-12). As with any writer-first lock, a
+# holder must not wait on a child that takes the lock again.
+take_lock() {
+  local gate end=$((SECONDS + 10))
+  exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
+  flock -w 10 "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 || die "the queue is locked by another writer"
+  exec {gate}>&-
 }
 
 items_in() { # state-dir -> item files, oldest first
@@ -484,12 +495,16 @@ hold_pending() {
 }
 
 # ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
-# the human answered it (with one of those options as the answer's first word, when named). A phase gated on the
+# the human answered it: with one of those options when named (the answer's first word, else the one
+# option the answer names, agent-ask answer-names), or in free text, an answer that names no option,
+# which reaches the work through the item's brief (fleet-dispatch ask_decisions). A phase gated on the
 # human's decision (live money, a vendor) is queued behind its ask instead of held by an open
 # session: on 2026-11-06 trader-real-money-plan sat 6h+ refusing to queue phases that would have
-# started on their own. Pending, cancelled, another answer or no such ask all hold.
+# started on their own. Pending, cancelled, no such ask, an empty answer, an answer naming another
+# option or several, and any other answer to an ask that lists no options all hold. 2026-11-12: three
+# Shape City items failed on free-text answers to e76omL, xTxBqv and zIi8Xc.
 ask_pending() {
-  local id="${1%%=*}" want="" f st by ans
+  local id="${1%%=*}" want="" f st by ans names
   [[ "$1" == *=* ]] && want="${1#*=}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "not an ask id"; return; }
   f="$(compgen -G "$AQ_ASKS/*/$id.md" | head -1)"
@@ -501,7 +516,13 @@ ask_pending() {
   [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-  case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
+  case "+${want,,}+" in *"+${ans,,}+"*) return 0 ;; esac
+  if [ -n "$ans" ] && [ -n "$(ask_options "$id")" ]; then
+    names="$(AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" answer-names "$id" 2>/dev/null)" || names="unreadable"
+    [ -n "$names" ] || return 0
+    case "$names" in *$'\n'*) ;; *) case "+${want,,}+" in *"+${names,,}+"*) return 0 ;; esac ;; esac
+  fi
+  echo "answered ${ans:-nothing}, not $want"
 }
 
 # ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
@@ -1083,6 +1104,7 @@ cmd_add() {
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   ! waits_turn "$slug" "$priority" || return 0
+  ! dispatch_held "$slug" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
   fleet-dispatch start --item "$slug" ||
@@ -1389,7 +1411,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1905,6 +1927,16 @@ waits_turn() {
   echo "agent-queue: $1 is low priority, so a dispatch pass starts it in its turn"
 }
 
+# dispatch_held <slugs> -- exit 0, and say so, when the dispatch hold (hold_pending, asked as no session)
+# keeps agent-queue from starting those items itself, at add or when the item they wait on closes; a
+# failing agent-hold holds. The one place both starts check it. 2026-11-12: an urgent plan item
+# started at add under the human's dispatch hold.
+dispatch_held() {
+  local why; why="$(hold_pending dispatch)"
+  [ -n "$why" ] || return 1
+  echo "agent-queue: dispatch is held ($why), so $1 stays queued for the next dispatch pass" >&2
+}
+
 start_next() {
   local f s h next=() landed=() self
   self="$(realpath "${BASH_SOURCE[0]}")"
@@ -1926,10 +1958,7 @@ start_next() {
     "$self" move "$s" done --status ok
   done
   [ ${#next[@]} -gt 0 ] || return 0
-  if ! agent-hold check dispatch >/dev/null 2>&1; then
-    echo "agent-queue: dispatch is held, so ${next[*]} stays queued for the next dispatch pass" >&2
-    return 0
-  fi
+  ! dispatch_held "${next[*]}" || return 0
   for s in "${next[@]}"; do
     fleet-dispatch start --item "$s" ||
       echo "agent-queue: $s could not start now, so it stays queued for the next dispatch pass" >&2

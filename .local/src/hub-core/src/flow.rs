@@ -1,7 +1,7 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). Home leads
-//! with it on both surfaces and the Queue tab shows the same one, from this one builder, so the
-//! hub TUI and agent-web cannot word or count it differently.
+//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). The Queue
+//! tab leads with it as a `Rail` and Home's Queue card takes its bottleneck (`cards::queue`), from
+//! this one builder, so the hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
@@ -109,7 +109,7 @@ impl Strip {
                         state: "",
                     }),
                 ),
-                chip("queued", "up next", up_next, queue_to("up next")),
+                chip("queued", "up next", up_next, queue_to("ready")),
                 chip(
                     "running",
                     "running",
@@ -167,14 +167,7 @@ impl Strip {
             c.hot = hot == Some(c.key);
         }
         // The step in the strip's own words: the record's `queued` is the up next chip.
-        let chips = &self.chips;
-        self.bottleneck = p.bottleneck_text(|step| {
-            let key = chip_key(step);
-            chips
-                .iter()
-                .find(|c| c.key == key)
-                .map_or(step.to_string(), |c| c.label.to_string())
-        });
+        self.bottleneck = p.bottleneck_text(step_label);
         self.as_of = p.as_of_label();
     }
 
@@ -189,6 +182,16 @@ impl Strip {
 }
 
 /// The record names the board `backlog`, the human's turn `waiting` and a parked PR `review`.
+/// A pipeline step in the strip's own words: the record's `queued` is the up next chip.
+pub fn step_label(step: &str) -> String {
+    let key = chip_key(step);
+    Strip::build(None)
+        .chips
+        .iter()
+        .find(|c| c.key == key)
+        .map_or(step.to_string(), |c| c.label.to_string())
+}
+
 fn chip_key(step: &str) -> &str {
     match step {
         "backlog" => "board",
@@ -419,12 +422,12 @@ impl Rail {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pipeline::tests::snapshot;
     use crate::queue::{Item, Stats, LIST_FAILED};
 
-    fn pipe(ratio: f64) -> Pipeline {
+    pub(crate) fn pipe(ratio: f64) -> Pipeline {
         snapshot(&[
             ("inbox", 4, 1.0, 0.1),
             ("backlog", 312, 1.0, 0.1),
@@ -433,7 +436,7 @@ mod tests {
         ])
     }
 
-    fn queue() -> Queue {
+    pub(crate) fn queue() -> Queue {
         let item = |slug: &str, state| Item {
             slug: slug.into(),
             state,
@@ -482,7 +485,7 @@ mod tests {
             vec![
                 None,
                 Some(("board", "")),
-                Some(("queue", "up next")),
+                Some(("queue", "ready")),
                 Some(("queue", "running")),
                 Some(("queue", "on a PR")),
                 Some(("queue", "needs you")),

@@ -16,6 +16,7 @@ mod config;
 mod daily;
 mod doctor;
 mod epics;
+mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
@@ -252,6 +253,24 @@ enum Cmd {
         /// List only `task` tags (row state like `#high`, `#size/s`) or `topic` tags.
         #[arg(long, value_enum, conflicts_with = "name")]
         kind: Option<md::TagKind>,
+    },
+    /// Ranked lookup over the vault's knowledge: articles, zettels, refs, employment/ and lab/.
+    /// Words are OR-ed and ranked (notes with every word first), `#tag` filters, `"a phrase"`
+    /// boosts, `-word` excludes; typos and half-typed words still match. Prints
+    /// `path<TAB>line<TAB>score<TAB>title<TAB>snippet`, best first.
+    Find {
+        /// The query, e.g. `ai oauth`, `#interview system design`, `"cert pinning" -android`.
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        query: Vec<String>,
+        /// Most hits to print.
+        #[arg(short = 'n', long, default_value_t = 30)]
+        limit: usize,
+        /// Print hits as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Score the engine against an eval file (`query<TAB>path[;path]`, `-` for none).
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["query", "json"])]
+        eval: Option<std::path::PathBuf>,
     },
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
@@ -1566,6 +1585,18 @@ fn main() -> Result<()> {
             match name {
                 Some(n) => tags::show(&prof, &n)?,
                 None => tags::list(&prof, kind)?,
+            }
+            0
+        }
+        Cmd::Find {
+            query,
+            limit,
+            json,
+            eval,
+        } => {
+            match eval {
+                Some(f) => find::run_eval(&prof, &f)?,
+                None => find::run(&prof, &query.join(" "), limit, json)?,
             }
             0
         }

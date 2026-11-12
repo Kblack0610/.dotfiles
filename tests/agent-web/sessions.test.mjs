@@ -43,7 +43,7 @@ const ROWS = [
   row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex", close: "now" }),
 ];
 const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
-  states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1 }, { name: "stalled", n: 1 }, { name: "done today", n: 1 }],
+  states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "done today", n: 1, tone: "ok", means: "ended today" }],
   columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
@@ -84,9 +84,9 @@ test("the table is the server's rows in its order, with the overview tiles and t
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(html, /<button class="tile" data-ts="done today" style="--c:var\(--b-done\)"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
-  assert.doesNotMatch(html, /data-ts="all"|sessions-chips/, "the tiles are the chips, so the small chip row is gone");
-  assert.ok(html.indexOf("stiles") < html.indexOf("capline"), "the overview row leads the tab");
+  assert.match(html, /<button class="tile t-ok" data-ts="done today" title="ended today"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
+  assert.doesNotMatch(html, /data-ts="all"|sessions-chips|class="seg fseg"/, "the tiles are the chips, so the small chip row is gone");
+  assert.ok(html.indexOf("stiles") < html.indexOf("tqbar"), "the overview row sits on the search bar");
   assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
@@ -115,7 +115,7 @@ test("the overview spend is the server's sum, and the tile in force clears the f
   run("sst.render()");
   const html = boxes.scroll.innerHTML;
   assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
-  assert.match(html, /<button class="tile on" data-ts="" style="--c:var\(--b-stalled\)">/);
+  assert.match(html, /<button class="tile on t-warn" data-ts="">/);
 });
 
 test("an opened session starts on its conversation, not its Details page", () => {
@@ -289,7 +289,7 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   run("sst.render()");
   assert.doesNotMatch(boxes.scroll.innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
   ctx.renderLogRanked();
-  assert.match(boxes["log-ranked"].innerHTML, /<span class="muted">7d, by friction<\/span>/);
+  assert.doesNotMatch(boxes["log-ranked"].innerHTML, /by friction/, "no prose head: the summary is the title");
   assert.match(boxes["log-ranked"].innerHTML, /Loading\./, "nothing is read until the section opens");
   run(`ost.rows = __d.rows; ost.open = __d.rows[0].session_id; ost.cards[ost.open] = __d.card;`, { card: "fix the gate (6f296b73)\n  Time      work 2h05", rows: [
     { session_id: "6f296b73-b7a5", project: "dotfiles", title: "fix the gate\nmore", friction: 11, why: "9 nudges", cost_usd: 41.2, duration_s: 22200, prs_merged: 24, prs_open: 0, prs_closed_unmerged: 1 },
@@ -297,7 +297,6 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   ] });
   ctx.renderLogRanked();
   const html = boxes["log-ranked"].innerHTML;
-  assert.match(html, /2 worst, 7d, by friction/);
   assert.match(html, /<tr class="click" data-sid="6f296b73-b7a5"><td class="n">11<\/td><td>fix the gate <span class="muted">6f296b73<\/span>/);
   assert.match(html, /<td class="n">6h 10m<\/td><td class="n">\$41\.20<\/td><td class="n">24\/25<\/td>/);
   assert.match(html, /<pre class="joblog">fix the gate \(6f296b73\)\n  Time/);
@@ -316,4 +315,29 @@ test("an open session's facts are its fleet-state card, open until folded to one
   run("st.sel = st.agents[3]");
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);
+});
+
+test("Log's Rundowns list the server's shown rows, every card shut until opened, and +N older shows the rest", async () => {
+  const shst = vm.runInContext("shst", ctx), cap = 30;
+  Object.assign(shst, { data: null, err: null });
+  run('st.tab = "log"');
+  ctx.renderLogRundowns();
+  assert.match(boxes["log-rundowns"].innerHTML, /Loading/, "the first render, before any data, says Loading");
+  const rundowns = Array.from({ length: cap + 3 }, (_, i) => ({ file: `r${i}.md`, title: `rundown-${i}`, stamp: "2026-11-12 12:00 UTC", body: "a long sum-up" }));
+  const fetch0 = ctx.fetch;
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rundowns, shown: cap, stats: null, ledger: { due: [] } }) });
+  await run("refreshShepherd()");
+  ctx.fetch = fetch0;
+  run('st.tab = "log"');
+  ctx.renderLogRundowns();
+  const h = boxes["log-rundowns"].innerHTML;
+  assert.equal((h.match(/<details class="card rd"/g) || []).length, cap);
+  assert.doesNotMatch(h, /<details class="card rd" open/, "the newest starts shut too (dashboards rule 4)");
+  assert.match(h, />\+3 older</);
+  shst.all = true;
+  ctx.renderLogRundowns();
+  assert.match(boxes["log-rundowns"].innerHTML, new RegExp(`rundown-${cap + 2}<`));
+  assert.doesNotMatch(boxes["log-rundowns"].innerHTML, /older</);
+  Object.assign(shst, { all: false, data: null });
+  run('st.tab = "sessions"');
 });

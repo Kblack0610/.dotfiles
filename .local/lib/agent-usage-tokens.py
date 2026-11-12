@@ -37,7 +37,10 @@ TOKENS_GATEWAY_TRIP (default BadRequestError, comma separated) has at least TOKE
 errors, 0 otherwise. Only the listed classes count: auth probes (HTTPException, KeyNotFoundError)
 and budget or rate limits (BudgetExceededError, ProxyRateLimitError) are the gateway doing its job,
 and a BadRequestError is a caller sending something the model API refuses. A null langfuse section
-is quiet here, since check --langfuse owns an unreadable reader. 2 as above.
+is quiet here, since check --langfuse owns an unreadable reader. 2 as above. When SENTINEL_SINCE
+(the fix watermark watch-companion-loop passes) falls after the snapshot's day began, the same
+rule runs on a live Langfuse read from that moment to now instead, so a resolved watch clears at
+once and trips again only on errors after the fix; 2 when that read fails.
 """
 import argparse
 import datetime as dt
@@ -327,20 +330,44 @@ def langfuse_check(files, newest):
     return 1
 
 
+def gateway_verdict(label, gw):
+    by_error = gw.get("by_error") or {}
+    hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
+    if not hit:
+        print(f"{label}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
+        return 0
+    others = gw.get("errors", 0) - sum(hit.values())
+    print(f"{label}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
+    return 1
+
+
 def gateway_errors_check(newest):
-    """check --gateway-errors: a trip-listed error class in the newest snapshot's gateway errors."""
+    raw = (ENV.get("SENTINEL_SINCE") or "0").strip()
+    since = int(raw) if raw.isdigit() else 0   # watch-companion-loop passes an epoch or 0
+    if since > day_window(dt.date.fromisoformat(newest["date"]))[0].timestamp():
+        # A fix landed after this snapshot's day began, so its errors may predate the fix:
+        # count only the gateway calls since the fix, read live from Langfuse.
+        start = dt.datetime.fromtimestamp(since).astimezone()
+        until = dt.datetime.now().astimezone()
+        label = f"since the fix at {start:%Y-%m-%d %H:%M}"
+        if until <= start:
+            print(f"{label}: no window yet")
+            return 0
+        out, why = run_json(LANGFUSE + ["--since", start.isoformat(timespec="seconds"),
+                                        "--until", until.isoformat(timespec="seconds")], timeout=600)
+        gw = out.get("gateway") if isinstance(out, dict) else None
+        if not gw:
+            print(f"{label}: no gateway figures ({why or 'langfuse returned none'})")
+            return 2
+        if gw.get("truncated"):
+            print(f"{label}: the gateway error classes are truncated, so a BadRequestError could be missing")
+            return 2
+        return gateway_verdict(label, gw)
     gw = (newest.get("langfuse") or {}).get("gateway")
     if not gw:
         print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
         return 0
-    by_error = gw.get("by_error") or {}
-    hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
-    if not hit:
-        print(f"{newest['date']}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
-        return 0
-    others = gw.get("errors", 0) - sum(hit.values())
-    print(f"{newest['date']}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
-    return 1
+    return gateway_verdict(newest["date"], gw)
 
 
 def check(langfuse=False, gateway_errors=False):

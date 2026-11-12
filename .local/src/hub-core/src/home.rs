@@ -1,6 +1,6 @@
 //! The Home tab for both surfaces: what needs the human, what is running
-//! (with the session counts), the spend
-//! line and the health chips. It joins what the other readers already read (fleet-sessions'
+//! (with the session counts), the vitals and the health chips the briefing reads; the status
+//! grid over it is `cards`, one card per tab. It joins what the other readers already read (fleet-sessions'
 //! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
 //! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
@@ -10,8 +10,8 @@
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
 //! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
-//! from facts (who can act, what it holds, how long it waited, the row's own priority), never a
-//! model's number.
+//! from facts (who can act, whether it stops running work, what it holds, how long it waited, a
+//! sheet row's own priority), never a model's number.
 
 use std::collections::HashSet;
 
@@ -267,8 +267,9 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent` or `high`). A `high` row ranks after every live wait
-    /// and `urgent` row with the same `human`; a live wait has none and ranks as `urgent`.
+    /// A sheet row's priority (`urgent` or `high`). Every sheet row ranks after every live wait
+    /// with the same `human`, since a live wait stops work already running and a to-do does not;
+    /// among sheet rows, `high` follows `urgent`. A live wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
@@ -303,9 +304,14 @@ impl Score {
         }
     }
 
-    /// A `high` sheet row, which ranks after the rows that block running work or are urgent.
-    fn later(&self) -> bool {
-        self.priority.as_deref() == Some("high")
+    /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
+    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one.
+    fn tier(&self) -> u8 {
+        match self.priority.as_deref() {
+            None => 0,
+            Some("high") => 2,
+            Some(_) => 1,
+        }
     }
 }
 
@@ -496,16 +502,13 @@ pub struct Home {
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
     pub running: Vec<Running>,
-    /// Where work sits from inbox to done; `set_pipeline` adds the snapshot's half.
-    pub flow: crate::flow::Strip,
     /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
     /// fleet-sessions' state has no counts.
     pub sessions: String,
-    /// What the fleet spent on Claude in 24h (`claude $573 in 24h`), the line that links to
-    /// Costs; None when Prometheus did not answer (its error is in `errors`).
-    pub spend: Option<String>,
     /// The fleet's front page, one row per question; None when Prometheus did not answer.
     pub vitals: Option<crate::vitals::Vitals>,
+    /// The `cc:domain_status` chips: the briefing's overnight line reads them; the pages show
+    /// them on Alerts.
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
@@ -659,7 +662,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 epic,
                 ci_url: ci
                     .as_ref()
-                    .and_then(|_| pr_url.as_deref())
+                    .and(pr_url.as_deref())
                     .and_then(crate::reds::checks_url),
                 ci,
                 pr_state: said_lower(live, "pr_state").filter(|_| pr.is_some()),
@@ -671,9 +674,9 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
 }
 
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
-/// infra (None until read), ranked: the asks, sessions, queue items and `#urgent` sheet rows only
-/// the human can act on by what their wait costs (`Score::value`), then the `#high` sheet rows
-/// by the same value, then those the judge said a machine could answer, then the conditions:
+/// infra (None until read), ranked: the asks, sessions and queue items only the human can act on
+/// by what their wait costs (`Score::value`), then the `#urgent` sheet to-dos, then the `#high`
+/// ones, each by the same value, then those the judge said a machine could answer, then the conditions:
 /// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
 /// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
 pub fn needs(
@@ -988,7 +991,7 @@ pub fn needs(
             n.score.is_none(),
             n.score
                 .as_ref()
-                .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
+                .map(|s| (!s.human, s.tier(), std::cmp::Reverse(s.value))),
         )
     });
     for (i, n) in out.iter_mut().enumerate() {
@@ -998,11 +1001,6 @@ pub fn needs(
 }
 
 impl Home {
-    /// The snapshot's half of the flow strip (inbox, board, the amber step).
-    pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
-        self.flow.set_pipeline(read);
-    }
-
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
         match open {
@@ -1037,7 +1035,7 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
-/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the spend line and the chips.
+/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
 pub fn build(
     state: &Value,
     queue: Option<&Queue>,
@@ -1046,7 +1044,6 @@ pub fn build(
 ) -> Home {
     let mut h = Home {
         shown: SHOWN,
-        flow: crate::flow::Strip::build(queue),
         ..Home::default()
     };
     if state.is_null() {
@@ -1094,10 +1091,6 @@ pub fn build(
             i.error.as_deref().unwrap_or("did not answer")
         )),
         Some(i) => {
-            let v = i.cc_values();
-            if let Some(x) = v.get("cc:claude_code_cost_24h_usd") {
-                h.spend = Some(format!("claude ${x:.0} in 24h"));
-            }
             h.health = i.health();
             h.vitals = crate::vitals::read(i);
         }
@@ -1283,11 +1276,8 @@ mod tests {
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        // The queue's counts are the flow strip's; the session counts head Running.
+        // The session counts head Running.
         assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
-        assert_eq!(h.spend, None, "no Prometheus read, no spend");
-        assert_eq!(h.flow.chips[3].text(), "running 1");
-        assert_eq!(h.flow.chips[2].text(), "up next 0 ready, 0 held");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
@@ -1557,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn human_sheet_rows_that_need_the_human_rank_by_priority_then_their_wait() {
+    fn live_waits_lead_then_sheet_to_dos_by_priority_then_their_wait() {
         let mut asked = item("asked", State::Waiting, Some("lab:repo-agent-1"));
         asked.row = Some("trader:tr-51".into());
         let q = Queue {
@@ -1566,19 +1556,20 @@ mod tests {
         };
         let h = build(&state(), Some(&q), Some(&board()), None);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
-        // The #urgent row has waited longer than the ask, so it leads; the #high row, older
-        // still, follows every live wait; conditions stay last.
+        // The #urgent row has waited longer than the ask, but every live wait leads: it stops
+        // running work and a to-do does not. The #high row follows the #urgent one; conditions
+        // stay last.
         assert_eq!(
             rows,
             [
-                (Kind::Sheet, "tr-50"),
                 (Kind::Ask, "a1"),
                 (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Sheet, "tr-50"),
                 (Kind::Sheet, "tr-117"),
                 (Kind::Nightly, "repo"),
             ]
         );
-        let top = &h.needs[0];
+        let top = &h.needs[2];
         let age = (NOW - day_start("2026-11-04").unwrap()) / 60;
         assert!(age > 60 * 24, "a day-old row waits more than a day: {age}");
         assert_eq!(score(top), (true, false, 0, 0, age, age));
@@ -1587,7 +1578,7 @@ mod tests {
         let json = serde_json::to_value(top).unwrap();
         assert_eq!(json["kind"], "sheet");
         assert_eq!(json["score"]["priority"], "urgent");
-        assert!(serde_json::to_value(&h.needs[1]).unwrap()["score"]
+        assert!(serde_json::to_value(&h.needs[0]).unwrap()["score"]
             .get("priority")
             .is_none());
         // With no board read there are no sheet rows, and nothing else moves.
@@ -1625,13 +1616,8 @@ mod tests {
     }
 
     #[test]
-    fn spend_is_one_worded_line_and_a_missing_series_or_counts_read_as_nothing() {
-        let cost =
-            json!({"metric": {"__name__": "cc:claude_code_cost_24h_usd"}, "value": [0, "573.4"]});
-        let h = build(&state(), None, None, Some(&infra(vec![cost], &[])));
-        assert_eq!(h.spend.as_deref(), Some("claude $573 in 24h"));
+    fn no_state_reads_as_no_session_counts() {
         let none = build(&Value::Null, None, None, Some(&infra(vec![], &[])));
-        assert_eq!(none.spend, None, "a series Prometheus lacks is not $0");
         assert_eq!(none.sessions, "", "no state, no counts");
     }
 

@@ -9,7 +9,7 @@ How mature a project is, what it must have at each stage, and which check proves
 
 ## The ladder
 
-The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel. A project deploys no higher than its stage: a draft or dev project has no deploy target, and an alpha one nothing on a beta or prod channel. Each registry target's `channel` maps to the rung it serves in the `project-map.json` `channels` map (the Registry channels column); `release-state` turns that into each project's served rungs, and the Requirements rows below read them.
+The deploy pipeline is built at the dev -> alpha gate. An alpha project already deploys itself to a private target on every merge, so the beta step only changes who uses it and on which channel. The stage says what a project must have, never where it may deploy: a deploy is not the app being live, so a draft or dev project with a prod target is fine (the human, 2026-11-12). Each registry target's `channel` maps to the rung it serves in the `project-map.json` `channels` map (the Registry channels column); `release-state` turns that into each project's served rungs, and the Requirements rows below read them.
 
 | Stage | Means | Who uses it | Where it runs | Registry channels | What the tooling does |
 | --- | --- | --- | --- | --- | --- |
@@ -32,14 +32,13 @@ Enforced from: 2026-11-19
 Before that date a FAIL is reported and blocks nothing, so a row that turns out too strict can be fixed before it stops real work.
 
 The `Check` cell is one of three things:
-- a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT`, `LAB` and `STAGE` (the stage being checked, so a row judges a move up the same as today's stage) set, and `project-name.sh` and `lab-feed.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no repo it runs from an empty directory, so a repo file reads as missing rather than matching a lab file. A repo the map names but this machine has not cloned is not judged (exit 2). Exit 0 is PASS. It reads local files, git and the `release-state` snapshot only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
+- a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT`, `LAB` and `STAGE` (the stage being checked, so a row judges a move up the same as today's stage) set, and `project-name.sh` and `lab-feed.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no project folder it runs from an empty directory, so a project file reads as missing rather than matching a repo-root or lab file. A repo the map names but this machine has not cloned is not judged (exit 2). A missing project folder inside an available repo reports criteria gaps; predicates can still read `REPO` and `LAB`, and `ROOT` keeps its mapped path. Exit 0 is PASS. It reads local files, git and the `release-state` snapshot only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
 - `human`: only the human can attest it, so the gate lists it and never fails on it.
 - anything else: no predicate yet. The gate lists it as TODO with this text, which names what checks it today, if anything.
 
 | Stage | Applies | Requirement | Check |
 | --- | --- | --- | --- |
 | draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
-| draft | base | Deploys no higher than its stage: no target live on a channel above it | `r="$(release-state show --json \| jq -er --arg n "$NAME" '.stages[$n] \| objects \| .rungs[-1] // "none"')" && { [ "$r" = none ] \|\| lab_stage_at_least "$STAGE" "$r"; }` |
 | draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
 | draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |

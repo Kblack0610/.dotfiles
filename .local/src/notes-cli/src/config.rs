@@ -334,7 +334,7 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
+    /// Dated capture drop (`/remember`, `notes inbox add`).
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
     inbox: String,
@@ -342,6 +342,10 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
+    /// Dirs `notes find` searches. Optional: when empty, resolve() uses knowledge, permanent,
+    /// refs, and the vault's employment/ and lab/ trees.
+    #[serde(default)]
+    search_dirs: Vec<String>,
     /// Other orgs this profile rolls up (`rollup = ["acmecorp"]`). Empty = own only. Read here
     /// only as the fallback for `index-orgs`.
     #[serde(default)]
@@ -504,6 +508,8 @@ pub struct Profile {
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
+    /// Dirs searched by `notes find` (existing dirs only).
+    pub search_dirs: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
 }
@@ -601,6 +607,7 @@ fn builtin_default() -> RawConfig {
             meetings: None,
             inbox: "inbox".into(),
             tag_dirs: Vec::new(),
+            search_dirs: Vec::new(),
             rollup: Vec::new(),
             index_orgs: Vec::new(),
         },
@@ -765,6 +772,24 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     tag_scan.dedup();
     tag_scan.retain(|d| d.exists());
 
+    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the prose
+    // that holds knowledge: compiled articles, zettels, refs, and the vault-wide employment/
+    // (interview prep, job notes) and lab/ trees. Daily notes stay out: they are noise.
+    let mut search_dirs: Vec<PathBuf> = if rp.search_dirs.is_empty() {
+        vec![
+            join(&rp.knowledge),
+            join(&rp.zettel),
+            join(&rp.refs),
+            vault.join("employment"),
+            vault.join("lab"),
+        ]
+    } else {
+        rp.search_dirs.iter().map(|s| join(s)).collect()
+    };
+    search_dirs.sort();
+    search_dirs.dedup();
+    search_dirs.retain(|d| d.exists());
+
     Ok(Profile {
         name,
         source: format!("{how} (config: {config_src})"),
@@ -811,6 +836,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         outbox: vault.join(&raw.outbox),
         inbox: join(&rp.inbox),
         tag_scan,
+        search_dirs,
         state_dir,
         log_file,
     })
@@ -1039,6 +1065,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         outbox: PathBuf::from(root).join("outbox.md"),
         inbox: r.join("inbox"),
         tag_scan: Vec::new(),
+        search_dirs: Vec::new(),
         state_dir: r.join(".state"),
         log_file: r.join(".state/journal.log"),
     }

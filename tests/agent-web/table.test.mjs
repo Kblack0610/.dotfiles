@@ -397,3 +397,14 @@ test("a menu kept open on one tab never opens the same column on another, and ke
   run(`st.tab = "queue"; tblMenuKeep(root); st.tab = "tt"; tblMenu = null`);
   assert.equal(elsewhere.open, false);
 });
+
+test("the head is the state tiles, hued and explained by the server, over one search bar; a table with one state draws no tiles", () => {
+  const t = { ...summary, state: "stuck", legend: "stuck: no progress in 2h", states: [{ name: "all", n: 3 }, { name: "stuck", n: 1, tone: "bad", means: "no progress in 2h" }, { name: "free", n: 0 }] };
+  ctx.t = t;
+  const h = run(`tblBar("tt", t, "search", "<i>extra</i>")`);
+  assert.doesNotMatch(h, /fseg|bfilter|tlegend/, "no chip row, no search card, no legend line");
+  assert.match(h, /^<div id="tt-tiles"><div class="tiles stiles"><button class="tile on t-bad" data-ts="" title="no progress in 2h"><span class="tl">STUCK<\/span><span class="tv">1<\/span><\/button><button class="tile zero" data-ts="free"><span class="tl">FREE<\/span><span class="tv">0<\/span><\/button><i>extra<\/i><\/div><\/div><div class="tqbar"><input id="tt-q" data-tsearch/);
+  assert.match(h, /data-tsearch[^>]*title="key:value matches a column[^"]*the text">/, "the search box's hover is the query syntax; the legend is tblTab's fold");
+  ctx.t = { ...summary };
+  assert.match(run(`tblBar("tt", t, "search")`), /^<div id="tt-tiles"><\/div><div class="tqbar">/, "a table whose only state is all has no tiles");
+});

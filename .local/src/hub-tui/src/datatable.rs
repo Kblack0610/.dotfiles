@@ -9,6 +9,7 @@
 use hub_core::links::Link;
 use hub_core::table::{Dir, Row, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::fit::wrap;
@@ -207,7 +208,8 @@ impl DataTable {
             .collect()
     }
 
-    /// The state chips with their counts, the one in force in the head style.
+    /// The state chips with their counts in their hue (`Chip::tone`), the one in force in the
+    /// head style.
     pub fn chips<R: Row>(&self, rows: &[R], p: Palette) -> Vec<Span<'static>> {
         let mut out = vec![];
         for (i, c) in self.view.states(rows).iter().enumerate() {
@@ -217,11 +219,13 @@ impl DataTable {
                 self.view.state == c.name
             };
             let text = format!("{}{} {}", if i == 0 { "" } else { "  " }, c.name, c.n);
-            out.push(if on {
-                Span::styled(text, p.head())
-            } else {
-                Span::raw(text)
-            });
+            let hue = c
+                .tone
+                .map_or_else(Style::new, |l| crate::releases::level(l, p));
+            out.push(Span::styled(
+                text,
+                if on { hue.patch(p.head()) } else { hue },
+            ));
         }
         out
     }
@@ -256,6 +260,32 @@ mod tests {
 
     fn status(t: &DataTable) -> String {
         plain(&Line::from(t.status(&jobs(), Palette { no_color: true })))
+    }
+
+    #[test]
+    fn a_chip_wears_its_states_hue_only_while_it_holds_a_row() {
+        let p = Palette { no_color: false };
+        let chips = DataTable::default().chips(&jobs(), p);
+        let fg = |w: &str| {
+            chips
+                .iter()
+                .find(|s| s.content.trim_start().starts_with(w))
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(fg("failed"), p.bad().fg);
+        assert_eq!(fg("done"), p.good().fg);
+        assert_eq!(
+            (fg("running"), fg("waiting")),
+            (None, None),
+            "no hue for a neutral word or a zero count"
+        );
+        assert!(
+            chips[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "the chip in force is the head"
+        );
     }
 
     #[test]
