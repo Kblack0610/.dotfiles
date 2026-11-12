@@ -12,17 +12,19 @@
 # not a list of names. fleet-dispatch refuses on any nonzero rc (fail closed); the canary queue skips a
 # task only on rc 1 and leaves the rest to that refusal.
 harness_project_why() {
-  local list
-  list=$(jq -r --arg h "$2" '.harnesses[$h] | if type != "object" then "?" elif has("projects") | not then "*"
-      elif (.projects | type) == "array" and all(.projects[]; type == "string" and . != "") then "=" + (.projects | join(","))
-      else "!" end' "$1" 2>/dev/null) || list='?'
-  case "$list" in
-    '*') return 0 ;;
-    '?') echo "its project allowlist cannot be read from $1"; return 2 ;;
-    '!') echo "its projects in $1 is not a list of project names"; return 2 ;;
-    '=') echo "its projects in $1 allows no project"; return 1 ;;
+  local v
+  v=$(jq -r --arg h "$2" --arg p "$3" '.harnesses[$h] | if type != "object" then "unread"
+      elif has("projects") | not then "ok"
+      elif (.projects | type) != "array" or any(.projects[]; type != "string" or . == "") then "bad"
+      elif .projects | index([$p]) then "ok"
+      elif .projects == [] then "none"
+      else "out " + (.projects | join(",")) end' "$1" 2>/dev/null) || v=unread
+  case "$v" in
+    ok) return 0 ;;
+    unread) echo "its project allowlist cannot be read from $1"; return 2 ;;
+    bad) echo "its projects in $1 is not a list of project names"; return 2 ;;
+    none) echo "its projects in $1 allows no project"; return 1 ;;
   esac
-  [[ ",${list#=}," == *",$3,"* ]] && return 0
-  echo "it takes only ${list#=} work (projects in $1), and this is ${3:-an item with no project}"
+  echo "it takes only ${v#out } work (projects in $1), and this is ${3:-an item with no project}"
   return 1
 }

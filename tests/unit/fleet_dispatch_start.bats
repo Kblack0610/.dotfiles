@@ -623,7 +623,7 @@ load 'fleet_dispatch/common'
 
 @test "a hand --harness start of a private-project item on an allowlisted harness is refused before any room or launch" {
   harness_ready
-  jq '.harnesses.glm.projects = ["dotfiles"]' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.glm.projects = ["dotfiles"]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure 2
   assert_output --partial "glm refuses fix-menu: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
@@ -632,13 +632,24 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
   # An unreadable list refuses too, never reads as "no list".
-  jq '.harnesses.glm.projects = "dotfiles"' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.glm.projects = "dotfiles"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure 2
   assert_output --partial 'not a list of project names'
-  # Positive control: the project on the list starts. Its config_dir stands in for ~/.config/opencode
-  # (the private global rules, agents and plugins), and no Claude Code or above-worktree rules load.
-  jq --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["dotfiles", "game"] | .harnesses.glm.config_dir = $d' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+}
+
+@test "an allowlisted harness starts only with a config_dir, which keeps every private rule out of its run" {
+  harness_ready
+  # A projects list with no config_dir would load ~/.config/opencode (the private global rules,
+  # agents and plugins): refused before any worktree is made.
+  harness_set '.harnesses.glm.projects = ["dotfiles", "game"]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure 2
+  assert_output --partial 'glm has a projects allowlist and no config_dir'
+  assert_not_called 'opencode run'
+  assert_not_called 'wt new'
+  # Positive control: with a config_dir it starts, and no Claude Code or above-worktree rules load.
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.config_dir = $d'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_success
   assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 timeout 180m opencode run"
@@ -660,7 +671,7 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
   assert_failure
   assert_output --partial 'opencode has no room: eval: its pool lazer is spent'
-  jq 'del(.harnesses.opencode.source)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set 'del(.harnesses.opencode.source)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
   assert_failure 2
   assert_output --partial 'harness opencode has no source'
@@ -874,7 +885,7 @@ load 'fleet_dispatch/common'
   assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
   assert_not_called 'plan first'
   # Negative control: the same map without resume refuses it, as glm and opencode are.
-  jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.codex |= del(.resume)'
   agent-queue add --project game --slug planned2 --mode plan --priority high "Think again" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned2 --harness codex --model sol
   assert_failure

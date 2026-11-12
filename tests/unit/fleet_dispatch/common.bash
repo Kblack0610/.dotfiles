@@ -665,6 +665,9 @@ restore_setup() {
 # src_shut <source> <why> -- claude-acct room --source refuses <source> with <why>
 src_shut() { printf '%s\n' "$2" > "$NOTES_FIXTURE/src.$1"; }
 
+# harness_set [jq args] <filter> -- edit the harness map in place.
+harness_set() { jq "$@" "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"; }
+
 # A harness map whose harnesses each name the source they spend; claude-acct says every source has room.
 harness_ready() {
   game_ready
@@ -750,8 +753,7 @@ codex_ran() {
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
-  jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
-    "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
   acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   srcs
   sonnet_lane

@@ -11,7 +11,7 @@ setup() {
   source "$REPO_ROOT/.local/lib/harness-projects.sh"
   MAP="$BATS_TEST_TMPDIR/harnesses.json"
   jq -n '{harnesses: {codex: {source: "codex"}, ocfree: {source: "ocfree", projects: ["dotfiles", "site"]},
-    shut: {projects: []}, bare: {projects: "dotfiles"}, holed: {projects: ["dotfiles", ""]}}}' > "$MAP"
+    shut: {projects: []}, bare: {projects: "dotfiles"}, holed: {projects: ["dotfiles", ""]}, comma: {projects: ["a,b"]}}}' > "$MAP"
 }
 
 @test "a harness with no projects takes every project, and one with a list takes only its names" {
@@ -29,6 +29,8 @@ setup() {
   run harness_project_why "$MAP" ocfree dot
   assert_failure 1
   run harness_project_why "$MAP" ocfree dotfiles-private
+  assert_failure 1
+  run harness_project_why "$MAP" comma a
   assert_failure 1
   run harness_project_why "$MAP" ocfree ''
   assert_failure 1

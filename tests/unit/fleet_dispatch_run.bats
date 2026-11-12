@@ -645,13 +645,13 @@ load 'fleet_dispatch/common'
 @test "a plan item goes to a headless harness only when it resumes; the same item in oneshot mode always may" {
   route_ready
   srcs codex:ok:1 reserve:ok:20
-  jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.codex |= del(.resume)'
   agent-queue set fix-menu mode=plan >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu on lazer-reserve (sonnet)'
   assert_not_called 'agent-codex'
   # With resume, codex takes a plan item: it posts the plan and is resumed on the answer.
-  jq '.harnesses.codex.resume = true' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.codex.resume = true'
   agent-queue add --project game --slug plan-next --mode plan --priority urgent "Plan the next menu" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item plan-next on codex (sol)'
@@ -717,9 +717,8 @@ load 'fleet_dispatch/common'
 # ocfree: a free harness whose provider may train on prompts, allowlisted to the public project only.
 ocfree_ready() {
   printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
-  jq --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" '.harnesses.ocfree = {launcher: "opencode", source: "ocfree",
-    headless: true, config: $c, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}' \
-    "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
+    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
 }
 
 @test "negative control: a private-project item never picks ocfree, pinned or routed, though ocfree has room and ranks first" {
@@ -742,7 +741,7 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'room --source ocfree'
   # Positive control: the same pinned item starts on ocfree once its project is on the list, so the
   # refusal above came from the allowlist and nothing else.
-  jq '.harnesses.ocfree.projects = ["dotfiles", "game"]' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.ocfree.projects = ["dotfiles", "game"]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item pin-free on ocfree (beam), the harness it is pinned to'
   assert_called "OPENCODE_CONFIG='$SANDBOX/eval-ocfree.json'"

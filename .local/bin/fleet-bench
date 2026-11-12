@@ -4695,9 +4695,8 @@ canary_queue() {
     id=$(jq -r .id <<<"$t")
     # A harness with a project allowlist (ocfree: public input only) replays only those projects'
     # tasks; fleet-dispatch would refuse the rest on every pass.
-    if [ -n "$harness" ] && [ "$harness" != claude ] && { harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r .project <<<"$t")" >/dev/null; [ $? = 1 ]; }; then
-      off=$((off + 1)); continue
-    fi
+    harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$t")" >/dev/null
+    [ $? != 1 ] || { off=$((off + 1)); continue; }
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
@@ -4709,8 +4708,8 @@ canary_queue() {
       { say "canary: queued $slug, but could not set its model"; return 1; }
     added=$((added + 1))
   done <<<"$tasks"
-  [ "$off" = 0 ] && off='' || off=", $off outside $harness's projects"
-  say "canary: $added queued, $had already queued$off for $week${label:+ ($label)}"
+  local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
+  say "canary: $added queued, $had already queued$note for $week${label:+ ($label)}"
 }
 
 # canary_queue_lanes: the week's run on each lane in BENCH_CANARY_LANES (`harness model [effort]` a
