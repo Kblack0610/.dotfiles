@@ -17,6 +17,20 @@ MAIN_STREAKS='map(select(.status == "completed"
     | (if $g == null then .[-1] else .[$g - 1] end) as $red
     | {workflow: $red.workflowName, red: $red, green: (if $g == null then null else .[$g] end)}'
 
+# MAIN_LIVE: a jq program, runs in, the runs of each workflow that ran in the MAIN_STALE_HOURS
+# before the newest run; put it before MAIN_STREAKS. A parked or retired workflow runs no more, so
+# its last red would read as a red branch for the run ledger's 30 days: unity-core-playground parked
+# Multi, HD, Soak and Slim tour on 2026-11-12. Counted from the newest run, not now, so a quiet repo,
+# or one whose scheduler stopped every workflow, keeps its red. A run with no createdAt keeps no
+# workflow live; with none dated, every run passes.
+: "${MAIN_STALE_HOURS:=72}"
+MAIN_LIVE='(map(.createdAt // empty) | max) as $newest
+    | if $newest == null then . else
+        ($newest | fromdateiso8601 - '"$MAIN_STALE_HOURS"' * 3600 | todate) as $since
+        | (map(select((.createdAt // "") >= $since) | .workflowPath) | unique) as $live
+        | map(select(.workflowPath as $p | any($live[]; . == $p)))
+      end'
+
 : "${MAIN_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/fleet}"
 # The run ledger's one reader (schedules-sync runs); the sibling in this tree, so a worktree's
 # scripts read through its own copy.

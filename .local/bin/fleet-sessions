@@ -842,10 +842,12 @@ default_base() {
 # decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
 # FIRST failure after the last green (the oldest in the window when there is none), so the
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
-# Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over.
+# Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over,
+# and so is a workflow MAIN_LIVE drops (no run in MAIN_STALE_HOURS before the branch's newest run).
 main_state() {
   jq -r --arg partial "$FLEET_PARTIAL_RUNS" \
-    'map(select(.workflowName // "" | test($partial) | not)) | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
+    'map(select(.workflowName // "" | test($partial) | not))
+     | '"$MAIN_LIVE | $MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's PRs as a JSON array of {number, state, mergedAt},
@@ -887,14 +889,15 @@ prs_cell() {
 # clone, and its (#N) squash subjects are suspects only when there are FLEET_SUSPECTS_MAX or
 # fewer. No green in the window, or a range the clone lacks, names nobody.
 main_health() {
-  local dir="$1" url key base b runs wf red green wfs="" sha="" prs="" range
+  local dir="$1" url key base b runs st wf red green wfs="" sha="" prs="" range
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
   key="$CACHE/main_$(repo_slug "$dir")"
   if [ ! -f "$key" ]; then
     base="$(default_base "$dir")"
     b="${base#origin/}"
-    # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
-    if ! runs="$(branch_runs "$dir" "$b")"; then
+    # Could not look is not green: say so, so the shepherd never reads a dead gh, or runs main_state
+    # cannot read, as healthy.
+    if ! runs="$(branch_runs "$dir" "$b")" || ! st="$(main_state <<<"$runs")"; then
       printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-4 "$key"; return
     fi
@@ -914,7 +917,7 @@ main_health() {
       # No green: the oldest red in view slides as runs age out, so that fact names no sha.
       if [ "$green" = - ]; then wfs="${wfs:+$wfs, }$wf ($range)"
       else wfs="${wfs:+$wfs, }$wf @${red:0:8} ($range)"; fi
-    done < <(main_state <<<"$runs")
+    done <<<"$st"
     if [ -n "$wfs" ]; then
       # Every field non-empty: read with a tab IFS folds an empty field into the next.
       prs="$(tr ' ' '\n' <<<"$prs" | grep . | sort -un | paste -sd' ' -)"
