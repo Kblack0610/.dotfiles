@@ -63,7 +63,11 @@ test("the sections come in the layout's order: health, firing, fixes, history, w
   assert.ok(order.every((i) => i >= 0), order.join(","));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(h, /cchip bad">FIRING<\/span>/);
-  assert.match(h, /Firing <span class="muted">2: 1 trip, 1 error, 0 no owner, 0 alertmanager<\/span>/);
+  // Each fold's head is its title and count, toned by its own level; the state chips break the firing count down.
+  assert.match(h, /<summary><h2 class="sec bad">Firing <span class="n">2<\/span><\/h2><\/summary>/);
+  assert.match(h, /data-ts="trip">trip <span class="n">1<\/span>/);
+  assert.match(h, /<span class="cchip bad">FIRING<\/span><\/span><\/div>/, "the tab's head row is the level chip alone");
+  assert.match(show(data({ level: "ok" })), /<summary><h2 class="sec">Firing <span class="n">2<\/span><\/h2>/);
 });
 
 test("a firing row names its project, a fleet-wide one a dash, and the watches list carries it too", () => {
@@ -76,9 +80,15 @@ test("a firing row names its project, a fleet-wide one a dash, and the watches l
 test("health names every domain, the red first, then each component that is not green", () => {
   const h = show(data());
   assert.ok(h.indexOf("k3s RED") < h.indexOf("ci OK"), h);
-  assert.match(h, /Health <span class="muted">1 not green of 2<\/span>/);
+  assert.match(h, /<h2 class="sec bad">Health <span class="n">2<\/span><\/h2>/, "a red domain tones the head");
+  assert.match(show(data({ health: [{ name: "ci", level: "ok" }] })), /<h2 class="sec">Health <span class="n">1<\/span><\/h2>/);
+  const read = new RegExp(`<div class="cline"><b>read</b> ${run(`clock(${NOW} * 1e3)`)}</div></div>`);
+  assert.match(h, read, "when it was read is a fact in Health's box");
   assert.match(h, /<div><span class="cchip bad">RED<\/span> k3s\/nodes<\/div>/);
-  assert.match(show(data({ health: [] })), /No health: Prometheus did not answer\./);
+  const none = show(data({ health: [] }));
+  assert.match(none, /No health: Prometheus did not answer\./);
+  assert.match(none, /<h2 class="sec">Health<\/h2>/);
+  assert.match(none, read, "the read time stays with no health");
 });
 
 test("a firing row shows its owner as a link to its queue item, and opens what the watch says", () => {
@@ -104,7 +114,7 @@ test("a source that failed is an error line, and nothing firing says so", () => 
 
 test("fixes: open rows with outcome, red, slug, PR and age; the settled fold to a count", () => {
   const h = run(`alertsFixes(${JSON.stringify(data())})`);
-  assert.match(h, /Fixes <span class="muted">2 open: 1 came back, 1 queued \| 1 fixed, 1 cancelled in 7d, fix p50 34m<\/span>/);
+  assert.match(h, /<h2 class="sec">Fixes <span class="n">2<\/span><\/h2>/);
   const [openPart, foldPart] = h.split('<details class="sec-d" data-k="fixes-settled">');
   assert.ok(openPart.indexOf("CAME BACK") < openPart.indexOf("QUEUED"), "the server's order is kept");
   assert.match(openPart, /<a href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>PR Kblack0610\/.dotfiles#1170<\/a>/);
@@ -116,7 +126,7 @@ test("fixes: open rows with outcome, red, slug, PR and age; the settled fold to 
 
 test("fixes: a failed read says so, never an empty list, and the open ones cap at LOG_ROWS", () => {
   const failed = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: [], settled: [], summary: "" }, errors: ["fleet-bench reds: exit 1"] }))})`);
-  assert.match(failed, /Fixes <span class="muted">read failed<\/span>/);
+  assert.match(failed, /<h2 class="sec bad">Fixes<\/h2><\/summary><div class="panel down">Could not read the fixes\.<\/div>/);
   assert.ok(!failed.includes("No red was queued"));
   const n = run("LOG_ROWS") + 2;
   const many = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: Array.from({ length: n }, (_, i) => fix(`ar-${i}`, "queued")), settled: [], summary: `${n} open` } }))})`);
@@ -126,14 +136,14 @@ test("fixes: a failed read says so, never an empty list, and the open ones cap a
 
 test("history counts the older pages and sends them to Log", () => {
   const h = show(data());
-  assert.match(h, /History <span class="muted">4 pages in 7 days<\/span>/);
+  assert.match(h, /<h2 class="sec">History <span class="n">4<\/span><\/h2>/);
   assert.match(h, /\+3 older on <a href="#log\/actions">Log<\/a>/);
 });
 
 test("watches fold to their count when none is tripped, and a fold the reader set stays", () => {
-  assert.match(show(data()), /Watches <span class="muted">3: 1 tripped, 1 error, 1 ok, 0 new<\/span>/);
+  assert.match(show(data()), /<h2 class="sec warn">Watches <span class="n">3<\/span><\/h2><\/summary><div class="cline warn">1 tripped, 1 error<\/div>/);
   const quiet = data({ watches_folded: true, counts: { ...counts, watches_tripped: 0, watches_error: 0 } });
-  assert.match(show(quiet), /id="sec-watches" data-k="watches"><summary>/);
+  assert.match(show(quiet), /id="sec-watches" data-k="watches"><summary><h2 class="sec">Watches <span class="n">3<\/span><\/h2><\/summary><div class="panel scroll">/, "no warn line while none is tripped");
   run("alertsOpen.watches = true; alst.render()");
   assert.match(box.innerHTML, /id="sec-watches" data-k="watches" open>/);
 });

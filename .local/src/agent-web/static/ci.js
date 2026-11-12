@@ -21,7 +21,7 @@ const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
 
 // One run table. `o.tab` and `o.el` are where it draws; `o.render` is the tab's own render when
 // it draws inside the tab's page (Releases), else it paints `o.el`. `o.scope` is the read's cut,
-// `o.title` its heading, `o.lead` a line under it, `o.folds` the map its folds keep their state in.
+// `o.title` its heading, `o.folds` the map its folds keep their state in.
 function runsTable(o) {
   const folds = o.folds || CI_OPEN, id = o.id;
   const t = tblTab({
@@ -51,9 +51,9 @@ function runsTable(o) {
   }
 
   function head(d) {
-    const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after;
-    let html = `<h2 class="sec" id="sec-runs">${o.title} <span class="muted">${esc(d.summary || "")}</span>` +
-      (stale ? ` <span class="warn">ledger older than ${dur(d.stale_after / 60)}</span>` : "") + `</h2>` + (o.lead || "");
+    const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after, v = d.table;
+    let html = secHead("runs", o.title, v && (v.shown === v.total ? v.total : `${v.shown} of ${v.total}`), stale ? "warn" : "");
+    if (stale) html += `<div class="cline warn">ledger older than ${dur(d.stale_after / 60)}</div>`;
     if (t.err) html += `<div class="panel down">${esc(t.err)}</div>`;
     if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
     // In the head, so a repaint while the search box has focus refreshes them too.
@@ -148,7 +148,7 @@ function showRunPage() {
 }
 function runPage() {
   const id = ciRunId();
-  const h = `<h2 class="sec" id="sec-run">CI run <span class="muted">${esc(id)}</span> <a href="#infra/ci">all runs</a></h2>`;
+  const h = `<div class="bhead" id="sec-run"><span>CI runs / <b>${esc(id)}</b></span><a class="btn sm" href="#infra/ci">All runs</a></div>`;
   if (runst.err) return h + `<div class="panel down">${esc(runst.err)}</div>`;
   if (!runst.data) return h + `<div class="empty">Loading...</div>`;
   if (!runst.run) return h + `<div class="panel">No CI run ${esc(id)} in the ledger's 30 days.</div>`;
@@ -225,7 +225,7 @@ const TEST_RESULTS = ["all", "failed", "skipped", "passed"];
 const tst = tblTab({
   tab: "infra", id: "tst", pre: TESTS_PRE, el: "ci-tests", api: "/api/tests", hint: TESTS_HINT, state: { cases: null, res: "" },
   params: (p) => { const run = new URLSearchParams(st.views.infra || "").get("trun"); if (run) p.set("trun", run); },
-  head: (t) => testsHead(t.data), body: (t) => testsBody(t.data),
+  head: (t) => testsHead(t.data), body: (t) => testsBody(t.data), tiles: (t) => testsTiles(t.data),
   render: () => ciPaint("ci-tests", tst),
   after: () => renderInfra(),
   // An opened suite belongs to the run it was read from: another run shows none open.
@@ -281,8 +281,15 @@ function testsPicker(d) {
   return `<div class="cline"><select data-twin="run" aria-label="CI run">${opts}</select>${link}</div>`;
 }
 
+// The run's tests over every suite, after the suites' state tiles; none before a run has results.
+const testsTiles = (d) => {
+  const n = d.totals;
+  return d.run && n && n.tests ? tile("TESTS", n.tests, n.failed ? "var(--b-needs)" : "var(--b-done)", `${n.failed} failed, ${n.skipped} skipped`) : "";
+};
+
 function testsHead(d) {
-  let html = `<h2 class="sec" id="sec-tests">Tests <span class="muted">${esc(d.summary || "")}</span></h2>` + testsPicker(d);
+  const v = d.table;
+  let html = secHead("tests", "Tests", v && d.run ? (v.shown === v.total ? v.total : `${v.shown} of ${v.total}`) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
   if (tst.err) html += `<div class="panel down">${esc(tst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -291,10 +298,10 @@ function testsHead(d) {
 // The Tests block, once it has been read. The first look at a run waits on GitHub for its
 // artifacts, so the heading shows before the rows do.
 tst.block = () => {
-  if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
+  if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : secHead("tests", "Tests") + `<div class="empty">Reading...</div>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>`;
   const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
-  return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
+  return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT, testsTiles(tst.data))}` +
     `<div id="tst-body">${body}</div></div>`;
 };
 

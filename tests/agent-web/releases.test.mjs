@@ -84,7 +84,7 @@ const binks = {
   ],
 };
 const data = (o = {}) => ({
-  at: NOW() - 120, question: "What is building, and what is live where?", summary: "2 apps: 1 drift, 1 ok", stale_after: 3600, errors: [], table,
+  at: NOW() - 120, stale_after: 3600, errors: [], table,
   gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "coverage: prev 2/2, deployed 1/2", rows: [binks],
   blanks: ["none declared", "not recorded", "manual", "not read", "none merged"], ...o,
 });
@@ -115,26 +115,30 @@ const page = async (d = data(PAGE), name = "binks", log = changelog()) => {
 };
 const clickChannel = (id) => fire("click", { type: "click", target: target({}, null, { dataset: { ch: `binks|${id}` } }) });
 
-test("the head asks the tab's question, counts the apps, names what it could not read and says the snapshot's age", () => {
+test("the head counts the apps, names what it could not read under it, and folds the coverage shut at the bottom", () => {
   show();
   const h = box.innerHTML;
-  assert.match(h, /What is building, and what is live where\?/);
-  assert.match(h, /2 apps: 1 drift, 1 ok/);
-  assert.match(h, /<div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
-  assert.match(h, /<div class="cline muted">coverage: prev 2\/2, deployed 1\/2<\/div>/);
-  assert.match(h, /refreshed .* \(2m ago\)/);
-  assert.doesNotMatch(h, /class="warn">refreshed/);
+  assert.match(h, /<h2 class="sec warn">Releases <span class="n">\d+(?: of \d+)?<\/span><\/h2><div class="cline warn">1 channel not read: steam GetAppBetas failed \(1\)<\/div>/);
+  assert.match(h, /<details class="cfold" data-k="rel-coverage"><summary>Coverage<\/summary><div class="cline">coverage: prev 2\/2, deployed 1\/2<\/div><\/details>/);
+  assert.ok(h.indexOf("rel-coverage") > h.indexOf(`data-key="binks"`), "after the apps");
+  // When the snapshot was taken is a tile after the state tiles (the Releases tblTab's tiles).
+  const t = run("releasesTiles")(data());
+  assert.match(t, /^<div class="tile" style="--c:var\(--c-other\)"><span class="tl">REFRESHED<\/span><span class="tv">\d\d:\d\d<\/span><span class="ts1">2m ago<\/span>/);
 });
 
 test("a snapshot older than the collector's cadence is amber, and a full read draws no gap line", () => {
   show(data({ at: NOW() - 7200, gaps: "" }));
-  assert.match(box.innerHTML, /class="warn">refreshed/);
+  assert.match(box.innerHTML, /<h2 class="sec warn">Releases /, "a stale snapshot hues the head");
   assert.doesNotMatch(box.innerHTML, /not read:/);
+  assert.match(run("releasesTiles")(data({ at: NOW() - 7200 })), /--c:var\(--b-stalled\)/);
+  show(data({ gaps: "" }));
+  assert.match(box.innerHTML, /<h2 class="sec">Releases /, "fresh and fully read: a plain head");
 });
 
 test("no snapshot names the error instead of drawing a stale table", () => {
-  show(data({ at: 0, rows: [], gaps: "", summary: "not read", errors: ["release-state show: no snapshot yet"], table: { ...table, total: 0 } }));
+  show(data({ at: 0, rows: [], gaps: "", errors: ["release-state show: no snapshot yet"], table: { ...table, total: 0 } }));
   assert.match(box.innerHTML, /release-state show: no snapshot yet/);
+  assert.match(run("releasesTiles")(data({ at: 0 })), /<span class="tv">-<\/span><span class="ts1">no snapshot read<\/span>/);
   assert.match(box.innerHTML, /No apps\./);
 });
 
@@ -377,17 +381,16 @@ const shipped = {
   conclusion: "success", prs: [], url: "https://github.com/o/binks/actions/runs/77", owner: "", state: "green", level: "ok", started: NOW() - 300, took: 125, release: { project: "binks", tag: "v2" },
 };
 const bdata = (o = {}) => ({
-  at: NOW() - 60, summary: "1 run in 30 days: 0 running, 0 queued, 0 red", stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
+  at: NOW() - 60, stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
   table: { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
 const showRuns = (d = bdata()) => { show(); Object.assign(run("relRuns"), { data: d, err: null, sel: null, log: null, detail: null }); run("relst.render()"); };
 
-test("Release runs lists the runs tied to a release with the tag each ran on, and links every run on Infra", () => {
+test("Release runs lists the runs tied to a release with the tag each ran on", () => {
   showRuns();
   const b = box.innerHTML;
-  assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="muted">1 run in 30 days/);
-  assert.match(b, /<a href="#infra\/runs">Infra, CI<\/a>/);
+  assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="n">1<\/span><\/h2><\/div>/);
   assert.match(b, /<td class="muted">v2<\/td><\/tr>/);
   assert.ok(b.indexOf("sec-runs") > b.indexOf(`data-key="binks"`), "after the apps");
   showRuns(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));

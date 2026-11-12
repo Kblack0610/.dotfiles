@@ -27,7 +27,6 @@ pub struct Query {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    summary: &'a str,
     rows: Vec<&'a Schedule>,
     errors: &'a [String],
     table: Summary,
@@ -41,7 +40,6 @@ fn render(s: &Schedules, q: &Query) -> String {
     let (rows, table) = view.summary(&s.rows);
     let out = Shown {
         at: s.at,
-        summary: &s.summary,
         rows,
         errors: &s.errors,
         table,
@@ -92,7 +90,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["name"], "app / Tests");
-        assert_eq!(v["summary"], "2 scheduled, 1 red");
         assert_eq!(v["table"]["total"], 2);
     }
 

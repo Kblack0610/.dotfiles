@@ -50,7 +50,6 @@ struct Shown<'a> {
     stale_after: i64,
     runs: &'a [PickRun],
     run: Option<&'a PickRun>,
-    summary: String,
     totals: Totals,
     rows: Vec<&'a Suite>,
     more: usize,
@@ -76,13 +75,6 @@ fn render(r: &Read, q: &Query) -> String {
     let totals = junit::totals(suites);
     let (rows, fold) = junit::fold(&view, rows, &totals);
     let (rows, more) = junit::cap(rows);
-    let summary = match (r.run, r.loaded) {
-        (Some(run), Some(l)) if !l.suites.is_empty() => {
-            format!("{} {}: {}", run.branch, run.sha, totals.says())
-        }
-        (Some(run), _) => format!("{} {}: no results", run.branch, run.sha),
-        _ => "no finished run of a declared test workflow in the ledger".to_string(),
-    };
     let mut errors = r.errors.clone();
     errors.extend(r.loaded.iter().flat_map(|l| l.errors.clone()));
     let out = Shown {
@@ -90,7 +82,6 @@ fn render(r: &Read, q: &Query) -> String {
         stale_after: STALE_SECS,
         runs: r.runs,
         run: r.run,
-        summary,
         totals,
         rows,
         more,
@@ -260,10 +251,6 @@ mod tests {
         let v = body(Some(&red()), Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
         assert_eq!(v["fold"], serde_json::Value::Null);
-        assert_eq!(
-            v["summary"],
-            "main abc1234: 5 tests in 3 suites: 1 failed, 1 skipped, 3 passed"
-        );
         assert_eq!(v["totals"]["failed_suites"], 1);
         assert_eq!(v["runs"].as_array().unwrap().len(), 2);
         assert_eq!(v["stale_after"], STALE_SECS);
@@ -340,7 +327,6 @@ mod tests {
         };
         let v = body(Some(&none), Query::default());
         assert_eq!(v["note"], "no artifacts");
-        assert_eq!(v["summary"], "main abc1234: no results");
         let b = Builds::default();
         let r = Read {
             builds: &b,
@@ -350,10 +336,6 @@ mod tests {
             errors: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&render(&r, &Query::default())).unwrap();
-        assert_eq!(
-            v["summary"],
-            "no finished run of a declared test workflow in the ledger"
-        );
         assert_eq!(v["table"]["total"], 0);
     }
 

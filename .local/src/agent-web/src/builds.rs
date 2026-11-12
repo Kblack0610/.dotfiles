@@ -40,7 +40,6 @@ pub struct Query {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    summary: String,
     stale_after: i64,
     rows: Vec<&'a Run>,
     more: usize,
@@ -104,7 +103,6 @@ fn render(b: &Builds, q: &Query) -> String {
     table.links = hub_core::table::links(&rows);
     let out = Shown {
         at: b.at,
-        summary: s.summary(),
         stale_after: STALE_SECS,
         rows,
         more,
@@ -214,15 +212,11 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_view_lists_every_run_and_says_how_they_divide() {
+    fn the_plain_view_lists_every_run() {
         let v = body(Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
         assert_eq!(v["more"], 0);
         assert_eq!(v["table"]["total"], 3);
-        assert_eq!(
-            v["summary"],
-            "3 runs in 30 days: 1 running, 0 queued, 1 red"
-        );
         assert_eq!(v["stale_after"], STALE_SECS);
         assert_eq!(
             v["times"][0]["workflow"], "Tests",
@@ -241,11 +235,6 @@ mod tests {
             project: "app".into(),
             tag: "v1.0.0".into(),
         });
-        // What the read counts the release scope with.
-        b.released = builds::Counts {
-            total: 1,
-            ..Default::default()
-        };
         let v: serde_json::Value = serde_json::from_str(&render(
             &b,
             &Query {
@@ -256,7 +245,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["release"]["tag"], "v1.0.0");
-        assert_eq!(v["summary"], "1 run in 30 days: 0 running, 0 queued, 0 red");
+        assert_eq!(v["table"]["total"], 1, "the head counts the release scope's runs");
         assert!(v["times"].as_array().unwrap().is_empty());
         // negative control: the plain read keeps every run.
         assert_eq!(body(Query::default())["rows"].as_array().unwrap().len(), 3);

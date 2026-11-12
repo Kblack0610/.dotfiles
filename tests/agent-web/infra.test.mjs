@@ -57,14 +57,30 @@ const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, done: { runs: 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
   const h = section(ci);
-  assert.match(h, /CI runners <span class="muted">2 hosts, 3 slots, 1 busy, 1 waiting \(oldest 15m\)/);
+  assert.match(h, /^<h2 class="sec bad" id="sec-ci">CI runners <span class="n">3<\/span><\/h2><div class="panel down">/, "a job nobody can take hues the head red");
   assert.match(h, /<div class="panel down">[\s\S]*HD tests \(unity\) needs \[unity-full, hd-library\]: no online runner holds hd-library/);
   assert.match(h, /<td class="n warn">1h 57m!<\/td>/);
   assert.match(h, /<td class="bad">off<\/td>/);
   assert.match(h, /<td class="muted">idle<\/td>/);
   assert.match(h, /<td class="bad">HD tests<\/td>/, "a stuck queued job is red");
   assert.match(h, /<td class="wrap">nobody<\/td>/);
-  assert.match(h, /Finished 24h <span class="muted">10 runs, 89% pass, 1 failed, 1 cancelled/);
+  assert.match(h, /<h3 class="sec">Waiting for a runner <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Finished 24h <span class="n">10<\/span><\/h3>/);
+  // The pass rate is a tile after the Finished table's state tiles (its tblTab's tiles).
+  assert.match(run("finishedTiles")(ci.done), /<span class="tl">PASS<\/span><span class="tv">89%<\/span><span class="ts1">1 failed, 1 cancelled<\/span>/);
+  assert.equal(run("finishedTiles")(done), "", "no finished run, no tile");
+});
+
+test("CI runners: a failure in the last 24h is a warn line under the head while it holds", () => {
+  Object.assign(ist, { open: {} });
+  ist.data = { ok: true, tables: tables(ci) };
+  const inst = { local_failed: [{ labels: { repo: "unity", branch: "feat", platform: "linux", result: "fail", hour: "1700000000" }, value: 2 }] };
+  const h = run(`ciSection(${JSON.stringify(inst)}, Date.now(), ${JSON.stringify({ ...ci, red: [] })})`);
+  assert.match(h, /^<h2 class="sec warn" id="sec-ci">CI runners <span class="n">3<\/span><\/h2><div class="cline warn">2 failed in 24h<\/div>/);
+  assert.match(h, /<h3 class="sec bad">Failed, last 24h <span class="n">2<\/span><\/h3>/);
+  const quiet = section({ ...ci, red: [] });
+  assert.match(quiet, /^<h2 class="sec" id="sec-ci">CI runners <span class="n">3<\/span><\/h2>/, "nothing failed: a plain head and no line");
+  assert.doesNotMatch(quiet, /cline warn|Failed, last 24h/);
 });
 
 test("CI runners: a queued job some host can take names it, and is not red", () => {
@@ -95,10 +111,10 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   // The open inner tab shows; another one's sections are in the page, hidden.
   assert.match(main, /<div data-in="machines"><div class="tiles roomy">[\s\S]*<h2 class="sec" id="sec-machines">/);
   assert.match(main, /href="#alerts\/watches"/, "the watches tile opens Alerts' Watches");
-  assert.match(main, /<div data-in="ci" hidden><h2 class="sec" id="sec-ci">/);
+  assert.match(main, /<div data-in="ci" hidden><h2 class="sec bad" id="sec-ci">/);
   // The governor and cloud sections folded into Machines' columns (layout::MOVED); Pools joins Machines.
   for (const gone of ['id="sec-governor"', 'id="sec-cloud"']) assert.equal(at(gone), -1, `${gone} folded into Machines`);
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">/);
+  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">Pools <span class="n">0<\/span><\/h2>/);
   // Jobs is its own element (jobs.js paints it): it joins the Jobs group and hides here.
   assert.equal(els.jobs.dataset.in, "jobs");
   assert.equal(els.jobs.hidden, true);
@@ -106,7 +122,7 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   assert.equal(els.jobs.hidden, false);
   // "Done today" starts open like every section; a fold the reader closed stays closed.
   run(`st.arg = "ci"; renderInfra()`);
-  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open>/);
+  assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open><summary><h3 class="sec">Done today<\/h3><\/summary>/, "the fold's summary is its head alone");
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more"><summary/);
@@ -245,6 +261,13 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
+  // The breadcrumb is the machine alone; when it was read is a fact in its panel.
+  assert.match(h, /<div class="bhead"><span>workstation, local, up<\/span><a class="btn sm"/);
+  assert.match(h, /<span class="pgk">Read<\/span>/);
+  assert.match(h, /<h3 class="sec">7 days <span class="n">1 reading<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Downtime <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Recent CI jobs <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Alerts <span class="n">0<\/span><\/h3>/);
 });
 
 test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {
@@ -286,7 +309,10 @@ test("a pool page draws its parts, its machines and waiting jobs with their link
   assert.match(h, />nobody</);
   assert.match(h, /data-tip="[^"]*1\.0 busy of 3\.0 slots, 2 waiting at most"/);
   assert.match(h, /data-tip="[^"]*: no reading"/, "an hour with no sample says so");
-  assert.match(h, /30 readings/);
+  assert.match(h, /<h3 class="sec">7 days <span class="n">30 readings<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Machines <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<h3 class="sec">Waiting <span class="n">1<\/span><\/h3>/);
+  assert.match(h, /<div class="bhead"><span>unity, 1\/3 busy, 2 waiting<\/span><a class="btn sm"/);
 });
 
 test("a failed pool refresh keeps the page on screen and says so", () => {

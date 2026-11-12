@@ -23,7 +23,7 @@ const relst = tblTab({
   draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
-  body: (t) => releasesBody(t.data),
+  body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
   wrap: (html) => innerWrap("releases", "table", html),
   tail: () => innerWrap("releases", "runs", relRuns.block()),
 });
@@ -182,18 +182,23 @@ function releaseDetail(r) {
     line("Watches", r.telemetry.map(releaseWatch).join("")) + line("Deps", r.deps.length ? esc(r.deps_text) : "") + `</div></td></tr>`;
 }
 
+// The apps, then how full each history column is (Releases::coverage) in a fold that starts shut.
 function releasesBody(d) {
   const t = d.table, rows = d.rows || [];
-  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>`;
-  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>`;
+  const cover = d.coverage ? cfold("rel-coverage", "Coverage", `<div class="cline">${esc(d.coverage)}</div>`, REL_OPEN) : "";
+  if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>${cover}`;
+  return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>${cover}`;
 }
 
+// A snapshot older than the collector's cadence is stale.
+const relStale = (d) => d.at && Date.now() / 1e3 - d.at > d.stale_after;
+// When the snapshot was taken, after the apps' state tiles; amber once it is stale.
+const releasesTiles = (d) =>
+  tile("REFRESHED", d.at ? clock(d.at * 1e3) : "-", relStale(d) ? "var(--b-stalled)" : "var(--c-other)", d.at ? `${ago(d.at)} ago` : "no snapshot read");
+
 function releasesHead(d) {
-  const age = d.at ? Date.now() / 1e3 - d.at : 0, stale = d.at && age > d.stale_after;
-  const read = d.at ? `refreshed ${clock(d.at * 1e3)} (${ago(d.at)} ago)` : "no snapshot read";
-  let html = `<h2 class="sec">Releases <span class="muted">${esc(d.question || "")}</span></h2>` +
-    `<div class="cline">${esc(d.summary || "")} <span class="${stale ? "warn" : "muted"}">${esc(read)}</span></div>`;
-  if (d.coverage) html += `<div class="cline muted">${esc(d.coverage)}</div>`;
+  const t = d.table;
+  let html = secHead("", "Releases", t && (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`), d.gaps || relStale(d) ? "warn" : "");
   if (d.gaps) html += `<div class="cline warn">${esc(d.gaps)}</div>`;
   if (relst.err) html += `<div class="panel down">${esc(relst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -204,7 +209,6 @@ function releasesHead(d) {
 // It draws inside this tab's page, so its render is the tab's. Every run is Infra's CI runs.
 const relRuns = runsTable({
   tab: "releases", id: "relrun", el: "releases", scope: "release", title: "Release runs", folds: REL_OPEN,
-  lead: `<div class="cline muted">The runs that deployed or ran on a release tag; every run is on <a href="#infra/runs">Infra, CI</a>.</div>`,
   none: "No run tied to a release in 30 days.", render: () => relst.render(),
 });
 // A refresh must not take the focus from either search box: the section repaints when it holds it.

@@ -11,7 +11,10 @@ const SCHEDULE_RUNS_OPEN = 2;
 const schst = tblTab({
   tab: "schedules", id: "sched", el: "schedules", api: "/api/schedules", hint: "search, or kind:ci result:failure -name:dream",
   head: (t) => schedulesHead(t.data), body: (t) => schedulesBody(t.data),
+  tiles: (t) => schedulesTiles(t.data),
 });
+// When the schedules were read, after the state tiles.
+const schedulesTiles = (d) => tile("READ", d.at ? clock(d.at * 1e3) : "-", "var(--c-other)");
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
@@ -64,7 +67,8 @@ function schedulesBody(d) {
 }
 
 function schedulesHead(d) {
-  let html = `<h2 class="sec">Schedules <span class="muted">${esc(d.summary)}, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
+  const t = d.table;
+  let html = secHead("", "Schedules", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
   if (schst.err) html += `<div class="panel down">${esc(schst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

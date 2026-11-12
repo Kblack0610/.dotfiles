@@ -58,7 +58,10 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   Object.assign(jst, { data, err: null, hist: null, log: null, all: false });
   run("jst.render()");
   const h = box.innerHTML;
-  assert.match(h, /2 of 3 in 24h/);
+  assert.match(h, /<h2 class="sec" id="sec-jobs">Jobs <span class="n">2 of 3<\/span><\/h2>/, "the head is its title and the view's count");
+  // When the list was read, and over what window, is a tile after the state tiles (the tblTab's tiles).
+  assert.match(run("jobsTiles")(data), /<span class="tl">READ<\/span><span class="tv">\d\d:\d\d<\/span><span class="ts1">last 24h<\/span>/);
+  assert.doesNotMatch(h, /in 24h, read/, "no sentence after the title");
   assert.match(h, /<th class="n" aria-sort="ascending"[^>]*><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
   assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
   assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
@@ -73,6 +76,14 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.equal((h.match(/data-fkey="source"/g) || []).length, 1, "a facet whose column is drawn is not also in the bar");
   assert.match(h, /id="jobs-q" data-tsearch placeholder="[^"]*" value="source:ci"/);
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
+});
+
+test("an opened log is headed Log, with the job it is from as a fact in its panel", () => {
+  run("st.tab = 'infra'");
+  Object.assign(jst, { data, err: null, hist: null, log: { title: "ci gate 10:00", text: "ok" }, all: false });
+  run("jst.render()");
+  assert.match(box.innerHTML, /<h2 class="sec">Log<\/h2><div class="panel"><div class="pgrow"><span class="pgk">Job<\/span><span class="pgv">ci gate 10:00<\/span><\/div><pre class="joblog">ok<\/pre><\/div>/);
+  jst.log = null;
 });
 
 test("a job not started reads waiting in STATE, the word its chip and legend use", () => {
@@ -150,7 +161,8 @@ test("a job's page is its URL: every run of it is read by name, and its host cel
   await new Promise((r) => setImmediate(r));
   assert.equal(asked.at(-1), "/api/jobs?name=gate");
   const h = box.innerHTML;
-  assert.match(h, /every run of <b>gate<\/b> <a href="#infra\/jobs">back to all<\/a>/);
+  assert.match(h, /<h2 class="sec" id="sec-jobs">Jobs <span class="n">2 of 3<\/span><\/h2>/);
+  assert.match(h, /<div class="cline">Every run of <b>gate<\/b> <a class="btn sm" href="#infra\/jobs">All jobs<\/a><\/div>/, "a job's page keeps its way back to every job");
   assert.match(h, /<a href="#infra\/jobs\/gate" class="muted" title="every run of this job">4 runs<\/a>/);
   assert.match(h, /<td class="muted"><a class="tl" href="#infra\/machines\/workstation">workstation<\/a><\/td>/);
   run('st.page = ""; showJobs()');

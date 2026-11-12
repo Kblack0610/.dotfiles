@@ -68,7 +68,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
     ],
     table: { shown: 2, total: 2, states: [{ name: "all", n: 2 }, { name: "Question", n: 1 }, { name: "Failing", n: 1 }] },
   }));
-  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">2<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="n">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
   assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
   assert.match(html, /<th class="n"[^>]*><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
@@ -90,7 +90,7 @@ test("a sort asked for marks its own header and takes the mark off the rank", ()
 
 test("the view keeps the count of the whole list, and no match is not an all-clear", () => {
   const html = draw({ ...home(), table: ntable([], { q: "kind:ask", total: 5, shown: 0 }) });
-  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">0 of 5<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="n">0 of 5<\/span><\/h2>/);
   assert.match(html, /No needs match\./);
   assert.doesNotMatch(html, /Nothing waits on you/);
   assert.match(html, /id="home-need-q"[^>]*value="kind:ask"/, "the box stays, so the view can be changed back");
@@ -262,8 +262,8 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
       { item: "#queue/q-2", project: "#projects/trader" },
     ] },
   }));
-  assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
-  assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
+  assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="n">2<\/span><\/h2><\/div>/);
+  assert.match(html, /<\/table><div class="cline muted"><a href="#sessions\?s=running">all running in Sessions<\/a><\/div><\/div>/, "the filtered link is the table's last line");
   assert.match(html, /id="home-run-q" data-tsearch placeholder="search, or project:dotfiles ci:fail epic:ar-1292"/);
   assert.match(html, /data-ts="CI failing">CI failing <span class="n">1<\/span>/);
   assert.match(html, /data-tsort="eta"[^>]*>eta<\/button>/);
@@ -326,14 +326,15 @@ test("what could not be read is drawn as hub-core worded it", () => {
   assert.match(html, /^<div class="cline warn">Prometheus: down<\/div>/);
 });
 
-test("Home has no Numbers heading: the session counts head Running and the spend is one line linking Costs", () => {
+test("Home has no Numbers heading: the session counts close Running and the spend is one line linking Costs", () => {
   const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled", spend: "claude $573 in 24h" }));
   assert.doesNotMatch(html, /Numbers/);
-  assert.match(html, />Running <span class="muted">0<\/span> <span class="muted"><a href="#sessions">sessions<\/a>: 3 working, 1 need you, 0 stalled<\/span> <a class="muted" href="#sessions\?s=running">all in Sessions -&gt;<\/a><\/h2>/);
+  assert.match(html, />Running <span class="n">0<\/span><\/h2>/);
+  assert.match(html, /<div class="empty">Nothing running from the queue.<\/div><div class="cline muted"><b>Sessions<\/b> 3 working, 1 need you, 0 stalled <a href="#sessions\?s=running">all running in Sessions<\/a><\/div>/);
   assert.match(html, /Spend<\/h2><div class="cline">claude \$573 in 24h <a href="#costs">Costs<\/a><\/div>/);
   assert.ok(html.indexOf("Health") < html.indexOf("Spend") && html.indexOf("Spend") < html.indexOf("Needs you"), html);
   const none = draw(home());
-  assert.doesNotMatch(none, /Spend|sessions<\/a>/, "the control: no spend and no counts, no lines for them");
+  assert.doesNotMatch(none, /Spend|<b>Sessions/, "the control: no spend and no counts, no lines for them");
 });
 
 const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
@@ -343,7 +344,7 @@ const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off targe
 
 test("Vitals sits under Spend and above Needs you, a row per question, the off ones marked", () => {
   const html = draw(home({ spend: "claude $573 in 24h", vitals: vitals() }));
-  assert.match(html, /Vitals <span class="muted">1 of 2 off target<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec warn" id="sec-vitals">Vitals<\/h2><div class="cline warn">1 of 2 off target<\/div>/);
   assert.match(html, /<div class="cline vital"><b>Cost<\/b> \$12.54 per merged item<\/div>/);
   assert.match(html, /<div class="cline vital warn"><b>Outcome<\/b> Oldest request 340h, limit 72h; 12 unverified, limit 0<\/div>/);
   assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
@@ -356,10 +357,10 @@ test("an unread vital is dim, so it never looks like a healthy row", () => {
 
 test("Vitals folds to its head when all are on target, and shows nothing until it is read", () => {
   const html = draw(home({ vitals: vitals({ head: "2 of 2 on target", all_ok: true }) }));
-  assert.match(html, /Vitals <span class="muted">2 of 2 on target<\/span>/);
+  assert.match(html, /<h2 class="sec" id="sec-vitals">Vitals<\/h2><div class="cline">2 of 2 on target<\/div>/);
   assert.doesNotMatch(html, /cline vital/, "green is one line (dashboards rule 4)");
   assert.doesNotMatch(draw(home({ vitals: null })), /Vitals/);
-  assert.match(draw(home({ vitals: vitals(), grafana: "https://g" })), /Vitals <span class="muted">[^<]*<\/span> <a class="glink" href="https:\/\/g\/d\/kb-agents-overview"/, "the trend is one click away");
+  assert.match(draw(home({ vitals: vitals(), grafana: "https://g" })), /Vitals<\/h2><div class="cline warn">1 of 2 off target <a class="glink" href="https:\/\/g\/d\/kb-agents-overview"/, "the trend is one click away");
 });
 
 test("the flow strip leads Home, and the queue and done-today numbers are gone", () => {
@@ -414,7 +415,7 @@ test("Proposals is one line when empty and sits between Needs you and Running", 
 test("a proposal row carries both actions; the rest fold under +N more", () => {
   const rows = Array.from({ length: 10 }, (_, i) => prop(`p${i}`));
   const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: table(10) }));
-  assert.match(html, /Proposals <span class="muted">10 from 1 stream<\/span>/);
+  assert.match(html, /<div id="home-prop-head"><h2 class="sec" id="sec-proposals">Proposals <span class="n">10<\/span><\/h2><\/div>/);
   assert.match(html, /data-accept="p0".*data-reject="p0"/s);
   assert.equal((html.match(/data-accept=/g) || []).length, 8);
   assert.match(html, /\+2 more/);
@@ -477,7 +478,7 @@ function drawNight(n) {
 }
 
 test("Since last night shows only what is not ok, links each row and folds the ok areas", () => {
-  assert.match(drawNight(night()), /<h2 class="sec" id="sec-night">Since last night <span class="muted">since Thu 18:00 <a href="#daily">briefing<\/a><\/span><\/h2><div class="cline muted">all 6 areas ok<\/div>/);
+  assert.match(drawNight(night()), /<h2 class="sec" id="sec-night">Since last night<\/h2><div class="cline muted">all 6 areas ok<\/div><div class="cline muted"><b>Since<\/b> Thu 18:00<\/div>/);
   const html = drawNight(night({
     rows: [
       area("Workers overnight", "bad", { details: ["wave-roll failed 02:10"], fix: { project: "agent-runtime", task: "Fix it" } }),
@@ -486,7 +487,7 @@ test("Since last night shows only what is not ok, links each row and folds the o
     ok_line: "Infra, Nightly, Delivery, Costs ok",
     errors: ["watches: no such dir"],
   }));
-  assert.match(html, /<div class="cline warn">watches: no such dir<\/div>/);
+  assert.match(html, /<h2 class="sec bad" id="sec-night">Since last night<\/h2><div class="cline warn">watches: no such dir<\/div>/, "a bad area hues the title");
   assert.match(html, /<a href="#fleet\?s=failed">Workers overnight<\/a> <span class="cchip bad">bad<\/span> Workers overnight line <button class="btn sm" data-fix="Workers overnight">Queue a fix<\/button><\/div><div class="cline muted">wave-roll failed 02:10<\/div>/);
   assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
   assert.equal(html.match(/data-fix=/g).length, 1);
@@ -497,7 +498,7 @@ test("Since last night shows only what is not ok, links each row and folds the o
 test("a failed briefing read says why instead of an all-clear", () => {
   vm.runInContext("hst.night = null; hst.nightErr = 'agent-web: 502'", ctx);
   const html = draw(home());
-  assert.match(html, /Since last night<\/h2><div class="cline warn">agent-web: 502<\/div>/);
+  assert.match(html, /<h2 class="sec warn" id="sec-night">Since last night<\/h2><div class="cline warn">agent-web: 502<\/div>/);
   assert.doesNotMatch(html, /areas ok/);
   vm.runInContext("hst.nightErr = null", ctx);
 });

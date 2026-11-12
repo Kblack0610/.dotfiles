@@ -56,7 +56,8 @@ test("the table draws the server's rows, chips and dropdowns with no day heading
   fresh();
   run("ast.render()");
   const h = box.innerHTML;
-  assert.match(h, /2 of 3 in 24h/);
+  assert.doesNotMatch(h, /class="bhead"|<h2/, "Log's Actions fold is the title; the window buttons and chips count");
+  assert.match(h, /class="on" data-twin="hours" data-tval="">24h<\/button>/, "the window is the lit button");
   assert.match(h, /data-tsort="when"/, "every column header sorts");
   assert.match(h, /value="actor:shepherd"/, "the query sits in the search box");
   assert.match(h, /data-fv="notify" value="actor:shepherd actor:notify"> <span>notify<\/span> <span class="n">1<\/span>/, "the actors are a checklist, a tick adding to the pick");

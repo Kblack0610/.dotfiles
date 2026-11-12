@@ -16,7 +16,7 @@ const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
   state: { open: null, inner: "overview", unlinked: true, page: {}, folds: {}, viewed: "" },
-  head: (t) => `<h2 class="sec" id="sec-projects">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  head: (t) => secHead("projects", "Projects", pCount(t.data.table)) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
 
@@ -31,7 +31,8 @@ const dst = tblTab({
   shown: () => st.tab === "projects" && (!pst.open || pst.inner === "build"), wait: "Reading fleet-bench epics (about 10s when cold)...",
   params: (p) => { if (pst.open) p.set("scope", pst.open); },
   draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
-  head: (t) => (pst.open ? pSec("p-build", "Build", t.data.says) : `<h2 class="sec" id="sec-deliverables">${esc(t.data.says)}</h2>`),
+  // An epic behind its ETA hues the head; the track counts are the table's state chips.
+  head: (t) => secHead(pst.open ? "p-build" : "deliverables", pst.open ? "Build" : "Deliverables", pCount(t.data.table), t.data.behind ? "warn" : null),
   body: (t) => dBody(t.data),
 });
 
@@ -75,8 +76,8 @@ function pSplit(arg) {
 }
 // The arg naming what is open: the project, and its inner tab unless that is Overview.
 const pArg = () => pst.open + (pst.inner === "overview" ? "" : "/" + pst.inner);
-// A section of the opened page: its sec- anchor (the sidebar outline lists it) and head.
-const pSec = (id, title, says) => `<h2 class="sec" id="sec-${id}">${esc(title)}${says === "" || says == null ? "" : ` <span class="muted">${esc(says)}</span>`}</h2>`;
+// A table's head count: its rows, or "N of M" while a search or state narrows them.
+const pCount = (t) => (t.shown === t.total ? t.total : `${t.shown} of ${t.total}`);
 
 // One running item: its title (two lines at most), then its phases and estimate.
 function pRunning(r) {
@@ -146,14 +147,14 @@ function pOverview(c, pg) {
   let html = "";
   if (pg) {
     const groups = pNeedGroups(pg), n = pNeedCount(pg);
-    html += pSec("p-needs", "Needs you", n || "nothing");
+    html += secHead("p-needs", "Needs you", n);
     if (groups.length) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
       `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go, P_GO_TEXT[g.go.pgo])}` : ""}`, pLines(g.items), pst.folds)).join("") + `</div>`;
   }
-  html += pSec("p-flight", "In flight", c.counts) +
+  html += secHead("p-flight", "In flight", c.running.length) +
     `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +
-    `<div class="cline"><a href="#queue?q=${encodeURIComponent("project:" + c.name)}">this project's queue</a></div></div>`;
-  if (pg) html += pSec("p-systems", "Systems", pg.systems_says) + pSysTable(pg.systems);
+    (c.counts ? `<div class="cline muted">${esc(c.counts)}</div>` : "") + `<div class="cline"><a href="#queue?q=${encodeURIComponent("project:" + c.name)}">this project's queue</a></div></div>`;
+  if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;
 }
 const P_SYS_HEAD = ["system", "done", "features", "standard", "open rows", "behind", "criteria", "current wave"];
@@ -169,11 +170,13 @@ function pSysTable(systems) {
   return `<div class="panel scroll"><table class="tbl"><tr>${P_SYS_HEAD.map((h, i) => `<th${i && i < 7 ? ` class="n"` : ""}>${h}</th>`).join("")}</tr>${systems.map(row).join("")}</table></div>`;
 }
 
-// Stage: the next stage's requirements not met, failing first, then a human's, then the rest.
+// Stage: the next stage's requirements not met, failing first, then a human's, then the rest. The
+// head counts the met ones and a failing one hues it; the header's next stage line names the stage.
 const P_RESULT = { FAIL: 0, HUMAN: 1 };
 function pStage(pg) {
   const rows = [...pg.next_rows].sort((a, b) => (P_RESULT[a.result] ?? 2) - (P_RESULT[b.result] ?? 2));
-  return pSec("p-stage", "Next stage", pg.next_says) + (rows.length
+  const g = pg.gate;
+  return secHead("p-stage", "Next stage", g ? `${g.met} of ${g.total}` : null, g && g.fail ? "warn" : null) + (rows.length
     ? `<div class="card">${rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join("")}</div>`
     : "");
 }
@@ -182,10 +185,13 @@ function pStage(pg) {
 function pActivity(c, pg) {
   let html = "";
   if (pg) {
-    html += pSec("p-shipped", "Shipped", pg.shipped_says) + (pg.shipped.length ? `<div class="card">${pLines(pg.shipped)}</div>` : "");
-    if (pg.timeline) html += pSec("p-timeline", "Timeline", pg.timeline.says) + `<div class="card">${pTimeline(pg.timeline)}</div>`;
+    html += secHead("p-shipped", "Shipped", pg.shipped.length) + (pg.shipped.length ? `<div class="card">${pLines(pg.shipped)}</div>` : "");
+    if (pg.timeline) html += secHead("p-timeline", "Timeline", pg.timeline.lines.length + pg.timeline.older) + `<div class="card">${pTimeline(pg.timeline)}</div>`;
   }
-  return html + pSec("p-note", "Agent note", c.note_says) + (c.status ? `<div class="card"><div class="pstat">${esc(c.status)}</div></div>` : "");
+  // The note's date is a fact in its card.
+  return html + secHead("p-note", "Agent note") + (c.status
+    ? `<div class="card"><div class="pstat">${esc(c.status)}</div>${c.status_date ? `<div class="cline muted"><b>written</b> ${esc(c.status_date)}</div>` : ""}</div>`
+    : `<div class="card muted">No agent note.</div>`);
 }
 
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
@@ -198,7 +204,7 @@ function pPanes(c) {
   const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) +
-    pin("rows", pSec("p-rows", "Rows", `${c.progress.open} open; select one for its actions`)),
+    pin("rows", secHead("p-rows", "Rows", c.progress.open)),
   pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
 }
 
@@ -209,13 +215,6 @@ async function pReadPage(name) {
   if (st.tab === "projects" && pst.open) renderProjects();
 }
 
-// The list's head: how many the view keeps and how many fly, and what progress counts.
-function pHead(t) {
-  const flying = t.states.find((c) => c.name === "in flight").n;
-  return `<div class="muted qstats">${t.shown === t.total ? t.total : `${t.shown} of ${t.total}`} projects, ${flying} in flight; ` +
-    `progress is the open version's rows by size (#size/s 1, m 3, l 8)</div>`;
-}
-
 // The list, then what no card claims.
 function pList() {
   const d = pst.data, t = d.table;
@@ -223,8 +222,7 @@ function pList() {
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, P_COLS)}${d.cards.map(pLine).join("")}</table></div>`
     : `<div class="card muted">${t.total ? "No project matches." : "No projects."}</div>`;
   if (d.unlinked && d.unlinked.length) {
-    html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary><h2 class="sec">Not on a card ` +
-      `<span class="muted">${d.unlinked.length} active queue items no project claims</span></h2></summary>` +
+    html += `<details data-k="unlinked"${pst.unlinked ? " open" : ""}><summary>${secHead("", "Not on a card", d.unlinked.length)}</summary>` +
       `<div class="card">${d.unlinked.map((u) => `<div>${esc(u)}</div>`).join("")}</div></details>`;
   }
   return html;

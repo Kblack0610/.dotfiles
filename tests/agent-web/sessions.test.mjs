@@ -289,7 +289,7 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   run("sst.render()");
   assert.doesNotMatch(boxes.scroll.innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
   ctx.renderLogRanked();
-  assert.match(boxes["log-ranked"].innerHTML, /<span class="muted">7d, by friction<\/span>/);
+  assert.doesNotMatch(boxes["log-ranked"].innerHTML, /by friction/, "no prose head: the summary is the title");
   assert.match(boxes["log-ranked"].innerHTML, /Loading\./, "nothing is read until the section opens");
   run(`ost.rows = __d.rows; ost.open = __d.rows[0].session_id; ost.cards[ost.open] = __d.card;`, { card: "fix the gate (6f296b73)\n  Time      work 2h05", rows: [
     { session_id: "6f296b73-b7a5", project: "dotfiles", title: "fix the gate\nmore", friction: 11, why: "9 nudges", cost_usd: 41.2, duration_s: 22200, prs_merged: 24, prs_open: 0, prs_closed_unmerged: 1 },
@@ -297,7 +297,6 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   ] });
   ctx.renderLogRanked();
   const html = boxes["log-ranked"].innerHTML;
-  assert.match(html, /2 worst, 7d, by friction/);
   assert.match(html, /<tr class="click" data-sid="6f296b73-b7a5"><td class="n">11<\/td><td>fix the gate <span class="muted">6f296b73<\/span>/);
   assert.match(html, /<td class="n">6h 10m<\/td><td class="n">\$41\.20<\/td><td class="n">24\/25<\/td>/);
   assert.match(html, /<pre class="joblog">fix the gate \(6f296b73\)\n  Time/);

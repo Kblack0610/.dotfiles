@@ -122,6 +122,13 @@ const tile = (l, v, c, sub, href) => {
   return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
 };
 
+// A section head: its title and its count, nothing else (docs/dashboards.md, Section head). A problem
+// the section holds is a line under the head while it holds, and level (warn, bad) hues the title,
+// so a shut fold still says so; detail is a fold; what the section is for is hub_core::layout's.
+const secHead = (id, title, n, level, tag = "h2") =>
+  `<${tag} class="sec${level === "warn" || level === "bad" ? ` ${level}` : ""}"${id ? ` id="sec-${id}"` : ""}>${esc(title)}` +
+  `${n == null || n === "" ? "" : ` <span class="n">${esc(n)}</span>`}</${tag}>`;
+
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already
 // escaped; text arguments are escaped here.

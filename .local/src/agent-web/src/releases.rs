@@ -29,8 +29,6 @@ pub struct Query {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    question: &'a str,
-    summary: &'a str,
     gaps: &'a str,
     /// `Releases::coverage`: how full each history column is, over every app.
     coverage: &'a str,
@@ -62,8 +60,6 @@ fn render(s: &Releases, q: &Query) -> String {
         .flatten();
     let out = Shown {
         at: s.at,
-        question: &s.question,
-        summary: &s.summary,
         gaps: &s.gaps,
         coverage: &s.coverage,
         stale_after: STALE_SECS,
@@ -219,7 +215,6 @@ mod tests {
         assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
         assert_eq!(v["coverage"], "coverage: prev 2/2, deployed 1/2");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(v["question"], "What is deployed where?");
         assert_eq!(v["stale_after"], STALE_SECS);
     }
 
