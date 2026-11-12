@@ -1670,8 +1670,9 @@ resume_thread() {
 }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
-# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
-# its server (the human reads [dispatch] as "an agent started this"), and a session doing work
+# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
+# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
 # which the human had to ask about twice.
@@ -1697,7 +1698,7 @@ resume_thread() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human key='' server='' model='' brief_file='' \
+  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1814,6 +1815,11 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
+    # A resume is an agent's work only when its item came from a start (it has an origin). With no
+    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of
+    # a session they opened, so it gets no @dispatch label. Its item still records origin=resume:
+    # live_runs reads an empty origin with a session as a runner slot.
+    [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
       [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item runs on $rh, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
@@ -1895,7 +1901,7 @@ cmd_start() {
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
   # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
+  [ -n "$joined" ] || [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
   logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
