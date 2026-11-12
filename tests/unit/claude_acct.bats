@@ -1039,6 +1039,17 @@ seen_claude() {
   [[ "$(field alt '.room.headroom_points | floor' <<< "$output")" == 3 ]]
 }
 
+@test "room --json: fleet carries the sessions the pool sustains at pace, the same figure as the status line" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 80 84
+  week alt 80 84
+  live "" 10
+  live "$ALT" 10
+  run --separate-stderr "$ACCT" room --json
+  # the status line's "carries ~2": 0.24 an hour over 0.1 a session
+  assert_equal "$(jq -c '[.fleet.carries, .fleet.rate]' <<<"$output")" '[2,0.1]'
+}
+
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 97 2

@@ -158,7 +158,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   feed summary_dispatch.room_held_slots=1
   run "$MODULE"
   run tip
-  assert_output --partial "paused by: <span color='$Y'>the fleet is at its pace target (DISPATCH_TARGET_PRESENT, DISPATCH_TARGET_BURST away)</span>"
+  assert_output --partial "paused by: <span color='$Y'>the fleet is at its pace target (DISPATCH_TARGET_PRESENT, DISPATCH_TARGET_AWAY away)</span>"
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
