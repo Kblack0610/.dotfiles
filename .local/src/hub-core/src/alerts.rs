@@ -165,6 +165,62 @@ impl Row for Alert {
     }
 }
 
+/// Watches, the Alerts tab's table of every one. The reader's order (tripped and failing first)
+/// is the default; the state tiles split it, so no fold hides the ok ones.
+impl Row for Watch {
+    const COLUMNS: &'static [&'static str] = &[
+        "name", "state", "severity", "project", "since", "lastrun", "place",
+    ];
+    // Each a word `vocab::tone` hues: trip and error red, ok green, new plain.
+    const STATES: &'static [&'static str] = &["all", "trip", "error", "new", "ok"];
+    const FACETS: &'static [&'static str] = &["severity", "project"];
+    const LEAD: &'static str = "name";
+    const GLANCE: &'static [&'static str] = &["state", "since"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| match s {
+            "" | "-" => Val::None,
+            s => Val::Text(s.to_string()),
+        };
+        let num = |t: Option<i64>| t.map_or(Val::None, |t| Val::Num(t as f64));
+        match col {
+            "name" => text(&self.name),
+            "state" => text(&self.state),
+            "severity" => text(&self.severity),
+            "project" => text(&self.project),
+            "since" => num(self.since),
+            "lastrun" => num(self.lastrun),
+            "place" => text(&self.place),
+            _ => Val::None,
+        }
+    }
+
+    /// The state file says TRIP, OK, ERROR, or `new`; a chip is its word.
+    fn in_state(&self, state: &str) -> bool {
+        self.state.eq_ignore_ascii_case(state)
+    }
+
+    fn rank(&self, col: &str) -> Val {
+        match col {
+            "severity" => Val::Num(sev_rank(&self.severity) as f64),
+            _ => self.val(col),
+        }
+    }
+
+    fn text(&self) -> String {
+        [
+            &self.name,
+            &self.project,
+            &self.place,
+            &self.severity,
+            &self.what,
+        ]
+        .map(String::as_str)
+        .join("\n")
+        .to_lowercase()
+    }
+}
+
 fn sev_rank(sev: &str) -> usize {
     match sev {
         "urgent" => 0,
@@ -1361,6 +1417,49 @@ mod tests {
             project_badge(&ws, "dotfiles").unwrap().level,
             crate::releases::Level::Warn,
             "an error alone is amber"
+        );
+    }
+
+    #[test]
+    fn a_watch_table_tiles_its_states_in_their_hue_and_searches_name_project_place_and_severity() {
+        use crate::table::View;
+        use crate::vocab::Level;
+        let mut ws = vec![
+            watch("board-open", "TRIP", "high", None),
+            watch("dream", "ERROR", "normal", None),
+            watch("fresh", "new", "low", None),
+            watch("disk", "OK", "normal", None),
+        ];
+        ws[0].project = "dotfiles".into();
+        ws[3].place = "nas:/mnt".into();
+        let n = |q: &str, s: &str| View::new::<Watch>(q, s, "", "").apply(&ws).len();
+        for (s, want) in [("trip", 1), ("error", 1), ("new", 1), ("ok", 1), ("all", 4)] {
+            assert_eq!(n("", s), want, "{s}");
+        }
+        assert_eq!(n("dotfiles", ""), 1, "project");
+        assert_eq!(n("nas", ""), 1, "place");
+        assert_eq!(n("severity:normal", ""), 2);
+        assert_eq!(n("board", ""), 1, "name");
+        // Negative control: a word no watch carries keeps none.
+        assert_eq!(n("zzz", ""), 0);
+        let (rows, s) = View::new::<Watch>("", "", "", "").summary(&ws);
+        assert_eq!(
+            rows[0].name, "board-open",
+            "no sort keeps the reader's order, worst first"
+        );
+        let tone = |name: &str| s.states.iter().find(|c| c.name == name).unwrap().tone;
+        assert_eq!(
+            (tone("trip"), tone("error"), tone("ok"), tone("new")),
+            (Some(Level::Bad), Some(Level::Bad), Some(Level::Ok), None)
+        );
+        let by_sev = View::new::<Watch>("", "", "severity", "asc").apply(&ws);
+        assert_eq!(
+            by_sev
+                .iter()
+                .map(|w| w.severity.as_str())
+                .collect::<Vec<_>>(),
+            ["high", "normal", "normal", "low"],
+            "severity sorts by rank as Firing's does, not by spelling"
         );
     }
 }
