@@ -147,6 +147,20 @@ EOF
   assert_output --partial "missing 'expiry'"
 }
 
+@test "--strict rejects an expiry that reads as null without saying null" {
+  # A bare key, ~ and '' all mean standing at runtime, the same as no key; only the
+  # literal null says the writer chose it, and it is what triage --coverage reads.
+  for v in '' '~' "''"; do
+    legible; sed -i "s/^expiry:.*/expiry: $v/" "$M"
+    run "$SM" validate --strict "$M"
+    assert_failure
+    assert_output --partial "missing 'expiry'"
+  done
+  legible; sed -i 's/^expiry:.*/expiry: 60m/' "$M"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
 @test "--strict rejects a field that is present but empty" {
   # `where:` with nothing after it parses as None. A key that exists but says nothing
   # is the documentation equivalent of a false green.
