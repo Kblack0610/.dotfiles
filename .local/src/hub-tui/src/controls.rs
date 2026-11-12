@@ -8,6 +8,7 @@
 use std::cell::Cell as Remembered;
 
 use hub_core::capacity::{Capacity, Part};
+use hub_core::links::Link;
 use hub_core::session_actions::{available, Action, Session, Snapshot};
 use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
@@ -671,10 +672,13 @@ impl Controls {
     }
 }
 
-/// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
-/// agent-web's own.
+/// One part of the page. A URL is printed, since nothing here is clicked; a link to a record in
+/// the hub is not, since its value already names that record.
 fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
-    let url = part.link.as_deref().filter(|l| l.starts_with("http"));
+    let url = match &part.link {
+        Some(Link::Url(u)) => Some(u),
+        _ => None,
+    };
     let text = match url {
         Some(u) => format!("{}  {u}", part.text),
         None => part.text.clone(),

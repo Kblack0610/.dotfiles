@@ -12,8 +12,11 @@
 //! that is not one of the table's columns is read as a bare word, so `http://x` still searches.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::links::Link;
 
 /// A row's value in one column: what `key:value` matches and what the sort orders.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +87,10 @@ pub trait Row {
     fn rank(&self, col: &str) -> Val {
         self.val(col)
     }
+    /// The record `col` names, which both surfaces open from that cell (`hub_core::links`).
+    fn link(&self, _col: &str) -> Option<Link> {
+        None
+    }
 }
 
 /// A table over rows borrowed from a longer list: a surface narrows to its scope first (one
@@ -109,6 +116,9 @@ impl<T: Row> Row for &T {
     }
     fn rank(&self, col: &str) -> Val {
         (*self).rank(col)
+    }
+    fn link(&self, col: &str) -> Option<Link> {
+        (*self).link(col)
     }
 }
 
@@ -356,6 +366,29 @@ pub struct Summary {
     pub states: Vec<Chip>,
     pub columns: Vec<Column>,
     pub facets: Vec<Facet>,
+    /// Row i of the rows sent beside it: each column that names a record and that record's href
+    /// ([`links`]). Absent when no row links anything. A surface that reshapes the rows after the
+    /// view (Fleet's folds) sends `links` of what it reshaped to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<BTreeMap<&'static str, String>>,
+}
+
+/// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
+pub fn links<R: Row>(rows: &[&R]) -> Vec<BTreeMap<&'static str, String>> {
+    let out: Vec<BTreeMap<&'static str, String>> = rows
+        .iter()
+        .map(|r| {
+            R::COLUMNS
+                .iter()
+                .filter_map(|c| r.link(c).map(|l| (*c, l.href())))
+                .collect()
+        })
+        .collect();
+    if out.iter().all(BTreeMap::is_empty) {
+        vec![]
+    } else {
+        out
+    }
 }
 
 impl View {
@@ -579,6 +612,7 @@ impl View {
             states: self.states(rows),
             columns,
             facets: self.facets(rows),
+            links: links(&shown),
         };
         (shown, s)
     }
@@ -629,6 +663,13 @@ mod tests {
         fn in_state(&self, s: &str) -> bool {
             (s == "live") == self.live
         }
+    }
+
+    #[test]
+    fn a_table_that_links_nothing_sends_no_links() {
+        let (_, t) = View::default().summary(&rows());
+        assert!(t.links.is_empty());
+        assert!(serde_json::to_value(&t).unwrap().get("links").is_none());
     }
 
     fn rows() -> Vec<T> {
