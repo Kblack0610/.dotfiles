@@ -3,7 +3,7 @@
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
 //! exceptions-first order. The Release runs inner tab beside the apps is `builds`' reader, cut by
-//! `Builds::releases`.
+//! `Scope::Release`.
 
 use std::collections::HashMap;
 

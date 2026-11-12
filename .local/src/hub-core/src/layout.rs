@@ -109,7 +109,7 @@ pub const TABS: [Tab; 13] = [
         inner: &[],
     },
     // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
-    // graph tied to a release (`builds::Builds::releases`). Every other CI run is Infra's.
+    // graph tied to a release (`builds::Scope::Release`). Every other CI run is Infra's.
     Tab {
         id: "releases",
         group: "Projects",
