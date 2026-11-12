@@ -333,9 +333,10 @@ ledger() {
   ! session_finished idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
   run work_blockers '' idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
   assert_output "$why"
-  # the same with every phase ticked, a single-phase plan, or the PR found only in the transcript
+  # with every phase ticked the item is the one thing left open, and the reason says so
   run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - 2/2 - - - - - "$own"
-  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  assert_output 'STALLED PR #1922 merged, tree clean, its item steam-beta-cut-1106 is still open with every phase done or queued'
+  # the same with a single-phase plan, or the PR found only in the transcript
   run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - none - - - - - "$own"
   assert_output "STALLED PR #1922 merged, tree clean, $why"
   run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#1922' "$own"
@@ -1559,16 +1560,69 @@ research_item() {
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nafter: fix-wave-save\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of /elsewhere/plans/plan.md: rollout\n' \
     > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
-  # its own item still running is an unrecorded landing (agent-land moves it to done), never DONE
+  # its own item still running is an unrecorded landing (agent-land moves it to done), never DONE;
+  # with every other phase queued, closing that item is the one step left (the requeued case)
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is running here' ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is still open with every phase done or queued' ]
   [ "$(jq -r .finished <<<"$output")" = false ]
+  [ "$(jq -r .close.verdict <<<"$output")" = after ]
   "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .finished <<<"$output")" = true ]
   [ "$(jq -r .next_phase <<<"$output")" = 'Phase 2: rollout' ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+}
+
+@test "end to end: an item that records phases: holds only those; the next phase it does not hold is still this session's (ar-267)" {
+  # 2026-11-04 agent-2 read DONE mid-phase 3 because phases 4 and on were queue items.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  # phase_item <phases>: phase 3 (or what <phases> names) queued from the plan
+  phase_item() {
+    printf 'slug: docs\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: %s\n---\nphase of the plan\n' \
+      "$SANDBOX/plan.md" "$1" > "$HOME/.agent/queue/queued/20261103-100000-docs.md"
+  }
+  phase_item 3
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  # an item holding the next phase but not a later one leaves that one this session's
+  phase_item 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 3: docs' ]
+  # holding every open phase, the plan is queued
+  phase_item '2 3'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
+}
+
+@test "end to end: the requeued case: an own item whose plan is all ticked by other items reads after, close the item (ucp-agent-82)" {
+  # 2026-11-11 ucp-agent-82: apo-120 stayed running after a partial landing while its phases 3 and
+  # 4 landed as their own items in other sessions; the row read LANDED, queue the next phases.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#880)'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  queue_item running lab:s1
+  printf 'origin: run\n' > "$SANDBOX/hdr"
+  sed -i "/^session:/r $SANDBOX/hdr" "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is still open with every phase done or queued' ]
+  [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'its item fix-wave-save is still open with every phase done or queued' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued' ]
+  # negative control: a phase left that no item holds is this session's work, not a close step
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'next phase: Phase 2: rollout; its item fix-wave-save is running here' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan), then close' ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {
@@ -3058,6 +3112,11 @@ verdict() {
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
+  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
+  # Only a STALLED row: a NEEDS row with its own ask open waits on the human (the ask rule).
+  [ "$(verdict '{bucket: "NEEDS", reason: "1 pending ask(s)", asks: 1, own_asks: 1, finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "after: the human answers its ask" ]
+  # Negative control: anything else open beside the item is still STALLED's.
+  [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging", "its item s is still open with every phase done or queued"]}')" = "keep: stalled: PR #9 closed without merging" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 25h with no plan, PR or item" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "after: quiet 24h (now 300m)" ]
