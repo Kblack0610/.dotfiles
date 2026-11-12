@@ -25,14 +25,17 @@ STUB
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 }
 
+# Called first in each nvim test: a skip inside `run lua_run` would only end the subshell.
+need_nvim() { command -v nvim >/dev/null || skip "nvim not installed"; }
+
 lua_run() {
-  command -v nvim >/dev/null || skip "nvim not installed"
   printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/t.lua"
   nvim --headless -u NONE -i NONE --cmd "set rtp^=$PLUGIN" \
     -c "luafile $BATS_TEST_TMPDIR/t.lua" -c 'qa!' 2>&1
 }
 
 @test "a CLI row parses into file, line, title and snippet; a malformed row is dropped" {
+  need_nvim
   run lua_run '
 local f = require("notes.find")
 local i = f.parse("/v/a.md\t12\t3.25\tA title\tthe snippet")
@@ -41,6 +44,7 @@ io.stdout:write(i.file, "|", i.pos[1], "|", i.title, "|", i.snippet, "|", tostri
 }
 
 @test "the query goes to the CLI after --, so a leading -word is not read as a flag" {
+  need_nvim
   run lua_run '
 local f = require("notes.find")
 io.stdout:write(table.concat(f.args("-draft ai oauth"), " "))'
@@ -48,6 +52,7 @@ io.stdout:write(table.concat(f.args("-draft ai oauth"), " "))'
 }
 
 @test "the fallback picker lists hits in the CLI's order and opens the first at its line" {
+  need_nvim
   run lua_run '
 vim.ui.input = function(_, cb) cb("ai oauth") end
 local shown
