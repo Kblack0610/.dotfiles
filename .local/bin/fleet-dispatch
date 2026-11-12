@@ -3298,8 +3298,8 @@ cmd_stopped() {
 # and the last pass's outcome. A standing hold past that long trips it too, led by the Stopped line,
 # and no run start clears it then: a run-floor start goes past an account hold, and on 11-05/06 one
 # every hour cleared this while every other pass stopped. A deep queue the passes are moving is not starved, and neither is one
-# held on purpose (agent-hold) or by the load gates, whose alarm is fleet-thermal: a busy machine is
-# not a broken queue, and any other gate still trips. A board item is not starved while it waits for
+# held on purpose (agent-hold), high items behind a fleet at its pace target, or the load gates, whose alarm is
+# fleet-thermal: a busy machine is not a broken queue, and any other gate still trips. A board item is not starved while it waits for
 # the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
@@ -3329,6 +3329,17 @@ cmd_starved() {
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
+  # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
+  # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
+  # session there, and a standing hold, board or low water still trips. On 11-11 this tripped 4h at
+  # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
+  local TARGET TARGET_WHEN TOTAL_LIVE
+  pace_target
+  if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
+    ! grep -q '(urgent, ' <<<"$items"; then
+    echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET), so nothing is starved"
+    [ -z "$dead" ]; return
+  fi
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
   # and gate leaves that one out while another source has room, so room is read here from the verdict
   # gate reads too (ACCT_ROWS, asked once for both).
