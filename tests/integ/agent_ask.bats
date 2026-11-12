@@ -45,8 +45,12 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
     --context 'scale.net.botsPredicted is the switch that runs bots on your machine; scaling-net.md is the netcode doc' "$q"
   assert_success
   # Plain words and quoted text need no definitions (negative control).
-  run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today?'
+  run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today in utf-8?'
   assert_success
+  # A term counts as named only whole: ucp-5260 in the context does not name ucp-526.
+  run --separate-stderr "$AGENT_ASK" post --project demo --context 'ucp-5260 is a row' 'land ucp-526?'
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"(ucp-526)"* ]]
 }
 
 @test "a new ask starts pending" {
@@ -1614,7 +1618,7 @@ ASK-JUDGE-END'
   assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
   # a question posted before the floor existed is held to it when judged again
   rm "$BATS_TEST_TMPDIR/judge.calls"
-  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a 'trim the hard stops?')"
+  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a --context 'JUDGE_HARD_STOPS lists the asks the judge never answers' 'trim the hard stops?')"
   run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"

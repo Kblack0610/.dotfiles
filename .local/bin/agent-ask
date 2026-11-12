@@ -197,7 +197,8 @@ oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +
 # undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
 # names, one per line. A term is a name for a machine: camelCase, a dotted name or file
 # (scale.net.botsPredicted, scaling-net.md), snake_case, a --flag, a row or item id (ucp-526,
-# agent-26) or a `backticked` span. Quoted text is left out: quoting the human is not jargon.
+# agent-26) or a `backticked` span. Double-quoted text is left out: quoting the human is not
+# jargon. A term counts as named only as a whole word, so ucp-5260 does not name ucp-526.
 undefined_terms() {
   local ctx="$1" t; shift
   printf '%s\n' "$@" | sed -E 's/"[^"]*"//g' | {
@@ -206,9 +207,9 @@ undefined_terms() {
              -e '\b[A-Za-z_][A-Za-z0-9_-]+(\.[A-Za-z_][A-Za-z0-9_-]+)+' \
              -e '\b[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)+\b' \
              -e '(^|[^A-Za-z0-9-])--[a-z][a-z0-9-]*' \
-             -e '\b[a-z]{2,5}-[0-9]+\b'
+             -e '\b[a-z]{2,5}-[0-9]{2,}\b'
   } | sed -E 's/^[^-`]*--/--/; s/^`(.*)`$/\1/' | awk '!seen[$0]++' | while IFS= read -r t; do
-    [[ "$ctx" == *"$t"* ]] || printf '%s\n' "$t"
+    grep -qFw -e "$t" <<<"$ctx" || printf '%s\n' "$t"
   done
 }
 
