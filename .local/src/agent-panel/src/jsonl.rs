@@ -878,7 +878,11 @@ fn last_usage(text: &str) -> (u64, String) {
         .unwrap_or_default()
 }
 
-/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the plan
+/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), unless the
+/// session later landed a phase against another plan (`agent-land --plan`, `plans_landed`): it
+/// works the plan it lands, as when it copies its plan-mode file under a name of its own
+/// (2026-11-11, unity-core-playground-agent-82 landed every phase of a copy and read the 2/4
+/// plan-mode file, ar-201). Only a landing moves it, so editing another plan does not. Else the plan
 /// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
 /// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
 /// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
@@ -886,13 +890,33 @@ fn last_usage(text: &str) -> (u64, String) {
 /// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
+    const REATTACHED: &str = "\"type\":\"plan_file_reference\"";
+    let plans = crate::session::home().join(".claude/plans");
     if let Some(i) = text.rfind(KEY) {
+        // A compaction re-attaches the plan-mode file (a plan_file_reference attachment): that
+        // is not the session choosing it again, so landings count from the last real entry.
+        let line_of = |at: usize| {
+            let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
+            &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
+        };
+        let chosen = text
+            .rmatch_indices(KEY)
+            .map(|(at, _)| at)
+            .find(|&at| !line_of(at).contains(REATTACHED))
+            .unwrap_or(i);
         let rest = &text[i + KEY.len()..];
-        if let Some(end) = rest.find('"') {
-            return rest[..end].to_string();
+        let mode = rest.find('"').map(|end| &rest[..end]);
+        // The same file through another account's plans dir (a link to ~/.claude/plans) keeps
+        // the path plan mode wrote.
+        if let Some(name) = plans_landed(&text[chosen..]).pop() {
+            if mode.and_then(|m| m.rsplit('/').next()) != Some(name.as_str()) {
+                return plans.join(name).to_string_lossy().into_owned();
+            }
+        }
+        if let Some(m) = mode {
+            return m.to_string();
         }
     }
-    let plans = crate::session::home().join(".claude/plans");
     if let Some(name) = plans_written(text).pop() {
         return plans.join(name).to_string_lossy().into_owned();
     }
@@ -926,8 +950,17 @@ fn plan_file(text: &str) -> String {
 }
 
 /// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
-/// file_path, or a Bash command that writes one (see `bash_plan_writes`).
+/// file_path, or a Bash command that writes one (see `bash_plan_refs`).
 fn plans_written(text: &str) -> Vec<String> {
+    plans_touched(text, false)
+}
+
+/// The plans the session's own `agent-land --plan` calls named, oldest first.
+fn plans_landed(text: &str) -> Vec<String> {
+    plans_touched(text, true)
+}
+
+fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
     let mut out = Vec::new();
     for v in text
         .lines()
@@ -948,10 +981,10 @@ fn plans_written(text: &str) -> Vec<String> {
                     .unwrap_or("")
             };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                "Edit" | "Write" | "MultiEdit" => {
+                "Edit" | "Write" | "MultiEdit" if !lands_only => {
                     out.extend(plan_name(input("file_path")).map(str::to_string))
                 }
-                "Bash" => out.extend(bash_plan_writes(input("command"))),
+                "Bash" => out.extend(bash_plan_refs(input("command"), lands_only)),
                 _ => {}
             }
         }
@@ -961,8 +994,8 @@ fn plans_written(text: &str) -> Vec<String> {
 
 /// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
 /// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
-/// to another command is not writing it.
-fn bash_plan_writes(cmd: &str) -> Vec<String> {
+/// to another command is not writing it. With `lands_only`, only the agent-land `--plan` ones.
+fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
     let mut out = Vec::new();
     for (i, _) in cmd.match_indices("/plans/") {
@@ -994,10 +1027,13 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
         let sed_in_place = |w: &&str| {
             *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'))
         };
-        if before.ends_with('>')
-            || (cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan=")))
-            || cmd_is("tee")
-            || (cmd_is("sed") && words.iter().any(sed_in_place))
+        let lands =
+            cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan="));
+        if lands
+            || !lands_only
+                && (before.ends_with('>')
+                    || cmd_is("tee")
+                    || (cmd_is("sed") && words.iter().any(sed_in_place)))
         {
             out.push(name.to_string());
         }
@@ -2184,6 +2220,40 @@ mod tests {
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
 
+        // A plan-mode session that copied its plan and landed against the copy works the copy
+        // (ar-201), and a compaction re-attaching the plan-mode file does not undo that; editing
+        // another plan after plan mode does not move it.
+        let mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/mode-file.md"}"#;
+        let copied = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/mode-file.md ~/.claude/plans/copy.md && agent-land 9 --item x --plan ~/.claude/plans/copy.md --phase 1"}}]}}"#;
+        let reattached = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude/plans/mode-file.md"}}"#;
+        let edited = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/sibling.md","old_string":"","new_string":""}}]}}"#;
+        for (name, lines, want) in [
+            ("landed-copy", vec![mode, copied], "/.claude/plans/copy.md"),
+            (
+                "compacted",
+                vec![mode, copied, reattached],
+                "/.claude/plans/copy.md",
+            ),
+            (
+                "landed-then-mode",
+                vec![copied, mode],
+                "/h/.claude/plans/mode-file.md",
+            ),
+            (
+                "edited-sibling",
+                vec![mode, edited],
+                "/h/.claude/plans/mode-file.md",
+            ),
+        ] {
+            let p = tmpfile(name, &lines);
+            assert!(
+                fleet_info(&p).plan_file.ends_with(want),
+                "{name}: {}",
+                fleet_info(&p).plan_file
+            );
+            fs::remove_file(&p).ok();
+        }
+
         // Named only there, the session has no plan of its own: not someone else's.
         let p = tmpfile(
             "preflight-only",
@@ -2253,13 +2323,13 @@ mod tests {
             ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
             ("cat > ~/notes/plans/a.md", vec![]),
         ] {
-            assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
+            assert_eq!(bash_plan_refs(cmd, false), want, "{cmd}");
         }
         let abs = format!(
             "cat > {}/.claude/plans/a.md",
             crate::session::home().display()
         );
-        assert_eq!(bash_plan_writes(&abs), ["a.md"]);
+        assert_eq!(bash_plan_refs(&abs, false), ["a.md"]);
     }
 
     #[test]
