@@ -10,18 +10,18 @@ permissions refused it. One line per command: DENIED or ran, then the command. E
 command got a verdict, 1 when one got none (opencode failed: see its log under --keep), 2 on usage.
 
 A permission rule is a glob over the whole command line (`*` is any run of characters, last
-matching rule wins), so `cd x && git ...` and `git -C d ...` need the leading `*`; this is how a
-new deny is tested before it ships instead of trusted.
+matching rule wins), so `cd x && git ...` and `git -C d ...` need the leading `*`, and a trailing
+` *` also matches nothing (`ls *` matches `ls`). Globs surprise, so a new deny is tested here
+before it ships instead of trusted.
 
-An allowed command RUNS, in a scratch git repo that is the cwd: pass only commands that are
-harmless there. Config, data, state and cache all live in that scratch dir, so the shared
+An allowed command RUNS, in a scratch git repo, with HOME in the scratch dir too: pass only
+commands that are harmless there. Config, data, state and cache all live in that dir, so the shared
 opencode.db, auth.json and plugins are never read or written; the copy points the litellm provider
 and every agent at the fake and drops the MCP servers, so nothing reaches a real model or spends a key.
 """
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +33,7 @@ RUN_TIMEOUT_S = 120  # per command: startup plus two model turns against a local
 
 
 def strip_jsonc(text):
-    """The config is JSONC: drop // and /* */ comments outside strings, and trailing commas."""
+    """The config is JSONC: drop // and /* */ comments and trailing commas, all outside strings."""
     out, i, n, in_str = [], 0, len(text), False
     while i < n:
         c = text[i]
@@ -55,15 +55,21 @@ def strip_jsonc(text):
             end = text.find("*/", i + 2)
             i = n if end < 0 else end + 2
             continue
+        elif c in "}]":
+            while out and out[-1].isspace():
+                out.pop()
+            if out and out[-1] == ",":
+                out.pop()
+            out.append(c)
         else:
             out.append(c)
         i += 1
-    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+    return "".join(out)
 
 
 class Fake(BaseHTTPRequestHandler):
     """Turn one: a call to the tool that takes a `command`. Turn two, and any request with no
-    tools (the title agent): plain text. Each tool result is kept on the server for the verdict."""
+    tools (the title agent): plain text. Each tool result is kept on the server, by call id, for the verdict."""
 
     def log_message(self, *_):
         pass
@@ -72,7 +78,7 @@ class Fake(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         results = [m for m in body.get("messages") or [] if m.get("role") == "tool"]
         if results:
-            self.server.results.extend(str(m.get("content") or "") for m in results)
+            self.server.results.update((m.get("tool_call_id"), str(m.get("content") or "")) for m in results)
             return self.reply({"role": "assistant", "content": "done"}, "stop")
         tool = next((t["function"]["name"] for t in body.get("tools") or []
                      if "command" in ((t.get("function") or {}).get("parameters") or {}).get("properties", {})), None)
@@ -99,14 +105,16 @@ class Fake(BaseHTTPRequestHandler):
 
 
 def verdict(results):
-    """DENIED when opencode answered the call with its structured refusal (opencode 2.x:
-    {"error":{"type":"permission.rejected",...}}), ran for any other result, the command's own output."""
+    """DENIED when opencode refused the call on its shell permission (opencode 2.x:
+    {"error":{"type":"permission.rejected","message":"Permission denied: shell"}}), so a refusal on
+    another rule (external_directory, say) does not pass for the shell rule under test; ran for any
+    other result, the command's own output."""
     if not results:
         return "NO-RESULT"
-    for text in results:
+    for text in results.values():
         try:
             err = json.loads(text)["error"]
-            if str(err["type"]).startswith("permission."):
+            if err["type"] == "permission.rejected" and str(err["message"]).endswith(": shell"):
                 return "DENIED"
         except (ValueError, LookupError, TypeError):
             pass
@@ -154,12 +162,16 @@ def main():
             json.dump(scratch_config(cfg, model, server.server_address[1]), f)
         work = os.path.join(scratch, "work")
         subprocess.run(["git", "init", "-q", work], check=True)
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENCODE_", "XDG_"))}
-        env.update(OPENCODE_DISABLE_CLAUDE_CODE="1", OPENCODE_DISABLE_PROJECT_CONFIG="1",
+        # opencode's shell runs in $PWD, not the process cwd, and git reads $HOME's config: both point
+        # into the scratch dir, or an allowed command runs in the caller's repo.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("OPENCODE_")}
+        env.update(PWD=work, HOME=os.path.join(scratch, "home"), GIT_CONFIG_NOSYSTEM="1",
+                   OPENCODE_DISABLE_CLAUDE_CODE="1", OPENCODE_DISABLE_PROJECT_CONFIG="1",
                    **{f"XDG_{k}_HOME": os.path.join(scratch, k.lower()) for k in ("CONFIG", "DATA", "STATE", "CACHE")})
+        os.makedirs(env["HOME"])
         with open(os.path.join(scratch, "opencode.log"), "a") as log:
             for command in a.commands:
-                server.command, server.results = command, []
+                server.command, server.results = command, {}
                 log.write(f"\n=== {command}\n")
                 log.flush()
                 try:
@@ -167,7 +179,7 @@ def main():
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=RUN_TIMEOUT_S)
                 except subprocess.TimeoutExpired:
                     log.write("timed out\n")
-                log.write("--- tool result: " + " | ".join(server.results) + "\n")
+                log.write("--- tool result: " + " | ".join(server.results.values()) + "\n")
                 v = verdict(server.results)
                 rc = 1 if v == "NO-RESULT" else rc
                 print(json.dumps({"command": command, "verdict": v}) if a.json else f"{v:<9} {command}", flush=True)

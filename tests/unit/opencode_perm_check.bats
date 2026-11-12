@@ -80,11 +80,17 @@ PY
   assert_output --partial 'no litellm model'
 }
 
-@test "the real opencode refuses a denied command and runs an allowed one" {
-  real="$(PATH=/usr/bin:/usr/local/bin:$PATH command -v opencode || true)"
+@test "the real opencode refuses a denied command and runs an allowed one in the scratch repo" {
+  real="$(command -v opencode || true)"
   [ -n "$real" ] || skip "opencode not installed"
-  run "$CHECK" --config "$CFG" --opencode "$real" 'git push --force origin main' 'true'
+  cd "$SANDBOX/fixture"
+  run "$CHECK" --keep --config "$CFG" --opencode "$real" 'git push --force origin main' 'pwd > where.txt; git config user.name probe'
   assert_success
   assert_line --index 0 --regexp '^DENIED +git push --force origin main$'
-  assert_line --index 1 --regexp '^ran +true$'
+  assert_line --index 1 --regexp '^ran +pwd > where.txt; git config user.name probe$'
+  # It ran in the scratch repo, not in the caller's cwd ($PWD is what opencode's shell follows).
+  work="$(ls -d "$TMPDIR"/opencode-perm-check.*/work)"
+  assert_equal "$(cat "$work/where.txt")" "$work"
+  assert_equal "$(git -C "$work" config --local user.name)" probe
+  [ ! -e "$SANDBOX/fixture/where.txt" ]
 }
