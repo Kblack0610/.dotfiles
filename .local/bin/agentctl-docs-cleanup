@@ -14,7 +14,7 @@
 #
 # Verdict: WORKED when it queued a pass, NOOP when there was no drift, a pass is still open or the
 # queue's admission held it, FAILED when a count could not be taken or the open pass has sat queued
-# past DOCS_CLEANUP_STARVED_DAYS without starting.
+# or held by admission past DOCS_CLEANUP_STARVED_DAYS without starting.
 set -uo pipefail
 # The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
 PATH="$HOME/.local/bin:$PATH"
@@ -73,10 +73,13 @@ fi
 # Each night's pass is new work under that slug, so it is queued --repeat.
 item="$(agent-queue show "$SLUG" --json 2>/dev/null)"
 state="$(jq -r '.state // empty' <<<"$item" 2>/dev/null)"
-if [ "$state" = queued ]; then
+# Starved: queued past STARVED_DAYS with nothing holding it but the night window. Another hold
+# (after, focus, ask) is the queue's own choice, not starvation.
+if [ "$state" = queued ] && jq -e '(.hold // "") | . == "" or startswith("night")' <<<"$item" >/dev/null; then
     queued_at="$(jq -r '.queued // empty' <<<"$item")"
-    age_s=$(( $(date +%s) - $(date -d "$queued_at" +%s 2>/dev/null || date +%s) ))
-    [ "$age_s" -lt $(( STARVED_DAYS * 86400 )) ] \
+    queued_s="$(date -d "$queued_at" +%s 2>/dev/null)" && [ -n "$queued_at" ] \
+        || fail "pass $SLUG has no readable queued time ('$queued_at'), cannot judge starvation"
+    [ $(( $(date +%s) - queued_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
         || fail "pass $SLUG starved: queued since $queued_at, never started ($summary)"
 fi
 case "$state" in
@@ -94,14 +97,20 @@ if [ "$DRY" = 1 ]; then
     exit 0
 fi
 # An automated filer: a queue already a day of drain deep holds the pass (agent-queue exit 5), and
-# tomorrow's run counts again. High plus `cleanup` is where the queue orders the fleet's own
+# tomorrow's run counts again; held since HELD_SINCE for STARVED_DAYS is starved too. High plus `cleanup` is where the queue orders the fleet's own
 # housekeeping (agent-queue ORDER); at low it never reached the front.
 agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags "night cleanup" "$task"
 rc=$?
+HELD_SINCE="$INBOX/held-since"
 if [ "$rc" -eq 5 ]; then
+    [ -s "$HELD_SINCE" ] || date +%s > "$HELD_SINCE"
+    held_s="$(cat "$HELD_SINCE")"
+    [ $(( $(date +%s) - held_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+        || fail "pass $SLUG starved: held by queue admission since $(date -d "@$held_s" +%F), never queued ($summary)"
     report NOOP "pass held by queue admission ($summary)"
     echo "docs-cleanup: the queue held the pass (admission), not queued ($summary)"
     exit 0
 fi
 [ "$rc" -eq 0 ] || fail "could not queue the pass ($summary)"
+rm -f "$HELD_SINCE"
 report WORKED "queued $SLUG ($summary)"
