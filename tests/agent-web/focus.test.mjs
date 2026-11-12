@@ -20,6 +20,7 @@ const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
+  URLSearchParams,
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
 for (const f of ["ui.js", "md.js", "app.js", "outbox.js", "focus.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
@@ -129,7 +130,7 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
   assert.deepEqual(r("#board"), { name: "board", tab: "board", arg: "", query: "" });
   assert.deepEqual(r("#projects/all"), { name: "projects", tab: "board", arg: "", query: "", section: "" });
   assert.deepEqual(r(""), { name: "", tab: "home", arg: "", query: "" }, "the landing tab is the first");
-  assert.deepEqual(r("#fleet?lane=deliver&s=failed"), { name: "fleet", tab: "fleet", arg: "", query: "lane=deliver&s=failed" }, "after a ? is the tab's view state");
+  assert.deepEqual(r("#queue?q=lab&s=open"), { name: "queue", tab: "queue", arg: "", query: "q=lab&s=open" }, "after a ? is the tab's view state");
   assert.deepEqual(r("#nope"), { name: "nope", tab: "home", arg: "", query: "" });
 });
 

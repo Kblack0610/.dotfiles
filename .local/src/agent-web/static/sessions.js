@@ -1,6 +1,6 @@
 "use strict";
-// Sessions with no session open: the overview tiles, the capacity header, the table and the folds
-// under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// Sessions' Sessions inner tab, with no session open: the overview tiles, the capacity header, the
+// table and the folds under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
 // through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
 // row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
@@ -8,13 +8,13 @@
 // A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
 const SESSIONS_OPEN = 200;
 const sst = tblTab({
-  tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
+  tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
-  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
+  shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
   tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
-const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
+const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
 
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
@@ -68,7 +68,7 @@ function sessionRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
   return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
-    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
+    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
 
@@ -198,14 +198,26 @@ $("scroll").addEventListener("click", (e) => {
   }
 });
 
-// fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
-const watchFeed = pushed("sessions", ["watch"], refreshWatch);
-const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd);
-const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions);
+// The inner tab shown: an inner id, or Sessions while a session's record is open.
+const sessInner = () => innerOf("sessions", st.arg)[0];
+const sessShows = (id) => st.tab === "sessions" && sessInner() === id;
+// The session `#sessions/<id>` names; "" on an inner tab.
+const sessArg = () => (st.arg && !INNER_TABS.sessions.tabs.some((t) => t[0] === st.arg) ? st.arg : "");
+
+// fleet-state writes every minute and the shepherd on each pass; only the inner tab shown reads
+// its own (rule 10): a session's record reads the table's, for its side list and facts.
+const watchFeed = pushed("sessions", ["watch"], refreshWatch, () => sessShows("sessions"));
+const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions, () => sessShows("sessions"));
+const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd, () => sessShows("shepherd"));
 TABS.sessions = {
   show() {
-    if (st.arg) openSession(st.arg); else overview();
-    watchFeed.show(!wst.data); shepFeed.show(!shst.data); tableFeed.show(!sst.data);
+    if (sessArg()) openSession(sessArg()); else overview();
+    this.inner(sessInner());
   },
-  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); },
+  inner(id) {
+    if (id === "sessions") { sst.render(); watchFeed.show(!wst.data); tableFeed.show(true); }
+    else if (id === "runners") runnersShow();
+    else if (id === "shepherd") { renderShepherd(); shepFeed.show(!shst.data); }
+  },
+  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); runnersEvent(ev); },
 };

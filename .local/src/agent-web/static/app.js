@@ -177,7 +177,9 @@ function select(a) {
   load();
 }
 
-// No session open: the page is the table (sessions.js) and the folds under it.
+// No session open: the page is the inner tabs' strip and one group each, the table (sessions.js)
+// and the folds under it, the runners (fleet.js) and the shepherd (shepherd.js); TABS.sessions
+// reads only the one shown.
 function overview() {
   st.sel = null; st.start = null; st.end = null;
   $("d-dot").hidden = $("v-seg").hidden = true;
@@ -186,8 +188,11 @@ function overview() {
   $("compose").hidden = true;
   renderPin();
   $("main").classList.remove("open");
-  $("scroll").innerHTML = "";
-  renderFacts(); sst.render(); renderSide(); refreshSessions();
+  $("scroll").innerHTML = `<div id="sessions">${innerStrip("sessions")}` +
+    innerWrap("sessions", "sessions", `<div id="ov-sessions"></div>`) +
+    innerWrap("sessions", "fleet", `<div id="sec-fleet" data-tbl="${RUNNERS_PRE}"><div id="ov-runners"></div></div>`) +
+    innerWrap("sessions", "shepherd", `<div id="sec-shepherd"><div id="ov-shepherd"></div></div>`) + `</div>`;
+  renderFacts(); renderSide();
 }
 
 $("back").onclick = () => setTab("sessions", "");
@@ -315,25 +320,33 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "fleet", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
 // and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
-const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
-const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
+const ENTITY_PAGES = {"sessions":{"runners":"runners"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
+// hub_core::links::RETIRED_TAB_PAGES: a retired tab whose `#tab/<id>` was a record's page, as
+// [tab, word] of that page now and the key prefix its table's view took there, so `#fleet/<runner>`
+// is `#sessions/runners/<runner>` and `#fleet?s=failed` is `#sessions/runners?rs=failed`.
+// assets.rs `retired_tab_pages_are_the_links` fails when this line drifts.
+const RETIRED_TAB_PAGES = {"fleet":["sessions","runners","r"]};
+// A runner's page (hub_core::links Kind::Runner), for a page that holds a runner's name and no
+// server link: Schedules' agentctl rows and Log's judge headers.
+const runnerHref = (name) => "#sessions/runners/" + encodeURIComponent(name);
 // The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
 const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
@@ -362,7 +375,9 @@ function innerRoute(r) {
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
-  return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : "" };
+  if (g.tabs.some((t) => t[0] === want)) return { ...r, arg: want };
+  // Any other Sessions arg is a session's id (`#sessions/lab%2Fa%3A1`), the record it opens.
+  return { ...r, arg: r.tab === "sessions" && !r.section ? r.arg || "" : "" };
 }
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
@@ -409,16 +424,25 @@ function seekSection() {
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
 // (`#daily/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
 // The retired `#outbox` is Daily's outbox (`#daily/outbox`); `#focus/<note>` is `#daily/<note>`.
-// After a `?` is the tab's own view state, so a view can be linked (`#fleet?lane=deliver&s=failed`).
+// After a `?` is the tab's own view state, so a view can be linked (`#sessions/runners?rs=failed`).
 function route(hash) {
-  const [h, query = ""] = String(hash || "").replace(/^#/, "").split(/\?(.*)/s);
+  const [h, q = ""] = String(hash || "").replace(/^#/, "").split(/\?(.*)/s);
+  let query = q;
   const at = h.indexOf("/");
   const name = at < 0 ? h : h.slice(0, at);
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  const old = Object.hasOwn(RETIRED_TAB_PAGES, name) ? RETIRED_TAB_PAGES[name] : null;
+  if (old && query) {
+    // The retired tab's table keeps its view under the prefix it has on its new tab.
+    const p = new URLSearchParams(query);
+    for (const k of TBL_KEYS) if (p.has(k)) { p.set(old[2] + k, p.get(k)); p.delete(k); }
+    query = p.toString();
+  }
   const moved = MOVED[name + "/" + arg.toLowerCase()];
   if (moved) return innerRoute({ name, tab: moved[0], arg: "", query: query || moved[2] || "", section: moved[1] });
+  if (old && arg) return innerRoute({ name, tab: old[0], arg: old[1] + "/" + arg, query });
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);
   if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
@@ -507,7 +531,8 @@ function setTab(t, arg, query, page) {
   st.page = page || "";
   // A tab button (no arg) brings back the inner tab that tab last showed.
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
-  if (INNER_TABS[t]) lastInner[t] = st.arg;
+  // A record open on it (a session's id) brings back the inner tab holding it.
+  if (INNER_TABS[t]) lastInner[t] = !st.arg || INNER_TABS[t].tabs.some((x) => x[0] === st.arg) ? st.arg : innerOf(t, st.arg)[0];
   st.views[t] = query ?? st.views[t] ?? "";
   // The open tab carries aria-current; web-kit's <kb-shell> marks it and names it on the bar.
   for (const n of TAB_NAMES) {

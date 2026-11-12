@@ -1,5 +1,5 @@
 "use strict";
-// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each session's
+// Sessions' fleet-state half: each session's
 // card, the folded facts card above an open transcript, and the last day's fold under the
 // table. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
 // through /api/watch; nothing is judged here.
@@ -145,8 +145,8 @@ function renderFacts() {
   paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
 }
 
-// The folds under the table: how old the state is, the last day's swimlanes and the shepherd's
-// pass and due lines. The change feed, the rundowns and the ranked sessions are Log's.
+// The folds under the table: how old the state is and the last day's swimlanes. The shepherd is
+// its own inner tab (shepherd.js); the change feed, the rundowns and the ranked sessions are Log's.
 function overviewFolds() {
   if (!wst.data) return '<div class="empty">Loading the overview.</div>';
   const state = wst.data.state;
@@ -162,7 +162,7 @@ function overviewFolds() {
     html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
       `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
   }
-  return html + shepherdOverview();
+  return html;
 }
 
 // Log's Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes'

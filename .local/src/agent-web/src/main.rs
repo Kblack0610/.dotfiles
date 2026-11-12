@@ -409,7 +409,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         boards::fleet_state().parent().map(Path::to_path_buf),
         Some(boards::shepherd_dir()),
         Some(boards::daylog_dir()),
-        // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
+        // Sessions' Runners run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
         // agent-notify's ledger, for Log's Actions section.

@@ -43,6 +43,17 @@ pub fn is_unlinked(s: &Value) -> bool {
     !is_machine(s) && s["item"].is_null()
 }
 
+/// Who started a session, from its queue item's `origin`: `dispatch` (fleet-dispatch's run or
+/// redispatch), `resume`, `hand` (started by hand), or blank when the item does not say.
+pub fn started_by(origin: &str) -> &'static str {
+    match origin {
+        "run" | "redispatch" => "dispatch",
+        "resume" => "resume",
+        "hand" => "hand",
+        _ => "",
+    }
+}
+
 /// Where a row came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +88,8 @@ pub struct SessionRow {
     pub project: String,
     /// The queue item's title, else the session's topic.
     pub task: String,
+    /// Who started it (`started_by`).
+    pub by: String,
     /// The queue item, empty when it has none.
     pub item: String,
     /// `<target>` while the session has one.
@@ -116,13 +129,14 @@ pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
 
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
-        "bucket", "activity", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness",
-        "close", "item", "source", "session",
+        "bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "cost", "acct",
+        "harness", "close", "item", "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["bucket", "project", "acct", "harness", "close"];
+    const FACETS: &'static [&'static str] =
+        &["bucket", "project", "by", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
     /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
@@ -142,6 +156,7 @@ impl Row for SessionRow {
             "activity" => text(&self.activity),
             "project" => text(&self.project),
             "task" => text(&self.task),
+            "by" => text(&self.by),
             "pr" => text(&self.pr_state),
             "phases" => self.phases_done.map_or(Val::None, |n| Val::Num(n as f64)),
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
@@ -299,6 +314,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         activity: str_of(s, "activity_line").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
+        by: started_by(str_of(&s["item"], "origin")).to_string(),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
         session_id: sid.to_string(),
@@ -372,6 +388,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         bucket: "DONE".into(),
         project: i.project.clone(),
         task: i.title(),
+        by: started_by(&extra_str(i, "origin")).to_string(),
         item: i.slug.clone(),
         session_id: sids.first().cloned().unwrap_or_default(),
         pr_state: if pr.is_none() {
@@ -629,7 +646,30 @@ mod tests {
         assert_eq!(own.activity, "waiting on CI 4m");
         assert_eq!(own.val("activity"), Val::Text("waiting on CI 4m".into()));
         let hand = r.iter().find(|x| x.target == "lab/d:2").unwrap();
-        assert_eq!(hand.val("activity"), Val::None, "no activity_line reads as blank");
+        assert_eq!(
+            hand.val("activity"),
+            Val::None,
+            "no activity_line reads as blank"
+        );
+    }
+
+    #[test]
+    fn a_row_says_who_started_it_and_the_by_facet_filters() {
+        let mut s = state();
+        s[0]["item"]["origin"] = json!("redispatch");
+        s[1]["item"] = json!({"slug": "", "origin": "hand"});
+        let mut f = feed();
+        f.items[1].extra.insert("origin".into(), "resume".into());
+        let r = rows(&s, &vocab(), &f, &[]);
+        let by = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("by");
+        assert_eq!(by("lab/d:1"), Val::Text("dispatch".into()));
+        assert_eq!(by("lab/d:2"), Val::Text("hand".into()));
+        assert_eq!(by("lab/d:3"), Val::None, "no item says nobody");
+        assert_eq!(by("ucp-394"), Val::Text("resume".into()), "a queue row");
+        assert_eq!(started_by("bogus"), "");
+        let v = View::new::<SessionRow>("by:dispatch", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
     }
 
     #[test]

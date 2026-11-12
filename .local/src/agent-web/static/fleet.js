@@ -1,38 +1,42 @@
 "use strict";
-// The Fleet tab: who is working, on what, and why it is deployed. One table (the shared one,
-// table.js) of every runner and live session, its KIND (lead, a lane, session) explained by the
-// legend above it (lanes.tsv, read by hub-core); a row opens its record, and a lead row folds the
-// rows under it. Who pays, where the tokens go and what Langfuse sees are Costs' (costs.js). The judges'
-// verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
-// Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
-// opens (hub-core `fleet::runner`).
+// Sessions' Runners inner tab: every agentctl runner, what it is doing and why it is deployed. One
+// table (the shared one, table.js), its KIND (lead or a lane) explained by the legend above it
+// (lanes.tsv, read by hub-core); a row opens its runner's page, and a lead's UNDER counts the live
+// sessions it oversees, which are the Sessions inner tab's rows. Who pays, where the tokens go and
+// what Langfuse sees are Costs' (costs.js). The judges' verdict lists are Log's Judges' verdicts
+// section. From /api/fleet (hub-core `fleet`, the same reader as the hub's Runners).
+// `#sessions/runners/<runner>` is one runner's page, read from /api/fleet/runner only when it opens
+// (hub-core `fleet::runner`); app.js routes the retired `#fleet/<runner>` there.
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
-// A read also answers Log's verdicts and the open runner page.
+// The Runners table's view keys in `#sessions?...`, beside the Sessions table's plain ones.
+const RUNNERS_PRE = "r";
+// The runner page open, "" on the table.
+const runnerName = () => pageId("sessions", "runners");
+const runnersShown = () => !st.sel && sessShows("runners");
+// said: the answer judge's filter on Log. A read also answers Log's verdicts and the open runner page.
 const fst = tblTab({
-  tab: "fleet", id: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
-  state: { fold: new Set(), said: "all" }, shown: () => st.tab === "fleet" && !st.arg,
-  params: (p, t) => { if (t.fold.size) p.set("fold", [...t.fold].join(",")); },
+  tab: "sessions", id: "runners", el: "ov-runners", on: "scroll", pre: RUNNERS_PRE, api: "/api/fleet", hint: "search, or kind:lead state:failed -who:shepherd",
+  state: { said: "all" }, shown: () => runnersShown() && !runnerName(),
   head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
-  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (st.tab === "fleet" && st.arg) renderFleet(); },
+  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (runnerName()) renderRunners(); },
 });
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
-const runnerHref = (name) => "#fleet/" + encodeURIComponent(name);
 
 const refreshRunner = coalesce(async () => {
-  const name = st.arg;
+  const name = runnerName();
   if (!name) return;
   try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name)); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
-  if (st.tab === "fleet" && st.arg === name) renderFleet();
+  if (runnerName() === name) renderRunners();
 });
 
-// The rows re-read on their own events (onEvent); the open tab also re-reads on Infra's cadence,
-// so the ages and a runner page's status move with no event.
-const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : fst.refresh()), INFRA_REFRESH_MS);
+// The rows re-read on their own events (runnersEvent); while Runners shows, they also re-read on
+// Infra's cadence, so the ages and a runner page's status move with no event. The timer lives
+// while Sessions is the tab (ui.js poll) and reads nothing on another inner tab.
+const pollFleet = poll("sessions", () => { if (runnersShown()) (runnerName() ? refreshRunner() : fst.refresh()); }, INFRA_REFRESH_MS);
 
 const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${esc(s.slice(0, n - 2))}..</span>` : esc(s));
 
@@ -64,29 +68,25 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
-const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], cost: ["cost 24h", "n"], activity: ["activity"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
-const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
-// A runner opens its page, a session its record on the Sessions tab.
-// `l`: the row's links (tblLinks): its who and its project, each to its page.
+const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], cost: ["cost 24h", "n"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"] };
+const STATE_CLASS = { failed: "bad", held: "bad", stalled: "warn", idle: "muted", off: "muted" };
+// A runner opens its page. `l`: the row's links (tblLinks), its who to that page.
 function whoRow(r, l) {
-  const shut = fst.fold.has(r.key);
-  const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
-  return `<tr class="wr" data-href="${esc(l.who || "")}"><td class="muted">${fold}${esc(r.kind)}</td><td>${tblLink(l.who, r.who)}</td>` +
-    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${r.cost_estimated ? "~" : ""}${usd(r.cost_24h)}</a>`}</td><td class="muted">${esc(r.activity)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${r.project ? tblLink(l.project, r.project) : ""}</td></tr>`;
+  return `<tr class="wr" data-href="${esc(l.who || "")}"><td class="muted">${esc(r.kind)}</td><td>${tblLink(l.who, r.who)}</td>` +
+    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${r.cost_estimated ? "~" : ""}${usd(r.cost_24h)}</a>`}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
+    `<td class="wrap">${cut(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td></tr>`;
 }
 
 function fleetBody(d) {
   const t = d.table;
-  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a lead row</div>` : "";
   return d.who.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map((r, i) => whoRow(r, tblLinks(t, i))).join("")}</table>${more}</div>`
-    : `<div class="panel">${t.total ? "No runner or session matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map((r, i) => whoRow(r, tblLinks(t, i))).join("")}</table></div>`
+    : `<div class="panel">${t.total ? "No runner matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
 }
 
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  return `<div class="bhead"><span>fleet <span class="muted">who is working, and on what; ${d.table.shown} of ${d.table.total} rows, accounts and who spent what on <a href="#costs">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+  return `<div class="bhead"><span>runners <span class="muted">${d.table.shown} of ${d.table.total}, what each is doing and why; who spent what on <a href="#costs">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
     pfold("fleet-legend", "Legend", `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>`) +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
@@ -156,17 +156,19 @@ function judgeList(j) {
     `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>project</th><th>type</th><th data-role="glance">said</th><th data-role="lead">question</th><th data-role="glance">why</th><th data-role="glance" data-named>you</th></tr>${rows}</table>` : `<div class="empty">No verdicts here.</div>`}</div>`;
 }
 
-function renderFleet() {
-  if (st.arg) renderRunner($("fleet")); else fst.render();
+function renderRunners() {
+  const el = $("ov-runners");
+  if (!el || !runnersShown()) return;
+  if (runnerName()) renderRunner(el); else fst.render();
 }
 
 // One run's log on the runner page, through Infra's reader and the run's byte range.
 async function runnerLog(j) {
   rst.sel = jobKey(j);
   const log = rst.log = { title: `${j.name} ${when(j.started)}`, text: "Loading..." };
-  renderFleet();
+  renderRunners();
   log.text = await jobLogText(j);
-  if (st.tab === "fleet" && rst.log === log) renderFleet();
+  if (rst.log === log) renderRunners();
 }
 
 const RUNNER_TIME_KEYS = ["updated", "next"];
@@ -198,12 +200,12 @@ function runnerExtras(x) {
   }
 }
 
-// `#fleet/<runner>`: summary first, then its runs with their logs, status and activity, calls,
+// `#sessions/runners/<runner>`: summary first, then its runs with their logs, status and activity, calls,
 // what the registry says, the lane's extras, and the conf.
 function renderRunner(el) {
-  const back = `<a class="btn sm" href="#fleet${st.views.fleet ? "?" + st.views.fleet : ""}">All runners</a>`;
+  const back = `<a class="btn sm" href="#sessions/runners${st.views.sessions ? "?" + st.views.sessions : ""}">All runners</a>`;
   const r = rst.data;
-  if (!r) { paint(el, `<div class="bhead"><span>${esc(st.arg)}</span>${back}</div><div class="${rst.err ? "panel down" : "empty"}">${rst.err ? esc(rst.err) : "Loading..."}</div>`); return; }
+  if (!r) { paint(el, `<div class="bhead"><span>${esc(runnerName())}</span>${back}</div><div class="${rst.err ? "panel down" : "empty"}">${rst.err ? esc(rst.err) : "Loading..."}</div>`); return; }
   const g = r.registry, day = r.calls.day, week = r.calls.week;
   let h = `<div class="bhead"><span>${esc(r.name)} <span class="muted">${esc(r.lane || "no lane")}, read ${clock(r.at * 1e3)}</span></span>${back}</div>`;
   if (r.errors.length) h += `<div class="panel down">${r.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
@@ -267,14 +269,13 @@ $("log-verdicts").addEventListener("click", (e) => {
   renderLogVerdicts();
 });
 
-$("fleet").addEventListener("click", (e) => {
+$("scroll").addEventListener("click", (e) => {
   const t = e.target;
+  if (st.sel || !t.closest("#ov-runners")) return;
   const said = t.closest("[data-said]");
-  if (said) { fst.said = said.dataset.said; renderFleet(); return; }
+  if (said) { fst.said = said.dataset.said; renderRunners(); return; }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
-  const fold = t.closest("[data-fold]");
-  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); fst.refresh(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;
@@ -282,15 +283,16 @@ $("fleet").addEventListener("click", (e) => {
 
 const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh, () => logShows("verdicts"));
 LOG_PARTS.push({ sec: "verdicts", show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
-TABS.fleet = {
-  show() {
-    if (rst.name !== st.arg) Object.assign(rst, { name: st.arg, data: null, err: null, log: null, sel: "" });
-    renderFleet();
-    pollFleet();
-  },
-  onEvent(ev) {
-    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : fst.refresh());
-    // The ingest record pushes as the outbox's kind; only a runner page with the ingest table reads it.
-    else if (st.tab === "fleet" && ev.kind === "outbox" && rst.data?.extras?.kind === "ingest") refreshRunner();
-  },
-};
+// TABS.sessions (sessions.js) calls these for the Runners inner tab.
+function runnersShow() {
+  const name = runnerName();
+  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "" });
+  renderRunners();
+  pollFleet();
+}
+function runnersEvent(ev) {
+  if (!runnersShown()) return;
+  if (["fleet", "asks", "sessions", "resync"].includes(ev.kind)) (runnerName() ? refreshRunner() : fst.refresh());
+  // The ingest record pushes as the outbox's kind; only a runner page with the ingest table reads it.
+  else if (ev.kind === "outbox" && rst.data?.extras?.kind === "ingest") refreshRunner();
+}

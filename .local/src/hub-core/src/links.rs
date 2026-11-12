@@ -21,7 +21,7 @@ pub enum Kind {
     Queue,
     /// A board row or an epic, by its id (`ar-1494`): the Board filtered to exactly that id.
     Row,
-    /// An agentctl runner's page.
+    /// An agentctl runner's page, on Sessions' Runners (`#sessions/runners/<name>`).
     Runner,
     /// A watch or a Prometheus red, by its alert id.
     Alert,
@@ -79,6 +79,12 @@ pub const PAGES: &[Page] = &[
         word: "apps",
         inner: "apps",
     },
+    Page {
+        kind: Kind::Runner,
+        tab: "sessions",
+        word: "runners",
+        inner: "runners",
+    },
 ];
 
 /// A page's old word, still read so a saved link or a `hub tab` habit lands on the page; nothing
@@ -89,6 +95,24 @@ pub const RETIRED_PAGES: &[Page] = &[Page {
     word: "ci",
     inner: "runs",
 }];
+
+/// A retired tab whose `#<tab>/<id>` was a record's page, and that record's kind, so a saved
+/// link or a `hub tab '<tab> <id>'` habit still lands on the page. `#fleet/<runner>` was a
+/// runner's page until Fleet became Sessions' Runners (2026-11-12). app.js `RETIRED_TAB_PAGES`
+/// mirrors it (agent-web's `retired_tab_pages_are_the_links` test).
+pub const RETIRED_TAB_PAGES: &[(&str, Kind)] = &[("fleet", Kind::Runner)];
+
+/// The record `<tab> <id>` names on a retired tab (`RETIRED_TAB_PAGES`): `("fleet",
+/// "inbox-triage")` is that runner's page. None for a live tab or a blank id; a section that
+/// moved off the retired tab (`layout::moved`) is the caller's to try first.
+pub fn retired_tab_page(tab: &str, id: &str) -> Option<Link> {
+    let (tab, id) = (tab.trim(), id.trim());
+    RETIRED_TAB_PAGES
+        .iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case(tab))
+        .filter(|_| !id.is_empty())
+        .map(|(_, kind)| Link::to(*kind, id))
+}
 
 /// The page `hub tab '<tab> <word>/<id>'` names (`PAGES`, or a `RETIRED_PAGES` word), as
 /// `Link::tab_args` writes it.
@@ -141,7 +165,6 @@ impl Link {
             Kind::Queue => format!("#queue/{seg}"),
             // `id:ar-1` alone would match `ar-10`.
             Kind::Row => format!("#board?q=id:={seg}"),
-            Kind::Runner => format!("#fleet/{seg}"),
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
@@ -150,7 +173,7 @@ impl Link {
                 format!("#schedules?q=name:={}", component(&format!("\"{id}\"")))
             }
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App | Kind::Runner => {
                 unreachable!("in PAGES")
             }
         }
@@ -171,12 +194,11 @@ impl Link {
             Kind::Session => ("sessions", id.clone()),
             Kind::Queue => ("queue", id.clone()),
             Kind::Row => ("board", format!("id:={id}")),
-            Kind::Runner => ("fleet", id.clone()),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
             Kind::Schedule => ("schedules", String::new()),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App | Kind::Runner => {
                 unreachable!("in PAGES")
             }
         })
@@ -270,7 +292,10 @@ mod tests {
         );
         assert_eq!(
             both(Kind::Runner, "inbox-triage"),
-            ("#fleet/inbox-triage".into(), a("fleet", "inbox-triage"))
+            (
+                "#sessions/runners/inbox-triage".into(),
+                a("sessions", "runners/inbox-triage")
+            )
         );
         assert_eq!(both(Kind::Tab, "home"), ("#home".into(), a("home", "")));
         assert_eq!(
@@ -361,11 +386,26 @@ mod tests {
             Kind::Session,
             Kind::Queue,
             Kind::Row,
-            Kind::Runner,
             Kind::Schedule,
         ] {
             let (tab, _) = Link::to(k, "x").tab_args().unwrap();
             assert!(crate::layout::resolve(tab).is_some(), "{k:?}: {tab}");
         }
+    }
+
+    #[test]
+    fn a_retired_tabs_record_link_lands_on_the_page() {
+        for (tab, _) in RETIRED_TAB_PAGES {
+            let t = crate::layout::resolve(tab).unwrap();
+            assert_ne!(t.id, *tab, "{tab} is a retired name, not a live tab");
+        }
+        let l = retired_tab_page("Fleet", " inbox-triage ").unwrap();
+        assert_eq!(l.href(), "#sessions/runners/inbox-triage");
+        assert_eq!(
+            page_of("sessions", "runners/inbox-triage"),
+            Some((Kind::Runner, "inbox-triage"))
+        );
+        assert_eq!(retired_tab_page("fleet", " "), None);
+        assert_eq!(retired_tab_page("sessions", "x"), None, "a live tab");
     }
 }

@@ -403,6 +403,16 @@ fn run_of(url: &str) -> Option<(String, u64)> {
     Some((repo_key(&repo), id))
 }
 
+/// A session's tmux target as a row names it: `lab/dotfiles-agent-3:1` is `dotfiles-agent-3`,
+/// `hub/dotfiles:2` stays as it is past the world.
+fn name_of(target: &str) -> String {
+    match target.split_once('/') {
+        Some(("lab", rest)) => rest.strip_suffix(":1").unwrap_or(rest).to_string(),
+        Some((_, rest)) => rest.to_string(),
+        None => target.to_string(),
+    }
+}
+
 /// The sessions on each branch, from `state.json`'s live sessions. A branch every session shares
 /// (`main`) is no one's, and a branch no session sits on is absent, so a hand-pushed one shows `-`.
 pub fn live(state: &Value) -> HashMap<String, String> {
@@ -415,7 +425,7 @@ pub fn live(state: &Value) -> HashMap<String, String> {
         if branch.is_empty() || SHARED_BRANCHES.contains(&branch) || target.is_empty() {
             continue;
         }
-        let name = crate::fleet::who::name_of(target);
+        let name = name_of(target);
         let names = by_branch.entry(branch.to_string()).or_default();
         if !names.contains(&name) {
             names.push(name);

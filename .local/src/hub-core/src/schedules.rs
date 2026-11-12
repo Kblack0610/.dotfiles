@@ -73,7 +73,7 @@ pub struct Schedule {
     /// Each open red item, `<slug> (<outcome>)`.
     pub open: Vec<String>,
     pub runs: Vec<Run>,
-    /// The runner whose Fleet page this row opens instead of a detail of its own; empty if none.
+    /// The runner whose page (Sessions, Runners) this row opens instead of a detail of its own; empty if none.
     pub page: String,
     /// The detail's head: `red since 11-01, triage no fix ar-485, next 02:00`.
     pub status: String,

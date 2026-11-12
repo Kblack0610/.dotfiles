@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn the_fleet_headers_are_hub_cores_columns() {
-        // Rule 8: the Fleet table draws the columns hub_core::fleet::who sorts and filters.
+        // Rule 8: the Runners table draws the columns hub_core::fleet::who sorts and filters.
         use hub_core::table::Row;
         let at = FLEET_JS
             .find("const FLEET_COLS = {")
@@ -476,6 +476,34 @@ mod tests {
     }
 
     #[test]
+    fn retired_tab_pages_are_the_links() {
+        // app.js's RETIRED_TAB_PAGES is hub_core::links::RETIRED_TAB_PAGES: `#fleet/<runner>`
+        // opens the page Link::href draws for that runner, and the old table's view keys take
+        // the prefix fleet.js's table reads.
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const RETIRED_TAB_PAGES = "))
+            .expect("app.js has RETIRED_TAB_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("RETIRED_TAB_PAGES is JSON");
+        let got = got.as_object().expect("an object");
+        assert_eq!(got.len(), hub_core::links::RETIRED_TAB_PAGES.len());
+        for (tab, kind) in hub_core::links::RETIRED_TAB_PAGES {
+            let (new, arg) = hub_core::links::Link::to(*kind, "x")
+                .tab_args()
+                .expect("a page on a tab");
+            let word = arg.strip_suffix("/x").expect("a page arg");
+            let pre = format!(
+                "const RUNNERS_PRE = \"{}\";",
+                got[*tab][2].as_str().unwrap()
+            );
+            assert_eq!(got[*tab][0], new, "{tab}");
+            assert_eq!(got[*tab][1], word, "{tab}");
+            assert!(FLEET_JS.contains(&pre), "fleet.js lacks {pre}");
+        }
+    }
+
+    #[test]
     fn moved_chips_are_the_layout() {
         // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
         // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
@@ -555,7 +583,7 @@ mod tests {
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && !["releases", "log"].contains(&t.id))
+            .filter(|t| !t.inner.is_empty() && !["releases", "log", "sessions"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -586,6 +614,20 @@ mod tests {
             assert!(
                 *s == "forecast" || index.contains(&id) || drawn,
                 "Log's {s} has no {id} in its inner tab's group"
+            );
+        }
+        // Every Sessions inner tab has a group on the page: app.js's overview wraps one of its
+        // sections (an open session's `detail` replaces the page, so it is in no group).
+        for i in hub_core::layout::resolve("sessions")
+            .expect("sessions")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| APP_JS.contains(&format!("innerWrap(\"sessions\", \"{s}\""))),
+                "app.js never draws the {} inner tab",
+                i.id
             );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.

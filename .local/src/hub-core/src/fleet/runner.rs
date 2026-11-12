@@ -1,4 +1,4 @@
-//! One runner's page: `#fleet/<name>` on the web, Enter on a Workers row in the TUI. Read only
+//! One runner's page: `#sessions/runners/<name>` on the web, Enter on a Runners row in the TUI. Read only
 //! when it is opened (dashboards.md rule 10), and by this one reader for both surfaces (rule 8).
 //! Nothing is kept; each part reads the file its writer owns:
 //!
@@ -36,7 +36,9 @@ pub const DETAILS: [&str; 4] = [
 ];
 
 /// The intake steps the ingest block counts: what inbox-triage does with a line.
-const INTAKE: [&str; 7] = ["moved", "filed", "dup", "planned", "left", "asked", "refused"];
+const INTAKE: [&str; 7] = [
+    "moved", "filed", "dup", "planned", "left", "asked", "refused",
+];
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Runner {

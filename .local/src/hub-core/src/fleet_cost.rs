@@ -15,7 +15,7 @@ pub(crate) const STALE_SECS: i64 = 2 * 3600;
 const CENT: f64 = 0.005;
 
 pub const FOOT: &str = "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.";
-/// The Fleet tab's line for its COST 24H column.
+/// The Runners table's line for its COST 24H column.
 pub const FLEET_LEGEND: &str = "cost 24h from Costs' fleet figure, ~ when part is estimated";
 
 /// One cut of the file: an origin, a runner.

@@ -6,7 +6,7 @@
 //! | figure | store | read through |
 //! |---|---|---|
 //! | per session: cost, models, harness, project, runner, kind | outcomes rows | `agentctl-session-outcomes costs` |
-//! | per runner call | `calls.jsonl` | `fleet::parse_call`, the Fleet tab's parser |
+//! | per runner call | `calls.jsonl` | `fleet::parse_call`, the runners' parser |
 //! | per tool and per skill, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
@@ -407,7 +407,7 @@ pub fn sessions(out: &str) -> Vec<Spent> {
         .collect()
 }
 
-/// calls.jsonl's lines since `since`, through the Fleet tab's parser.
+/// calls.jsonl's lines since `since`, through the runners' parser.
 pub fn calls(text: &str, since: i64) -> Vec<Call> {
     text.lines()
         .filter_map(|l| crate::fleet::parse_call(l, ""))

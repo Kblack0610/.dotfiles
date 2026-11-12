@@ -430,25 +430,26 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first fourteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first fifteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "BY", "PR", "PLAN", "IDLE", "COST",
+                    "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK",
+                    "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 1, 14, 9, 10, 11, 12],
-                flex: Some(17),
+                keep: vec![0, 3, 5, 6, 7, 14, 2, 8, 9, 17, 16, 4, 1, 15, 10, 11, 12, 13],
+                flex: Some(18),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
-                right: vec![6, 7],
+                right: vec![7, 8],
                 cap: vec![
                     (1, 22),
                     (2, 16),
                     (3, 30),
-                    (9, 16),
-                    (11, 22),
-                    (13, fleet::NAME_MAX),
-                    (14, 22),
+                    (10, 16),
+                    (12, 22),
+                    (14, fleet::NAME_MAX),
+                    (15, 22),
                 ],
             }
             .fit(w, p.head());
@@ -546,6 +547,7 @@ impl Controls {
             dash(&x.activity),
             dash(&x.project),
             task,
+            dash(&x.by),
             pr,
             plan,
             idle,

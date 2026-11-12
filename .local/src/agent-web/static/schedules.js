@@ -77,7 +77,7 @@ $("schedules").addEventListener("click", (e) => {
   if (!tr) return;
   const r = (schst.data.rows || []).find((x) => schedKey(x) === tr.dataset.key);
   if (!r) return;
-  if (r.page) { location.hash = "fleet/" + encodeURIComponent(r.page); return; }
+  if (r.page) { location.hash = runnerHref(r.page); return; }
   schst.sel = schst.sel === schedKey(r) ? null : schedKey(r);
   schst.render();
 });

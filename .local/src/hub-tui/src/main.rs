@@ -536,30 +536,20 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Log)) = tab {
+    if let Some(t @ (Tab::Sessions | Tab::Log)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
+        // `--tab 'sessions runners'` (or `fleet`) prints Runners, `--tab 'fleet NAME'` that
+        // runner's page, `--tab 'sessions shepherd'` Shepherd; else the sessions.
         if t == Tab::Sessions {
+            a.sessions_once(section.as_deref());
+        }
+        if t == Tab::Sessions && a.sessions_inner == "sessions" {
             let b = a.boards.as_ref().expect("just read");
             let f = forecast::Forecast::read();
             a.controls
                 .read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
             a.read_sessions_now();
-        }
-        // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
-        if t == Tab::Fleet {
-            match section.as_deref().and_then(fleettab::runner_arg) {
-                Some(name) => {
-                    a.fleet_page = Some(name.to_string());
-                    a.fleet_runner = Some(hub_core::fleet::runner::read(
-                        &hub_core::fleet::Paths::from_env(),
-                        name,
-                    ));
-                }
-                None => {
-                    a.fleet = Some(hub_core::fleet::files(&hub_core::fleet::Paths::from_env()));
-                }
-            }
         }
         a.tab = t;
         for l in a.page_lines(w) {
@@ -850,6 +840,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
         }
+        if e.paths.iter().any(|p| boards.is_due_file(p)) {
+            let _ = files.send(Msg::ShepherdFiles);
+        }
         if e.paths.iter().any(|p| app::is_queue_file(&queue, p)) {
             let _ = files.send(Msg::QueueFiles);
         }
@@ -886,11 +879,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         app.read_candidates();
     }
     if app.tab == Tab::Sessions {
-        app.read_forecast();
-        app.read_sessions();
-    }
-    if app.tab == Tab::Fleet {
-        app.read_fleet();
+        app.read_sessions_shown();
     }
     if app.tab == Tab::Alerts {
         app.read_reds();

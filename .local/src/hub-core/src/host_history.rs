@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn a_history_stays_under_prometheus_point_cap() {
-        assert!(DAYS * 86_400 / STEP < 11_000);
+        const { assert!(DAYS * 86_400 / STEP < 11_000) };
     }
 
     #[test]
