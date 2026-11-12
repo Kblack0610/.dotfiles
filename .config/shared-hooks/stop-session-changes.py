@@ -50,6 +50,30 @@ def state(root, before=None):
     return files
 
 
+def upstream(root, paths):
+    """Path -> [mode, blob] on the remote's default branch for `paths`, or None with no such ref.
+
+    A changed path whose content now matches it came in from upstream (a merge of the
+    default branch, or agent-land's fast-forward of the main checkout), not from this
+    session. Only the changed paths are read, in batches, so a large tree costs nothing.
+    """
+    for ref in ("origin/HEAD", "origin/main", "origin/master"):
+        try:
+            git(root, "rev-parse", "--verify", "-q", ref + "^{tree}")
+        except subprocess.CalledProcessError:
+            continue
+        tree = {}
+        for i in range(0, len(paths), 500):
+            rows = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-tree", ref, "--", *paths[i:i + 500])
+            for row in rows.split(b"\0"):
+                if row:
+                    meta, path = row.split(b"\t", 1)
+                    mode, _, blob = meta.decode().split()
+                    tree[os.fsdecode(path)] = [mode, blob]
+        return tree
+    return None
+
+
 def main():
     action, directory, sid = sys.argv[1:]
     root = Path(os.fsdecode(git(directory, "rev-parse", "--show-toplevel")).strip())
@@ -65,9 +89,14 @@ def main():
     elif action == "changed":
         before = json.loads(baseline.read_text())
         current = state(root, before)
-        for path in sorted(before.keys() | current.keys()):
-            if (before.get(path) or [])[:3] != (current.get(path) or [])[:3]:
-                print(path)
+        changed = [p for p in sorted(before.keys() | current.keys())
+                   if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
+        tree = upstream(root, [p for p in changed if p in current]) if changed else None
+        for path in changed:
+            # a deletion always counts: an absent path cannot say where its change came from
+            if tree is not None and path in current and current[path][:2] == tree.get(path):
+                continue
+            print(path)
     else:
         raise ValueError("unknown action")
 
