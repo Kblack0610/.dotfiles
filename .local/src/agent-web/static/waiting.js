@@ -16,7 +16,7 @@ function drawAsks() {
   if (st.tab === "queue") qst.render();
 }
 const refreshAsks = coalesce(async () => {
-  st.asks = await api("/api/asks");
+  [st.asks, st.parked] = await Promise.all([api("/api/asks"), api("/api/asks/parked").catch(() => st.parked)]);
   drawAsks();
 });
 
@@ -126,7 +126,9 @@ function askOptions(a) {
     const why = rec ? `<span class="aow">recommended${a.why ? ": " + esc(a.why) : ""}</span>` : "";
     return `<button class="aopt${rec ? " rec" : ""}" data-a="${esc(o)}"><span class="aok">${esc(o)}</span>${note}${why}</button>`;
   }).join("");
-  return `<div class="aopts">${rows}</div><div class="opts"><input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button></div>`;
+  // Park takes it off Needs you until its revisit date (agent-ask park, by its item's priority).
+  return `<div class="aopts">${rows}</div><div class="opts"><input placeholder="or type an answer" data-free><button class="btn" data-send>Answer</button>` +
+    `<button class="btn" data-park title="off Needs you until its revisit date, set by its item's priority">Park</button></div>`;
 }
 
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
@@ -214,6 +216,7 @@ async function answerCard(card, e) {
     catch (x) { markSending(key, "", x.message); }
     return;
   }
+  if (e.target.dataset.park !== undefined) { await parkAsk(card.dataset.id, false); return; }
   const opt = e.target.closest("[data-a]");
   let answer = opt && opt.dataset.a;
   if (e.target.dataset.send !== undefined) answer = card.querySelector("[data-free]").value;
@@ -227,6 +230,33 @@ async function answerCard(card, e) {
   st.asks = st.asks.filter((a) => a.id !== id);
   drawAsks();
   refreshAsks();
+}
+
+// Park an ask off Needs you, or put a parked one back; either way it moves between the lists.
+async function parkAsk(id, unpark) {
+  const key = `ask:${id}`;
+  if (askst.sending[key]) return;
+  markSending(key, unpark ? "unpark" : "park");
+  askst.parkErr = "";
+  try { await post("/api/asks/park", { id, unpark }); }
+  catch (x) { markSending(key, "", x.message); if (unpark) { askst.parkErr = x.message; drawAsks(); } return; }
+  delete askst.sending[key];
+  st.asks = st.asks.filter((a) => a.id !== id);
+  st.parked = st.parked.filter((a) => a.id !== id);
+  drawAsks();
+  refreshAsks();
+  if (typeof refreshHome === "function") refreshHome();
+}
+
+// Home's Parked fold: the asks parked until a date, soonest back first, shut until opened.
+function parkedSection() {
+  const rows = [...(st.parked || [])].sort((a, b) => (a.parked_until < b.parked_until ? -1 : 1));
+  if (!rows.length) return "";
+  const row = (a) => `<tr><td>${esc(a.project) || "-"}</td><td class="n" title="${esc(a.parked_until)}">${stamp(a.parked_until)}</td>` +
+    `<td class="wrap">${esc(a.title || a.question)}</td><td><button class="btn sm" data-unpark="${esc(a.id)}">Unpark</button></td></tr>`;
+  const table = `<div class="panel scroll"><table class="tbl"><tr><th>project</th><th class="n" data-role="glance">back</th><th data-role="lead">question</th><th></th></tr>${rows.map(row).join("")}</table></div>`;
+  const err = askst.parkErr ? `<div class="err">${esc(askst.parkErr)}</div>` : "";
+  return cfold("parked", `Parked <span class="muted">${rows.length}</span>`, err + table, askst.open);
 }
 
 function answerOnEnter(e) {

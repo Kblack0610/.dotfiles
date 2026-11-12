@@ -34,6 +34,10 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 /// How far back `check` holds the stores to each other: the runs ledger's window.
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
 
+/// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
+/// next pass (`SCHEDULE='*:7/30'` in wave-roll.conf), so the grace is two of its cycles.
+const ROLL_GRACE_SECS: i64 = 2 * 1800;
+
 /// One tag of a project's line as the collector read it from git.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
@@ -91,14 +95,17 @@ pub struct Shipment {
     pub prs: Vec<u64>,
     /// The board rows its PRs' items worked (`agent-runtime:ar-1655`).
     pub rows: Vec<String>,
-    /// The RELEASED cell: `11-10 22:07`, dated even today, `-` when git gave no date.
+    /// The RELEASED cell: `11-10 22:07`, dated even today, `not read` when git gave no date.
     pub at_text: String,
-    /// The REACHED cell: `beta 11-10 22:07, flux 11-09 10:00 (pin), steam-default (live)`,
-    /// `not recorded` when no channel says so.
+    /// The PREV cell: the release before it, `first tag` for the line's first.
+    pub prev_text: String,
+    /// The REACHED cell: `beta 11-10 22:07, flux 11-09 10:00 (pin), steam-default (live)`;
+    /// `not recorded` when no channel says so, `none declared` when the app declares no channel.
     pub reached_text: String,
-    /// The PRS cell: `#12, #13`, `-` with none.
+    /// The PRS cell: `#12, #13`, `none merged` with none.
     pub prs_text: String,
-    /// The ROWS cell: `ar-1655, ar-1660`, `-` with none.
+    /// The ROWS cell: `ar-1655, ar-1660`; `none merged` with no PRs, `before 2026-11-11` for a
+    /// release before the links were held, `not recorded` after.
     pub rows_text: String,
 }
 
@@ -127,6 +134,112 @@ pub struct Pr {
     pub merged_at: Option<String>,
     pub merge_sha: Option<String>,
     pub url: String,
+    /// The forge login that opened it; a bot's PR has no board row to name.
+    pub author: Option<String>,
+}
+
+impl Pr {
+    /// Opened by a bot (Dependabot, Renovate, a GitHub App), so no session or row asked for it.
+    fn by_bot(&self) -> bool {
+        self.author.as_deref().is_some_and(|a| {
+            let a = a.to_ascii_lowercase();
+            a.ends_with("[bot]") || a.starts_with("app/") || a == "dependabot" || a == "renovate"
+        })
+    }
+}
+
+/// One repo's line in the PR store's sync record (`schedules-sync prs`, sync.json).
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Synced {
+    pub synced_at: Option<String>,
+    pub error: Option<String>,
+}
+
+/// The PR store's sync record, by repo as the store keys it.
+pub fn read_sync(dir: &Path) -> Result<HashMap<String, Synced>, String> {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct File {
+        repos: HashMap<String, Synced>,
+    }
+    let p = dir.join("sync.json");
+    let raw = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    serde_json::from_str::<File>(&raw)
+        .map(|f| f.repos)
+        .map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// The facts `release-state refresh` reads for the link checks: the snapshot's `links`
+/// (docs/operations/release-state.md, "Link facts").
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Links {
+    /// `RELEASE_NOTES_SINCE` in unix seconds: the links are held from this day on, and a gap
+    /// before it is history nothing recorded. 0 in a snapshot written before the facts were.
+    pub since: i64,
+    /// App repo (its registry key) -> the GitHub environments holding a recorded Deployment.
+    pub environments: HashMap<String, Envs>,
+    /// App repo -> its workflow files at origin's default branch, on both forges.
+    pub workflows: HashMap<String, Workflows>,
+    /// Lab project -> its versions but the open one.
+    pub versions: HashMap<String, Versions>,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Envs {
+    pub slug: String,
+    pub names: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Workflows {
+    pub branch: String,
+    pub files: Vec<Workflow>,
+    pub error: Option<String>,
+}
+
+/// One workflow file, and whether its name or a step says it ships something (`DEPLOY_NAMES`,
+/// `DEPLOY_MARKERS` in release-state).
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Workflow {
+    pub path: String,
+    pub deploy: bool,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Versions {
+    pub list: Vec<LabVersion>,
+    pub error: Option<String>,
+}
+
+/// One lab version note: `v1.18.1`, when the roll froze it, the PRs its frozen rows name.
+#[derive(Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct LabVersion {
+    pub version: String,
+    pub state: String,
+    pub rolled: Option<i64>,
+    pub prs: Vec<u64>,
+}
+
+/// What [`Graph::check`] holds the graph to beyond the stores it joins. A field left empty
+/// skips the checks that read it.
+#[derive(Default)]
+pub struct Facts<'a> {
+    /// The runs ledger.
+    pub runs: Option<&'a [Run]>,
+    pub links: Option<&'a Links>,
+    /// Project -> its lab stage, and the ladder the stages climb, lowest first.
+    pub stages: HashMap<String, String>,
+    pub ladder: &'a [String],
+    /// The PR store's sync record.
+    pub synced: Option<&'a HashMap<String, Synced>>,
 }
 
 /// The tag a release run's log named, kept for a run started before its workflow's title carried
@@ -326,8 +439,10 @@ pub struct Inputs<'a> {
     pub prs: &'a [Pr],
     /// Branch -> the live sessions on it ([`live`]).
     pub live: &'a HashMap<String, String>,
-    /// Resolves a bare `pr:N` through its project's one repo.
+    /// Resolves a bare `pr:N` through its project's one repo, and declares the targets.
     pub registry: Option<&'a Registry>,
+    /// `Links::since`: a release before it has no rows because nothing recorded them.
+    pub since: i64,
     /// The tags release runs' logs named ([`read_run_tags`]).
     pub run_tags: &'a [RunTag],
 }
@@ -397,13 +512,12 @@ impl<'a> Graph<'a> {
                     Some(r) => r,
                     None => {
                         // One repo mirrored on two forges is still one repo.
-                        let mut repos: Vec<String> = g
-                            .i
-                            .registry
-                            .map_or(vec![], |r| r.repos(&it.project))
-                            .iter()
-                            .map(|r| repo_key(r))
-                            .collect();
+                        let mut repos: Vec<String> =
+                            g.i.registry
+                                .map_or(vec![], |r| r.repos(&it.project))
+                                .iter()
+                                .map(|r| repo_key(r))
+                                .collect();
                         repos.dedup();
                         if let [one] = &repos[..] {
                             one.clone()
@@ -481,6 +595,19 @@ impl<'a> Graph<'a> {
             .min_by_key(|p| ts(&p.created_at).unwrap_or(i64::MAX))
             .map(|p| vec![p.number])
             .unwrap_or_default()
+    }
+
+    /// Target `id`'s `pinned.deployed` as the registry declares it: `true` for a channel whose
+    /// deploys record a GitHub Deployment, `"manual"` for one moved by hand.
+    fn deployed(&self, id: &str) -> Option<&Value> {
+        self.i.registry?.trackers().find_map(|(_, t)| {
+            t.get("targets")?
+                .as_array()?
+                .iter()
+                .find(|x| x.get("id").and_then(Value::as_str) == Some(id))?
+                .get("pinned")?
+                .get("deployed")
+        })
     }
 
     /// The item that names PR `n` of `repo`.
@@ -588,21 +715,31 @@ impl<'a> Graph<'a> {
         let mut h = history(line, channels);
         for s in &mut h {
             s.rows = self.rows(line.repo.as_deref(), &s.prs);
-            s.rows_text = cell(s.rows.iter().map(|r| {
-                r.split_once(':')
-                    .map_or(r.as_str(), |(_, id)| id)
-                    .to_string()
-            }));
+            s.rows_text = if !s.rows.is_empty() {
+                cell(s.rows.iter().map(|r| {
+                    r.split_once(':')
+                        .map_or(r.as_str(), |(_, id)| id)
+                        .to_string()
+                }))
+            } else if s.prs.is_empty() {
+                "none merged".into()
+            } else if s.at.is_some_and(|a| a < self.i.since) {
+                format!("before {}", since_day(self.i.since))
+            } else {
+                "not recorded".into()
+            };
         }
         h
     }
 
-    /// Where the stores disagree, one line each, sorted: what `hub releases check` prints. A PR
-    /// an item or a tag names that the store lacks (in a repo the store holds, inside the
-    /// ledger's window), a bare `pr:N` on a project with no one repo, and a Deployment naming a
-    /// run of a repo the ledger holds that the ledger lacks. `runs` is the ledger; None skips
-    /// that check.
-    pub fn check(&self, runs: Option<&[Run]>, now: i64) -> Vec<String> {
+    /// Where the stores disagree, one line each, sorted: what `hub releases check` prints.
+    /// Inside the ledger's window: a PR an item or a tag names that the store lacks (in a repo
+    /// the store holds), and a Deployment naming a run of a repo the ledger holds that the
+    /// ledger lacks. Always: a bare `pr:N` on a project with no one repo, a channel that says it
+    /// records deploys and has none, a manual one with no reason, a missing telemetry watch, a
+    /// tag in two lines. With the link facts, [`Graph::check_links`]; with the sync record, a
+    /// stale PR store. A fact `f` leaves empty skips the checks that read it.
+    pub fn check(&self, f: &Facts, now: i64) -> Vec<String> {
         let since = now - CHECK_SECS;
         let held: HashSet<String> = self.i.prs.iter().map(|p| repo_key(&p.repo)).collect();
         let mut out: Vec<String> = vec![];
@@ -640,10 +777,17 @@ impl<'a> Graph<'a> {
                 if slugs.len() > 3 { ", ..." } else { "" }
             ));
         }
+        let mut lines_of: HashMap<(String, &str), Vec<&str>> = HashMap::new();
         for (project, line) in self.i.lines {
             let Some(repo) = line.repo.as_deref().map(repo_key) else {
                 continue;
             };
+            for t in &line.tags {
+                lines_of
+                    .entry((repo.clone(), t.tag.as_str()))
+                    .or_default()
+                    .push(project);
+            }
             if !held.contains(&repo) {
                 continue;
             }
@@ -664,7 +808,37 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        if let Some(runs) = runs {
+        for ((repo, tag), mut projects) in lines_of {
+            if projects.len() > 1 {
+                projects.sort();
+                out.push(format!(
+                    "{repo} tag {tag} is in the lines of {}",
+                    projects.join(" and ")
+                ));
+            }
+        }
+        for r in self.i.channels.iter().filter(|r| !r.implicit) {
+            let who = format!("{} {}", r.project, r.id);
+            match self.deployed(&r.id) {
+                Some(Value::Bool(true))
+                    if r.deploys.error.is_none() && r.deploys.history.is_empty() =>
+                {
+                    out.push(format!(
+                        "{who}: deployed: true and no Deployment recorded (record one, or declare it manual with a reason)"
+                    ))
+                }
+                Some(Value::String(m))
+                    if m == "manual" && r.pinned.reason.as_deref().unwrap_or("").is_empty() =>
+                {
+                    out.push(format!("{who}: deployed: manual with no reason"))
+                }
+                _ => {}
+            }
+            for w in r.telemetry.iter().filter(|w| w.state == "missing") {
+                out.push(format!("{who}: telemetry watch {} does not exist", w.watch));
+            }
+        }
+        if let Some(runs) = f.runs {
             let ran: HashSet<(String, u64)> =
                 runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
             let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
@@ -682,10 +856,288 @@ impl<'a> Graph<'a> {
                 }
             }
         }
+        if let Some(links) = f.links {
+            out.extend(self.check_links(links, f, now));
+        }
+        if let Some(synced) = f.synced {
+            for (repo, s) in synced {
+                let age = s
+                    .synced_at
+                    .as_deref()
+                    .and_then(crate::fleet::ts)
+                    .map(|t| now - t);
+                match (&s.error, age) {
+                    (Some(e), _) if !e.is_empty() => {
+                        out.push(format!("PR store: {repo} did not sync: {e}"))
+                    }
+                    (_, None) => out.push(format!("PR store: {repo} has never synced")),
+                    (_, Some(a)) if a > builds::STALE_SECS => out.push(format!(
+                        "PR store: {repo} last synced {}m ago (over {}m)",
+                        a / 60,
+                        builds::STALE_SECS / 60
+                    )),
+                    _ => {}
+                }
+            }
+        }
         out.sort();
         out.dedup();
         out
     }
+
+    /// The checks over the link facts, each held from `links.since` on (the earlier gaps are
+    /// history nothing recorded): a GitHub environment with recorded Deployments that names no
+    /// target, a tag glob that matches nothing on a project the lab has shipped, a successful
+    /// run of a recording deploy workflow that resolves to no release, a release tag with no lab
+    /// version and a shipped lab version with no tag, a release PR with no board row and a row
+    /// frozen into a version its PR did not ship in, and a deploy workflow the registry's
+    /// `deployWorkflows` does not map (or that deploys a project below alpha).
+    fn check_links(&self, links: &Links, f: &Facts, now: i64) -> Vec<String> {
+        let mut out = vec![];
+        let reg = self.i.registry;
+        let trackers: Vec<(&str, &serde_json::Map<String, Value>)> =
+            reg.map_or(vec![], |r| r.trackers().collect());
+        let targets: HashMap<&str, &str> = trackers
+            .iter()
+            .flat_map(|(p, t)| {
+                t.get("targets")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.get("id")?.as_str())
+                    .map(move |id| (id, *p))
+            })
+            .collect();
+        let mut keys: Vec<&String> = links.environments.keys().collect();
+        keys.sort();
+        for key in keys {
+            let e = &links.environments[key];
+            for name in e.names.iter().filter(|n| !targets.contains_key(n.as_str())) {
+                out.push(format!(
+                    "{}: environment {name} holds recorded Deployments and no registry target is named {name}",
+                    e.slug
+                ));
+            }
+        }
+        let shipped_versions = |p: &str| -> Option<&Vec<LabVersion>> {
+            links
+                .versions
+                .get(p)
+                .filter(|v| v.error.is_none())
+                .map(|v| &v.list)
+        };
+        let recording = |id: &str| self.deployed(id) == Some(&Value::Bool(true));
+        // Workflow path -> the targets it deploys, per app repo (registry key).
+        let mut deploys_to: HashMap<(String, &str), Vec<&str>> = HashMap::new();
+        for (key, w) in &links.workflows {
+            if w.error.is_some() {
+                continue;
+            }
+            let declared = reg
+                .and_then(|r| r.tracker(key))
+                .and_then(|t| t.get("deployWorkflows"))
+                .and_then(Value::as_object);
+            let files: HashSet<&str> = w.files.iter().map(|f| f.path.as_str()).collect();
+            for (path, v) in declared.into_iter().flatten() {
+                if !files.contains(path.as_str()) {
+                    out.push(format!(
+                        "{key} deployWorkflows {path}: not a workflow on origin/{}",
+                        w.branch
+                    ));
+                }
+                match v {
+                    Value::Array(ids) => {
+                        for id in ids {
+                            match id.as_str() {
+                                Some(id) if targets.contains_key(id) => deploys_to
+                                    .entry((key.clone(), path.as_str()))
+                                    .or_default()
+                                    .push(id),
+                                _ => out.push(format!(
+                                    "{key} deployWorkflows {path}: {id} is no registry target"
+                                )),
+                            }
+                        }
+                    }
+                    Value::String(why) if !why.trim().is_empty() => {}
+                    _ => out.push(format!(
+                        "{key} deployWorkflows {path}: give the targets it deploys, or a reason it deploys none"
+                    )),
+                }
+            }
+            for wf in w.files.iter().filter(|f| f.deploy) {
+                if declared.is_some_and(|d| d.contains_key(&wf.path)) {
+                    continue;
+                }
+                let file = wf.path.rsplit('/').next().unwrap_or(&wf.path);
+                let early = trackers
+                    .iter()
+                    .filter(|(p, t)| t.get("repo").and_then(Value::as_str).unwrap_or(p) == key)
+                    .filter(|(p, _)| file.contains(p))
+                    .find_map(|(p, _)| {
+                        let s = f.stages.get(*p)?;
+                        below_alpha(s, f.ladder).then_some((*p, s.as_str()))
+                    });
+                out.push(match early {
+                    Some((p, s)) => format!(
+                        "{key} {}: deploys {p}, which is {s}: ahead of its stage",
+                        wf.path
+                    ),
+                    None => format!(
+                        "{key} {}: a deploy workflow no registry target maps to (add it to deployWorkflows)",
+                        wf.path
+                    ),
+                });
+            }
+        }
+        if let Some(runs) = f.runs {
+            let from = links.since.max(now - CHECK_SECS);
+            let key_of: HashMap<String, &str> = trackers
+                .iter()
+                .filter_map(|(k, t)| Some((repo_key(t.get("github")?.as_str()?), *k)))
+                .collect();
+            for r in runs.iter().filter(|r| {
+                r.conclusion.as_deref() == Some("success")
+                    && crate::fleet::ts(&r.created_at).is_some_and(|c| c >= from)
+            }) {
+                let Some(key) = key_of.get(&repo_key(&r.repo)) else {
+                    continue;
+                };
+                let records = deploys_to
+                    .get(&(key.to_string(), r.path.as_str()))
+                    .is_some_and(|ids| ids.iter().any(|id| recording(id)));
+                if records && self.release(r).is_none() {
+                    out.push(format!(
+                        "{} run {} ({}) deployed and resolves to no release",
+                        r.repo, r.id, r.path
+                    ));
+                }
+            }
+        }
+        let mut projects: Vec<&String> = self.i.lines.keys().collect();
+        projects.sort();
+        for p in projects {
+            let line = &self.i.lines[p];
+            let Some(versions) = shipped_versions(p) else {
+                continue;
+            };
+            if line.line == "none" && line.error.is_none() {
+                if let Some(g) = &line.glob {
+                    if !versions.is_empty() {
+                        out.push(format!(
+                            "{p}: tag glob {g} matches no tag, and the lab has {} shipped version(s)",
+                            versions.len()
+                        ));
+                    }
+                }
+            }
+            if line.line != "release" {
+                continue;
+            }
+            let repo = line.repo.as_deref().map(repo_key);
+            for t in line
+                .tags
+                .iter()
+                .filter(|t| t.at.is_some_and(|a| a >= links.since))
+            {
+                if plain_version(&t.version)
+                    && t.at.is_some_and(|a| now - a >= ROLL_GRACE_SECS)
+                    && !versions
+                        .iter()
+                        .any(|v| v.version.trim_start_matches('v') == t.version)
+                {
+                    out.push(format!("{p} {}: no lab version v{}", t.tag, t.version));
+                }
+                let Some(repo) = &repo else { continue };
+                for n in &t.prs {
+                    let Some(pr) = self
+                        .i
+                        .prs
+                        .iter()
+                        .find(|x| x.number == *n && repo_key(&x.repo) == *repo)
+                    else {
+                        continue;
+                    };
+                    if !pr.by_bot() && self.item(repo, *n).and_then(Item::board_row).is_none() {
+                        out.push(format!("{p} {}: {repo}#{n} has no board row", t.tag));
+                    }
+                }
+            }
+            for v in versions
+                .iter()
+                .filter(|v| v.rolled.is_some_and(|r| r >= links.since))
+            {
+                let bare = v.version.trim_start_matches('v');
+                if !line.tags.iter().any(|t| t.version == bare) {
+                    out.push(format!("{p} lab {}: no tag of the line", v.version));
+                }
+                for n in &v.prs {
+                    match line.tags.iter().find(|t| t.prs.contains(n)) {
+                        Some(t) if t.version != bare => out.push(format!(
+                            "{p} lab {}: row PR #{n} shipped in {}",
+                            v.version, t.tag
+                        )),
+                        Some(_) => {}
+                        None => out.push(format!(
+                            "{p} lab {}: row PR #{n} is in no tag of the line",
+                            v.version
+                        )),
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The link facts the collector could not read: each an error of `hub releases check`, never a
+/// clean pass.
+pub fn link_errors(links: &Links) -> Vec<String> {
+    if links.since == 0 {
+        return vec!["the snapshot has no link facts (run release-state refresh)".into()];
+    }
+    let mut out: Vec<String> = links
+        .environments
+        .iter()
+        .filter_map(|(k, e)| Some(format!("{k} environments: {}", e.error.as_ref()?)))
+        .chain(
+            links
+                .workflows
+                .iter()
+                .filter_map(|(k, w)| Some(format!("{k} workflows: {}", w.error.as_ref()?))),
+        )
+        .chain(
+            links
+                .versions
+                .iter()
+                .filter_map(|(k, v)| Some(format!("{k} lab versions: {}", v.error.as_ref()?))),
+        )
+        .collect();
+    out.sort();
+    out
+}
+
+/// `1.19.0`: the versions a lab version note is named for. A build or pre-release tag's version
+/// (`0.5.0-shapecity3`) has none to match.
+fn plain_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A stage below `alpha` on the ladder (`draft`, `dev`): nothing of it should deploy yet.
+fn below_alpha(stage: &str, ladder: &[String]) -> bool {
+    let at = |s: &str| ladder.iter().position(|x| x == s);
+    matches!((at(stage), at("alpha")), (Some(s), Some(a)) if s < a)
+}
+
+/// `2026-11-11`: the day the links are held from.
+pub fn since_day(since: i64) -> String {
+    chrono::DateTime::from_timestamp(since, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
 }
 
 /// The checks of `hub releases check`, as two lists: where the stores disagree (`Graph::check`)
@@ -701,8 +1153,10 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
         errors.push(format!("agent-queue list: {e}"));
         vec![]
     });
-    let (prs, e) = read_prs(&prs_dir());
+    let dir = prs_dir();
+    let (prs, e) = read_prs(&dir);
     errors.extend(e);
+    let synced = read_sync(&dir).map_err(|e| errors.push(e)).ok();
     let ledger = builds::read(&builds::Paths::from_env(), None, now);
     // The ledger's read reads the PR store too: one line per fault.
     for e in ledger.errors {
@@ -710,7 +1164,14 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
             errors.push(e);
         }
     }
+    errors.extend(link_errors(&snap.links));
+    if let Some(e) = &snap.stages_error {
+        errors.push(format!("lab stages: {e}"));
+    }
     let registry = project_map::cached();
+    if registry.is_none() {
+        errors.push(format!("{}: not read", project_map::map_path().display()));
+    }
     let none = HashMap::new();
     let graph = Graph::new(Inputs {
         lines: &snap.releases,
@@ -719,9 +1180,17 @@ pub fn audit(runner: &dyn Runner, now: i64) -> (Vec<String>, Vec<String>) {
         prs: &prs,
         live: &none,
         registry: registry.as_deref(),
+        since: snap.links.since,
         run_tags: &[],
     });
-    (graph.check(Some(&ledger.rows), now), errors)
+    let facts = Facts {
+        runs: Some(&ledger.rows),
+        links: Some(&snap.links),
+        stages: snap.stage_names(),
+        ladder: &snap.ladder,
+        synced: synced.as_ref(),
+    };
+    (graph.check(&facts, now), errors)
 }
 
 /// `#12, #13, #14 +2`: a cell that lists at most three, `-` with none.
@@ -829,7 +1298,9 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
         .iter()
         .map(|t| {
             let reached = reached(t, &line.tags, channels);
-            let reached_text = if reached.is_empty() {
+            let reached_text = if channels.iter().all(|r| r.implicit) {
+                "none declared".into()
+            } else if reached.is_empty() {
                 "not recorded".into()
             } else {
                 reached
@@ -852,13 +1323,18 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
                 sha: t.sha.clone(),
                 at: t.at,
                 prev: t.prev.clone(),
-                at_text: t.at.map_or("-".into(), dated),
+                at_text: t.at.map_or("not read".into(), dated),
+                prev_text: t.prev.clone().unwrap_or_else(|| "first tag".into()),
                 reached,
                 reached_text,
                 prs: t.prs.clone(),
-                prs_text: cell(t.prs.iter().map(|n| format!("#{n}"))),
+                prs_text: if t.prs.is_empty() {
+                    "none merged".into()
+                } else {
+                    cell(t.prs.iter().map(|n| format!("#{n}")))
+                },
                 rows: vec![],
-                rows_text: "-".into(),
+                rows_text: "not recorded".into(),
             }
         })
         .collect()
@@ -1094,6 +1570,7 @@ mod tests {
             prs: &prs,
             live: &live,
             registry: Some(&reg),
+            since: 0,
             run_tags: &[],
         });
         let t = "2026-11-05T01:00:00Z";
@@ -1153,6 +1630,7 @@ mod tests {
                 prs: &prs,
                 live,
                 registry: Some(&reg),
+                since: 0,
                 run_tags: &[],
             })
             .join(&mut runs);
@@ -1196,6 +1674,7 @@ mod tests {
             prs: &[],
             live: &live,
             registry: None,
+            since: 0,
             run_tags: &[],
         });
         let rel = |r: &Run| g.release(r).map(|x| format!("{} {}", x.project, x.tag));
@@ -1305,6 +1784,7 @@ mod tests {
             prs: &[],
             live: &live,
             registry: None,
+            since: 0,
             run_tags: &logged,
         });
         let titled_run = |id, name: &str| Run {
@@ -1435,11 +1915,18 @@ mod tests {
             prs: &prs,
             live: &live,
             registry: Some(&reg),
+            since: 0,
             run_tags: &[],
         });
         let runs = vec![run("Acme/app", 55, "main", "x", "")];
         assert_eq!(
-            g.check(Some(&runs), now),
+            g.check(
+                &Facts {
+                    runs: Some(&runs),
+                    ..Default::default()
+                },
+                now
+            ),
             [
                 "app app-v1.2.0: acme/app#9 is not in the PR store",
                 "app web: deploy v1.1.0 names run acme/app#56 the runs ledger lacks",
@@ -1459,13 +1946,247 @@ mod tests {
             prs: &whole,
             live: &live,
             registry: Some(&reg),
+            since: 0,
             run_tags: &[],
         });
         let runs = vec![
             run("Acme/app", 55, "main", "x", ""),
             run("Acme/app", 56, "main", "x", ""),
         ];
-        assert!(g.check(Some(&runs), now).is_empty());
+        assert!(g
+            .check(
+                &Facts {
+                    runs: Some(&runs),
+                    ..Default::default()
+                },
+                now
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn the_link_checks_name_each_gap_from_the_day_they_are_held() {
+        let since = 1_794_384_000; // 2026-11-11
+        let now = since + 5000;
+        let ts = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339();
+        let reg = Registry::parse(
+            r#"{"trackers": {
+                "app": {"github": "Acme/app", "type": "app", "targets": [
+                    {"id": "app-prod", "pinned": {"deployed": true}},
+                    {"id": "app-steam", "pinned": {"deployed": "manual"}}],
+                  "deployWorkflows": {
+                    ".github/workflows/deploy.yml": ["app-prod"],
+                    ".github/workflows/gone.yml": "retired",
+                    ".github/workflows/bad.yml": ["nope"],
+                    ".github/workflows/odd.yml": 3}},
+                "early": {"repo": "app", "type": "app"},
+                "lib": {"github": "Acme/lib", "type": "app"}}}"#,
+        )
+        .unwrap();
+        let mut old = tag("app-v1.2.0", "1.2.0", since - 100);
+        old.prs = vec![10];
+        let mut new = tag("app-v1.3.0", "1.3.0", since + 10);
+        new.prs = vec![11, 12, 14];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                line: "release".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![new.clone(), old],
+                ..Default::default()
+            },
+        );
+        lines.insert(
+            "early".to_string(),
+            Line {
+                line: "build".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![new],
+                ..Default::default()
+            },
+        );
+        lines.insert(
+            "lib".to_string(),
+            Line {
+                line: "none".into(),
+                glob: Some("lib-v*".into()),
+                repo: Some("Acme/lib".into()),
+                ..Default::default()
+            },
+        );
+        let mut prod = channel("app-prod", vec![], None);
+        prod.pinned.source = "none".into();
+        prod.telemetry = vec![crate::releases::Watch {
+            watch: "app-errors".into(),
+            state: "missing".into(),
+            ..Default::default()
+        }];
+        let mut steam = channel("app-steam", vec![], None);
+        steam.pinned.source = "manual".into();
+        let chans = vec![prod, steam];
+        let human = |n| Pr {
+            author: Some("kb".into()),
+            ..pr("Acme/app", n, "x", "2026-11-05T00:00:00Z", None, None)
+        };
+        let prs = vec![
+            human(10),
+            human(11),
+            Pr {
+                author: Some("dependabot[bot]".into()),
+                ..human(12)
+            },
+            human(14),
+        ];
+        let mut items = vec![item(
+            "a",
+            "app",
+            "Acme/app#11",
+            "lab:s",
+            "agent-runtime:ar-1",
+        )];
+        items[0].finished = Some(ts(now - 10));
+        let v = |version: &str, rolled: i64, prs: Vec<u64>| LabVersion {
+            version: version.into(),
+            state: "shipped".into(),
+            rolled: Some(rolled),
+            prs,
+        };
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.environments.insert(
+            "app".into(),
+            Envs {
+                slug: "Acme/app".into(),
+                names: vec!["app-prod".into(), "production".into()],
+                error: None,
+            },
+        );
+        let wf = |p: &str, deploy| Workflow {
+            path: format!(".github/workflows/{p}"),
+            deploy,
+        };
+        links.workflows.insert(
+            "app".into(),
+            Workflows {
+                branch: "main".into(),
+                files: vec![
+                    wf("deploy.yml", true),
+                    wf("deploy-early.yml", true),
+                    wf("image.yml", true),
+                    wf("ci.yml", false),
+                    wf("bad.yml", false),
+                    wf("odd.yml", false),
+                ],
+                error: None,
+            },
+        );
+        links.versions.insert(
+            "app".into(),
+            Versions {
+                // v1.1.0 was rolled before the day and has no tag: history, not a red.
+                list: vec![
+                    v("v1.1.0", since - 50, vec![]),
+                    v("v1.4.0", since + 5, vec![11, 13]),
+                ],
+                error: None,
+            },
+        );
+        links.versions.insert(
+            "lib".into(),
+            Versions {
+                list: vec![v("v0.1.0", since - 50, vec![])],
+                error: None,
+            },
+        );
+        let deploy_run = |id, conclusion: &str| Run {
+            path: ".github/workflows/deploy.yml".into(),
+            conclusion: Some(conclusion.into()),
+            ..run("Acme/app", id, "main", "s", &ts(since + 20))
+        };
+        let runs = vec![deploy_run(70, "success"), deploy_run(71, "failure")];
+        let mut synced = HashMap::new();
+        let sync = |at: Option<i64>, error: Option<&str>| Synced {
+            synced_at: at.map(ts),
+            error: error.map(String::from),
+        };
+        synced.insert("Acme/app".to_string(), sync(Some(now - 60), None));
+        synced.insert("Acme/lib".to_string(), sync(Some(now - 4000), None));
+        synced.insert("Acme/x".to_string(), sync(None, Some("HTTP 403")));
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items: &items,
+            prs: &prs,
+            live: &live,
+            registry: Some(&reg),
+            since,
+            run_tags: &[],
+        });
+        let ladder: Vec<String> = ["draft", "dev", "alpha", "beta", "prod"]
+            .map(String::from)
+            .into();
+        let facts = Facts {
+            runs: Some(&runs),
+            links: Some(&links),
+            stages: HashMap::from([("early".to_string(), "draft".to_string())]),
+            ladder: &ladder,
+            synced: Some(&synced),
+        };
+        assert_eq!(
+            g.check(&facts, now),
+            [
+                "Acme/app run 70 (.github/workflows/deploy.yml) deployed and resolves to no release",
+                "Acme/app: environment production holds recorded Deployments and no registry target is named production",
+                "PR store: Acme/lib last synced 66m ago (over 30m)",
+                "PR store: Acme/x did not sync: HTTP 403",
+                "acme/app tag app-v1.3.0 is in the lines of app and early",
+                "app .github/workflows/deploy-early.yml: deploys early, which is draft: ahead of its stage",
+                "app .github/workflows/image.yml: a deploy workflow no registry target maps to (add it to deployWorkflows)",
+                "app app-prod: deployed: true and no Deployment recorded (record one, or declare it manual with a reason)",
+                "app app-prod: telemetry watch app-errors does not exist",
+                "app app-steam: deployed: manual with no reason",
+                "app app-v1.3.0: acme/app#14 has no board row",
+                "app app-v1.3.0: no lab version v1.3.0",
+                "app deployWorkflows .github/workflows/bad.yml: \"nope\" is no registry target",
+                "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",
+                "app deployWorkflows .github/workflows/odd.yml: give the targets it deploys, or a reason it deploys none",
+                "app lab v1.4.0: no tag of the line",
+                "app lab v1.4.0: row PR #11 shipped in app-v1.3.0",
+                "app lab v1.4.0: row PR #13 is in no tag of the line",
+                "lib: tag glob lib-v* matches no tag, and the lab has 1 shipped version(s)",
+            ]
+        );
+        // A tag the roll has not had two passes to freeze is not missing its version yet.
+        assert!(!g
+            .check(&facts, since + 1000)
+            .iter()
+            .any(|l| l.contains("no lab version")));
+        // Without the link facts or the sync record, only the checks over the stores remain.
+        let bare = g.check(
+            &Facts {
+                runs: Some(&runs),
+                ..Default::default()
+            },
+            now,
+        );
+        assert!(bare
+            .iter()
+            .all(|l| !l.contains("lab") && !l.starts_with("PR store")));
+        // A release before the day with no row is history nothing recorded, never a red.
+        let h = g.history("app", &chans);
+        assert_eq!(
+            h.iter().map(|s| s.rows_text.as_str()).collect::<Vec<_>>(),
+            ["ar-1", "before 2026-11-11"]
+        );
+        assert_eq!(h[1].prev_text, "first tag");
+        assert_eq!(
+            link_errors(&Links::default()),
+            ["the snapshot has no link facts (run release-state refresh)"]
+        );
     }
 
     #[test]

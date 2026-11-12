@@ -4,6 +4,7 @@
 //! answer and applies each table's view from the page's URL.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -119,9 +120,10 @@ impl Cache {
     }
 }
 
-/// One machine's page (`hub_core::machine_page`), kept for the host last asked for: its history
-/// is three week-long range queries and its recent jobs a pass over the jobs archive, so a reload
-/// or the page's own refresh inside `CACHE_SECS` is served the last read.
+/// One Infra page cache (a machine's, a pool's), kept for the name last asked for: each page's
+/// history is three week-long range queries (a machine's recent jobs also a pass over the jobs
+/// archive), so a reload or the page's own refresh inside `CACHE_SECS` is served the last read.
+/// The app keeps one per kind of page, so opening a pool does not drop the machine read.
 #[derive(Default)]
 pub struct Pages(ReadCache<String, CACHE_SECS, String>);
 
@@ -168,37 +170,6 @@ fn with_tables<const N: usize>(
     v.to_string()
 }
 
-impl Pages {
-    /// `#infra/machines/<host>`'s read: a name no machine has is a 404, and is not kept.
-    pub async fn get(
-        &self,
-        infra: &Cache,
-        alerts: &crate::alerts::Cache,
-        host: String,
-    ) -> Result<String, (StatusCode, String)> {
-        let read = async {
-            let i = infra.infra().await;
-            let firing = alerts.firing(infra).await;
-            let h = host.clone();
-            let now = hub_core::jobs::now().max(0) as u64;
-            let jobs = hub_core::builds::Paths::from_env().jobs;
-            off(move || {
-                machine_page::read(&i, &h, firing.as_deref().map_err(Clone::clone), &jobs, now)
-                    .map(|p| page_json(&p))
-            })
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-            .map_err(|e| (StatusCode::NOT_FOUND, e))
-        };
-        self.0.get(host.clone(), read).await.map(|s| (*s).clone())
-    }
-}
-
-/// One pool's page (`hub_core::pool_page`), kept for the pool last asked for: its history is
-/// three week-long range queries, so a reload inside `CACHE_SECS` is served the last read.
-#[derive(Default)]
-pub struct PoolPages(ReadCache<String, CACHE_SECS, String>);
-
 /// The page, its machines and waiting jobs sent once, as tables (`shown`, in their own order).
 fn pool_json(p: &PoolPage) -> String {
     let none = ViewQuery::new();
@@ -212,19 +183,57 @@ fn pool_json(p: &PoolPage) -> String {
     )
 }
 
-impl PoolPages {
-    /// `#infra/pools/<pool>`'s read: a name no pool has is a 404, and is not kept.
-    pub async fn get(&self, infra: &Cache, name: String) -> Result<String, (StatusCode, String)> {
+impl Pages {
+    /// `name`'s page: `inputs` reads what the page is made from, only on a miss, and hands back
+    /// the read that makes it off the async threads. A name its reader does not know is a 404,
+    /// and is not kept.
+    async fn get<F>(
+        &self,
+        name: String,
+        inputs: impl Future<Output = F>,
+    ) -> Result<String, (StatusCode, String)>
+    where
+        F: FnOnce() -> Result<String, String> + Send + 'static,
+    {
         let read = async {
-            let i = infra.infra().await;
-            let n = name.clone();
-            let now = hub_core::jobs::now().max(0) as u64;
-            off(move || pool_page::read(&i, &n, now).map(|p| pool_json(&p)))
+            off(inputs.await)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
                 .map_err(|e| (StatusCode::NOT_FOUND, e))
         };
-        self.0.get(name.clone(), read).await.map(|s| (*s).clone())
+        self.0.get(name, read).await.map(|s| (*s).clone())
+    }
+
+    /// `#infra/machines/<host>`'s read (`hub_core::machine_page`).
+    pub async fn machine(
+        &self,
+        infra: &Cache,
+        alerts: &crate::alerts::Cache,
+        host: String,
+    ) -> Result<String, (StatusCode, String)> {
+        let h = host.clone();
+        self.get(host, async move {
+            let i = infra.infra().await;
+            let firing = alerts.firing(infra).await;
+            let now = hub_core::jobs::now().max(0) as u64;
+            let jobs = hub_core::builds::Paths::from_env().jobs;
+            move || {
+                machine_page::read(&i, &h, firing.as_deref().map_err(Clone::clone), &jobs, now)
+                    .map(|p| page_json(&p))
+            }
+        })
+        .await
+    }
+
+    /// `#infra/pools/<pool>`'s read (`hub_core::pool_page`).
+    pub async fn pool(&self, infra: &Cache, name: String) -> Result<String, (StatusCode, String)> {
+        let n = name.clone();
+        self.get(name, async move {
+            let i = infra.infra().await;
+            let now = hub_core::jobs::now().max(0) as u64;
+            move || pool_page::read(&i, &n, now).map(|p| pool_json(&p))
+        })
+        .await
     }
 }
 

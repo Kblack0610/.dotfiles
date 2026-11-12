@@ -208,6 +208,16 @@ impl Registry {
         self.raw.get("trackers")?.get(name)?.as_object()
     }
 
+    /// Every object tracker with its key, in the file's order.
+    pub fn trackers(&self) -> impl Iterator<Item = (&str, &Map<String, Value>)> {
+        self.raw
+            .get("trackers")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, v)| Some((k.as_str(), v.as_object()?)))
+    }
+
     /// True when `name` is a value of `paths`: a repo with a registered checkout.
     fn in_paths(&self, name: &str) -> bool {
         self.raw

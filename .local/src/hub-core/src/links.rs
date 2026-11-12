@@ -80,7 +80,8 @@ pub fn page_of<'a>(tab: &str, arg: &'a str) -> Option<(Kind, &'a str)> {
     Some((p.kind, id.trim())).filter(|(_, id)| !id.is_empty())
 }
 
-fn page(kind: Kind) -> Option<&'static Page> {
+/// `kind`'s row, when its records have a page.
+pub fn page(kind: Kind) -> Option<&'static Page> {
     PAGES.iter().find(|p| p.kind == kind)
 }
 

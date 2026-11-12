@@ -89,7 +89,7 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     machines: infra::Pages,
-    pools: infra::PoolPages,
+    pools: infra::Pages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
         watch_off,
         infra: infra::Cache::default(),
         machines: infra::Pages::default(),
-        pools: infra::PoolPages::default(),
+        pools: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -151,6 +151,8 @@ async fn main() -> Result<()> {
         .route("/api/sessions/timer/{name}/start", post(sessions_start))
         .route("/api/asks", get(asks))
         .route("/api/asks/answer", post(answer))
+        .route("/api/asks/parked", get(parked_asks))
+        .route("/api/asks/park", post(park))
         .route("/api/asks/{id}/trace", get(ask_trace))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
@@ -1034,12 +1036,14 @@ struct Ask {
     answer_note: String,
     /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
     assume_at: String,
+    /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
+    parked_until: String,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note, assume_at.
+/// judge_reason, answer_note, assume_at, resume, parked_until.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -1076,19 +1080,48 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     reason: col(22).into(),
                     answer_note: col(23).into(),
                     assume_at: col(24).into(),
+                    parked_until: col(26).into(),
                 }
             })
         })
         .collect()
 }
 
-async fn asks() -> ApiResult<Json<Vec<Ask>>> {
+async fn list_asks(filter: &str) -> ApiResult<Json<Vec<Ask>>> {
     let out = tokio::process::Command::new("agent-ask")
-        .args(["list", "--all", "--pending"])
+        .args(["list", "--all", filter])
         .output()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-ask: {e}")))?;
     Ok(Json(parse_asks(&String::from_utf8_lossy(&out.stdout))))
+}
+
+/// What waits on the human now: a parked ask is left out until its date (agent-ask list --pending).
+async fn asks() -> ApiResult<Json<Vec<Ask>>> {
+    list_asks("--pending").await
+}
+
+/// The parked asks, for Home's Parked fold.
+async fn parked_asks() -> ApiResult<Json<Vec<Ask>>> {
+    list_asks("--parked").await
+}
+
+#[derive(Deserialize)]
+struct ParkBody {
+    id: String,
+    /// true puts a parked ask back on the boards now.
+    #[serde(default)]
+    unpark: bool,
+}
+
+/// Park an ask until the revisit date agent-ask gives it from its item's priority, or unpark it.
+async fn park(Json(b): Json<ParkBody>) -> ApiResult<StatusCode> {
+    if !ask_id_ok(&b.id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let verb = if b.unpark { "unpark" } else { "park" };
+    run_cmd("agent-ask", &[verb, &b.id], None).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -1280,7 +1313,7 @@ async fn infra_machine(
     State(s): State<Shared>,
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
-    let json = s.machines.get(&s.infra, &s.alerts, q.host).await?;
+    let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1291,7 +1324,7 @@ struct PoolQuery {
 
 /// One pool's page, read only when `#infra/pools/<pool>` opens. An unknown name is a 404.
 async fn infra_pool(State(s): State<Shared>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
-    let json = s.pools.get(&s.infra, q.name).await?;
+    let json = s.pools.pool(&s.infra, q.name).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1890,6 +1923,10 @@ mod tests {
         let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
         assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
         assert_eq!(parse_asks(ruled)[0].assume_at, "");
+        // parked_until is the last column, after resume.
+        let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
+        assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
+        assert_eq!(parse_asks(&armed)[0].parked_until, "");
     }
 
     #[test]
