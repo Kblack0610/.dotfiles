@@ -1,7 +1,7 @@
 "use strict";
 // Infra's CI runs and Tests sections, and the run table Releases' Release runs reuses.
 // Runs: CI runs of the last 30 days from /api/builds (hub_core::builds), with the Run times and
-// Quarantine folds above them; Releases reads the same with scope=release (Builds::releases).
+// Quarantine folds above them; Releases reads the same with scope=release (Scope::Release).
 // Tests: the suites of one finished run of a repo's declared test workflow from /api/tests
 // (hub_core::junit), the newest unless the picker names another. Each is the shared table
 // (table.js) under its own view keys (bq, bs, bsort, bdir; tq, ts, tsort, tdir, trun), so it sits

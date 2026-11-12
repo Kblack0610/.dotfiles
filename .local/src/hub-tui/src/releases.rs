@@ -1,10 +1,10 @@
 //! The Releases page: every app from `hub_core::releases::read` on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), one row each with what is live
 //! where it matters most. The opened app's pane lists its headline env's channels, its other envs
-//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps, Builds,
-//! Tests, `hub_core::layout`), switched with Left/Right.
+//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps and Release
+//! runs, `hub_core::layout`), switched with Left/Right.
 
-use hub_core::builds::Builds;
+use hub_core::builds::{Builds, Scope};
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
@@ -62,7 +62,6 @@ pub struct ChangelogRead {
     pub read: Option<Result<Changelog, String>>,
 }
 
-#[derive(Default)]
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
@@ -72,10 +71,24 @@ pub struct ReleasesView {
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
     pub cl: ChangelogRead,
-    /// The Release runs inner tab's table and pane, over `Builds::releases`.
+    /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
     pub inner: &'static str,
+}
+
+impl Default for ReleasesView {
+    fn default() -> Self {
+        ReleasesView {
+            table: DataTable::default(),
+            open: false,
+            down: 0,
+            others: false,
+            cl: ChangelogRead::default(),
+            runs: crate::builds::BuildsView::of(Scope::Release),
+            inner: "",
+        }
+    }
 }
 
 /// Releases' layout entry: its inner tabs.
@@ -84,13 +97,13 @@ pub fn tab() -> &'static layout::Tab {
 }
 
 /// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
-/// red release run of the last day (`b` is `Builds::releases`).
+/// red release run of the last day (`b` is the builds read, cut here to `Scope::Release`).
 pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
     let mut out = vec![];
     if s.needs_look() {
         out.push("table");
     }
-    if b.is_some_and(Builds::needs_look) {
+    if b.is_some_and(|b| b.needs_look(Scope::Release)) {
         out.push("runs");
     }
     out
@@ -184,6 +197,9 @@ impl ReleasesView {
             out.push(Line::styled(s.gaps.clone(), p.warn()));
         }
         out.push(Line::from(spans));
+        if !s.coverage.is_empty() {
+            out.push(Line::styled(s.coverage.clone(), p.dim()));
+        }
         if !s.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", s.errors.join("; ")),
@@ -339,9 +355,10 @@ pub fn detail(
     w: usize,
     cl: Option<&Result<Changelog, String>>,
 ) -> Vec<Line<'static>> {
-    let says = match a.live_text.as_str() {
-        "-" => a.status_text.clone(),
-        live => format!("{live}, {}", a.status_text),
+    let says = if hub_core::releases::blank(&a.live_text) {
+        a.status_text.clone()
+    } else {
+        format!("{}, {}", a.live_text, a.status_text)
     };
     let mut out = vec![
         clip_line(
@@ -366,6 +383,12 @@ pub fn detail(
             w,
         ),
     ];
+    if !a.coverage_text.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("  coverage {}", a.coverage_text), p.dim()),
+            w,
+        ));
+    }
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
         out.extend(channel(r, p, now, w));
@@ -417,12 +440,7 @@ pub fn detail(
         for h in a.history.iter().take(HISTORY_LINES) {
             let line = format!(
                 "    {}  {}  prev {}  reached {}  prs {}  rows {}",
-                h.tag,
-                h.at_text,
-                h.prev.as_deref().unwrap_or("-"),
-                h.reached_text,
-                h.prs_text,
-                h.rows_text
+                h.tag, h.at_text, h.prev_text, h.reached_text, h.prs_text, h.rows_text
             );
             let style = if h.reached.is_empty() { p.dim() } else { plain };
             out.push(clip_line(Line::styled(line, style), w));
@@ -799,6 +817,11 @@ mod tests {
                 tag: format!("v0.5.0-binks{}", 10 - i),
                 at_text: "11-10".into(),
                 prev: (i < 9).then(|| format!("v0.5.0-binks{}", 9 - i)),
+                prev_text: if i < 9 {
+                    format!("v0.5.0-binks{}", 9 - i)
+                } else {
+                    "first tag".into()
+                },
                 reached_text: if i == 0 {
                     "binks-steam-beta 11-10".into()
                 } else {
