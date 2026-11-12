@@ -1,4 +1,4 @@
-# hypr_dump <binds|registry> [config-dir]: what the real Hyprland Lua config declares, read
+# hypr_dump <binds|registry|rules> [config-dir]: what the real Hyprland Lua config declares, read
 # under plain Lua by hypr-lua-dump.lua, so no Hyprland is involved. Debian names it lua5.4.
 hypr_dump() {
   local lua

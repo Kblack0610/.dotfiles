@@ -199,7 +199,7 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
 }
 
-@test "start --resume opens its own session on the named server running claude --resume, and leaves the sheet alone" {
+@test "start --resume opens its own session on the named server running claude --resume, untagged, and leaves the sheet alone" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
   : > "$NOTES_FIXTURE/tmux.sessions.default"
@@ -207,11 +207,26 @@ load 'fleet_dispatch/common'
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
   assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
-  assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: resumed'
+  # No item from a start: the human's own conversation (a scratch send, a restore of their session).
+  assert_not_called '@dispatch'
   assert_not_called 'start fix crash'
   assert_not_called 'wt new'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "touched the row"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "a restore with no item wrote one"
+}
+
+# 2026-11-12: every restored or scratch-sent hand session came back labelled dispatch, and so
+# did each window the human opened in it with Prefix+c.
+@test "start --resume of a hand item (no origin) does not tag the session; the item records origin resume" {
+  project game beta "$SANDBOX/repos/game"
+  started_item mine hub:dotfiles
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session mine \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --item mine
+  assert_success
+  assert_not_called '@dispatch'
+  f=$(qitem running mine)
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin) $(qfield "$f" sessions)" 'default:mine resume abc-123'
 }
 
 @test "start --resume --prompt gives the resumed conversation its first message; without a resume it is refused" {
@@ -533,7 +548,8 @@ load 'fleet_dispatch/common'
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
   assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
-  assert_called 'set-option -t =planned: @dispatch game: plan-work'
+  # The session filed its own item (no origin): a hand session, so no @dispatch label.
+  assert_not_called '@dispatch'
   f=$(qitem running plan-work)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
 

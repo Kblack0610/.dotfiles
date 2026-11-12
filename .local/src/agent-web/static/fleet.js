@@ -120,7 +120,6 @@ function judgeTiles(j) {
   const tiles = tile("AGREE", j.agree, "var(--b-done)", j.precision == null ? "none scored" : `${j.precision}% precision`) +
     tile("DISAGREE", j.disagree, "var(--b-needs)", j.kappa == null ? "" : `kappa ${j.kappa}`) +
     tile("DEFERRED", j.deferred, "var(--c-other)", "judge said: ask you") +
-    tile("FALSE-DEFER", j.false_defer, "var(--b-needs)", "you took the recommendation") +
     tile("PENDING", j.pending, "var(--b-stalled)", "judged, unanswered") +
     tile("UNSCORED", j.unscored, "var(--c3)", "free text, no option named");
   return `<div class="tiles">${tiles}</div>`;
