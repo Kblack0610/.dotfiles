@@ -70,7 +70,7 @@ impl Cache {
 
     /// What fires now, one alert a place, for a machine page's alerts.
     pub async fn firing(&self, infra: &infra::Cache) -> Result<Vec<Alert>, String> {
-        self.read(infra).await.map(|a| a.pages())
+        self.read(infra).await.map(|a| a.pages().cloned().collect())
     }
 }
 

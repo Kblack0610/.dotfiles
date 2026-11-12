@@ -68,8 +68,8 @@ pub struct Alert {
     pub place: String,
     pub action: String,
     pub evidence: String,
-    /// An Alertmanager rule firing in more than one place is one row named for the rule, with
-    /// each alert (`am_row`) here; empty for any other row. `Alerts::pages` lists them flat.
+    /// An Alertmanager rule's row: each place it fires in (`am_row`), worst first; empty for any
+    /// other row. `Alerts::pages` lists them flat.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<Alert>,
 }
@@ -154,8 +154,11 @@ impl Row for Alert {
         ]
         .map(String::as_str)
         .into_iter()
-        .chain(self.pages.iter().map(|p| p.what.as_str()))
-        .chain(self.pages.iter().map(|p| p.place.as_str()))
+        .chain(
+            self.pages
+                .iter()
+                .flat_map(|p| [p.what.as_str(), p.place.as_str(), p.about.as_str()]),
+        )
         .collect::<Vec<_>>()
         .join("\n")
         .to_lowercase()
@@ -213,9 +216,9 @@ pub struct Counts {
     pub watches_error: usize,
     pub watches_ok: usize,
     pub watches_new: usize,
-    /// Alertmanager alerts, each place a rule fires in, and the rows they group into, one a rule.
+    /// Alertmanager's rows, one a rule, and the alerts under them, one a place a rule fires in.
     pub alertmanager: usize,
-    pub alertmanager_rules: usize,
+    pub alertmanager_alerts: usize,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -250,18 +253,14 @@ pub struct Alerts {
 impl Alerts {
     /// Every firing alert, one a place: a rule's row is its alerts. A machine's page matches
     /// these, since a rule's row names no one place.
-    pub fn pages(&self) -> Vec<Alert> {
-        self.firing
-            .iter()
-            .flat_map(|a| {
-                if a.pages.is_empty() {
-                    std::slice::from_ref(a)
-                } else {
-                    a.pages.as_slice()
-                }
-            })
-            .cloned()
-            .collect()
+    pub fn pages(&self) -> impl Iterator<Item = &Alert> {
+        self.firing.iter().flat_map(|a| {
+            if a.pages.is_empty() {
+                std::slice::from_ref(a)
+            } else {
+                a.pages.as_slice()
+            }
+        })
     }
 }
 
@@ -460,24 +459,29 @@ fn am_row(f: &Firing) -> Alert {
     }
 }
 
-/// Alertmanager's alerts as firing rows: a rule firing in one place is that alert's row; one
-/// firing in more is one row named for the rule, at its worst severity and oldest start, with each
-/// alert under it (`Alert::pages`) in `order`. Rules come in the order of their first alert.
+/// Alertmanager's alerts as firing rows, one a rule (alertname) however many places it fires in,
+/// so its row and a selection on it hold as that count moves: named for the rule, at its worst
+/// severity and oldest start, with each alert under it (`Alert::pages`) in `order`. What every
+/// alert says alike (what it checks, what to do) stays on the row; text that differs is each
+/// alert's own.
 fn am_rows(list: &[Firing]) -> Vec<Alert> {
-    let mut rules: Vec<(&str, Vec<Alert>)> = vec![];
+    let mut rules: BTreeMap<&str, Vec<Alert>> = BTreeMap::new();
     for f in list {
-        match rules.iter_mut().find(|r| r.0 == f.name) {
-            Some(r) => r.1.push(am_row(f)),
-            None => rules.push((f.name.as_str(), vec![am_row(f)])),
-        }
+        rules.entry(f.name.as_str()).or_default().push(am_row(f));
     }
     rules
         .into_iter()
         .map(|(name, mut pages)| {
-            if pages.len() == 1 {
-                return pages.remove(0);
-            }
             pages.sort_by_cached_key(order);
+            let shared = |text: fn(&Alert) -> &String| {
+                let first = text(&pages[0]);
+                if pages.iter().all(|p| text(p) == first) {
+                    first.clone()
+                } else {
+                    String::new()
+                }
+            };
+            let (about, action) = (shared(|p| &p.about), shared(|p| &p.action));
             let sev = pages
                 .iter()
                 .map(|p| p.sev.as_str())
@@ -489,8 +493,8 @@ fn am_rows(list: &[Firing]) -> Vec<Alert> {
                 what: name.to_string(),
                 source: ALERTMANAGER.into(),
                 since: pages.iter().filter_map(|p| p.since).min(),
-                about: format!("{name}: firing in {} places", pages.len()),
-                action: pages[0].action.clone(),
+                about,
+                action,
                 owner: "-".into(),
                 state: "firing".into(),
                 pages,
@@ -611,9 +615,9 @@ pub fn join(
 
     let watches = watches.unwrap_or_default();
     let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
-    let alerts = |a: &Alert| a.pages.len().max(1);
+    let am = || firing.iter().filter(|a| a.in_state(ALERTMANAGER));
     let counts = Counts {
-        firing: firing.iter().map(alerts).sum(),
+        firing: firing.len(),
         tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
         errors: firing.iter().filter(|a| a.error()).count(),
         no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
@@ -626,17 +630,16 @@ pub fn join(
         watches_error: n("ERROR"),
         watches_ok: n("OK"),
         watches_new: n("new"),
-        alertmanager: firing
-            .iter()
-            .filter(|a| a.in_state(ALERTMANAGER))
-            .map(alerts)
-            .sum(),
-        alertmanager_rules: firing.iter().filter(|a| a.in_state(ALERTMANAGER)).count(),
+        alertmanager: am().count(),
+        alertmanager_alerts: am().map(|a| a.pages.len()).sum(),
     };
     let strip = BTreeMap::from([
         ("firing", counts.firing),
         ("fixes", counts.fixes_open),
-        ("watches", counts.watches_tripped + counts.watches_error),
+        (
+            "watches",
+            counts.watches_tripped + counts.watches_error + counts.watches_new,
+        ),
     ]);
     let hue = |l: Level| firing.iter().any(|a| a.hue() == l);
     let level = if hue(Level::Red) {
@@ -794,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_tripped_and_nothing_red_is_zero_firing_ok_and_no_watch_count() {
+    fn nothing_tripped_and_nothing_red_is_zero_firing_ok_and_only_the_new_watch_counted() {
         // The negative control: with every watch ok and cc:red_now empty, nothing fires and the
         // tab is ok, so a red one below is the join's doing and not the fixture's.
         let a = join(
@@ -807,7 +810,10 @@ mod tests {
         assert_eq!(a.counts.firing, 0, "{:?}", a.firing);
         assert!(a.firing.is_empty());
         assert_eq!(a.level, Level::Ok);
-        assert_eq!(a.strip["watches"], 0, "no watch tripped or failing: no count");
+        assert_eq!(
+            a.strip["watches"], 1,
+            "nothing tripped or failing: the new watch to look at"
+        );
         assert_eq!(
             (a.counts.watches, a.counts.watches_ok, a.counts.watches_new),
             (3, 2, 1)
@@ -871,7 +877,10 @@ mod tests {
             ]
         );
         assert_eq!(a.level, Level::Red);
-        assert_eq!(a.strip["watches"], 2, "the tripped and failing watches");
+        assert_eq!(
+            a.strip["watches"], 3,
+            "the tripped, failing and new watches"
+        );
         assert_eq!(
             (a.counts.firing, a.counts.tripped, a.counts.errors),
             (3, 2, 1)
@@ -1107,7 +1116,7 @@ mod tests {
                 a.firing[0].state.as_str()
             ),
             ("CPUThrottlingHigh", "low", "firing"),
-            "no summary: the rule's name"
+            "a row is its rule"
         );
 
         i.alertmanager = Some(Ok(vec![
@@ -1144,14 +1153,16 @@ mod tests {
             got,
             [
                 ("delta", "sentinel", "low"),
-                ("Backup stale: freqtrade/lab", "alertmanager", "high"),
-                ("n1 killed 2 processes", "alertmanager", "normal"),
+                ("HomelabBackupStale", "alertmanager", "high"),
+                ("NodeOomKill", "alertmanager", "normal"),
             ]
         );
         let r = &a.firing[1];
         assert_eq!(r.about, "HomelabBackupStale");
-        assert_eq!(r.place, "namespace=freqtrade");
         assert!(r.action.contains("routed to ntfy"), "{}", r.action);
+        let page = &r.pages[0];
+        assert_eq!(page.what, "Backup stale: freqtrade/lab");
+        assert_eq!(page.place, "namespace=freqtrade");
         assert_eq!(
             (a.counts.tripped, a.counts.no_owner),
             (1, 1),
@@ -1197,9 +1208,9 @@ mod tests {
             got,
             [
                 ("HomelabCriticalVulnerability", "high", 3),
-                ("Backup stale: freqtrade/lab", "high", 0),
+                ("HomelabBackupStale", "high", 1),
             ],
-            "the rule takes its worst alert's severity; a rule firing once is its alert's row"
+            "the rule takes its worst alert's severity"
         );
         let rule = &a.firing[0];
         assert_eq!(rule.since, Some(NOW - 600), "its oldest start");
@@ -1209,22 +1220,35 @@ mod tests {
             rule.text().contains("image=nginx"),
             "a search finds a place"
         );
+        assert!(rule.action.contains("routed to ntfy"), "shared: on the row");
+        // The counts are rows, the alerts under them their own count.
+        let c = &a.counts;
+        assert_eq!((c.firing, c.alertmanager, c.alertmanager_alerts), (2, 2, 4));
+        assert_eq!(a.strip["firing"], 2);
+        assert_eq!((a.strip["fixes"], a.strip["watches"]), (0, 1));
+        assert_eq!(a.pages().count(), 4, "a machine page matches each alert");
+
+        // A rule going from one place to two keeps its row: the same what and place.
+        let key = |a: &Alerts| (a.firing[0].what.clone(), a.firing[0].place.clone());
+        i.alertmanager = Some(Ok(vec![cve("warning", "alpine", 60)]));
+        let one = join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+        let mut other = cve("warning", "nginx", 600);
+        other.description = "nginx has 3".into();
+        i.alertmanager = Some(Ok(vec![cve("warning", "alpine", 60), other]));
+        let two = join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
+        assert_eq!(key(&one), key(&two));
+        // Text the alerts do not share is each alert's, never one alert's on the row.
+        let rule = &two.firing[0];
+        assert_eq!(rule.about, "", "the descriptions differ");
+        let abouts: Vec<&str> = rule.pages.iter().map(|p| p.about.as_str()).collect();
         assert_eq!(
-            (
-                a.counts.firing,
-                a.counts.alertmanager,
-                a.counts.alertmanager_rules
-            ),
-            (4, 4, 2)
+            abouts,
+            [
+                "HomelabCriticalVulnerability: nginx has 3",
+                "HomelabCriticalVulnerability"
+            ]
         );
-        assert_eq!(a.strip["firing"], 4);
-        assert_eq!((a.strip["fixes"], a.strip["watches"]), (0, 0));
-        assert_eq!(a.pages().len(), 4, "a machine page matches each alert");
-        // negative control: two rules, one alert each, stay two rows with no alerts under them
-        i.alertmanager = Some(Ok(vec![am("A", "warning", "a"), am("B", "warning", "b")]));
-        let a = join(&i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
-        assert!(a.firing.iter().all(|r| r.pages.is_empty()));
-        assert_eq!(a.counts.alertmanager_rules, 2);
+        assert_eq!(one.firing[0].about, "HomelabCriticalVulnerability");
     }
 
     #[test]

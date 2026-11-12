@@ -39,7 +39,7 @@ const alertKey = (a) => `${a.source}|${a.what}|${a.place}`;
 function alertsFiringTitle(d) {
   const c = d?.counts;
   if (!c) return "Firing";
-  return `Firing <span class="muted">${c.firing}: ${c.tripped} trip, ${c.errors} error, ${c.no_owner} no owner, ${c.alertmanager} alertmanager${c.alertmanager_rules ? ` in ${c.alertmanager_rules} rules` : ""}</span>`;
+  return `Firing <span class="muted">${c.firing}: ${c.tripped} trip, ${c.errors} error, ${c.no_owner} no owner, ${c.alertmanager} alertmanager${c.alertmanager_alerts !== c.alertmanager ? ` (${c.alertmanager_alerts} alerts)` : ""}</span>`;
 }
 
 function alertsHead(d) {
@@ -76,8 +76,12 @@ function alertRow(a) {
   return open ? row + alertDetail(a) : row;
 }
 
-// A rule firing in many places: how many, beside its name.
-const alertCount = (a) => ((a.pages || []).length ? ` <span class="muted">${a.pages.length} alerts</span>` : "");
+// An Alertmanager rule beside its name: its one alert's summary, or how many alerts it has.
+function alertCount(a) {
+  const pages = a.pages || [];
+  if (pages.length > 1) return ` <span class="muted">(${pages.length} alerts)</span>`;
+  return pages.length && pages[0].what !== a.what ? ` <span class="muted">${esc(pages[0].what)}</span>` : "";
+}
 
 function alertDetail(a) {
   if ((a.pages || []).length) return alertPages(a);
@@ -96,11 +100,14 @@ function alertsBody(d) {
     : `<div class="panel">${t.total ? "No firing row matches." : "Nothing is firing."}</div>`;
 }
 
-// An opened rule: what to do, then each place it fires, worst first (hub_core::alerts::am_rows).
+// An opened rule: what its alerts all say (hub_core::alerts::am_rows), then each place it fires,
+// worst first, with the description and what to do that are that alert's own.
 function alertPages(a) {
-  const rows = a.pages.map((p) => `<tr><td class="${p.sev === "high" ? "bad" : "muted"}">${esc(p.sev)}</td><td class="wrap">${esc(p.what)}</td>` +
+  const own = (p) => [!a.about && p.about, !a.action && p.action].filter(Boolean).map((t) => `<div class="muted">${esc(t)}</div>`).join("");
+  const rows = a.pages.map((p) => `<tr><td class="${p.sev === "high" ? "bad" : "muted"}">${esc(p.sev)}</td><td class="wrap">${esc(p.what)}${own(p)}</td>` +
     `<td class="wrap muted">${esc(p.place || "-")}</td><td class="n">${p.since ? ago(p.since) : "-"}</td></tr>`).join("");
-  return `<tr class="wdet"><td colspan="7"><div class="sdet">` + (a.action ? `<div class="cline"><b>What to do</b> ${esc(a.action)}</div>` : "") +
+  const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${esc(v)}</div>` : "");
+  return `<tr class="wdet"><td colspan="7"><div class="sdet">` + line("What it checks", a.about) + line("What to do", a.action) +
     `<table class="tbl"><tr><th data-role="glance">sev</th><th data-role="lead">alert</th><th>where</th><th class="n" data-role="glance">since</th></tr>${rows}</table></div></td></tr>`;
 }
 

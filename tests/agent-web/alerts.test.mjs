@@ -48,7 +48,7 @@ const firing = [
   alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
   alert("dream", { state: "error", sev: "normal" }),
 ];
-const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0, alertmanager_rules: 0 };
+const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0, alertmanager_alerts: 0 };
 const strip = { firing: 2, fixes: 2, watches: 2 };
 const data = (o = {}) => ({
   at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
@@ -89,18 +89,30 @@ test("an old #alerts/<section> link opens the inner tab holding it", () => {
   assert.match(h, /<div data-in="firing" hidden>/);
 });
 
-test("a rule firing in many places is one row with its count, and opens its alerts", () => {
-  const page = (img, sev) => alert(`CVEs in ${img}`, { source: "alertmanager", sev, state: "firing", place: `image=${img}` });
-  const rule = alert("HomelabCriticalVulnerability", { source: "alertmanager", state: "firing", action: "routed to ntfy", pages: [page("postgres", "high"), page("nginx", "normal")] });
-  const h = show(data({ firing: [rule], rows: [rule] }));
-  assert.match(h, /<td class="wrap">HomelabCriticalVulnerability <span class="muted">2 alerts<\/span><\/td>/);
+test("a rule firing in many places is one row with its count, and opens its alerts with their own text", () => {
+  const page = (img, sev) => alert(`CVEs in ${img}`, { source: "alertmanager", sev, state: "firing", place: `image=${img}`, about: `${img} has 3`, action: "routed to ntfy" });
+  const rule = alert("HomelabCriticalVulnerability", { source: "alertmanager", state: "firing", about: "", action: "routed to ntfy", pages: [page("postgres", "high"), page("nginx", "normal")] });
+  const c = { ...counts, firing: 1, alertmanager: 1, alertmanager_alerts: 2 };
+  const h = show(data({ firing: [rule], rows: [rule], counts: c }));
+  assert.match(h, /0 no owner, 1 alertmanager \(2 alerts\)<\/span>/);
+  assert.match(h, /<td class="wrap">HomelabCriticalVulnerability <span class="muted">\(2 alerts\)<\/span><\/td>/);
   assert.ok(!h.includes("image=nginx"), "its alerts start closed");
   const tr = { dataset: { key: "alertmanager|HomelabCriticalVulnerability|" } };
   fire("click", { target: { closest: (sel) => (sel === "tr.jr" ? tr : null), dataset: {} } });
   const o = box.innerHTML;
   assert.match(o, /<b>What to do<\/b> routed to ntfy/);
   assert.ok(o.indexOf("image=postgres") < o.indexOf("image=nginx"), "the reader's order");
-  assert.match(o, /<td class="wrap">CVEs in nginx<\/td><td class="wrap muted">image=nginx<\/td>/);
+  assert.match(o, /<td class="wrap">CVEs in nginx<div class="muted">nginx has 3<\/div><\/td><td class="wrap muted">image=nginx<\/td>/);
+  assert.ok(!o.includes("What it checks"), "the descriptions differ: none on the row");
+  assert.equal(o.split("routed to ntfy").length, 2, "the shared action once, on the row");
+});
+
+test("a rule firing in one place keeps its row and names its alert's summary", () => {
+  const one = alert("CVEs in nginx", { source: "alertmanager", state: "firing", place: "image=nginx", about: "nginx has 3" });
+  const rule = alert("HomelabCriticalVulnerability", { source: "alertmanager", state: "firing", about: "nginx has 3", pages: [one] });
+  const h = show(data({ firing: [rule], rows: [rule], counts: { ...counts, firing: 1, alertmanager: 1, alertmanager_alerts: 1 } }));
+  assert.match(h, /1 alertmanager<\/span>/, "rows and alerts agree: no second count");
+  assert.match(h, /<td class="wrap">HomelabCriticalVulnerability <span class="muted">CVEs in nginx<\/span><\/td>/);
 });
 
 test("a firing row names its project, a fleet-wide one a dash, and the watches list carries it too", () => {

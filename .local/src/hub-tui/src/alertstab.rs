@@ -172,16 +172,16 @@ impl AlertsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Option<usize>) {
         let c = &a.counts;
-        let rules = match c.alertmanager_rules {
-            0 => String::new(),
-            n => format!(" in {n} rules"),
+        let alerts = match c.alertmanager_alerts {
+            n if n == c.alertmanager => String::new(),
+            n => format!(" ({n} alerts)"),
         };
         let mut out = vec![
             clip_line(
                 heading(
                     "FIRING",
                     format!(
-                        "  {}: {} trip, {} error, {} no owner, {} alertmanager{rules}",
+                        "  {}: {} trip, {} error, {} no owner, {} alertmanager{alerts}",
                         c.firing, c.tripped, c.errors, c.no_owner, c.alertmanager
                     ),
                     p,
@@ -323,10 +323,11 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
     };
     vec![
         cell(r.sev.clone(), sev),
-        if r.pages.is_empty() {
-            r.what.clone().into()
-        } else {
-            format!("{} ({} alerts)", r.what, r.pages.len()).into()
+        match r.pages.as_slice() {
+            [] => r.what.clone().into(),
+            [one] if one.what != r.what => format!("{}: {}", r.what, one.what).into(),
+            [_] => r.what.clone().into(),
+            many => format!("{} ({} alerts)", r.what, many.len()).into(),
         },
         cell(dash(&r.project), p.dim()),
         cell(r.source.clone(), p.dim()),
@@ -386,16 +387,22 @@ pub fn detail(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// An Alertmanager rule's opened row: what to do, then each of its alerts, worst first, with
-/// where it fires and since when.
+/// An Alertmanager rule's opened row: what its alerts all say (`hub_core::alerts::am_rows`),
+/// then each alert, worst first, with where it fires, since when, and the description and what
+/// to do that are its own.
 fn pages(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![clip_line(
-        Line::from(vec![
-            Span::styled(format!("    {:<LABEL$} ", "What to do"), p.dim()),
-            Span::raw(r.action.clone()),
-        ]),
-        w,
-    )];
+    let mut out = vec![];
+    for (label, text) in [("What it checks", &r.about), ("What to do", &r.action)] {
+        if !text.is_empty() {
+            out.push(clip_line(
+                Line::from(vec![
+                    Span::styled(format!("    {label:<LABEL$} "), p.dim()),
+                    Span::raw(text.clone()),
+                ]),
+                w,
+            ));
+        }
+    }
     for x in &r.pages {
         let since = x.since.map_or("-".into(), |t| hub_core::text::age(now - t));
         out.push(clip_line(
@@ -406,6 +413,14 @@ fn pages(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
             ]),
             w,
         ));
+        for (shared, own) in [(&r.about, &x.about), (&r.action, &x.action)] {
+            if shared.is_empty() && !own.is_empty() {
+                out.push(clip_line(
+                    Line::styled(format!("                     {own}"), p.dim()),
+                    w,
+                ));
+            }
+        }
     }
     out
 }
@@ -676,7 +691,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_rule_row_names_its_alert_count_and_opens_to_each_alert() {
+    fn a_rule_row_names_its_alert_count_and_opens_to_each_alert_with_its_own_text() {
         let mut a = sample();
         let am = |place: &str, sev: &str| Alert {
             sev: sev.into(),
@@ -684,17 +699,19 @@ pub(crate) mod tests {
             source: "alertmanager".into(),
             place: format!("image={place}"),
             since: Some(NOW - 7200),
+            about: format!("HomelabCriticalVulnerability: {place} has 3"),
             action: "routed to ntfy".into(),
             ..Default::default()
         };
-        a.firing.insert(
-            0,
-            Alert {
-                what: "HomelabCriticalVulnerability".into(),
-                pages: vec![am("api", "high"), am("web", "normal")],
-                ..am("api", "high")
-            },
-        );
+        let rule = |pages: Vec<Alert>, about: &str| Alert {
+            what: "HomelabCriticalVulnerability".into(),
+            about: about.into(),
+            place: String::new(),
+            pages,
+            ..am("api", "high")
+        };
+        a.firing
+            .insert(0, rule(vec![am("api", "high"), am("web", "normal")], ""));
         let v = AlertsView {
             open: true,
             ..Default::default()
@@ -704,8 +721,27 @@ pub(crate) mod tests {
         assert!(s.contains("What to do     routed to ntfy"), "{s}");
         assert!(s.contains("high       2h  CVEs in api  image=api"), "{s}");
         assert!(s.contains("CVEs in web  image=web"), "{s}");
+        // The descriptions differ, so each alert keeps its own and the row has none.
+        assert!(s.contains("HomelabCriticalVulnerability: web has 3"), "{s}");
+        assert!(!s.contains("What it checks"), "{s}");
         // Negative control: a single alert's row opens to what its watch says.
         assert!(!s.contains("playground-nightly ("), "{s}");
+
+        // One alert: its summary beside the rule, its description shared on the row.
+        a.firing[0] = rule(
+            vec![am("api", "high")],
+            "HomelabCriticalVulnerability: api has 3",
+        );
+        let (s, _) = page(&v, &a, 160);
+        assert!(
+            s.contains("HomelabCriticalVulnerability: CVEs in api"),
+            "{s}"
+        );
+        assert!(
+            s.contains("What it checks HomelabCriticalVulnerability: api has 3"),
+            "{s}"
+        );
+        assert_eq!(s.matches("api has 3").count(), 1, "said once: {s}");
     }
 
     #[test]

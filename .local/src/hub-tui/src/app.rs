@@ -1069,7 +1069,7 @@ impl App {
             let tx = self.tx.clone();
             let firing = (self.alerts.as_ref())
                 .filter(|_| page.reads_alerts())
-                .map(|a| a.pages());
+                .map(|a| a.pages().cloned().collect::<Vec<_>>());
             let jobs = self.files.builds.jobs.clone();
             let page = page.unread();
             std::thread::spawn(move || {
@@ -3349,8 +3349,8 @@ impl App {
 
     /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
     /// which already says all the pane would.
-    /// The Alerts tab's keys: Left/Right switch the inner tab, n/N step the sections, `w` shows
-    /// or folds the ok watches (on Watches). On
+    /// The Alerts tab's keys: Left/Right switch the inner tab, `w` shows or folds the ok watches
+    /// (on Watches). On
     /// Firing, the table's (/ f s S x; a new view shuts the opened row), j/k and the page keys
     /// move its selection, Enter opens the row under it, `o` its fix PR, `i` its queue item; Esc
     /// shuts the row, then clears the view, then is the global Esc. The other inner tabs scroll.
@@ -3369,18 +3369,12 @@ impl App {
                 self.av.follow = true;
                 return true;
             }
-            KeyCode::Char('n') if !typing => {
-                self.next_section(true);
-                return true;
-            }
-            KeyCode::Char('N') if !typing => {
-                self.next_section(false);
-                return true;
-            }
-            // `w` shows or folds the ok watches, on Watches.
+            // `w` shows or folds the ok watches, on Watches, which opens at its top.
             KeyCode::Char('w') if !typing => {
                 self.av.ok_watches = !self.av.ok_watches || self.av.on() != "watches";
                 self.av.inner = "watches";
+                self.scroll = 0;
+                self.av.follow = true;
                 return true;
             }
             _ if self.av.on() != "firing" => return false,
@@ -3882,10 +3876,10 @@ impl App {
             ),
             Tab::Alerts if self.av.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Alerts if self.av.on() == "firing" => format!(
-                "<-/-> view  j/k move  Enter open  o fix PR  i its item  w ok watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  j/k move  Enter open  o fix PR  i its item  w ok watches  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Alerts => format!(
-                "<-/-> view  j/k PgUp/PgDn scroll  w ok watches  n/N section  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  j/k PgUp/PgDn scroll  w ok watches  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.infra_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
                 "Esc {}  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
@@ -7665,9 +7659,16 @@ mod tests {
             "no table here"
         );
         assert!(a.hints().contains("<-/-> view") && !a.hints().contains("Enter open"));
+        assert!(!a.hints().contains("n/N"), "Left/Right step the inner tabs");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
         assert_eq!(a.av.on(), "firing");
+        assert!(!a.hints().contains("n/N"), "{}", a.hints());
+        // `w` from another inner tab opens Watches at its top, as Left/Right do.
+        a.scroll = 7;
+        a.handle(key('w'));
+        assert_eq!((a.av.on(), a.scroll), ("watches", 0));
+        a.av.inner = "firing";
         // A section word opens the inner tab holding it, as `hub --tab 'alerts history'` does.
         a.open_query(Some("history".into()));
         assert_eq!((a.av.on(), a.seek), ("history", Some("history")));
