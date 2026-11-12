@@ -142,7 +142,7 @@ test("no snapshot names the error instead of drawing a stale table", () => {
 test("an app is one row: its stage in its own column, what is deployed, its channels amber when one was not read, blanks dimmed", () => {
   show(data({ table: { ...table, links: [{ project: "#projects/binks" }] } }));
   const b = box.innerHTML;
-  assert.match(b, /<tr class="jr" data-key="binks"><td><a href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
+  assert.match(b, /<tr class="jr" data-key="binks"><td><a class="tl" href="#projects\/binks">binks<\/a><\/td><td class="warn" title="alpha: no alpha target deployed">alpha<\/td><td class="wrap">v1 prod<\/td><td class="bad">drift<\/td><td class="wrap warn">1 drift, 1 not read<\/td><td class="">v2 11-05<\/td><td class="warn">11-06 15:00 fail<\/td><\/tr>/);
   assert.match(b, /data-label="stage"><button class="thsort" data-tsort="stage"/, "the stage sorts and filters as a column");
   assert.match(b, /data-label="deployed"><button class="thsort" data-tsort="live"/, "a deploy is not the app being live");
   assert.match(b, /placeholder="search, or stage:alpha channel:prod status:drift"/);
