@@ -287,9 +287,10 @@ function doneToday(inst, t1) {
   return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
 }
 
-// The CI tab: the slots of hub_core::ci, the queued jobs with what each needs and the hosts that
-// can take it, the day's failures, then the finished runs by workflow and the day's tiles. Each
-// pool's queue and last day are the Pools table on Machines.
+// The CI runners section: the slots of hub_core::ci, the queued jobs with what each needs and the
+// hosts that can take it, the day's failures, then the finished runs by workflow and the day's
+// tiles. Each pool's queue and last day are the Pools table on Machines; the runs themselves
+// (hub_core::builds) and the Tests are the sections under it (ci.js).
 const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
 function ciSection(inst, t1, ci) {
   const failed = failedCount(inst), done = ci.done;
@@ -304,7 +305,7 @@ function ciSection(inst, t1, ci) {
   html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin)}</span></h3>${INFRA_T.finished.html()}`;
   const open = secOpen(ist.open, "ci-more") ? " open" : "";
   html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today</summary>${doneToday(inst, t1)}</details>`;
-  return html + `<div class="cline">Runs: every CI run is on <a href="#releases/builds">Releases, Builds</a></div>`;
+  return html;
 }
 
 // The governor's global series: whether it is up and saw every source, its queue, and the budget
@@ -497,7 +498,10 @@ function drawInfra() {
   const el = $("infra-main");
   const d = ist.data;
   // The strip comes first on every path, then each section in its inner tab's group
-  // (hub_core::layout, app.js INNER_TABS). Jobs is its own element under main.
+  // (hub_core::layout, app.js INNER_TABS). CI's runs and Tests (ci.js) and Jobs (jobs.js) are
+  // elements of their own under main, each painted by its own read.
+  innerHide("infra", "runs", $("ci-runs"));
+  innerHide("infra", "tests", $("ci-tests"));
   innerHide("infra", "jobs", $("jobs"));
   const strip = innerStrip("infra", infraFlagged(d));
   if (machineHost()) { paint(el, strip + machinePage()); return; }
@@ -528,18 +532,23 @@ function renderInfra() {
 }
 
 // The sections whose inner tab carries a count: CI lines hub_core::ci judged red (a queued job no
-// online runner can take); the hub's App::infra_flagged reads the same.
-const infraFlagged = (d) => (d && d.ci && (d.ci.red || []).length ? ["ci"] : []);
+// online runner can take), runs that need a look (Builds::needs_look) and a failed suite in the
+// Tests run on show (ci.js); the hub's App::infra_flagged reads the same.
+const infraFlagged = (d) => [d && d.ci && (d.ci.red || []).length && "ci", bld.data?.look && "runs", tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
 const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 
 TABS.infra = {
-  // The Jobs section (jobs.js) reads its own source on its own timer.
+  // The Jobs section (jobs.js) reads its own source on its own timer; CI's runs and Tests (ci.js)
+  // read on show and again on each new ledger line.
   show() {
     const h = machineHost();
     if (h !== mst.host) { Object.assign(mst, { host: h, data: null, err: null, all: false }); if (h) refreshMachine(); }
-    renderInfra(); pollInfra(); jst.render(); pollJobs();
+    renderInfra(); pollInfra(); jst.render(); pollJobs(); bldFeed.show(!bld.data); tstFeed.show(!tst.data);
   },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); } },
+  onEvent(ev) {
+    if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); }
+    bldFeed.onEvent(ev); tstFeed.onEvent(ev);
+  },
 };

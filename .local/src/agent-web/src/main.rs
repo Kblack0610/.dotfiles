@@ -1332,10 +1332,9 @@ async fn releases_list(State(s): State<Shared>, Query(q): Query<schedules::Query
 }
 
 async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
-    let (rates, items) = tokio::join!(s.infra.rates(), s.queue.items());
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q, rates, items).await,
+        builds::get(q, s.queue.items().await).await,
     )
         .into_response()
 }

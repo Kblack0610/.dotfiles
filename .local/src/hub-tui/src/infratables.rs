@@ -46,6 +46,12 @@ impl InfraTables {
         }
     }
 
+    /// Its rows are picked with j/k and opened with Enter: Machines only, since CI's Enter opens
+    /// its runs table (P5 makes its rows open).
+    pub fn picks(inner: &str) -> bool {
+        inner == "machines"
+    }
+
     /// The table with the keys on this inner tab: the one last given them, else its first.
     pub fn focus(&self, inner: &str) -> Option<usize> {
         let on = Self::on(inner);
@@ -133,6 +139,9 @@ impl InfraTables {
         let (Some(infra), Some(i)) = (infra, self.focus(inner)) else {
             return false;
         };
+        if !Self::picks(inner) {
+            return false;
+        }
         if !matches!(
             k.code,
             KeyCode::Char('j' | 'k' | 'g' | 'G')
@@ -153,6 +162,9 @@ impl InfraTables {
     /// What Enter opens: the selected row's record in the table with the keys (`Row::link`).
     pub fn opens(&self, infra: Option<&Infra>, inner: &str) -> Option<Link> {
         let (infra, i) = (infra?, self.focus(inner)?);
+        if !Self::picks(inner) {
+            return None;
+        }
         let t = &self.views[i];
         fn sel<R: Row>(t: &DataTable, rows: &[R]) -> Option<Link> {
             DataTable::opens(*t.view.apply(rows).get(t.sel)?)
@@ -183,6 +195,7 @@ impl InfraTables {
         let d = Draw {
             t: &self.views[i],
             keys: self.focus(inner) == Some(i),
+            picks: Self::picks(inner),
             more: Self::on(inner).len() > 1,
             p,
             w,
@@ -202,6 +215,8 @@ struct Draw<'a> {
     t: &'a DataTable,
     /// It has the table keys.
     keys: bool,
+    /// Its selected row is marked (`InfraTables::picks`).
+    picks: bool,
     /// Another table on the inner tab can take them (`c`).
     more: bool,
     p: Palette,
@@ -254,7 +269,7 @@ impl Draw<'_> {
         }
         .fit(self.w, p.head());
         // The table with the keys marks its selected row, which Enter opens.
-        if self.keys {
+        if self.keys && self.picks {
             if let Some(l) = lines.get_mut(self.t.sel.min(n.saturating_sub(1)) + 1) {
                 l.style = p.sel();
             }

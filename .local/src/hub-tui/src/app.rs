@@ -211,6 +211,10 @@ const BUILD_LOG_MIN: usize = 6;
 fn infra_tab() -> &'static hub_core::layout::Tab {
     hub_core::layout::resolve("infra").expect("infra is a tab")
 }
+/// The tabs that draw the CI runs ledger: Infra's CI runs and Releases' Release runs.
+fn reads_runs(t: Tab) -> bool {
+    matches!(t, Tab::Releases | Tab::Infra)
+}
 /// The footer while a table's query is being typed.
 const QUERY_HINT: &str = "type a query (word, key:value, -key:value), Enter applies, Esc cancels";
 
@@ -230,7 +234,7 @@ pub struct BoardFiles {
     pub tokens: PathBuf,
     /// `release-state`'s directory: its snapshot is replaced by a rename when a refresh finishes.
     pub releases: PathBuf,
-    /// schedules-sync's run ledger behind Releases' Builds section.
+    /// schedules-sync's run ledger behind Infra's CI runs and Releases' Release runs.
     pub builds: builds::Paths,
     /// The Queue tab's Candidates: the snapshot each real `fleet-dispatch run` writes.
     pub candidates: PathBuf,
@@ -455,7 +459,11 @@ pub struct App {
     pub schedules: Option<Schedules>,
     pub rv: ReleasesView,
     pub releases: Option<Releases>,
+    /// Every CI run: Infra's CI runs table, over `ci`.
     pub builds: Option<Builds>,
+    /// The runs tied to a release (`Builds::releases`): Releases' Release runs, over `rv.runs`.
+    pub release_builds: Option<Builds>,
+    pub ci: bv::BuildsView,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -561,6 +569,8 @@ pub struct App {
     seek: Option<&'static str>,
     /// Infra's Jobs section opened as the whole jobs table.
     pub infra_jobs: bool,
+    /// Infra's CI Runs section opened as the whole runs table.
+    pub infra_runs: bool,
     /// Infra's inner tab shown (a `hub_core::layout::Inner` id of Infra).
     pub infra_inner: &'static str,
     /// Infra shows every inner tab's sections under the strip: the printed page (`hub --once`),
@@ -634,6 +644,8 @@ impl App {
             rv: ReleasesView::default(),
             releases: None,
             builds: None,
+            release_builds: None,
+            ci: bv::BuildsView::default(),
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -695,6 +707,7 @@ impl App {
             sections: vec![],
             seek: None,
             infra_jobs: false,
+            infra_runs: false,
             infra_inner: hub_core::layout::inner_tab(infra_tab(), None).map_or("", |i| i.id),
             infra_all: false,
             scroll: 0,
@@ -1055,6 +1068,7 @@ impl App {
         }
         self.go(Tab::Infra);
         self.infra_inner = "machines";
+        self.infra_runs = false;
         self.machine_page = Some(host.to_string());
         self.read_reds();
         self.read_alerts();
@@ -1557,6 +1571,8 @@ impl App {
                     self.read_queue();
                     if self.tab == Tab::Releases {
                         self.read_releases();
+                    }
+                    if reads_runs(self.tab) {
                         self.read_builds();
                     }
                 }
@@ -1598,7 +1614,7 @@ impl App {
             Msg::TokenFiles => {}
             Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
             Msg::ReleaseFile => {}
-            Msg::BuildFile if self.tab == Tab::Releases => self.read_builds(),
+            Msg::BuildFile if reads_runs(self.tab) => self.read_builds(),
             Msg::BuildFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
@@ -1700,12 +1716,18 @@ impl App {
                 self.sync_changelog();
             }
             Msg::Builds(b) => {
-                let id = self.selected_build().map(hub_core::builds::Run::key);
+                let key = |v: &bv::BuildsView, b: Option<&Builds>| {
+                    b.and_then(|b| v.selected(b))
+                        .map(hub_core::builds::Run::key)
+                };
+                let ci = key(&self.ci, self.builds.as_ref());
+                let rel = key(&self.rv.runs, self.release_builds.as_ref());
+                let rb = b.releases(jobs::now());
+                self.ci.reselect(&b, ci);
+                self.rv.runs.reselect(&rb, rel);
                 self.builds = Some(*b);
-                if let Some(b) = &self.builds {
-                    self.rv.builds.reselect(b, id);
-                }
-                if self.builds_read.done() && self.tab == Tab::Releases {
+                self.release_builds = Some(rb);
+                if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
             }
@@ -1803,13 +1825,18 @@ impl App {
                 }
             }
             Msg::Log(gen, text) => {
-                let logs = [self.jv.log.as_mut(), self.rv.builds.log.as_mut()];
+                let logs = [
+                    self.jv.log.as_mut(),
+                    self.ci.log.as_mut(),
+                    self.rv.runs.log.as_mut(),
+                ];
                 if let Some(l) = logs.into_iter().flatten().find(|l| l.gen == gen) {
                     l.text = Some(text);
                 }
             }
             Msg::BuildDetail(gen, d) => {
-                if let Some(p) = self.rv.builds.detail.as_mut().filter(|p| p.gen == gen) {
+                let panes = [self.ci.detail.as_mut(), self.rv.runs.detail.as_mut()];
+                if let Some(p) = panes.into_iter().flatten().find(|p| p.gen == gen) {
                     p.read = Some(*d);
                 }
             }
@@ -2041,6 +2068,8 @@ impl App {
                 }
                 if self.tab == Tab::Releases {
                     self.read_releases();
+                }
+                if reads_runs(self.tab) {
                     self.read_builds();
                 }
                 if self.tab == Tab::Costs {
@@ -2239,6 +2268,7 @@ impl App {
                     // `hub --tab 'infra reds'`: an inner tab's own name opens it at its top.
                     self.infra_inner = id;
                     self.infra_jobs = false;
+                    self.infra_runs = false;
                     self.scroll = 0;
                 } else if let Some((table, chip)) = hub_core::layout::moved_chip("infra", &q) {
                     // `hub --tab 'infra governor'`: the table it moved into, under its chip.
@@ -2283,10 +2313,12 @@ impl App {
         }
     }
 
-    /// Show one section of the tab: Infra's Jobs opens the jobs table, Log's History its day
-    /// list and a Log fold opens; any other scrolls to its heading at the next draw.
+    /// Show one section of the tab: Infra's Jobs opens the jobs table and its Runs the runs
+    /// table, Log's History its day list and a Log fold opens; any other scrolls to its heading
+    /// at the next draw.
     fn open_section(&mut self, sec: &'static str) {
         self.infra_jobs = sec == "jobs";
+        self.infra_runs = self.tab == Tab::Infra && sec == "runs";
         if self.tab == Tab::Infra {
             // A section on another inner tab switches to it; a pinned one keeps the one shown.
             if let Some(id) = crate::innertabs::named(infra_tab(), sec) {
@@ -2299,7 +2331,7 @@ impl App {
             self.log_open.push(sec);
             self.read_log_folds();
         }
-        if !self.infra_jobs && !self.log_days {
+        if !self.infra_jobs && !self.infra_runs && !self.log_days {
             self.seek = Some(sec);
         }
     }
@@ -2317,6 +2349,7 @@ impl App {
         self.tab = t;
         self.scroll = 0;
         self.infra_jobs = false;
+        self.infra_runs = false;
         self.log_days = false;
         self.log_actions = false;
         self.log_work = false;
@@ -2340,6 +2373,8 @@ impl App {
         }
         if t == Tab::Releases {
             self.read_releases();
+        }
+        if reads_runs(t) {
             self.read_builds();
         }
         if t == Tab::Costs {
@@ -2933,9 +2968,9 @@ impl App {
 
     /// Infra's own keys. The summary: Left/Right switch the inner tab, n/N jump between
     /// sections, the table keys (/ f s S x, Esc) go to the inner tab's table that has them and
-    /// `c` passes them on (`infratables`); on Jobs, Enter and the jobs keys (/ s f h) open the
-    /// jobs table, as Enter does anywhere. The jobs table: its keys, and Esc with nothing to clear
-    /// goes back to the summary.
+    /// `c` passes them on (`infratables`); on CI, Enter opens the runs table and `t` it with Run
+    /// times; elsewhere Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs
+    /// tables: their keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
         // A machine's page: Esc back to the tables, `o` its Grafana board, Left/Right another
         // inner tab; the rest scroll it.
@@ -2960,6 +2995,21 @@ impl App {
                 _ => return false,
             }
             return true;
+        }
+        if self.infra_runs {
+            let v = &self.ci;
+            let root = v.table.is_default() && v.log.is_none() && v.times.is_none();
+            if root && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+                self.infra_runs = false;
+                return true;
+            }
+            if k.code == KeyCode::Char('t') && self.ci.table.typing.is_none() {
+                self.ci.times = self.ci.times.xor(Some(0));
+                self.ci.log = None;
+                self.ci.detail = None;
+                return true;
+            }
+            return self.builds_key(k);
         }
         if !self.infra_jobs {
             if !crate::infratables::InfraTables::on(self.infra_inner).is_empty() {
@@ -2986,6 +3036,15 @@ impl App {
                         return true;
                     }
                 }
+            }
+            // CI's runs table is one key away, as Jobs is from the rest: Enter opens it, `t`
+            // with Run times.
+            if self.infra_inner == "ci" && matches!(k.code, KeyCode::Enter | KeyCode::Char('t')) {
+                self.infra_runs = true;
+                if k.code == KeyCode::Char('t') {
+                    self.ci.times = Some(0);
+                }
+                return true;
             }
             match k.code {
                 KeyCode::Left | KeyCode::Right => {
@@ -3207,13 +3266,27 @@ impl App {
         self.go(Tab::Alerts);
     }
 
+    /// The runs table this tab shows and the runs under it: Infra's CI runs (every run), or
+    /// Releases' Release runs (the runs tied to a release).
+    fn runs(&self) -> (&bv::BuildsView, Option<&Builds>) {
+        if self.tab == Tab::Infra {
+            (&self.ci, self.builds.as_ref())
+        } else {
+            (&self.rv.runs, self.release_builds.as_ref())
+        }
+    }
+
+    fn runs_mut(&mut self) -> &mut bv::BuildsView {
+        if self.tab == Tab::Infra {
+            &mut self.ci
+        } else {
+            &mut self.rv.runs
+        }
+    }
+
     fn selected_build(&self) -> Option<&hub_core::builds::Run> {
-        let b = self.builds.as_ref()?;
-        self.rv
-            .builds
-            .shown(b)
-            .get(self.rv.builds.table.sel)
-            .copied()
+        let (v, b) = self.runs();
+        v.selected(b?)
     }
 
     /// Enter on a run: its detail and failed-job log, read now and never before. The detail is
@@ -3223,16 +3296,17 @@ impl App {
             return;
         };
         let (title, key, url) = (bv::log_title(r), r.key(), r.url.clone());
-        self.rv.builds.times = None;
         self.log_gen += 1;
         let gen = self.log_gen;
-        self.rv.builds.log = Some(LogPane {
+        let v = self.runs_mut();
+        v.times = None;
+        v.log = Some(LogPane {
             title,
             text: None,
             back: 0,
             gen,
         });
-        self.rv.builds.detail = Some(bv::DetailPane {
+        v.detail = Some(bv::DetailPane {
             gen,
             read: None,
             top: 0,
@@ -3266,17 +3340,22 @@ impl App {
         });
     }
 
-    /// The Builds table's keys while it has them: Enter reads the run's log, `o` opens its page.
+    /// A runs table's keys while it has them: Enter reads the run's log, `o` opens its page.
     fn builds_key(&mut self, k: KeyEvent) -> bool {
-        if self.rv.builds.table.key::<hub_core::builds::Run>(k.code) != Took::No {
+        if self.runs_mut().table.key::<hub_core::builds::Run>(k.code) != Took::No {
             return true;
         }
-        let rows = self
+        let rows = match self.runs() {
+            (v, Some(b)) => v.shown(b).len(),
+            _ => 0,
+        };
+        // Run times is every workflow's, on Infra's table alone.
+        let last = self
             .builds
             .as_ref()
-            .map_or(0, |b| self.rv.builds.shown(b).len());
+            .map_or(0, |b| bv::times_rows(b).saturating_sub(1));
         let n = self.page.max(1);
-        let bv = &mut self.rv.builds;
+        let bv = self.runs_mut();
         match k.code {
             c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
                 if bv.log.as_mut().is_some_and(|l| l.scroll(c, n)) => {}
@@ -3299,10 +3378,6 @@ impl App {
                     n
                 };
                 // Stored clamped, so scrolling back up past the end moves at once.
-                let last = self
-                    .builds
-                    .as_ref()
-                    .map_or(0, |b| bv::times_rows(b).saturating_sub(1));
                 bv.times = Some(match c {
                     KeyCode::PageDown | KeyCode::Char('J') => (top + step).min(last),
                     _ => top.saturating_sub(step),
@@ -3336,30 +3411,16 @@ impl App {
     /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
     /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
-        let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
+        let typing = self.rv.runs.table.typing.is_some() || self.rv.table.typing.is_some();
         let on = self.rv.on();
-        // Left and Right switch the inner tabs (Apps, Builds, Tests).
+        // Left and Right switch the inner tabs (Apps, Release runs).
         if !typing && matches!(k.code, KeyCode::Left | KeyCode::Right) {
             let to = crate::innertabs::step(releases::tab(), on, k.code == KeyCode::Left);
             self.rv.show(to);
             return true;
         }
-        // `t` opens each workflow's usual run time in the Builds pane, from any inner tab.
-        if !typing && k.code == KeyCode::Char('t') {
-            let bv = &mut self.rv.builds;
-            bv.times = if bv.times.is_some() && on == "builds" {
-                None
-            } else {
-                Some(0)
-            };
-            bv.log = None;
-            self.rv.show("builds");
-            return true;
-        }
-        match on {
-            "builds" => return self.builds_key(k),
-            "tests" => return false,
-            _ => {}
+        if on == "runs" {
+            return self.builds_key(k);
         }
         if self.rv.table.key::<ReleaseApp>(k.code) != Took::No {
             self.sync_changelog();
@@ -3458,6 +3519,8 @@ impl App {
         self.page = body.height.saturating_sub(2) as usize;
         if self.tab == Tab::Infra && self.infra_jobs {
             self.draw_jobs(f, body);
+        } else if self.tab == Tab::Infra && self.infra_runs {
+            self.draw_runs(f, body, "Runs");
         } else if self.tab == Tab::Schedules {
             self.draw_schedules(f, body);
         } else if self.tab == Tab::Releases {
@@ -3588,9 +3651,22 @@ impl App {
             Tab::Infra if self.machine_page.is_some() && !self.infra_jobs => format!(
                 "Esc all machines  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Infra if self.infra_runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Infra if self.infra_runs && self.ci.times.is_some() => {
+                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  q quit".into()
+            }
+            Tab::Infra if self.infra_runs && self.ci.log.is_some() => {
+                "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  q quit".into()
+            }
+            Tab::Infra if self.infra_runs => format!(
+                "Enter log  t run times, quarantine  / query  f state  s sort  S asc/desc  x clear  o open run  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Infra if !self.infra_jobs && self.infra_inner == "ci" => format!(
+                "<-/-> view  n/N section  Enter runs table  t run times  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
+            ),
             Tab::Infra
                 if !self.infra_jobs
-                    && !crate::infratables::InfraTables::on(self.infra_inner).is_empty() =>
+                    && crate::infratables::InfraTables::picks(self.infra_inner) =>
             {
                 format!(
                     "<-/-> view  n/N section  j/k pick  Enter open  / f s S x table  c next table  PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
@@ -3618,24 +3694,18 @@ impl App {
             Tab::Infra => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Releases if self.rv.table.typing.is_some() || self.rv.builds.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Releases if self.rv.on() == "builds" && self.rv.builds.times.is_some() => {
-                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  <-/-> view  q quit".into()
-            }
-            Tab::Releases if self.rv.on() == "builds" && self.rv.builds.log.is_some() => {
+            Tab::Releases if self.rv.table.typing.is_some() || self.rv.runs.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Releases if self.rv.on() == "runs" && self.rv.runs.log.is_some() => {
                 "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
             }
-            Tab::Releases if self.rv.on() == "builds" => format!(
-                "<-/-> view  Enter log  t run times, quarantine  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Releases if self.rv.on() == "tests" => format!(
-                "<-/-> view  t run times, quarantine  r refresh  {tabs} tabs  q quit"
+            Tab::Releases if self.rv.on() == "runs" => format!(
+                "<-/-> view  Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
                 "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  <-/-> view  q quit".into()
             },
             Tab::Releases => format!(
-                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  t run times, quarantine  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3757,12 +3827,40 @@ impl App {
     }
 
     /// Infra's sections needing a look, for the strip's counts: the CI lines `hub_core::ci`
-    /// judged red (a queued job no online runner can take).
+    /// judged red (a queued job no online runner can take) and a red run of the last day. The
+    /// TUI reads no tests run, so Tests carries no count here.
     fn infra_flagged(&self, i: Option<&hub_core::infra::Infra>) -> Vec<&'static str> {
         let mut out = vec![];
         if i.is_some_and(|i| !i.ci.red.is_empty()) {
             out.push("ci");
         }
+        if self.builds.as_ref().is_some_and(Builds::needs_look) {
+            out.push("runs");
+        }
+        out
+    }
+
+    /// Infra's CI Runs section: the runs line and the first rows; Enter opens the whole table.
+    fn runs_section(&self, w: usize) -> Vec<Line<'static>> {
+        let Some(b) = &self.builds else {
+            return vec![
+                Line::styled("RUNS", self.p.head()),
+                Line::styled("Reading runs...", self.p.dim()),
+            ];
+        };
+        let mut out = self.ci.status("RUNS", b, self.p, jobs::now());
+        let table = self.ci.table(b, self.p, w, false, jobs::now());
+        let rows = table.len().saturating_sub(1);
+        out.extend(table.into_iter().take(1 + JOBS_SHOWN));
+        out.push(crate::fit::clip_line(
+            Line::styled(
+                format!(
+                    "  {rows} rows; Enter opens the table (/ search, f state, Enter log), t run times and quarantine"
+                ),
+                self.p.dim(),
+            ),
+            w,
+        ));
         out
     }
 
@@ -3982,6 +4080,12 @@ impl App {
                 if shown.contains(&"jobs") {
                     secs.push(("jobs", self.jobs_section(w)));
                 }
+                if shown.contains(&"runs") {
+                    secs.push(("runs", self.runs_section(w)));
+                }
+                if shown.contains(&"tests") {
+                    secs.push(("tests", bv::tests_note(self.p, w)));
+                }
                 let strip = crate::innertabs::strip(
                     tab,
                     self.infra_inner,
@@ -4190,12 +4294,19 @@ impl App {
             );
             return;
         };
-        // The strip, then the inner tab shown, with its own pane under it: the app's, or the
-        // run's log or run times.
         let on = self.rv.on();
-        let log =
-            on == "builds" && (self.rv.builds.log.is_some() || self.rv.builds.times.is_some());
-        let (list, pane) = if (on == "apps" && self.rv.open) || log {
+        let w = area.width as usize;
+        let flagged = releases::flagged(s, self.release_builds.as_ref());
+        let strip = crate::innertabs::strip(releases::tab(), on, &flagged, self.p, w);
+        if on == "runs" {
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+            f.render_widget(Paragraph::new(strip), top);
+            self.draw_runs(f, rest, "Release runs");
+            return;
+        }
+        // The strip, then the apps, with the app's pane under them when it is open.
+        let (list, pane) = if self.rv.open {
             let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(area);
             (a, Some(b))
@@ -4203,70 +4314,19 @@ impl App {
             (area, None)
         };
         let now = jobs::now();
-        let w = list.width as usize;
-        let flagged = releases::flagged(s, self.builds.as_ref());
-        let mut lines = vec![crate::innertabs::strip(
-            releases::tab(),
-            on,
-            &flagged,
-            self.p,
-            w,
-        )];
-        // A tab with no table yet (Builds unread, Tests) windows none: another's scroll stays.
-        let (head, table, sel) = match (on, &self.builds) {
-            ("apps", _) => (
-                self.rv.status(s, self.p, now),
-                self.rv.table(s, self.p, w, true),
-                Some(&mut self.rv.table),
-            ),
-            ("builds", Some(b)) => (
-                self.rv.builds.status(b, self.p, now),
-                self.rv.builds.table(b, self.p, w, true, now),
-                Some(&mut self.rv.builds.table),
-            ),
-            ("builds", None) => (
-                vec![Line::styled("Reading builds...", self.p.dim())],
-                vec![],
-                None,
-            ),
-            _ => (releases::tests_note(self.p, w), vec![], None),
-        };
+        let mut lines = vec![strip];
+        let head = self.rv.status(s, self.p, now);
+        let table = self.rv.table(s, self.p, w, true);
         // The rows under the table's header line.
         let h = (list.height as usize)
             .saturating_sub(lines.len() + head.len() + 1)
             .max(1);
         self.page = h.saturating_sub(1).max(1);
         lines.extend(head);
-        if let Some(sel) = sel {
-            lines.extend(sel.window(table, h));
-        }
+        lines.extend(self.rv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
         let Some(area) = pane else { return };
-        if let (true, Some(top), Some(b)) = (log, self.rv.builds.times, &self.builds) {
-            let (w, h) = (area.width as usize, area.height as usize);
-            let rates = self.infra.as_ref().map(Infra::rates).unwrap_or_default();
-            let costs = hub_core::run_detail::costs(b, &rates, now);
-            f.render_widget(
-                Paragraph::new(bv::times(b, &costs, self.p, w, h, top)),
-                area,
-            );
-        } else if log {
-            // The run's detail on top, as tall as it is up to all but the log's few lines.
-            let (w, h) = (area.width as usize, area.height as usize);
-            let mut rest = area;
-            if let Some(d) = &mut self.rv.builds.detail {
-                let lines = bv::detail_pane(d, self.p, w, h.saturating_sub(BUILD_LOG_MIN));
-                let [top, bottom] =
-                    Layout::vertical([Constraint::Length(lines.len() as u16), Constraint::Min(0)])
-                        .areas(area);
-                f.render_widget(Paragraph::new(lines), top);
-                rest = bottom;
-            }
-            if let Some(l) = &mut self.rv.builds.log {
-                let lines = log_lines(l, rest.width as usize, rest.height as usize, self.p);
-                f.render_widget(Paragraph::new(lines), rest);
-            }
-        } else if let Some(r) = self.rv.shown(s).get(self.rv.table.sel).copied() {
+        if let Some(r) = self.rv.shown(s).get(self.rv.table.sel).copied() {
             let cl = self
                 .rv
                 .cl
@@ -4278,6 +4338,61 @@ impl App {
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
             f.render_widget(Paragraph::new(shown), area);
+        }
+    }
+
+    /// The tab's runs table (`runs`) under its `title`, with the opened run's detail and log, or
+    /// Run times, in a pane under it.
+    fn draw_runs(&mut self, f: &mut Frame, area: Rect, title: &str) {
+        let infra = self.tab == Tab::Infra;
+        let (v, b) = if infra {
+            (&mut self.ci, self.builds.as_ref())
+        } else {
+            (&mut self.rv.runs, self.release_builds.as_ref())
+        };
+        let Some(b) = b else {
+            f.render_widget(
+                Paragraph::new(Line::styled("Reading runs...", self.p.dim())),
+                area,
+            );
+            return;
+        };
+        let pane = v.log.is_some() || v.times.is_some();
+        let (list, pane) = if pane {
+            let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(area);
+            (a, Some(b))
+        } else {
+            (area, None)
+        };
+        let now = jobs::now();
+        let w = list.width as usize;
+        let head = v.status(title, b, self.p, now);
+        let table = v.table(b, self.p, w, true, now);
+        let h = (list.height as usize).saturating_sub(head.len() + 1).max(1);
+        self.page = h.saturating_sub(1).max(1);
+        let mut lines = head;
+        lines.extend(v.table.window(table, h));
+        f.render_widget(Paragraph::new(lines), list);
+        let Some(area) = pane else { return };
+        let (w, h) = (area.width as usize, area.height as usize);
+        if let Some(top) = v.times {
+            f.render_widget(Paragraph::new(bv::times(b, self.p, w, h, top)), area);
+            return;
+        }
+        // The run's detail on top, as tall as it is up to all but the log's few lines.
+        let mut rest = area;
+        if let Some(d) = &mut v.detail {
+            let lines = bv::detail_pane(d, self.p, w, h.saturating_sub(BUILD_LOG_MIN));
+            let [top, bottom] =
+                Layout::vertical([Constraint::Length(lines.len() as u16), Constraint::Min(0)])
+                    .areas(area);
+            f.render_widget(Paragraph::new(lines), top);
+            rest = bottom;
+        }
+        if let Some(l) = &mut v.log {
+            let lines = log_lines(l, rest.width as usize, rest.height as usize, self.p);
+            f.render_widget(Paragraph::new(lines), rest);
         }
     }
 
@@ -6141,11 +6256,25 @@ mod tests {
         assert!(!f.is_release_file(Path::new("/a/other/state.json")));
     }
 
+    /// The fixture's runs with #3 (red) and #2 tied to binks releases, as the graph joins them.
+    fn release_fixture() -> Builds {
+        let mut b = bv::tests::fixture();
+        for (r, tag) in b.rows.iter_mut().zip(["v1.2.0", "v1.1.0"]) {
+            r.release = Some(hub_core::release_graph::RunRelease {
+                project: "binks".into(),
+                tag: tag.into(),
+            });
+        }
+        b
+    }
+
     fn builds_app() -> App {
         let mut a = app(Tab::Releases);
         a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
         a.releases = Some(Releases::default());
-        a.builds = Some(bv::tests::fixture());
+        let b = release_fixture();
+        a.release_builds = Some(b.releases(1300));
+        a.builds = Some(b);
         a
     }
 
@@ -6168,47 +6297,45 @@ mod tests {
     }
 
     #[test]
-    fn the_builds_inner_tab_lists_each_runs_owner_and_its_red_counts_on_the_strip() {
+    fn release_runs_lists_the_runs_tied_to_a_release_and_counts_a_red_on_the_strip() {
         let mut a = builds_app();
-        let s = screen(&mut a, 110, 30);
+        let s = screen(&mut a, 120, 30);
         assert!(
-            s.contains("[Apps] Builds 1  Tests"),
-            "a recent red counts: {s}"
+            s.contains("[Apps] Release runs 1"),
+            "a recent red release run counts: {s}"
         );
-        assert!(
-            !s.contains("runs in 30 days"),
-            "the runs are on Builds: {s}"
-        );
+        assert!(!s.contains("Builds") && !s.contains("Tests"), "{s}");
         press(&mut a, KeyCode::Right);
-        let s = screen(&mut a, 110, 30);
-        assert!(s.contains("[Builds 1]"), "{s}");
-        assert!(
-            s.contains("Builds  3 runs in 30 days: 0 running, 1 queued, 1 red"),
-            "{s}"
-        );
+        let s = screen(&mut a, 120, 30);
+        assert!(s.contains("[Release runs 1]"), "{s}");
+        assert!(s.contains("Release runs  2 runs in 30 days"), "{s}");
         let red = s
             .lines()
             .find(|l| l.contains("red") && l.contains("binks"))
             .unwrap();
-        assert!(red.contains("agent-3"), "{red}");
+        assert!(red.contains("agent-3") && red.contains("v1.2.0"), "{red}");
+        assert!(
+            !s.contains("dotfiles"),
+            "a run of no release is Infra's: {s}"
+        );
         let mut b = app(Tab::Releases);
         b.releases = Some(Releases::default());
-        b.rv.show("builds");
-        assert!(screen(&mut b, 110, 30).contains("Reading builds..."));
+        b.rv.show("runs");
+        assert!(screen(&mut b, 110, 30).contains("Reading runs..."));
     }
 
     #[test]
-    fn right_hands_the_keys_to_builds_and_enter_reads_that_runs_log_then() {
+    fn right_hands_the_keys_to_release_runs_and_enter_reads_that_runs_log_then() {
         let mut a = builds_app();
         press(&mut a, KeyCode::Right);
-        assert_eq!(a.rv.on(), "builds");
+        assert_eq!(a.rv.on(), "runs");
         press(&mut a, KeyCode::Char('j'));
-        assert_eq!(a.rv.builds.table.sel, 1, "j moves the builds, not the apps");
+        assert_eq!(a.rv.runs.table.sel, 1, "j moves the runs, not the apps");
         assert_eq!(a.rv.table.sel, 0);
         press(&mut a, KeyCode::Char('k'));
-        assert!(a.rv.builds.log.is_none(), "selecting reads no log");
+        assert!(a.rv.runs.log.is_none(), "selecting reads no log");
         press(&mut a, KeyCode::Enter);
-        let gen = a.rv.builds.log.as_ref().unwrap().gen;
+        let gen = a.rv.runs.log.as_ref().unwrap().gen;
         let s = screen(&mut a, 110, 30);
         assert!(
             s.contains("--- log: github.com binks Tests #3 agent-3/work owner agent-3"),
@@ -6239,7 +6366,7 @@ mod tests {
             "the log stays under the detail: {s}"
         );
         press(&mut a, KeyCode::Esc);
-        assert!(a.rv.builds.log.is_none() && a.rv.builds.detail.is_none() && a.rv.on() == "builds");
+        assert!(a.rv.runs.log.is_none() && a.rv.runs.detail.is_none() && a.rv.on() == "runs");
         press(&mut a, KeyCode::Left);
         assert_eq!(a.rv.on(), "apps");
     }
@@ -6249,31 +6376,96 @@ mod tests {
         let mut a = builds_app();
         assert_eq!(a.rv.on(), "apps");
         press(&mut a, KeyCode::Left);
-        assert_eq!(a.rv.on(), "tests", "Left wraps before the first");
-        let s = screen(&mut a, 80, 24);
-        assert!(s.contains("[Tests]") && s.contains("on agent-web"), "{s}");
+        assert_eq!(a.rv.on(), "runs", "Left wraps before the first");
         press(&mut a, KeyCode::Right);
         assert_eq!(a.rv.on(), "apps", "Right wraps past the last");
         // An open app pane belongs to Apps: another inner tab closes it.
         a.rv.open = true;
         press(&mut a, KeyCode::Right);
         assert!(!a.rv.open);
-        // `t` brings up Builds with its run times, from any inner tab.
-        a.rv.show("tests");
+        // Run times is Infra's: `t` on Releases is the runs' query key no more.
         press(&mut a, KeyCode::Char('t'));
-        assert_eq!((a.rv.on(), a.rv.builds.times), ("builds", Some(0)));
-        // `hub --tab 'releases builds'` and the old section words land on the inner tab holding
-        // them; any other word is the apps' query, on Apps.
+        assert!(a.rv.runs.times.is_none());
+        // `hub --tab 'releases runs'` and the section words land on the inner tab holding them;
+        // any other word is the apps' query, on Apps.
         for (word, on, q) in [
-            ("builds", "builds", ""),
-            ("Tests", "tests", ""),
+            ("runs", "runs", ""),
             ("detail", "apps", ""),
             ("project:binks", "apps", "project:binks"),
         ] {
             let mut a = builds_app();
-            a.rv.show("builds");
+            a.rv.show("runs");
             a.open_query(Some(word.to_string()));
             assert_eq!((a.rv.on(), a.rv.table.view.q.as_str()), (on, q), "{word}");
+        }
+    }
+
+    /// Infra on its CI inner tab, with every run read.
+    fn ci_app() -> App {
+        let mut a = infra_app();
+        a.tab = Tab::Infra;
+        a.infra_inner = "ci";
+        a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
+        a.builds = Some(release_fixture());
+        a
+    }
+
+    #[test]
+    fn infra_ci_shows_every_run_and_the_tests_note_and_counts_a_red() {
+        let mut a = ci_app();
+        let s = screen(&mut a, 160, 80);
+        assert!(s.contains("[CI 1]") || s.contains("[CI 2]"), "{s}");
+        assert!(
+            s.contains("RUNS  3 runs in 30 days: 0 running, 1 queued, 1 red"),
+            "{s}"
+        );
+        assert!(s.contains("dotfiles"), "a run of no release is listed: {s}");
+        assert!(s.contains("TESTS") && s.contains("Infra, CI, Tests"), "{s}");
+        assert!(!s.contains("Releases, Builds"), "{s}");
+        a.builds = None;
+        assert!(screen(&mut a, 160, 80).contains("Reading runs..."));
+    }
+
+    #[test]
+    fn enter_on_infra_ci_opens_the_runs_table_and_t_its_run_times_without_money() {
+        let mut a = ci_app();
+        press(&mut a, KeyCode::Enter);
+        assert!(a.infra_runs && !a.infra_jobs);
+        let s = screen(&mut a, 120, 30);
+        assert!(
+            s.contains("Runs  3 runs in 30 days") && s.contains("RELEASE"),
+            "{s}"
+        );
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.ci.table.sel, 1);
+        assert_eq!(a.rv.runs.table.sel, 0, "Infra's table is its own");
+        press(&mut a, KeyCode::Char('t'));
+        assert_eq!(a.ci.times, Some(0));
+        let s = screen(&mut a, 120, 40);
+        assert!(s.contains("Run times") && !s.contains("$/RUN"), "{s}");
+        press(&mut a, KeyCode::Char('t'));
+        assert!(a.ci.times.is_none());
+        press(&mut a, KeyCode::Esc);
+        assert!(!a.infra_runs, "Esc with nothing open goes back");
+        // `t` from the CI summary opens the table with Run times.
+        press(&mut a, KeyCode::Char('t'));
+        assert!(a.infra_runs && a.ci.times == Some(0));
+        // A key from the Jobs inner tab still opens the jobs table.
+        let mut b = ci_app();
+        b.infra_inner = "jobs";
+        press(&mut b, KeyCode::Enter);
+        assert!(b.infra_jobs && !b.infra_runs);
+    }
+
+    #[test]
+    fn the_moved_releases_sections_open_infra_ci() {
+        for (req, runs) in [("releases builds", true), ("releases tests", false)] {
+            let (t, q) = crate::tabreq::parse(req).unwrap();
+            assert_eq!(t, Tab::Infra, "{req}");
+            let mut a = ci_app();
+            a.infra_inner = "machines";
+            a.open_query(q);
+            assert_eq!((a.infra_inner, a.infra_runs), ("ci", runs), "{req}");
         }
     }
 
@@ -6287,6 +6479,15 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(5)),
             Ok(Msg::Builds(_))
         ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut c = builds_app();
+        c.tab = Tab::Infra;
+        c.tx = tx;
+        c.handle(Msg::BuildFile);
+        assert!(
+            matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(Msg::Builds(_))),
+            "Infra's CI shows the runs too"
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         let mut b = builds_app();
         b.tab = Tab::Home;
