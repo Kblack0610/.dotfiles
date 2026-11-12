@@ -30,6 +30,7 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
+#                          type /wind-down into each session whose close verdict is now (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
@@ -229,7 +230,7 @@ tag_pane() {
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" '
+  out="$(jq -r --argjson items "$(shared_items)" --arg typed "${CLOSE_TYPED:-}" '
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -240,6 +241,7 @@ cmd_due() {
         else empty end )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
+      | select(.session_id as $s | $typed | split("\n") | index($s) | not)
       | (.close.verdict // "") as $v
       | ((.own_asks // 0) > 0) as $ask
       | if $ask and $v == "now" and (.nudged | not) then
@@ -618,6 +620,59 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
+# close_sample: the close nudge without a model. Each row cmd_due would give a pass as `nudge
+# DONE|CHAT|CLOSE` (close verdict now, not yet nudged, not manual) gets its close typed into its
+# pane: /wind-down auto, which runs the session's own `fleet-sessions close --self` first, or for
+# CHAT /wind-down, the human's standing order to close a chat quiet 24h. A pass could only send it
+# by SendMessage, and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the
+# claude CLI has no send, so typing is the one model-free way in, as claude-acct types /exit.
+# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
+# cancelling the human's copy mode; any other screen is left for the pass, which sends the
+# message by SendMessage. The mark claims the fact first, so the two never both send it.
+# CLOSE_TYPED keeps the session ids typed to, which cmd_due leaves out: the document predates them.
+CLOSE_TYPED=""
+close_sample() {
+  local sid target pane bucket fact server cmd screen
+  while IFS=$'\t' read -r sid target pane bucket fact; do
+    case "$sid" in ''|*/*|.|..) continue ;; esac
+    server="${target%%/*}"
+    [ -n "$server" ] && [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    [ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || continue
+    screen="$(tmux -L "$server" capture-pane -p -t "$pane" 2>/dev/null)" || continue
+    idle_prompt "$screen" || continue
+    fleet-sessions mark "$sid" "$fact" >/dev/null 2>&1 || continue
+    cmd="/wind-down auto"; [ "$bucket" = CHAT ] && cmd="/wind-down"
+    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
+      CLOSE_TYPED+="$sid"$'\n'
+      cmd_log "close: $target $bucket: typed $cmd ($fact)" >/dev/null
+    else
+      cmd_log "close: $target $bucket: marked, but typing $cmd failed; the escalation carries it" >/dev/null
+    fi
+  done < <(jq -r '(.sessions // [])[]
+    | select((.labels // []) | index("manual") | not)
+    | select(.close.verdict == "now" and (.nudged | not))
+    | ((.own_asks // 0) > 0) as $ask
+    | select($ask or (.bucket | IN("DONE","CHAT")))
+    | [.session_id, .target, .pane, (if $ask then "CLOSE" else .bucket end), .fact]
+    | map(. // "" | tostring | gsub("[\t\n]"; " ")) | @tsv' "$STATE_FILE" 2>/dev/null)
+}
+
+# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working: the
+# lines between the screen's last two rule lines (a run of ─, the top one may carry the session's
+# name) hold no more than the prompt glyph and blanks,
+# and the footer has no "esc to interrupt" (cut short on a narrow pane, so its head is matched).
+# A draft, a ghost suggestion, a dialog or a screen it cannot read all fail, toward the pass.
+idle_prompt() {
+  grep -qF 'esc to inter' <<<"$1" && return 1
+  awk -v nb=$'\xc2\xa0' '
+    { l[NR] = $0 }
+    /^───/ && /─ *$/ { r2 = r1; r1 = NR }
+    END {
+      if (!r2 || r1 - r2 < 2) exit 1
+      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, "", s); gsub(/[ \t]/, "", s); if (s != "") exit 1 }
+    }' <<<"$1"
+}
+
 # remind_decision <bucket> <reason> <pr> <next phase> <plan> -> the one decision, in plain words.
 remind_decision() {
   local pr="#$3"
@@ -744,6 +799,8 @@ cmd_check() {
   cmd_holds 2>/dev/null && shared_sample
   # And so is a reminder: one writer of $REMINDED.
   cmd_holds 2>/dev/null && remind_sample
+  # And so is typing a close into a session: one writer of its nudge, beside the pass's mark.
+  cmd_holds 2>/dev/null && close_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
