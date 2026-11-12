@@ -54,6 +54,8 @@ pub struct ProjView {
     pub sys: usize,
     /// The Deliverables table's search, chip and sort, and its selected row.
     pub dv: DataTable,
+    /// The opened project's Build table: its own view, so the list's Deliverables keep theirs.
+    pub bv: DataTable,
     /// The Deliverables table has the keys (`d`), not the project list.
     pub dfocus: bool,
 }
@@ -68,6 +70,7 @@ impl Default for ProjView {
             needs: false,
             sys: 0,
             dv: DataTable::default(),
+            bv: DataTable::default(),
             dfocus: false,
         }
     }
@@ -99,6 +102,7 @@ impl ProjView {
         self.inner = OVERVIEW;
         self.needs = false;
         self.sys = 0;
+        self.bv = DataTable::default();
     }
 
     /// Back to the list, the selection on the row it was on.
@@ -125,8 +129,9 @@ impl ProjView {
         page: usize,
     ) -> bool {
         if let KeyCode::Left | KeyCode::Right = k.code {
-            if self.dv.typing.is_none() {
-                self.inner = step(self.inner, k.code == KeyCode::Left);
+            if self.bv.typing.is_none() {
+                self.inner =
+                    crate::innertabs::step_of(&PROJECT_PAGE, self.inner, k.code == KeyCode::Left);
                 return true;
             }
         }
@@ -138,31 +143,34 @@ impl ProjView {
                     self.sys = (self.sys + 1).min(pg.systems.len().saturating_sub(1))
                 }
                 KeyCode::Char('k') | KeyCode::Up => self.sys = self.sys.saturating_sub(1),
+                // `no system` has no word to search by: Build opens on every epic.
                 KeyCode::Enter => {
-                    if let Some(s) = pg.systems.get(self.sys).filter(|s| !s.id.is_empty()) {
-                        self.dv.clear();
-                        self.dv.view.q = format!("sys:{}", s.id);
+                    if let Some(s) = pg.systems.get(self.sys) {
+                        self.bv.clear();
+                        if !s.id.is_empty() {
+                            self.bv.view.q = format!("sys:{}", s.id);
+                        }
                         self.inner = BUILD;
                     }
                 }
                 _ => return false,
             },
             BUILD => {
-                let rows = self.dv.view.apply(&pg.build.rows);
-                if self.dv.key::<Deliverable>(k.code) != Took::No
-                    || self.dv.moves(k, rows.len(), page)
+                let rows = self.bv.view.apply(&pg.build.rows);
+                if self.bv.key::<Deliverable>(k.code) != Took::No
+                    || self.bv.moves(k, rows.len(), page)
                 {
                     return true;
                 }
                 match k.code {
                     KeyCode::Enter => {
-                        if let Some(r) = rows.get(self.dv.sel.min(rows.len().saturating_sub(1))) {
+                        if let Some(r) = rows.get(self.bv.sel.min(rows.len().saturating_sub(1))) {
                             tv.table.clear();
                             tv.table.view.q = format!("tag:=of/{}", r.id);
                             self.inner = ROWS;
                         }
                     }
-                    KeyCode::Esc if !self.dv.is_default() => self.dv.clear(),
+                    KeyCode::Esc if !self.bv.is_default() => self.bv.clear(),
                     _ => return false,
                 }
             }
@@ -205,7 +213,7 @@ impl ProjView {
     }
 
     /// The Deliverables table's keys while it has them: the shared table keys and moves, Enter
-    /// opens the selected epic's project on Build searched to the epic, Esc clears the view and
+    /// opens the selected epic's project on Build with the epic selected, Esc clears the view and
     /// then gives the keys back to the list, as `d` does at once.
     pub fn dkey(
         &mut self,
@@ -225,12 +233,21 @@ impl ProjView {
                 let shown = self.dshown(d);
                 let want = shown.get(self.dv.sel.min(shown.len().saturating_sub(1)));
                 if let Some(r) = want.filter(|r| cards.iter().any(|c| same(c, r))) {
+                    // Build is the same rows scoped to the project, in the same default order,
+                    // so the epic's place among its project's rows is its row there: selected by
+                    // id, never a search that also matches gm-10 for gm-1.
+                    let mine: Vec<Deliverable> = d
+                        .rows
+                        .iter()
+                        .filter(|x| x.profile == r.profile && x.project == r.project)
+                        .cloned()
+                        .collect();
                     let (key, id) = (r.key(), r.id.clone());
                     self.dfocus = false;
                     self.go(tv, cards, &key);
                     self.inner = BUILD;
-                    self.dv.clear();
-                    self.dv.view.q = id;
+                    let at = self.bv.view.apply(&mine).iter().position(|x| x.id == id);
+                    self.bv.sel = at.unwrap_or(0);
                 }
             }
             KeyCode::Esc if !self.dv.is_default() => self.dv.clear(),
@@ -283,13 +300,6 @@ const BUILD: &str = "build";
 /// The inner id `word` names, from `layout::PROJECT_PAGE`.
 fn inner_id(word: &str) -> Option<&'static str> {
     PROJECT_PAGE.iter().find(|i| i.id == word).map(|i| i.id)
-}
-
-/// The inner tab after (or with `back`, before) `on`, wrapping at the ends.
-fn step(on: &str, back: bool) -> &'static str {
-    let n = PROJECT_PAGE.len();
-    let i = PROJECT_PAGE.iter().position(|x| x.id == on).unwrap_or(0);
-    PROJECT_PAGE[if back { (i + n - 1) % n } else { (i + 1) % n }].id
 }
 
 const BAR: usize = 20;
@@ -649,8 +659,8 @@ pub fn open_lines(
     let (body, at) = match pv.inner {
         OVERVIEW => overview(c, pg, pv, p, w),
         BUILD => deliverables(
-            Some(&Ok(pg.build.clone())),
-            &pv.dv,
+            Some(Ok(&pg.build)),
+            &pv.bv,
             true,
             "  Enter opens the epic's rows",
             p,
@@ -710,7 +720,7 @@ const DHEADER: [&str; 6] = ["PROJECT", "EPIC", "SYS", "DONE", "ETA", "TRACK"];
 /// and the line the selected row is on when `d` has the keys. A failed read says so, never an
 /// empty table.
 fn deliverables(
-    dl: Option<&Result<Deliverables, String>>,
+    dl: Option<Result<&Deliverables, &str>>,
     dv: &DataTable,
     focus: bool,
     hint: &str,
@@ -823,6 +833,7 @@ pub fn page(
     } else {
         "  d browses them"
     };
+    let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
     let (mut out, dat) = deliverables(dl, &pv.dv, pv.dfocus, hint, p, w);
     let (mut list, at) = list(pr, feed, pv, p, w);
     let at = if pv.dfocus {
@@ -1180,13 +1191,17 @@ pub(crate) mod tests {
         let l = draw(&pr.cards[0], Some(&pg), &pv);
         assert!(l[sel.unwrap()].starts_with("ci "), "{l:?}");
         assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
-        assert_eq!((pv.inner, pv.dv.view.q.as_str()), (BUILD, "sys:ci"));
+        assert_eq!((pv.inner, pv.bv.view.q.as_str()), (BUILD, "sys:ci"));
+        assert!(
+            pv.dv.is_default(),
+            "the list's Deliverables keep their own view"
+        );
         let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
         assert!(s.contains("Pipelines") && !s.contains("Menus"), "{s}");
 
         // Esc clears Build's filter; Enter on an epic opens Rows searched to it.
         assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10));
-        assert!(pv.dv.is_default());
+        assert!(pv.bv.is_default());
         assert!(
             !pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10),
             "then Esc goes back"
@@ -1499,7 +1514,8 @@ pub(crate) mod tests {
             20
         ));
         pv.dv.sel = 0;
-        // Enter: the project opens on Build, searched to the epic
+        // Enter: the project opens on Build with the epic selected by id; g-10, which a search
+        // for g-1 also matches, stays a row of its own
         assert!(pv.dkey(
             &mut tv,
             key(KeyCode::Enter),
@@ -1509,7 +1525,23 @@ pub(crate) mod tests {
         ));
         assert!(pv.open && !pv.dfocus);
         assert_eq!(tv.project, Some(("personal".into(), "garden".into())));
-        assert_eq!((pv.inner, pv.dv.view.q.as_str()), (BUILD, "g-1"));
+        assert_eq!((pv.inner, pv.bv.view.q.as_str(), pv.bv.sel), (BUILD, "", 0));
+        let mut d10 = d.clone().unwrap();
+        let g10 = deliverable("garden", "g-10", "after g-1", "gameplay", "behind");
+        d10.rows.insert(0, g10);
+        pv.close(&mut tv);
+        pv.dfocus = true;
+        pv.dv.sel = 0;
+        assert!(pv.dkey(&mut tv, key(KeyCode::Char('f')), &pr.cards, &d10, 20));
+        assert!(pv.dkey(&mut tv, key(KeyCode::Char('j')), &pr.cards, &d10, 20));
+        assert_eq!(pv.dshown(&d10)[pv.dv.sel].id, "g-1");
+        assert!(pv.dkey(&mut tv, key(KeyCode::Enter), &pr.cards, &d10, 20));
+        assert_eq!(
+            (pv.inner, pv.bv.sel),
+            (BUILD, 1),
+            "g-1 is garden's second row"
+        );
+        pv.dv.clear();
         // Esc from the table: clear the view first, then back to the list
         pv.close(&mut tv);
         pv.dfocus = true;

@@ -19,13 +19,17 @@ pub fn named(tab: &Tab, word: &str) -> Option<&'static str> {
 
 /// The inner tab after (or with `back`, before) `on`, wrapping at the ends; "" on a tab with none.
 pub fn step(tab: &Tab, on: &str, back: bool) -> &'static str {
-    let ids: Vec<&'static str> = tab.inner.iter().map(|i| i.id).collect();
-    let n = ids.len();
+    step_of(tab.inner, on, back)
+}
+
+/// `step` over any inner list, such as the project page's (`layout::PROJECT_PAGE`).
+pub fn step_of(inner: &[Inner], on: &str, back: bool) -> &'static str {
+    let n = inner.len();
     if n == 0 {
         return "";
     }
-    let i = ids.iter().position(|x| *x == on).unwrap_or(0);
-    ids[if back { (i + n - 1) % n } else { (i + 1) % n }]
+    let i = inner.iter().position(|x| x.id == on).unwrap_or(0);
+    inner[if back { (i + n - 1) % n } else { (i + 1) % n }].id
 }
 
 /// The strip, its tab's first line: the open one in brackets, bold and reversed (amber when its

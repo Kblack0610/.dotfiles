@@ -3951,7 +3951,8 @@ impl App {
             Tab::Projects
                 if self.tv.typing()
                     || self.pv.table.typing.is_some()
-                    || self.pv.dv.typing.is_some() =>
+                    || self.pv.dv.typing.is_some()
+                    || self.pv.bv.typing.is_some() =>
             {
                 "type, Enter submits, Esc cancels".into()
             }
@@ -3959,11 +3960,11 @@ impl App {
                 "j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.pv.open && !self.pv.rows_shown(&self.tv) => format!(
-                "<- -> inner tabs  {}Esc back  r refresh  {tabs} tabs  q quit",
+                "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
                 match self.pv.inner {
-                    "overview" => "j/k pick a system  Enter its epics  F lists Needs you  ",
-                    "build" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  ",
-                    _ => "j/k scroll  ",
+                    "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
+                    "build" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
+                    _ => "j/k scroll  Esc back  ",
                 }
             ),
             Tab::Projects if self.pv.open => format!(
@@ -4110,32 +4111,41 @@ impl App {
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
-            // One project's card stays on top of its rows; All has none.
-            (Tab::Projects, ..) => match &self.tasks {
-                None => reading("notes board"),
-                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
-                Some(Ok(f)) => {
-                    let mut l = vec![];
-                    if let Some((profile, name)) = &self.tv.project {
-                        let cards = self.cards().cards;
-                        if let Some(c) = cards
-                            .iter()
-                            .find(|c| c.profile == *profile && c.name == *name)
-                        {
-                            let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                            let (page, at) = projtab::open_lines(c, pg, &self.pv, self.p, w);
-                            if !self.pv.rows_shown(&self.tv) {
-                                return (page, at.map(|a| ("", a)).into_iter().collect());
-                            }
-                            l = page;
+            // One project's card stays on top of its rows; All has none. Only Rows reads the
+            // board, so the other inner tabs draw while it is read or failed.
+            (Tab::Projects, ..) => {
+                let mut l = vec![];
+                if let Some((profile, name)) = &self.tv.project {
+                    let cards = self.cards().cards;
+                    if let Some(c) = cards
+                        .iter()
+                        .find(|c| c.profile == *profile && c.name == *name)
+                    {
+                        let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
+                        let (page, at) = projtab::open_lines(c, pg, &self.pv, self.p, w);
+                        if !self.pv.rows_shown(&self.tv) {
+                            return (page, at.map(|a| ("", a)).into_iter().collect());
                         }
+                        l = page;
                     }
-                    let top = l.len();
-                    let (rows, at) = tasktab::page(f, &self.tv, self.p, w);
-                    l.extend(rows);
-                    (l, at.map(|a| ("", a + top)).into_iter().collect())
                 }
-            },
+                match &self.tasks {
+                    None => {
+                        l.extend(reading("notes board").0);
+                        (l, vec![])
+                    }
+                    Some(Err(e)) => {
+                        l.push(Line::styled(e.clone(), self.p.warn()));
+                        (l, vec![])
+                    }
+                    Some(Ok(f)) => {
+                        let top = l.len();
+                        let (rows, at) = tasktab::page(f, &self.tv, self.p, w);
+                        l.extend(rows);
+                        (l, at.map(|a| ("", a + top)).into_iter().collect())
+                    }
+                }
+            }
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => {
@@ -5952,6 +5962,14 @@ mod tests {
             !s.contains("ROWS  "),
             "the rows wait for their inner tab:\n{s}"
         );
+        // Only Rows reads the board: Overview draws while it is read.
+        let board = a.tasks.take();
+        let s = screen(&mut a, 140, 40);
+        assert!(
+            s.contains("NEEDS YOU") && !s.contains("Reading notes board"),
+            "{s}"
+        );
+        a.tasks = board;
         assert!(
             s.lines().last().unwrap().contains("<- -> inner tabs"),
             "{s}"
