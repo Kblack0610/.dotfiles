@@ -93,9 +93,12 @@ test("a section painted later above the sought one does not leave it off screen,
   // Where scrollIntoView leaves the board: the anchor's offset, which a paint above it raises.
   let offset = 400;
   tests.scrollIntoView = function () { this.scrolled++; board.scrollTop = offset; };
+  tests.getBoundingClientRect = () => ({ top: offset - board.scrollTop });
   boards.log = board;
   vm.runInContext('st.tab = "log"; st.section = "tests"; seekSection()', ctx);
   assert.equal(tests.scrolled, 1);
+  vm.runInContext("seekSection()", ctx); // a repaint that moved nothing
+  assert.equal(tests.scrolled, 1, "an anchor already on top is not scrolled again");
   offset = 9000; // the runs table paints above Tests; the board did not move, so Tests is pushed down
   vm.runInContext("seekSection()", ctx);
   assert.equal(tests.scrolled, 2);

@@ -364,12 +364,13 @@ const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
 // it paints; the first paint that has the section clears it. A section that paints later above
 // it (Infra CI's runs above Tests, each from its own read) pushes it down, so until the reader
-// scrolls the board, each paint puts the anchor back on top.
+// scrolls the board, a paint that moved the anchor puts it back on top.
 let seekHeld = null;
+const anchorAt = (e) => e.getBoundingClientRect?.().top;
 function seekTo(board, e) {
   if (!e.scrollIntoView) return;
   e.scrollIntoView({ block: "start" });
-  seekHeld = board ? { board, id: e.id, top: board.scrollTop } : null;
+  seekHeld = board ? { board, id: e.id, top: board.scrollTop, at: anchorAt(e) } : null;
 }
 function seekSection() {
   // A section on another inner tab switches to it first, so the anchor is on screen.
@@ -380,7 +381,8 @@ function seekSection() {
   if (!e) {
     const h = seekHeld;
     const a = h && h.board === board && board.scrollTop === h.top && tabAnchors().find((x) => x.id === h.id);
-    if (a) seekTo(board, a); else seekHeld = null;
+    if (!a) seekHeld = null;
+    else if (anchorAt(a) !== h.at) seekTo(board, a);
     return;
   }
   st.section = null;
