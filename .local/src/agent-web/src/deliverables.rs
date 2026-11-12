@@ -27,6 +27,18 @@ pub struct DeliverableQuery {
     sort: String,
     #[serde(rename = "ddir")]
     dir: String,
+    /// One project's epics only (`<profile>/<name>`, or the name), as its page's Build tab reads
+    /// them; empty is every project.
+    scope: String,
+}
+
+/// The chain of the `<profile>/<project>` that `scope` names; a bare name could be two profiles' projects, so it keeps nothing.
+fn scoped(chains: &[hub_core::epics::Chain], scope: &str) -> Vec<hub_core::epics::Chain> {
+    chains
+        .iter()
+        .filter(|c| format!("{}/{}", c.profile, c.project) == scope)
+        .cloned()
+        .collect()
 }
 
 /// The section as the page reads it: the kept rows by reference, every other field the reader's.
@@ -66,7 +78,12 @@ pub async fn get(Query(q): Query<DeliverableQuery>) -> ApiResult<Json<serde_json
     let chains = crate::epics::chains()
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
-    let all = deliverables::build(&chains, *chrono::Local::now().offset());
+    let zone = *chrono::Local::now().offset();
+    let all = if q.scope.is_empty() {
+        deliverables::build(&chains, zone)
+    } else {
+        deliverables::build(&scoped(&chains, &q.scope), zone)
+    };
     Ok(Json(shown(&all, &q)))
 }
 
@@ -120,5 +137,28 @@ mod tests {
         let Query(q) = Query::<DeliverableQuery>::try_from_uri(&uri).unwrap();
         assert_eq!((q.q.as_str(), q.s.as_str()), ("sys:ui", "behind"));
         assert_eq!((q.sort.as_str(), q.dir.as_str()), ("eta", "asc"));
+    }
+
+    #[test]
+    fn a_scope_keeps_one_project_by_profile_and_name() {
+        use hub_core::epics::Chain;
+        let c = |profile: &str, project: &str| Chain {
+            profile: profile.into(),
+            project: project.into(),
+            ..Default::default()
+        };
+        let chains = vec![c("bnb", "ucp"), c("personal", "dotfiles")];
+        let names = |s: &str| {
+            scoped(&chains, s)
+                .into_iter()
+                .map(|c| c.project)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("bnb/ucp"), vec!["ucp"]);
+        assert_eq!(names("personal/dotfiles"), vec!["dotfiles"]);
+        // A bare name could be two profiles' projects: it keeps nothing.
+        assert!(names("dotfiles").is_empty());
+        // NEGATIVE CONTROL: a profile that is not the project's keeps nothing.
+        assert!(names("personal/ucp").is_empty());
     }
 }
