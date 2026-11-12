@@ -18,7 +18,7 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-tiles": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [], posted = [];
 let reply = {};
@@ -162,9 +162,9 @@ const target = (attrs, row) => ({
 test("the Queue is one table with the server's chips and every header a sort button", () => {
   load();
   const h = draw();
-  assert.match(h, /<button class="on" data-ts="">all <span class="n">3<\/span><\/button>/, "no chip is every row");
-  assert.match(h, /<button class="" data-ts="needs you">needs you <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<button class="" data-ts="up next">up next <span class="n">1<\/span><\/button>/);
+  assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
+  assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
+  assert.match(h, /<button class="tile" data-ts="up next"><span class="tl">UP NEXT<\/span><span class="tv">1<\/span><\/button>/);
   for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title"]) {
     assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
   }
@@ -209,11 +209,11 @@ test("an item not started is ready or held, a held cell names its hold, and the 
   const h = draw();
   assert.match(h, /<td>ready<\/td>/);
   assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
-  assert.match(h, /<div class="muted fold tlegend">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/);
+  assert.match(h, /data-tsearch[^>]*title="[^"]*\. ready: starts when dispatch has a slot for it; held: waits on its hold"/, "the legend is the search box's hover");
   assert.doesNotMatch(h, /<td>queued<\/td>/);
   // Negative control: a table with no legend draws no legend line.
   load();
-  assert.doesNotMatch(draw(), /tlegend/);
+  assert.doesNotMatch(draw(), /ready: starts/);
 });
 
 test("the page caps at the server's open_rows with +N older, one click lifts it", () => {

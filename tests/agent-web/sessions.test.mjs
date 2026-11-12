@@ -43,7 +43,7 @@ const ROWS = [
   row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex", close: "now" }),
 ];
 const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
-  states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1 }, { name: "stalled", n: 1 }, { name: "done today", n: 1 }],
+  states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "warn" }, { name: "stalled", n: 1, tone: "warn" }, { name: "done today", n: 1, tone: "ok", means: "ended today" }],
   columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
@@ -84,9 +84,9 @@ test("the table is the server's rows in its order, with the overview tiles and t
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(html, /<button class="tile" data-ts="done today" style="--c:var\(--b-done\)"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
-  assert.doesNotMatch(html, /data-ts="all"|sessions-chips/, "the tiles are the chips, so the small chip row is gone");
-  assert.ok(html.indexOf("stiles") < html.indexOf("capline"), "the overview row leads the tab");
+  assert.match(html, /<button class="tile t-ok" data-ts="done today" title="ended today"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
+  assert.doesNotMatch(html, /data-ts="all"|sessions-chips|class="seg fseg"/, "the tiles are the chips, so the small chip row is gone");
+  assert.ok(html.indexOf("stiles") < html.indexOf("tqbar"), "the overview row sits on the search bar");
   assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
@@ -115,7 +115,7 @@ test("the overview spend is the server's sum, and the tile in force clears the f
   run("sst.render()");
   const html = boxes.scroll.innerHTML;
   assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
-  assert.match(html, /<button class="tile on" data-ts="" style="--c:var\(--b-stalled\)">/);
+  assert.match(html, /<button class="tile on t-warn" data-ts="">/);
 });
 
 test("an opened session starts on its conversation, not its Details page", () => {

@@ -2,7 +2,11 @@
 // Renders every agent-web table tab at phone width and records whether a phone can read it.
 // No server and no auth: the page is assets::index() (dumped by an ignored Rust test), the
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
-//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit]
+//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit] [--wide] [--api origin]
+// --wide draws every tab at 1280px for a before-and-after look; it skips the phone checks.
+// --api answers /api/* from a running agent-web instead of the fixtures, so a change is seen on
+// real data (lessons dotfiles.md: fixtures alone hide what real rows do); the session cookie is
+// $AGENT_WEB_SESSION. The fixed clock is off, since the rows are live.
 // --control forces body min-width 900px and fails unless every tab reports the overflow.
 // The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
 // a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
@@ -50,8 +54,12 @@ const TABS = [
 const args = process.argv.slice(2);
 const control = args.includes("--control");
 const noKit = args.includes("--no-kit");
+const wide = args.includes("--wide");
+const apiAt = args.indexOf("--api");
+const api = apiAt >= 0 ? args[apiAt + 1].replace(/\/$/, "") : null;
+if (api && !process.env.AGENT_WEB_SESSION) throw new Error("--api needs AGENT_WEB_SESSION, the agent_web cookie of that instance");
 const outAt = args.indexOf("--out");
-const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : noKit ? "no-kit" : "out");
+const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : noKit ? "no-kit" : wide ? "wide" : "out");
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
@@ -122,10 +130,14 @@ function staticFile(name) {
 }
 
 async function wire(context, page, { index, csp, roles }, seen) {
-  await context.route("**/*", (route) => {
+  await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
     const path = url.pathname;
+    if (api && path.startsWith("/api/")) {
+      const headers = { cookie: `agent_web=${process.env.AGENT_WEB_SESSION}` };
+      return route.fulfill({ response: await route.fetch({ url: api + path + url.search, headers }) });
+    }
     if (path === "/") return route.fulfill({ status: 200, contentType: TYPES[".html"], body: index, headers: { ...NOSNIFF, "content-security-policy": csp } });
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
@@ -162,10 +174,11 @@ function measure({ width, row: selector }) {
 }
 
 async function renderTab(browser, spec, page0) {
-  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, hasTouch: true, isMobile: true, locale: "en-US", timezoneId: "America/Los_Angeles" });
+  const device = wide ? { viewport: WIDE } : { viewport: VIEWPORT, deviceScaleFactor: 2, hasTouch: true, isMobile: true };
+  const context = await browser.newContext({ ...device, locale: "en-US", timezoneId: "America/Los_Angeles" });
   const page = await context.newPage();
   const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
-  await context.clock.setFixedTime(new Date(NOW * 1000));
+  if (!api) await context.clock.setFixedTime(new Date(NOW * 1000));
   await page.addInitScript(() => {
     window.EventSource = class {
       constructor(url) { this.url = url; this.readyState = 1; setTimeout(() => { if (this.onopen) this.onopen({}); }, 0); }
@@ -183,7 +196,7 @@ async function renderTab(browser, spec, page0) {
     await page.waitForSelector(spec.row, { state: "visible", timeout: WAIT_MS });
     await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
     if (spec.name) await page.locator(spec.row).first().scrollIntoViewIfNeeded();
-    const { badText, ...numbers } = await page.evaluate(measure, { width: VIEWPORT.width, row: spec.row });
+    const { badText, ...numbers } = await page.evaluate(measure, { width: device.viewport.width, row: spec.row });
     Object.assign(result, numbers);
     if (badText) seen.errors.push(`a fixture field is missing: the page shows "${badText}"`);
   } catch (e) {
@@ -205,7 +218,7 @@ async function navCheck(browser, page0) {
     const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles" });
     const page = await context.newPage();
     const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
-    await context.clock.setFixedTime(new Date(NOW * 1000));
+    if (!api) await context.clock.setFixedTime(new Date(NOW * 1000));
     await page.addInitScript(() => { window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() {} close() {} }; });
     await wire(context, page, page0, seen);
     try {
@@ -266,7 +279,7 @@ async function main() {
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const results = [];
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const navErrors = control ? [] : await navCheck(browser, page);
+  const navErrors = control || wide ? [] : await navCheck(browser, page);
   if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
@@ -276,12 +289,13 @@ async function main() {
     return;
   }
   if (navErrors.length) { console.log(`FAIL: nav check, ${navErrors.length} error(s)`); process.exit(1); }
-  if (!control) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
+  if (!control && !wide) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);
   const errored = results.filter((r) => r.errors.length);
   if (errored.length) { console.log(`FAIL: errors on ${errored.map((r) => r.tab).join(", ")}`); process.exit(1); }
+  if (wide) return;
   // A tab whose row has no lead, or whose lead runs off the screen, is what this harness exists to catch.
   const cut = control ? [] : results.filter((r) => r.leadVisible !== true || r.leadMethod !== "data-role");
   if (cut.length) { console.log(`FAIL: no visible lead on ${cut.map((r) => r.tab).join(", ")}`); process.exit(1); }

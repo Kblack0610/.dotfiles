@@ -61,11 +61,25 @@ const tblDrawn = new WeakMap();
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
-// One count chip, here and on the tabs that still filter their own lists.
+// One count chip, for the lists that filter themselves (the Sessions side list, Tests results,
+// the Fleet verdicts); a table draws its states as tiles (tblTiles).
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
+
+// The table's overview: each state but `all` as a tile with its count, in its hue (hub-core's
+// Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
+// one in force clears it. `extra` is a tab's own tiles after them (Sessions' SPEND). A table with
+// no state but `all` and no extra draws none.
+function tblTiles(t, extra = "") {
+  const tiles = t.states.slice(1).map((c) => {
+    const on = c.name === t.state;
+    const cls = `tile${on ? " on" : ""}${c.n ? "" : " zero"}${c.tone && c.tone !== "none" ? ` t-${c.tone}` : ""}`;
+    return `<button class="${cls}" data-ts="${on ? "" : esc(c.name)}"${c.means ? ` title="${esc(c.means)}"` : ""}><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
+  }).join("");
+  return tiles || extra ? `<div class="tiles stiles">${tiles}${extra}</div>` : "";
+}
 
 // The window buttons a table can carry beside its dropdowns: each writes one URL key (`key`), a blank
 // value being the plain view, and `date` adds a day picker on the same key.
@@ -75,14 +89,17 @@ function tblDays({ key, on, windows, date }) {
   return `<span class="seg tdays">${b}${pick}</span>`;
 }
 
-// The search box, the dropdowns and the chips, then what the table's state words mean (the
-// summary's `legend`, hub_core::vocab, when it has one). `id` names the parts a repaint while the
-// search box has focus replaces around it: `<id>-facets` and `<id>-chips`. A tab whose overview
-// tiles are its chips (Sessions) passes `chips` false.
-function tblBar(id, t, hint, chips = true, days = "") {
-  return `<div class="card bfilter qcfilter"><div class="opts"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text">` +
-    `<span id="${id}-facets">${tblFacets(t)}${days}</span></div></div>` + (chips ? `<div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>` : "") +
-    (t.legend ? `<div class="muted fold tlegend">${esc(t.legend)}</div>` : "");
+// The table's head: its tiles (tblTiles), then one bar fused to the top of the table under it:
+// the search box, the facets no header drew, the phone sort and the window buttons. The search
+// box's hover says the query syntax and the table's state words (the summary's `legend`,
+// hub_core::vocab). `id` names the parts a repaint while the search box has focus replaces around
+// it: `<id>-facets` and `<id>-tiles`. `tiles` is a tab's own tiles after the states.
+const TBL_SYNTAX = "key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text";
+function tblBar(id, t, hint, tiles = "", days = "") {
+  const help = TBL_SYNTAX + (t.legend ? `. ${t.legend}` : "");
+  return `<div id="${id}-tiles">${tblTiles(t, tiles)}</div>` +
+    `<div class="tqbar"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="${esc(help)}">` +
+    `<span class="tqf" id="${id}-facets">${tblFacets(t)}${days}</span></div>`;
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
@@ -142,15 +159,15 @@ const tblDropdown = (el) => el?.dataset?.tsv !== undefined || (el?.dataset?.twin
 
 // One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
 //   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
-//   id     the parts' prefix: `<id>-head`, the bar's `<id>-q`, `-facets` and `-chips`, `<id>-body`, `<id>-tail`
+//   id     the parts' prefix: `<id>-head`, the bar's `<id>-q`, `-facets` and `-tiles`, `<id>-body`, `<id>-tail`
 //   el     the id of the element it draws into (id), and `on` the one its listener sits on (el);
 //          scroller: the scrolling parent whose scrollTop a whole draw keeps
 //   pre    the view keys' prefix (tblParams), for a tab's second table; its block carries data-tbl
 //   api    the path read with the view keys, plus what params(p, t) adds; with no api the tab reads
 //          itself and `refresh` is that read
 //   hint   the search box's placeholder; wait: what shows before the first read, under lead(), the
-//          html that leads the tab on that path too (an inner strip); chips: false
-//          for a tab whose overview tiles are its chips; days(t): what tblDays draws in the bar
+//          html that leads the tab on that path too (an inner strip); tiles(t): the tab's own
+//          tiles after the state tiles; days(t): what tblDays draws in the bar
 //   pages  the server caps the rows, so "+N more" reads them again with params asking for all
 //   head, body, tail (t)  the html above the bar, the rows and below them; wrap(html): around the bar and rows (Costs' inner tab); table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
@@ -166,6 +183,7 @@ function tblTab(o) {
   const part = (k, f) => (f ? `<div id="${id}-${k}">${f(t)}</div>` : "");
   const open = () => o.open && o.open();
   const days = () => (o.days ? tblDays(o.days(t)) : "");
+  const tiles = (v) => tblTiles(v, o.tiles ? o.tiles(t) : "");
   const facets = (v) => tblFacets(v) + days();
   const around = () => { if (o.head) paint($(id + "-head"), o.head(t), open()); if (o.tail) paint($(id + "-tail"), o.tail(t), open()); };
   t.refresh = o.refresh || coalesce(async () => {
@@ -186,7 +204,7 @@ function tblTab(o) {
     if (f?.id !== id + "-q" && (!tblDropdown(f) || !f.closest?.(`#${id}-facets`))) return false;
     paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
     if (f.id === id + "-q") paint($(id + "-facets"), facets(v));
-    if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
+    if ($(id + "-tiles")) paint($(id + "-tiles"), tiles(v));
     around();
     return true;
   };
@@ -195,11 +213,11 @@ function tblTab(o) {
     const v = table();
     paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
     if ($(id + "-facets")) paint($(id + "-facets"), facets(v));
-    if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
+    if ($(id + "-tiles")) paint($(id + "-tiles"), tiles(v));
     around();
   };
   const wrap = o.wrap || ((html) => html);
-  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + body) + part("tail", o.tail); };
+  t.html = () => { const body = tblBodyFirst(table(), () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.tiles ? o.tiles(t) : "", days()) + body) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;

@@ -25,11 +25,13 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 function facet(key, values) {
   return { key, on: [], clear: "", values: values.map((value, i) => ({ value, n: values.length - i, on: false, q: `${key}:${value}` })) };
 }
-// A hub_core::table Summary as it serializes; the first state chip keeps every row.
+// A hub_core::table Summary as it serializes; the first state chip keeps every row. A few words
+// carry the tone hub_core::vocab::tone gives them, so a screenshot shows the tiles' hues.
+const TONE = { failed: "bad", red: "bad", attention: "warn", "needs you": "warn", stalled: "warn", ok: "ok", done: "ok" };
 function table(n, columns, states = ["all"], facets = {}) {
   return {
     q: "", state: states[0], sort: "", dir: "desc", total: n, shown: n,
-    states: states.map((name, i) => ({ name, n: i ? Math.max(1, n - i) : n })),
+    states: states.map((name, i) => ({ name, n: i ? Math.max(1, n - i) : n, tone: (i && TONE[name]) || "none" })),
     columns: columns.map(col),
     facets: Object.entries(facets).map(([k, v]) => facet(k, v)),
   };

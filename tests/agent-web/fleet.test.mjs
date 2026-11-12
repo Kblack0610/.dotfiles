@@ -19,7 +19,7 @@ const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll:
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part() };
+const parts = { "fleet-body": part(), "fleet-tiles": part(), "fleet-facets": part(), "fleet-head": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
@@ -148,7 +148,7 @@ test("a held runner reads red and the held chip counts it", () => {
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.match(h, /<td class="bad">held<\/td>/);
-  assert.match(h, /data-ts="held">held <span class="n">1<\/span>/);
+  assert.match(h, /data-ts="held"><span class="tl">HELD<\/span><span class="tv">1</);
 });
 
 test("the header draws every hub-core column and the bar is the shared one", () => {
@@ -173,7 +173,7 @@ test("KIND and FOR say what each row is and why it is deployed, under the lanes.
   assert.match(h, /<td class="muted">observe<\/td><td><a href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
   assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
-  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}">${k} <span class="n">`));
+  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}"><span class="tl">${k.toUpperCase()}</span><span class="tv">`));
   vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
   ctx.renderFleet();
   assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
@@ -338,7 +338,7 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   st.tab = "fleet";
   fs.data = judges;
   ctx.renderFleet();
-  assert.doesNotMatch(box.innerHTML, /class="tile"/, "the judges' tiles moved to their pages");
+  assert.doesNotMatch(box.innerHTML, /<div class="tile"/, "the judges' tiles moved to their pages");
   st.tab = "log";
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /<a href="#fleet\/dispatch-judge">Dispatch judge<\/a>/);

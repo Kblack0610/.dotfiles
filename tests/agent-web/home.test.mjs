@@ -70,7 +70,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
   }));
   assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
-  assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
+  assert.match(html, /data-ts="Question"><span class="tl">QUESTION<\/span><span class="tv">1</);
   assert.match(html, /<th class="n"[^>]*><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
   assert.match(html, /data-tsort="waited"[^>]*>waited<\/button>/);
   const row = /<tr class="jr" data-need="ask:a1"><td class="n">1<\/td><td>Question<\/td><td>p<\/td><td class="n" title="(\d{4}-\d\d-\d\dT[^"]+Z)">1h 5m<\/td><td class="wrap muted">session, 2 phases<\/td><td class="wrap">Ship it\?<\/td><\/tr>/.exec(html);
@@ -228,7 +228,7 @@ test("a refresh repaints around the search box in use and leaves it alone", () =
   assert.equal(again, first, "the board with the box in it is not repainted");
   assert.match(parts["home-need-body"].innerHTML, /Second/);
   assert.match(parts["home-need-head"].innerHTML, /Needs you/);
-  assert.equal(typeof parts["home-need-chips"].innerHTML, "string");
+  assert.equal(typeof parts["home-need-tiles"].innerHTML, "string");
 });
 
 test("a reply being typed in an open card survives a refresh", () => {
@@ -265,7 +265,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
   assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
   assert.match(html, /id="home-run-q" data-tsearch placeholder="search, or project:dotfiles ci:fail epic:ar-1292"/);
-  assert.match(html, /data-ts="CI failing">CI failing <span class="n">1<\/span>/);
+  assert.match(html, /data-ts="CI failing"><span class="tl">CI FAILING<\/span><span class="tv">1</);
   assert.match(html, /data-tsort="eta"[^>]*>eta<\/button>/);
   const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
   assert.ok(row, html);
