@@ -143,9 +143,10 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 # online <gh stderr>: a run that reaches gh, whose `run view` (a job's log) fails with that message
 online() {
   mkdir -p "$SANDBOX/ghbin"
-  printf '#!/bin/sh\n[ "$1 $2" = "run view" ] && { echo "%s" >&2; exit 1; }\necho "[]"\n' "$1" > "$SANDBOX/ghbin/gh"
+  printf '%s\n' "$1" > "$SANDBOX/ghbin/err"
+  printf '#!/bin/sh\n[ "$1 $2" = "run view" ] && { cat "%s" >&2; exit 1; }\necho "[]"\n' "$SANDBOX/ghbin/err" > "$SANDBOX/ghbin/gh"
   chmod +x "$SANDBOX/ghbin/gh"
-  rm "$CACHE/log-1061.txt"
+  rm -f "$CACHE/log-1061.txt"
   PATH="$SANDBOX/ghbin:$PATH" python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
 }
 
@@ -153,6 +154,7 @@ online() {
   run --separate-stderr online "log not found: 1061"
   assert_success
   assert_equal "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['partial'], d['logs_missing'], d['red_runs'], d['buckets']['infra'])" "$output")" "False [1061] 5 2"
+  assert_equal "$(python3 -c "import json,sys; print([r['line'] for r in json.loads(sys.argv[1])['records'] if r['run'] == 106][0])" "$output")" "(no log on GitHub)"
 }
 
 @test "negative control: any other gh error on a log is PARTIAL, exit 3" {
