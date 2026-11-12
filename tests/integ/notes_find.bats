@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The knowledge finder: notes.nvim `notes.find` (<leader>nk) and the fzf popup
-# `.local/src/fzf/notes-find.sh` (tmux Prefix+k), both over a stub `notes find`. The ranking
+# `.local/src/tmux/notes-find.sh` (tmux Prefix+k), both over a stub `notes find`. The ranking
 # itself is tested in notes-cli (`cargo test find::`); these check that each surface keeps the
 # CLI's order, parses its rows and opens at the hit's line.
 #
@@ -11,7 +11,7 @@ setup() {
   load '../vendor/bats-assert/load'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   PLUGIN="$REPO_ROOT/.config/nvim/local-plugins/notes.nvim"
-  FIND_SH="$REPO_ROOT/.local/src/fzf/notes-find.sh"
+  FIND_SH="$REPO_ROOT/.local/src/tmux/notes-find.sh"
   mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/vault"
   printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nsso with oidc here\nl9\n' > "$BATS_TEST_TMPDIR/vault/sso.md"
   # Records its argv, then prints two hits, best first, in the CLI's tab shape.
@@ -81,7 +81,7 @@ io.stdout:write(shown, "|", vim.fn.expand("%:t"), ":", vim.api.nvim_win_get_curs
 }
 
 @test "the preview starts a few lines above the hit and shows the hit line" {
-  PATH="$BATS_TEST_TMPDIR/bin:/usr/bin:/bin" run "$FIND_SH" --preview-hit "$BATS_TEST_TMPDIR/vault/sso.md" 8
+  PATH="$BATS_TEST_TMPDIR/bin:/usr/bin:/bin" run "$FIND_SH" --preview "$BATS_TEST_TMPDIR/vault/sso.md" 8
   assert_success
   assert_output --partial 'sso with oidc here'
   refute_output --partial 'l2'

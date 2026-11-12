@@ -66,6 +66,9 @@ pub struct Query {
     pub tags: Vec<String>,
     pub phrases: Vec<String>,
     pub exclude: Vec<String>,
+    /// (word, the word joined to its neighbour): `back up` also asks for `backup`, `log in`
+    /// for `login`. Taken before stopwords go, since the second half is often one.
+    pub joins: Vec<(String, String)>,
 }
 
 pub fn parse_query(q: &str) -> Query {
@@ -105,6 +108,11 @@ pub fn parse_query(q: &str) -> Query {
         } else {
             out.words.extend(tokenize(tok));
         }
+    }
+    for pair in out.words.windows(2) {
+        let joined = stem(&format!("{}{}", pair[0], pair[1]));
+        out.joins.push((pair[0].clone(), joined.clone()));
+        out.joins.push((pair[1].clone(), joined));
     }
     let content: Vec<String> = out
         .words
@@ -221,6 +229,8 @@ struct Doc {
     tf: TermMap,
     len: f64,
     knowledge: bool,
+    /// Under the lab tree, where task rows are project sheets and boards, not notes.
+    sheet: bool,
     /// Folder names on the path, stemmed: `#interview` also matches a note under `interviews/`.
     dirs: HashSet<String>,
     content: String,
@@ -251,7 +261,7 @@ fn add(tf: &mut TermMap, text: &str, w: f64) -> usize {
     n
 }
 
-fn parse_doc(path: &Path, content: &str, knowledge_root: &Path) -> Doc {
+fn parse_doc(path: &Path, content: &str, knowledge_root: &Path, sheets_root: &Path) -> Doc {
     let (fm, body) = front_matter(content);
     let mut tf = TermMap::default();
     let mut len = 0usize;
@@ -289,11 +299,13 @@ fn parse_doc(path: &Path, content: &str, knowledge_root: &Path) -> Doc {
         }
     }
     let knowledge = path.starts_with(knowledge_root);
+    let sheet = path.starts_with(sheets_root);
     for line in body.lines() {
         let t = line.trim_start();
-        // A task row is a to-do, not knowledge: lab and job boards are thousands of them, and
-        // counted they bury the prose. Compiled articles keep theirs.
-        if !knowledge && md::is_task(t) {
+        // A task row on a lab sheet is a to-do, not knowledge: the boards are thousands of
+        // them, and counted they bury the prose. Elsewhere a checklist is how a note was
+        // written (interview notes are often all `- [ ]` rows), so it counts.
+        if sheet && md::is_task(t) {
             continue;
         }
         let w = if t.starts_with('#') && t.trim_start_matches('#').starts_with(' ') {
@@ -310,6 +322,7 @@ fn parse_doc(path: &Path, content: &str, knowledge_root: &Path) -> Doc {
         tf,
         len: len as f64,
         knowledge,
+        sheet,
         dirs: rel
             .parent()
             .map(|d| tokenize(&d.to_string_lossy()).into_iter().collect())
@@ -338,7 +351,12 @@ fn files(dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Parse every file across the machine's cores (std threads, no crate). Workers pull the
 /// next file from a shared counter, so one thread never gets every big file.
-fn load(dirs: &[PathBuf], knowledge_root: &Path) -> Vec<Doc> {
+/// The project-sheet tree: lab/, which `search_dirs` also searches by default.
+fn sheets_root(p: &Profile) -> PathBuf {
+    p.vault.join("lab")
+}
+
+fn load(dirs: &[PathBuf], knowledge_root: &Path, sheets_root: &Path) -> Vec<Doc> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let paths = files(dirs);
     let next = AtomicUsize::new(0);
@@ -354,7 +372,7 @@ fn load(dirs: &[PathBuf], knowledge_root: &Path) -> Vec<Doc> {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(p) = paths.get(i) else { break };
                         if let Ok(c) = fs::read_to_string(p) {
-                            out.push(parse_doc(p, &c, knowledge_root));
+                            out.push(parse_doc(p, &c, knowledge_root, sheets_root));
                         }
                     }
                     out
@@ -428,6 +446,7 @@ fn edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
 /// Each query word -> the (term, weight) list it scores with.
 fn expand(
     words: &[String],
+    joins: &[(String, String)],
     docs: &[Doc],
     aliases: &HashMap<String, Vec<String>>,
 ) -> Vec<Vec<(String, f64)>> {
@@ -460,6 +479,9 @@ fn expand(
             if let Some(al) = aliases.get(w) {
                 terms.extend(al.iter().map(|a| (a.clone(), W_ALIAS)));
             }
+            for (_, joined) in joins.iter().filter(|(jw, j)| jw == w && present(j)) {
+                terms.push((joined.clone(), 1.0));
+            }
             if !present(w) {
                 let mut pre: Vec<(&str, usize)> = if w.chars().count() >= 3 {
                     df.iter()
@@ -476,8 +498,10 @@ fn expand(
                             .take(MAX_PREFIX)
                             .map(|(t, _)| (t.to_string(), W_PREFIX)),
                     );
-                } else if w.chars().count() >= 4 {
-                    let max = if w.chars().count() <= 5 { 1 } else { 2 };
+                } else if w.chars().count() >= 5 {
+                    // Under five letters a word sits one edit from too many others (`raft` and
+                    // `pkce` each found an unrelated note), so a short unknown word gets no fuzz.
+                    let max = if w.chars().count() <= 6 { 1 } else { 2 };
                     let best = df
                         .iter()
                         .filter_map(|(t, n)| {
@@ -563,7 +587,7 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
     if q.words.is_empty() && q.tags.is_empty() {
         return Vec::new();
     }
-    let terms = expand(&q.words, docs, aliases);
+    let terms = expand(&q.words, &q.joins, docs, aliases);
     let mut df: HashMap<&str, usize> = HashMap::new();
     for (t, _) in terms.iter().flatten() {
         let c = docs.iter().filter(|d| d.tf.contains_key(t)).count();
@@ -629,7 +653,7 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
     hits.truncate(limit);
     hits.into_iter()
         .map(|(d, score, coverage)| {
-            let (line, text) = best_line(&d.content, &terms, !d.knowledge);
+            let (line, text) = best_line(&d.content, &terms, d.sheet);
             Hit {
                 path: d.path.clone(),
                 line,
@@ -644,7 +668,7 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
 
 /// Search the profile's `search_dirs` for `query`; at most `limit` hits.
 pub fn search(p: &Profile, query: &str, limit: usize) -> Result<Vec<Hit>> {
-    let docs = load(&p.search_dirs, &p.knowledge);
+    let docs = load(&p.search_dirs, &p.knowledge, &sheets_root(p));
     let aliases = load_aliases(&aliases_path(p))?;
     let hits = rank(&docs, &parse_query(query), &aliases, limit);
     // The process exits right after printing: freeing millions of term strings one by one
@@ -684,7 +708,7 @@ fn read_cases(path: &Path) -> Result<Vec<Case>> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut out = Vec::new();
     for line in text.lines() {
-        if line.trim().is_empty() || line.starts_with('#') {
+        if line.trim().is_empty() || line == "#" || line.starts_with("# ") {
             continue;
         }
         let (q, e) = line.split_once('\t').unwrap_or((line, "-"));
@@ -719,7 +743,7 @@ pub struct EvalScore {
 pub fn eval(p: &Profile, file: &Path) -> Result<EvalScore> {
     let cases = read_cases(file)?;
     let t0 = std::time::Instant::now();
-    let docs = load(&p.search_dirs, &p.knowledge);
+    let docs = load(&p.search_dirs, &p.knowledge, &sheets_root(p));
     let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let aliases = load_aliases(&aliases_path(p))?;
     let root = &p.vault;
@@ -854,7 +878,12 @@ mod tests {
 
     fn doc(rel: &str, content: &str) -> Doc {
         let root = Path::new("/v/knowledge");
-        parse_doc(&Path::new("/v").join(rel), content, root)
+        parse_doc(
+            &Path::new("/v").join(rel),
+            content,
+            root,
+            Path::new("/v/lab"),
+        )
     }
 
     fn corpus() -> Vec<Doc> {
@@ -876,8 +905,16 @@ mod tests {
                 "# Board\n- [ ] epic(security): mobile security to standard\n",
             ),
             doc(
+                "employment/prep/pizza-app.md",
+                "# Pizza app code interview\n- [ ] decided on mongoose model for schema validation\n",
+            ),
+            doc(
+                "knowledge/home/phone-backup.md",
+                "# Phone backup\nThe phone backup runs nightly to the NAS.\n",
+            ),
+            doc(
                 "lab/notes/garden.md",
-                "# Garden\nTomatoes and basil.\n",
+                "# Garden\nTomatoes and basil out back.\n",
             ),
         ]
     }
@@ -915,6 +952,13 @@ mod tests {
     }
 
     #[test]
+    fn two_words_that_are_one_word_in_the_note_still_cover_the_query() {
+        let h = q("how do i back up my phone");
+        assert_eq!(names(&h)[0], "phone-backup");
+        assert_eq!(h[0].coverage, 1.0, "back up should cover via backup");
+    }
+
+    #[test]
     fn all_words_beat_some_words() {
         let h = q("mobile security");
         assert_eq!(names(&h)[0], "mobile-app", "{:?}", names(&h));
@@ -922,8 +966,9 @@ mod tests {
     }
 
     #[test]
-    fn task_rows_outside_knowledge_are_not_knowledge() {
+    fn task_rows_count_except_on_lab_sheets() {
         assert!(!names(&q("mobile security")).contains(&"board".to_string()));
+        assert_eq!(names(&q("mongoose model"))[0], "pizza-app");
     }
 
     #[test]
