@@ -832,7 +832,8 @@ live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 
 # delay_of <rule> <level>: the minutes that type waits at that level; fails when the judge does
 # not answer it there, an ask with no level included.
-delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l { print $3; found = 1; exit } END { exit !found }'; }
+# awk reads every row: an early exit would SIGPIPE delay_rows, and pipefail would fail the lookup.
+delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l && !found { print $3; found = 1 } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
 # anything else: a gate, a human or error call, a shadow rule, an ask the human disarmed. The one
