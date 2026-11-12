@@ -641,3 +641,35 @@ test("a row that leaves Needs you closes, so its id never comes back open", asyn
     assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; vm.runInContext("hst.open = new Set()", ctx); }
 });
+
+test("an opened sheet row closes from its card: the row read fresh by id, then the board's write", async () => {
+  const needs = [{ kind: "sheet", need: "todo", project: "p", text: "sheet row", id: "t1", score: { human: true, holds: "", priority: "urgent", value: 1 } }];
+  assert.match(draw(home({ needs }), [], [], ["sheet:t1"]), /data-close="t1" data-closeproj="p".*data-closehow.*data-closewhy.*data-closego>Close/s);
+  const sent = [];
+  const reply = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  const row = { id: "t1", project: "p", state: "open", profile: "personal", lane: "human", raw: "- [ ] sheet row #urgent" };
+  const before = ctx.fetch;
+  let rows = [row, { ...row, project: "other" }];
+  ctx.fetch = async (path, o) => {
+    if (path.startsWith("/api/board?")) { sent.push(["read", path]); return reply({ rows }); }
+    if (path === "/api/board") { sent.push(["write", JSON.parse(o.body)]); return reply({ out: "dropped" }); }
+    return reply(path === "/api/briefing" ? { error: "off" } : home());
+  };
+  const err = { textContent: "" };
+  const box = (how, why) => ({ dataset: { close: "t1", closeproj: "p" }, parentElement: { querySelector: () => err },
+    querySelector: (s) => (s === "[data-closehow]" ? { value: how } : { value: why }) });
+  try {
+    ctx.input = box("drop:why", "");
+    await vm.runInContext("closeSheetRow(input)", ctx);
+    assert.equal(err.textContent, "Say why.");
+    assert.equal(sent.length, 0);
+    ctx.input = box("drop:why", "stale");
+    await vm.runInContext("closeSheetRow(input)", ctx);
+    assert.deepEqual(sent, [["read", "/api/board?q=id%3A%3Dt1"],
+      ["write", { verb: "drop", why: "stale", profile: "personal", project: "p", lane: "human", raw: "- [ ] sheet row #urgent" }]]);
+    rows = [];
+    ctx.input = box("done:proof", "pr:9");
+    await vm.runInContext("closeSheetRow(input)", ctx);
+    assert.match(err.textContent, /t1 is not open on the p sheet any more/);
+  } finally { ctx.fetch = before; }
+});

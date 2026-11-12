@@ -146,8 +146,36 @@ function needCard(n) {
   const band = needBand(k, [esc(n.project), what, id, n.since ? waited(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
-    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
+    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>`
+    : n.kind === "sheet" ? sheetClose(n) : "";
   return `<div class="card need k-${k}" title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
+}
+
+// A sheet row closes here as on the Board tab: done with a proof or why it has none, or dropped
+// with why. The write is the board's (POST /api/board, `notes ptask --exact` on the row's raw line).
+const SHEET_CLOSE = [["drop:why", "drop, because"], ["done:proof", "done, proof"], ["done:unverified", "done, unverified because"]];
+function sheetClose(n) {
+  return `<div class="opts" data-close="${esc(n.id)}" data-closeproj="${esc(n.project)}">` +
+    `<select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>` +
+    `<input data-closewhy placeholder="why, or pr:123 / a URL"><button class="btn sm" data-closego>Close</button></div><div class="err"></div>`;
+}
+
+// Read the row fresh off the board by its id, so a row changed since Home drew it fails the write
+// instead of closing the wrong line, then close it and read Home again.
+async function closeSheetRow(box) {
+  const err = box.parentElement.querySelector(".err");
+  const [verb, how] = box.querySelector("[data-closehow]").value.split(":");
+  const v = box.querySelector("[data-closewhy]").value.trim();
+  if (!v) { err.textContent = how === "proof" ? "Give the proof (pr:N or a URL)." : "Say why."; return; }
+  const id = box.dataset.close, project = box.dataset.closeproj;
+  try {
+    const got = await api(`/api/board?q=${encodeURIComponent(`id:=${id}`)}`);
+    const r = (got.rows || []).find((x) => x.id === id && x.project === project && x.state !== "done");
+    if (!r) throw new Error(`${id} is not open on the ${project} sheet any more`);
+    await post("/api/board", { verb, [how]: v, profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
+    hst.open.delete(`sheet:${id}`);
+    refreshHome();
+  } catch (e) { err.textContent = e.message; }
 }
 
 // An ask or a session dialog the page can answer gets its answer card; the rest a plain card.
@@ -315,6 +343,8 @@ $("home").addEventListener("click", (e) => {
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
+  if (t.dataset.closego !== undefined) { closeSheetRow(t.closest("[data-close]")); return; }
+  if (t.closest("[data-close]")) return;
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e).then(refreshHome); return; }
   const row = e.target.closest("tr.jr[data-need]");
