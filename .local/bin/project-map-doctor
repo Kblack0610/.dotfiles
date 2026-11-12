@@ -185,20 +185,29 @@ done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "obj
 
 # --- 4c. every deploy target is well formed (release-state reads them) ----------------
 # A malformed target does not error in release-state; it shows `unknown` forever, which reads
-# like a flaky probe. Schema: docs/operations/release-state.md.
+# like a flaky probe. Schema: docs/operations/release-state.md. A channel word is a key of the
+# registry's `channels`, which maps it to the stage rung it serves (alpha or above: below alpha
+# nothing deploys, ~/.local/src/docs/stages.md "The ladder").
 n=0
 while IFS= read -r msg; do
   [ -n "$msg" ] && fail "$msg"
-done < <(jq -r '
-  def chans: ["prod","beta","alpha","preview","internal"];
-  (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
+done < <(jq -r --arg ladder "$(notes projects --stages 2>/dev/null)" '
+  def chans: (.channels // {}) | keys | map(select(startswith("_") | not));
+  ($ladder | split(" ") | map(select(. != ""))) as $L
+  | (if (.channels | type) != "object" then
+       (if [(.trackers // {})[] | objects | .targets // empty] != [] then "registry has no channels map (channel word -> stage rung)" else empty end)
+     elif $L == [] then empty
+     else .channels | to_entries[] | select(.key | startswith("_") | not)
+       | select(.value as $v | $L | index($v) as $i | $i == null or $i < ($L | index("alpha")))
+       | "channels.\(.key): \"\(.value)\" is not a stage at or above alpha (\($L | join("|")))" end),
+  (. as $root | (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
   | .key as $p
   | if (.value.targets | type) != "array" then "trackers.\($p).targets is not a list"
     else .value.targets[] | (.id // "?") as $id
     | (if type != "object" then "trackers.\($p).targets has a non-object entry" else empty end),
       (select(type == "object")
        | (if ((.id // "") | test("^[a-z0-9][a-z0-9-]*$") | not) then "trackers.\($p) target \"\($id)\": id must be lowercase letters, digits and -" else empty end),
-         (if ((.channel // "") as $c | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \(chans | join("|"))" else empty end),
+         (if ($root.channels | type) == "object" and ((.channel // "") as $c | $root | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \($root | chans | join("|"))" else empty end),
          (if (.pinned.tag == true) or (.pinned.deployed == true) or ((.pinned.repo // "") != "" and (.pinned.path // "") != "") then empty
           elif .pinned.deployed == "manual" then
             (if ((.pinned.reason // "") | type) == "string" and (.pinned.reason // "") != "" then empty
@@ -208,7 +217,7 @@ done < <(jq -r '
              or (.live.steam.app and .live.steam.branch) or (.live.play.package and .live.play.track) or .live.testflight.app then empty
           else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment}, health {url}, steam {app, branch}, play {package, track} or testflight {app}" end),
          (if (.live | objects | length) > 1 then "trackers.\($p) target \"\($id)\": live names more than one kind" else empty end))
-    end' "$MAP_FILE" 2>/dev/null)
+    end)' "$MAP_FILE" 2>/dev/null)
 while IFS= read -r dup; do
   [ -n "$dup" ] && fail "deploy target id $dup"
 done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | (.value.targets // []) | arrays | .[] | objects | .id]

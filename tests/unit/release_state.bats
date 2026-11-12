@@ -74,6 +74,7 @@ push_pin() {
 write_map() {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
+  "channels": { "_comment": "c", "alpha": "alpha", "preview": "alpha", "internal": "alpha", "beta": "beta", "prod": "prod" },
   "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "_comment": "a string value",
@@ -89,6 +90,21 @@ write_map() {
   }
 }
 EOF
+}
+
+# notes_stub <stats-json> - `notes` answers the ladder and each lab project's stage;
+# NOTES_FAIL=1 makes it answer nothing.
+notes_stub() {
+  cat > "$SANDBOX/bin/notes" <<'EOF'
+#!/usr/bin/env bash
+[ "${NOTES_FAIL:-0}" = 1 ] && exit 1
+case "$*" in
+  "projects --stages") echo "draft dev alpha beta prod" ;;
+  "projects --stats --json") cat "$SANDBOX/stats.json" ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+  printf '%s' "$1" > "$SANDBOX/stats.json"
 }
 
 row() { jq -c --arg id "$1" '.rows[] | select(.id == $id)' "$RELEASE_STATE_DIR/state.json"; }
@@ -249,6 +265,7 @@ field() { row "$1" | jq -r "$2"; }
 @test "doctor 4c names a malformed target and a duplicate id" {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
+  "channels": { "prod": "prod", "beta": "beta" },
   "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "infra": { "system": "none" },
@@ -264,7 +281,7 @@ EOF
   assert_failure
   assert_output --partial 'target "Bad Id": id must be lowercase'
   assert_output --partial 'target "Bad Id": pinned needs {tag: true}, {deployed: true}, {deployed: "manual", reason} or repo and path'
-  assert_output --partial 'target "dup": channel "staging" is not one of'
+  assert_output --partial 'target "dup": channel "staging" is not one of beta|prod'
   assert_output --partial 'target "dup": live needs k8s'
   assert_output --partial 'dep "ghost" is not a registered project'
   assert_output --partial 'deploy target id "dup" is used 2 times'
@@ -552,6 +569,24 @@ EOF
   assert_output --partial 'target "b-steam-beta": live needs'
   assert_output --partial 'target "c-two-kinds": live names more than one kind'
   refute_output --partial 'target "a-'
+}
+
+@test "doctor 4c: channel words come from the registry channels map, each a stage at or above alpha" {
+  notes_stub '[]'
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  refute_output --partial 'channels'
+  # A rung below alpha, or one not on the ladder, is named.
+  jq '.channels.preview = "dev" | .channels.edge = "staging"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_failure
+  assert_output --partial 'channels.preview: "dev" is not a stage at or above alpha (draft|dev|alpha|beta|prod)'
+  assert_output --partial 'channels.edge: "staging" is not a stage at or above alpha'
+  # With no map, a registry with targets fails once, not once per target.
+  jq 'del(.channels)' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
+  assert_failure
+  assert_output --partial 'registry has no channels map'
+  refute_output --partial 'is not one of'
 }
 
 @test "doctor 4c names a buildTags that is not a list of single globs" {
@@ -965,4 +1000,54 @@ EOF
   reply "$(node v0.5.0-g1 SUCCESS 2026-11-03T10:00:00Z 4500)"
   "$RS" refresh game
   [ "$(row game-testflight | jq -r .drift_since)" -gt 1000 ]
+}
+
+@test "stages: a draft project live on any channel is ahead of its stage, every target named" {
+  notes_stub '[{"name": "web", "stage": "draft"}, {"name": "nolab", "stage": ""}]'
+  run "$RS" refresh
+  assert_success
+  run jq -c '.stages_error, .stages.web, .stages.shop' "$RELEASE_STATE_DIR/state.json"
+  assert_line --index 0 'null'
+  assert_line --index 1 '{"stage":"draft","rungs":["alpha","prod"],"needs":[],"ahead":["web-prod","web-preview"]}'
+  # A project with no stage still has its rungs, for the gate that sets its first stage.
+  assert_line --index 2 '{"stage":null,"rungs":[],"needs":[],"ahead":[]}'
+}
+
+@test "stages: a stage off the ladder or a channel the map does not name judges nothing" {
+  notes_stub '[{"name": "web", "stage": "gamma"}]'
+  jq '.trackers.web.targets[1].channel = "_comment"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web' "$RELEASE_STATE_DIR/state.json"
+  assert_output '{"stage":null,"rungs":["prod"],"needs":[],"ahead":[]}'
+}
+
+@test "stages: a beta app names the rung nothing serves and the target above it" {
+  notes_stub '[{"name": "web", "stage": "beta"}]'
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web | [.needs, .ahead]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[["beta"],["web-prod"]]'
+  # Negative control: at prod it owes beta and nothing is ahead.
+  notes_stub '[{"name": "web", "stage": "prod"}]'
+  "$RS" refresh >/dev/null
+  run jq -c '.stages.web | [.needs, .ahead]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[["beta"],[]]'
+}
+
+@test "stages: a target not read serves no rung, and infra owes none" {
+  notes_stub '[{"name": "web", "stage": "alpha"}]'
+  KUBE_FAIL=1 "$RS" refresh >/dev/null
+  run jq -c '.stages.web | [.rungs, .needs]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[[],["alpha"]]'
+  jq '.trackers.web.type = "infra"' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  KUBE_FAIL=1 "$RS" refresh >/dev/null
+  run jq -c '.stages.web.needs' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[]'
+}
+
+@test "stages: when notes cannot say, the snapshot says why and still writes its rows" {
+  notes_stub '[]'
+  NOTES_FAIL=1 run "$RS" refresh
+  assert_success
+  run jq -c '[.stages, .stages_error, (.rows | length > 0)]' "$RELEASE_STATE_DIR/state.json"
+  assert_output '[{},"notes projects --stages printed nothing",true]'
 }
