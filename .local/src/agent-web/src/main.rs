@@ -1257,10 +1257,10 @@ async fn briefing_night(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn infra_board(State(s): State<Shared>) -> Response {
+async fn infra_board(State(s): State<Shared>, Query(q): Query<infra::ViewQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.infra.get().await,
+        s.infra.get(q).await,
     )
         .into_response()
 }

@@ -27,6 +27,7 @@ pub mod jobs;
 pub mod junit;
 pub mod layout;
 pub mod links;
+pub mod machines;
 pub mod money;
 pub mod outbox;
 pub mod outcomes;
