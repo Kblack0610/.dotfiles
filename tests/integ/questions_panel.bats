@@ -497,6 +497,36 @@ transcript() {
   assert_output 2
 }
 
+@test "the panel hides parked asks until P, and P again hides them" {
+  local live parked
+  live="$(ask demo agent-1 'a=the first|b=the second' 'live?')"
+  parked="$(ask demo agent-2 'a=the first|b=the second' 'wear the headset?')"
+  "$AGENT_ASK" park "$parked" --until '+3 days' 2>/dev/null
+  export QUESTIONS_PARKED="$BATS_TEST_TMPDIR/parked"
+  : >"$QUESTIONS_PARKED"
+  run rows
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
+  . "$Q"
+  assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked (P shows)'
+  run "$Q" key P "$live"
+  assert_output --partial 'reload('
+  assert_output --partial '1 parked (P hides)'
+  assert_output --partial 'parked asks shown'
+  run rows
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live $parked "
+  run "$Q" key P "$live"
+  assert_output --partial 'parked asks hidden'
+  run rows
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
+  # The status bar count never counted parked asks, hidden or not.
+  run "$Q" count
+  assert_output 1
+  # Typing an answer, P is a letter.
+  echo "typing - $live" >"$QUESTIONS_STATE"
+  run "$Q" key P "$live"
+  assert_output 'put(P)'
+}
+
 @test "p then enter parks the question until its revisit date; p on a parked one then enter puts it back" {
   local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'fly the drone?')"
   run "$Q" key p "$id"
