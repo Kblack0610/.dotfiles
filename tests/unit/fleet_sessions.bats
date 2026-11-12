@@ -3188,7 +3188,7 @@ main_change() {
 # fleet-states.md). base is a hand-started lab session, finished, idle an hour, nothing open. SELF names
 # the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson hand 60 --argjson chat 1440 --arg self "${SELF:-}" \
+  jq -nr --argjson chat 1440 --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
       blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
@@ -3209,7 +3209,8 @@ verdict() {
   # Plan mode keeps it whether or not its approval dialog is open (ask 4RSfMg).
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  # No keep on time since the human was here: a finished hand-started row idle 30 closes (2026-11-12).
+  [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
@@ -3229,26 +3230,29 @@ verdict() {
 @test "close verdict: dispatched is the window flag or the item origin, never the world" {
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "now: plan finished, nothing open" ]
   # Being on lab is not dispatch: the human's own worktree sessions live there too.
-  [ "$(verdict '{idle_min: 30}')" = "keep: the human was here 30m ago" ]
+  [ "$(verdict '{idle_min: 30, bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "moved"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
-  [ "$(verdict '{idle_min: 30, bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: the human was here 30m ago" ]
-  # An unknown age is quiet 0 (as fleet-shepherd reads it), so it never closes on quiet.
-  [ "$(verdict '{target: "hub/d:4", bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "keep: the human was here 0m ago" ]
-  [ "$(jq -r --argjson hand 60 --argjson chat 1440 \
-       '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = keep ]
+  # What waits on the human keeps a hand-started row idle 30; time alone does not (negative controls).
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission"}')" = "keep: a dialog waits on the human" ]
+  # An unknown age is quiet 0 (as fleet-shepherd reads it), so a CHAT row never closes on quiet.
+  [ "$(verdict '{target: "hub/d:4", bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 24h (now 0m)" ]
+  [ "$(jq -r --argjson chat 1440 \
+       '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = now ]
 }
 
 @test "close verdict: a session asking about itself reads as at the end of its turn" {
-  # Mid-turn it always reads WORKING and just used; those two keeps are not asked of itself.
+  # Mid-turn it always reads WORKING; that keep is not asked of itself.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1"}')" = "now: plan finished, nothing open" ]
   [ "$(SELF=s1 verdict '{target: "hub/d:3", idle_min: 0, session_id: "s1"}')" = "now: plan finished, nothing open" ]
   # Negative control: the same rows read by anyone else, or for another session, still keep.
   [ "$(verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
   [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
-  [ "$(SELF=s2 verdict '{target: "hub/d:3", idle_min: 0, session_id: "s1"}')" = "keep: the human was here 0m ago" ]
+  [ "$(SELF=s2 verdict '{target: "hub/d:3", bucket: "WORKING", idle_min: 0, session_id: "s1"}')" = "keep: working" ]
   # Every other keep still holds it.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
@@ -3289,11 +3293,11 @@ verdict() {
 }
 
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
+  [ "$(jq -c --argjson chat 1440 \
        '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
+  [ "$(jq -c --argjson chat 1440 \
        '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
-  [ "$(jq -c --argjson hand 60 --argjson chat 1440 \
+  [ "$(jq -c --argjson chat 1440 \
        '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
   run json_rows < <(age_row 45)
   assert_success
