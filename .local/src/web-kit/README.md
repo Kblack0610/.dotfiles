@@ -2,6 +2,8 @@
 
 The shared site shell for every kblab site: design tokens, the two fonts, and `<kb-shell>`, the top bar with tabs under group headings. It shows as a fixed sidebar from 900px, and as a menu button with a dropdown below that. There is no build step and no dependency: plain CSS and one ES module, in light DOM, so a site's own CSS and server-rendered links work inside it.
 
+What the tokens should look like, and how a site uses them, is `../docs/ui.md`; a token change follows it.
+
 | File | What it is |
 |---|---|
 | `tokens.css` | `:root` palette, type scale, dark mode, the two `@font-face` rules, and the body base |
