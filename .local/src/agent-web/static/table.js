@@ -105,6 +105,11 @@ function tblHead(t, labels, pre = "t") {
 
 // The button a capped body ends in; tblTab's listener answers `data-all` (t.all, reset by a view change).
 const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
+// The record each cell names (hub_core::links, `Row::link`): the summary sends `links`, one
+// column -> href map per row it sent, in the same order, so the page builds no `#...` itself.
+const tblLinks = (t, i) => t?.links?.[i] || {};
+// A linked cell: an anchor to its page, a URL outside the hub in a new tab; no href, its text.
+const tblLink = (href, text, cls = "") => href ? `<a${cls ? ` class="${cls}"` : ""} href="${esc(href)}"${/^https?:/.test(href) ? ' target="_blank" rel="noopener"' : ""}>${esc(text)}</a>` : text ? (cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)) : "-";
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {
