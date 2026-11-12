@@ -60,12 +60,21 @@ EOF
   # cif-stub: ci-failures --json serves $SANDBOX/cif and exits $SANDBOX/cif-rc
   export DAYLOG_CI_FAILURES_CMD=cif-stub DAYLOG_CI="$SANDBOX/ci" DAYLOG_CI_CACHE="$SANDBOX/ci-cache"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
-  echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"base":[4,1],"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
+  echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
   echo 'O/game trunk' > "$DAYLOG_CI"
-  # hub-stub: hub ci pass serves $SANDBOX/pass, logs its args, and exits $SANDBOX/pass-rc
+  # hub-stub: hub ci pass serves $SANDBOX/pass (with --branch B: $SANDBOX/pass-B), logs its args, and
+  # exits $SANDBOX/pass-rc (pass-B-rc)
   export DAYLOG_HUB_CMD=hub-stub
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/hub-args" "$SANDBOX/pass" "$SANDBOX/pass-rc" > "$SANDBOX/bin/hub-stub"
+  cat > "$SANDBOX/bin/hub-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/hub-args"
+f="$SANDBOX/pass"
+[[ "\$*" =~ --branch\ ([^ ]+) ]] && f+="-\${BASH_REMATCH[1]}"
+cat "\$f"
+exit "\$(cat "\$f-rc" 2>/dev/null || echo 0)"
+EOF
   echo '{"github:O/game":{"runs":9,"green":7,"pass":0.7778,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Lint":{"runs":1,"green":1,"pass":1.0}}},"github:O/other":{"runs":1,"green":0,"pass":0.0,"workflows":{}}}' > "$SANDBOX/pass"
+  echo '{"github:o/GAME":{"runs":4,"green":3,"pass":0.75,"workflows":{}}}' > "$SANDBOX/pass-trunk"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
   sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
@@ -566,7 +575,9 @@ PROM
   run rec -c '.ci.repos["O/game"] | [.runs, .red, .pass, .main, .workflows.Tests, .workflows.Lint.pass, .cost.hours.pool, .cost.quarantine.open]' 2026-10-27
   assert_output '[10,2,{"runs":9,"green":7,"pass":0.7778},{"runs":4,"red":1},{"runs":8,"green":6,"pass":0.75},1.0,3.5,6]'
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
-  assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $(date -d '2026-10-27 00:00' +%s) --until $(date -d '2026-10-28 00:00' +%s)"
+  local since until; since=$(date -d '2026-10-27 00:00' +%s) until=$(date -d '2026-10-28 00:00' +%s)
+  assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $since --until $until
+ci pass --since $since --until $until --branch trunk"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
   [ ! -e "$DAYLOG_CI_CACHE/2026-10-27" ]
@@ -584,6 +595,23 @@ PROM
   run rec -c '.ci | [.repos["O/game"] | .runs, has("pass"), has("workflows")], [.unreadable[] | select(startswith("hub ci pass"))]' 2026-10-27
   assert_output '[10,false,false]
 ["hub ci pass: exit 1"]'
+}
+
+@test "nightly: main is the base branch's runs from hub ci pass --branch, less the green, never ci-failures' count" {
+  jq -c '.base = [9,9]' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"   # an old ci-failures: ignored
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  run rec -c '.ci.repos["O/game"] | [.main, .pass.runs]' 2026-10-27
+  assert_output '[{"runs":4,"red":1},9]'
+}
+
+@test "negative control: a failed hub ci pass --branch is named unreadable and leaves main out, never zero; the day's pass stays" {
+  echo 1 > "$SANDBOX/pass-trunk-rc"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  run rec -c '.ci | [.repos["O/game"] | has("main"), .pass.runs], [.unreadable[] | select(startswith("hub ci pass"))]' 2026-10-27
+  assert_output '[false,9]
+["hub ci pass --branch trunk: exit 1"]'
 }
 
 @test "nightly: ci-cost runs from the base branch's scripts/ tree, so a file it loads beside it is there" {
