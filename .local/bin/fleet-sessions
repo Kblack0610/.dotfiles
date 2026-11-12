@@ -462,8 +462,8 @@ ledger_write() {
   case "$sid" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
   case "$key" in
-    escalated) keep="$(grep '^fact: ' "$LEDGER/$sid" 2>/dev/null)" ;;
-    fact)      keep="$(grep '^escalated: ' "$LEDGER/$sid" 2>/dev/null)" ;;
+    escalated) keep="$(grep '^fact: ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
+    fact)      keep="$(grep '^escalated: ' "$LEDGER/$sid" 2>/dev/null)" || true ;;
   esac
   tmp="$(mktemp "$LEDGER/.$sid.XXXXXX")" || return 1
   { [ -n "$keep" ] && echo "$keep"; printf '%s: %s\nat: %s\n' "$key" "$fact" "$(date -Iseconds)"; } > "$tmp" \
