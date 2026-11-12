@@ -114,11 +114,20 @@ holds_set() {
 # Who drives a process decides how it can be stopped: a `claude` ancestor can take a
 # message, a tmux pane with none is a `shell` loop (gate or kill only), an `agentctl` unit
 # stops through agentctl, another systemd service is a `unit` (systemctl --user stop, its
-# name in the session column), and anything else was reparented to init: an `orphan`.
+# name in the session column), a job of this host's CI runner pool, under ci.slice, is `ci`
+# (its runner slice in the session column; machine-mode's runner slots stop it, never a kill),
+# and anything else was reparented to init: an `orphan`.
 # 2026-11-07 (ar-916) the `agent-panel list` of the fleet-state tick read as an orphan.
+# 2026-11-11 (ar-1652) two pool PlayMode jobs read as orphans, whose stop is a kill.
 classify() {
   local pid="$1" q="$1" i comm class="" pane="" cg unit="" proc="${FLEET_PROC:-/proc}"
   cg="$(cat "$proc/$pid/cgroup" 2>/dev/null)"
+  case "$cg" in *0::/ci.slice/*)
+    # the slice holding the job's scope: a slice never holds a process itself
+    unit="${cg##*0::}"; unit="${unit%%$'\n'*}"; unit="${unit%/*}"
+    printf 'ci\t%s\t-\n' "${unit##*/}"
+    return ;;
+  esac
   case "$cg" in *agentctl@*) class=agentctl ;; esac
   unit="$(sed -n 's|^0::.*/||p' <<<"$cg")"; case "$unit" in *.service) ;; *) unit="" ;; esac
   for i in $(seq 1 12); do

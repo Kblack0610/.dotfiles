@@ -1,17 +1,23 @@
-//! The Releases tab's Builds section, both surfaces: every CI run of the last 30 days on GitHub
-//! and Forgejo, from `schedules-sync`'s run ledger (`~/.local/state/ci/runs.jsonl`), each with
-//! the session that owns its branch. The ledger is append-only (a run is written again each time
-//! it changes), so a run is its last line. A failed run's log is fetched only when the row is
-//! opened (docs/dashboards.md rule 10), through the fetch and cache `jobs::read_log` already has.
-//! The opened run's jobs, steps and cost are `detail` (`run_detail`), read from local files only.
+//! Infra's CI runs, both surfaces: every CI run of the last 30 days on GitHub and Forgejo, from
+//! `schedules-sync`'s run ledger (`~/.local/state/ci/runs.jsonl`), each with the session that owns
+//! its branch. The ledger is append-only (a run is written again each time it changes), so a run is
+//! its last line. A failed run's log is fetched only when the row is opened (docs/dashboards.md
+//! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs, steps
+//! and cost are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
+//! same read cut to the runs the graph tied to a release (`Builds::scoped`). Money is a cloud
+//! machine's POWER cell on Infra Machines and Costs', so the Run times fold has none.
 //!
 //! | fact                | home                                                           |
 //! |---------------------|----------------------------------------------------------------|
 //! | the runs            | `$SCHEDULES_RUNS_LEDGER`, else `<state>/ci/runs.jsonl`          |
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
-//! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
+//! | the owner session   | fleet-sessions' `state.json`: the live session on the branch, else its PR's item's |
+//! | a run's PRs and release | joined on read by `release_graph`, from the PR store, the queue and `release-state` |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
+//! | the pass rate       | computed on read (`verdict`, `pass_by_repo`): the one CI pass rate |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
+//! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
+//! | a run's logged tag  | `$SCHEDULES_RUN_TAGS`, else `run-tags.jsonl` beside the ledger (`schedules-sync run-tags`) |
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -20,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{self, LogRef};
+use crate::links::{Kind, Link};
+use crate::quarantine;
 use crate::releases::Level;
 use crate::run_detail::{self, Rates, RunDetail};
 use crate::table::{Row, Val};
@@ -29,8 +37,6 @@ pub const KEEP_DAYS: i64 = 30;
 
 /// How far back a red run still colours the count line.
 pub const RECENT_SECS: i64 = 86400;
-/// Branches that belong to no session: a session sitting on one is not what ran it.
-const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 
 /// Where the files live. Each honours the variable its writer reads.
 #[derive(Clone, Debug)]
@@ -38,8 +44,14 @@ pub struct Paths {
     pub ledger: PathBuf,
     pub sync: PathBuf,
     pub fleet: PathBuf,
+    /// The PR store (`release_graph::prs_dir`): what a run's PRs are joined from.
+    pub prs: PathBuf,
     /// The job archive: every job of each run, keyed as the ledger is.
     pub jobs: PathBuf,
+    /// Each repo's test quarantine and its last nightly's counts.
+    pub quarantine: PathBuf,
+    /// The tags release runs' logs named, for runs whose title does not carry one.
+    pub run_tags: PathBuf,
 }
 
 impl Paths {
@@ -54,16 +66,25 @@ impl Paths {
         let ledger = env("SCHEDULES_RUNS_LEDGER").unwrap_or_else(|| state.join("ci/runs.jsonl"));
         Paths {
             sync: ledger.with_file_name("sync.json"),
+            quarantine: env("SCHEDULES_QUARANTINE")
+                .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
+            run_tags: env("SCHEDULES_RUN_TAGS")
+                .unwrap_or_else(|| ledger.with_file_name("run-tags.jsonl")),
             ledger,
             fleet: crate::boards::fleet_state(),
+            prs: crate::release_graph::prs_dir(),
             jobs: env("SCHEDULES_JOBS_LEDGER").unwrap_or_else(|| state.join("ci/jobs.jsonl")),
         }
     }
 
-    /// Whether a changed file is the ledger, its sync record or the job archive: what wakes the
-    /// section.
+    /// Whether a changed file is the ledger, its sync record, the job archive, the quarantine or
+    /// the run tags: what wakes the section.
     pub fn is_ledger_file(&self, p: &Path) -> bool {
-        p == self.ledger || p == self.sync || p == self.jobs
+        p == self.ledger
+            || p == self.sync
+            || p == self.jobs
+            || p == self.quarantine
+            || p == self.run_tags
     }
 }
 
@@ -82,19 +103,22 @@ pub struct Run {
     pub branch: String,
     pub event: String,
     pub sha: String,
-    /// The commit the jobs checked out, when the workflow records one apart from `sha`.
-    pub tested_sha: String,
     pub status: String,
     pub conclusion: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
-    pub prs: Vec<u64>,
     pub url: String,
-    /// The session working on the branch (several are joined with a comma); empty for a branch
-    /// no session owns, which is drawn `-`.
+    /// The PRs it ran for (`release_graph::Graph::run_prs`): joined on read, never stored.
+    #[serde(skip_deserializing)]
+    pub prs: Vec<u64>,
+    /// The session working on the branch, else the one whose item landed its PR (several are
+    /// joined with a comma); empty for a run no session owns, which is drawn `-`.
     #[serde(skip_deserializing)]
     pub owner: String,
+    /// The release it deployed or ran on its tag for (`release_graph::Graph::release`).
+    #[serde(skip_deserializing)]
+    pub release: Option<crate::release_graph::RunRelease>,
     /// `running`, `queued`, `green`, `red` or `other` (cancelled, skipped).
     #[serde(skip_deserializing)]
     pub state: String,
@@ -136,23 +160,27 @@ pub struct RunTime {
     pub runs: usize,
     pub usual: Option<Usual>,
     pub longest: i64,
-    /// Successes among the runs counted, a whole percent.
+    /// The pass rate (`verdict`) of its finished runs, a whole percent.
     pub pass: u32,
     pub running: usize,
 }
 
 impl RunTime {
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
 }
 
-/// The repo as a person names it: the part after the owner.
-pub fn short_repo(repo: &str) -> &str {
-    repo.rsplit('/').next().unwrap_or(repo)
-}
-
 impl Run {
+    /// Each PR the run built as `owner/repo#N`, the id a queue item's PR carries.
+    pub fn pr_refs(&self) -> Vec<String> {
+        self.prs
+            .iter()
+            .map(|n| format!("{}#{n}", self.repo))
+            .collect()
+    }
+
     pub fn key(&self) -> RunKey {
         RunKey {
             forge: self.forge.clone(),
@@ -167,8 +195,9 @@ impl Run {
         matches!(self.state.as_str(), "green" | "red" | "other")
     }
 
-    pub fn short_repo(&self) -> &str {
-        short_repo(&self.repo)
+    /// The project the repo is, through the name index (`project_map::canonical`).
+    pub fn project(&self) -> String {
+        project_map::canonical(&self.repo)
     }
 }
 
@@ -185,11 +214,13 @@ pub struct RunKey {
 }
 
 impl Row for Run {
-    // `forge`, `event`, `title`, `sha` and `url` filter without a column on the page: the first two
-    // are dropdowns, the third is the open row's heading.
+    // `forge`, `event`, `title`, `id` and `pr` filter without a column on the page: the first two
+    // are dropdowns, the third is the open row's heading, `id:=` is one run's record
+    // (`links::Kind::CiRun`) and `pr:=owner/repo#N` a PR's runs (`Kind::PrRuns`). `release` is the
+    // tag the run deployed or ran on (`release_graph`), `-` for the rest.
     const COLUMNS: &'static [&'static str] = &[
-        "started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "forge",
-        "event", "title",
+        "started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner",
+        "release", "forge", "event", "title", "id", "pr",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "red", "green"];
     const FACETS: &'static [&'static str] = &["repo", "forge", "event", "state"];
@@ -203,7 +234,7 @@ impl Row for Run {
         };
         match col {
             "started" => Val::Num(self.started as f64),
-            "repo" => text(self.short_repo()),
+            "repo" => text(&self.project()),
             "forge" => text(&self.forge),
             "workflow" => text(&self.workflow),
             "branch" => text(&self.branch),
@@ -214,7 +245,17 @@ impl Row for Run {
             "eta" => self.eta.map_or(Val::None, |n| Val::Num(n as f64)),
             "owner" => text(&self.owner),
             "title" => text(&self.title),
+            "release" => self.release.as_ref().map_or(Val::None, |r| text(&r.tag)),
+            "id" => Val::Text(self.id.to_string()),
+            "pr" => text(&self.pr_refs().join(" ")),
             _ => Val::None,
+        }
+    }
+
+    fn vals(&self, col: &str) -> Vec<Val> {
+        match col {
+            "pr" => self.pr_refs().into_iter().map(Val::Text).collect(),
+            _ => vec![self.val(col)],
         }
     }
 
@@ -222,9 +263,23 @@ impl Row for Run {
         self.state == state || state == "all"
     }
 
-    /// A bare word searches what the row says: the owner, the sha and the PR numbers too.
+    /// The workflow opens the run's record; the repo its project.
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "workflow" => Some(Link::to(
+                Kind::CiRun,
+                format!("{}/{}", self.project(), self.id),
+            )),
+            "repo" => Some(Link::to(Kind::Project, self.project())),
+            _ => None,
+        }
+    }
+
+    /// A bare word searches what the row says: the owner, the sha, the PR numbers and the
+    /// release tag too.
     fn text(&self) -> String {
         let prs: Vec<String> = self.prs.iter().map(|n| format!("#{n}")).collect();
+        let tag = self.release.as_ref().map_or("", |r| r.tag.as_str());
         [
             self.repo.as_str(),
             &self.workflow,
@@ -234,6 +289,7 @@ impl Row for Run {
             &self.title,
             &self.sha,
             &prs.join(" "),
+            tag,
         ]
         .join("\n")
         .to_lowercase()
@@ -252,18 +308,21 @@ pub struct Counts {
 }
 
 impl Counts {
-    fn of(rows: &[Run], now: i64) -> Counts {
-        let n = |s: &str| rows.iter().filter(|r| r.state == s).count();
-        Counts {
-            total: rows.len(),
-            running: n("running"),
-            queued: n("queued"),
-            red: n("red"),
-            recent_red: rows
-                .iter()
-                .filter(|r| r.state == "red" && now - r.started < RECENT_SECS)
-                .count(),
+    fn of<'a>(rows: impl IntoIterator<Item = &'a Run>, now: i64) -> Counts {
+        let mut c = Counts::default();
+        for r in rows {
+            c.total += 1;
+            match r.state.as_str() {
+                "running" => c.running += 1,
+                "queued" => c.queued += 1,
+                "red" => {
+                    c.red += 1;
+                    c.recent_red += usize::from(now - r.started < RECENT_SECS);
+                }
+                _ => {}
+            }
         }
+        c
     }
 
     /// `212 runs in 30 days: 3 running, 2 queued, 14 red`.
@@ -296,25 +355,90 @@ impl Counts {
 pub struct Builds {
     pub at: i64,
     pub counts: Counts,
+    /// The counts of the runs tied to a release (`Scope::Release`), taken with `counts`.
+    pub released: Counts,
     pub rows: Vec<Run>,
     /// Each workflow's run times, by repo, the most-run first.
     pub times: Vec<RunTime>,
     /// Why the ledger or a repo could not be read: a red line, never a silent blank.
     pub errors: Vec<String>,
-    /// Each archived run's finished jobs, for the Run times fold's money (`run_detail::costs`).
-    #[serde(skip)]
-    pub job_times: HashMap<RunKey, Vec<run_detail::JobTime>>,
+    /// Each repo's test quarantine: the Quarantine fold, none when no repo has one.
+    pub quarantine: Vec<quarantine::Lane>,
+}
+
+/// Which runs a runs table lists: every CI run (Infra's) or the runs the graph tied to a release
+/// (it deployed one, or ran on its tag: Releases' Release runs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    #[default]
+    All,
+    Release,
+}
+
+impl Scope {
+    /// agent-web's `scope=`: `release`, else every run.
+    pub fn named(s: &str) -> Scope {
+        if s == "release" {
+            Scope::Release
+        } else {
+            Scope::All
+        }
+    }
+
+    pub fn keeps(self, r: &Run) -> bool {
+        self == Scope::All || r.release.is_some()
+    }
+}
+
+/// One scope's runs, borrowed from the read: what a runs table and its heading draw. Run times
+/// and the quarantine are Infra's, so the `Release` scope carries none.
+pub struct Scoped<'a> {
+    pub rows: Vec<&'a Run>,
+    pub counts: &'a Counts,
+    pub times: &'a [RunTime],
+    pub quarantine: &'a [quarantine::Lane],
+    pub errors: &'a [String],
+}
+
+impl Scoped<'_> {
+    pub fn summary(&self) -> String {
+        self.counts.says()
+    }
 }
 
 impl Builds {
-    /// A run went red in the last `RECENT_SECS`, or the ledger did not read: the Builds inner
-    /// tab's count on Releases. Older reds are history, as `Counts::level` says.
-    pub fn needs_look(&self) -> bool {
-        !self.errors.is_empty() || self.counts.level() == Level::Bad
+    /// The runs `scope` lists, in the ledger's order.
+    pub fn rows_in(&self, scope: Scope) -> Vec<&Run> {
+        self.rows.iter().filter(|r| scope.keeps(r)).collect()
     }
 
-    pub fn summary(&self) -> String {
-        self.counts.says()
+    /// The counts the read took of the runs `scope` lists.
+    fn counts_in(&self, scope: Scope) -> &Counts {
+        match scope {
+            Scope::All => &self.counts,
+            Scope::Release => &self.released,
+        }
+    }
+
+    /// The read cut to `scope`, with that scope's counts; `All` is the read as it is.
+    pub fn scoped(&self, scope: Scope) -> Scoped<'_> {
+        let (times, quarantine): (&[RunTime], &[quarantine::Lane]) = match scope {
+            Scope::All => (&self.times, &self.quarantine),
+            Scope::Release => (&[], &[]),
+        };
+        Scoped {
+            rows: self.rows_in(scope),
+            counts: self.counts_in(scope),
+            times,
+            quarantine,
+            errors: &self.errors,
+        }
+    }
+
+    /// A run of `scope` went red in the last `RECENT_SECS`, or the ledger did not read: the count
+    /// on the inner tab those runs are on. Older reds are history, as `Counts::level` says.
+    pub fn needs_look(&self, scope: Scope) -> bool {
+        !self.errors.is_empty() || self.counts_in(scope).level() == Level::Bad
     }
 
     /// The collector has not finished a pass in longer than its cadence explains.
@@ -396,30 +520,6 @@ pub fn parse(text: &str, now: i64) -> (Vec<Run>, usize) {
     (rows, bad)
 }
 
-/// The sessions on each branch, from `state.json`'s live sessions. A branch every session shares
-/// (`main`) is no one's, and a branch no session sits on is absent, so a hand-pushed one shows `-`.
-pub fn owners(state: &Value) -> HashMap<String, String> {
-    let mut by_branch: HashMap<String, Vec<String>> = HashMap::new();
-    for s in state["sessions"].as_array().into_iter().flatten() {
-        let (branch, target) = (
-            s["branch"].as_str().unwrap_or_default(),
-            s["target"].as_str().unwrap_or_default(),
-        );
-        if branch.is_empty() || SHARED_BRANCHES.contains(&branch) || target.is_empty() {
-            continue;
-        }
-        let name = crate::fleet::who::name_of(target);
-        let names = by_branch.entry(branch.to_string()).or_default();
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    by_branch
-        .into_iter()
-        .map(|(b, n)| (b, n.join(", ")))
-        .collect()
-}
-
 /// `generated_at` of `sync.json` as unix seconds, and one line per distinct error the last pass
 /// hit: `<repo>: <error>` for one repo, `<error> (<n> repos: <names>)` when several share it, so
 /// a rate limit that stops every repo reads once rather than once per repo.
@@ -456,9 +556,17 @@ fn read_text(p: &Path) -> Result<String, String> {
     std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// What a read joins its runs to beyond its own files: the queue's items (a run's PR -> item ->
+/// session) and the runner `release-state show` is asked through (run -> release).
+pub struct Join<'a> {
+    pub runner: &'a dyn crate::session_actions::Runner,
+    pub items: &'a [crate::queue::Item],
+}
+
 /// The section: every run in the window, or what stopped the read. The rows that did read are
-/// kept beside the errors, and nothing is carried over from an earlier read.
-pub fn read(paths: &Paths, now: i64) -> Builds {
+/// kept beside the errors, and nothing is carried over from an earlier read. With no `join` a
+/// run's owner is the live session on its branch only, and it has no release.
+pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
     let mut out = Builds::default();
     match read_text(&paths.ledger) {
         Ok(text) => {
@@ -478,36 +586,63 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(e),
     }
-    // The fleet's state is the owner column's only source; without it the column is `-`, and
-    // the section says so rather than claiming no run has an owner.
-    match read_text(&paths.fleet).and_then(|t| {
+    // The fleet's state is the owner column's first source; without it the section says so
+    // rather than claiming no run has an owner.
+    let live = match read_text(&paths.fleet).and_then(|t| {
         serde_json::from_str::<Value>(&t).map_err(|e| format!("{}: {e}", paths.fleet.display()))
     }) {
-        Ok(state) => {
-            let owner = owners(&state);
-            for r in &mut out.rows {
-                r.owner = owner.get(&r.branch).cloned().unwrap_or_default();
+        Ok(state) => crate::release_graph::live(&state),
+        Err(e) => {
+            out.errors.push(format!("owner session: {e}"));
+            HashMap::new()
+        }
+    };
+    let (prs, errors) = crate::release_graph::read_prs(&paths.prs);
+    out.errors.extend(errors);
+    let (channels, lines) = match &join {
+        Some(j) => match crate::releases::snapshot(j.runner) {
+            Ok(s) => (s.rows, s.releases),
+            // No snapshot yet is a host release-state never refreshed on: no run has a release.
+            Err(e) if e.contains("no snapshot yet") => (vec![], HashMap::new()),
+            Err(e) => {
+                out.errors.push(format!("run release: {e}"));
+                (vec![], HashMap::new())
             }
+        },
+        None => (vec![], HashMap::new()),
+    };
+    let registry = project_map::cached();
+    let (run_tags, errors) = crate::release_graph::read_run_tags(&paths.run_tags);
+    out.errors.extend(errors);
+    crate::release_graph::Graph::new(crate::release_graph::Inputs {
+        lines: &lines,
+        channels: &channels,
+        items: join.as_ref().map_or(&[], |j| j.items),
+        prs: &prs,
+        live: &live,
+        registry: registry.as_deref(),
+        // The runs draw no release history, so no row cell reads it.
+        since: 0,
+        run_tags: &run_tags,
+    })
+    .join(&mut out.rows);
+    // The quarantine is absent until a repo has one: no file is no fold, not an error.
+    if let Ok(text) = read_text(&paths.quarantine) {
+        match quarantine::parse(&text) {
+            Ok(lanes) => out.quarantine = lanes,
+            Err(e) => out.errors.push(e),
         }
-        Err(e) => out.errors.push(format!("owner session: {e}")),
-    }
-    // The job archive is optional until schedules-sync writes it: runs then price as no record.
-    if let Ok(text) = read_text(&paths.jobs) {
-        let (records, bad) = run_detail::archive(&text, |_| true);
-        if bad > 0 {
-            out.errors
-                .push(format!("jobs.jsonl: {bad} unreadable line(s) skipped"));
-        }
-        out.job_times = run_detail::job_times(&records, now - (KEEP_DAYS + 1) * 86400);
     }
     out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
+    out.released = Counts::of(out.rows_in(Scope::Release), now);
     out
 }
 
 /// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
 /// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
-/// `Tests (delta)`), so one workflow's runs pool.
+/// `Tests (delta)`), as does a tag after `of` (`Release builds of v0.5.0-x7`, `of web-v1.1.0`
+/// are `Release builds`), so one workflow's runs pool.
 pub fn timed_as(workflow: &str, path: &str) -> String {
     if path.starts_with("dynamic/dependabot/") {
         let eco = workflow.split_whitespace().next().unwrap_or_default();
@@ -519,6 +654,9 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
         let id = core.len() >= 7
             && core.chars().all(|c| c.is_ascii_hexdigit())
             && core.chars().any(|c| c.is_ascii_digit());
+        // What `release_graph::titled` reads as a tag: a word with a digit after `of`.
+        let tag = out.last().is_some_and(|w| w == "of") && core.chars().any(|c| c.is_ascii_digit());
+        let id = id || tag;
         if !id {
             out.push(word.to_string());
             continue;
@@ -538,14 +676,86 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
     out.join(" ")
 }
 
+/// The one CI pass rate's verdict on a run: `Some(true)` it succeeded, `Some(false)` it failed
+/// (failure, timeout, startup failure), `None` it is left out: still running, or cancelled,
+/// skipped, abandoned (a Forgejo job no runner took), neutral, stale or waiting on approval,
+/// which stopped before saying pass or fail.
+/// Each attempt is a run, so a red re-run to green is one red and one green. Builds' Run times
+/// and `hub ci pass` (day-log's CI numbers) count with this and nothing else.
+pub fn verdict(conclusion: Option<&str>) -> Option<bool> {
+    match conclusion? {
+        "success" => Some(true),
+        "failure" | "timed_out" | "startup_failure" => Some(false),
+        _ => None,
+    }
+}
+
+/// Runs counted by `verdict` and how many of them succeeded; `pass` is their share, 0..1 to four
+/// places, none when no run counted.
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+pub struct Pass {
+    pub runs: usize,
+    pub green: usize,
+    pub pass: Option<f64>,
+}
+
+impl Pass {
+    fn add(&mut self, conclusion: Option<&str>) {
+        if let Some(green) = verdict(conclusion) {
+            self.runs += 1;
+            self.green += usize::from(green);
+            self.pass = Some((self.green as f64 / self.runs as f64 * 1e4).round() / 1e4);
+        }
+    }
+
+    /// The share as a whole percent, 0 when no run counted.
+    pub fn percent(&self) -> u32 {
+        (self.green * 100)
+            .checked_div(self.runs)
+            .unwrap_or_default() as u32
+    }
+}
+
+/// One repo's pass rate over a window, whole and per workflow (`timed_as`).
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+pub struct RepoPass {
+    #[serde(flatten)]
+    pub all: Pass,
+    pub workflows: BTreeMap<String, Pass>,
+}
+
+/// The pass rate of every repo's runs created in `[since, until)`, keyed `<forge>:<repo>`, on
+/// `branch` alone when one is given: what `hub ci pass` prints.
+pub fn pass_by_repo(
+    rows: &[Run],
+    since: i64,
+    until: i64,
+    branch: Option<&str>,
+) -> BTreeMap<String, RepoPass> {
+    let mut out: BTreeMap<String, RepoPass> = BTreeMap::new();
+    for r in rows {
+        let created = crate::fleet::ts(&r.created_at).unwrap_or(i64::MIN);
+        if created < since || created >= until || branch.is_some_and(|b| r.branch != b) {
+            continue;
+        }
+        let repo = out.entry(format!("{}:{}", r.forge, r.repo)).or_default();
+        repo.all.add(r.conclusion.as_deref());
+        repo.workflows
+            .entry(timed_as(&r.workflow, &r.path))
+            .or_default()
+            .add(r.conclusion.as_deref());
+    }
+    out
+}
+
 /// The value at quantile `q` of sorted `v`, nearest rank.
 fn rank(v: &[i64], q: f64) -> i64 {
     v[((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
 }
 
-/// Each workflow's run times from `rows`, and each row's usual time and, running, its ETA. Only
-/// a finished success, failure or timeout counts: a cancelled or skipped run stopped early and
-/// would pull the median down. A running run past its workflow's p90 turns amber.
+/// Each workflow's run times and pass rate (`verdict`) from `rows`, and each row's usual time
+/// and, running, its ETA. Only a run `verdict` counts is timed: a cancelled or skipped run
+/// stopped early and would pull the median down. A running run past its workflow's p90 turns amber.
 pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
     type Key = (String, String, String);
     let key = |r: &Run| {
@@ -555,24 +765,28 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
             timed_as(&r.workflow, &r.path),
         )
     };
-    let mut by: HashMap<Key, (Vec<i64>, usize, usize)> = HashMap::new();
+    let mut by: HashMap<Key, (Vec<i64>, Pass, usize)> = HashMap::new();
     for r in rows.iter() {
-        let (took, green, running) = by.entry(key(r)).or_default();
+        let (took, pass, running) = by.entry(key(r)).or_default();
         *running += usize::from(r.state == "running");
-        let counted = matches!(
+        if !r.done() {
+            continue;
+        }
+        pass.add(r.conclusion.as_deref());
+        // A startup failure never ran its jobs, so its seconds would drag the usual time down.
+        let ran = matches!(
             r.conclusion.as_deref(),
             Some("success" | "failure" | "timed_out")
-        ) && r.done()
-            && r.started_at.is_some();
-        if let (true, Some(t)) = (counted, r.took) {
+        );
+        let timed = ran && r.started_at.is_some();
+        if let (true, Some(t)) = (timed, r.took) {
             took.push(t);
-            *green += usize::from(r.state == "green");
         }
     }
     let mut out: Vec<RunTime> = by
         .into_iter()
         .filter(|(_, (took, _, running))| !took.is_empty() || *running > 0)
-        .map(|((forge, repo, workflow), (mut took, green, running))| {
+        .map(|((forge, repo, workflow), (mut took, pass, running))| {
             took.sort_unstable();
             let usual = (took.len() >= USUAL_MIN).then(|| Usual {
                 median: rank(&took, 0.5),
@@ -585,23 +799,20 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
                 runs: took.len(),
                 usual,
                 longest: took.last().copied().unwrap_or_default(),
-                pass: (green * 100).checked_div(took.len()).unwrap_or_default() as u32,
+                pass: pass.percent(),
                 running,
             }
         })
         .collect();
     // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
-    out.sort_by(|a, b| {
-        let k = |t: &RunTime| {
-            (
-                short_repo(&t.repo).to_string(),
-                std::cmp::Reverse(t.runs),
-                t.workflow.clone(),
-                t.repo.clone(),
-                t.forge.clone(),
-            )
-        };
-        k(a).cmp(&k(b))
+    out.sort_by_cached_key(|t| {
+        (
+            t.project(),
+            std::cmp::Reverse(t.runs),
+            t.workflow.clone(),
+            t.repo.clone(),
+            t.forge.clone(),
+        )
     });
     let usual: HashMap<Key, Usual> = out
         .iter()
@@ -629,6 +840,16 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
 
 /// The cap on the rows a surface draws at once; the rest are one search or chip away.
 pub const LIST_ROWS: usize = 100;
+
+/// The runs query a run's page names (`links::Kind::CiRun`, `<repo>/<id>`, the repo as its column
+/// reads): its repo and id, as a Forgejo run id is an index within its repo. A bare id is that id
+/// in any repo.
+pub fn run_query(page: &str) -> String {
+    match page.trim().rsplit_once('/') {
+        Some((repo, id)) => format!("repo:={repo} id:={id}"),
+        None => format!("id:={}", page.trim()),
+    }
+}
 
 /// The first `LIST_ROWS` of `rows`, and how many were left out.
 pub fn cap(rows: Vec<&Run>) -> (Vec<&Run>, usize) {
@@ -755,6 +976,45 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_found_by_its_id_and_its_pr_and_opens_its_record() {
+        use crate::table::View;
+        let text = [
+            line(41, "completed", Some("success"), 100, "a"),
+            line(4, "completed", Some("failure"), 50, "b"),
+        ]
+        .join("\n");
+        let (mut rows, _) = parse(&text, NOW);
+        for r in &mut rows {
+            r.prs = vec![7];
+        }
+        let ids = |q: &str| -> Vec<u64> {
+            View::new::<Run>(q, "", "", "")
+                .apply(&rows)
+                .iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(ids("id:=4"), [4], "exact: 41 is another run");
+        assert_eq!(ids("pr:=org/app#7").len(), 2, "both built PR 7");
+        assert!(ids("pr:=Org/app#70").is_empty());
+        let r = &rows[0];
+        assert_eq!(r.pr_refs(), ["Org/app#7"]);
+        let page = format!("{}/{}", r.project(), r.id);
+        assert_eq!(
+            r.link("workflow"),
+            Some(Link::to(Kind::CiRun, page.clone()))
+        );
+        assert_eq!(ids(&run_query(&page)), [r.id], "its repo and id");
+        assert!(
+            ids(&run_query("Other/app/41")).is_empty(),
+            "another repo's run 41 is not this one"
+        );
+        assert_eq!(run_query(" 4 "), "id:=4");
+        assert_eq!(r.link("repo"), Some(Link::to(Kind::Project, r.project())));
+        assert_eq!(r.link("branch"), None);
+    }
+
+    #[test]
     fn live_runs_come_first_then_the_newest() {
         let text = [
             line(1, "completed", Some("success"), 100, "a"),
@@ -789,18 +1049,19 @@ mod tests {
             (1, Level::Ok),
             "an old red is history"
         );
-        // A recent red or an unread ledger puts a count on Releases' Builds inner tab; an old
-        // red does not.
+        // A recent red or an unread ledger puts a count on Infra's CI inner tab; an old red does
+        // not.
         let builds = |counts| Builds {
             counts,
             ..Default::default()
         };
-        assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let look = |b: Builds| b.needs_look(Scope::All);
+        assert!(look(builds(c)) && !look(builds(later)));
         let unread = Builds {
             errors: vec!["runs.jsonl: unreadable".into()],
             ..Default::default()
         };
-        assert!(unread.needs_look());
+        assert!(unread.needs_look(Scope::Release));
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 
@@ -812,7 +1073,7 @@ mod tests {
             {"target": "hub/dotfiles:2", "branch": "main"},
             {"target": "lab/x:1", "branch": ""},
         ]});
-        let o = owners(&state);
+        let o = crate::release_graph::live(&state);
         assert_eq!(o["feat/a"], "dotfiles-agent-32, dotfiles-agent-33");
         assert_eq!(o.len(), 1, "main and an empty branch are nobody's");
         let (rows, _) = parse(&line(1, "queued", None, 5, "by-hand"), NOW);
@@ -849,6 +1110,13 @@ mod tests {
         );
     }
 
+    /// An empty PR store beside the ledger.
+    fn store(d: &Path) -> PathBuf {
+        let p = d.join("prs");
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn a_missing_ledger_is_an_error_and_the_rest_still_reads() {
         let d = std::env::temp_dir().join(format!("hub-builds-{}", std::process::id()));
@@ -862,9 +1130,12 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
-        let b = read(&p, NOW);
+        let b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
         assert!(b.rows.is_empty());
         assert!(b.errors[0].contains("runs.jsonl"), "{:?}", b.errors);
@@ -884,7 +1155,10 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -912,7 +1186,10 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         let key = RunKey {
             forge: "github".into(),
@@ -929,6 +1206,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_quarantine_rides_the_read_silent_when_absent_and_red_when_unreadable() {
+        let (d, p) = opened("quar", &[], "");
+        assert!(
+            p.is_ledger_file(&p.quarantine),
+            "a new quarantine wakes the section"
+        );
+        let none = read(&p, None, NOW);
+        assert!(none.quarantine.is_empty());
+        assert!(
+            !none.errors.iter().any(|e| e.contains("quarantine")),
+            "{:?}",
+            none.errors
+        );
+        std::fs::write(
+            &p.quarantine,
+            r#"{"repos":[{"repo":"Org/app","base":"main","report":{"entries":3,"rows":[]}}]}"#,
+        )
+        .unwrap();
+        let some = read(&p, None, NOW);
+        std::fs::write(&p.quarantine, "{").unwrap();
+        let bad = read(&p, None, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(some.quarantine[0].repo, "Org/app");
+        assert_eq!(some.quarantine[0].report.as_ref().unwrap().entries, 3);
+        assert!(bad.quarantine.is_empty());
+        assert!(
+            bad.errors.iter().any(|e| e.starts_with("quarantine.json:")),
+            "{:?}",
+            bad.errors
+        );
+    }
+
     /// A run ledger and job archive in a fresh directory, and the paths that read them.
     fn opened(name: &str, runs: &[String], jobs: &str) -> (PathBuf, Paths) {
         let d = std::env::temp_dir().join(format!("hub-builds-{name}-{}", std::process::id()));
@@ -939,7 +1249,10 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
+            quarantine: d.join("quarantine.json"),
+            run_tags: d.join("run-tags.jsonl"),
         };
         (d, p)
     }
@@ -1068,40 +1381,27 @@ mod tests {
     }
 
     #[test]
-    fn the_run_times_fold_prices_each_workflow_and_reconciles_the_month() {
-        let runs: Vec<String> = (1..=3)
-            .map(|i| timed(i, "Tests", "success", 1965))
-            .collect();
-        let archive: Vec<String> = (1..=3)
-            .map(|i| {
-                record(
-                    i,
-                    true,
-                    vec![job(
-                        "shard",
-                        "aws-burst-1-unity-pool-3",
-                        NOW - 3600 - i as i64,
-                        1965,
-                    )],
-                )
-            })
-            .collect();
-        let (d, p) = opened("times", &runs, &archive.join("\n"));
-        let b = read(&p, NOW);
+    fn release_runs_are_the_runs_the_graph_tied_to_a_release() {
+        let runs: Vec<String> = (1..=3).map(|i| timed(i, "Tests", "success", 60)).collect();
+        let (d, p) = opened("rel", &runs, "");
+        let mut b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
-        let c = run_detail::costs(&b, &run_detail::tests::rates(), NOW);
-        assert_eq!(c.times, ["$0.20 (3 priced)"]);
-        let idle = &c.idle[0];
-        assert!(
-            idle.starts_with("aws-burst-1: powered 2.0h today $3.71"),
-            "{idle}"
-        );
-        assert!(c
-            .month
-            .as_deref()
-            .unwrap()
-            .contains("jobs priced $0.61, AWS actual $10.00, off by"));
-        assert!(c.month_off);
+        b.rows[1].release = Some(crate::release_graph::RunRelease {
+            project: "app".into(),
+            tag: "v1.2.0".into(),
+        });
+        b.quarantine = vec![Default::default()];
+        b.released = Counts::of(b.rows_in(Scope::Release), NOW);
+        let r = b.scoped(Scope::Release);
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.counts.total, 1);
+        assert!(r.times.is_empty() && r.quarantine.is_empty());
+        let all = b.scoped(Scope::All);
+        assert_eq!((all.rows.len(), all.counts.total), (3, 3));
+        assert!(!all.times.is_empty() && all.quarantine.len() == 1);
+        assert_eq!(r.rows[0].val("release"), Val::Text("v1.2.0".into()));
+        assert!(r.rows[0].text().contains("v1.2.0"));
+        assert_eq!(b.rows[0].val("release"), Val::None);
     }
 
     /// A finished run of `workflow` that took `secs`, begun an hour before `NOW`.
@@ -1149,10 +1449,12 @@ mod tests {
             lines.push(timed(i, "Tests (affected)", "cancelled", 5));
         }
         lines.push(timed(21, "Tests (affected)", "skipped", 1));
+        // A Forgejo run whose job no runner took ends when the job was cancelled, a day on.
+        lines.push(timed(22, "Tests (affected)", "abandoned", 27 * 3600));
         let (_, times) = timed_rows(&lines);
         assert_eq!(times.len(), 1);
         let t = &times[0];
-        assert_eq!(t.runs, 10, "cancelled and skipped are left out");
+        assert_eq!(t.runs, 10, "cancelled, skipped and abandoned are left out");
         assert_eq!(
             t.usual,
             Some(Usual {
@@ -1164,6 +1466,65 @@ mod tests {
     }
 
     #[test]
+    fn the_pass_rate_counts_each_finished_attempt_and_leaves_out_runs_that_said_neither() {
+        let mut lines: Vec<String> = [
+            (1, "success"),
+            (2, "failure"),
+            (3, "timed_out"),
+            (4, "startup_failure"),
+            (5, "cancelled"),
+            (6, "skipped"),
+            (7, "neutral"),
+            (8, "action_required"),
+        ]
+        .iter()
+        .map(|(i, c)| timed(*i, "Tests", c, 60))
+        .collect();
+        lines.push(running(9, "Tests", 60));
+        // A red re-run to green: two runs, one of each.
+        let rerun = |attempt: u32, c: &str| {
+            let mut v: Value = serde_json::from_str(&timed(10, "Tests", c, 60)).unwrap();
+            v["attempt"] = attempt.into();
+            v.to_string()
+        };
+        lines.push(rerun(1, "failure"));
+        lines.push(rerun(2, "success"));
+        // Another branch, and a run before the window.
+        let mut other: Value = serde_json::from_str(&timed(11, "Lint", "success", 60)).unwrap();
+        other["branch"] = "main".into();
+        lines.push(other.to_string());
+        let mut old: Value = serde_json::from_str(&timed(12, "Tests", "failure", 60)).unwrap();
+        old["created_at"] = iso(NOW - 3 * 86400).into();
+        lines.push(old.to_string());
+        let (rows, times) = timed_rows(&lines);
+        let all = pass_by_repo(&rows, NOW - 86400, NOW, None);
+        let app = &all["github:Org/app"];
+        assert_eq!(
+            (app.all.runs, app.all.green, app.all.pass),
+            (7, 3, Some(0.4286))
+        );
+        assert_eq!(
+            (app.workflows["Tests"].runs, app.workflows["Tests"].green),
+            (6, 2)
+        );
+        let main = pass_by_repo(&rows, NOW - 86400, NOW, Some("main"));
+        assert_eq!(
+            main["github:Org/app"].all,
+            Pass {
+                runs: 1,
+                green: 1,
+                pass: Some(1.0)
+            }
+        );
+        // Run times read the same verdict: 2 of 7 finished Tests runs in the 30 days, 28%.
+        let tests = times.iter().find(|t| t.workflow == "Tests").unwrap();
+        assert_eq!(tests.pass, 28);
+        // The startup failure counts as red but is not timed: 6 of the 7 have a time.
+        assert_eq!(tests.runs, 6);
+        assert_eq!(verdict(None), None);
+    }
+
+    #[test]
     fn a_run_id_in_the_name_and_dependabots_updates_pool_under_one_name() {
         assert_eq!(
             timed_as("Tests (delta of 42614501160)", "x"),
@@ -1172,6 +1533,24 @@ mod tests {
         assert_eq!(timed_as("Tests (delta of 3f2a9c1d)", "x"), "Tests (delta)");
         assert_eq!(timed_as("Multi (named)", "x"), "Multi (named)");
         assert_eq!(timed_as("Release builds", "x"), "Release builds");
+        assert_eq!(
+            timed_as("Release builds of v0.5.0-dodginballs7", "x"),
+            "Release builds"
+        );
+        assert_eq!(
+            timed_as("Phone release of web-v1.1.0", "x"),
+            "Phone release"
+        );
+        assert_eq!(timed_as("Proof of concept", "x"), "Proof of concept");
+        assert_eq!(
+            timed_as("Steam (dodginballs of 43026871395)", "x"),
+            "Steam (dodginballs)"
+        );
+        assert_eq!(
+            timed_as("Deploy v2", "x"),
+            "Deploy v2",
+            "a tag folds only after of"
+        );
         assert_eq!(
             timed_as(
                 "github_actions in / for actions/checkout - Update #1687367140",

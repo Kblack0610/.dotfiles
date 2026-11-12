@@ -33,7 +33,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const jst = run("jst");
 
@@ -41,11 +41,11 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 // The shape hub_core::table::Summary serializes to, for `source:ci` sorted by start, oldest first.
 const table = {
   q: "source:ci", state: "", sort: "started", dir: "asc", total: 3, shown: 2,
-  states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "queued", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
+  states: [{ name: "all", n: 2 }, { name: "running", n: 1 }, { name: "waiting", n: 0 }, { name: "done", n: 1 }, { name: "failed", n: 1 }],
   columns: [col("state"), col("source"), col("name"), col("started", "asc", ["", "desc"]), col("took"), col("result"), col("detail")],
   facets: [
-    { key: "source", on: "ci", clear: "", values: [{ value: "agentctl", n: 1, q: "source:agentctl" }, { value: "ci", n: 2, q: "source:ci" }] },
-    { key: "result", on: null, clear: "source:ci", values: [{ value: "failure", n: 1, q: "source:ci result:failure" }] },
+    { key: "source", on: ["ci"], clear: "", values: [{ value: "agentctl", n: 1, on: false, q: "source:ci source:agentctl" }, { value: "ci", n: 2, on: true, q: "" }] },
+    { key: "result", on: [], clear: "source:ci", values: [{ value: "failure", n: 1, on: false, q: "source:ci result:failure" }] },
   ],
 };
 const job = (name, o = {}) => ({ source: "ci", name, state: "done", ok: true, result: "success", started: 1793942659, finished: null, secs: 60, detail: "", runs: 1, ...o });
@@ -63,17 +63,34 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
   assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
   assert.match(h, /<button class="" data-ts="failed">failed <span class="n">1<\/span><\/button>/);
-  assert.match(h, /<option value="source:ci" selected>ci \(2\)<\/option>/, "the dropdown shows the value the query picks");
-  assert.match(h, /<option value="source:ci">every result<\/option>/, "its first option clears that column only");
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><td><\/td><th><details class="tfacet on" data-fkey="source" data-fq="source:ci">/, "the filter row sits under the headers, a cell per column");
+  assert.match(h, /<details class="tfacet on" data-fkey="source"[^>]*><summary[^>]*>source: ci<\/summary>/, "a filtering column's pill is tinted and names its pick");
+  assert.match(h, /<button type="button" class="tfclear" data-tqc="">clear source<\/button>/, "a filtering column can be cleared");
+  assert.match(h, /<input type="checkbox" data-tq data-fv="ci" value="" checked> <span>ci<\/span> <span class="n">2<\/span>/, "the picked value is ticked and unticking it is the query without it");
+  assert.match(h, /<input type="checkbox" data-tq data-fv="agentctl" value="source:ci source:agentctl"> /, "ticking another adds it to the column's picks");
+  assert.match(h, /<details class="tfacet" data-fkey="result" data-fq="source:ci"><summary[^>]*>result<\/summary><div class="tfmenu"><label>/, "a column not filtering has no clear item");
+  assert.doesNotMatch(parts["jobs-facets"]?.innerHTML ?? "", /tfacet/);
+  assert.equal((h.match(/data-fkey="source"/g) || []).length, 1, "a facet whose column is drawn is not also in the bar");
   assert.match(h, /id="jobs-q" data-tsearch placeholder="[^"]*" value="source:ci"/);
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
 });
 
-test("CI runs are one count line that links to the Releases Builds section", () => {
+test("a job not started reads waiting in STATE, the word its chip and legend use", () => {
+  run("st.tab = 'infra'");
+  const waiting = job("gate", { state: "queued", ok: null, result: "", secs: 90 });
+  Object.assign(jst, { data: { ...data, jobs: [waiting], table: { ...table, legend: "waiting: the job has not started" } }, err: null, hist: null, log: null, all: false });
+  run("jst.render()");
+  const h = box.innerHTML;
+  assert.match(h, /<td>waiting<\/td><td class="muted">ci<\/td>/);
+  assert.doesNotMatch(h, /<td>queued<\/td>/);
+  assert.match(h, /tlegend">waiting: the job has not started</);
+});
+
+test("CI runs are one count line that links to Infra's CI runs", () => {
   run("st.tab = 'infra'");
   Object.assign(jst, { data: { ...data, ci: { says: "9 runs in 30 days: 1 running, 0 queued, 2 red", level: "bad" } }, err: null, hist: null, log: null, all: false });
   run("jst.render()");
-  assert.match(box.innerHTML, /CI: <a class="bad" href="#releases\/builds">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
+  assert.match(box.innerHTML, /CI: <a class="bad" href="#infra\/runs">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
   Object.assign(jst, { data });
   run("jst.render()");
   assert.doesNotMatch(box.innerHTML, /CI: <a/, "a list with no ledger read draws no line");
@@ -100,11 +117,10 @@ test("a view change lands in the URL and the API asks the server for it", async 
   fire({ type: "click", target: target({ tsort: "", tdir: "desc" }) });
   await new Promise((r) => setImmediate(r));
   assert.equal(ctx.history.url, "#infra?q=source%3Aci&s=failed", "the plain sort is a bare URL");
-  jst.hist = "dream";
-  run("jst.refresh()");
+  run('st.tab = "infra"; st.page = "jobs/dream"; jst.refresh()');
   await new Promise((r) => setImmediate(r));
   assert.equal(asked.at(-1), "/api/jobs?q=source%3Aci&s=failed&name=dream", "a history keeps the view");
-  jst.hist = null;
+  run('st.page = ""');
 });
 
 test("a refresh while the search box has focus leaves the box alone", () => {
@@ -116,11 +132,28 @@ test("a refresh while the search box has focus leaves the box alone", () => {
   assert.equal(box.innerHTML, "KEEP");
   assert.match(parts["jobs-body"].innerHTML, /playground \/ Tests/);
   assert.match(parts["jobs-chips"].innerHTML, /data-ts="failed"/);
-  assert.match(parts["jobs-facets"].innerHTML, /every source/);
+  assert.match(parts["jobs-facets"].innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
+  assert.doesNotMatch(parts["jobs-facets"].innerHTML, /tfacet/, "the facets are in the body's filter row");
+  assert.match(parts["jobs-body"].innerHTML, /data-fkey="source"/);
 });
 
 test("a failed collection says why instead of drawing an empty table", () => {
   Object.assign(jst, { data: { jobs: [], errors: ["gh: rate limited"] }, err: null });
   run("jst.render()");
   assert.match(box.innerHTML, /<div class="card err">gh: rate limited<\/div>/);
+});
+
+test("a job's page is its URL: every run of it is read by name, and its host cell opens the machine", async () => {
+  asked = [];
+  body = { ...data, table: { ...table, links: [{ name: "#infra/jobs/gate", host: "#infra/machines/workstation" }] }, jobs: [job("gate", { source: "unity", runs: 4, host: "workstation" })] };
+  run('st.tab = "infra"; st.views.infra = ""; st.page = "jobs/gate"; showJobs()');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(asked.at(-1), "/api/jobs?name=gate");
+  const h = box.innerHTML;
+  assert.match(h, /every run of <b>gate<\/b> <a href="#infra\/jobs">back to all<\/a>/);
+  assert.match(h, /<a href="#infra\/jobs\/gate" class="muted" title="every run of this job">4 runs<\/a>/);
+  assert.match(h, /<td class="muted"><a class="tl" href="#infra\/machines\/workstation">workstation<\/a><\/td>/);
+  run('st.page = ""; showJobs()');
+  assert.equal(jst.hist, "", "leaving the page drops the rows read for it");
+  assert.equal(jst.data, null);
 });

@@ -277,6 +277,25 @@ load 'fleet_dispatch/common'
   [ -f "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] && [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ] || fail "$(cat "$FLEET_DISPATCH_DIR/verdicts.jsonl")"
 }
 
+# 2026-11-11 (ar-1675): the judge's daily cap led every gated pass's reason, so the Stopped line,
+# hub Home and the queue-starved red named the judge's budget instead of the account hold.
+@test "a judge budget stop in a pass a gate held is a note: the gate leads the reason and the Stopped line" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  two_items
+  row game human 'fix the new crash' "- [ ] fix the new crash $T"
+  stub judge-stub 'exit 75'
+  export DISPATCH_RUN_FLOOR=0
+  acct "main:pace::5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
+  grep -q 'outcome=BLOCKED why: could not judge the new rows (stopped at its budget); no account has room' "$d/activity.log" ||
+    fail "$(cat "$d/activity.log")"
+  echo "$(( $(date +%s) - 2 * 3600 - 30 ))" > "$d/held_since"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output 'Dispatch stopped 2h00m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
+}
+
 @test "a judge budget stop does not stop the pass: a row the cache already judged still starts" {
   game_ready
   row game human 'fix the new crash' "- [ ] fix the new crash $T"
@@ -289,7 +308,7 @@ load 'fleet_dispatch/common'
 
 @test "run starts nothing once the live cap is reached" {
   game_ready
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_AWAY=1
   project other beta "$SANDBOX/repos/other"
   row other human 'other work' '- [/] other work'
   started_item other-work lab:other-agent-1 run '' 'board:other:other work' running other
@@ -299,9 +318,81 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
+# Pace targets (plan session-close-verdict P4): every live session counts, hand starts too.
+@test "run starts nothing while the fleet is at its pace target, hand-started sessions counted" {
+  game_ready
+  export DISPATCH_TARGET_AWAY=6
+  fleet_state 6
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'pace target: 6 of 6 live sessions (the human is away'
+  assert_output --partial 'at 6 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  # One under it, the same pass starts the item: the parked session never counted.
+  fleet_state 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started game-agent-1'
+}
+
+@test "the pace target is the present one while the human is here and the away one while away" {
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=10
+  fleet_state 3
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: present 3, away what the accounts carry, at most 10)'
+  assert_output --partial 'the present pace target is 3, starting nothing'
+  stub fleet-presence 'echo "away 45 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: present 3, away what the accounts carry, at most 10)'
+  refute_output --partial 'pace target is'
+}
+
+@test "away, the pace target is what the accounts carry at pace, at most the away target and never under the run floor" {
+  export DISPATCH_TARGET_PRESENT=30 DISPATCH_TARGET_AWAY=10
+  fleet_state 3
+  stub fleet-presence 'echo "away 45 tmux"'
+  jq '.fleet = {keeps: 1, rate: 0.25, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 4 live sessions (the human is away'
+  # A carry over the away target is held to it; the run floor is the least it drops to.
+  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away'
+  jq '.fleet.carries = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 5 live sessions (the human is away'
+  # Here, the carry does not lower the present target.
+  stub fleet-presence 'echo "here 0 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
+}
+
+@test "a missing or stale fleet state document holds every start: the live count is unknown" {
+  game_ready
+  fleet_state 0 30
+  refuses 'live sessions unreadable: the fleet state document'
+  assert_equal "$(outcome)" BLOCKED
+  rm -f "$FLEET_STATE_FILE"
+  refuses 'live sessions unreadable'
+}
+
+@test "headroom bounds what could start by the room under the pace target" {
+  two_items
+  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_AWAY=6
+  fleet_state 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .total_live, .target, .target_when, .held] | @tsv' <<<"$output")" $'1\t5\t6\taway\t'
+  fleet_state 6
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'pace:      6 of 6 live sessions, the away target (present 50, away what the accounts carry, at most 6); hand starts count toward it and are never refused'
+}
+
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=6
+  export DISPATCH_TARGET_AWAY=6
   # Two heavy and one light live session: 2 + 2 + 1 = 5 units.
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
@@ -329,6 +420,7 @@ load 'fleet_dispatch/common'
 
 @test "a heavy item alone at 5 of 6 run units is a full fleet: NOOP, not BLOCKED" {
   project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
   sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
@@ -573,13 +665,13 @@ load 'fleet_dispatch/common'
 @test "a plan item goes to a headless harness only when it resumes; the same item in oneshot mode always may" {
   route_ready
   srcs codex:ok:1 reserve:ok:20
-  jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.codex |= del(.resume)'
   agent-queue set fix-menu mode=plan >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu on lazer-reserve (sonnet)'
   assert_not_called 'agent-codex'
   # With resume, codex takes a plan item: it posts the plan and is resumed on the answer.
-  jq '.harnesses.codex.resume = true' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set '.harnesses.codex.resume = true'
   agent-queue add --project game --slug plan-next --mode plan --priority urgent "Plan the next menu" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item plan-next on codex (sol)'
@@ -640,6 +732,46 @@ load 'fleet_dispatch/common'
   assert_output --partial 'queue item gw-first has no source with room it may run on: opencode: eval: inside its reserve'
   [ -n "$(qitem queued gw-first)" ] || fail "a pass started a pinned item with no room"
   [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
+}
+
+# ocfree: a free harness whose provider may train on prompts, allowlisted to the public project only.
+ocfree_ready() {
+  printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
+  harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
+    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+  harness_sandboxed ocfree
+}
+
+@test "negative control: a private-project item never picks ocfree, pinned or routed, though ocfree has room and ranks first" {
+  route_ready; ocfree_ready
+  srcs ocfree:ok:0.1 codex:ok:5
+  # model-lane offers ocfree first; it has room at the lowest rank.
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
+case "$1" in log) echo run-9 ;; classify)
+  echo "{\"lane\":\"sonnet\",\"by\":\"rule\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"candidates\":[{\"harness\":\"ocfree\",\"model\":\"beam\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0}]}" ;; esac'
+  # Pinned by hand to ocfree: refused with the reason, and it stays queued.
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Fix the private menu" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "queue item pin-free has no source with room it may run on: ocfree: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
+  [ -n "$(qitem queued pin-free)" ] || fail "the pinned private item left the queue"
+  # Routed: the item behind it skips ocfree and goes to the next fit.
+  assert_output --partial 'started queue item fix-menu on codex (sol), routed by model-lane'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_not_called 'opencode run'
+  assert_not_called 'room --source ocfree'
+  # With its project on the list it is still refused: a sandboxed run takes canary items only.
+  harness_set '.harnesses.ocfree.projects = ["dotfiles", "game"]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item pin-free has no source with room it may run on: ocfree: runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:)'
+  assert_not_called 'opencode run'
+  # Positive control: the same pinned item, a canary, starts on ocfree, so each refusal above came
+  # from the allowlist or the canary rule and nothing else.
+  canary_item pin-free c-1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-free on ocfree (beam), the harness it is pinned to'
+  assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-ocfree.json")"
+  assert_called 'srt --settings'
 }
 
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {

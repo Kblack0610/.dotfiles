@@ -133,11 +133,19 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     export OTEL_RESOURCE_ATTRIBUTES
 
     # claude_telemetry_launch -> OTEL_RESOURCE_ATTRIBUTES with project= for $PWD and queue.item=
-    # for $AGENT_QUEUE_ITEM, each dropped when it has no value.
+    # for $AGENT_QUEUE_ITEM, each dropped when it has no value. A launch with an item is fleet-dispatch's
+    # (service.name=claude-agentctl, agentctl.runner=fleet-dispatch) whoever ran the start: the caller's
+    # runner leaked in before, so on 2026-11-11 16 of 24 queue sessions past 1h exported as shepherd,
+    # inbox-plan or claude-code. `agent-usage export check` reads this label.
     claude_telemetry_launch() {
-        OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr project "$(bash -c '. "$1" && resolve_project_name "$2"' _ \
-            "$HOME/.config/shared-hooks/project-name.sh" "$PWD" 2>/dev/null)")" \
-            claude_otel_attr queue.item "${AGENT_QUEUE_ITEM:-}"
+        local a="${OTEL_RESOURCE_ATTRIBUTES:-}"
+        if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then
+            a="$(OTEL_RESOURCE_ATTRIBUTES="$a" claude_otel_attr service.name claude-agentctl)"
+            a="$(OTEL_RESOURCE_ATTRIBUTES="$a" claude_otel_attr agentctl.runner fleet-dispatch)"
+        fi
+        a="$(OTEL_RESOURCE_ATTRIBUTES="$a" claude_otel_attr project "$(bash -c '. "$1" && resolve_project_name "$2"' _ \
+            "$HOME/.config/shared-hooks/project-name.sh" "$PWD" 2>/dev/null)")"
+        OTEL_RESOURCE_ATTRIBUTES="$a" claude_otel_attr queue.item "${AGENT_QUEUE_ITEM:-}"
     }
 fi
 

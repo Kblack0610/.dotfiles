@@ -45,11 +45,15 @@ const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown
 const COLS = ["rank", "kind", "project", "waited", "holds", "what"];
 const ntable = (needs, o) => ({ q: "", state: "", sort: "", dir: "desc", total: needs.length, shown: needs.length,
   states: [{ name: "all", n: needs.length }], columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })), facets: [], ...o });
+// Running's (`rtable`) over its rows, the columns hub_core::home::Running names.
+const RCOLS = ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"];
+const rtable = (rows, o) => ({ q: "", state: "", sort: "", dir: "desc", total: rows.length, shown: rows.length,
+  states: [{ name: "all", n: rows.length }, { name: "CI failing", n: 0 }], columns: RCOLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })), facets: [], ...o });
 // Rows as the server ranks them.
 const ranked = (needs) => needs.map((n, i) => ({ rank: i + 1, ...n }));
 const home = (o = {}) => {
   const needs = ranked(o.needs || []);
-  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, sessions: "", spend: null, health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table) };
+  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, sessions: "", spend: null, health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table), running_table: rtable(o.running || [], o.running_table) };
 };
 const live = (target, kind) => ({ target, short: target, session: target, project: "p", summary: target, items: [], actions: [], question: { kind, text: "Run it?" } });
 const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 };
@@ -204,7 +208,7 @@ test("a dropdown in use in one table repaints around it, and the other table who
   const needs = [{ kind: "ask", need: "ask", project: "p", text: "Ship it?", id: "a1" }];
   const first = draw(home({ needs, proposals: [prop("a1")], proposals_table: table(1) }));
   delete parts["home-prop-body"];
-  doc.activeElement = { dataset: { tq: "" }, closest: (sel) => (sel === "#home-need-facets" ? {} : null), matches: () => false };
+  doc.activeElement = { dataset: { tsv: "" }, closest: (sel) => (sel === "#home-need-facets" ? {} : null), matches: () => false };
   ctx.input = home({ needs: [...needs, { kind: "ask", need: "ask", project: "p", text: "Second", id: "a2" }], proposals: [prop("a1")], proposals_table: table(1) });
   const again = vm.runInContext(`hst.data = input; renderHome(); $("home").innerHTML`, ctx);
   doc.activeElement = undefined;
@@ -242,11 +246,70 @@ test("a reply being typed in an open card survives a refresh", () => {
   assert.match(box.innerHTML, /data-id="a1"/, "the opened row is still open after the repaint");
 });
 
-test("running rows carry their phase and next phase; empty sections say so", () => {
-  const html = draw(home({ running: [{ slug: "ar-1", title: "Queue cards", project: "agent-runtime", phases: { done: 3, total: 4, next: "docs" } }] }));
-  assert.match(html, /Queue cards<\/span><span class="cchip running">running<\/span>.*agent-runtime, phase 3\/4, next: docs/s);
-  assert.match(html, /Nothing waits on you\./);
+test("Running is the shared table: its own bar and keys, and each row opens the item and links its records", () => {
+  const due = now() - 7200;
+  const html = draw(home({
+    running: [
+      { slug: "ar-1", title: "Queue cards", project: "agent-runtime", target: "lab/dotfiles-agent-2:1", started: "2026-11-11T10:00:00Z",
+        phases: { done: 3, total: 4, next: "docs", eta_epoch: due }, overdue: true, row: "ar-1494", epic: "ar-1292",
+        pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
+      { slug: "q-2", title: "No session yet", project: "trader" },
+    ],
+    // hub_core::links beside the rows (`Running::link`): the page draws these, it builds none.
+    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }], links: [
+      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#board?q=id:=ar-1494", epic: "#board?q=id:=ar-1292",
+        pr: "https://github.com/o/r/pull/1871", ci: "https://github.com/o/r/pull/1871/checks" },
+      { item: "#queue/q-2", project: "#projects/trader" },
+    ] },
+  }));
+  assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="muted">2<\/span>/);
+  assert.match(html, /href="#sessions\?s=running">all in Sessions -&gt;<\/a>/);
+  assert.match(html, /id="home-run-q" data-tsearch placeholder="search, or project:dotfiles ci:fail epic:ar-1292"/);
+  assert.match(html, /data-ts="CI failing">CI failing <span class="n">1<\/span>/);
+  assert.match(html, /data-tsort="eta"[^>]*>eta<\/button>/);
+  const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
+  assert.ok(row, html);
+  const cells = row[1];
+  assert.match(cells, /<a class="tl" href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
+  assert.match(cells, /<a class="tl" href="#projects\/agent-runtime">agent-runtime<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1494">ar-1494<\/a>/);
+  assert.match(cells, /<a class="tl" href="#board\?q=id:=ar-1292">ar-1292<\/a>/);
+  assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
+  assert.match(cells, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
+  assert.match(cells, /<a class="tl ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
+  // No session: the row has no target to open and empty cells say so.
+  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
+  assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
+  // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
+  // not call overdue is drawn as an ETA, not late.
+  const calm = draw(home({ running: [{ slug: "ar-3", title: "t", project: "p", phases: { done: 1, total: 2, eta_epoch: due } }] }));
+  assert.doesNotMatch(calm, /qlate/, calm);
+});
+
+test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {
+  draw(home({ running: [{ slug: "ar-1", title: "t", project: "p", target: "lab/x:1" }, { slug: "q-2", title: "u", project: "p" }] }));
+  const went = [];
+  ctx.went = went;
+  vm.runInContext(`setTab = (t, a) => went.push(t + "/" + a)`, ctx);
+  const tr = (data) => ({ dataset: data });
+  const click = (target) => on.click.forEach((f) => f({ target, preventDefault() {} }));
+  const cell = (row, link) => ({ dataset: {}, closest: (sel) => (sel === "a" ? link : sel.startsWith("tr.jr[data-slug]") ? row : null) });
+  click(cell(tr({ slug: "ar-1", target: "lab/x:1" }), null));
+  click(cell(tr({ slug: "q-2" }), null));
+  click(cell(tr({ slug: "q-2" }), {}));
+  assert.deepEqual(went, ["sessions/lab/x:1", "queue/q-2"]);
+});
+
+test("Running reads its own r-prefixed keys beside Needs you's and Proposals'", async () => {
+  reads.length = 0;
+  vm.runInContext(`st.views.home = "q=x&nq=kind:ask&rq=project:trader&rs=CI+failing"`, ctx);
+  await vm.runInContext("refreshHome()", ctx);
+  const r = reads.find((p) => p.startsWith("/api/home?"));
+  assert.ok(r, reads.join(" "));
+  const p = new URLSearchParams(r.split("?")[1]);
+  assert.deepEqual([p.get("q"), p.get("nq"), p.get("rq"), p.get("rs")], ["x", "kind:ask", "project:trader", "CI failing"]);
+  vm.runInContext(`st.views.home = ""`, ctx);
 });
 
 test("health shows only what is not green, and all green as one chip", () => {
@@ -255,6 +318,7 @@ test("health shows only what is not green, and all green as one chip", () => {
   assert.match(mixed, /cchip warn">ci WARN<\/span> <span class="cchip ">prod NO DATA<\/span> <span class="muted">1 green<\/span>/);
   assert.doesNotMatch(mixed, /k3s/);
   assert.match(draw(home({ health: [chips[0]] })), /cchip ok">all green \(1\)<\/span>/);
+  assert.match(mixed, /green<\/span> <a href="#alerts">Alerts<\/a><\/div>/, "the chips open Alerts, which has every domain");
 });
 
 test("what could not be read is drawn as hub-core worded it", () => {
@@ -265,29 +329,29 @@ test("what could not be read is drawn as hub-core worded it", () => {
 test("Home has no Numbers heading: the session counts head Running and the spend is one line linking Costs", () => {
   const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled", spend: "claude $573 in 24h" }));
   assert.doesNotMatch(html, /Numbers/);
-  assert.match(html, />Running <span class="muted">0<\/span> <span class="muted"><a href="#sessions">sessions<\/a>: 3 working, 1 need you, 0 stalled<\/span><\/h2>/);
+  assert.match(html, />Running <span class="muted">0<\/span> <span class="muted"><a href="#sessions">sessions<\/a>: 3 working, 1 need you, 0 stalled<\/span> <a class="muted" href="#sessions\?s=running">all in Sessions -&gt;<\/a><\/h2>/);
   assert.match(html, /Spend<\/h2><div class="cline">claude \$573 in 24h <a href="#costs">Costs<\/a><\/div>/);
   assert.ok(html.indexOf("Health") < html.indexOf("Spend") && html.indexOf("Spend") < html.indexOf("Needs you"), html);
   const none = draw(home());
   assert.doesNotMatch(none, /Spend|sessions<\/a>/, "the control: no spend and no counts, no lines for them");
 });
 
-const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Flow", all_ok: false, rows: [
-  { question: "Output", level: "ok", parts: ["1633 PRs merged in 7d"] },
-  { question: "Flow", level: "warn", parts: ["Queue -200 in 24h", "queued p90 53h, limit 12h"] },
+const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
+  { question: "Cost", level: "ok", parts: ["$12.54 per merged item"] },
+  { question: "Outcome", level: "warn", parts: ["Oldest request 340h, limit 72h", "12 unverified, limit 0"] },
 ], ...o });
 
 test("Vitals sits under Spend and above Needs you, a row per question, the off ones marked", () => {
   const html = draw(home({ spend: "claude $573 in 24h", vitals: vitals() }));
   assert.match(html, /Vitals <span class="muted">1 of 2 off target<\/span><\/h2>/);
-  assert.match(html, /<div class="cline vital"><b>Output<\/b> 1633 PRs merged in 7d<\/div>/);
-  assert.match(html, /<div class="cline vital warn"><b>Flow<\/b> Queue -200 in 24h; queued p90 53h, limit 12h<\/div>/);
+  assert.match(html, /<div class="cline vital"><b>Cost<\/b> \$12.54 per merged item<\/div>/);
+  assert.match(html, /<div class="cline vital warn"><b>Outcome<\/b> Oldest request 340h, limit 72h; 12 unverified, limit 0<\/div>/);
   assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
 });
 
 test("an unread vital is dim, so it never looks like a healthy row", () => {
-  const rows = [{ question: "Trust", level: "nodata", parts: ["Ledger ?"] }];
-  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Trust<\/b> Ledger \?<\/div>/);
+  const rows = [{ question: "Cost", level: "nodata", parts: ["? per merged item"] }];
+  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Cost<\/b> \? per merged item<\/div>/);
 });
 
 test("Vitals folds to its head when all are on target, and shows nothing until it is read", () => {
@@ -576,4 +640,44 @@ test("a row that leaves Needs you closes, so its id never comes back open", asyn
     await vm.runInContext("refreshHome()", ctx);
     assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; vm.runInContext("hst.open = new Set()", ctx); }
+});
+
+test("an opened sheet row closes from its card: a refresh keeps the form, the row is read fresh by id, then the board's write", async () => {
+  const sheet = (id) => ({ kind: "sheet", need: "todo", project: "p", text: "sheet row", id, score: { human: true, holds: "", priority: "urgent", value: 1 } });
+  const needs = [sheet("t-1"), sheet("a row with no id")];
+  const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
+  assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
+  assert.match(html, /data-tab="board">Open the board/);
+  assert.equal((html.match(/data-closego/g) || []).length, 1);
+  // What was picked and typed is Home's state, so the next draw shows it again.
+  vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+  assert.match(draw(home({ needs }), [], [], ["sheet:t-1"]), /value="done:proof" selected.*value="pr:9"/s);
+  const sent = [];
+  const reply = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  const row = { id: "t-1", project: "p", state: "open", profile: "personal", lane: "human", raw: "- [ ] sheet row #urgent" };
+  const before = ctx.fetch;
+  let rows = [row, { ...row, project: "other" }];
+  ctx.fetch = async (path, o) => {
+    if (path.startsWith("/api/board?")) { sent.push(["read", path]); return reply({ rows }); }
+    if (path === "/api/board") { sent.push(["write", JSON.parse(o.body)]); return reply({ out: "dropped" }); }
+    return reply(path === "/api/briefing" ? { error: "off" } : home({ needs }));
+  };
+  const close = () => vm.runInContext(`closeSheetRow("t-1", "p")`, ctx);
+  try {
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: " " }`, ctx);
+    await close();
+    assert.equal(vm.runInContext(`hst.close["t-1"].err`, ctx), "Say why it is dropped.");
+    assert.equal(sent.length, 0);
+    vm.runInContext(`hst.close["t-1"] = { how: "drop:why", why: "stale" }`, ctx);
+    await close();
+    assert.deepEqual(sent, [["read", "/api/board?q=id%3A%3Dt-1"],
+      ["write", { verb: "drop", why: "stale", profile: "personal", project: "p", lane: "human", raw: "- [ ] sheet row #urgent" }]]);
+    assert.equal(vm.runInContext(`"t-1" in hst.close`, ctx), false);
+    rows = [{ ...row, state: "done" }];
+    vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
+    await close();
+    assert.match(vm.runInContext(`hst.close["t-1"].err`, ctx), /t-1 is not open on the p sheet any more/);
+    assert.equal(vm.runInContext(`hst.close["t-1"].busy`, ctx), false);
+    assert.equal(sent.filter(([k]) => k === "write").length, 1);
+  } finally { ctx.fetch = before; vm.runInContext(`hst.close = {}`, ctx); }
 });

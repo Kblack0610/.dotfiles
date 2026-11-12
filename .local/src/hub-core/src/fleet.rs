@@ -313,8 +313,6 @@ pub struct Judge {
     pub disagree: u32,
     /// The judge said this one is the human's ("asks-you").
     pub deferred: u32,
-    /// Deferred, and the human took the recommendation anyway.
-    pub false_defer: u32,
     /// Judged, still waiting on the human.
     pub pending: u32,
     /// Answered in the session as free text naming no option, which no call can match.
@@ -328,6 +326,30 @@ pub struct Judge {
     pub week: JudgeWeek,
     /// Every verdict, newest first and under any prompt, as judge-eval lists them.
     pub verdicts: Vec<AskVerdict>,
+    /// One per type and impact level under the current prompt, as judge-eval scores them.
+    pub cells: Vec<Cell>,
+}
+
+/// judge-eval's numbers for one type at one impact level (self, repo, fleet, critical): what a
+/// promotion is weighed on. A live cell scores only the answers the human reviewed (`audited`).
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Cell {
+    /// Empty for a verdict that recorded no type or no level.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub level: String,
+    pub verdicts: u32,
+    pub scored: u32,
+    pub pending: u32,
+    /// In percent, with its Wilson 95% interval; null with nothing scored.
+    pub precision: Option<f64>,
+    pub precision_lo: Option<f64>,
+    pub precision_hi: Option<f64>,
+    pub live: bool,
+    pub audited: u32,
+    /// The share of its verdicts a Fleet floor raised above the judge's own rating.
+    pub level_raised_pct: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -1013,6 +1035,8 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         #[serde(default)]
         verdicts: Vec<AskVerdict>,
         #[serde(default)]
+        cells: Vec<Cell>,
+        #[serde(default)]
         live: Vec<String>,
         #[serde(default)]
         rules: Vec<Score>,
@@ -1027,8 +1051,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         score: Score,
         tp: u32,
         fp: u32,
-        #[serde(rename = "fn")]
-        false_defer: u32,
         deferred: u32,
         pending: u32,
         unscorable: u32,
@@ -1061,7 +1083,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         agree: t.tp,
         disagree: t.fp,
         deferred: t.deferred,
-        false_defer: t.false_defer,
         pending: t.pending,
         unscored: t.unscorable,
         precision: t.score.precision,
@@ -1069,6 +1090,7 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         prompt: a.prompt_sha.chars().take(7).collect(),
         week: a.week,
         verdicts: a.verdicts,
+        cells: a.cells,
     };
     Ok((judge, evals, scores))
 }
@@ -1358,7 +1380,11 @@ mod tests {
            "week":{"live_pct":25.0,"coverage":40.0,"precision":90.0},
            "verdicts":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
              "you":"no","rule":"r","type":"ship_deploy","said":"would answer","score":"wrong","at":1700000000},
-             {"id":"Ab2","said":"passed","score":"needless","at":null}]}]}"#;
+             {"id":"Ab2","said":"passed","score":"needless","at":null}],
+           "cells":[{"type":"ship_deploy","level":"repo","verdicts":3,"errors":0,"tp":2,"fp":1,"scored":3,"pending":0,
+             "precision":66.7,"precision_lo":20.8,"precision_hi":93.9,"live":true,"audited":3,"level_raised_pct":33.3},
+             {"type":"","level":"","verdicts":1,"scored":0,"pending":1,"precision":null,"precision_lo":null,
+              "precision_hi":null,"live":false,"audited":0,"level_raised_pct":0}]}]}"#;
         let (j, evals, _) = judges(json).unwrap();
         assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
         assert_eq!(
@@ -1366,11 +1392,10 @@ mod tests {
                 j.agree,
                 j.disagree,
                 j.deferred,
-                j.false_defer,
                 j.pending,
                 j.unscored
             ),
-            (2, 1, 4, 3, 1, 2)
+            (2, 1, 4, 1, 2)
         );
         assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
         assert_eq!(j.prompt, "60c840b");
@@ -1380,6 +1405,29 @@ mod tests {
             (v.kind.as_str(), v.you.as_str(), v.at),
             ("ship_deploy", "no", Some(1_700_000_000))
         );
+        // Each cell is judge-eval's, untouched: nothing here recounts it.
+        let c = &j.cells[0];
+        assert_eq!(
+            (
+                c.kind.as_str(),
+                c.level.as_str(),
+                c.verdicts,
+                c.scored,
+                c.audited,
+                c.live
+            ),
+            ("ship_deploy", "repo", 3, 3, 3, true)
+        );
+        assert_eq!(
+            (
+                c.precision,
+                c.precision_lo,
+                c.precision_hi,
+                c.level_raised_pct
+            ),
+            (Some(66.7), Some(20.8), Some(93.9), Some(33.3))
+        );
+        assert_eq!((j.cells[1].precision, j.cells[1].pending), (None, 1));
         for (filter, want) in [
             ("all", 2),
             ("would answer", 1),

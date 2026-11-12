@@ -207,15 +207,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-pkill-f.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Bash|Read",
         "hooks": [
           {
@@ -256,7 +247,7 @@
         ]
       },
       {
-        "matcher": "Grep|Glob|Bash",
+        "matcher": "Grep|Glob",
         "hooks": [
           {
             "type": "command",

@@ -1,16 +1,29 @@
-//! The Releases tab: every app with what is live where, its channels on open, from hub-core's
+//! The Releases tab: every app with what is deployed where, its channels on open, from hub-core's
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
-//! No read cache: the read is one small file, and a new snapshot pushes the `releases` event.
+//! No read cache of its own: the read is one small file, and a new snapshot pushes the `releases`
+//! event. The apps' build runs come from the builds read and its cache.
 
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
+use hub_core::queue::Item;
 use hub_core::releases::{self, App, Releases, STALE_SECS};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-use crate::schedules::Query;
+/// The table view (`q`, `s`, `sort`, `dir`, the keys the page keeps in its URL) and the app whose
+/// page is open (`#releases/apps/<name>`, links::Kind::App), read whatever the view hides.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct Query {
+    pub q: String,
+    pub s: String,
+    pub sort: String,
+    pub dir: String,
+    pub app: String,
+}
 
 /// The read with the view applied: the apps drawn, the channels it could not read, the controls.
 #[derive(Serialize)]
@@ -19,27 +32,49 @@ struct Shown<'a> {
     question: &'a str,
     summary: &'a str,
     gaps: &'a str,
+    /// `Releases::coverage`: how full each history column is, over every app.
+    coverage: &'a str,
     stale_after: i64,
     rows: Vec<&'a App>,
     errors: &'a [String],
     /// `Releases::needs_look`: the count on the Apps inner tab.
     look: bool,
     table: Summary,
+    /// The words a cell says when the fact is absent (`releases::BLANKS`), which the page dims.
+    blanks: &'static [&'static str],
+    /// The app this read was asked for (`Query::app`), so a page can tell a read still on its way
+    /// from an app the snapshot does not have.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    asked: &'a str,
+    /// The app `Query::app` names, absent when none is asked or no app has that name, and the
+    /// records its cells link to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<&'a App>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_links: Option<BTreeMap<&'static str, String>>,
 }
 
 fn render(s: &Releases, q: &Query) -> String {
     let view = View::new::<App>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&s.apps);
+    let app = (!q.app.is_empty())
+        .then(|| s.apps.iter().find(|a| a.project == q.app))
+        .flatten();
     let out = Shown {
         at: s.at,
         question: &s.question,
         summary: &s.summary,
         gaps: &s.gaps,
+        coverage: &s.coverage,
         stale_after: STALE_SECS,
         rows,
         errors: &s.errors,
         look: s.needs_look(),
         table,
+        blanks: &releases::BLANKS,
+        asked: &q.app,
+        app,
+        app_links: app.map(|a| hub_core::table::links(&[a]).pop().unwrap_or_default()),
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
 }
@@ -49,9 +84,20 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "errors": [e] }).to_string()
 }
 
-/// The view `q` asks for, over a read of its own.
-pub async fn get(q: Query) -> String {
-    match tokio::task::spawn_blocking(|| releases::read(&System)).await {
+/// The view `q` asks for, over a read of its own joined to the queue `items`, each app with its
+/// build runs from the builds read Release runs lists (`builds::current`, kept a few seconds).
+pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) -> String {
+    let runs = crate::builds::current((items.clone(), None)).await;
+    let read = move || {
+        let mut r = releases::read(&System, &items);
+        r.errors.extend(queue_error);
+        match runs {
+            Ok(b) => r.with_builds(&b.rows),
+            Err(e) => r.errors.push(format!("build runs: {e}")),
+        }
+        r
+    };
+    match tokio::task::spawn_blocking(read).await {
         Ok(s) => render(&s, &q),
         Err(e) => failed(e.to_string()),
     }
@@ -139,9 +185,10 @@ mod tests {
     fn sample() -> Releases {
         Releases {
             at: 300,
-            question: "What is live where?".into(),
+            question: "What is deployed where?".into(),
             summary: "2 apps: 1 drift, 1 ok".into(),
             gaps: "1 channel not read: steam 403 (1)".into(),
+            coverage: "coverage: prev 2/2, deployed 1/2".into(),
             apps: vec![
                 app("game", releases::Level::Bad),
                 app("site", releases::Level::Ok),
@@ -170,8 +217,9 @@ mod tests {
         );
         assert!(v.get("fold").is_none());
         assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
+        assert_eq!(v["coverage"], "coverage: prev 2/2, deployed 1/2");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(v["question"], "What is live where?");
+        assert_eq!(v["question"], "What is deployed where?");
         assert_eq!(v["stale_after"], STALE_SECS);
     }
 
@@ -183,6 +231,30 @@ mod tests {
         });
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["project"], "site");
+    }
+
+    #[test]
+    fn an_app_page_reads_its_app_whatever_the_view_hides_and_links_its_project() {
+        let v = body(Query {
+            s: "ok".into(),
+            app: "game".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            v["rows"].as_array().unwrap().len(),
+            1,
+            "the view still applies"
+        );
+        assert_eq!(v["app"]["project"], "game");
+        assert_eq!(v["app_links"]["project"], "#projects/game");
+        assert_eq!(v["blanks"][0], "none declared");
+        let none = body(Query {
+            app: "nope".into(),
+            ..Default::default()
+        });
+        assert!(none.get("app").is_none() && body(Query::default()).get("app").is_none());
+        assert_eq!(none["asked"], "nope", "an unknown app's read says what it was asked");
+        assert!(body(Query::default()).get("asked").is_none());
     }
 
     #[test]

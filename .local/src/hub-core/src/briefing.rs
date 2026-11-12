@@ -137,13 +137,13 @@ pub struct Inputs {
     /// Queue items finished since the start of yesterday: the priority and type each landed PR
     /// is ranked by.
     pub landed_items: Option<Vec<Item>>,
-    /// `release-state show --json`: what is live where, and what deployed.
+    /// `release-state show --json`: what is deployed where, and what deployed.
     pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
     pub sources: Option<Vec<Account>>,
     /// comms' one-line inbox summary.
     pub mail_stats: Option<String>,
-    /// What the app stores made yesterday (`store-sales`); None when it could not run, or for
+    /// What the app stores and Steam made yesterday (`store-sales`); None when it could not run, or for
     /// a caller that renders no Money section.
     pub sales: Option<Vec<crate::money::Source>>,
     pub errors: Vec<String>,
@@ -1021,7 +1021,7 @@ fn overnight(i: &Inputs) -> Vec<String> {
 }
 
 /// Money: what yesterday cost, then one line per store of what it made. A store that could not
-/// be read says so, never $0; games and trader have no reader yet.
+/// be read says so, never $0; the trader has no reader yet.
 fn money_lines(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match yesterday_and_avg(i, spent) {
@@ -1040,9 +1040,9 @@ fn money_lines(i: &Inputs) -> Vec<String> {
                 .iter()
                 .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
         ),
-        None => out.push("App stores: not read, store-sales could not run.".into()),
+        None => out.push("Stores: not read, store-sales could not run.".into()),
     }
-    out.push("Games and trader: not read yet, no reader is connected.".into());
+    out.push("Trader: not read yet, no reader is connected.".into());
     out
 }
 
@@ -1514,7 +1514,8 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
     let landed_items = queue::list_since(&System, "done", &date_before(now, 1))
         .map_err(|e| errors.push(format!("agent-queue list --since yesterday: {e}")))
         .ok();
-    let rel = crate::releases::read(&System);
+    // Channel rows only: the briefing says drift and deploys, no release's rows.
+    let rel = crate::releases::read(&System, &[]);
     errors.extend(rel.errors.iter().cloned());
     let releases = rel.errors.is_empty().then_some(rel.rows);
     let sources = sources
@@ -1605,7 +1606,7 @@ mod tests {
             since: Some(since),
             lastrun: None,
             lasttrip: None,
-            place: String::new(),
+            ..Default::default()
         }
     }
 
@@ -2052,10 +2053,7 @@ mod tests {
         assert_eq!(b.landed, ["Not read: no day-log record for yesterday."]);
         assert!(b.money[0].starts_with("Spend not read"), "{:?}", b.money);
         assert!(!b.overview.contains("Yesterday"), "{}", b.overview);
-        assert!(b
-            .money
-            .iter()
-            .any(|l| l.starts_with("App stores: not read")));
+        assert!(b.money.iter().any(|l| l.starts_with("Stores: not read")));
     }
 
     #[test]
@@ -2080,6 +2078,12 @@ mod tests {
                 error: Some("no rbw entry store_sales_play".into()),
                 ..Default::default()
             },
+            Source {
+                name: "Steam".into(),
+                basis: "net".into(),
+                error: Some("no rbw entry store_sales_steam".into()),
+                ..Default::default()
+            },
         ]);
         let m = build(&i).money;
         assert_eq!(m[1], "App Store: $7.00 proceeds from 2 sales (Shape City).");
@@ -2088,7 +2092,9 @@ mod tests {
             m[2],
             "Google Play: not read, no rbw entry store_sales_play."
         );
-        assert_eq!(m.len(), 4, "{m:?}");
+        assert_eq!(m[3], "Steam: not read, no rbw entry store_sales_steam.");
+        assert_eq!(m[4], "Trader: not read yet, no reader is connected.");
+        assert_eq!(m.len(), 5, "{m:?}");
     }
 
     fn release(project: &str, channel: &str, last: Option<(&str, &str, i64)>) -> Release {
@@ -2103,6 +2109,7 @@ mod tests {
             state: st.into(),
             at,
             url: None,
+            ..Default::default()
         });
         r
     }

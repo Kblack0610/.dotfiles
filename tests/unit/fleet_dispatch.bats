@@ -132,6 +132,21 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'stale policy,retagged'
 }
 
+@test "candidates: an edit that adds #of/, a priority tag or a comment field keeps the verdict; a scope or title edit re-judges" {
+  project game beta "$SANDBOX/repos/game"
+  local k
+  for k in linked prio scoped titled; do row game agent "$k" "- [ ] chore(plan): $k it $T <!-- id:$k -->"; verdict game agent "$k" skip; done
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent linked "- [ ] chore(plan): linked it $T #of/ga-1 <!-- id:linked -->"
+  row game agent prio "- [ ] chore(plan): prio it   $T #high <!-- id:prio run:3 -->"
+  row game agent scoped "- [ ] chore(gameplay): scoped it $T <!-- id:scoped -->"
+  row game agent titled "- [ ] chore(plan): titled it now $T <!-- id:titled -->"
+
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'scoped,titled'
+}
+
 @test "candidates: the judge reads a row's details, and an edit to them re-judges only a verdict that recorded them" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] fix the jump $T <!-- id:ga-1 -->"
@@ -748,23 +763,17 @@ app urgent: fleet, #urgent, alpha"
   assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
 
-@test "item_brief: a repo whose canonical forge is Forgejo lands by one-shot's Forgejo section, never agent-land" {
+@test "item_brief: a repo whose canonical forge is Forgejo merges with agent-land too, which lands it through that API (ar-1213)" {
   project game beta "$SANDBOX/repos/game"
   mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
   it='{"slug": "hc", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}'
   run item_brief "$it"
-  assert_output --partial 'landing.md "Forgejo repo" says, recording the PR and merged: on hc.'
-  refute_output --partial 'Merge with agent-land'
-  # headless on Forgejo: no agent-land line, and recording the PR is not tied to gh
+  assert_output --partial 'Merge with agent-land <N> (AGENT_QUEUE_ITEM=hc is set)'
+  refute_output --partial 'landing.md'
   echo '{"harnesses": {"codex": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$it" codex
   assert_output --partial 'Right after the PR opens, run: agent-queue set hc pr='
-  refute_output --partial 'Run agent-land in the foreground'
-  # a GitHub-canonical repo still merges with agent-land (negative control)
-  rm "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
-  run item_brief "$it"
-  assert_output --partial 'Merge with agent-land <N>'
-  refute_output --partial 'Forgejo'
+  assert_output --partial 'Run agent-land in the foreground'
 }
 
 @test "item_brief: a doc+ask kind ends on a doc in the lab docs and an ask recorded on the item, never a PR" {
@@ -789,7 +798,7 @@ app urgent: fleet, #urgent, alpha"
   it='{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): cut all 3pm, upload beta", "task": "release(steam): cut all 3pm, upload beta", "row": "game:ar-7", "lane": "agent"}'
   run item_brief "$it"
   assert_line --index 0 '/release release(steam): cut all 3pm, upload beta'
-  assert_output --partial 'a release row: it ends on the live proof its skill names, never a PR or agent-land'
+  assert_output --partial 'a release row: it ends on live proof, never a PR or agent-land'
   assert_output --partial 'agent-queue set rel note="<proof>"; notes ptask game --agent done "ar-7" --proof "<proof>"; agent-queue move rel done --status ok'
   assert_output --partial 'If a step needs a decision from the human'
   refute_output --partial 'Merge with agent-land'
@@ -896,22 +905,72 @@ EOF
 }
 
 @test "judge: each verdict names its policy rule and the call it came from" {
-  stub judge-stub 'echo "$AGENTCTL_CALL_ID" > "$NOTES_FIXTURE/call.id"; cat "$NOTES_FIXTURE/judge.out"'
+  stub judge-stub 'echo "$AGENTCTL_CALL_ID" >> "$NOTES_FIXTURE/call.id"; cat "$NOTES_FIXTURE/judge.out"'
   cat > "$NOTES_FIXTURE/judge.out" <<'EOF'
 {"verdicts":[{"project":"game","lane":"human","key":"a","tier":1,"size":"S","clear":true,"agent_only":true,"verdict":"dispatch","rule":"fits","reason":"small"},{"project":"game","lane":"human","key":"b","verdict":"skip","rule":"vibes","reason":"x"},{"project":"game","lane":"human","key":"c","verdict":"skip","reason":"no rule"}]}
 EOF
   c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
   run judge "$(c a; c b; c c; c d)"
   assert_success
-  local id; id=$(cat "$NOTES_FIXTURE/call.id")
-  [ -n "$id" ]
+  local id retry; id=$(sed -n 1p "$NOTES_FIXTURE/call.id"); retry=$(sed -n 2p "$NOTES_FIXTURE/call.id")
+  [ -n "$id" ] && [ -n "$retry" ] && [ "$id" != "$retry" ]
   v() { jq -r --arg k "$1" --arg id "$id" 'select(.key == $k) | "\(.verdict) \(.rule // "-") \(.judge_call == $id) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   assert_equal "$(v a)" 'dispatch fits true small'
   assert_equal "$(v b)" 'error - true rule "vibes" is not in the policy'
   assert_equal "$(v c)" 'error - true rule "" is not in the policy'
-  assert_equal "$(v d)" 'error - true the reply had no verdict for this row'
+  # d was left out twice (the retry's reply has no d either), so its error names the retry's call
+  assert_equal "$(v d)" 'error - false neither the reply nor its retry had a verdict for this row'
+  assert_equal "$(jq -r 'select(.key == "d") | .judge_call' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" "$retry"
   # An error holds nothing: those rows are judged again; the dispatch verdict holds.
   assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
+}
+
+@test "judge: a row the reply left out is asked for again, alone, and the retry's verdict leaves no error (ar-1645)" {
+  # First call: a verdict for a only. Second call: one for b. Each call's id and prompt are kept.
+  stub judge-stub 'n=$(( $(cat "$NOTES_FIXTURE/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/n"
+    echo "$AGENTCTL_CALL_ID" >> "$NOTES_FIXTURE/call.id"; printf "%s" "$2" > "$NOTES_FIXTURE/prompt.$n"
+    cat "$NOTES_FIXTURE/judge.out.$n"'
+  r() { jq -cn --arg k "$1" '{verdicts: [{project: "game", lane: "human", key: $k, tier: 1, size: "S", clear: true, agent_only: true, verdict: "dispatch", rule: "fits", reason: "small"}]}'; }
+  r a > "$NOTES_FIXTURE/judge.out.1"; r b > "$NOTES_FIXTURE/judge.out.2"
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b)"
+  assert_success
+  assert_output --partial 'left out 1 row(s), asking again'
+  assert_equal "$(cat "$NOTES_FIXTURE/n")" 2
+  # the retry sends only the row left out, counted as such
+  grep -qF 'There are 1 rows above. Return exactly 1 verdicts' "$NOTES_FIXTURE/prompt.2" || fail "$(cat "$NOTES_FIXTURE/prompt.2")"
+  run grep -c '"key":"a"' "$NOTES_FIXTURE/prompt.2"
+  assert_output 0
+  # no error line; each verdict names the call that made it, and both rows are judged
+  assert_equal "$(jq -r 'select(.verdict == "error")' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" ''
+  assert_equal "$(jq -r 'select(.key == "b") | .judge_call' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" "$(sed -n 2p "$NOTES_FIXTURE/call.id")"
+  assert_equal "$(judged_keys | cut -f3 | sort | paste -sd' ')" 'a b'
+}
+
+@test "judge: a row the retry leaves out too is an error verdict; a retry that fails names why, one stopped at its budget leaves none (negative control)" {
+  stub judge-stub 'n=$(( $(cat "$NOTES_FIXTURE/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/n"
+    [ "$n" = 1 ] || [ -z "${RETRY_EXIT:-}" ] || { echo "rate limited" >&2; exit "$RETRY_EXIT"; }
+    echo "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"human\",\"key\":\"a\",\"verdict\":\"skip\",\"rule\":\"unclear\",\"reason\":\"x\"}]}"'
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  e() { jq -r 'select(.verdict == "error") | "\(.key) \(.reason)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  run judge "$(c a; c b)"
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/n")" 2
+  assert_equal "$(e)" 'b neither the reply nor its retry had a verdict for this row'
+  assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
+  # the retry call fails: b's error says so
+  rm -f "$NOTES_FIXTURE/n" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  RETRY_EXIT=7 run judge "$(c a; c b)"
+  assert_success
+  assert_equal "$(e)" 'b the reply had no verdict for this row, and the retry call failed (exit 7): rate limited '
+  # the retry stops at its budget: no verdict on b at all, so the next pass judges it, and the
+  # pass gets the budget code (settle names the stop) while a's verdict stands
+  rm -f "$NOTES_FIXTURE/n" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  RETRY_EXIT=75 run judge "$(c a; c b)"
+  assert_equal "$status" 75
+  assert_output --partial 'the retry for 1 left-out row(s) stopped at its budget'
+  assert_equal "$(e)" ''
+  assert_equal "$(jq -r .key "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'a'
 }
 
 @test "judge: the prompt numbers the rows and asks for exactly that many verdicts" {
@@ -922,6 +981,29 @@ EOF
   assert_output 3
   grep -q '^3\. {"project":"game","stage":"beta","lane":"human","key":"c"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
   grep -qF 'There are 3 rows above. Return exactly 3 verdicts' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+}
+
+@test "judge: the call's schema holds the reply to exactly as many verdicts as rows (ucp-469)" {
+  DISPATCH_SCHEMA="$REPO_ROOT/.config/fleet-dispatch/verdicts.schema.json"
+  stub judge-stub '[ "$1" = --schema ] && cp "$2" "$NOTES_FIXTURE/schema.json"; echo "{\"verdicts\":[]}"'
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b; c c)"
+  assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
+  # the rest is the conf's schema, unchanged
+  assert_equal "$(jq -S 'del(.properties.verdicts.minItems, .properties.verdicts.maxItems)' "$NOTES_FIXTURE/schema.json")" \
+    "$(jq -S . "$DISPATCH_SCHEMA")"
+  # negative control: a schema that cannot be read makes no call and no verdict, so the rows are judged again
+  rm -f "$NOTES_FIXTURE/schema.json" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; DISPATCH_SCHEMA="$SANDBOX/missing.json"
+  run judge "$(c a)"
+  assert_failure
+  assert_output --partial 'no readable schema'
+  assert [ ! -e "$NOTES_FIXTURE/schema.json" ]
+  assert [ ! -s "$FLEET_DISPATCH_DIR/verdicts.jsonl" ]
+  # and so does one whose verdicts are not where the reply puts them
+  echo '{"type":"object","properties":{"rows":{"type":"array"}}}' > "$SANDBOX/moved.json"; DISPATCH_SCHEMA="$SANDBOX/moved.json"
+  run judge "$(c a)"
+  assert_failure
+  assert [ ! -e "$NOTES_FIXTURE/schema.json" ]
 }
 
 @test "judge: a failed call is an error verdict for every row, with its reason, and the rows are judged again" {
@@ -1182,7 +1264,7 @@ EOF
 
 @test "headroom counts what could start now against each limit" {
   two_items
-  export DISPATCH_PER_PASS=1 DISPATCH_MAX_LIVE=6
+  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .idle_room, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t60\t'
@@ -1229,9 +1311,9 @@ EOF
   assert_equal "$(jq -r .could_start <<<"$output")" 0
   assert_equal "$(jq -r .held <<<"$output")" "load 99.0 on $(nproc) cores is over the 0.7 pace"
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  export DISPATCH_MAX_LIVE=0
+  export DISPATCH_TARGET_AWAY=0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tDISPATCH_MAX_LIVE: every run unit is used'
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\tpace target: 0 live sessions, the away target is 0'
 }
 
 @test "headroom counts live sessions started by hand apart from run slots, and names the held kind" {
@@ -1239,12 +1321,12 @@ EOF
   started_item run-one lab:lab-run-1 run
   started_item hand-one lab:lab-hand-1 hand
   printf 'lab-run-1\nlab-hand-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_AWAY=1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.live_runs, .live_hand, .held_kind] | @tsv' <<<"$output")" $'1\t1\tslots'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'run units: 1/1 used, 0 free (heavy 2, light 1), 1 more started by hand'
-  export DISPATCH_MAX_LIVE=6
+  export DISPATCH_TARGET_AWAY=6
   echo '99.0 99.0 99.0 1/1 1' > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .held_kind <<<"$output")" load
@@ -1256,17 +1338,17 @@ EOF
 
 @test "a run from a shell reads the DISPATCH_* tuning from the agentctl conf; the environment wins" {
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_AWAY=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   two_items
-  run env -u DISPATCH_MAX_LIVE -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  run env -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.max_live, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'24\t3\t1.5'
-  DISPATCH_MAX_LIVE=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  DISPATCH_TARGET_AWAY=2 run env -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r .max_live <<<"$output")" 2
 }
 
 @test "the machine-mode level scales the start limits where they are read; mid is the conf's own" {
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf "NAME=fleet-dispatch\nDISPATCH_MAX_LIVE=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  printf "NAME=fleet-dispatch\nDISPATCH_TARGET_AWAY=24\nDISPATCH_MAX_LOAD='1.5'\nDISPATCH_PER_PASS=3\n" > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
   two_items
   run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
@@ -1597,7 +1679,8 @@ J
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+  # the first call's prompt: the rows it leaves out are asked for again in a second one
+  stub judge-stub '[ -e "$NOTES_FIXTURE/prompt" ] || printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
   DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1}
 {"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1}
@@ -1609,7 +1692,8 @@ J
 }
 
 @test "judge: a cleanup row goes first within a round, never ahead of it; a project with no cleanup row still gets its slot" {
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+  # the first call's prompt: the rows it leaves out are asked for again in a second one
+  stub judge-stub '[ -e "$NOTES_FIXTURE/prompt" ] || printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
   DISPATCH_JUDGE_MAX=3 run judge '{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":1,"cleanup":0}
 {"project":"p","stage":"prod","lane":"human","key":"p2","text":"- [ ] p2","prio":1,"cleanup":0}
@@ -1789,6 +1873,39 @@ J
   assert_output --partial 'dispatch is held'
 }
 
+@test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item stuck high "$old"
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=3
+  fleet_state 3
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by a full fleet (3 live sessions, the away pace target is 3)'
+  # Negative control: one under the target the account gate binds, and the item starves.
+  fleet_state 2
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # A stale fleet state document reads no live count, so it holds nothing here.
+  fleet_state 3 30
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # A standing hold still trips at a full fleet, led by its Stopped line.
+  fleet_state 3
+  hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
+  run cmd_starved
+  assert_failure
+  assert_line --index 0 --partial 'Dispatch stopped 2h05m: no account has room'
+  rm "$HOME/.local/state/agentctl/fleet-dispatch/held_since"
+  # An urgent item may preempt a runner session at a full fleet, so it still starves.
+  queued_item hot urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'hot (urgent'
+}
+
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   acct main:pace
@@ -1828,6 +1945,21 @@ J
   assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
   run cmd_stopped --json
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+}
+
+@test "stopped: every pass note ahead of the gate is dropped, and a judge budget stop alone clears at its reset" {
+  hold_for 90 'could not judge the new rows (stopped at its budget); tagged 1 for a plan; queued 2 for the night; no account has room; bnb is the closest, 4 points over its weekly pace, queue item x waits'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 1h30m: no account has room; bnb is the closest, 4 points over its weekly pace. Clears when an account is back under its pace.'
+  hold_for 90 'could not judge the new rows (the retry for 3 left-out row(s) stopped at its budget); no account has room; bnb is the closest'
+  run cmd_stopped
+  assert_failure
+  assert_output 'Dispatch stopped 1h30m: no account has room; bnb is the closest. Clears when an account is back under its pace.'
+  hold_for 90 'budget: could not judge the new rows (stopped at its budget); tagged 1 for a plan; queued 2 for the night; no new row to judge'
+  run cmd_stopped
+  assert_failure
+  assert_output "Dispatch stopped 1h30m: budget: could not judge the new rows; no new row to judge. Clears when dispatch-judge's daily budget resets."
 }
 
 # 2026-11-06 (P3 live): with every account full and another source open, gate names no account, so each pass
@@ -2215,6 +2347,34 @@ J
   assert_not_called 'wt new'
 }
 
+@test "item_brief: a verify item starts on its own task and closes on proof, never a PR, whatever its title parses as" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "verify-gm-5-3", "mode": "oneshot", "project": "agent-runtime", "title": "check(ui): verify gm-5 ranked matches", "task": "Verify epic gm-5 on game.", "type": "check", "tags": "verify", "row": "game:gm-9", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  assert_output --partial 'a verify row: it ends on live proof, never a PR or agent-land'
+  assert_output --partial 'agent-queue set verify-gm-5-3 note="<proof>"; notes ptask game --agent done "gm-9" --proof "<proof>"; agent-queue move verify-gm-5-3 done --status ok'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  refute_output --partial 'already opened'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$it" opencode
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  refute_output --partial 'SKILL.md'
+  # negative control: without the tag the same check item is a /one-shot that lands a PR
+  run item_brief "${it/\"tags\": \"verify\", /}"
+  assert_line --index 0 --partial '/one-shot'
+}
+
+@test "pr_line: an item with no PR names none, so its session is never told to check out PR null" {
+  run pr_line '{"slug": "a", "pr": null}'
+  assert_output ''
+  run pr_line '{"slug": "a"}'
+  assert_output ''
+  run pr_line '{"slug": "a", "pr": "o/game#12"}'
+  assert_output --partial 'already opened o/game#12'
+}
+
 @test "item_brief for claude-cloud names the Item and Task lines and leaves out local tooling" {
   run item_brief '{"slug": "cloud-fix", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}' claude-cloud
   assert_success
@@ -2290,8 +2450,20 @@ J
   # An item with no title is read by its task's first line, the headline every log uses.
   refused '{"slug":"x","project":"game","mode":"oneshot","task":"\n  kubectl apply the ingress\nmore"}' \
     "codex: runs headless, and this is deploy work (excluded in $MATRIX); claude: no account has room"
-  # Negative controls: a near miss (product, not prod), the same tag off the Unity stack, and plain work route to codex.
+  # Live host ops: the 2026-11-10 Codex item that drained and deregistered 4 runners (its task's first line), deregister, systemctl.
+  refused '{"slug":"x","project":"game","mode":"oneshot","task":"fix(ci): razer-laptop runners run 3-5x slow. Find the host cause or drain it."}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"deregister the razer runners from the org"}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"sudo systemctl --user restart the runner units on asus"}' \
+    "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
+  # Negative controls: near misses (product, not prod; a drain with no host or runner; systemctl status; unregister with no runner; the word null, which the
+  # kind-less mode entries would match if they read as a "null" pattern), the same tag off the Unity stack, and plain work route to codex.
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"fix(mem0): drain lines end in a backslash"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"show systemctl status of the runner in the panel"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"unregister the service worker on logout"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"a null kind prints as null in the menu"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"open the editor pane","tags":"requested"}' \
     '{"slug":"x","project":"arena","mode":"oneshot","title":"fix the menu sides"}'; do
     route "$it" "$v" || fail "refused ($ROUTE_WHY): $it"

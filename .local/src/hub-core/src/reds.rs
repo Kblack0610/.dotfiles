@@ -41,6 +41,9 @@ pub const SETTLED: [&str; 7] = [
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Red {
     pub slug: String,
+    /// The queue item's project; empty when the item names none.
+    #[serde(default)]
+    pub project: String,
     /// `<area> <name>` (`watch playground-nightly`), else the item's title.
     #[serde(default)]
     pub red: String,
@@ -76,6 +79,14 @@ fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
         serde_json::Value::String(s) => Some(s),
         v => Some(v.to_string()),
     })
+}
+
+/// A GitHub PR page's checks tab, where its CI runs are listed. None for any other forge, whose
+/// PR page is the only link a row has until the PR store carries its runs.
+pub fn checks_url(pr_url: &str) -> Option<String> {
+    let url = pr_url.trim_end_matches('/');
+    (url.starts_with("https://github.com/") && url.contains("/pull/"))
+        .then(|| format!("{url}/checks"))
 }
 
 /// A PR as a link: a URL as it is, `owner/repo#N` on GitHub, anything else (a bare number, a

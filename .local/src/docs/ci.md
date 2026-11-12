@@ -52,7 +52,7 @@ One decision list. Walk it top to bottom for every red.
 
 ## Analysis
 
-- Read runs from the local run ledger (`schedules-sync runs`, the playground's `~/.local/state/unity-test-runs/runs.tsv`) and the `ci-failures` and `ci-cost` scripts, with their caches; never sweep `gh api` live in a loop. Why: a session hit a GitHub 403 on 2026-11-10, and the account's 5,000 calls an hour are shared by every session.
+- Read PRs from the PR store (`schedules-sync prs`) and runs from the local run ledger (`schedules-sync runs`, the playground's `~/.local/state/unity-test-runs/runs.tsv`) and the `ci-failures` and `ci-cost` scripts, with their caches; never sweep `gh api` live in a loop. A pass rate is `hub ci pass` (hub_core `builds::verdict`: green over green plus red, each attempt a run, cancelled and skipped left out), never a second formula. Why: a session hit a GitHub 403 on 2026-11-10, and the account's 5,000 calls an hour are shared by every session.
 - Quote only a number counted in this session or read from a dated doc. Why: an uncounted number cannot be compared next time (skills `ci-cost`, `ci-failures`).
 
 ## Client bars

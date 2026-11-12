@@ -5,7 +5,25 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
-  reviewed: 2026-11-07
+  reviewed: 2026-11-11
+  # The hand-typed forms that hang or kill the machine; hand_methods.py denies them. The Grep and Glob
+  # half of the root-search deny is block-root-search.sh.
+  replaces:
+    - match: |-
+        (?:^|[^A-Za-z0-9_.-])pkill(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$)
+      use: "`pkill -x <name>`, or kill a PID you hold: `$!`, a pidfile, or `pgrep -x <name>`. To search or write about the command, break the phrase, e.g. `rg 'pkill[ ]-f'`"
+      mode: deny
+      why: "a -f pattern also matches this command's own shell and other sessions' processes, so it kills them (a test-file pattern once killed every worktree's bats run; 291 session-days of the lesson before the guard)"
+    - match: |-
+        (?m)\A(?=.*(?:^|[;&|(`]|\$\(|xargs(?:\s+[^;&|\s]+)*)[ \t]*(?:sudo[ \t]+)?kill(?:\s|$))(?=.*(?:^|[^A-Za-z0-9_.-])pgrep(?:[ \t]+[^;&|\s]+)*[ \t]+(?:-[a-eg-zA-Z0-9]*f[A-Za-z0-9]*|--full)(?:[ \t;&|)"']|$))
+      use: "`pgrep -x <name>`, or a PID you hold, before `kill`"
+      mode: deny
+      why: "the -f pattern is on the shell's own command line, so the pgrep matches that shell and the kill takes it down"
+    - match: |-
+        (?:^|[\s;&|(){}`])(?:\S*/)?(?:(?:find|bfs|fd|fdfind|rg|ugrep)|e?grep(?=[^;&|()`\n]{0,400}\s(?:-[A-Za-z0-9]*[rR][A-Za-z0-9]*|--(?:dereference-)?recursive)(?=\s|$)))(?=\s)(?![^;&|()`\n]{0,400}\s(?:-xdev|-mount|--one-file-system)(?=\s|$))[^;&|()`\n]{0,400}?\s(?<!-path\s)(?<!-ipath\s)(?<!-wholename\s)(?<!-iwholename\s)(?<!-newer\s)(?<!-samefile\s)(?<!-regex\s)/(?:mnt(?:/nas(?:/(?:private|public))?)?)?/*(?=\s|[;&|()`]|$)
+      use: "search the working directory (a repo's code, submodules included, is under it) or a named subdirectory; to search the share, name a subdirectory of it, or add `-xdev` / `--one-file-system`"
+      mode: deny
+      why: "a recursive walk from / or /mnt enters the CIFS mount /mnt/nas and blocks on it for tens of minutes (2026-10-29: three sessions, load 28 on 24 cores at 0% CPU); a new network mount adds its path here"
 ---
 
 # fleet-pace
@@ -32,6 +50,8 @@ The class column tells you how each consumer can be stopped:
 | `claude` | a Claude session drove it | parked (`claude-acct park`) when idle or waiting on GitHub, a `fleet-comms` message when busy, plus the hold |
 | `shell` | a tmux pane with no Claude, usually a suite loop | the hold at the resource gate, or a kill. It has no inbox |
 | `agentctl` | an agentctl unit | `agentctl stop <name>` |
+| `unit` | another systemd user service (its name in the session column) | `systemctl --user stop <name>` |
+| `ci` | a job of this host's CI runner pool (cgroup under `ci.slice`; the runner slice is in the session column) | `machine-mode` runner slots: a busy runner finishes its job, then takes no new one. A stuck job: cancel its run (`gh run cancel`), never a kill |
 | `orphan` | reparented to init, its driver gone | nothing will reap it; a kill, with the human's OK |
 
 ## Verdicts
@@ -96,7 +116,7 @@ What a `fleet-lead pass` runs for a `pace:`, `blocked:` or `limit:` due line, or
 The fleet-wide list is in `fleet-lead`; these are this role's own.
 
 - Lift a hold on a timer, or because the session that set it went quiet. Lift it on CLEAR.
-- Lift a `dispatch` hold set by `machine-mode`, or read the mode's lower runner and Unity slots as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it.
+- Read the machine mode's lower runner and Unity slots, or its lower level, as a pace failure. The mode is the human's word on how much of the machine is free; only `machine-mode` changes it, and no mode holds dispatch.
 - Tell a session to run with `UNITY_TEST_IGNORE_HOLD` or `UNITY_TEST_SLOTS`. They are for a person in their own shell, and `slots.sh` ignores them in an agent session. GO is `agent-hold grant`, which ends with the hold; the flag never ended, and on 2026-10-28 all 6 Unity runs live under a hold carried it.
 - Treat a Tctl reading in the 90s on its own as an emergency.
 - Edit the sentinel watch to go quiet while it is tripped. It is red because the machine is, and the clear edge is the GO signal.

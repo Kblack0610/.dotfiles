@@ -551,6 +551,23 @@ fake_proc() {
   assert_output --regexp '^orphan'
 }
 
+@test "classify: a CI pool job under ci.slice is ci, by runner slice, not an orphan (ar-1652)" {
+  export FLEET_PROC="$BATS_TEST_TMPDIR/proc"
+  # a docker-run Unity job: containerd-shim reparented to init, so the parent chain says nothing
+  fake_proc 90 1 containerd-shim "/ci.slice/ci-unity.slice/ci-unity-2.slice/docker-f303.scope"
+  fake_proc 91 90 Unity "/ci.slice/ci-unity.slice/ci-unity-2.slice/docker-f303.scope"
+  run classify 91
+  assert_output "$(printf 'ci\tci-unity-2.slice\t-')"
+  # a scope straight under ci.slice names the slice itself
+  fake_proc 95 1 dockerd-job "/ci.slice/docker-10f3.scope"
+  run classify 95
+  assert_output "$(printf 'ci\tci.slice\t-')"
+  # the same chain outside ci.slice is still an orphan
+  fake_proc 99 1 Unity "/system.slice/docker-abcd.scope"
+  run classify 99
+  assert_output --regexp '^orphan'
+}
+
 # rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and
 # classify with a fixed answer, so the selection is pinned without a hot machine.
 rows_with() {

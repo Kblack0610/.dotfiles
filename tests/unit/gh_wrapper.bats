@@ -231,3 +231,15 @@ SH
   assert_equal "$(token)" ghs_one
   assert_equal "$(bucket)" app:acme
 }
+
+@test "a sandboxed HOME never reaches GitHub, so a test that forgot its gh stub acts on nothing (ar-1892)" {
+  mkdir -p "$BATS_TEST_TMPDIR/home"
+  HOME="$BATS_TEST_TMPDIR/home" run "$WRAP" workflow run hd.yml -R acme/x
+  assert_failure 3
+  assert_output --partial "a sandboxed caller never reaches GitHub"
+  [ ! -e "$BATS_TEST_TMPDIR/real.log" ]
+  # NEGATIVE CONTROL: the account's own home reaches the real gh
+  HOME="$(getent passwd "$(id -un)" | cut -d: -f6)" run "$WRAP" workflow run hd.yml -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|workflow run hd.yml -R acme/x'
+}

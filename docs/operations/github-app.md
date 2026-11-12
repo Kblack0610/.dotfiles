@@ -53,3 +53,4 @@ awk -F'\t' -v s=$(( $(date +%s) - 3600 )) '$1 >= s && $2 ~ /^user/ { n[$4]++ } E
 | Log rows read `user:app-denied` | GitHub refused the App's token (a missing read permission, an uninstalled App, or its own limit spent); the read reran on your token | Add the permission as Read-only in the App's settings and accept it on each installation, or reinstall |
 | An owner's reads stay on `user` | No installation for that owner, or it covers selected repos only | Install on that account with All repositories |
 | A session's `gh` is not the wrapper | `~/.local/bin/gh` is not stowed yet | Re-run the dotfiles deploy so stow links the new file |
+| `gh: HOME is <dir>, not <home>: a sandboxed caller never reaches GitHub`, exit 3 | The caller runs under a HOME that is not the account's, as a test does, and `gh` on its PATH is this wrapper, not the test's stub | Put the stub first on PATH in the test; the refusal is the point, never work around it |

@@ -63,14 +63,33 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8
   assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",6.0],["Read",2.0]]\n2.0'
 }
 
-@test "snapshot: the three recall cuts come from one tool-output scan" {
+@test "snapshot: by skill splits each session's cost over its skill spans by weighted tokens; one with no response allocates nothing" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  cat > "$stub/recall" <<'EOS'
+#!/bin/sh
+echo '{"totals":{"turns":5},"rows":{"session,skill":[{"key":["a","one-shot"],"turns":3,"spans":1,"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000,"output_tokens":20},{"key":["a","(no skill)"],"turns":2,"spans":0,"input_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"output_tokens":0}]}}'
+EOS
+  echo "#!/bin/sh
+echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":9,\"b\":1}}}'" > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  # a: one-shot weighs 1000*0.1 + 20*5 = 200, no skill 50 + 500*0.1 = 100, so $9 splits 6 and 3; b ($1) had no response
+  assert_equal "$(snap '[.by_skill[] | [.skill, .spans, .sessions, .responses, .context, .allocated_cost_usd]], .by_skill_unallocated_usd')" $'[["one-shot",1,1,3,1000,6.0],["(no skill)",0,1,2,550,3.0]]\n1.0'
+}
+
+@test "snapshot: by skill on the real fixture sums to the day's cost" {
+  "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[((.by_skill | map(.responses) | add) == .totals.responses), ((((.by_skill | map(.allocated_cost_usd) | add) + .by_skill_unallocated_usd - .totals.cost_usd) | fabs) < 0.01)]')" '[true,true]'
+}
+
+@test "snapshot: the four recall cuts come from one tool-output scan" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"totals\\":{\\"turns\\":1},\\"rows\\":{}}"\n' "$stub" > "$stub/recall"
   printf '#!/bin/sh\necho {}\n' > "$stub/burn"
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
   assert_equal "$(grep -c -- '--by' "$stub/calls")" 1
-  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool '
+  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool --by session,skill '
 }
 
 @test "snapshot: the command cut is trimmed to the top 20 here, since recall is asked for every row" {
@@ -299,6 +318,57 @@ gw_day() { lf_day "$1" "{\"gateway\":{\"calls\":100,\"errors\":$2,\"by_error\":$
   assert_success
   TOKENS_GATEWAY_MIN=2 run "$AU" tokens check --gateway-errors
   assert_success
+}
+
+# A resolve watermark after the snapshot's day began: only the live window since the fix counts.
+gw_live() {
+  printf '#!/bin/sh\necho "$*" > "%s/lf-args"\nprintf %%s %s\n' "$BATS_TEST_TMPDIR" "'$1'" > "$BATS_TEST_TMPDIR/lf"
+  chmod +x "$BATS_TEST_TMPDIR/lf"
+  export TOKENS_LANGFUSE_CMD="$BATS_TEST_TMPDIR/lf"
+}
+
+@test "check --gateway-errors: a fix after the snapshot's day began reads only the window since the fix" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  gw_live '{"gateway":{"calls":50,"errors":2,"by_error":{"HTTPException":2}}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output 'since the fix at 2026-01-01 12:00: no BadRequestError in the gateway errors (2 errors in 50 calls)'
+  run cat "$BATS_TEST_TMPDIR/lf-args"
+  assert_output --partial '--since 2026-01-01T12:00:00+00:00 --until '
+  gw_live '{"gateway":{"calls":50,"errors":3,"by_error":{"BadRequestError":3}}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output 'since the fix at 2026-01-01 12:00: gateway BadRequestError x3 (0 other errors, not listed)'
+}
+
+@test "check --gateway-errors: no watermark, or one before the snapshot's day, keeps the snapshot verdict (negative control)" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  gw_live '{"gateway":{"calls":50,"errors":0,"by_error":{}}}'
+  SENTINEL_SINCE=0 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output --partial '2026-01-01: gateway BadRequestError x8'
+  SENTINEL_SINCE=1767139200 run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  [ ! -e "$BATS_TEST_TMPDIR/lf-args" ]
+}
+
+@test "check --gateway-errors: an unreadable live window is exit 2, never a quiet pass" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8}'
+  gw_live 'null'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  assert_output --partial 'since the fix at 2026-01-01 12:00: no gateway figures'
+  gw_live '{"gateway":{"calls":50,"errors":30000,"by_error":{"HTTPException":20000},"truncated":true}}'
+  SENTINEL_SINCE=1767268800 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  assert_output --partial 'truncated'
+}
+
+@test "check --gateway-errors: a watermark that is not an epoch is ignored, never a crash that reads as a trip" {
+  gw_day 2026-01-01 3 '{"HTTPException":3}'
+  SENTINEL_SINCE=abc run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output '2026-01-01: no BadRequestError in the gateway errors (3 errors in 100 calls)'
 }
 
 @test "check --gateway-errors: a zero minimum or an empty class list falls back instead of tripping or crashing" {

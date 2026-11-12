@@ -475,7 +475,8 @@ fn note_rows(note: &std::path::Path, keep: impl Fn(bool) -> bool) -> Vec<String>
 type LaneRows = Vec<(Lane, String)>;
 
 /// One project's release `want` across both lanes: the live sheets' rows aimed at it, plus the
-/// rows already frozen into `versions/<want>.md` or archived into `agent/versions/<want>.md`.
+/// rows already frozen into `versions/<want>.md` (or the tag note it froze under, `frozen_note`)
+/// or archived into `agent/versions/<want>.md`.
 /// Each row carries its lane. Empty when nothing on this project is aimed at `want`.
 fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
     let ver = crate::projects::fmt_version(want);
@@ -491,7 +492,7 @@ fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
         let agent_note = crate::projects::agent_note_path(dir, &ver);
         let rows = match lane {
             Lane::Human => {
-                let mut r = frozen_rows(&dir.join("versions").join(format!("{ver}.md")));
+                let mut r = frozen_rows(&crate::projects::frozen_note(dir, &ver));
                 r.extend(note_rows(&agent_note, |sheet| sheet));
                 r
             }
@@ -715,6 +716,7 @@ fn feed_row(
             !words.contains(&t.as_str())
                 && !md::is_version_tag(t)
                 && !md::is_created_tag(t)
+                && !md::is_done_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")

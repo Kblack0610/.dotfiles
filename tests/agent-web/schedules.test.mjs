@@ -34,7 +34,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const schst = run("schst");
 
@@ -43,7 +43,7 @@ const table = {
   q: "", state: "red", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 3 }, { name: "red", n: 2 }, { name: "ok", n: 1 }, { name: "unknown", n: 0 }, { name: "no-purpose", n: 1 }],
   columns: ["kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo"].map(col),
-  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "ci", n: 2, q: "kind:ci" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, on: false, q: "kind:ci" }] }],
 };
 const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
 const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}` });

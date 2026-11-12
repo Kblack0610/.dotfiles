@@ -1,9 +1,9 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | queued (ready) | running | on a PR | needs you | done 24h | drain`). Home leads
+//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). Home leads
 //! with it on both surfaces and the Queue tab shows the same one, from this one builder, so the
 //! hub TUI and agent-web cannot word or count it differently.
 //!
-//! Where each number comes from: the queue's own chips (queued, running, on a PR, needs you) are the live
+//! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
 //! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
@@ -29,7 +29,7 @@ pub struct Target {
 pub struct Chip {
     pub key: &'static str,
     pub label: &'static str,
-    /// The number as worded (`83 (27 ready)`, `6h +41/-52 shrinking`); None reads `-`.
+    /// The number as worded (`27 ready, 56 held`, `6h +41/-52 shrinking`); None reads `-`.
     pub value: Option<String>,
     /// The step is past its age bound.
     pub hot: bool,
@@ -92,14 +92,11 @@ impl Strip {
         let recent = queue
             .and_then(|q| q.stats.as_ref())
             .and_then(|s| s.recent.as_ref());
-        let ready = queue
-            .and_then(|q| q.stats.as_ref())
-            .and_then(|s| s.sitting.as_ref())
-            .map(|s| s.runnable);
-        let queued = n(State::Queued).map(|c| match ready {
-            Some(r) => format!("{c} ({r} ready)"),
-            None => c.to_string(),
-        });
+        // Not started is said as its two states (`vocab::QUEUE`), never as "queued".
+        let up_next = queue
+            .filter(|q| q.list_read())
+            .map(Queue::up_next)
+            .map(|(r, h)| format!("{r} ready, {h} held"));
         Strip {
             chips: vec![
                 chip("inbox", "inbox", None, None),
@@ -112,7 +109,7 @@ impl Strip {
                         state: "",
                     }),
                 ),
-                chip("queued", "queued", queued, queue_to("up next")),
+                chip("queued", "up next", up_next, queue_to("up next")),
                 chip(
                     "running",
                     "running",
@@ -169,11 +166,19 @@ impl Strip {
         for c in &mut self.chips {
             c.hot = hot == Some(c.key);
         }
-        self.bottleneck = p.bottleneck_text();
+        // The step in the strip's own words: the record's `queued` is the up next chip.
+        let chips = &self.chips;
+        self.bottleneck = p.bottleneck_text(|step| {
+            let key = chip_key(step);
+            chips
+                .iter()
+                .find(|c| c.key == key)
+                .map_or(step.to_string(), |c| c.label.to_string())
+        });
         self.as_of = p.as_of_label();
     }
 
-    /// `inbox 4 | board 312 | queued 83 (27 ready) | ...`, the plain words of the chips.
+    /// `inbox 4 | board 312 | up next 27 ready, 56 held | ...`, the plain words of the chips.
     pub fn line(&self) -> String {
         self.chips
             .iter()
@@ -258,7 +263,7 @@ pub struct Node {
     pub to: Option<Target>,
     /// Why nothing can leave it.
     pub stop: Option<String>,
-    /// The detail lines: counts against the bound, then the drain on queued.
+    /// The detail lines: counts against the bound, then the drain on up next.
     pub facts: Vec<String>,
     pub problems_n: usize,
     /// The newest problems, newest first.
@@ -267,7 +272,7 @@ pub struct Node {
     pub elsewhere: Option<String>,
 }
 
-/// The line: every step but the drain, which rides in queued's detail.
+/// The line: every step but the drain, which rides in up next's detail.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Rail {
     pub nodes: Vec<Node>,
@@ -283,13 +288,12 @@ pub struct Rail {
     pub absent: bool,
 }
 
-fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
-    let (count, ready) = match c.value.as_deref() {
-        Some(v) => match v.split_once(" (") {
-            Some((n, r)) => (Some(n.to_string()), Some(r.trim_end_matches(')'))),
-            None => (Some(v.to_string()), None),
-        },
-        None => (None, None),
+/// `up` is the queue's `(ready, held)`: up next's node counts its items, and its chip's split is
+/// the first fact.
+fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>, up: Option<(usize, usize)>) -> Node {
+    let (count, split) = match (c.key, up) {
+        ("queued", Some((r, h))) => (Some((r + h).to_string()), c.value.as_deref()),
+        _ => (c.value.clone(), None),
     };
     let sub = match (c.key, s.and_then(|s| s.age_p90_min), s.and_then(|s| s.wip)) {
         ("done", ..) => "24h".to_string(),
@@ -302,7 +306,7 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
     if c.key != "done" {
         line.extend(count.as_ref().map(|n| format!("{n} items")));
     }
-    line.extend(ready.map(str::to_string));
+    line.extend(split.map(str::to_string));
     if let Some(s) = s {
         line.extend(s.oldest_min.map(|m| format!("oldest {}", age(m))));
         if let (Some(b), Some(r)) = (s.bound, ratio) {
@@ -376,11 +380,12 @@ impl Rail {
         let p = read.and_then(|r| r.as_ref().ok()).and_then(|o| o.as_ref());
         let drain = strip.chips.iter().find(|c| c.key == "drain");
         let drain = drain.and_then(|c| c.value.as_deref());
+        let up = queue.filter(|q| q.list_read()).map(Queue::up_next);
         let mut nodes: Vec<Node> = strip
             .chips
             .iter()
             .filter(|c| c.key != "drain")
-            .map(|c| node(c, step_of(p, c.key), drain))
+            .map(|c| node(c, step_of(p, c.key), drain, up))
             .collect();
         if let Some(q) = queue.filter(|q| q.list_read()) {
             for n in nodes.iter_mut() {
@@ -417,7 +422,7 @@ impl Rail {
 mod tests {
     use super::*;
     use crate::pipeline::tests::snapshot;
-    use crate::queue::{Item, Sitting, Stats, LIST_FAILED};
+    use crate::queue::{Item, Stats, LIST_FAILED};
 
     fn pipe(ratio: f64) -> Pipeline {
         snapshot(&[
@@ -434,19 +439,19 @@ mod tests {
             state,
             ..Item::default()
         };
+        let held = Item {
+            hold: Some("after b".into()),
+            ..item("c", State::Queued)
+        };
         Queue {
             items: vec![
                 item("a", State::Running),
                 item("b", State::Queued),
-                item("c", State::Queued),
+                held,
                 item("d", State::Waiting),
                 item("e", State::Review),
             ],
             stats: Some(Stats {
-                sitting: Some(Sitting {
-                    runnable: 1,
-                    ..Sitting::default()
-                }),
                 recent: Some(Recent {
                     added_6h: 41,
                     done_6h: 52,
@@ -465,7 +470,7 @@ mod tests {
         st.set_pipeline(&Ok(Some(pipe(0.5))));
         assert_eq!(
             st.line(),
-            "inbox 4 | board 312 | queued 2 (1 ready) | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
+            "inbox 4 | board 312 | up next 1 ready, 1 held | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
         );
         let to: Vec<_> = st
             .chips
@@ -500,7 +505,8 @@ mod tests {
         );
         assert_eq!(
             st.bottleneck.as_deref(),
-            Some("bottleneck: waiting, age p90 9h (bound 4h)")
+            Some("bottleneck: needs you, age p90 9h (bound 4h)"),
+            "the record's step is named as its chip"
         );
     }
 
@@ -509,7 +515,7 @@ mod tests {
         let mut st = Strip::build(None);
         assert_eq!(
             st.line(),
-            "inbox - | board - | queued - | running - | on a PR - | needs you - | done 24h - | drain -"
+            "inbox - | board - | up next - | running - | on a PR - | needs you - | done 24h - | drain -"
         );
         // No snapshot: the queue's chips stand and inbox and board stay `-`.
         let mut q = Strip::build(Some(&queue()));
@@ -517,19 +523,20 @@ mod tests {
         assert!(q.absent);
         assert!(q
             .line()
-            .starts_with("inbox - | board - | queued 2 (1 ready)"));
+            .starts_with("inbox - | board - | up next 1 ready, 1 held"));
         // A failed read is kept for the surface to show, and is not a zero.
         st.set_pipeline(&Err("no prom".into()));
         assert_eq!(st.error.as_deref(), Some("no prom"));
         assert!(st.chips.iter().all(|c| c.value.is_none() && !c.hot));
-        // An agent-queue with no `recent` or `sitting` says so with `-`, and a bare count.
+        // An agent-queue with no `recent` says so with `-`; up next counts the list itself.
         let mut old = queue();
         old.stats = Some(Stats::default());
         let l = Strip::build(Some(&old)).line();
         assert!(
-            l.contains("queued 2 |") && l.ends_with("done 24h - | drain -"),
+            l.contains("up next 1 ready, 1 held |") && l.ends_with("done 24h - | drain -"),
             "{l}"
         );
+        assert!(!l.contains("queued"), "the strip never says queued: {l}");
     }
 
     fn stuck() -> Pipeline {
@@ -580,11 +587,12 @@ mod tests {
         assert_eq!(
             q.facts,
             [
-                "2 items, 1 ready, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
+                "2 items, 1 ready, 1 held, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
                 "drain 6h +41/-52 shrinking"
             ]
         );
         assert_eq!(keys[r.worst], "queued", "a stopped step starts open");
+        assert_eq!(q.label, "up next");
         assert!(!r.stale);
         assert_eq!(node_at(&r, "done").sub, "24h");
         assert_eq!(node_at(&r, "done").count.as_deref(), Some("280"));

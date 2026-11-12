@@ -2,8 +2,9 @@
 # questions.sh - every question an agent is waiting on you for, answered from one screen
 # (Prefix y): the list, the selected card beside it (ctrl-/ moves it under, then hides it),
 # and the answer right there: a number then enter sends that option, t types an answer,
-# d then enter drops it, g goes to the asking session (reopening it when it has ended). Data
-# and delivery are agent-ask's (list, card, answer, cancel, target).
+# d then enter drops it, p then enter parks it until its revisit date (or puts a parked one back),
+# g goes to the asking session (reopening it when it has ended). Data and delivery are
+# agent-ask's (list, card, answer, cancel, park, target).
 #
 # Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
 # in its own terminal (a plan to approve, an AskUserQuestion, a permission): agent-ask never
@@ -18,9 +19,11 @@
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
 #                     then the live asks oldest first, then the sessions with a dialog open
-#                     (id @<target>), then the dead asks oldest first
-#   count             how many rows rows prints, one number: the pending asks plus the open dialogs.
-#                     The agents status bar's !N, so the bar and this panel never disagree
+#                     (id @<target>), then the dead asks oldest first, then the parked asks
+#                     soonest back first
+#   count             how many rows rows prints less the parked ones, one number: the pending asks
+#                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
+#                     never disagree
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
 #   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
@@ -30,6 +33,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 # project_slug: the short project name a row has room for.
 . "${SELF%/*}/../../../.config/shared-hooks/project-name.sh" || exit 1
+# now_utc: the clock a parked card's date is read against.
+. "${SELF%/*}/../../lib/fmt.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
@@ -37,13 +42,15 @@ FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/flee
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
 # picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
-QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
+QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
 # A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
 # session is (its registry title): short enough for the list column beside the card (a third of
 # the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
 # ask whose session has ended, none an ask no session filed (intake, headless), as its card says
-# "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts. Where an answer goes is on the card
+# "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts.
+# park is an ask parked until a revisit date (agent-ask park), shown last with that date in the
+# age column, so it is in reach but not in the count. Where an answer goes is on the card
 # (agent-ask answer_route), not the row: it reads the queue, 1.8 s, too slow for the open path
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
@@ -75,7 +82,7 @@ prompt_list() {
 
 cmd_rows() {
   local list prompts here live epochs names name slugs="" titles
-  list="$("$QUESTIONS_ASK" list --all --pending)"
+  list="$("$QUESTIONS_ASK" list --all --open)"
   prompts="$(prompt_list)"
   [ -n "$list$prompts" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
@@ -85,21 +92,25 @@ cmd_rows() {
   # ages go blank rather than shift onto the wrong rows.
   epochs="$(cut -f12 <<<"$list" | date -f - +%s 2>/dev/null)" || epochs=""
   [ "$(grep -c . <<<"$epochs")" = "$(grep -c . <<<"$list")" ] || epochs="$(sed 's/.*//' <<<"$list")"
+  # The same for parked_until (filled only on a parked ask), so a parked row sorts and reads in
+  # seconds like the rest. An unparked row reads @0, so every row keeps its line.
+  backs="$(awk -F'\t' '{ print $27 == "" ? "@0" : $27 }' <<<"$list" | date -f - +%s 2>/dev/null)" || backs=""
+  [ "$(grep -c . <<<"$backs")" = "$(grep -c . <<<"$list")" ] || backs="$(sed 's/.*//' <<<"$list")"
   # One slug per project named (a row with no project goes by its session's name; a prompt
   # row always does).
   names="$({ awk -F'\t' 'NF { n = $2; if (n == "") { n = $13; sub(/-agent-[0-9]+$/, "", n) } print n }' <<<"$list"
     awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
-  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs"); } |
+  { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
-      function age(e,   d) {
-        if (e == "") return ""
-        d = now - e; if (d < 0) d = 0
+      function span(d) {
+        if (d < 0) d = 0
         if (d < 3600) return int(d / 60) "m"
         if (d < 86400) return int(d / 3600) "h"
         return int(d / 86400) "d"
       }
+      function age(e) { return e == "" ? "" : span(now - e) }
       function slug(n,   i, r) {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
@@ -132,8 +143,12 @@ cmd_rows() {
         if (match($13, /agent-[0-9]+$/)) who = who ":" substr($13, RSTART + 6)
         W[NR] = who; if (length(who) > w) w = length(who)
         M[NR] = ($16 == "") ? 1 : (index(live, " " $16 " ") > 0) ? 2 : 0
-        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $NF, $1)
-        A[NR] = age($NF); Q[NR] = $6
+        # The last two fields are the created and the parked_until epochs pasted on above.
+        L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : M[NR] ? 1 : 3, $(NF - 1), $1)
+        A[NR] = age($(NF - 1)); Q[NR] = $6
+        # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
+        # first, and its age column says how long until it comes back.
+        if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("4\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
         S[NR] = (T[$16] != "") ? faint T[$16] off : ""
       }
       # The name column is as wide as its longest name, up to 12. The second line starts under
@@ -141,7 +156,7 @@ cmd_rows() {
       END {
         if (w > 12) w = 12
         for (i in W) {
-          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : faint "dead" off,
+          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : M[i] == 3 ? faint "park" off : faint "dead" off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
           if (S[i] != "") printf "\037%*s%s", w + 11, "", S[i]
           print ""
@@ -162,13 +177,14 @@ cmd_count() {
   } | grep -c .)" || true
   echo $((${asks:-0} + ${prompts:-0}))
 }
-# rows_count: "<asks> <plans> <questions> <prompts>" in what cmd_rows printed (a row is
-# NUL-ended; a dialog's id starts with @ and its first line names its kind).
+# rows_count: "<asks> <plans> <questions> <prompts> <parked>" in what cmd_rows printed (a row is
+# NUL-ended; a dialog's id starts with @ and its first line names its kind; a parked ask's tag is park).
 rows_count() {
-  tr '\n\000' '\037\n' | awk '{ split($0, L, "\037") }
+  tr '\n\000' '\037\n' | awk '{ split($0, L, "\037"); t = L[1]; gsub(/\033\[[0-9;]*m/, "", t) }
+    !/^@/ && t ~ /^[^\t]*\tpark / { k++; next }
     !/^@/ { a++; next } L[1] ~ /plan waiting for approval/ { p++; next }
     L[1] ~ /question waiting for an answer/ { q++; next } { o++ }
-    END { print a + 0, p + 0, q + 0, o + 0 }'
+    END { print a + 0, p + 0, q + 0, o + 0, k + 0 }'
 }
 
 # One handler for every answer key. It prints fzf actions; the state file carries an armed
@@ -206,11 +222,12 @@ fit() {
 # ask_load <id>: the ask's options, question, status and who asked, from one `agent-ask show`.
 ask_load() {
   local line k project="" session=""
-  A_OPTS=() A_WHO="" A_Q="" A_STATUS=""
+  A_OPTS=() A_WHO="" A_Q="" A_STATUS="" A_PARKED=""
   while IFS= read -r line; do
     k="${line%%: *}"
     case "$k" in
     status) A_STATUS="${line#*: }" ;;
+    parked_until) [[ "${line#*: }" > "$(now_utc)" ]] && A_PARKED="${line#*: }" ;;
     options) IFS='|' read -r -a A_OPTS <<<"${line#*: }" ;;
     question) A_Q="${line#*: }" ;;
     project) project="${line#*: }" ;;
@@ -229,19 +246,19 @@ after() {
   st_write ""
   printf 'hide-input+change-prompt~~+reload(QUESTIONS_ANSWERED=%q %q rows)+change-header~%s~+' \
     "${QUESTIONS_ANSWERED:-}" "$SELF" "$(waiting $n)"
-  if [ "$n" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
+  if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
 header_count() { printf 'change-header~%s~+' "$(waiting $(cmd_rows | rows_count))"; }
-# waiting <asks> <plans> <questions> <prompts>: the header, "3 asks . 11 plans . 2 questions
-# waiting", a kind with none left out.
+# waiting <asks> <plans> <questions> <prompts> [<parked>]: the header, "3 asks . 11 plans . 2
+# questions waiting . 5 parked", a kind with none left out.
 waiting() {
   local n i out="" kinds=(ask plan question prompt) counts=("${1:-0}" "${2:-0}" "${3:-0}" "${4:-0}")
   for i in 0 1 2 3; do
     n="${counts[i]}"
     ((n > 0)) && out+="${out:+ . }$n ${kinds[i]}$( ((n == 1)) || echo s)"
   done
-  echo "${out:-no questions} waiting"
+  echo "${out:-no questions} waiting$( ((${5:-0} > 0)) && echo " . $5 parked")"
 }
 
 # prompt_card <target>: the card for a dialog agent-panel cannot read (a permission prompt):
@@ -277,6 +294,7 @@ dlg_load() {
 dialog_key() {
   local k="$1" t="$2" i at=-1
   [ "$k" = d ] && { footer "a dialog is answered, not dropped . g goes there"; return 0; }
+  [ "$k" = p ] && { footer "a dialog is answered, not parked . g goes there"; return 0; }
   dlg_load "$t" || { footer "no dialog to answer here . g goes there"; return 0; }
   for i in "${!D_KEYS[@]}"; do
     if [ "$k" = t ]; then [ "${D_FREE[i]}" = 1 ] && { at=$i; break; }
@@ -342,7 +360,7 @@ cmd_key() {
       printf 'execute-silent(agent-panel jump %s)+abort' "$(printf '%q' "$to")"
     else footer "${to:-no session to go to}"; fi
     ;;
-  [1-9] | d | t)
+  [1-9] | d | p | t)
     if [ "$mode" = typing ]; then printf 'put(%s)' "$k"; return 0; fi
     [ -n "$id" ] || return 0
     if [[ "$id" == @* ]]; then dialog_key "$k" "${id#@}"; return 0; fi
@@ -365,6 +383,15 @@ cmd_key() {
     d)
       st_write drop - "$id"
       footer "drop $id (nobody gets an answer)? enter drops . esc cancels"
+      ;;
+    p)
+      if [ -n "$A_PARKED" ]; then
+        st_write unpark - "$id"
+        footer "put $id back on the list now? enter unparks . esc cancels"
+      else
+        st_write park - "$id"
+        footer "park $id until its revisit date (by its item's priority)? enter parks . esc cancels"
+      fi
       ;;
     *)
       if [ "$k" -gt "${#A_OPTS[@]}" ]; then
@@ -396,7 +423,11 @@ cmd_key() {
       if err="$("$QUESTIONS_ASK" cancel "$sid" dropped by the human 2>&1 >/dev/null)"; then after "dropped $sid"
       else st_write ""; footer "not dropped: ${err:-agent-ask cancel failed}"; fi
       ;;
-    *) footer "press a number, t or d first . $QUESTIONS_KEYS" ;;
+    park | unpark)
+      if err="$("$QUESTIONS_ASK" "$mode" "$sid" 2>&1)"; then after "${err:-${mode}ed $sid}"
+      else st_write ""; footer "not ${mode}ed: ${err:-agent-ask $mode failed}"; fi
+      ;;
+    *) footer "press a number, t, d or p first . $QUESTIONS_KEYS" ;;
     esac
     ;;
   *) panel_die "unknown key: $k" ;;
@@ -416,7 +447,7 @@ cmd_pick() {
   export QUESTIONS_STATE
   trap 'rm -f "$QUESTIONS_STATE" "$rows"' EXIT
   cmd_rows >"$rows"
-  for k in 1 2 3 4 5 6 7 8 9 d t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
+  for k in 1 2 3 4 5 6 7 8 9 d p t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
 
   # --no-input --disabled: no search box (a handful of rows), which frees the digit keys;
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row

@@ -5,5 +5,10 @@
 .local/src/agent-panel .local/bin/claude-recall
 .local/src/agent-panel .local/src/tmux/
 .local/src/agent-web   .local/src/web-kit/
+.local/src/agent-web   tests/agent-web/phone/
 .local/src/hub-core    .config/comms-lint/
 .local/src/hub-core    .local/bin/comms-lint
+.local/src/project-map tests/fixtures/project-names.json
+.local/src/project-map tests/fixtures/project-names.tsv
+.local/src/project-map tests/fixtures/project-visibility.json
+.local/src/project-map tests/fixtures/project-visibility.tsv

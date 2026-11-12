@@ -19,7 +19,7 @@ acct() {
     rows=$(jq -c --arg n "$name" --arg r "$reasons" --arg d "$dir" --arg w "$why" --argjson k "$rank" '
       ($r | split(",") | map(select(. != "ok"))) as $no
       | {pace: "1 point over its weekly pace", reserve: "90% of its week used, inside the last 15% kept for the human",
-         five_hour: "its 5h window at 90%", committed: "its 2 live sessions use the rest of its week before the reset",
+         five_hour: "its 5h window at 90%", committed: "its 2 working sessions use the rest of its week before the reset",
          capped: "out of its week", unread: "its usage cannot be read"} as $stock
       | . + [{name: $n, dir: $d, state: (if $no == ["unread"] then "unread" else "ok" end), rank: $k,
               room: {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no, capped: ($no | index("capped") != null),
@@ -93,6 +93,9 @@ setup() {
   stub agent-hold 'exit 0'
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub fleet-presence 'echo "away 45 tmux"'
+  # A fresh fleet state document with no session in it: the pace target counts none unless a test adds them.
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  fleet_state 0
   stub fleet-bench 'exit 0'
   # Since boot the machine was 98% idle; the window is what the gate reads.
   export DISPATCH_PROC_STAT="$SANDBOX/stat"
@@ -245,7 +248,7 @@ T='#worker/fleet #tier/1'
 line_of() {
   local text
   text=$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2" 2>/dev/null)
-  [ -z "$text" ] || printf '%s' "$text" | sig
+  [ -z "$text" ] || row_sig "$text"
 }
 
 # verdict <project> <lane> <key> <verdict> [size] [tier] [area] -- made under the current policy for the row's current text
@@ -375,6 +378,16 @@ held_game_app_row() {
   findings "$(finding starved pool:unity '["game"]')"
 }
 
+# fleet_state <live sessions> [<age in minutes>] -- the fleet state document fleet-sessions writes,
+# holding that many live sessions, written that long ago. On top sit a parked, a finished and the
+# shepherd's session, which the pace target never counts.
+fleet_state() {
+  jq -cn --argjson n "$1" --argjson at "$(( $(date +%s) - ${2:-0} * 60 ))" \
+    '{generated_epoch: $at, vocab: {finished: ["DONE", "LANDED"]},
+      sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}]
+        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
+}
+
 # outcome: what the pass told fleet-liveness, through the real agent-proof.sh the sandbox links.
 # agentctl calls a run that says nothing STALLED.
 outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev/null; }
@@ -382,7 +395,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 # 5 of 6 run units held by two heavy and one light live session, as the tests around it do.
 five_of_six_units() {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=6
+  export DISPATCH_TARGET_AWAY=6
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
   sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
@@ -652,6 +665,9 @@ restore_setup() {
 # src_shut <source> <why> -- claude-acct room --source refuses <source> with <why>
 src_shut() { printf '%s\n' "$2" > "$NOTES_FIXTURE/src.$1"; }
 
+# harness_set [jq args] <filter> -- edit the harness map in place.
+harness_set() { jq "$@" "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"; }
+
 # A harness map whose harnesses each name the source they spend; claude-acct says every source has room.
 harness_ready() {
   game_ready
@@ -673,6 +689,8 @@ harness_ready() {
       {kind: "secrets", match: "\\b(secrets?|rbw|sops)\\b", why: "secrets"},
       {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
       {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
+      {kind: "host-ops", match: "\\b(drain(s|ed|ing)?\\b.*\\b(runners?|hosts?)|(runners?|hosts?)\\b.*\\bdrain(s|ed|ing)?|(de|un)-?regist(er|ers|ered|ering|ration)\\b.*\\brunners?|runners?\\b.*\\b(de|un)-?regist(er|ers|ered|ering|ration)|runners? (registration|token)s?|regist(er|ers|ered|ering|ration) (of )?(the |a |its |their )?(self-hosted |org |github )?runners?|systemctl( +-[^ ]+)* +(stop|disable|mask|kill|restart|reboot|poweroff|halt))\\b", why: "live host ops"},
+      {mode: "fleet-worker", why: "no match, so never read by route"},
       {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -699,6 +717,21 @@ JSON
 }
 # launch_settings -> the JSON the last launch line passed to --settings
 launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/cmds.log" | sed -E 's/.* --settings (.*) --permission-mode.*/\1/')"; }
+
+# harness_sandboxed <harness> -- the harness names lane sandbox "pub", held by srt (a stub; the
+# start never runs it, the pane would). Its config exists, since the launch names it by its target.
+harness_sandboxed() {
+  export AGENTCTL_SANDBOX_DIR="$SANDBOX/sbx" SANDBOX_SRT_NEEDS=srt
+  mkdir -p "$AGENTCTL_SANDBOX_DIR"
+  printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/", "/tmp"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' \
+    > "$AGENTCTL_SANDBOX_DIR/pub.json"
+  stub srt 'exit 0'
+  harness_set --arg h "$1" '.harnesses[$h].sandbox = "pub"'
+  touch "$(jq -r --arg h "$1" '.harnesses[$h].config' "$DISPATCH_HARNESSES")"
+}
+
+# canary_item <slug> <canary id> -- the queued item is a fleet-bench canary that names its task.
+canary_item() { agent-queue set "$1" tags=canary canary="$2" >/dev/null; }
 
 # --- claude-cloud: a #cloud-ok item runs as a Claude cloud session ---------------------------
 
@@ -737,8 +770,7 @@ codex_ran() {
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
-  jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
-    "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
   acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   srcs
   sonnet_lane

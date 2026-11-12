@@ -175,11 +175,25 @@ so_transcript_metrics() {
   ' < "$1"
 }
 
+# so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
+# name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
+# an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
+# every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
+# night (qmk_firmware, bnb-agents, binks-agent-orchestrator). With no registry to read
+# (project_known rc 2, or a resolver lib without it) the resolver's name stands.
+so_project_of() {
+  local p rc=0
+  p="$(resolve_project_name "$1")"
+  case "$p" in _*) ;; *) project_known "$p" 2>/dev/null || rc=$?; [ "$rc" -ne 1 ] || p=_unscoped ;; esac
+  printf '%s\n' "$p"
+}
+
 # so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
 # subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
-# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID:
+# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID: `litellm`
+# and `go` reach the gateway (GATEWAY_PROVIDERS in agent-usage-burn.py; a new one goes there too), and
 # `lazer` went to Lazer direct, which the gateway's lazer-pool never sees. No DB is no rows; a schema
 # it cannot read is rc 1.
 so_opencode_rows() {
@@ -199,7 +213,7 @@ so_opencode_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/oc.projects.json" || return 1
   jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
@@ -246,7 +260,7 @@ so_codex_rows() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/cx.projects.json" || return 1
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
@@ -286,31 +300,10 @@ so_lesson_sigs() {
     | group_by(.sig) | map(min_by(.since))'
 }
 
-# so_forgejo_pr_list HOST/OWNER/REPO WORKDIR LIMIT - the repo's newest LIMIT PRs from its Forgejo API,
-# in the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape, so a reader of
-# gh's list takes them unchanged. The token is rbw entry SO_FORGEJO_ENTRY (one with repo scope),
-# read once per process, and goes in on stdin (-K -), never argv, and only to a host so_forgejo_hosts
-# lists. SO_FORGEJO_ERR says why on a failure: rc 1 = no token or a page failed (worth a retry),
+# SO_FORGEJO_ERR says why a Forgejo read failed: rc 1 = no token or the read failed (worth a retry),
 # rc 2 = the host is not listed (never called). Seams: SO_CURL SO_RBW.
 SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
-so_forgejo_pr_list() {
-  local repo="$1" work="$2" limit="$3" page=1 got
-  so_forgejo_auth "$repo" || return
-  rm -f "$work"/fj.page.*
-  while :; do
-    so_forgejo_get "$repo" "pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" \
-        -o "$work/fj.page.$(printf %04d "$page")" 2>"$work/fj.err" &&
-      got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
-      { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
-    [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
-    page=$((page + 1))
-  done
-  jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
-                     state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
-                     mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
-}
-
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
 # state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
 # branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
@@ -324,32 +317,58 @@ so_forgejo_pr() {
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
 }
 
-# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state}],
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, context}],
 # so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
-# failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
+# failure, and warning is a pass (Forgejo's own combined state does not fail on it). After so_forgejo_auth.
 so_forgejo_checks() {
   local st
   st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
-  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]' <<<"$st"
+  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
 }
 
-# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts
-# lists (home-config's is `forgejo`, its origin the GitHub mirror); rc 1 when none is.
-so_forgejo_repo() {
-  local name url host hosts
+# so_forgejo_remote CHECKOUT [REMOTE...] - "<remote> HOST/OWNER/REPO" of the first REMOTE (default:
+# each of the checkout's remotes) whose URL is on a host so_forgejo_hosts lists; rc 1 when none is.
+so_forgejo_remote() {
+  local dir="$1" name url host hosts
+  shift
   hosts=" $(so_forgejo_hosts) "
-  for name in $(git -C "$1" remote 2>/dev/null); do
-    url="$(git -C "$1" remote get-url "$name" 2>/dev/null)" || continue
+  [ -n "${hosts// /}" ] || return 1
+  # shellcheck disable=SC2046 # one remote name a word
+  [ $# -gt 0 ] || set -- $(git -C "$dir" remote 2>/dev/null)
+  for name; do
+    url="$(git -C "$dir" remote get-url "$name" 2>/dev/null)" || continue
     host="$(url_host "$url")"
     [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
-    printf '%s/%s\n' "$host" "$(url_repo "$url")"
+    printf '%s %s/%s\n' "$name" "$host" "$(url_repo "$url")"
     return 0
   done
   return 1
 }
 
+# so_forge_remote CHECKOUT - the forge CHECKOUT lands on, the one rule agent-land and `project-map
+# forges` share: "<remote> HOST/OWNER/REPO" when it is Forgejo (its checkout commits the mirror
+# marker, forge_canonical, or its origin is on a host so_forgejo_hosts lists). rc 1: GitHub (or any
+# other origin). rc 2: Forgejo-canonical, but no remote is on a listed host.
+so_forge_remote() {
+  local top
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || top=''
+  if forge_canonical "$top"; then
+    so_forgejo_remote "$1" || return 2
+  else
+    so_forgejo_remote "$1" origin || return 1
+  fi
+}
+
+# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of so_forgejo_remote (home-config's remote is `forgejo`,
+# its origin the GitHub mirror); rc 1 when no remote is on a listed host.
+so_forgejo_repo() {
+  local r
+  r="$(so_forgejo_remote "$1")" || return 1
+  printf '%s\n' "${r#* }"
+}
+
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
-# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR: rc as so_forgejo_pr_list.
+# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
 so_forgejo_auth() {
   local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
   case " $(so_forgejo_hosts) " in
@@ -362,11 +381,12 @@ so_forgejo_auth() {
   fi
 }
 
-# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API read, after so_forgejo_auth
+# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API call, after so_forgejo_auth; on
+# an HTTP error it fails and still prints the body, which carries Forgejo's reason (.message).
 so_forgejo_get() {
   local repo="$1" path="$2"; shift 2
   printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-    "${SO_CURL:-curl}" -sSf -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
+    "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
@@ -378,36 +398,24 @@ so_forgejo_hosts() {
     printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
 }
 
-# so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
-# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are
-# the claude.ai/code session ids the body names, the link Claude Code's attribution puts in every PR
-# it opens (so_session_links reads the same id from the session's side).
+# so_pr_index FINAL_DAYS - stdin: the PR store's rows for ONE repo (`schedules-sync prs`). stdout:
+# {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are the claude.ai/code session
+# ids the body names, the link Claude Code's attribution puts in every PR it opens (so_session_links
+# reads the same id from the session's side); the store parses them, and what a PR reverts, once.
 # reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
-# this PR's merge commit. `#N\b` so #5 never matches #50; "revert-safe" is not a revert
-# word, and "reverted in #N" names the reverter (a re-apply PR says it). A revert pushed
-# without a PR is not seen.
+# this PR's merge commit (schedules-sync revert_of). A revert pushed without a PR is not seen.
 so_pr_index() {
-  # Each revert is parsed once into what it names, so matching a PR is comparisons only:
-  # regexes per (PR, revert) pair took 85 s over 561 PRs.
   jq -c --argjson days "$1" '
-    def revert_re: "(?i)\\brevert(s|ed|ing)?(?![-\\w])(?!\\s+(in|by)\\b)";
-    [ .[] | select(.state == "MERGED")
-      | ((.title // "") + "\n" + (.body // "")) as $t
-      | select($t | test(revert_re))
-      | { number, at: (.mergedAt | fromdateiso8601),
-          title: ((.title // "") | capture("^Revert \"(?<t>.*)\"$").t // null),
-          refs: [ $t | split("\n")[] | capture(revert_re + "(?<rest>.*)").rest
-                  | scan("#([0-9]+)\\b")[0] | tonumber ],
-          shas: [ $t | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0] ] } ] as $rev
+    [ .[] | select(.state == "MERGED" and .revert != null and .merged_at != null)
+      | {number, at: (.merged_at | fromdateiso8601), title: .revert.title, refs: .revert.prs, shas: .revert.shas} ] as $rev
     | map(. as $p
         | { key: ($p.number | tostring),
-            value: { state: $p.state, merged_at: $p.mergedAt, merge_oid: ($p.mergeCommit.oid // null),
-                     links: ([($p.body // "") | scan("claude\\.ai/code/(session_[A-Za-z0-9]+)")[0]] | unique),
-                     reverted: ( $p.state == "MERGED" and $p.mergedAt != null
-                       and (($p.mergedAt | fromdateiso8601) as $at
-                            | ($p.mergeCommit.oid // "") as $oid
+            value: { state: $p.state, merged_at: $p.merged_at, merge_oid: $p.merge_sha, links: ($p.links // []),
+                     reverted: ( $p.state == "MERGED" and $p.merged_at != null
+                       and (($p.merged_at | fromdateiso8601) as $at
+                            | ($p.merge_sha // "") as $oid
                             | any($rev[];
                                 .number != $p.number
                                 and (.at - $at) >= 0 and (.at - $at) <= $days * 86400
