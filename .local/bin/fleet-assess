@@ -5,6 +5,7 @@
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (fleet-dispatch's load gate)
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe)
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
+#   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
 #   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
@@ -280,6 +281,9 @@ RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
 LEDGER_WINDOW_SECS=86400
 LEDGER_RESULTS='pass fail timeout killed flood error'
+GATE_WINDOW_SECS=7200            # the gate line's window: recent enough to say what the gate is doing now
+GATE_REPEAT_MIN=5                # runs of one branch in that window that earn it a name on the line
+WORKTREE_ROOT="${WORKTREE_ROOT:-$HOME/.worktrees}"
 
 # lock_ids <file...> -> one "<maj:min:inode>" per file, as /proc/locks names it (hex device).
 lock_ids() {
@@ -334,12 +338,23 @@ unslotted_editors() {
   echo "$n"
 }
 
-# ledger_stats -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of run time,
-# over runs that ended in the last LEDGER_WINDOW_SECS.
+# slot_counts -> "<open> <room> <busy> <queued> <unslotted>" for the textfile and the gate line;
+# busy includes the editors running outside any slot. Fails when slots.sh never ran here (no
+# capacity file), so there is no slot series and no gate line rather than a guessed count.
+slot_counts() {
+  local open room busy queued holders unslotted
+  read -r open room 2>/dev/null < "$SLOT_DIR/capacity" || return 1
+  read -r busy queued holders < <(slot_usage)
+  unslotted="$(unslotted_editors "$holders")"
+  echo "$open $room $((busy + unslotted)) $queued $unslotted"
+}
+
+# ledger_stats [<window s>] -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of
+# run time, over runs that ended in the last LEDGER_WINDOW_SECS (or the window given).
 ledger_stats() {
   # No ledger yet (no run since slots.sh began writing one) reads as no runs, not a failure.
   local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
-  awk -F'\t' -v since="$(( $(date +%s) - LEDGER_WINDOW_SECS ))" -v results="$LEDGER_RESULTS" '
+  awk -F'\t' -v since="$(( $(date +%s) - ${1:-$LEDGER_WINDOW_SECS} ))" -v results="$LEDGER_RESULTS" '
     BEGIN { split(results, rs, " "); for (i in rs) c[rs[i]] = 0 }
     $1 >= since && ($3 in c) { c[$3]++; d[++n] = $1 - $2 }
     END {
@@ -371,6 +386,55 @@ ledger_hours() {
     }' "$f" | sort
 }
 
+# ledger_repeats -> "<runs> <worktree> <branch>" for each branch with GATE_REPEAT_MIN or more runs
+# that ended in the last GATE_WINDOW_SECS, most runs first: a branch the gate keeps re-running.
+ledger_repeats() {
+  local f="$RUN_LEDGER"; [ -r "$f" ] || f=/dev/null
+  awk -F'\t' -v since="$(( $(date +%s) - GATE_WINDOW_SECS ))" -v min="$GATE_REPEAT_MIN" -v results="$LEDGER_RESULTS" '
+    BEGIN { split(results, rs, " "); for (i in rs) known[rs[i]] = 1 }
+    $1 >= since && ($3 in known) && $6 != "" && $6 != "-" && $6 != "HEAD" { n[$5 "\t" $6]++ }
+    END { for (k in n) if (n[k] >= min) { split(k, p, "\t"); print n[k], p[1], p[2] } }' "$f" | sort -rn
+}
+
+# branch_merged <worktree> <branch> -> 0 when the branch adds nothing to origin's default branch:
+# its merge into it leaves that tree unchanged, which holds for a squash merge too (the tip of a
+# squashed branch is never an ancestor). A worktree that is gone was reaped after its landing, and
+# a branch the worktree no longer has cannot be judged: both read merged, so the line stays quiet
+# rather than naming a branch it cannot check. The ref is the last fetched origin, never a fetch.
+branch_merged() {
+  local dir="$WORKTREE_ROOT/$1" base tree
+  [ -d "$dir" ] || return 0
+  base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+  git -C "$dir" rev-parse -q --verify "$2^{commit}" >/dev/null 2>&1 || return 0
+  git -C "$dir" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 0
+  tree="$(git -C "$dir" merge-tree --write-tree "$base" "$2" 2>/dev/null | head -n 1)" || return 1
+  [ "$tree" = "$(git -C "$dir" rev-parse "$base^{tree}")" ]
+}
+
+# gate_line -> one line: slots busy and queued, the last GATE_WINDOW_SECS of results, and the
+# branches the gate re-ran GATE_REPEAT_MIN or more times with no merge. Nothing when slots.sh
+# never ran here (no capacity file), so a machine with no gate prints no gate line.
+gate_line() {
+  local open room busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r open room busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$open slots busy (burst room $room), $queued queued, $((GATE_WINDOW_SECS / 3600))h:"
+  stats="$(ledger_stats "$GATE_WINDOW_SECS")"
+  while read -r res n; do
+    case "$res" in
+      p[0-9]*|"") ;;
+      pass|fail) line="$line $n $res," ;;
+      *) [ "$n" = 0 ] || rest="$rest $n $res," ;;
+    esac
+  done <<< "$stats"
+  line="${line%,}${rest:+,}${rest%,}"
+  while read -r runs wt br; do
+    [ -n "$runs" ] || continue
+    branch_merged "$wt" "$br" || branches="$branches${branches:+, }$br x$runs"
+  done < <(ledger_repeats)
+  [ -z "$branches" ] || line="$line; $GATE_REPEAT_MIN+ runs, not merged: $branches"
+  echo "$line"
+}
+
 # agent_count -> claude processes whose parent is not claude: one per session.
 agent_count() {
   local p n=0
@@ -385,7 +449,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued holders unslotted stats hours
+  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued unslotted stats hours
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -403,11 +467,7 @@ write_textfile() {
     echo '# HELP fleet_agent_sessions Claude agent sessions running on this machine.'
     echo '# TYPE fleet_agent_sessions gauge'
     echo "fleet_agent_sessions $(agent_count)"
-    # No capacity file (slots.sh never ran here) means no slot series, never a guessed count.
-    if read -r open room 2>/dev/null < "$SLOT_DIR/capacity"; then
-      read -r busy queued holders < <(slot_usage)
-      unslotted="$(unslotted_editors "$holders")"
-      busy=$((busy + unslotted))
+    if read -r open room busy queued unslotted < <(slot_counts); then
       echo '# HELP fleet_local_slots Unity run slots on this machine (playground slots.sh): open always, burst only with room.'
       echo '# TYPE fleet_local_slots gauge'
       echo "fleet_local_slots{kind=\"open\"} $open"
@@ -452,6 +512,10 @@ main() {
     gh_budget
     return
   fi
+  if [ "${1:-}" = --gate ]; then
+    gate_line
+    return
+  fi
   local load cores tctl mem stall held=0 verdict blocked
   load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"; stall="$(read_mem_stall)"
   holds_set && held=1
@@ -468,6 +532,7 @@ main() {
 
   echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free (stall ${stall}%, swap $(read_swap_used_gb)G used), $(d_sample | d_threads) threads blocked on I/O"
   gh_budget
+  gate_line
   if [ "$held" = 1 ]; then
     echo "holds:"
     agent-hold list 2>/dev/null | awk -F'\t' '{ printf "  %s since %s by %s: %s\n", $1, $2, $3, $4 }'
