@@ -1377,15 +1377,19 @@ impl Candidates {
         self.rows.len() - self.shown().len()
     }
 
-    /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts.
+    /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,
+    /// a row counted once per reason as the facet counts it, without scanning every other facet.
     pub fn reasons(&self) -> Vec<(String, usize)> {
-        let facets = crate::table::View::default().facets(&self.rows);
-        let mut by: Vec<(String, usize)> = facets
-            .into_iter()
-            .filter(|f| f.key == "blocked")
-            .flat_map(|f| f.values)
-            .map(|v| (v.value, v.n))
-            .collect();
+        let mut counts = BTreeMap::<String, usize>::new();
+        for r in &self.rows {
+            let mut seen = std::collections::BTreeSet::new();
+            for x in r.reasons() {
+                if !x.is_empty() && seen.insert(x.clone()) {
+                    *counts.entry(x).or_default() += 1;
+                }
+            }
+        }
+        let mut by: Vec<(String, usize)> = counts.into_iter().collect();
         by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         by
     }
@@ -2002,6 +2006,19 @@ mod tests {
             "a judge's reason is one chip"
         );
         assert_eq!(c.reasons().len(), 4);
+        let mut facet: Vec<(String, usize)> = crate::table::View::default()
+            .facets(&c.rows)
+            .into_iter()
+            .filter(|f| f.key == "blocked")
+            .flat_map(|f| f.values)
+            .map(|v| (v.value, v.n))
+            .collect();
+        facet.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert_eq!(
+            c.reasons(),
+            facet,
+            "the TUI's chips count what the blocked facet counts"
+        );
         assert_eq!(
             c.urgent_blocked, 1,
             "an urgent row a worker takes is not counted"

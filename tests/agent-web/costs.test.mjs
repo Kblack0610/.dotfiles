@@ -163,6 +163,10 @@ test("Consumers start open after Burn, green or red, and the reader's fold stays
   assert.match(stale, /<div class="warn">stale: the gateway snapshot is 3h old/);
   delete cost.open.consumers;
   assert.doesNotMatch(show(board()), /sec-consumers/, "no Consumers data draws no section");
+  // negative control: a search that keeps nothing says so, and the bar stays to clear it
+  const none = consumers({ rows: [] });
+  none.table = { ...none.table, q: "zzz", shown: 0 };
+  assert.match(show(board({ consumers: none })), /id="costs-cons-q"[\s\S]*<div id="costs-cons-body"><div class="panel muted">No consumer matches\.<\/div>/);
 });
 
 test("a Consumers header, search or tile is its own view, apart from the main table", async () => {

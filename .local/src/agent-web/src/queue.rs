@@ -232,9 +232,18 @@ pub struct CandQuery {
 }
 
 /// The snapshot (about 2 MB) changes only when a dispatch pass rewrites it, so one read is kept
-/// per file mtime and every keystroke of a search filters that; this only bounds it.
+/// per file version and every keystroke of a search filters that; this only bounds it.
 const CANDS_SECS: u64 = 600;
-static CANDS: ReadCache<Candidates, CANDS_SECS, Option<std::time::SystemTime>> = ReadCache::new();
+static CANDS: ReadCache<Candidates, CANDS_SECS, Option<(std::time::SystemTime, u64)>> =
+    ReadCache::new();
+
+/// A version of the snapshot: its mtime and its size. A promote drops the row and keeps the
+/// pass's mtime (fleet-dispatch `candidates_drop`, so `as of` stays the pass's), so the size is
+/// what tells that rewrite apart.
+fn cands_version(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
 
 /// The rows the view keeps, the first `CANDIDATES_SHOWN` unless asked for all (`more` counts the
 /// rest, so a search narrows on the server), each with the title and start label hub-core
@@ -267,10 +276,10 @@ fn candidates_view(c: &Candidates, q: &CandQuery) -> serde_json::Value {
 /// the tab, on a view change and after a promote.
 pub async fn candidates(Query(q): Query<CandQuery>) -> ApiResult<Json<serde_json::Value>> {
     let path = hub_core::boards::candidates_file();
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let version = cands_version(&path);
     let read = off(move || hub_queue::candidates(&path));
     CANDS
-        .get(mtime, async { read.await.and_then(|r| r) })
+        .get(version, async { read.await.and_then(|r| r) })
         .await
         .map(|c| Json(candidates_view(&c, &q)))
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
@@ -361,6 +370,27 @@ fn project_names(map: &str, machine: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_promote_that_keeps_the_mtime_is_a_new_snapshot_version() {
+        let dir = std::env::temp_dir().join(format!("agent-web-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("candidates.jsonl");
+        std::fs::write(&path, "{\"key\":\"a\"}\n{\"key\":\"b\"}\n").unwrap();
+        let before = cands_version(&path).unwrap();
+        // candidates_drop: the promoted row out, the pass's mtime put back (`touch -r`)
+        std::fs::write(&path, "{\"key\":\"b\"}\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before.0)
+            .unwrap();
+        let after = cands_version(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(after.0, before.0, "the mtime is the pass's");
+        assert_ne!(after, before, "and the cache still reads the file again");
+    }
 
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {

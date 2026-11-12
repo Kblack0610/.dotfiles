@@ -206,7 +206,7 @@ test("Candidates is the shared table in its fold: the count heads it, urgent blo
     assert.match(h, /data-fkey="blocked"/, "each reason is a facet");
     assert.match(h, /<a class="tl" href="#projects\/trader">trader<\/a>/);
     assert.match(h, /<span class="cchip bad">judge: skip, too big<\/span>/);
-    assert.match(h, /data-promote="ar-2"/, "Promote names the row by its key");
+    assert.match(h, /data-promote="2"/, "Promote names the row by its rank");
     assert.match(h, /<button class="btn sm" data-all="1">\+39 more<\/button>/);
     const calm = drawCands(cands({ urgent_blocked: 0, table: { ...cands().table, total: 41, shown: 3 } }));
     assert.match(calm, /<h2 class="sec">Candidates <span class="n">3 of 41<\/span><\/h2>/);
@@ -234,13 +234,16 @@ test("a Candidates search asks the server with its own keys, and +N more asks fo
   } finally { reply = {}; run("st.views.queue = ''; qcd.data = null; qcd.all = false"); }
 });
 
-test("Promote starts the row its key names, wherever it sits", async () => {
+test("Promote starts the row its rank names, when another row shares its key", async () => {
   load();
   posted = [];
   reply = (url) => (url.startsWith("/api/board") ? { out: "promoted ar-2" } : url.startsWith("/api/queue/candidates") ? cands() : data);
   try {
-    run(`qcd.data = ${JSON.stringify(cands())}`);
-    fire("click", { type: "click", target: { id: "", dataset: { promote: "ar-2" }, closest: () => null } });
+    // Negative control: a key is a row's text when it has no id, so two rows can share one.
+    const d = cands();
+    d.rows[0].key = d.rows[1].key;
+    run(`qcd.data = ${JSON.stringify(d)}`);
+    fire("click", { type: "click", target: { id: "", dataset: { promote: "2" }, closest: () => null } });
     await settle();
     const [p] = posted;
     assert.match(p, /^\/api\/board /);

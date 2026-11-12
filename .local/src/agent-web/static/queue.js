@@ -297,10 +297,10 @@ const qTableHead = () => secHead("table", "Queue", tblCount(qst.table)) +
 // One ranked row: rank, project, key, title, how it would start (hub-core's label) with its
 // Promote, why, and each reason nothing would start it.
 function qCandRow(c, L) {
-  const busy = qcd.promoting === c.key;
+  const busy = qcd.promoting === c.rank;
   const blocked = (c.blocked || []).map((b) => `<span class="cchip ${c.prio === 0 ? "bad" : "warn"}">${esc(b)}</span>`).join(" ");
   return `<tr><td class="n">${c.rank}</td><td>${tblLink(L.project, c.project)}</td><td>${esc(c.key)}</td><td class="wrap">${esc(c.title)}</td>` +
-    `<td class="${c.held ? "warn" : ""}">${esc(c.start_label)} <button class="btn sm" data-promote="${esc(c.key)}"${qcd.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td>` +
+    `<td class="${c.held ? "warn" : ""}">${esc(c.start_label)} <button class="btn sm" data-promote="${c.rank}"${qcd.promoting ? " disabled" : ""}>${busy ? "Promoting..." : "Promote"}</button></td>` +
     `<td class="wrap muted">${esc(c.why)}</td><td>${blocked || "-"}</td></tr>`;
 }
 
@@ -343,15 +343,16 @@ function qCandPaint() {
   if (!qcd.repaint()) paint($("qc-fold"), qCandFold(), qst.open);
 }
 
-async function qPromote(key) {
-  const c = (qcd.data?.rows || []).find((r) => r.key === key);
+// A row is found by its rank, unique in a snapshot; a key is a row's text when it has no id.
+async function qPromote(rank) {
+  const c = (qcd.data?.rows || []).find((r) => r.rank === rank);
   if (!c || qcd.promoting) return;
-  qcd.promoting = key; qcd.msg = "";
+  qcd.promoting = rank; qcd.msg = "";
   qcd.render();
   try {
     // The board's Start: fleet-dispatch promote, as board.js and the hub TUI's p run it.
     const r = await post("/api/board", { verb: "start", profile: c.profile, project: c.project, lane: c.lane, raw: c.text });
-    qcd.msg = (r && r.out) || `Promoted ${key}.`;
+    qcd.msg = (r && r.out) || `Promoted ${c.key}.`;
   } catch (e) {
     qcd.msg = e.message;
   }
@@ -405,7 +406,7 @@ $("queue").addEventListener("click", (e) => {
   // from st.asks and st.agents, whose own reads redraw the tab, so nothing re-reads the queue here.
   const card = t.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e); return; }
-  if (t.dataset.promote) { qPromote(t.dataset.promote); return; }
+  if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) openAgent(a);

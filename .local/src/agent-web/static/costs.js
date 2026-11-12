@@ -288,7 +288,8 @@ const burnKeys = (b) => (b.keys ? `<div class="panel"><span class="muted">KEYS</
 function consumerRows(c) {
   const labels = Object.fromEntries(c.columns.map((k, i) => [k, [c.headers[i].toLowerCase()]]));
   const row = (r) => `<tr>${c.columns.map((k) => `<td${r.level === "bad" ? ' class="bad"' : ""}>${esc(r[k])}</td>`).join("")}</tr>`;
-  return c.rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(c.table, labels)}${c.rows.map(row).join("")}</table></div>` : "";
+  return c.rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(c.table, labels)}${c.rows.map(row).join("")}</table></div>`
+    : `<div class="panel muted">${c.table.total ? "No consumer matches." : "No consumer configured."}</div>`;
 }
 
 function costsConsumers(d) {

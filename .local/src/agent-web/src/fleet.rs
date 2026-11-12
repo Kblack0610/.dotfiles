@@ -43,9 +43,9 @@ impl VerdictQuery {
     }
 }
 
-/// A runner's page: its name, and the verdicts' view when it is the answer judge's.
-#[derive(Deserialize, Default)]
-#[serde(default)]
+/// A runner's page: its name, required (a request without one is a 400), and the verdicts' view
+/// when it is the answer judge's.
+#[derive(Deserialize)]
 pub struct RunnerQuery {
     pub name: String,
     #[serde(flatten)]
@@ -196,6 +196,13 @@ mod tests {
         assert_eq!(
             (r.name.as_str(), r.verdicts.vs.as_str()),
             ("ask-judge", "passed")
+        );
+        let bare = "/api/fleet/runner?vs=passed"
+            .parse::<axum::http::Uri>()
+            .unwrap();
+        assert!(
+            axum::extract::Query::<RunnerQuery>::try_from_uri(&bare).is_err(),
+            "no name is a bad request, not a lookup of the empty name"
         );
     }
 
