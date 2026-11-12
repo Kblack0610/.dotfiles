@@ -62,6 +62,9 @@ const qStrip = () => qfl.data ? railHtml(qfl.data.line, qfl.node, qfl.data.grafa
   : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 const refreshQueue = coalesce(async () => {
+  // The window's line and what sits now, read beside the rows so a tick's answer waits for one read,
+  // not two; the list still shows when agent-queue stats fails.
+  const stats = api("/api/queue/stats").catch((e) => ({ week: `stats: ${e.message}` }));
   try {
     const q = tblParams(st.views.queue).toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
@@ -74,10 +77,15 @@ const refreshQueue = coalesce(async () => {
       st.arg = "";
       if (chip && !tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); refreshQueue(); } else { setQuery(st.views.queue); }
       if (!chip) st.section = arg;
-    }
+    } else if ((qst.items || []).some((i) => i.slug === arg)) {
+      // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
+      st.arg = ""; qst.sel = arg; setQuery(st.views.queue);
+    } else if (tblParams(st.views.queue).get("q") !== arg) {
+      // Not in this view: search for it once, and the read that answers opens it.
+      setQuery(tblSet(st.views.queue, { q: arg, s: "" })); refreshQueue();
+    } else st.arg = "";
   }
-  // The window's line and what sits now; the list still shows when agent-queue stats fails.
-  try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
+  qst.stats = await stats;
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
   if (st.tab === "queue") refreshFlow();
@@ -244,6 +252,7 @@ function renderQueue() {
     qst.render();
     return;
   }
+  if (qst.repaint()) return;
   el.innerHTML = pfold("q-add", "Add to the queue", qCompose()) + `<div id="q-list"></div>`;
   qst.render();
 }

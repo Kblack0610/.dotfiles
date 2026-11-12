@@ -28,11 +28,11 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
-        group: "Now",
+        group: "Today",
         title: "Home",
         question: "What needs me, and is everything OK?",
         sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
@@ -44,7 +44,7 @@ pub const TABS: [Tab; 12] = [
     // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
-        group: "Now",
+        group: "Today",
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
@@ -52,78 +52,8 @@ pub const TABS: [Tab; 12] = [
         inner: &[],
     },
     Tab {
-        id: "queue",
-        group: "Work",
-        title: "Queue",
-        question: "What will agents do next?",
-        sections: &["flow", "table", "candidates"],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "projects",
-        group: "Work",
-        title: "Projects",
-        question: "Where is each project, and its tasks?",
-        sections: &["cards", "rows"],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "board",
-        group: "Work",
-        title: "Board",
-        question: "What is on every project's board?",
-        sections: &["rows"],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "sessions",
-        group: "Work",
-        title: "Sessions",
-        question: "What is each agent doing?",
-        sections: &["shepherd", "sessions", "detail"],
-        pinned: &[],
-        inner: &[],
-    },
-    Tab {
-        id: "infra",
-        group: "Ops",
-        title: "Infra",
-        question: "Is the machinery healthy?",
-        sections: &[
-            "health", "red", "fixes", "machines", "ci", "governor", "jobs", "cloud",
-        ],
-        // Health and what is red now stay above the strip (exceptions first); the governor
-        // powers machines on and off, so it sits with them.
-        pinned: &["health", "red"],
-        inner: &[
-            Inner {
-                id: "reds",
-                title: "Reds",
-                sections: &["fixes"],
-            },
-            Inner {
-                id: "machines",
-                title: "Machines",
-                sections: &["machines", "ci", "governor"],
-            },
-            Inner {
-                id: "jobs",
-                title: "Jobs",
-                sections: &["jobs"],
-            },
-            Inner {
-                id: "cloud",
-                title: "Cloud",
-                sections: &["cloud"],
-            },
-        ],
-    },
-    Tab {
         id: "log",
-        group: "Ops",
+        group: "Today",
         title: "Log",
         question: "What happened?",
         sections: &[
@@ -134,69 +64,56 @@ pub const TABS: [Tab; 12] = [
         inner: &[],
     },
     Tab {
+        id: "queue",
+        group: "Agents",
+        title: "Queue",
+        question: "What will agents do next?",
+        sections: &["flow", "table", "candidates"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
+        id: "sessions",
+        group: "Agents",
+        title: "Sessions",
+        question: "What is each agent doing?",
+        sections: &["shepherd", "sessions", "detail"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
         id: "fleet",
-        group: "Ops",
+        group: "Agents",
         title: "Fleet",
         question: "Who is working, and on what?",
         sections: &["workers"],
         pinned: &[],
         inner: &[],
     },
-    // After the older tabs, so they keep their digits.
     Tab {
-        id: "schedules",
-        group: "Ops",
-        title: "Schedules",
-        question: "What runs on its own, and why?",
-        sections: &["table", "detail"],
+        id: "projects",
+        group: "Projects",
+        title: "Projects",
+        question: "Where is each project, and its tasks?",
+        sections: &["cards", "rows"],
         pinned: &[],
         inner: &[],
     },
-    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
-    // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
-        id: "costs",
-        group: "Spend, ship",
-        title: "Costs",
-        question:
-            "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
-        sections: &[
-            "fleet",
-            "burn",
-            "consumers",
-            "spend",
-            "totals",
-            "table",
-            "tokens",
-            "langfuse",
-            "sections",
-        ],
-        // The 24h fleet figure stays above the strip; the strip splits the three questions.
-        pinned: &["fleet"],
-        inner: &[
-            Inner {
-                id: "limits",
-                title: "Limits",
-                sections: &["burn", "consumers"],
-            },
-            Inner {
-                id: "spend",
-                title: "Spend",
-                sections: &["spend", "totals", "table"],
-            },
-            Inner {
-                id: "models",
-                title: "Models",
-                sections: &["tokens", "langfuse", "sections"],
-            },
-        ],
+        id: "board",
+        group: "Projects",
+        title: "Board",
+        question: "What is on every project's board?",
+        sections: &["rows"],
+        pinned: &[],
+        inner: &[],
     },
-    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
-    // Builds section (CI runs, its own reader; release-state has no CI collector), then the Tests
-    // section (per-suite results of one tests.yml run, web first; the TUI follows).
+    // The channels (`hub_core::releases`) and each opened row, then the Builds section (CI runs,
+    // its own reader; release-state has no CI collector), then the Tests section (per-suite
+    // results of one tests.yml run, web first; the TUI follows).
     Tab {
         id: "releases",
-        group: "Spend, ship",
+        group: "Projects",
         title: "Releases",
         question: "What is building, and what is live where?",
         sections: &["table", "detail", "builds", "tests"],
@@ -218,6 +135,105 @@ pub const TABS: [Tab; 12] = [
                 id: "tests",
                 title: "Tests",
                 sections: &["tests"],
+            },
+        ],
+    },
+    Tab {
+        id: "alerts",
+        group: "System",
+        title: "Alerts",
+        question: "What is firing, who owns it, and what fired lately?",
+        // hub_core::alerts: the health chips, what fires with its fix's owner, the fixes, the
+        // alert pages of the week, then every watch (folded while none is red).
+        sections: &["health", "firing", "fixes", "history", "watches"],
+        pinned: &[],
+        inner: &[],
+    },
+    Tab {
+        id: "infra",
+        group: "System",
+        title: "Infra",
+        question: "Is the machinery healthy?",
+        sections: &["machines", "governor", "ci", "jobs", "cloud"],
+        // What is red and its fixes moved to Alerts (MOVED); the governor powers machines on
+        // and off, so it sits with them, and the CI runners are their own inner tab.
+        pinned: &[],
+        inner: &[
+            Inner {
+                id: "machines",
+                title: "Machines",
+                sections: &["machines", "governor"],
+            },
+            Inner {
+                id: "ci",
+                title: "CI",
+                sections: &["ci"],
+            },
+            Inner {
+                id: "jobs",
+                title: "Jobs",
+                sections: &["jobs"],
+            },
+            Inner {
+                id: "cloud",
+                title: "Cloud",
+                sections: &["cloud"],
+            },
+        ],
+    },
+    Tab {
+        id: "schedules",
+        group: "System",
+        title: "Schedules",
+        question: "What runs on its own, and why?",
+        sections: &["table", "detail"],
+        pinned: &[],
+        inner: &[],
+    },
+    // Every dollar figure the other tabs showed is here, cut seven ways; they keep a one-line
+    // badge that links in.
+    Tab {
+        id: "costs",
+        group: "System",
+        title: "Costs",
+        question:
+            "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
+        sections: &[
+            "fleet",
+            "burn",
+            "consumers",
+            "sessions",
+            "spend",
+            "totals",
+            "table",
+            "tokens",
+            "langfuse",
+            "sections",
+            "budget",
+        ],
+        // The 24h fleet figure stays above the strip; the strip splits the four questions. Budget
+        // is cash (the bills we pay); the 24h figure and the rest of the tab are list price.
+        pinned: &["fleet"],
+        inner: &[
+            Inner {
+                id: "limits",
+                title: "Limits",
+                sections: &["burn", "consumers"],
+            },
+            Inner {
+                id: "spend",
+                title: "Spend",
+                sections: &["sessions", "spend", "totals", "table"],
+            },
+            Inner {
+                id: "models",
+                title: "Models",
+                sections: &["tokens", "langfuse", "sections"],
+            },
+            Inner {
+                id: "budget",
+                title: "Budget",
+                sections: &["budget"],
             },
         ],
     },
@@ -266,18 +282,33 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "accounts", "costs", "burn"),
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
+    // Infra's health chips, Red now and Red fixes (with its Reds inner tab): what is firing and
+    // who owns it is Alerts' question, not the machinery's (2026-11-11).
+    ("infra", "health", "alerts", "health"),
+    ("infra", "red", "alerts", "firing"),
+    ("infra", "fixes", "alerts", "fixes"),
+    ("infra", "reds", "alerts", "fixes"),
 ];
 
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
 /// Board, which is `a` on Projects there.
 pub const OFF_BAR: [&str; 2] = ["daily", "board"];
 
-/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth.
+/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth; a tab past the tenth
+/// has none (Tab and Shift-Tab still reach it).
 pub fn bar_digit(id: &str) -> Option<usize> {
     TABS.iter()
         .filter(|t| !OFF_BAR.contains(&t.id))
         .position(|t| t.id == id)
+        .filter(|i| *i < 10)
         .map(|i| (i + 1) % 10)
+}
+
+/// A tab as the TUI's text names it: its bar digit and title (`8 Alerts`), or the title alone for
+/// a tab with no digit, so a badge or hint never names a stale key after a reorder.
+pub fn bar_label(id: &str) -> String {
+    let title = resolve(id).map_or(id, |t| t.title);
+    bar_digit(id).map_or(title.to_string(), |d| format!("{d} {title}"))
 }
 
 /// Where a section that moved off `tab` lives now: its new tab and section.
@@ -462,15 +493,99 @@ mod tests {
             "a runner is no section"
         );
         assert_eq!(moved("costs", "tokens"), None);
+        // Infra's old links (`#infra/red`, `hub tab infra fixes`) land on Alerts.
+        for (old, new) in [
+            ("red", "firing"),
+            ("reds", "fixes"),
+            ("fixes", "fixes"),
+            ("health", "health"),
+        ] {
+            assert_eq!(
+                moved("infra", old).map(|(t, s)| (t.id, s)),
+                Some(("alerts", new)),
+                "{old}"
+            );
+        }
+        assert_eq!(moved("infra", "machines"), None, "machines stayed");
         assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
     }
 
     #[test]
-    fn infra_shows_red_fixes_right_under_red_now() {
-        let infra = resolve("infra").unwrap().sections;
-        let at = |s: &str| infra.iter().position(|x| *x == s).unwrap();
-        assert_eq!(at("fixes"), at("red") + 1);
+    fn alerts_sits_just_before_infra_and_leads_with_what_is_firing() {
+        let at = |id: &str| TABS.iter().position(|t| t.id == id).unwrap();
+        assert_eq!(at("alerts") + 1, at("infra"));
+        let alerts = resolve("alerts").unwrap();
+        assert_eq!(
+            alerts.sections,
+            ["health", "firing", "fixes", "history", "watches"]
+        );
         assert_eq!(section("fixes"), None, "a new section is no retired name");
+        // The eleventh tab on the number row has no digit; the tenth is 0.
+        assert_eq!(bar_digit("schedules"), Some(0));
+        assert_eq!(bar_digit("costs"), None);
+        assert_eq!(bar_digit("alerts"), Some(8));
+    }
+
+    #[test]
+    fn the_groups_are_today_agents_projects_system_one_subject_each() {
+        // One subject per group (P3 of can-we-fix-trader-logical-goblet.md): the day's tabs, the
+        // agent tabs, the project tabs, and the system's, Alerts leading it.
+        let groups: Vec<(&str, Vec<&str>)> = TABS.iter().fold(vec![], |mut g, t| {
+            match g.last_mut() {
+                Some((name, ids)) if *name == t.group => ids.push(t.id),
+                _ => g.push((t.group, vec![t.id])),
+            }
+            g
+        });
+        assert_eq!(
+            groups,
+            [
+                ("Today", vec!["home", "daily", "log"]),
+                ("Agents", vec!["queue", "sessions", "fleet"]),
+                ("Projects", vec!["projects", "board", "releases"]),
+                ("System", vec!["alerts", "infra", "schedules", "costs"]),
+            ]
+        );
+        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Fleet 5, Projects 6, Releases 7,
+        // Alerts 8, Infra 9, Schedules 0; Costs, the eleventh, has none.
+        let ids = [
+            "home",
+            "log",
+            "queue",
+            "sessions",
+            "fleet",
+            "projects",
+            "releases",
+            "alerts",
+            "infra",
+            "schedules",
+            "costs",
+        ];
+        let digits: Vec<Option<usize>> = ids.iter().map(|id| bar_digit(id)).collect();
+        assert_eq!(
+            digits,
+            [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(7),
+                Some(8),
+                Some(9),
+                Some(0),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bar_label_is_the_digit_and_title_or_the_title_alone() {
+        assert_eq!(bar_label("sessions"), "4 Sessions");
+        assert_eq!(bar_label("alerts"), "8 Alerts");
+        assert_eq!(bar_label("costs"), "Costs", "the eleventh has no digit");
+        assert_eq!(bar_label("daily"), "Daily", "off the bar");
     }
 
     #[test]
@@ -495,21 +610,24 @@ mod tests {
         for t in &TABS {
             assert_eq!(groups_check(t), Ok(()), "{}", t.id);
         }
-        assert_eq!(resolve("costs").unwrap().inner.len(), 3);
+        assert_eq!(resolve("costs").unwrap().inner.len(), 4);
         assert_eq!(resolve("infra").unwrap().inner.len(), 4);
     }
 
     #[test]
-    fn infra_pins_health_and_red_and_old_links_open_their_inner_tab() {
+    fn infra_pins_nothing_and_old_links_open_their_inner_tab() {
         let infra = resolve("infra").unwrap();
-        assert_eq!(infra.pinned, ["health", "red"]);
+        assert!(infra.pinned.is_empty());
         let at = |w: Option<&str>| inner_tab(infra, w).map(|i| i.id);
-        assert_eq!(at(None), Some("reds"));
-        assert_eq!(at(Some("ci")), Some("machines"));
+        assert_eq!(at(None), Some("machines"));
         assert_eq!(at(Some("governor")), Some("machines"));
+        assert_eq!(at(Some("ci")), Some("ci"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
+        let titles: Vec<&str> = infra.inner.iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Machines", "CI", "Jobs", "Cloud"]);
         // a retired tab name that became a section lands on the inner tab holding it
-        assert_eq!(at(section("ci")), Some("machines"));
+        assert_eq!(at(section("ci")), Some("ci"));
+        assert_eq!(at(section("machines")), Some("machines"));
     }
 
     #[test]

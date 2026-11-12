@@ -1,7 +1,7 @@
-// Unit tests for Infra's Red fixes and Red now sections (.local/src/agent-web/static/infra.js), run by
-// `node --test` from tests/unit/agent_web_queue.bats. The page's real scripts load into one vm
-// context, as the browser loads them; only the DOM is a stub. The split, the order and the
-// summary are hub_core::reds, tested in Rust; this checks how the section draws them.
+// Unit tests for the Infra tab (.local/src/agent-web/static/infra.js), run by `node --test` from
+// tests/unit/agent_web_queue.bats. The page's real scripts load into one vm context, as the
+// browser loads them; only the DOM is a stub. Red now, Red fixes and health are Alerts'
+// (alerts.test.mjs).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -23,60 +23,6 @@ const ctx = vm.createContext({
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "infra.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const ist = run("ist");
-
-const red = (slug, outcome, o = {}) => ({ slug, red: `watch ${slug}`, outcome, queued: new Date(Date.now() - 3 * 3600e3).toISOString(), pr: null, pr_url: null, ...o });
-const reds = {
-  open: [red("ar-3", "came back", { pr: "Kblack0610/.dotfiles#1170", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170" }), red("ar-2", "queued", { pr: "986" })],
-  settled: [red("ar-1", "fixed"), red("ar-4", "cancelled")],
-  summary: "2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m",
-};
-
-test("open rows draw with their outcome, red, slug, PR and age; settled fold to a count", () => {
-  Object.assign(ist, { reds, redsErr: null, open: {} });
-  const h = run("fixesSection()");
-  assert.match(h, /<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">2 open: 1 came back, 1 queued \| 1 fixed, 1 cancelled in 7d, fix p50 34m<\/span><\/h2>/);
-  const [openPart, foldPart] = h.split('<details class="sec-d" data-k="fixes-settled">');
-  assert.ok(openPart.indexOf("CAME BACK") < openPart.indexOf("QUEUED"), "the server's order is kept");
-  assert.match(openPart, /<a href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>PR Kblack0610\/.dotfiles#1170<\/a>/);
-  assert.match(openPart, /<span class="by">PR 986<\/span>/, "a PR with no repo is text, not a link");
-  assert.match(openPart, /<span class="by">ar-3<\/span>/);
-  assert.match(openPart, /<span class="by">3h<\/span>/);
-  assert.ok(foldPart, "the settled rows sit in a fold");
-  assert.match(foldPart, /<summary class="muted fold">\+2 settled<\/summary>/);
-  assert.ok(!openPart.includes("FIXED") && foldPart.includes("FIXED"));
-});
-
-test("a failed read says so in the section, never an empty list", () => {
-  Object.assign(ist, { reds: null, redsErr: "Could not read reds (HTTP 502): reds: cannot read the queue" });
-  const h = run("fixesSection()");
-  assert.match(h, /Red fixes <span class="muted">read failed<\/span>/);
-  assert.match(h, /<div class="panel down">Could not read reds \(HTTP 502\): reds: cannot read the queue<\/div>/);
-  assert.ok(!h.includes("settled"));
-});
-
-test("nothing open and nothing settled is the summary alone", () => {
-  Object.assign(ist, { reds: { open: [], settled: [], summary: "no red fix queued in the last 7 days" }, redsErr: null });
-  assert.equal(run("fixesSection()"), `<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">no red fix queued in the last 7 days</span></h2>`);
-});
-
-test("red now draws the server's down runners and never judges a runner itself", () => {
-  const up = () => [{ labels: {}, value: 1 }];
-  const off = (name) => ({ labels: { name, host: "aws-burst-1", state: "offline" } });
-  const d = {
-    instant: { red: [{ labels: { item: "watch a" } }], runners: [off("aws-burst-1-unity-pool-1")], exporter_up: up(), rate_left: [{ labels: {}, value: 5 }], api: up() },
-    down: [{ labels: { name: "mini-1", host: "mac-mini", state: "missing" } }],
-  };
-  ctx.d = d;
-  assert.deepEqual([...run("redItems(d)")], ["watch a", "runner mini-1 missing"], "aws-burst-1 is offline in the series but not in down");
-});
-
-test("the open red fixes cap at LOG_ROWS, then +N more", () => {
-  const n = run("LOG_ROWS") + 2;
-  Object.assign(ist, { reds: { open: Array.from({ length: n }, (_, i) => red(`ar-${i}`, "queued")), settled: [], summary: `${n} open` }, redsErr: null, open: {} });
-  const h = run("fixesSection()");
-  assert.equal(h.match(/QUEUED/g).length, n - 2);
-  assert.match(h, /<div class="muted more">\+2 more<\/div>$/);
-});
 
 test("CI lists no runs: one line links to Releases, whose Builds section has them", () => {
   Object.assign(ist, { open: {} });
@@ -112,25 +58,25 @@ test("CI runners: a queued job some host can take names it, and is not red", () 
 const els = {};
 const page = (id) => (els[id] ||= Object.assign(el(), { id, dataset: {}, innerHTML: "" }));
 
-test("Infra's strip leads the page, over the pinned Health and Red now; each section joins its inner tab", () => {
+test("Infra's strip leads the page with nothing pinned above it; each section joins its inner tab", () => {
   doc.getElementById = page;
-  Object.assign(ist, { open: {}, reds: { open: [red("ar-3", "came back")], settled: [], summary: "1 open" }, redsErr: null });
+  Object.assign(ist, { open: {} });
   const instant = { cc: [], governor: [{ labels: { __name__: "ci_governor_up" }, value: 1 }], power: [{ labels: { __name__: "ci_governor_power_state", host: "aws-1", state: "off" }, value: 1 }] };
   ist.data = { ok: true, at: Date.now() / 1e3, instant, down: [], ci: { ...ci } };
   run(`st.tab = "infra"; st.arg = "machines"; renderInfra()`);
   const main = els["infra-main"].innerHTML, tail = els["infra-tail"].innerHTML;
   const at = (s) => main.indexOf(s);
   assert.ok(main.startsWith('<div class="seg fseg istrip" role="tablist">'), main);
-  assert.ok(at('role="tablist"') < at('id="sec-red"') && at('id="sec-red"') < at('id="sec-fixes"'), main);
-  // The counts: open red fixes on Reds, the red CI line on Machines; none on Jobs or Cloud.
-  assert.match(main, /data-itab="reds" class="" [^>]*>Reds <span class="pill warn">1<\/span>/);
-  assert.match(main, /data-itab="machines" class="on" [^>]*>Machines <span class="pill warn">1<\/span>/);
+  for (const gone of ['id="sec-red"', 'id="sec-fixes"', 'id="sec-health"', 'data-itab="reds"']) assert.equal(at(gone), -1, `${gone} moved to Alerts`);
+  // The count: the red CI line on CI; none on Machines, Jobs or Cloud.
+  assert.match(main, /data-itab="ci" [^>]*>CI <span class="pill warn">1<\/span>/);
+  assert.match(main, /data-itab="machines" class="on" [^>]*>Machines<\/button>/);
   assert.match(main, /data-itab="jobs" [^>]*>Jobs<\/button>/);
   // The open inner tab shows; another one's sections are in the page, hidden.
-  assert.match(main, /<div data-in="reds" hidden><h2 class="sec" id="sec-fixes">/);
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-machines">/);
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-ci">/);
-  assert.match(tail, /<div data-in="machines"><h2 class="sec" id="sec-governor">/);
+  assert.match(main, /<div data-in="machines"><div class="tiles roomy">[\s\S]*<h2 class="sec" id="sec-machines">/);
+  assert.match(main, /href="#alerts\/watches"/, "the watches tile opens Alerts' Watches");
+  assert.match(main, /<div data-in="ci" hidden><h2 class="sec" id="sec-ci">/);
+  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-governor">/);
   assert.match(tail, /<div data-in="cloud" hidden><h2 class="sec" id="sec-cloud">/);
   // Jobs is its own element (jobs.js paints it): it joins the Jobs group and hides here.
   assert.equal(els.jobs.dataset.in, "jobs");
@@ -138,7 +84,7 @@ test("Infra's strip leads the page, over the pinned Health and Red now; each sec
   run(`st.arg = "jobs"; renderInfra()`);
   assert.equal(els.jobs.hidden, false);
   // "Done today, queues by pool" starts open like every section; a fold the reader closed stays closed.
-  run(`st.arg = "machines"; renderInfra()`);
+  run(`st.arg = "ci"; renderInfra()`);
   assert.match(els["infra-main"].innerHTML, /data-k="ci-more" open>/);
   ist.open["ci-more"] = false;
   run(`renderInfra()`);
@@ -149,14 +95,14 @@ test("Infra's strip leads the page, over the pinned Health and Red now; each sec
 test("the strip leads Infra on the loading, failed-read and Prometheus-down paths too", () => {
   doc.getElementById = page;
   const lead = (st) => {
-    Object.assign(ist, { open: {}, reds: null, redsErr: null, ...st });
+    Object.assign(ist, { open: {}, ...st });
     run(`st.tab = "infra"; st.arg = ""; renderInfra()`);
     return els["infra-main"].innerHTML;
   };
   for (const [name, state] of [["loading", { data: null, err: null }], ["read failed", { data: null, err: "fetch failed" }], ["prometheus down", { data: { ok: false, error: "no answer" }, err: null }]]) {
     assert.ok(lead(state).startsWith('<div class="seg fseg istrip" role="tablist">'), name);
   }
-  assert.match(lead({ data: null, err: "fetch failed" }), /role="tablist">[\s\S]*fetch failed[\s\S]*id="sec-fixes"/, "the error, then Red fixes");
+  assert.match(lead({ data: null, err: "fetch failed" }), /role="tablist">[\s\S]*fetch failed/, "the error under the strip");
   ist.data = null; ist.err = null;
 });
 
@@ -166,19 +112,60 @@ test("a failed Prometheus read still draws the strip, so Jobs stays reachable", 
   const main = els["infra-main"].innerHTML;
   assert.match(main, /no answer/);
   assert.match(main, /role="tablist"/);
-  assert.match(main, /<div data-in="reds"><h2 class="sec" id="sec-fixes">/);
 });
 
 test("old Infra links open the inner tab holding their section", () => {
   const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.section]; };
   assert.deepEqual(r("#infra"), ["infra", "", undefined]);
-  assert.deepEqual(r("#infra/ci"), ["infra", "machines", "ci"]);
+  assert.deepEqual(r("#infra/ci"), ["infra", "ci", undefined]);
+  assert.deepEqual(r("#infra/governor"), ["infra", "machines", "governor"]);
   assert.deepEqual(r("#infra/jobs"), ["infra", "jobs", undefined]);
-  assert.deepEqual(r("#infra/reds"), ["infra", "reds", undefined]);
+  // Red now, Red fixes (and the Reds inner tab) and health moved to Alerts (layout::MOVED).
+  assert.deepEqual(r("#infra/reds"), ["alerts", "", "fixes"]);
+  assert.deepEqual(r("#infra/fixes"), ["alerts", "", "fixes"]);
+  assert.deepEqual(r("#infra/red"), ["alerts", "", "firing"]);
+  assert.deepEqual(r("#infra/health"), ["alerts", "", "health"]);
   // The retired #ci, #machines and #jobs tabs (layout::section) land on their inner tab too.
-  assert.deepEqual(r("#ci"), ["infra", "machines", "ci"]);
+  assert.deepEqual(r("#ci"), ["infra", "ci", "ci"]);
   assert.deepEqual(r("#machines"), ["infra", "machines", "machines"]);
   assert.deepEqual(r("#jobs"), ["infra", "jobs", "jobs"]);
-  // a pinned section names no inner tab, so the first opens (pinned sit at its top)
-  assert.equal(r("#infra/red")[1], "");
+});
+
+test("a record's page inside an inner tab keeps its id: the route opens the inner tab, the URL keeps the page", () => {
+  const r = (h) => { const x = ctx.route(h); return [x.tab, x.arg, x.page]; };
+  assert.deepEqual(r("#infra/machines/razer-laptop"), ["infra", "machines", "machines/razer-laptop"]);
+  assert.deepEqual(r("#infra/pools/unity"), ["infra", "machines", "pools/unity"], "a pool's page is on Machines");
+  assert.deepEqual(r("#infra/ci/4412"), ["infra", "ci", "ci/4412"]);
+  assert.deepEqual(r("#infra/jobs/agentctl-dream"), ["infra", "jobs", "jobs/agentctl-dream"]);
+  assert.deepEqual(r("#infra/machines"), ["infra", "machines", undefined], "no id: the inner tab alone");
+  assert.deepEqual(r("#infra/machines/a%2Fb"), ["infra", "machines", "machines/a/b"], "an id keeps its slash");
+  assert.deepEqual(r("#infra/constructor/x"), ["infra", "", undefined], "an inherited name is not a page word: an unknown inner tab, as before");
+  const urls = [];
+  ctx.history = { replaceState: (_s, _t, u) => urls.push(u) };
+  for (const h of ["#infra/machines/razer-laptop", "#infra/machines/a%2Fb"]) {
+    const x = ctx.route(h);
+    run(`st.tab = "infra"; st.views.infra = ""; st.arg = ${JSON.stringify(x.arg)}; st.page = ${JSON.stringify(x.page)}; showUrl()`);
+    assert.equal(urls.at(-1), h, "the URL a page shows is the one that opened it");
+  }
+  run(`innerGo("infra", "ci")`);
+  assert.equal(urls.at(-1), "#infra/ci", "another inner tab leaves the page");
+  delete ctx.history;
+});
+
+test("the Cloud card's month is a link to Costs, Budget; AWS's stops and emails stay", () => {
+  const g = run(`governorIndex({ governor: [
+    { labels: { __name__: "ci_governor_budget_ok" }, value: 1 },
+    { labels: { __name__: "ci_governor_budget_updated" }, value: 1700000000 },
+    { labels: { __name__: "ci_governor_budget_usd", kind: "actual" }, value: 113 },
+    { labels: { __name__: "ci_governor_budget_usd", kind: "limit" }, value: 600 },
+    { labels: { __name__: "ci_governor_budget_alert", basis: "actual", usd: "450" }, value: 1 },
+    { labels: { __name__: "ci_governor_budget_action_usd", type: "stop", status: "STANDBY" }, value: 550 },
+  ] })`);
+  const h = run(`budgetLines(${JSON.stringify(g)})`);
+  assert.match(h, /Month: <a href="#costs\/budget">Costs, Budget<\/a>/);
+  assert.doesNotMatch(h, /\$113|of \$600|forecast/, "the dollars are Costs, Budget's, not a second home");
+  assert.match(h, /Emails at \$450/);
+  assert.match(h, /at \$550 AWS stops it and blocks starts/);
+  assert.doesNotMatch(h, /READ FAILED/);
+  assert.match(run(`budgetLines(${JSON.stringify({ ...g, budget_ok: 0 })})`), /READ FAILED/);
 });

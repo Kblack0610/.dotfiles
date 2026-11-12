@@ -24,8 +24,8 @@ Not for what sessions are doing right now (`shepherd status`, the hub Sessions t
 
 ## Steps
 
-1. Read the record. `day-log json` gathers today fresh (about 5 s, three gh searches). `day-log json --date YYYY-MM-DD` reads a past day; if it says `no record`, run `day-log snapshot --date YYYY-MM-DD` to gather it (merged PRs and spend come back; the live sections stay empty for a day nobody watched).
-2. Check `.unreadable` first. A name there (`gh merged`, `agent-queue: ...`, `ci <repo> ...`) means that part is the last good copy, not current; say so.
+1. Read the record. `day-log json` gathers today fresh (about 5 s; PRs come from the PR store, `schedules-sync prs`). `day-log json --date YYYY-MM-DD` reads a past day; if it says `no record`, run `day-log snapshot --date YYYY-MM-DD` to gather it (merged PRs and spend come back; the live sections stay empty for a day nobody watched).
+2. Check `.unreadable` first. A name there (`PR store merged`, `PR store stale: <repos>`, `agent-queue: ...`, `ci <repo> ...`) means that part is the last good copy, not current; say so.
 3. Answer in the status shape (`comms-standard`, the shape `day-log show` prints): the headline (merged count, repos, spend), then Done (each area with its notable PRs), Doing (open PRs), Next (each live session's next plan phase) and Needs you, then the scorecard headline (`.bench.headline`, quote it as is). Name the session that landed a PR from `.by` only when it is set.
 4. For a page, publish an Artifact built from the same JSON (one section per area, every PR linked), so it cannot disagree with the board.
 
@@ -44,7 +44,7 @@ The data feed for pipeline evaluation (queue item session-pipeline-eval): read t
 
 ETA accuracy stays in fleet-bench; the record copies its headline.
 
-The board is the hub's Log tab (Prefix i, then 7; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; `h` lists every recorded day. `hub --once --tab log` prints it as text. `day-log show` prints the same record as markdown.
+The board is the hub's Log tab (Prefix i, then 6; `hub:board`): every section in full, scrolled with j/k, space, g/G, `n`/`N` jumping between sections, `[`/`]` stepping days; `h` lists every recorded day. `hub --once --tab log` prints it as text. `day-log show` prints the same record as markdown.
 
 ## Do NOT
 

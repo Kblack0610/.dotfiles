@@ -376,39 +376,55 @@ pub fn page(
         );
         let t = Table {
             mark: None,
-            header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
+            // `hub_core::table::Row::COLUMNS` for Running, with NEXT after PHASE (the web prints it
+            // under the item) and without SINCE, which the session page carries.
+            header: vec![
+                "ITEM", "PROJECT", "ROW", "EPIC", "PHASE", "NEXT", "ETA", "PR", "CI",
+            ],
             rows: h
                 .running
                 .iter()
                 .take(h.shown)
                 .map(|r| {
                     let ph = r.phases.as_ref();
+                    // Late by `overdue`, the clock the web's Overdue chip counts by.
                     let eta = ph.and_then(|x| x.eta_epoch).map_or("-".into(), |e| {
                         let s = clock(e, now);
-                        if e < now {
+                        if r.overdue {
                             cell(format!("{s} late"), p.warn())
                         } else {
                             s.into()
                         }
                     });
+                    let or_dash = |s: Option<&String>| s.cloned().unwrap_or("-".into());
+                    let ci = match r.ci.as_deref() {
+                        Some(c) if r.ci_failing() => cell(c.to_string(), p.bad()),
+                        Some(c) => c.to_string().into(),
+                        None => "-".into(),
+                    };
                     vec![
                         r.title.clone().into(),
                         r.project.clone().into(),
+                        or_dash(r.row.as_ref()).into(),
+                        or_dash(r.epic.as_ref()).into(),
                         ph.map_or("-".into(), |x| format!("{}/{}", x.done, x.total))
                             .into(),
                         ph.and_then(|x| x.next.clone()).unwrap_or("-".into()).into(),
                         eta,
+                        or_dash(r.pr.as_ref()).into(),
+                        ci,
                     ]
                 })
                 .collect(),
-            keep: vec![0, 2, 4, 1, 3],
+            // ITEM, then what is late or red, then where it sits; NEXT goes first.
+            keep: vec![0, 6, 8, 4, 7, 1, 2, 3, 5],
             flex: Some(0),
             flexmin: 20,
             flexkeep: true,
-            right: vec![2],
-            cap: vec![(1, 22), (3, 40)],
+            right: vec![4],
+            cap: vec![(1, 22), (3, 12), (5, 40)],
         };
-        out.extend(t.fit(w, p.dim()));
+        out.extend(t.fit_wrapped(w, p.dim()).0);
         more(
             &mut out,
             h.running.len(),
@@ -660,6 +676,44 @@ mod tests {
             "{out}"
         );
         assert!(out.lines().all(|l| l.chars().count() <= 60), "{out}");
+    }
+
+    #[test]
+    fn a_running_row_shows_its_row_epic_pr_and_ci_and_narrows_to_what_is_late_or_red() {
+        let mut h = home();
+        h.running = vec![hub_core::home::Running {
+            slug: "s1".into(),
+            title: "fix(x): the thing".into(),
+            project: "dotfiles".into(),
+            row: Some("ar-1494".into()),
+            epic: Some("ar-1292".into()),
+            pr: Some("#1871".into()),
+            ci: Some("fail".into()),
+            ..Default::default()
+        }];
+        let out = viewed(&h, &DataTable::default(), 160);
+        assert!(
+            out.contains("ROW")
+                && out.contains("EPIC")
+                && out.contains(" PR ")
+                && out.contains(" CI"),
+            "{out}"
+        );
+        assert!(
+            ["ar-1494", "ar-1292", "#1871", "fail"]
+                .iter()
+                .all(|s| out.contains(s)),
+            "{out}"
+        );
+        let narrow = viewed(&h, &DataTable::default(), 50);
+        assert!(
+            narrow.contains("fail") && !narrow.contains("ar-1292"),
+            "{narrow}"
+        );
+        // A title wider than the page wraps under ITEM instead of pushing CI off.
+        h.running[0].title = "fix(red): ".to_string() + &"word ".repeat(30);
+        let long = viewed(&h, &DataTable::default(), 80);
+        assert!(long.contains("fail") && long.contains("#1871"), "{long}");
     }
 
     #[test]

@@ -24,13 +24,15 @@ const ctx = vm.createContext({
   URLSearchParams,
   document: doc,
   window: { addEventListener() {} },
-  // A path in `answers` gets that body (a string is a 502 with it as the text); /api/board
+  // A path in `answers` gets that body (a string is a 502 with it as the text, an Error is a
+  // fetch that got no answer, as the browser rejects one); /api/board
   // answers from `board` as the server would, and the rest get []. `sent` is every request.
   answers: {},
   sent: [],
   fetch: async (u, opts) => {
     ctx.sent.push({ u, body: opts && opts.body });
     const a = u.startsWith("/api/board") ? board(u) : ctx.answers[u];
+    if (a instanceof Error) throw a;
     if (typeof a === "string") return { ok: false, status: 502, statusText: "Bad Gateway", text: async () => a, headers: { get: () => "text/plain" } };
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
@@ -50,7 +52,7 @@ const listTable = (kept, total = kept.length, o = {}) => ({
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
   columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "stage", on: "", clear: "", values: [{ value: "alpha", n: kept.length, q: "stage:alpha" }] }], ...o,
+  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
@@ -63,7 +65,7 @@ const tableOf = (q, total, kept) => ({
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
   columns: ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "lane", on: "", clear: "", values: [{ value: "agent", n: 1, q: "lane:agent" }] }],
+  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, on: false, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
@@ -141,7 +143,8 @@ test("a re-read keeps the search box the human is typing in", () => {
   ctx.document.activeElement = undefined;
   assert.equal(box("p-cards").innerHTML, "the box in use");
   assert.match(box("projects-chips").innerHTML, /in flight/);
-  assert.match(box("projects-facets").innerHTML, /every stage/);
+  assert.match(box("projects-facets").innerHTML, /data-tsv/, "the bar keeps its sort dropdown");
+  assert.doesNotMatch(box("projects-facets").innerHTML, /data-fkey="stage"/, "stage's dropdown is in the filter row under its header, not again in the bar");
 });
 
 test("with a project open every card is read, and an answer for a list no longer on screen is dropped", async () => {
@@ -162,6 +165,7 @@ test("with a project open every card is read, and an answer for a list no longer
 const page = {
   project: "demo", flow_line: "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0",
   needs: ["verify: Saves (4 of 4 rows landed, no live proof)"],
+  alerts: { says: "2 watches, 1 firing", level: "bad" },
   systems: [
     { id: "ui", head: "ui  25%  1 feature, 0 done  criteria 5 of 7", closed: "+1 closed, 1 verified", epics: [{ id: "de-9", line: "Menus  25%  [rows]  behind", behind: true, leaves: [
       { id: "de-1", line: "[ ] de-1  feat: wire the pause key  m", done: false },
@@ -186,6 +190,7 @@ test("an opened card reads its page once and shows Needs you, then open folds wi
   await settle();
   head = box("p-head").innerHTML;
   assert.match(head, /flow: ideas 3 \| briefs 1/);
+  assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
   assert.match(head, /Needs you <span class="muted">1<\/span><\/h2><div class="card"><div class="qlate">verify: Saves/);
   // Build by system is always shown, above Needs you: a fold per system with an epic, a fold per
   // epic over its tasks, an open task a link to its row, a system with no epic only its line.
@@ -354,7 +359,7 @@ const deliv = (o = {}) => {
       q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
       states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
       columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-      facets: [{ key: "sys", on: "", clear: "", values: [{ value: "ui", n: 1, q: "sys:ui" }] }],
+      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, on: false, q: "sys:ui" }] }],
     },
     ...o,
   };
@@ -407,4 +412,14 @@ test("a failed Deliverables read says so and never shows an empty table", async 
   const html = box("p-deliv").innerHTML;
   assert.match(html, /class="card err".*fleet-bench: not found/);
   assert.doesNotMatch(html, /<table/);
+});
+
+test("a page read that gets no answer says agent-web did not answer, never a bare network error", async () => {
+  ctx.answers["/api/projects/game/page?x=1"] = new TypeError("NetworkError when attempting to fetch resource.");
+  await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx),
+    { message: "agent-web did not answer /api/projects/game/page (NetworkError when attempting to fetch resource.). It may be restarting: retry in a few seconds." });
+  const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+  ctx.answers["/api/projects/game/page?x=1"] = abort;
+  await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx), (e) => e === abort);
+  delete ctx.answers["/api/projects/game/page?x=1"];
 });

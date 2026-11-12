@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list and its conversation, the Fleet runner rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab, the Costs tab and the tab skeleton they share (tblTab)
-# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,convo,fleet,infra,jobs,schedules,releases,costs,table}.test.mjs); skips where node is absent.
+# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,convo,fleet,alerts,infra,jobs,schedules,releases,costs,table}.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -53,8 +53,13 @@ setup() {
   assert_success
 }
 
-@test "agent-web infra.js red fixes and red now: node unit tests pass" {
+@test "agent-web infra.js the Infra tab: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/infra.test.mjs"
+  assert_success
+}
+
+@test "agent-web alerts.js the Alerts tab: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/alerts.test.mjs"
   assert_success
 }
 

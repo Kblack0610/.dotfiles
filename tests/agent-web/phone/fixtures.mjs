@@ -23,7 +23,7 @@ const pick = (list, i) => list[i % list.length];
 
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 function facet(key, values) {
-  return { key, on: null, clear: "", values: values.map((value, i) => ({ value, n: values.length - i, q: `${key}:${value}` })) };
+  return { key, on: [], clear: "", values: values.map((value, i) => ({ value, n: values.length - i, on: false, q: `${key}:${value}` })) };
 }
 // A hub_core::table Summary as it serializes; the first state chip keeps every row.
 function table(n, columns, states = ["all"], facets = {}) {
@@ -43,7 +43,8 @@ const home = {
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   flow: { chips: [{ key: "running", label: "running", value: "7", hot: false, to: { tab: "queue", state: "running" } }, { key: "needs", label: "needs you", value: "3", hot: true, to: { tab: "queue", state: "needs you" } }, { key: "ready", label: "ready", value: "12", hot: false, to: { tab: "queue", state: "up next" } }], bottleneck: "review is the slowest stage this week at 41 minutes per PR", error: null, as_of: "13:20", absent: [] },
   vitals: null,
-  running: rows(2, (i) => ({ project: pick(PROJECTS, i), title: TEXT[i], slug: SLUGS[i], started: iso(ago(40 + i * 10)), phases: { done: 1 + i, total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 } })),
+  running: rows(2, (i) => ({ project: pick(PROJECTS, i), title: TEXT[i], slug: SLUGS[i], started: iso(ago(40 + i * 10)), phases: { done: 1 + i, total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
+  running_table: table(2, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
   table: table(6, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
   needs: rows(6, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: TEXT[i], target: `agent-${i}` })),
   proposals: rows(5, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: TEXT[i + 2], created: iso(ago(120 + i * 60)), error: null, why: TEXT[i], evidence: "", does: "queue", expires: null, verb: "queue" })),
@@ -117,7 +118,6 @@ const infra = {
   instant: { cc: [{ labels: { __name__: "cc:overall_status" }, value: 0 }, { labels: { __name__: "cc:asks_open" }, value: 2 },
     ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], finished: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_cores: [], withheld: [] },
 };
-const reds = { open: [{ slug: SLUGS[0], red: TEXT[0], outcome: "", queued: iso(ago(30)), pr: "", pr_url: "" }], settled: [], summary: "1 open" };
 const jobs = {
   table: table(7, ["state", "source", "name", "started", "took", "result", "detail"], ["all", "running", "queued", "done", "failed"], { source: ["forgejo", "github", "local"], result: ["ok", "failed"] }),
   jobs: rows(7, (i) => ({ state: pick(["running", "done", "failed"], i), source: pick(["forgejo", "github", "local"], i), name: `Tests (EditMode) ${SLUGS[i]}`, started: ago(10 + i * 11), finished: i % 3 ? ago(i * 3) : null, secs: 240 + i * 90, result: pick(["", "ok", "failed"], i), ok: i % 3 === 1, runs: 1, next: null, url: "https://github.com/Kblack0610/.dotfiles/actions/runs/1", log: null, detail: TEXT[i] })),
@@ -153,6 +153,21 @@ const fleet = {
   who: rows(6, (i) => ({ key: `who-${i}`, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `fleet-${SLUGS[i]}`, state: pick(["working", "held", "needs you"], i), activity: pick(["editing", "reading", "gate"], i), since: ago(20 + i * 15), for: `${20 + i * 15}m`, doing: TEXT[i], under: "", project: pick(PROJECTS, i), opens: "", kids: 0 })),
   hidden: 0, legend: [], at: NOW, errors: [], workers: [],
   dispatch: { recent: [], eval: { rules: [], prompt_sha: "" } }, judge: { prompt: "", verdicts: [], eval: { rules: [], prompt_sha: "" } },
+};
+
+// Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.
+const alertRows = rows(6, (i) => ({ sev: pick(["high", "normal", "low"], i), what: SLUGS[i], source: pick(["sentinel", "red_now", "infra"], i), since: ago(20 + i * 45),
+  owner: i % 2 ? "-" : `${SLUGS[i]} fixing`, state: pick(["fixing", "no owner", "error"], i), slug: i % 2 ? undefined : SLUGS[i], about: TEXT[i], place: TEXT[i + 1], action: TEXT[i + 2] || "", evidence: "" }));
+const alerts = {
+  at: NOW, level: "red", health: [{ name: "k3s", level: "red" }, { name: "ci", level: "ok" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
+  firing: alertRows, rows: alertRows,
+  table: table(6, ["sev", "what", "source", "since", "owner", "state"], ["all", "trip", "error", "no owner"], { sev: ["high", "normal", "low"], source: ["sentinel", "red_now", "infra"], state: ["fixing", "no owner", "error"] }),
+  fixes: { open: [{ slug: SLUGS[0], red: TEXT[0], outcome: "fixing", queued: iso(ago(30)), pr: "", pr_url: "" }], settled: [], summary: "1 open" },
+  history: rows(3, (i) => ({ at: ago(30 + i * 60), actor: "sentinel", verb: "tripped", text: `Sentinel: ${TEXT[i]}`, source: "agent-notify" })),
+  watches: rows(4, (i) => ({ name: SLUGS[i], state: pick(["TRIP", "ERROR", "OK", "new"], i), severity: "high", since: ago(40), lastrun: ago(2), lasttrip: null, place: TEXT[i], what: "", action: "", evidence: "" })),
+  watches_folded: false,
+  counts: { firing: 6, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1 },
+  errors: [],
 };
 
 // Schedules: hub_core::schedules.
@@ -230,7 +245,7 @@ export const FIXTURES = {
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
-  "/api/infra": infra, "/api/reds": reds, "/api/jobs": jobs,
+  "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
   "/api/fleet": fleet, "/api/schedules": schedules, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
 };

@@ -29,13 +29,14 @@ const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn"
 let relCh = null;
 const chKey = (r) => `${r.project}|${r.id}`;
 
-const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], last_deploy: ["last deploy"] };
+const REL_COLS = { project: ["app"], live: ["live"], status: ["status"], channels: ["channels"], released: ["released"], last_deploy: ["last deploy"] };
 
 function releaseRow(a) {
   const open = relKey(a) === relst.sel;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(a))}">` +
     `<td>${esc(a.project)}</td><td class="wrap">${esc(a.live_text)}</td><td class="${relClass(a.level)}">${esc(a.status_text)}</td>` +
-    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
+    `<td class="wrap${a.unread ? " warn" : ""}">${esc(a.channels_text)}</td><td class="muted">${esc(a.released_text)}</td>` +
+    `<td class="${relClass(a.deploy_level)}">${esc(a.last_deploy_text)}</td></tr>`;
   return open ? row + appDetail(a) : row;
 }
 
@@ -52,18 +53,36 @@ function channelRow(r) {
 const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
-// The opened app: its headline env's channels, the other envs in a fold that starts open, then what its newest tag shipped.
+// The opened app: its headline env's channels, the other envs in a fold that starts open, its
+// release history, then what the picked tag shipped.
 function appDetail(a) {
   const lead = a.channels.slice(0, a.lead), rest = a.channels.slice(a.lead);
   const others = rest.length
     ? cfold(`rel-env:${a.project}`, `<b>${rest.length} other channel${rest.length === 1 ? "" : "s"}</b> <span class="muted">${esc(a.others_text)}</span>`, chTable(rest), REL_OPEN, true)
     : "";
-  return `<tr class="wdet"><td colspan="5"><div class="sdet">${chTable(lead)}${others}` +
+  return `<tr class="wdet"><td colspan="6"><div class="sdet">${chTable(lead)}${others}${releaseHistory(a)}` +
     `<div class="cline"><b>Changelog</b> ${releaseChangelog(a)}</div></div></td></tr>`;
 }
 
+// Which tags a history lists, as the collector named the line.
+const LINE_SAYS = { release: "release tags", build: "build tags (no release tag yet)" };
+
+// The opened app's releases, newest first: when each was tagged, the one before it, and the
+// channels it reached (hub_core::release_graph). A click shows that tag's changelog below.
+function releaseHistory(a) {
+  const h = a.history || [];
+  if (!h.length) return `<div class="cline"><b>Releases</b> <span class="muted">no tags read</span></div>`;
+  const shown = relcl.project === a.project ? relcl.data?.tag : null;
+  const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
+    `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
+    `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td></tr>`).join("");
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th></tr>${rows}</table></div>`;
+  return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
+}
+
 function releaseSide(s, text) {
-  return esc(text) + ` <span class="muted">from ${esc(s.source)}${s.image ? ", image " + esc(s.image) : ""}</span>` +
+  return esc(text) + ` <span class="muted">from ${esc(s.source)}${s.image ? ", image " + esc(s.image) : ""}` +
+    `${s.build ? ", build " + esc(s.build) : ""}${s.reason ? ": " + esc(s.reason) : ""}</span>` +
     (s.error ? ` <span class="warn">${esc(s.error)}</span>` : "");
 }
 
@@ -105,7 +124,7 @@ function releaseChangelog(r) {
 
 function releaseDeploy(d) {
   const run = /^https:/.test(d.url || "") ? ` <a href="${esc(d.url)}" target="_blank" rel="noopener">run</a>` : "";
-  return `<div>${when(d.at)} ${esc(d.version)} <span class="${d.state === "fail" ? "warn" : ""}">${esc(d.state)}</span>${run}</div>`;
+  return `<div>${when(d.at)} ${esc(d.version)}${d.build ? ` <span class="muted">build ${esc(d.build)}</span>` : ""} <span class="${d.state === "fail" ? "warn" : ""}">${esc(d.state)}</span>${run}</div>`;
 }
 
 // An opened channel: both sides with their sources, its deploys, watches and deps.
@@ -258,8 +277,9 @@ function buildsHead(d) {
 function releaseBuilds() {
   if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
   if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
+  const body = tblBodyFirst(bld.data.table, () => buildsBody(bld.data));
   return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
-    `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
+    `<div id="bld-body">${body}</div></div>`;
 }
 
 // A run's jobs and its failed-job log, read when its row opens and never before.
@@ -362,8 +382,9 @@ function testsHead(d) {
 function releaseTests() {
   if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>`;
+  const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
   return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
-    `<div id="tst-body">${testsBody(tst.data)}</div></div>`;
+    `<div id="tst-body">${body}</div></div>`;
 }
 
 // A suite's tests, read when its row opens.
@@ -392,6 +413,8 @@ $("releases").addEventListener("click", (e) => {
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
+  const rh = t.closest("tr.rh");
+  if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }
   const ch = t.closest("tr.rc");
   if (ch) { relCh = relCh === ch.dataset.ch ? null : ch.dataset.ch; relst.render(); return; }
   if (t.closest(".wdet")) return;

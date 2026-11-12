@@ -356,7 +356,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$second" ]
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
+  assert_equal "$(cut -f2 "$FLEET_SHEPHERD_DIR/.unhandled")" 1
   # a STALLED row is urgent too, however young the last pass, and so is each red the producers write
   live "$(pass_id)" idle
   doc "[$(row c STALLED false false)]"
@@ -1003,7 +1003,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'unhandled: watch: queue-starved tripped (high)'
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$id" ]
-  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
+  assert_equal "$(cut -f2 "$FLEET_SHEPHERD_DIR/.unhandled")" 1
 }
 
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
@@ -1377,6 +1377,30 @@ gw_accts() {
   run "$SH" stuck
   assert_success
   assert_output --partial 'passing: 1 due'
+}
+
+@test "two checks that each owe a different line are no streak: only the same line left twice is stuck" {
+  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  "$SH" check >/dev/null
+  # the pass handled b and left a, and c came due and is handed
+  doc "[$(row a DONE false false), $(row b LANDED true true), $(row c DONE false false)]"
+  run checked
+  assert_line --index 0 'unhandled: nudge DONE: a f-a'
+  # the next pass handled a and left c: a different line owed at the second check in a row
+  doc "[$(row a DONE true true), $(row b LANDED true true), $(row c DONE false false)]"
+  run checked
+  assert_line --index 0 'unhandled: nudge DONE: c f-c'
+  refute_output --partial 'nudge DONE: a'
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
+  run "$SH" stuck
+  assert_success
+  # Negative control: the same line left at the next check too is the streak
+  "$SH" check >/dev/null
+  run "$SH" stuck
+  assert_failure 1
+  assert_line 'stuck: an unhandled due line at 2 checks in a row'
+  assert_line 'unhandled: nudge DONE: c f-c'
 }
 
 @test "stuck: lines due and no pass started in an hour, whatever the lease says; a recent pass or nothing due is passing" {

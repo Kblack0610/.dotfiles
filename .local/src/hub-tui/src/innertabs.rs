@@ -60,11 +60,12 @@ mod tests {
     #[test]
     fn named_is_strict_so_a_pinned_or_unknown_word_keeps_the_inner_tab_shown() {
         let infra = layout::resolve("infra").unwrap();
-        assert_eq!(named(infra, "ci"), Some("machines"));
+        assert_eq!(named(infra, "ci"), Some("ci"));
+        assert_eq!(named(infra, "governor"), Some("machines"));
         assert_eq!(named(infra, " Cloud "), Some("cloud"));
         assert_eq!(named(infra, "red"), None);
         assert_eq!(named(infra, "nope"), None);
-        assert_eq!(step(infra, "reds", true), "cloud");
+        assert_eq!(step(infra, "machines", true), "cloud");
     }
 
     #[test]

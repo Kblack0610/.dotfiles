@@ -34,7 +34,7 @@
 # A board item starts while the human is away, or within DISPATCH_PRESENT_PER_HOUR while they are here.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
-# row's text changes or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
+# row's judged text changes (row_sig) or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
 # to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
 # running its kind's entry skill (kinds.json; /one-shot for code), tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
@@ -81,6 +81,8 @@ unset _k _v
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
 # here so a policy edit re-judges rows (policy_sig), and for the rule ids a verdict may name.
 : "${DISPATCH_POLICY:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${PROMPT:-}")}"
+# Its reply shape is the conf's SCHEMA; each call holds it to exactly the rows it sends (judge).
+: "${DISPATCH_SCHEMA:=$(. "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/dispatch-judge.conf" 2>/dev/null; printf '%s' "${SCHEMA:-}")}"
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
@@ -139,6 +141,8 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 : "${DISPATCH_REQUESTED_FLOOR:=4}"
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
+# 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
+: "${DISPATCH_EPIC_VERIFY:=1}"
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
@@ -425,6 +429,19 @@ nobody_why() {
 }
 
 sig() { sha256sum | cut -c1-12; }
+
+# row_sig <row text> -> a verdict's cache key: the sig of the text the judge rules on, whitespace
+# squeezed. The trailing <!-- --> comment, #of/ links and the priority tags (#urgent #high #low) are
+# left out: no verdict field reads them, and triage's --backlog --link and --priority passes add them
+# to hundreds of rows at once. The type(area) prefix stays: area is judged. Pure bash: it runs per row.
+row_sig() {
+  local w o="" t=()
+  read -ra t <<<"${1%%<!--*}"
+  for w in "${t[@]+"${t[@]}"}"; do
+    case "$w" in '#of/'*|'#urgent'|'#high'|'#low') ;; *) o+="${o:+ }$w" ;; esac
+  done
+  printf '%s' "$o" | sig
+}
 
 # policy_sig -> changes whenever the policy does. It dates a verdict (fresh or stale), it does not void
 # one: an old verdict stays in force while the rule it names is in the policy (usable) and the row's
@@ -1010,7 +1027,7 @@ cmd_candidates() {
             rank=99 worker='' tier=$(row_tier "$text"); tier=${tier:-null}
             nobody=$(nobody_why "$table" "$name" "$lane" "$text")
           fi
-          line=$(printf '%s' "$text" | sig)
+          line=$(row_sig "$text")
           x=${DET["$name"$'\t'"$lane"$'\t'"$key"]:-$'0\t""'}
           planned=${x%%$'\t'*} dj=${x#*$'\t'}
           dsig=$(detail_sig "$dj")
@@ -1040,10 +1057,12 @@ cmd_candidates() {
 
 # judge <candidates> -- one model call for the unjudged rows; every verdict lands in the cache. Each
 # names the policy rule that decided it (`rule`, an id judge_rules reads from the policy) and its
-# call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
-# saying why: the call failed, the reply named no rule of the policy, or it left the row out.
+# call (`judge_call`, its calls.jsonl line). Rows the reply left out are asked for once more in a
+# call of their own: on 2026-11-11 ucp-469 was left out at 07:18 and judged at 07:33, but its error
+# verdict held runner-score red for 24h. A row the calls could not judge gets an `error` verdict
+# saying why: the call failed, the reply named no rule of the policy, or both calls left it out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows
+  local cands="$1" verdicts cid rc missing rules
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -1055,11 +1074,50 @@ judge() {
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
       | sort_by(.round, (.row.cleanup // 1), .i) | .[:$max][].row' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
+  [ -z "$DISPATCH_SCHEMA" ] || jq -e '.properties.verdicts.type == "array"' "$DISPATCH_SCHEMA" >/dev/null 2>&1 ||
+    { JUDGE_WHY="no readable schema with a verdicts array at $DISPATCH_SCHEMA"; say "$JUDGE_WHY"; return 1; }
+  mkdir -p "$DIR"
+  cid=$(judge_call_id)
+  judge_ask "$cands" "$cid" "$rules"; rc=$?
+  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
+  if [ "$rc" = "$EX_BUDGET" ]; then touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
+  # A pass that could not judge must not read as "no row qualifies".
+  if [ "$rc" != 0 ] || [ -z "$JUDGE_VERDICTS" ]; then
+    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
+    say "judge $JUDGE_WHY for $(wc -l <<<"$cands") row(s)${JUDGE_REPLY:+: $JUDGE_REPLY}"; return 1
+  fi
+  verdicts=$JUDGE_VERDICTS
+  printf '%s\n' "$verdicts" >> "$VERDICTS"
+  size_back "$cands" "$verdicts"
+  missing=$(judge_missing "$cands" "$verdicts")
+  [ -n "$missing" ] || return 0
+  say "judge: the reply left out $(wc -l <<<"$missing") row(s), asking again for them"
+  cid=$(judge_call_id)
+  judge_ask "$missing" "$cid" "$rules"; rc=$?
+  # A retry stopped at its budget leaves no error line either; the pass names the stop (settle).
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="the retry for $(wc -l <<<"$missing") left-out row(s) $JUDGE_WHY"; say "judge: $JUDGE_WHY"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then
+    verdict_errors "$missing" "the reply had no verdict for this row, and the retry $JUDGE_WHY" "$cid" >> "$VERDICTS"
+    return 0
+  fi
+  [ -z "$JUDGE_VERDICTS" ] || { printf '%s\n' "$JUDGE_VERDICTS" >> "$VERDICTS"; size_back "$missing" "$JUDGE_VERDICTS"; }
+  verdict_errors "$(judge_missing "$missing" "$JUDGE_VERDICTS")" "neither the reply nor its retry had a verdict for this row" "$cid" >> "$VERDICTS"
+}
+
+# judge_ask <rows> <call id> <policy rule ids> -- one model call for <rows>; on success sets
+# JUDGE_VERDICTS to the reply's verdict lines for <rows> (a rule the policy lacks is an `error` line;
+# a verdict on a row not asked is dropped, so a retry cannot re-record one judged already), else
+# JUDGE_WHY to why and returns the call's code (EX_BUDGET for a budget stop). JUDGE_REPLY is the
+# reply's head, for the log line of a reply with no verdicts.
+judge_ask() {
+  local rows n prompt wd out rc err schema=()
+  JUDGE_VERDICTS='' JUDGE_REPLY=''
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
-  # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
-  # The count is of the numbered lines themselves, so the two never disagree.
+  # each dropping one row whole (hc-122, ar-269), and a dropped row is asked for again.
+  # The count is of the numbered lines themselves, so the two never disagree. Asking was not
+  # enough (2026-11-11, ucp-469 dropped from 41), so the call's schema holds the reply to it too.
   rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
-    + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
+    + (if (.details // "") != "" then {details} else {} end)' <<<"$1" | awk '{ print NR ". " $0 }')
   n=$(grep -c . <<<"$rows")
   prompt="## Rows to judge
 
@@ -1072,47 +1130,41 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
   wd=$(mktemp -d)
-  cid=$(judge_call_id)
+  # Claude Code checks the reply against this schema and hands a short one back to the model in
+  # the same call, so a dropped row is usually answered there; judge asks once more for the rest.
+  if [ -n "$DISPATCH_SCHEMA" ]; then
+    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+      { rm -rf -- "$wd"; JUDGE_WHY="could not read the schema at $DISPATCH_SCHEMA"; return 1; }
+    schema=(--schema "$wd/schema.json")
+  fi
   # shellcheck disable=SC2086 # the command is a word list by design (overridable in tests)
-  out=$(cd "$wd" && AGENTCTL_CALL_ID="$cid" $DISPATCH_JUDGE_CMD -p "$prompt" 2>"$wd/err")
+  out=$(cd "$wd" && AGENTCTL_CALL_ID="$2" $DISPATCH_JUDGE_CMD ${schema[@]+"${schema[@]}"} -p "$prompt" 2>"$wd/err")
   rc=$?
   err=$(head -c 200 "$wd/err" | tr '\n' ' ')
   rm -rf -- "$wd"
-  mkdir -p "$DIR"
-  # A budget stop is no verdict on any row, so it leaves no error line and they are judged again.
-  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; touch "$VERDICTS"; say "judge $JUDGE_WHY"; return "$rc"; fi
-  if [ "$rc" != 0 ]; then
-    JUDGE_WHY="call failed (exit $rc)${err:+: $err}"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge $JUDGE_WHY"; return 1
-  fi
+  if [ "$rc" = "$EX_BUDGET" ]; then JUDGE_WHY="stopped at its budget"; return "$rc"; fi
+  if [ "$rc" != 0 ]; then JUDGE_WHY="call failed (exit $rc)${err:+: $err}"; return "$rc"; fi
   # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
-  verdicts=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
-    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
-      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$cands")" '
+  JUDGE_VERDICTS=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
+    jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$2" --argjson rules "$3" \
+      --argjson c "$(jq -sc 'map({k: ([.project, .lane, .key] | tostring), line, dsig})' <<<"$1")" '
       select(type == "object"
         and (.project | type) == "string" and (.lane | type) == "string"
         and (.key | type) == "string" and (.verdict == "dispatch" or .verdict == "skip"))
-      | ([.project, .lane, .key] | tostring) as $k
+      | ([.project, .lane, .key] | tostring) as $k | select(any($c[]; .k == $k))
       | {project, lane, key, tier, size, area, clear, agent_only, tier3_only, verdict, rule, reason, at: $at,
          policy: $sig, line: ([$c[] | select(.k == $k) | .line] | first),
          dsig: ([$c[] | select(.k == $k) | .dsig] | first), judge_call: $call}
       | . as $v | if any($rules[]; . == $v.rule) then $v
         else {project, lane, key, verdict: "error", reason: "rule \(.rule // "" | tojson) is not in the policy",
               at, policy, line, judge_call} end')
-  # A pass that could not judge must not read as "no row qualifies".
-  if [ -z "$verdicts" ]; then
-    JUDGE_WHY="the reply had no verdicts"
-    verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
-    say "judge returned no verdicts for $(wc -l <<<"$cands") row(s): ${out:0:200}"; return 1
-  fi
-  missing=$(jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$verdicts")" \
-    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$cands")
-  {
-    printf '%s\n' "$verdicts"
-    verdict_errors "$missing" "the reply had no verdict for this row" "$cid"
-  } >> "$VERDICTS"
-  size_back "$cands" "$verdicts"
+  [ -n "$JUDGE_VERDICTS" ] || { JUDGE_WHY="the reply had no verdicts"; JUDGE_REPLY=${out:0:200}; }
+}
+
+# judge_missing <rows> <verdicts> -> each of <rows> no verdict line names.
+judge_missing() {
+  jq -c --argjson got "$(jq -sc 'map([.project, .lane, .key] | tostring)' <<<"$2")" \
+    'select(([.project, .lane, .key] | tostring) as $k | any($got[]; . == $k) | not)' <<<"$1"
 }
 
 # size_back <candidates> <verdicts> -- tag each unsized row (with an id) the judge sized with that
@@ -1125,7 +1177,7 @@ size_back() {
     np "$prof" ptask "$p" "${flag[@]}" tag --add "size/$s" "$key" >/dev/null 2>&1 || { say "size_back: could not tag $p $key size/$s"; continue; }
     raw=$(row_line "$prof" "$p" "$lane" "$key")
     [ -n "$raw" ] || continue
-    jq -c --arg p "$p" --arg l "$lane" --arg k "$key" --arg line "$(printf '%s' "$raw" | sig)" \
+    jq -c --arg p "$p" --arg l "$lane" --arg k "$key" --arg line "$(row_sig "$raw")" \
       'select(.project == $p and .lane == $l and .key == $k) | . + {line: $line}' <<<"$2" >> "$VERDICTS"
   done < <(jq -r --slurpfile c <(printf '%s\n' "$1") '
     ($c | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
@@ -1182,7 +1234,7 @@ plan_skips() {
       [ "$why" = unclear ] || [ "$size" = L ] || [ "$size" = XL ] || continue
     fi
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
-    [ "$(printf '%s' "$raw" | sig)" = "$line" ] || continue
+    [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     add=(--add plan); [ "$req" = true ] && add+=(--add go)
     if np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1; then
@@ -1322,6 +1374,23 @@ dropped_tools() {
   jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${drop//,/|}" && return 0
   printf ' --disallowedTools %s' "$drop"
 }
+
+# claude_effort <item json> -- " --effort <level>" for a claude start or resume of an item that carries
+# an effort (a canary lane's), or nothing. A level claude does not take refuses the start (rc 2), so a
+# typo never runs, and scores, at the default effort under the lane's name.
+claude_effort() {
+  local e; e=$(jq -r '.effort // empty' <<<"${1:-null}")
+  case "$e" in
+    '') ;;
+    low | medium | high | xhigh | max) printf ' --effort %s' "$e" ;;
+    *) say "start: effort '$e' is not one claude takes (low, medium, high, xhigh, max)"; return 2 ;;
+  esac
+}
+
+# claude_pin <item json> -> the model a claude item names before any start ran it (a canary lane's,
+# fleet-bench canary queue --model): a pin like --model, so the lane is the model it says. A model a
+# start recorded (the item has sessions) is not one, so a requeued item is picked afresh.
+claude_pin() { jq -r 'select((.agent // "claude") == "claude" and (.sessions // "") == "") | .model // empty' <<<"${1:-null}"; }
 
 # lane_sandbox <cwd> -- set the caller's sbx_env and sbx_flags for a claude start under
 # DISPATCH_SANDBOX_PROFILE, both empty when the knob is empty (the lane runs as before). The profile
@@ -1532,7 +1601,7 @@ resume_thread() {
 #                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -1650,8 +1719,10 @@ cmd_start() {
       gateway_launch "$rh" "$(jq -r '.model // empty' <<<"$it")" "$it" "$(item_brief "$it" "$rh")" || return
     else
       launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
+      eff=$(claude_effort "$it") || return 2
+      [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"${it:-null}")   # a resume keeps the model its start ran
       lane_sandbox "$cwd" || return 1
-      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     fi
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
@@ -1675,12 +1746,15 @@ cmd_start() {
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
+      # A pin is not the lane's pick, so like --model it logs no lane run.
+      [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
       [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
+      eff=$(claude_effort "$it") || return 2
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
@@ -1897,8 +1971,7 @@ ask_decisions() {
 # slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
 # resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
-# (salvage_line). A repo whose canonical forge is Forgejo (forge_canonical) cannot run agent-land, so
-# its brief names one-shot's Forgejo landing instead.
+# (salvage_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
@@ -1924,12 +1997,15 @@ item_brief() {
   kind=$(item_kind "$it")
   [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
   entry=${entry:-/one-shot}
+  # A verify item (reconcile_epics) carries its whole method in its task: no entry skill, and it
+  # closes on proof, whatever kind its title parses as.
+  [[ "$tags" != *" verify "* ]] || { entry='' exit_=proof kind=verify; }
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
   case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
     [ "$mode" != plan ] || plan_stage "$slug" "$tags"
-    printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
-  elif [ "$mode" != plan ]; then
+    [ -z "$entry" ] || printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
+  elif [ "$mode" != plan ] && [ -n "$entry" ]; then
     printf '%s%s ' "$entry" "$pr_only"
   fi
   jq -r .task <<<"$it"
@@ -1949,8 +2025,6 @@ item_brief() {
     proof_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")" "$harness"
     return
   fi
-  local forgejo=
-  forge_canonical "$(repo_dir "$(jq -r .project <<<"$it")")" && forgejo=1
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
@@ -1959,16 +2033,12 @@ item_brief() {
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
-    if [ -n "$forgejo" ]; then
-      echo "This repo's canonical forge is Forgejo, where agent-land cannot run: land it as ~/.claude/skills/one-shot/references/landing.md \"Forgejo repo\" says, recording the PR and merged: on $slug."
-    else
-      echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
-    fi
+    echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
   fi
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   if headless "$harness"; then
     echo "Right after the PR opens, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
-    [ -n "$pr_only$forgejo" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
+    [ -n "$pr_only" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Run final-pass (~/.claude/skills/final-pass/SKILL.md) on the diff before the PR opens; skip only its /simplify call. Skip wind-down (this run ends when you stop) and any other step that needs a Claude slash command, and name each step you skipped in the PR body."
     no_human "$slug"
     return
@@ -2073,7 +2143,7 @@ proof_brief() {
   project=${project:-$4}
   [ "${lane:-agent}" = agent ] && flag=' --agent'
   [ -z "$prof" ] || pf=" --profile $prof"
-  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on the live proof its skill names, never a PR or agent-land."
+  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on live proof, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
   if headless "$5"; then no_human "$slug"; else ask_rule; fi
@@ -2386,11 +2456,12 @@ settle_item() {
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
     # when it exited, and the next start resumes its thread there (resume_thread). A run started before
-    # its `after:` item finished (a hand start does not check holds) waits for that item the same way.
+    # its `after:` items finished (a hand start does not check holds) waits for them the same way.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
-    after=$(jq -r '.after // ""' <<<"$it")
-    [ -z "$after" ] || case "$(item_state "$after")" in queued | running | waiting | review)
-      requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    for after in $(jq -r '.after // ""' <<<"$it"); do
+      case "$(item_state "$after")" in queued | running | waiting | review)
+        requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+    done
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
@@ -2905,13 +2976,9 @@ item_repo() {
   printf '%s' "${url%.git}"
 }
 
-# scope_dir <project> -> the checkout of a fleet-bench project name, which may be an alias
+# scope_dir <project> -> the checkout of a fleet-bench project name, which may be another spelling
 # (`platform`) the queue never uses.
-scope_dir() {
-  local p
-  p=$(jq -r --arg s "$1" '.aliases[$s] // $s' "$DISPATCH_PROJECT_MAP" 2>/dev/null) || p=$1
-  repo_dir "${p:-$1}"
-}
+scope_dir() { repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_canonical "$1")"; }
 
 # held_by <item json> <findings> -> "<rule> <scope>" of each firing finding that holds this item,
 # comma-joined, else nothing. A starved pool holds the items whose repo has jobs waiting in it (all
@@ -2970,6 +3037,7 @@ lane_pick() {
   local it size kind
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
+  [ -z "$(claude_pin "$it")" ] || return 0   # a pinned model is the human's or a canary's pick, as --model is
   size=$(item_size "$it"); kind=$(item_kind "$it")
   model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} ${kind:+--kind "$kind"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
@@ -3137,10 +3205,13 @@ held_state() {
   printf '%s %s\n' "$since" "$(cat "$dir/held_why" 2>/dev/null)"
 }
 
-# held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the night and
-# plan counts, the item that waits, the run-out forecast and the parentheses.
+# held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the pass's
+# notes ahead of its gate (night and plan counts, a judge that could not judge), the item that
+# waits, the run-out forecast and the parentheses.
 held_short() {
-  sed -E 's/^(queued [0-9]+ for the night|tagged [0-9]+ for a plan); //g
+  # A judge's reason can hold its own parentheses ("left-out row(s)") but never "; ". A "budget:"
+  # lead is the stop itself (a pass with nothing else to do) and stays, the notes after it go.
+  sed -E 's/^(budget: could not judge the new rows[^;]*; )?((queued [0-9]+ for the night|tagged [0-9]+ for a plan|could not judge the new rows[^;]*); )+/\1/
     s/,? (queue item [^ ]+|every queue item) waits$//
     s/, runs out [^,]* at this rate//
     s/ \([^)]*\)//g' <<<"$1"
@@ -3154,6 +3225,7 @@ held_clears() {
     "finding firing"*) echo "Clears when its finding stops firing" ;;
     "fleet-assess says HOLD"* | "load "* | "real idle "*) echo "Clears when the machine's load falls" ;;
     "github budget"*) echo "Clears when the GitHub API budget refills" ;;
+    "budget: could not judge"*) echo "Clears when dispatch-judge's daily budget resets" ;;
     *) echo "fleet-dispatch run --dry-run names the gate" ;;
   esac
 }
@@ -3534,6 +3606,7 @@ cmd_reap() {
   done
   unstart_orphans
   reconcile_plans
+  reconcile_epics
   return 0
 }
 
@@ -3560,6 +3633,50 @@ reconcile_plans() {
       say "could not queue the phases of $plan: $out"
     fi
   done <<<"$orphans"
+}
+
+# reconcile_epics -- queue one verify item for each open epic whose every leaf has landed (fleet-bench's
+# landed_unverified, read the same way): its session gathers proof of the outcome and closes the epic
+# on it (epic_verify_task), asking the human only when the proof is their word. Nothing else closes a
+# landed epic (lifecycle.md, "Merged is not done"). Its slug carries the epic's done count, so a slug
+# the queue ever held is never queued again: a verify that failed or found gaps waits for a human or
+# for the gap rows to land, which raises the count and queues the next check. A profile with board
+# automation off gets none. Admission never holds its add (`from: auto:epics`, agent-queue admit),
+# however deep the queue: one item per landed epic. Its title's area, `epics`, names no
+# system, so the story row agent-queue files for it links under no standing epic: one that did would
+# be a leaf there, and its close would queue a verify of that epic in turn.
+reconcile_epics() {
+  [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
+  local landed prof project id done_ title slug out rc
+  landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
+    | (.epics // [])[] | select(.open == 0 and .done > 0)
+    | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
+  [ -n "$landed" ] || return 0
+  while IFS=$'\x1f' read -r prof project id done_ title; do
+    slug="verify-$id-$done_"
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
+    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
+    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" \
+      --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+      logline "queued $slug: every leaf of epic $id on $project has landed"
+    elif [ "$rc" -ne "$AQ_EX_FINISHED" ]; then
+      say "could not queue the verify of epic $id on $project: ${out##*$'\n'}"
+    fi
+  done <<<"$landed"
+}
+
+# epic_verify_task <profile> <project> <epic id> <title> -> the task of a verify item (reconcile_epics):
+# what the epic promised, proof of it seen live, and the epic closed on that proof. item_brief gives
+# a `verify` item proof_brief's close (its own story row and the item), never a PR.
+epic_verify_task() {
+  local pf=''
+  [ -z "$1" ] || pf=" --profile $1"
+  echo "Verify epic $3 on $2: \"$4\". Every leaf has landed, so it waits on proof of its outcome, and a PR only proves a leaf landed."
+  echo "Read what it promised: its row on the human sheet and its leaves, plans and PRs (notes$pf projects --roadmap $2 --json). Then see that outcome work live and keep the evidence: a run id, a URL, a screenshot path, a command and its output."
+  echo "When it works, close the epic on that evidence: notes$pf ptask $2 done $3 --proof \"<evidence>\". An open check(...): verify $3 row on the human sheet is this same check: close it with the same proof."
+  echo "When part of it does not work, file one row per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\"), leave the epic open, and close this item with those row ids as its proof: the rows landing queue the epic's next verify."
+  echo "Only when no artifact can prove it (a look, a feel, a play only the human can judge) post one agent-ask naming what to try and what counts as yes, and once they answer yes close the epic with --proof \"human: <their words>\"."
 }
 
 # waiting_sessions -> "<server>/<tmux session>" for each Claude waiting on its human (agent-panel),
@@ -3737,7 +3854,10 @@ settle() {
   esac
   case "${JUDGE_RC:-0}:$1:$2" in
     0:* | *:"could not judge"*) ;;
-    "$EX_BUDGET":NOOP:* | "$EX_BUDGET":BLOCKED:*) set -- BLOCKED "budget: $(judge_failed); $2" ;;
+    "$EX_BUDGET":NOOP:*) set -- BLOCKED "budget: $(judge_failed); $2" ;;
+    # A gate held the pass, so the gate is its reason and the judge's stop a note before it: as a
+    # "budget:" lead it named the judge's daily cap as the stop on every surface (ar-1675).
+    "$EX_BUDGET":BLOCKED:*) set -- BLOCKED "$(judge_failed); $2" ;;
     *:NOOP:* | *:BLOCKED:*) set -- FAILED "$(judge_failed); $2" ;;
     *) set -- "$1" "$(judge_failed); $2" ;;
   esac
@@ -3882,7 +4002,9 @@ fill_now() {
 judge_once() {
   if [ -z "${JUDGE_RC:-}" ]; then
     JUDGE_RC=0
-    [ "$DRY" = 1 ] || { judge "$(unjudged_rows)"; JUDGE_RC=$?; }
+    if [ "$DRY" != 1 ]; then
+      judge "$(unjudged_rows)"; JUDGE_RC=$?
+    fi
   fi
   [ "$JUDGE_RC" = "$EX_BUDGET" ] || return "$JUDGE_RC"
 }
@@ -4095,7 +4217,7 @@ night_rows() {
       [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
-      line=$(printf '%s' "$text" | sig)
+      line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}
       dsig=$(detail_sig "$dj")

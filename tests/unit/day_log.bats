@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # day-log: one record per local day of every merged PR, what is open, what waits on the
-# human and the fleet's telemetry. gh, fleet-bench, agent-usage, agent-hold, agent-queue and
+# human and the fleet's telemetry. The PR store (schedules-sync), fleet-bench, agent-usage, agent-hold, agent-queue and
 # ci-failures are stubs; the notes history and the ci-cost clone are real git repositories.
 
 setup() {
@@ -12,16 +12,22 @@ setup() {
   export DAYLOG_DIR="$HOME/.agent/daylog" DAYLOG_REFS_DIR="$HOME/refs"
   export DAYLOG_STATE="$SANDBOX/state.json" DAYLOG_WATCH_LOG="$SANDBOX/watch.log"
   export DAYLOG_GROUPS="$SANDBOX/groups" DAYLOG_OUTCOMES_DIR="$HOME/.agent/outcomes"
-  export DAYLOG_GH=gh-stub DAYLOG_BENCH_CMD=bench-stub DAYLOG_USAGE_CMD=usage-stub
+  export SCHEDULES_SYNC=ss-stub DAYLOG_AUTHOR=Kblack0610 DAYLOG_BENCH_CMD=bench-stub DAYLOG_USAGE_CMD=usage-stub
   export DAYLOG_HOLD_CMD=hold-stub DAYLOG_UNITY_CMD="echo 2"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"
-  # gh-stub: logs every call; --merged-at serves $GHD/merged, --state=open $GHD/open,
-  # and a $GHD/fail file makes every call fail.
-  cat > "$SANDBOX/bin/gh-stub" <<EOF
+  # ss-stub: the PR store, logging every call; `prs all --state merged` serves $GHD/merged and
+  # --state open $GHD/open as store rows (author kblack0610 unless a row names one), unfiltered by
+  # time, so the day's window is day-log's own. $GHD/fail fails every call; $GHD/stale names a
+  # repo the store is stale for: rc 1, the rest still printed.
+  cat > "$SANDBOX/bin/ss-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$GHD/calls"
 [ -e "$GHD/fail" ] && exit 1
-case "\$*" in *--merged-at*) cat "$GHD/merged" ;; *--state=open*) cat "$GHD/open" ;; esac
+case "\$*" in *"--state merged"*) f="$GHD/merged" st=MERGED ;; *"--state open"*) f="$GHD/open" st=OPEN ;; *) exit 2 ;; esac
+jq -c --arg st "\$st" 'map({forge: "github", repo: (.repository.nameWithOwner // "o/\(.repository.name)"), number, title, url,
+  author: (.author // "kblack0610"), state: \$st, merged_at: (if \$st == "MERGED" then .closedAt else null end),
+  created_at: .createdAt, updated_at: .updatedAt, draft: (.isDraft // false)})' "\$f"
+[ ! -e "$GHD/stale" ] || { echo "\$(cat "$GHD/stale"): PRs last synced 2026-10-28T09:00:00Z, older than 30m" >&2; exit 1; }
 EOF
   cat > "$SANDBOX/bin/bench-stub" <<'EOF'
 #!/usr/bin/env bash
@@ -148,18 +154,44 @@ EOF
 # day_record <day> <jq filter over {merged: []}>: a stored record, for the week
 day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR/$1.json"; }
 
-@test "the day is the LOCAL day: 2026-10-28 in PDT searches 07:00Z to 06:59:59Z next day" {
+@test "the day is the LOCAL day: 2026-10-28 in PDT is 07:00Z to 06:59:59Z next day, read from the PR store" {
+  { pr game 1 'feat: before' 2026-10-28T06:59:59Z; pr game 2 'feat: first' 2026-10-28T07:00:00Z
+    pr game 3 'feat: last' 2026-10-29T06:59:59Z; pr game 4 'feat: after' 2026-10-29T07:00:00Z; } | merged
   run "$SUBJECT" snapshot --date 2026-10-28
   assert_success
-  run grep -o -- '--merged-at [^ ]*' "$GHD/calls"
-  assert_output '--merged-at 2026-10-28T07:00:00Z..2026-10-29T06:59:59Z'
+  run grep -c -- 'prs all --state merged --since 2026-10-28T07:00:00Z' "$GHD/calls"
+  assert_output 1
+  run rec -c '[.merged[].number]' 2026-10-28
+  assert_output '[2,3]'
 }
 
 @test "the day the clocks go back is 25 hours long" {
+  { pr game 1 'feat: last' 2026-11-02T07:59:59Z; pr game 2 'feat: after' 2026-11-02T08:00:00Z; } | merged
   DAYLOG_NOW=1793563200 run "$SUBJECT" snapshot --date 2026-11-01
   assert_success
-  run grep -o -- '--merged-at [^ ]*' "$GHD/calls"
-  assert_output '--merged-at 2026-11-01T07:00:00Z..2026-11-02T07:59:59Z'
+  run grep -c -- '--since 2026-11-01T07:00:00Z' "$GHD/calls"
+  assert_output 1
+  run rec -c '[.merged[].number]' 2026-11-01
+  assert_output '[1]'
+}
+
+@test "only the human's PRs list, matched on the gh login whatever its case; another author's are not" {
+  { pr game 1 'feat: mine' 2026-10-28T20:00:00Z; pr game 2 'feat: theirs' 2026-10-28T20:00:00Z | jq -c '. + {author: "colleague"}'; } | merged
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[.merged[].number]' 2026-10-28
+  assert_output '[1]'
+}
+
+@test "a repo the PR store is stale for is named, keeps the PRs the record had for it, and the rest still list" {
+  { pr game 1 'feat: x' 2026-10-28T20:00:00Z; pr tools 2 'fix: y' 2026-10-28T21:00:00Z; pr web 3 'fix: z' 2026-10-28T22:00:00Z; } | merged
+  "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  pr game 1 'feat: x' 2026-10-28T20:00:00Z | merged
+  echo o/tools > "$GHD/stale"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[[.merged[] | [.repo, .number]], .unreadable]' 2026-10-28
+  assert_output '[[["game",1],["tools",2]],["PR store stale: o/tools"]]'
 }
 
 @test "a merged PR is grouped by its scope, a scope list shares a group, an unmapped scope is its own" {
@@ -176,9 +208,9 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
     '3	hovercraft	hovercraft	Games' '2	story	Raiders	Games' '1	raiders	Raiders	Games')"
 }
 
-@test "a PR carries the project its repo is registered as, an alias, or its name without the dot" {
+@test "a PR carries the project its repo is registered as, another spelling of it, or its name without the dot" {
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  echo '{"paths":{"/x/dev/game":"raiders-game"},"aliases":{"tool_attempt":"tools"}}' > "$PROJECT_MAP_FILE"
+  echo '{"paths":{"/x/dev/game":"raiders-game"},"trackers":{"tools":{"names":["tool_attempt"]}}}' > "$PROJECT_MAP_FILE"
   { pr game 1 'feat: a' 2026-10-28T20:00:00Z; pr tool_attempt 2 'feat: b' 2026-10-28T19:00:00Z
     pr .cfg 3 'feat: c' 2026-10-28T18:00:00Z; } | merged
   pr .cfg 4 'feat: d' 2026-10-28T18:00:00Z | jq -s 'map(. + {createdAt: .closedAt, updatedAt: .closedAt, isDraft: false})' > "$GHD/open"
@@ -226,7 +258,7 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   run "$SUBJECT" snapshot --date 2026-10-28
   assert_success
   run rec -c '[(.merged | length), .unreadable]' 2026-10-28
-  assert_output '[1,["gh merged","gh open"]]'
+  assert_output '[1,["PR store merged","PR store open"]]'
 }
 
 @test "negative control: without a previous record a blind pass has nothing to keep" {
@@ -236,13 +268,13 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output 0
 }
 
-@test "a past day keeps the live sections it last saw and does not ask gh what is open now" {
+@test "a past day keeps the live sections it last saw and does not ask the store what is open now" {
   echo '{"sessions":[{"target":"lab/game-agent-3:1","bucket":"NEEDS","reason":"a prompt","idle_min":5}],"main":[{"repo":"game","reason":"game red: Tests"}],"asks":[]}' > "$DAYLOG_STATE"
   DAYLOG_NOW=1793127600 "$SUBJECT" snapshot --date 2026-10-27    # noon on the 27th, live
   : > "$GHD/calls"
   run "$SUBJECT" snapshot --date 2026-10-27                       # now a past day
   assert_success
-  run grep -c -- --state=open "$GHD/calls"
+  run grep -c -- '--state open' "$GHD/calls"
   assert_output 0
   run rec -c '[.live, .waiting.main[0].repo, .waiting.needs[0].who, .bench.headline, .fleet.unity_runs]' 2026-10-27
   assert_output '[false,"game","game-agent-3","bench 24h: 2 sessions, 3 phases ticked",2]'
@@ -523,7 +555,7 @@ PROM
 
 @test "nightly: CI per repo from ci-failures and ci-cost lands in the record, and a later gather keeps it" {
   ci_clone
-  echo 'forgejo:fj.test/o/fj develop' >> "$DAYLOG_CI"   # ledger-only: never handed to the GitHub readers
+  printf 'forgejo:fj.test/o/fj develop\nprs-only:o/work main\n' >> "$DAYLOG_CI"   # never handed to the GitHub CI readers
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" nightly
   assert_success

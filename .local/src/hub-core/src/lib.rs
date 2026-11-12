@@ -4,8 +4,11 @@
 //! claude-acct, agent-queue, tmux); an async caller wraps it in `spawn_blocking`.
 
 pub mod actions;
+pub mod alertmanager;
+pub mod alerts;
 pub mod boards;
 pub mod briefing;
+pub mod budget;
 pub mod builds;
 pub mod burn;
 pub mod capacity;
@@ -23,6 +26,7 @@ pub mod infra;
 pub mod jobs;
 pub mod junit;
 pub mod layout;
+pub mod links;
 pub mod money;
 pub mod outbox;
 pub mod outcomes;
@@ -31,12 +35,14 @@ pub mod pager;
 pub mod phone;
 pub mod pipeline;
 pub mod plans;
+pub mod power_history;
 pub mod projects;
 pub mod prom;
 pub mod proposals;
 pub mod quarantine;
 pub mod queue;
 pub mod reds;
+pub mod release_graph;
 pub mod releases;
 pub mod run_detail;
 pub mod schedules;

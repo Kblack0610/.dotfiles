@@ -1377,12 +1377,13 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         let yaml =
             "name: n\nwhere: >-\n  GitHub, Org/app, test.yml\n  and multi.yml\nprobe: dream\n";
         let mut w = watch("nightly", "OK");
-        w.place = runner::place(yaml);
+        w.place = runner::field(yaml, "where");
+        assert_eq!(w.place, "GitHub, Org/app, test.yml and multi.yml");
         assert_eq!(
-            runner::place("where: one line\nprobe: x").trim(),
+            runner::field("where: one line\nprobe: x", "where"),
             "one line"
         );
-        assert_eq!(runner::place("name: none"), "");
+        assert_eq!(runner::field("name: none", "where"), "");
 
         let row = |name: &str, words: &[&str]| Schedule {
             name: name.into(),

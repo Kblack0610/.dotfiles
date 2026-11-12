@@ -67,7 +67,7 @@ impl Row for Work {
         "failed",
         "cancelled",
     ];
-    const FACETS: &'static [&'static str] = &["project", "kind"];
+    const FACETS: &'static [&'static str] = &["state", "project", "kind"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["state", "project", "when"];
 
@@ -146,28 +146,6 @@ fn title_kind(title: &str) -> Option<String> {
     (!kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase())).then(|| kind.to_string())
 }
 
-/// The canonical project a day-log row means, through project-map.json's basenames and aliases.
-fn canonical(names: &HashMap<String, String>, project: String) -> String {
-    names.get(&project).cloned().unwrap_or(project)
-}
-
-/// Basename and alias to project name, from project-map.json's text. Unreadable maps to nothing.
-pub fn names_from(map: &str) -> HashMap<String, String> {
-    let v: Value = serde_json::from_str(map).unwrap_or_default();
-    let mut names = HashMap::new();
-    for (path, name) in v["paths"].as_object().into_iter().flatten() {
-        if let (Some(base), Some(name)) = (path.rsplit('/').next(), name.as_str()) {
-            names.insert(base.trim_start_matches('.').to_string(), name.to_string());
-        }
-    }
-    for (alias, name) in v["aliases"].as_object().into_iter().flatten() {
-        if let Some(name) = name.as_str() {
-            names.insert(alias.clone(), name.to_string());
-        }
-    }
-    names
-}
-
 /// What an open PR's row says before its title: that it is a draft, else its CI state.
 fn check_of(v: &Value) -> Option<String> {
     if v["draft"].as_bool() == Some(true) {
@@ -186,12 +164,7 @@ fn tagged(what: String, pr: Option<&Pr>) -> String {
     }
 }
 
-fn pr_of<Tz: TimeZone>(
-    v: &Value,
-    open: bool,
-    names: &HashMap<String, String>,
-    tz: &Tz,
-) -> Option<Pr>
+fn pr_of<Tz: TimeZone>(v: &Value, open: bool, tz: &Tz) -> Option<Pr>
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -202,7 +175,7 @@ where
     Some(Pr {
         repo: v["repo"].as_str().unwrap_or("").to_string(),
         number: number.to_string(),
-        project: canonical(names, boards::pr_project(v)),
+        project: boards::pr_project(v),
         title: v["title"].as_str().unwrap_or("").to_string(),
         url: url.to_string(),
         at: v[stamp].as_str().and_then(|t| local(t, tz)),
@@ -326,7 +299,6 @@ fn pr_row(p: &Pr) -> Work {
 pub fn gather<Tz: TimeZone>(
     items: &[Item],
     days: &[(String, Value)],
-    names: &HashMap<String, String>,
     tz: &Tz,
 ) -> Gathered
 where
@@ -337,7 +309,7 @@ where
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|p| pr_of(p, open, names, tz))
+            .filter_map(|p| pr_of(p, open, tz))
             .collect()
     };
     let merged = days.iter().flat_map(|(_, r)| list(r, "merged", false));
@@ -418,10 +390,7 @@ pub fn read(runner: &dyn Runner) -> Gathered {
             }
         })
         .collect();
-    let names = std::fs::read_to_string(crate::projects::map_path())
-        .map(|m| names_from(&m))
-        .unwrap_or_default();
-    let mut g = gather(&items, &days, &names, &chrono::Local);
+    let mut g = gather(&items, &days, &chrono::Local);
     g.errors = errors;
     g
 }
@@ -490,7 +459,7 @@ mod tests {
     fn work(items: &[Item], days: Vec<(&str, Value)>) -> Vec<Work> {
         let days: Vec<(String, Value)> =
             days.into_iter().map(|(d, r)| (d.to_string(), r)).collect();
-        gather(items, &days, &HashMap::new(), &Utc).rows
+        gather(items, &days, &Utc).rows
     }
 
     const AT: &str = "2026-11-08T09:30:00Z";
@@ -664,20 +633,6 @@ mod tests {
     }
 
     #[test]
-    fn a_day_log_project_goes_through_the_map() {
-        let names = names_from(
-            r#"{"paths": {"/x/.dotfiles": "dotfiles", "/x/platform": "bnb-platform"},
-                "aliases": {"freqtrade_trading_attempt": "trader"}}"#,
-        );
-        assert_eq!(canonical(&names, "platform".into()), "bnb-platform");
-        assert_eq!(
-            canonical(&names, "freqtrade_trading_attempt".into()),
-            "trader"
-        );
-        assert_eq!(canonical(&names, "else".into()), "else");
-    }
-
-    #[test]
     fn a_plan_item_reads_as_its_plans_name_its_phase_and_the_phases_words() {
         let dir = std::env::temp_dir().join(format!("worklog-plan-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -724,7 +679,7 @@ mod tests {
                 json!({"title": "ghost-plan-file P10: P9 live stage"}),
             ),
         ];
-        let g = gather(&items, &[], &HashMap::new(), &Utc);
+        let g = gather(&items, &[], &Utc);
         let row = |s: &str| {
             g.rows
                 .iter()

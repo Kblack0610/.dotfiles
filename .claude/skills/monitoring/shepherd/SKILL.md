@@ -1,7 +1,7 @@
 ---
 name: shepherd
 description: >-
-  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases. Use for "which sessions are stuck", "nudge the stalled ones", "wind down the finished ones", "/shepherd status". Load is fleet-pace; one pass is fleet-lead.
+  Move every agent session through its plan: buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation, overdue phases, close verdicts. Use for "which sessions are stuck", "nudge the stalled ones", "which can close", "/shepherd triage". Load is fleet-pace; one pass is fleet-lead.
 metadata:
   category: monitoring
   tags: [agents, fleet, shepherd, nudge, delivery]
@@ -20,7 +20,7 @@ Use for "which sessions are stuck", "nudge the stalled ones", "wind down the fin
 
 ## Verb: `status`
 
-Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and `gh pr list`), with no judgment:
+Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and the PR store), with no judgment:
 
 The buckets (PARKED, NEEDS, STALLED, WORKING, LANDED, DONE, CHAT and NIGHTLY) are defined once, each with its entry facts, exit, actor, action and pinning test, in the bucket table of `~/.local/src/docs/fleet-states.md`. Read it there; `tests/unit/fleet_states_doc.bats` keeps it equal to what `fleet-sessions` emits.
 
@@ -28,11 +28,15 @@ The buckets (PARKED, NEEDS, STALLED, WORKING, LANDED, DONE, CHAT and NIGHTLY) ar
 
 Dirt counts by owner: in a session's own worktree (under `~/.worktrees/`) every dirty file is its own, but in a repo's main checkout only the files it edited count (`edited_files` from agent-panel), so the human's half-done config does not stall every session in that checkout. The reason names the first 3 dirty paths (`FLEET_DIRTY_NAMES`), so the nudge says what to land or restore. Ahead counts files whose content is not on the default branch, not commits, so a squash merge or a local merge of landed work reads 0.
 
-**The watch board.** The hub board's Sessions tab (key 6 in window `hub:board`, `hub tab sessions`; the web's Sessions tab) is the same facts as a stage board the human leaves open: one row per session with a column per stage (sync: commits behind the default branch; conflicts: whether merging it in would conflict; tree; PR; CI; plan phases; eta: the expected finish from `fleet-bench eta`, HH:MM or with a weekday when not today, plus its basis short (`s3` is the session's own median over 3 phases, `p16` the project's, `default` nothing measured yet); stage = the bucket; labels; idle; why, which on a WORKING row is the session's last action; task; prs: merged over total this session, all repos; work and wait: how much of its age was work, and the largest other share, jobs, you or parked), the open asks, and below them the last changes from `~/.agent/shepherd/watch.log` ("agent-11  ci pending -> fail, stage WORKING -> STALLED (PR #979 CI red)"). `fleet-state.timer` runs `fleet-sessions tick` every minute: one fetch and collect that writes the state document (with each session's `eta`), appends the changes to `watch.log` and keeps `watch.state`, so the log builds whether or not the tab is open. Read `watch.log` since your last pass to see what moved. `fleet-sessions explain <who>` prints one session in full: plan, each PR with its state, the time split, its last action and message. Parked hours say a session sat still until something woke it, not why, so check before calling one forgotten.
+**The watch board.** The hub board's Sessions tab (key 4 in window `hub:board`, `hub tab sessions`; the web's Sessions tab) is the same facts as a stage board the human leaves open: one row per session with a column per stage (sync: commits behind the default branch; conflicts: whether merging it in would conflict; tree; PR; CI; plan phases; eta: the expected finish from `fleet-bench eta`, HH:MM or with a weekday when not today, plus its basis short (`s3` is the session's own median over 3 phases, `p16` the project's, `default` nothing measured yet); stage = the bucket; labels; idle; why, which on a WORKING row is the session's last action; task; prs: merged over total this session, all repos; work and wait: how much of its age was work, and the largest other share, jobs, you or parked), the open asks, and below them the last changes from `~/.agent/shepherd/watch.log` ("agent-11  ci pending -> fail, stage WORKING -> STALLED (PR #979 CI red)"). `fleet-state.timer` runs `fleet-sessions tick` every minute: one fetch and collect that writes the state document (with each session's `eta`), appends the changes to `watch.log` and keeps `watch.state`, so the log builds whether or not the tab is open. Read `watch.log` since your last pass to see what moved. `fleet-sessions explain <who>` prints one session in full: plan, each PR with its state, the time split, its last action and message. Parked hours say a session sat still until something woke it, not why, so check before calling one forgotten.
 
 **Labels** carry only what the facts cannot: `fleet-sessions label <session|self> +name|-name` (no ops prints them), shown in the `labels` field. `manual` is the human's: the shepherd leaves that session alone. `quality:<step>` is a session's own, set while a cleanup pass runs and shown in the board's quality column. Stages are never labels; they are derived every pass.
 
 `FLEET_IDLE_MIN` (20), `FLEET_SHELL_STALE_MIN` (120: a background shell waiting on a gate, a test or a subagent, by agent-panel's `open_job` class, is WORKING until this, then bucketed on its facts with "background shell idle over 120m"; any other shell, a sleep loop or a watch, is bucketed on its facts after `FLEET_IDLE_MIN` with "background shell is not a gate or test"; a finished plan reads DONE after `FLEET_IDLE_MIN` with "background shell still running") and `FLEET_SUSPECTS_MAX` (3) are the tuning knobs. A nightly suite after a busy day has dozens of PRs in its range, so nobody is told it was theirs and the human gets the row. Say the NIGHTLY rows first, then the counts per bucket, then the NEEDS rows in full and the CHAT rows one line each. Read-only.
+
+## Verb: `triage`
+
+The close analysis, for "where is each session, can it close": `fleet-sessions close` (`--json` for a reader). One line per session, close-now first: verdict, session, bucket, phases done of total with percent, quiet minutes, `fleet-bench` eta, and why. The verdict (`now`, `after <step>`, `keep`) is the `close` field of the state document; its rules are the close table in `~/.local/src/docs/fleet-states.md`. Report it as counts per verdict, then the `now` rows by name, then the `after` rows with their step. It changes nothing and closes nothing.
 
 ## Verb: `nudge`
 

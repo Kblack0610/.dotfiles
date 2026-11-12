@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::boards;
 use crate::home::str_of;
+use crate::links::{Kind, Link};
 use crate::outcomes;
 use crate::queue::{self, Item};
 use crate::reds;
@@ -30,8 +31,8 @@ const NO_ROW: &str = "no outcome row";
 pub struct Part {
     pub label: &'static str,
     pub text: String,
-    /// Where the fact has its home: a URL, or a `#tab` of agent-web.
-    pub link: Option<String>,
+    /// Where the fact has its home, drawn as its href (`hub_core::links`).
+    pub link: Option<Link>,
     /// It needs attention, so it shows amber.
     pub warn: bool,
 }
@@ -45,9 +46,9 @@ impl Part {
         }
     }
 
-    fn link(self, to: impl Into<String>) -> Part {
+    fn link(self, to: Link) -> Part {
         Part {
-            link: Some(to.into()),
+            link: Some(to),
             ..self
         }
     }
@@ -133,8 +134,14 @@ pub fn read(
         .and_then(|i| budget(runner, &i.task).map_err(|e| fail("budget", e)).ok());
     let board = item
         .as_ref()
-        .and_then(|i| i.row.as_deref())
-        .map(|r| board_part(runner, r, &mut fail));
+        .and_then(|i| i.board_row())
+        .map(|(p, id)| board_parts(runner, p, id, &mut fail));
+    let (board, epic) = board.map_or((None, None), |(b, e)| (Some(b), e));
+    let project = item
+        .as_ref()
+        .map(|i| i.project.as_str())
+        .filter(|p| !p.is_empty())
+        .or_else(|| known(&live?["project"]));
     let asks = if row.session_id.is_empty() {
         Some(vec![])
     } else {
@@ -144,13 +151,19 @@ pub fn read(
     };
     let parts = vec![
         item_part(&row, item.as_ref(), live),
+        match project {
+            Some(p) => Part::new("Project", p).link(Link::to(Kind::Project, p)),
+            None => Part::new("Project", "-"),
+        },
         board.unwrap_or_else(|| match &item {
             None if !row.item.is_empty() => Part::new("Board row", "could not be read").warn(true),
             _ => Part::new("Board row", "no board row"),
         }),
+        epic.unwrap_or_else(|| Part::new("Epic", "no epic")),
         plan_part(live, item.as_ref()),
         worktree_part(live, item.as_ref()),
         pr_part(&row, live, item.as_ref()),
+        ci_part(&row, live, item.as_ref()),
         spend_part(&row, budget.as_ref()),
         asks_part(asks.as_deref()),
         shepherd_part(&Ledger::read(ledger, &row.session_id), live),
@@ -212,42 +225,46 @@ fn item_part(r: &SessionRow, item: Option<&Item>, live: Option<&Value>) -> Part 
     if live.is_some_and(|s| s["item"]["is"] == "moved") {
         said.push("moved on from this session");
     }
-    Part::new(label, format!("{} ({})", i.slug, said.join(", "))).link("#queue")
+    Part::new(label, format!("{} ({})", i.slug, said.join(", ")))
+        .link(Link::to(Kind::Queue, &i.slug))
 }
 
-/// `<project>:<id>`'s row off the open board. A row that is closed is not on it, which is no
-/// failure: a done item closed its row.
-fn board_part(runner: &dyn Runner, row: &str, fail: &mut dyn FnMut(&str, String)) -> Part {
+/// `<project>:<id>`'s row, open or closed, and the epic its `#of/` tag names.
+fn board_parts(
+    runner: &dyn Runner,
+    project: &str,
+    id: &str,
+    fail: &mut dyn FnMut(&str, String),
+) -> (Part, Option<Part>) {
     let label = "Board row";
-    let (project, id) = row.split_once(':').unwrap_or(("", row));
     let named = format!("{project} {id}");
-    let named = named.trim();
-    let part = match tasks::feed(runner) {
-        Ok(f) => {
-            let open = f.rows.iter().find(|r| {
-                r.id.as_deref() == Some(id)
-                    && r.project
-                        .as_deref()
-                        .is_some_and(|p| p.eq_ignore_ascii_case(project))
-            });
-            match open {
-                Some(r) => Part::new(
-                    label,
-                    format!("{named} \"{}\" ({})", cap(&r.text, TITLE_MAX), r.state),
-                ),
-                None => Part::new(label, format!("{named} (closed, or not on the open board)")),
+    let (part, epic) = match tasks::feed(runner) {
+        Ok(f) => match f.row(project, id) {
+            Some(r) => {
+                let epic = r.parent.as_deref().map(|e| {
+                    let title = f
+                        .row(project, e)
+                        .map(|x| format!(" \"{}\"", cap(&x.text, TITLE_MAX)))
+                        .unwrap_or_default();
+                    Part::new("Epic", format!("{e}{title}")).link(Link::to(Kind::Row, e))
+                });
+                let text = format!("{named} \"{}\" ({})", cap(&r.text, TITLE_MAX), r.state);
+                (Part::new(label, text), epic)
             }
-        }
+            None => (
+                Part::new(label, format!("{named} (not on the board)")),
+                None,
+            ),
+        },
         Err(e) => {
             fail("notes board", e);
-            Part::new(label, format!("{named} (could not be read)")).warn(true)
+            (
+                Part::new(label, format!("{named} (could not be read)")).warn(true),
+                None,
+            )
         }
     };
-    if project.is_empty() {
-        part
-    } else {
-        part.link(format!("#projects/{project}"))
-    }
+    (part.link(Link::to(Kind::Row, id)), epic)
 }
 
 /// A path with the home directory as `~`.
@@ -308,7 +325,7 @@ fn worktree_part(live: Option<&Value>, item: Option<&Item>) -> Part {
 }
 
 /// The PR's URL: the repo fleet-sessions read it from, else the queue item's `<repo>#<n>`.
-fn pr_url(number: &str, live: Option<&Value>, item: Option<&Item>) -> Option<String> {
+pub(crate) fn pr_url(number: &str, live: Option<&Value>, item: Option<&Item>) -> Option<String> {
     let listed = live
         .and_then(|s| s["prs"].as_array())
         .into_iter()
@@ -336,17 +353,28 @@ fn pr_part(r: &SessionRow, live: Option<&Value>, item: Option<&Item>) -> Part {
         );
     };
     let mut text = format!("#{n} {}", r.pr_state).trim_end().to_string();
-    if !r.ci.is_empty() {
-        text += &format!(" (CI {})", r.ci.to_lowercase());
-    }
     let prs = live.and_then(|s| s["prs"].as_array());
     if let Some(p) = prs.filter(|p| p.len() > 1) {
         let merged = p.iter().filter(|x| x["state"] == "MERGED").count();
         text += &format!(", {merged} of {} PRs merged", p.len());
     }
-    let part = Part::new(label, text).warn(r.ci.eq_ignore_ascii_case("fail"));
+    let part = Part::new(label, text);
     match pr_url(n, live, item) {
-        Some(u) => part.link(u),
+        Some(u) => part.link(Link::Url(u)),
+        None => part,
+    }
+}
+
+/// The PR's CI, linked to its checks when the forge has a page for them (reds::checks_url).
+fn ci_part(r: &SessionRow, live: Option<&Value>, item: Option<&Item>) -> Part {
+    let label = "CI";
+    let ci = r.ci.to_lowercase();
+    let (Some(n), false) = (&r.pr, ci.is_empty() || ci == "none") else {
+        return Part::new(label, "-");
+    };
+    let part = Part::new(label, ci.as_str()).warn(ci == "fail");
+    match pr_url(n, live, item).as_deref().and_then(reds::checks_url) {
+        Some(u) => part.link(Link::Url(u)),
         None => part,
     }
 }
@@ -412,10 +440,10 @@ fn asks_part(asks: Option<&[Value]>) -> Part {
                 str_of(a, "id")
             ),
         )
-        .link("#home")
+        .link(Link::tab("home"))
         .warn(true),
         Some(_) => Part::new(label, format!("{} open{was}", open.len()))
-            .link("#home")
+            .link(Link::tab("home"))
             .warn(true),
         None => Part::new(label, format!("none open{was}")),
     }
@@ -495,13 +523,16 @@ mod tests {
 
     fn tools() -> Fake {
         let board = json!({"rows": [{"profile": "p", "project": "agent-runtime", "lane": "agent",
-            "state": "doing", "priority": "", "id": "ar-455", "text": "notice and close",
-            "tags": [], "sheet": "s", "line": 1, "raw": "x", "requested": false}]});
+            "state": "doing", "priority": "", "id": "ar-455", "text": "notice and close", "parent": "ar-400",
+            "tags": [], "sheet": "s", "line": 1, "raw": "x", "requested": false}],
+            "done": [{"profile": "p", "project": "agent-runtime", "lane": "agent",
+            "state": "done", "priority": "", "id": "ar-400", "text": "the epic",
+            "tags": [], "sheet": "s", "line": 2, "raw": "y", "requested": false}]});
         let asks = tsv("Aa", "pending", "ship it?", SID)
             + &tsv("Bb", "answered", "which?", SID)
             + &tsv("Cc", "pending", "someone else's", "other");
         let item = json!({"slug": "the-item", "state": "running", "priority": "high",
-            "row": "agent-runtime:ar-455", "task": "do it", "plan": "/p/from-item.md"});
+            "project": "agent-runtime", "row": "agent-runtime:ar-455", "task": "do it", "plan": "/p/from-item.md"});
         Fake(vec![
             ("agent-queue show the-item --json", Ok(item.to_string())),
             ("fleet-shepherd budget do it", Ok("m 25\n".into())),
@@ -569,10 +600,13 @@ mod tests {
             labels,
             [
                 "Queue item",
+                "Project",
                 "Board row",
+                "Epic",
                 "Plan",
                 "Worktree",
                 "PR",
+                "CI",
                 "Spend",
                 "Asks",
                 "Shepherd"
@@ -595,7 +629,8 @@ mod tests {
             text(&p, "Worktree"),
             "/w/dotfiles-agent-6  branch feat/x, 2 ahead"
         );
-        assert_eq!(text(&p, "PR"), "#12 open (CI pass), 1 of 2 PRs merged");
+        assert_eq!(text(&p, "PR"), "#12 open, 1 of 2 PRs merged");
+        assert_eq!(text(&p, "Epic"), "ar-400 \"the epic\"");
         assert_eq!(
             text(&p, "Spend"),
             "$1.20 of the $25 budget, size m, from the session registry"
@@ -605,8 +640,32 @@ mod tests {
             text(&p, "Shepherd"),
             "now \"WORKING idle 3m\", last nudge 2026-11-06 12:49 on \"STALLED idle 40m\""
         );
-        let pr = p.parts.iter().find(|x| x.label == "PR").unwrap();
-        assert_eq!(pr.link.as_deref(), Some("https://github.com/o/r/pull/12"));
+        let link = |l: &str| {
+            p.parts
+                .iter()
+                .find(|x| x.label == l)
+                .unwrap()
+                .link
+                .as_ref()
+                .map(Link::href)
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(link("Queue item"), some("#queue/the-item"));
+        assert_eq!(link("Project"), some("#projects/agent-runtime"));
+        assert_eq!(link("Board row"), some("#board?q=id:=ar-455"));
+        assert_eq!(link("Epic"), some("#board?q=id:=ar-400"));
+        assert_eq!(link("PR"), some("https://github.com/o/r/pull/12"));
+        assert_eq!(
+            (text(&p, "CI"), link("CI")),
+            ("pass", some("https://github.com/o/r/pull/12/checks"))
+        );
+        // The page gets each link as the href it draws, the shape it had as a string.
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["link"] == "#queue/the-item"));
         assert_eq!(p.outcome, "", "a live session has no card to show");
         assert!(p.errors.is_empty(), "{:?}", p.errors);
     }
@@ -625,8 +684,10 @@ mod tests {
         let p = read(&only_asks, &d, SID, &[row], &[s]).unwrap();
         assert_eq!(text(&p, "Queue item"), "no queue item");
         assert_eq!(text(&p, "Board row"), "no board row");
+        assert_eq!(text(&p, "Epic"), "no epic");
         assert_eq!(text(&p, "Plan"), "no plan file");
         assert_eq!(text(&p, "PR"), "-");
+        assert_eq!(text(&p, "CI"), "-");
         assert_eq!(text(&p, "Spend"), "$1.20, from the session registry");
         assert_eq!(text(&p, "Asks"), "none open");
         assert_eq!(text(&p, "Shepherd"), "no nudge");
@@ -660,7 +721,7 @@ mod tests {
         assert_eq!(text(&p, "Queue item"), "the-item (done, high)");
         assert_eq!(
             text(&p, "Board row"),
-            "agent-runtime ar-999 (closed, or not on the open board)"
+            "agent-runtime ar-999 (not on the board)"
         );
         assert_eq!(text(&p, "Plan"), "/p/from-item.md");
         assert_eq!(
@@ -668,7 +729,10 @@ mod tests {
             "not recorded, it ran in tmux lab:dotfiles-agent-6"
         );
         let pr = p.parts.iter().find(|x| x.label == "PR").unwrap();
-        assert_eq!(pr.link.as_deref(), Some("https://github.com/o/r/pull/12"));
+        assert_eq!(
+            pr.link,
+            Some(Link::Url("https://github.com/o/r/pull/12".into()))
+        );
         assert_eq!(
             text(&p, "Spend"),
             "$1.20 of the $25 budget, size m, from the queue item"

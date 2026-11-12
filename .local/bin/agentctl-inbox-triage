@@ -285,6 +285,17 @@ homes_rule() {
   printf ' A row about a host or the cluster belongs on home-config.'
 }
 
+# priority_rule: what makes a row urgent, high or low, the one rubric the route call files by and
+# the --priority pass tags by. Two rubrics would let the pass re-tag nearly every filed row.
+priority_rule() {
+  cat <<'RULE'
+urgent: it breaks or blocks the person or production now.
+high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), it belongs to one of the open epics below (#of/<epic id>, or plainly part of one), or the person asked for it (#requested).
+low: everything else, including ideas, polish and cleanup nothing waits on.
+When unsure between two, pick the lower.
+RULE
+}
+
 # row_types: the types a row may take, from the grammar's one home (`notes row types`). An
 # empty list would let the model file any type, so a failure stops the call.
 row_types() {
@@ -324,13 +335,15 @@ route() {
   systems="$(systems_of "${sysp[@]}")"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+The priority, by this rule. A row you put on lane agent is filed #requested, so the person asked for it: it is #high, or #urgent when it breaks or blocks them now, and never goes without one. A lane human row is not #requested; omit its priority only when the rule leaves it open: a later pass with the whole board gives it one.
+$(priority_rule)
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
 {\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\", \"why\": \"<a few words>\"}
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
-{\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
+{\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #high #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
 {\"n\": 6, \"action\": \"ask\", \"projects\": [\"<likeliest project>\", \"<next>\"], \"why\": \"<why the first is likeliest, a few words>\"}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, only when the line or its neighbours point at it; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. own is a second, separate answer for an [outbox] line: the project its own words point to read alone, with its neighbours ignored (a project it names, or whose systems or open rows its words plainly match), or \"\" when its words alone point to none. Give it honestly even when it differs from project: a line whose own words point to a project is filed there, and its neighbours decide only when own is \"\". A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
@@ -620,8 +633,8 @@ $listing"
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
   local board names homes rc=0 p lane
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
@@ -656,10 +669,7 @@ priority_batch() {
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
   prompt="You set the priority of each row on one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
 
-urgent: it breaks or blocks the person or production now.
-high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), it belongs to one of the open epics below (#of/<epic id>, or plainly part of one), or the person asked for it (#requested).
-low: everything else, including ideas, polish and cleanup nothing waits on.
-When unsure between two, pick the lower.
+$(priority_rule)
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"priority\": \"low\"}
@@ -687,8 +697,8 @@ $listing"
 # --retag-high its #high rows), in batches, the boards with the most such rows first.
 priority_pass() {
   local board epics rows p lane total off size r rc=0
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   epics="$(epics_open "$board")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --argjson hi "$RETAG_HIGH" --arg only "$ONLY" '[.rows[]
@@ -816,8 +826,8 @@ $listing"
 # standing epic to fall back on.
 link_pass() {
   local board epics rows p lane tsv cache kept mine total off size r rc=0 raw sys of epic
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   epics="$(epics_open "$board")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg only "$ONLY" '[.rows[]
@@ -871,8 +881,8 @@ split_waiting() {
   local p sheets rc=0
   [ "$DRY" = 1 ] && return 0
   [ -n "$ONLY" ] || notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
-  sheets="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  sheets="$(managed_board <<<"$sheets" | jq -r '.projects[].project' | sort -u)"
+  read_board || return 1
+  sheets="$(managed_board <<<"$BOARD" | jq -r '.projects[].project' | sort -u)"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
@@ -944,8 +954,8 @@ pass() {
   done < <(jq -j --argjson seen "$seen" --arg only "$ONLY" ".[] | select(.project and (\$only == \"\" or .project == \$only))
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
-  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  board="$(managed_board <<<"$board")"
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
   # A `<id>: <words>` line answers its open row, with no model.
   [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
     answer "$p" "$raw" "$text" "$board" || rc=1

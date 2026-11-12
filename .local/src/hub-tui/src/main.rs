@@ -2,6 +2,7 @@
 //! Prefix i lands on Home through `hub tab`. Usage, keys and
 //! troubleshooting: README.md.
 
+mod alertstab;
 mod app;
 mod board;
 mod builds;
@@ -61,7 +62,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
           no card has opens every project's rows searched for it, as `/` would); fleet takes
-          a runner: `hub tab fleet inbox-triage` opens its page
+          a runner (`hub tab fleet inbox-triage` opens its page), sessions a session, queue an
+          item's slug, and board a row's `id:=ar-1`: what each link in hub_core::links opens
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
           whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
@@ -102,8 +104,8 @@ fn main() {
         it.next();
         let words: Vec<&str> = it.map(String::as_str).collect();
         let (t, q) = tabreq::parse(&words.join(" ")).unwrap_or_else(|| die(USAGE));
-        // A search is the Projects tab's; Infra's query is the section a retired name names.
-        if q.is_some() && t != Tab::Projects && words.len() > 1 {
+        // Every tab but these takes a word: what a link's `tab_args` names (hub_core::links).
+        if q.is_some() && matches!(t, Tab::Home | Tab::Schedules) && words.len() > 1 {
             die(USAGE)
         }
         if let Err(e) = tabreq::request(&tabreq::dir(), t, q.as_deref()) {
@@ -479,6 +481,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         ));
         // Home leads with the flow strip, whose inbox and board are the snapshot's.
         a.pipeline = Some(hub_core::pipeline::read());
+        // RUNNING joins each item to its session (phase, ETA, PR, CI) through the fleet state,
+        // which the live app reads in a worker.
+        a.boards = Some(app::Boards::read(&a.files, None));
     }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
@@ -592,13 +597,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         return i32::from(!s.errors.is_empty());
     }
     let infra = hub_core::infra::gather();
-    let failed = !infra.ok;
+    let mut failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
-    // Red fixes are read off-thread in the live app; a printed page has no next frame, so read
-    // them here or Infra prints "reading".
+    // The reds and the Alerts join are read off-thread in the live app; a printed page has no
+    // next frame, so read them here or Alerts prints "reading".
+    if matches!(tab, None | Some(Tab::Alerts)) {
+        let reds = hub_core::reds::read(&hub_core::session_actions::System);
+        let now = hub_core::jobs::now();
+        a.alerts = (a.infra.as_ref()).map(|i| hub_core::alerts::read(i, reds.clone(), now));
+        a.reds = Some(reds);
+        // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
+        failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
+        a.tab = Tab::Alerts;
+        a.open_query(section.clone());
+    }
     if matches!(tab, None | Some(Tab::Infra)) {
-        a.reds = Some(hub_core::reds::read(&hub_core::session_actions::System));
         // `--tab 'infra machines'` prints that inner tab; with none named, every one prints.
         a.tab = Tab::Infra;
         a.infra_all = section.is_none();
@@ -617,7 +631,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     let tabs = match tab {
         Some(t) => vec![t],
-        None => vec![Tab::Home, Tab::Infra],
+        None => vec![Tab::Home, Tab::Alerts, Tab::Infra],
     };
     for (n, t) in tabs.into_iter().enumerate() {
         if n > 0 {
@@ -674,6 +688,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
     std::fs::create_dir_all(&app.files.tokens).ok();
     std::fs::create_dir_all(&app.files.releases).ok();
+    std::fs::create_dir_all(&app.files.watches).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -707,6 +722,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if e.paths.iter().any(|p| boards.is_session_file(p)) {
             let _ = files.send(Msg::SessionFiles);
         }
+        if e.paths.iter().any(|p| boards.is_watch_file(p)) {
+            let _ = files.send(Msg::WatchFiles);
+        }
     });
     // Kept alive until hub exits; dropping it ends the watch.
     let _watcher = match watcher {
@@ -737,7 +755,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     if app.tab == Tab::Fleet {
         app.read_fleet();
     }
-    if app.tab == Tab::Infra {
+    if app.tab == Tab::Alerts {
         app.read_reds();
     }
     if app.tab == Tab::Schedules {

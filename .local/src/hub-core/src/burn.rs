@@ -13,8 +13,10 @@ use serde::Serialize;
 
 use crate::prom::Series;
 
-/// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "4 Sessions";
+/// Where the dispatch hold is explained (the Sessions header), as `costs::spend_badge` names Costs.
+pub fn hold_badge() -> String {
+    crate::layout::bar_label("sessions")
+}
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -259,6 +261,21 @@ pub struct Fleet {
     pub run_out: Option<i64>,
 }
 
+/// The Burn table's total row: claude-acct's fleet sum (the headline's figures) and the rows'
+/// dollars; the share and pace columns have no sum, so the surfaces print a dash there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Total {
+    pub live: u32,
+    pub burn: f64,
+    pub sustain: f64,
+    /// The fleet burns over what the weeks keep.
+    pub over: bool,
+    pub run_out: Option<i64>,
+    /// The readable top-level rows' `cost_24h` added up; None when no row has one. claude-acct
+    /// sums no dollars, so this is the one sum made here.
+    pub cost_24h: Option<f64>,
+}
+
 /// Dispatch starts, counted from log.md.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Drip {
@@ -298,6 +315,8 @@ pub struct Burn {
     /// The fold under the pool row; None when no source is nested.
     pub keys: Option<Keys>,
     pub fleet: Fleet,
+    /// None when the file is stale or there are fewer than two top-level rows to add up.
+    pub total: Option<Total>,
     pub drip: Drip,
     pub pace: Pace,
     /// What each term on the section means, in the order the surfaces print it.
@@ -489,6 +508,18 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
             .filter(|_| summed.is_some())
             .map(|t| t as i64),
     };
+    let top = || accounts.iter().filter(|a| !a.nested);
+    let total = (!stale && top().count() > 1).then(|| Total {
+        live: fleet.live,
+        burn,
+        sustain,
+        over: burn > sustain,
+        run_out: fleet.run_out,
+        cost_24h: top()
+            .filter(|a| a.state == "ok")
+            .filter_map(|a| a.cost_24h)
+            .reduce(|x, y| x + y),
+    });
     let level = if accounts.is_empty() {
         "none"
     } else if summed.is_none() {
@@ -513,6 +544,7 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         accounts,
         keys,
         fleet,
+        total,
         drip,
         legend: LEGEND,
         ..Burn::default()
@@ -725,6 +757,19 @@ mod tests {
     }
 
     #[test]
+    fn the_total_row_adds_up_the_readable_rows_dollars() {
+        let mut s = fixture();
+        s.push(series("alt", "cost_24h_usd", 12.5));
+        s.push(series("main", "cost_24h_usd", 30.0));
+        let b = build(&s, quiet(), NOW);
+        let t = b.total.expect("two rows and a fresh file have a total");
+        assert_eq!(t.cost_24h, Some(42.5));
+        assert_eq!((t.live, t.burn), (b.fleet.live, b.fleet.burn));
+        let none = build(&fixture(), quiet(), NOW).total.unwrap().cost_24h;
+        assert_eq!(none, None, "no row has dollars");
+    }
+
+    #[test]
     fn the_pool_running_into_the_reserve_before_the_resets_is_red() {
         let mut s = fixture();
         s.push(fleet("run_out_timestamp_seconds", (NOW + 5 * 3600) as f64));
@@ -744,7 +789,9 @@ mod tests {
         // under an hour, or a file a little older than the run-out, is not "in 0h"
         let mut s = fixture();
         s.push(fleet("run_out_timestamp_seconds", (NOW - 60) as f64));
-        assert!(build(&s, quiet(), NOW).head.contains(", into the reserve within the hour,"));
+        assert!(build(&s, quiet(), NOW)
+            .head
+            .contains(", into the reserve within the hour,"));
     }
 
     #[test]
@@ -901,16 +948,6 @@ mod tests {
         );
         let d = drip(&log, at, None);
         assert_eq!((d.hour, d.day), (1, 2));
-    }
-
-    #[test]
-    fn the_hold_badge_names_the_sessions_key() {
-        assert_eq!(
-            crate::layout::bar_digit("sessions")
-                .map(|d| format!("{d} Sessions"))
-                .as_deref(),
-            Some(HOLD_BADGE)
-        );
     }
     fn reason(account: &str, why: &str) -> Series {
         let mut s = series(account, "room_reason", 1.0);

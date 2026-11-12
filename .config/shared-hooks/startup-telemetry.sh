@@ -12,6 +12,7 @@
 # Process times come from /proc, so they are null on macOS; phases need EPOCHREALTIME (bash 5).
 # Builtins only until the one jq that writes the row: this runs on the path it measures.
 # Every failure is quiet: a telemetry row must never cost the session its preflight.
+# Claude Code starts only: under Codex, which runs the same hook, it writes nothing.
 
 : "${CLAUDE_STARTUP_LOG:=$HOME/.agent/telemetry/claude-startup.jsonl}"
 
@@ -43,19 +44,20 @@ _st_start_ms() {
   echo $(( ${up%.*} * 1000 + 10#${up#*.} * 10 - _ST_F[19] * 1000 / _ST_TCK ))
 }
 
-# _st_claude_pid -> the claude process this hook runs under: CLAUDE_PID, else the nearest
-# ancestor named claude
+# _st_claude_pid -> the claude process this hook runs under: the nearest ancestor named claude,
+# else CLAUDE_PID. Exit 2 when the nearest is codex: Codex runs this hook too (codex/hooks.json)
+# with CLAUDE_* inherited from its launcher, and its start is not a Claude Code start.
 _st_claude_pid() {
   local p=$PPID comm
-  if [ -n "${CLAUDE_PID:-}" ] && [ -r "/proc/$CLAUDE_PID/stat" ]; then printf '%s' "$CLAUDE_PID"; return 0; fi
   for _ in 1 2 3 4 5; do
-    [ -r "/proc/$p/comm" ] && read -r comm 2>/dev/null <"/proc/$p/comm" || return 1
+    [ -r "/proc/$p/comm" ] && read -r comm 2>/dev/null <"/proc/$p/comm" || break
     [ "$comm" = claude ] && { printf '%s' "$p"; return 0; }
-    _st_stat "$p" || return 1
+    [ "$comm" = codex ] && return 2
+    _st_stat "$p" || break
     p=${_ST_F[1]}
-    [ "$p" -gt 1 ] || return 1
+    [ "$p" -gt 1 ] || break
   done
-  return 1
+  [ -n "${CLAUDE_PID:-}" ] && [ -r "/proc/$CLAUDE_PID/stat" ] && printf '%s' "$CLAUDE_PID"
 }
 
 # _st_mcp <claude pid> <project dir> -> the mcp array. A server's process is the claude child
@@ -82,10 +84,12 @@ _st_mcp() {
 startup_record() {
   command -v jq >/dev/null 2>&1 || return 0
   local hook_age claude claude_age mcp='[]' hook_ms phases="{$_ST_PHASES}" exe=${CLAUDE_CODE_EXECPATH:-}
-  local dir=${CLAUDE_STARTUP_LOG%/*}
+  local dir=${CLAUDE_STARTUP_LOG%/*} rc=0
+  claude=$(_st_claude_pid) || rc=$?
+  [ "$rc" != 2 ] || return 0   # under Codex: no row, the log and its watch are Claude Code's
   _ST_TCK=$(getconf CLK_TCK 2>/dev/null) && [ "${_ST_TCK:-0}" -gt 0 ] 2>/dev/null || _ST_TCK=100
   hook_age=$(_st_start_ms $$) || hook_age=null
-  if claude=$(_st_claude_pid) && claude_age=$(_st_start_ms "$claude"); then
+  if [ "$rc" = 0 ] && claude_age=$(_st_start_ms "$claude"); then
     # MCP servers spawn once per process, so only a cold start pays for the scan.
     [ "$3" != startup ] || mcp=$(_st_mcp "$claude" "${CLAUDE_PROJECT_DIR:-$PWD}")
   else

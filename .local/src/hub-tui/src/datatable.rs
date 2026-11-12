@@ -6,6 +6,7 @@
 //! the next column, `S` flips the direction, `x` clears the whole view. The selection is the
 //! table's too: one cursor that moves, stays in range and goes to the top when the view changes.
 
+use hub_core::links::Link;
 use hub_core::table::{Dir, Row, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
@@ -119,6 +120,15 @@ impl DataTable {
         }
         .min(last);
         true
+    }
+
+    /// What Enter on a row opens: its lead column's record, else the first column that names
+    /// one (`Row::link`, the resolver agent-web draws its anchors from).
+    pub fn opens<R: Row>(row: &R) -> Option<Link> {
+        std::iter::once(R::LEAD)
+            .chain(R::COLUMNS.iter().copied())
+            .filter(|c| !c.is_empty())
+            .find_map(|c| row.link(c))
     }
 
     /// The selection within `n` rows.
@@ -255,6 +265,41 @@ mod tests {
         assert!(DataTable::owns(KeyCode::Char('S')) && !DataTable::owns(KeyCode::Char('j')));
         t.key::<Job>(KeyCode::Char('x'));
         assert!(t.is_default());
+    }
+
+    #[test]
+    fn enter_opens_the_lead_record_else_the_first_linked_column() {
+        use hub_core::links::{Kind, Link};
+        use hub_core::table::{Row, Val};
+        struct R(&'static str, bool);
+        impl Row for R {
+            const COLUMNS: &'static [&'static str] = &["state", "project", "pr"];
+            const STATES: &'static [&'static str] = &[];
+            const FACETS: &'static [&'static str] = &[];
+            const LEAD: &'static str = "item";
+            fn val(&self, _: &str) -> Val {
+                Val::Text(String::new())
+            }
+            fn in_state(&self, _: &str) -> bool {
+                true
+            }
+            fn link(&self, col: &str) -> Option<Link> {
+                match col {
+                    "item" if self.1 => Some(Link::to(Kind::Queue, self.0)),
+                    "project" => Some(Link::to(Kind::Project, "p")),
+                    "pr" => Some(Link::Url("https://x/pull/1".into())),
+                    _ => None,
+                }
+            }
+        }
+        assert_eq!(
+            DataTable::opens(&R("slug", true)),
+            Some(Link::to(Kind::Queue, "slug"))
+        );
+        assert_eq!(
+            DataTable::opens(&R("slug", false)),
+            Some(Link::to(Kind::Project, "p"))
+        );
     }
 
     #[test]

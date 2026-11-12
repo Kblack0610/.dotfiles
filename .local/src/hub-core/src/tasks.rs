@@ -186,7 +186,7 @@ impl crate::table::Row for Row {
     ];
     const STATES: &'static [&'static str] =
         &["all", "in progress", "filed today", "urgent", "requested"];
-    const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority"];
+    const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority", "state"];
     const LEAD: &'static str = "text";
     const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
 
@@ -323,6 +323,16 @@ impl Feed {
     /// The open rows of one project as (profile, project), or of every project: the rows table
     /// before any view, in the sheet's order: by section, then the feed's rank. Neither is
     /// derived here; notes-cli's sweep and rank own both.
+    /// The row `project`'s `id` names, open or closed; the project matches without case.
+    pub fn row(&self, project: &str, id: &str) -> Option<&Row> {
+        self.rows.iter().chain(&self.done).find(|r| {
+            r.id.as_deref() == Some(id)
+                && r.project
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case(project))
+        })
+    }
+
     pub fn open_rows(&self, scope: Option<(&str, &str)>) -> Vec<&Row> {
         let mut rows: Vec<&Row> = self
             .rows

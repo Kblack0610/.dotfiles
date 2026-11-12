@@ -48,6 +48,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
@@ -437,6 +438,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES, so the router
+        // keeps the id of every page Link::href draws inside an inner tab.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
     }
 
     #[test]

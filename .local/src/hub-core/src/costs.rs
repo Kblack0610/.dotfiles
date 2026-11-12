@@ -44,8 +44,10 @@ pub const DEFAULT_WINDOW: &str = "7d";
 pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
-/// The line a TUI tab prints where it would show spend: the Costs tab and its key.
-pub const SPEND_BADGE: &str = "spend: 9 Costs";
+/// The line a TUI tab prints where it would show spend: the Costs tab and its key, when it has one.
+pub fn spend_badge() -> String {
+    format!("spend: {}", crate::layout::bar_label("costs"))
+}
 
 /// What the tool cut says when its snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
@@ -219,6 +221,8 @@ pub struct Costs {
     pub snapshots: Vec<Snapshot>,
     /// The whole fleet's 24h cost; `why` says so when its file could not be read.
     pub fleet_cost: FleetCost,
+    /// The Budget inner tab: this month's cash by bill; `why` says so when its file could not be read.
+    pub budget: crate::budget::Budget,
     /// The History section: the fleet's dollars per day, month and year from every snapshot.
     pub history: crate::spend_history::History,
     /// Every snapshot day with its session rows, for the day table; too big to send whole.
@@ -246,6 +250,8 @@ pub struct Paths {
     pub headroom: PathBuf,
     /// `agent-usage fleet-cost`'s file.
     pub fleet_cost: PathBuf,
+    /// `agent-usage budget`'s file.
+    pub budget: PathBuf,
     /// `claude-acct gateway`'s snapshot.
     pub gateway: PathBuf,
 }
@@ -258,6 +264,7 @@ impl Paths {
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
             fleet_cost: crate::boards::fleet_cost(),
+            budget: crate::boards::budget(),
             gateway: crate::boards::gateway_snapshot(),
         }
     }
@@ -337,6 +344,10 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
         Ok(f) => crate::fleet_cost::build(&f, now),
         Err(e) => crate::fleet_cost::missing(e),
     };
+    c.budget = match crate::budget::load(&paths.budget) {
+        Ok(f) => crate::budget::build(&f, now),
+        Err(e) => crate::budget::missing(e),
+    };
 }
 
 /// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
@@ -361,10 +372,9 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
-/// is an empty queue, not a hold. `fleet-dispatch headroom` itself walks the live units and takes
-/// seconds, so it stays off this path (the Sessions header runs it).
+/// is an empty queue, not a hold, and a stale pass holds nothing.
 fn held(path: &std::path::Path) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let v = crate::capacity::headroom(path).ok()?;
     v["held_kind"].as_str()?;
     v["held"].as_str().map(String::from)
 }
@@ -976,6 +986,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub fleet_cost: FleetCost,
+    pub budget: crate::budget::Budget,
     pub history: crate::spend_history::History,
     /// One day's sessions ranked by cost, and the opened session's own days.
     pub day: crate::spend_history::DayView,
@@ -986,7 +997,7 @@ pub struct Board {
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
     /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
-    /// Langfuse with no figures or stale.
+    /// Langfuse with no figures or stale, and a Budget that needs a look or was not read.
     pub amber: Vec<&'static str>,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
     /// the window (the snapshots are nightly).
@@ -1026,6 +1037,9 @@ fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> 
         if t.stale || t.langfuse.figures.is_none() {
             out.push("langfuse");
         }
+    }
+    if c.budget.flagged() {
+        out.push("budget");
     }
     out
 }
@@ -1144,6 +1158,7 @@ pub fn board(
             .into_iter()
             .filter(|f| !f.values.is_empty())
             .collect(),
+        links: vec![],
     };
     let consumers = consumers(c, "", "");
     Board {
@@ -1157,6 +1172,7 @@ pub fn board(
             .filter(|t| t.window != "24h")
             .collect(),
         fleet_cost: c.fleet_cost.clone(),
+        budget: c.budget.clone(),
         history: c.history.clone(),
         day: crate::spend_history::day_view(&c.spend_days, spend),
         totals_note: TOTALS_NOTE,
@@ -1212,6 +1228,7 @@ mod tests {
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
@@ -1484,15 +1501,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_spend_badge_names_the_costs_key() {
-        assert_eq!(
-            crate::layout::bar_digit("costs")
-                .map(|d| format!("spend: {d} Costs"))
-                .as_deref(),
-            Some(SPEND_BADGE)
-        );
-    }
     #[test]
     fn the_totals_are_the_outcomes_cost_per_window() {
         let t = totals(&costs().sessions, NOW);
@@ -1896,6 +1904,7 @@ not json
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();

@@ -99,7 +99,7 @@ const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
   states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "lead", n: 1, q: "kind:lead" }] }],
+  facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, on: false, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
@@ -108,7 +108,14 @@ const people = [
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
-const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table(), hidden: 0 };
+// What hub_core::links sends beside those rows (`Who::link`); the page builds no `#...` itself.
+const links = [
+  { who: "#fleet/fleet-dispatch", project: "#projects/dotfiles" },
+  { who: "#fleet/ask-judge" },
+  { who: "#sessions/lab%2Fdotfiles-agent-11%3A1", project: "#projects/dotfiles" },
+  { who: "#sessions/lab%2Fdotfiles-agent-12%3A1", project: "#projects/dotfiles" },
+];
+const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table({ links }), hidden: 0 };
 
 test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
   vm.runInContext("st", ctx).tab = "fleet";
@@ -123,6 +130,11 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   assert.match(h, /<td class="warn">needs you<\/td>/);
   assert.doesNotMatch(h, /data-fold="ask-judge"/, "only a row with children folds");
   assert.match(h, /2 sessions/);
+  assert.match(h, /<td class="muted"><a href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
+  // A row the server sent no link for draws its text and opens nothing.
+  f.data = { ...fleetData, table: table() };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<tr class="wr" data-href=""><td class="muted"><button[^>]*>v<\/button> lead<\/td><td>fleet-dispatch<\/td>/);
 });
 
 test("a held runner reads red and the held chip counts it", () => {
@@ -143,7 +155,8 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.match(h, /who spent what on <a href="#costs">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
-  assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
+  assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind"[^>]*>/, "kind's dropdown sits under its header");
+  assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
 });
 
 test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
@@ -276,6 +289,13 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   await flush();
   assert.match(box.innerHTML, /<pre class="panel joblog">run log text<\/pre>/);
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
+});
+
+test("the sentinel page is one count line linking to Alerts' Watches, never the watch table", async () => {
+  const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
+  const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });
+  assert.match(h, /<h2 class="sec">Watches <span class="muted"><a href="#alerts\/watches">3 watches, 1 tripped<\/a><\/span><\/h2>/);
+  assert.doesNotMatch(h, /<th>watch<\/th>/);
 });
 
 test("a runner with no runs says no run in 14 days, not an error", async () => {

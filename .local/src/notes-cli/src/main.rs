@@ -36,7 +36,6 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
-mod registry;
 mod sheet;
 mod show;
 mod standing;
@@ -347,6 +346,11 @@ enum Cmd {
         /// would never close it). `notes-roll` checks the target is above the newest tag
         #[arg(long)]
         renumber: bool,
+        /// With --release: the release tag closing the version (vX.Y.Z). The frozen note is
+        /// named from it; a tag below the open version gets a note with no planned rows and
+        /// leaves the sheet open (`agentctl-wave-roll`)
+        #[arg(long, value_name = "VERSION")]
+        tag: Option<String>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -478,9 +482,12 @@ enum Cmd {
     },
     /// Print the resolved profile + paths
     Config {
-        /// List every configured profile name instead
+        /// List every profile this machine lists instead (a work profile only on its own machine)
         #[arg(long)]
         profiles: bool,
+        /// Print this machine's own profile: the one picked with no --profile flag
+        #[arg(long, conflicts_with = "profiles")]
+        machine_profile: bool,
     },
 }
 
@@ -1190,7 +1197,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let op = playtest_op(sub, exact)?;
             let _lock = match op {
                 playtest::Op::List => None,
@@ -1208,7 +1215,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -1457,7 +1464,7 @@ fn main() -> Result<()> {
             ..
         } => {
             let filter = ingest::Filter {
-                project: project.map(|n| registry::canonical(&n)),
+                project: project.map(|n| project_map::canonical(&n)),
                 id,
                 action,
                 by,
@@ -1586,6 +1593,7 @@ fn main() -> Result<()> {
             carry,
             next,
             renumber,
+            tag,
             version_of,
             roadmap,
             stats,
@@ -1707,6 +1715,7 @@ fn main() -> Result<()> {
                         carry,
                         next.as_deref(),
                         renumber,
+                        tag.as_deref(),
                     )?;
                     lab_refresh::kick();
                 }
@@ -1755,8 +1764,13 @@ fn main() -> Result<()> {
         Cmd::Doctor {
             projects: false, ..
         } => doctor::run(&prof, &log)?,
-        Cmd::Config { profiles } => {
-            if profiles {
+        Cmd::Config {
+            profiles,
+            machine_profile,
+        } => {
+            if machine_profile {
+                println!("{}", config::machine_profile()?);
+            } else if profiles {
                 for name in config::all_profile_names()? {
                     println!("{name}");
                 }

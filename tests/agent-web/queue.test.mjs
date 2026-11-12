@@ -116,6 +116,43 @@ const load = (d = data, over = {}) => {
   Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
 };
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
+test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
+  await settle();
+  load();
+  draw();
+  const descriptors = [box, parts["q-list"]].map((parent) => [parent, Object.getOwnPropertyDescriptor(parent, "innerHTML")]);
+  // Replacing either ancestor detaches the input and clears browser focus.
+  for (const [parent, descriptor] of descriptors) Object.defineProperty(parent, "innerHTML", {
+    configurable: true,
+    get: () => descriptor.value,
+    set: (html) => { descriptor.value = html; doc.activeElement = null; },
+  });
+  const search = { id: "qt-q", dataset: { tsearch: "" }, value: "title", selectionStart: 1, selectionEnd: 4, closest: () => null };
+  doc.activeElement = search;
+  reply = (url) => url.startsWith("/api/queue/candidates") ? { rows: [], total: 0 }
+    : url.startsWith("/api/queue/stats") ? { week: "updated stats" }
+    : { ...data, items: [item("fresh")], table: { ...table, q: "title" } };
+  try {
+    fire("input", { type: "input", target: search });
+    await settle();
+    assert.equal(run("st.views.queue"), "q=title");
+    assert.equal(doc.activeElement, search, "the query response keeps focus");
+    assert.match(parts["qt-body"].innerHTML, /title fresh/, "the query response repaints the rows");
+    for (const refresh of ["refreshQueue", "refreshCands", "refreshFlow"]) {
+      run(`${refresh}()`);
+      await settle();
+      assert.equal(doc.activeElement, search, `${refresh} keeps the original input focused`);
+      assert.equal(search.value, "title");
+      assert.deepEqual([search.selectionStart, search.selectionEnd], [1, 4]);
+      assert.match(parts["qt-body"].innerHTML, /title fresh/);
+    }
+    assert.match(parts["qt-head"].innerHTML, /updated stats/);
+  } finally {
+    doc.activeElement = null;
+    reply = {};
+    for (const [parent, descriptor] of descriptors) Object.defineProperty(parent, "innerHTML", descriptor);
+  }
+});
 const target = (attrs, row) => ({
   dataset: attrs,
   closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs }
@@ -206,6 +243,32 @@ test("an old section id opens the table on its chip, once", async () => {
   run("refreshQueue()");
   await settle(); await settle();
   assert.equal(ctx.history.url, "#queue?s=done");
+});
+
+test("an item's slug opens that item; one outside the view is searched for once", async () => {
+  load();
+  asked = [];
+  const slug = items[0].slug;
+  reply = data;
+  run(`st.tab = 'queue'; st.arg = '${slug}'; st.views.queue = ''`);
+  run("refreshQueue()");
+  await settle(); await settle();
+  assert.equal(run("qst.sel"), slug, "the item's record opens");
+  assert.equal(run("st.arg"), "");
+  // Not in this view: the table searches for it, and the read that has it opens it.
+  reply = (url) => (url.includes("q=gone") ? { ...data, items: [{ ...items[0], slug: "gone" }] } : { ...data, items: [] });
+  run("qst.sel = ''; st.arg = 'gone'; st.views.queue = 's=done'");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.ok(asked.some((u) => u.startsWith("/api/queue?q=gone")), asked.join(" "));
+  assert.equal(run("qst.sel"), "gone");
+  // An unknown slug searches once and then gives up, with the table still drawn.
+  reply = { ...data, items: [] };
+  run("qst.sel = ''; st.arg = 'nowhere'; st.views.queue = ''");
+  run("refreshQueue()");
+  await settle(); await settle(); await settle();
+  assert.equal(run("st.arg"), "");
+  assert.equal(run("qst.sel"), "");
 });
 
 test("a new section id scrolls to its section, not into the filter", async () => {

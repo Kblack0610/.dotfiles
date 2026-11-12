@@ -57,7 +57,13 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   assert_line 'UNREACHABLE Cloudflare: www.cloudflarestatus.com'
 
   feed www.githubstatus.com "[$(inc 'Git down' critical '{"name":"Git Operations"}')]"
-  run "$REPO_ROOT/.local/bin/provider-status" --quiet
+  run "$REPO_ROOT/.local/bin/provider-status"
   assert_failure 1
-  assert_output ''
+  assert_line 'GitHub: Git down (critical)'
+}
+
+@test "an unknown argument is refused, never read as a verdict" {
+  run "$REPO_ROOT/.local/bin/provider-status" --quiet
+  assert_failure 64
+  assert_output --partial 'unknown argument: --quiet'
 }

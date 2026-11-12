@@ -19,7 +19,7 @@ acct() {
     rows=$(jq -c --arg n "$name" --arg r "$reasons" --arg d "$dir" --arg w "$why" --argjson k "$rank" '
       ($r | split(",") | map(select(. != "ok"))) as $no
       | {pace: "1 point over its weekly pace", reserve: "90% of its week used, inside the last 15% kept for the human",
-         five_hour: "its 5h window at 90%", committed: "its 2 live sessions use the rest of its week before the reset",
+         five_hour: "its 5h window at 90%", committed: "its 2 working sessions use the rest of its week before the reset",
          capped: "out of its week", unread: "its usage cannot be read"} as $stock
       | . + [{name: $n, dir: $d, state: (if $no == ["unread"] then "unread" else "ok" end), rank: $k,
               room: {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no, capped: ($no | index("capped") != null),
@@ -245,7 +245,7 @@ T='#worker/fleet #tier/1'
 line_of() {
   local text
   text=$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2" 2>/dev/null)
-  [ -z "$text" ] || printf '%s' "$text" | sig
+  [ -z "$text" ] || row_sig "$text"
 }
 
 # verdict <project> <lane> <key> <verdict> [size] [tier] [area] -- made under the current policy for the row's current text

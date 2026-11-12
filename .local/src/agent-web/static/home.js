@@ -13,7 +13,7 @@ const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {} };
+const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {} };
 
 const refreshNight = async () => {
   try {
@@ -30,15 +30,20 @@ const refreshNight = async () => {
 const PROP_KEYS = ["proposals", "proposals_head", "proposals_table"];
 let homeSeq = 0;
 
-// Two tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
-// URL and in /api/home; Proposals came first and keeps the plain ones, so links to it stay valid.
-const NEED_PRE = "n";
+// Three tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
+// URL and in /api/home, and Running's `r` (rq, rs, rsort, rdir); Proposals came first and keeps the
+// plain ones, so links to it stay valid.
+const NEED_PRE = "n", RUN_PRE = "r";
 
-// Both tables are drawn by drawHome from the one Home read; these keep their views and their
+// The tables are drawn by drawHome from the one Home read; these keep their views and their
 // repaints around a search or dropdown in use. A search in Proposals reads only that section.
 const needT = tblTab({
   tab: "home", id: "home-need", el: "home", pre: NEED_PRE, refresh: () => refreshHome(), table: () => hst.data?.table,
   head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), render: () => renderHome(),
+});
+const runT = tblTab({
+  tab: "home", id: "home-run", el: "home", pre: RUN_PRE, refresh: () => refreshHome(), table: () => hst.data?.running_table,
+  head: () => runHead(hst.data), body: () => runBody(hst.data), render: () => renderHome(),
 });
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
@@ -46,7 +51,7 @@ const propT = tblTab({
 });
 
 const refreshHome = coalesce(async () => {
-  const view = new URLSearchParams([...tblParams(st.views.home), ...tblParams(st.views.home, NEED_PRE)]).toString();
+  const view = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)])).toString();
   const seq = ++homeSeq;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
@@ -108,8 +113,9 @@ function propBody(h) {
 function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  const body = tblBodyFirst(t, () => propBody(h));
   return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
-    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${propBody(h)}</div>`;
+    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
 
 // Accept or reject through agent-propose. What it says on failure stays on the page.
@@ -140,8 +146,45 @@ function needCard(n) {
   const band = needBand(k, [esc(n.project), what, id, n.since ? waited(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
-    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
-  return `<div class="card need k-${k}" title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
+    : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>`
+    : n.kind === "sheet" ? sheetClose(n) : "";
+  const close = n.kind === "sheet" && ROW_ID.test(n.id) ? ` data-close="${esc(n.id)}" data-closeproj="${esc(n.project)}"` : "";
+  return `<div class="card need k-${k}"${close} title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
+}
+
+// A sheet row closes on its card as on the Board's form (CLOSE_HOW), through the Board's write. Its
+// choice, text, error and in-flight state live in hst.close by row id, so a refresh redraws them
+// (keepTyping keeps the focus). A row with no id (hub_core::home sends its text) is opened on the
+// Board instead, since only an id finds it there again.
+const ROW_ID = /^[a-z][a-z0-9]*-[0-9]+$/;
+const SHEET_CLOSE = ["drop", "done"].flatMap((verb) => CLOSE_HOW[verb].map(([how, l]) => [`${verb}:${how}`, `${verb}, ${l}`]));
+function sheetClose(n) {
+  if (!ROW_ID.test(n.id)) return `<div class="opts"><button class="btn sm" data-tab="board">Open the board</button></div>`;
+  const c = hst.close[n.id] || {};
+  const how = c.how || SHEET_CLOSE[0][0];
+  return `<div class="opts"><select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}"${v === how ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>` +
+    `<input data-free data-closewhy value="${esc(c.why || "")}" placeholder="why, or pr:123 / a URL">` +
+    `<button class="btn sm" data-closego${c.busy ? " disabled" : ""}>${c.busy ? "Closing..." : "Close"}</button></div><div class="err">${esc(c.err || "")}</div>`;
+}
+
+// Read the row fresh off the board by its id, so a row changed since Home drew it fails the write
+// instead of closing the wrong line, then close it and read Home again.
+async function closeSheetRow(id, project) {
+  const c = hst.close[id] ??= {};
+  if (c.busy) return;
+  const [verb, how] = (c.how || SHEET_CLOSE[0][0]).split(":");
+  const v = (c.why || "").trim();
+  if (!v) { c.err = CLOSE_NEED[how]; renderHome(); return; }
+  c.busy = true; c.err = ""; renderHome();
+  try {
+    const got = await api(`/api/board?q=${encodeURIComponent(`id:=${id}`)}`);
+    const r = (got.rows || []).find((x) => x.id === id && (x.project || "") === project && x.state !== "done");
+    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on the Board.`);
+    await post("/api/board", { verb, [how]: v, ...rowTarget(r) });
+    delete hst.close[id];
+    hst.open.delete(`sheet:${id}`);
+    refreshHome();
+  } catch (e) { c.busy = false; c.err = e.message; renderHome(); }
 }
 
 // An ask or a session dialog the page can answer gets its answer card; the rest a plain card.
@@ -183,11 +226,33 @@ function needsBody(h) {
     tblMore(more, "more") + `</div>`;
 }
 
-function runningCard(r) {
+// One running item: its row opens its session page, or its queue item when no session runs it,
+// and each cell that names a record links to that record's page (`l`: tblLinks for the row).
+function runRow(r, l) {
   const p = r.phases;
-  const chips = [cchip("running", `running${r.started ? ` ${ago(r.started)}` : ""}`)];
-  const line = cardLine([esc(r.project), p ? `phase ${p.done}/${p.total}` : "", p && p.next ? `next: ${esc(p.next)}` : "", etaText(p)]);
-  return `<div class="card">${cardHead(r.title, chips, r.slug)}${line}</div>`;
+  const pr = r.pr ? tblLink(l.pr, `${r.pr}${r.pr_state && r.pr_state !== "open" ? ` ${r.pr_state}` : ""}`) : "-";
+  return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
+    `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
+    `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
+    `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
+}
+const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
+
+// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab.
+function runBody(h) {
+  const t = h.running_table, rows = h.running;
+  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>`;
+  const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
+    tblMore(more, "more") + `</div>`;
+}
+
+// The session counts head the list they count, linking to the tab that lists the sessions.
+function runHead(h) {
+  const t = h.running_table;
+  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
+  return sec("Running", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "", counts + ` <a class="muted" href="#sessions?s=running">all in Sessions -&gt;</a>`);
 }
 
 // Green collapses to one chip; only what is not green is named.
@@ -240,33 +305,31 @@ function drawHome() {
   const el = $("home"), h = hst.data;
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
   const errs = [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
-  // A long list shows its first `shown` rows; the rest fold under "+N more" (dashboards: capped lists).
-  const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
-    rows.slice(0, h.shown).map(card).join("") +
-    (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  // The session counts head the list they count, linking to the tab that lists the sessions.
-  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
-  const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
+  const rt = h.running_table;
+  const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
+  const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
   const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
   const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
     `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
     h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
   const t = h.table;
+  const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
-  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
+  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
   // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.
   // On a phone they are one line saying whether anything is wrong, so Needs you comes first.
   const warn = (t) => `<span class="warn">${esc(t)}</span>`;
   const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
   paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)} <a href="#alerts">Alerts</a></div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
 // The table without focus repaints whole, so a search in one never leaves the other stale.
+const HOME_TABLES = { "home-prop": propT, "home-need": needT, "home-run": runT };
 const renderHome = () => {
-  if (propT.repaint()) { if ($("home-need-body")) needT.redraw(); return; }
-  if (needT.repaint()) { if ($("home-prop-body")) propT.redraw(); return; }
+  const busy = Object.values(HOME_TABLES).find((t) => t.repaint());
+  if (busy) { for (const [id, t] of Object.entries(HOME_TABLES)) if (t !== busy && $(id + "-body")) t.redraw(); return; }
   keepTyping("#home .card", drawHome);
 };
 
@@ -289,14 +352,36 @@ $("home").addEventListener("click", (e) => {
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
+  const closing = t.closest(".card[data-close]");
+  if (closing) {
+    if (t.closest("[data-closego]")) closeSheetRow(closing.dataset.close, closing.dataset.closeproj);
+    return;
+  }
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e).then(refreshHome); return; }
   const row = e.target.closest("tr.jr[data-need]");
-  if (!row) return;
-  if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
-  renderHome();
+  if (row) {
+    if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
+    renderHome();
+    return;
+  }
+  // A Running row opens its session page, or its queue item when no session runs it.
+  const run = e.target.closest("tr.jr[data-slug]");
+  if (!run || t.closest("a")) return;
+  if (run.dataset.target) setTab("sessions", run.dataset.target); else setTab("queue", run.dataset.slug);
 });
-$("home").addEventListener("keydown", answerOnEnter);
+$("home").addEventListener("keydown", (e) => {
+  const closing = e.target.closest && e.target.closest(".card[data-close]");
+  if (!closing) { answerOnEnter(e); return; }
+  if (e.key === "Enter" && e.target.matches("[data-closewhy]")) { e.preventDefault(); closeSheetRow(closing.dataset.close, closing.dataset.closeproj); }
+});
+for (const ev of ["input", "change"]) $("home").addEventListener(ev, (e) => {
+  const closing = e.target.closest && e.target.closest(".card[data-close]");
+  if (!closing) return;
+  const c = hst.close[closing.dataset.close] ??= {};
+  if (e.target.matches("[data-closehow]")) c.how = e.target.value;
+  if (e.target.matches("[data-closewhy]")) c.why = e.target.value;
+});
 $("home").addEventListener("toggle", (e) => {
   askTrace(e, renderHome);
   if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;

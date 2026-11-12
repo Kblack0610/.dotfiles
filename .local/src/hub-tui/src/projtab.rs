@@ -464,6 +464,15 @@ pub fn open_lines(
             w,
         ));
     }
+    if let Some(b) = &pg.alerts {
+        out.extend(wrapped(
+            "  alerts   ",
+            &format!("{} (A opens)", b.says),
+            crate::releases::alert(b.level, p),
+            p,
+            w,
+        ));
+    }
     for e in &pg.errors {
         out.extend(wrapped("  ", e, p.warn(), p, w));
     }
@@ -858,6 +867,7 @@ pub(crate) mod tests {
         Page {
             project: "garden".into(),
             releases: None,
+            alerts: None,
             flow_line: Some(
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
@@ -952,6 +962,17 @@ pub(crate) mod tests {
                 "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
                 "AGENT NOTE  model-written, 2026-11-05  F opens it",
             ]
+        );
+        let mut watched = a_page();
+        watched.alerts = Some(hub_core::releases::Badge {
+            says: "2 watches, 1 firing".into(),
+            level: hub_core::releases::Level::Bad,
+        });
+        assert!(
+            draw(Some(&watched), false)
+                .iter()
+                .any(|l| l == "  alerts   2 watches, 1 firing (A opens)"),
+            "the count line leads to Alerts"
         );
         let open = draw(Some(&pg), true).join("\n");
         assert!(!open.contains("Menus"), "F opens the folds, not a system");

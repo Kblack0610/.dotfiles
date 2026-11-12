@@ -8,8 +8,26 @@ const $ = (id) => document.getElementById(id);
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 
+// The answer to one request. A fetch that got none (agent-web restarting or down, the network
+// gone) says that, never the browser's bare "NetworkError"; an abort stays an abort.
+async function reach(path, opts) {
+  try {
+    return await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    console.warn(path, e);
+    throw new Error(`agent-web did not answer ${path.split("?")[0]} (${(e && e.message) || e}). It may be restarting: retry in a few seconds.`);
+  }
+}
+
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the Board's form and Home's sheet
+// cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
+const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
+const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
+
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
     // What failed first, then the server's own words, then what to do (comms-standard, UI text).
@@ -24,7 +42,7 @@ const post = (path, body) => api(path, { method: "POST", headers: { "content-typ
 // One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
 // or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
 async function putBase(path, body, what, then = "") {
-  const r = await fetch(path, { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const r = await reach(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
   const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
@@ -132,21 +150,23 @@ function facts(rows) {
 }
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
 // or "overdue 2h" once it has passed. Empty without one.
-function etaText(p) {
+// `overdue`, when the server said it (Home's Running `overdue`, the clock its Overdue chip uses),
+// decides lateness so the cell and the chip agree; otherwise this page's clock does.
+function etaText(p, overdue) {
   if (!p || !p.eta_epoch) return "";
   const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return late > 0
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
+  return (overdue ?? late > 0)
+    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(Math.max(late, 0))} (ETA was ${stamp(p.eta_epoch)})</span>`
     : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.
 function keepTyping(sel, draw) {
   const f = document.activeElement, card = f && f.closest && f.closest(sel);
-  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id || card.dataset.close, v: f.value } : null;
   draw();
   if (!keep) return;
-  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id || c.dataset.close) === keep.k);
   const input = again && again.querySelector("[data-free]");
   if (input) { input.value = keep.v; input.focus(); }
 }

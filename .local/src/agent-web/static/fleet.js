@@ -67,21 +67,20 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="
 const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], cost: ["cost 24h", "n"], activity: ["activity"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
 const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
-const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
-
-function whoRow(r) {
+// `l`: the row's links (tblLinks): its who and its project, each to its page.
+function whoRow(r, l) {
   const shut = fst.fold.has(r.key);
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
-  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="muted">${fold}${esc(r.kind)}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
+  return `<tr class="wr" data-href="${esc(l.who || "")}"><td class="muted">${fold}${esc(r.kind)}</td><td>${tblLink(l.who, r.who)}</td>` +
     `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${r.cost_estimated ? "~" : ""}${usd(r.cost_24h)}</a>`}</td><td class="muted">${esc(r.activity)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
+    `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${r.project ? tblLink(l.project, r.project) : ""}</td></tr>`;
 }
 
 function fleetBody(d) {
   const t = d.table;
   const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a lead row</div>` : "";
   return d.who.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map(whoRow).join("")}</table>${more}</div>`
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map((r, i) => whoRow(r, tblLinks(t, i))).join("")}</table>${more}</div>`
     : `<div class="panel">${t.total ? "No runner or session matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
 }
 
@@ -177,11 +176,9 @@ function runnerExtras(x) {
         `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
-      const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
-      const rows = x.watches.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="n">${when(w.lasttrip)}</td></tr>`).join("");
+      // Every watch, its state and owner are on Alerts; Fleet keeps the count that sends you there.
       const trip = x.watches.filter((w) => w.state === "TRIP").length;
-      return `<h2 class="sec">Watches <span class="muted">${x.watches.length} watches, ${trip} tripped</span></h2>` +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th data-role="lead">watch</th><th data-role="glance">state</th><th>severity</th><th class="n" data-role="glance" data-named>since</th><th class="n">last run</th><th class="n" data-role="glance" data-named>last trip</th></tr>${rows}</table>` : `<div class="empty">No watch defined.</div>`}</div>`;
+      return `<h2 class="sec">Watches <span class="muted"><a href="#alerts/watches">${x.watches.length} watches, ${trip} tripped</a></span></h2>`;
     }
     default:
       return "";

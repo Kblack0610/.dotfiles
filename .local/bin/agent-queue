@@ -2,16 +2,17 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug] [--from human|shepherd|canary|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug[,slug...]] [--from human|shepherd|canary|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
+#       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
-#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix] [--repeat]
+#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
 #   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
@@ -39,7 +40,7 @@
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
-# Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
+# Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
 # with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
@@ -94,12 +95,14 @@ own_session() {
 # The Claude session id of the caller, which every reader of a session (outcomes, fleet-bench,
 # day-log, Langfuse) keys on. Claude Code exports it to every command it runs.
 claude_sid() { [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && printf '%s\n' "$CLAUDE_CODE_SESSION_ID"; }
-# The caller's session when it is on the agent world, else nothing. An item's session is what
-# cancel and the reap kill, so a hub window never lends its session to one.
+# The caller's worktree session (`<repo>-agent-N`) on any world, else nothing, so a hand start on
+# hub or work records itself as it does on lab. An item's session is what cancel and the reap act
+# on, so a checkout session (hub:dotfiles, hub:tools: one session, many conversations) never
+# lends itself to one, declared or not.
 agent_session() {
   local own
   own="$(own_session)" || return 1
-  [ "${own%%:*}" = "$(tmux-world agents)" ] || return 1
+  case "${own#*:}" in *-agent-[0-9]*) ;; *) return 1 ;; esac
   printf '%s\n' "$own"
 }
 # qualified <session> -- `session:` is always <server>:<session>; a bare name is on the agent world.
@@ -127,13 +130,23 @@ fm_get() { # file key
 }
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
 
+# item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
+# `row:`, else the board row it was promoted from (`from: board:`), else nothing. Every reader of an
+# item file's row goes through it, so a `--from board:` item added by hand marks and closes its row
+# like a `row:` one.
+item_row() {
+  local row
+  row="$(fm_get "$1" row)"
+  [ -n "$row" ] || case "$(fm_get "$1" from)" in board:*) row="$(fm_get "$1" from)" row="${row#board:}" ;; esac
+  printf '%s' "$row"
+}
+
 # item_event <action> <file> [record flags...] -> the item's write on the chain log (stage queue),
-# naming the item, its project, its row's key (as ITEM_JQ reads `row`), its PR and merge commit.
+# naming the item, its project, its row's key (item_row), its PR and merge commit.
 item_event() {
   local action=$1 f=$2 row title
   shift 2
-  row="$(fm_get "$f" row)" title="$(fm_get "$f" title)"
-  [ -n "$row" ] || case "$(fm_get "$f" from)" in board:*) row="$(fm_get "$f" from)" row="${row#board:}" ;; esac
+  row="$(item_row "$f")" title="$(fm_get "$f" title)"
   chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
     --sha "$(fm_get "$f" merged)" "$@"
@@ -250,7 +263,7 @@ finished_row_ok() {
 # promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
 # and a session working a queue item ($AGENT_QUEUE_ITEM) that adds one without --from, recorded as
 # `from: item:<its slug>` when admission gates it (an exempt or deferred add keeps `human`). Never held: --running (the caller's own work), a --plan not from a
-# machine filer (an approved plan), urgent, `red` and `#requested` items, and a session's add that
+# machine filer (an approved plan), urgent, `red` and `#requested` items, auto:epics verify items, and a session's add that
 # arrives held (--after, at:, pr:, ask:, hold:, nightly:): its own work later, not runnable inflow.
 # A held add writes no item, logs one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD. Drain is the
 # items started out of the queue (started after they were queued) over AQ_DRAIN_DAYS, a day.
@@ -304,6 +317,9 @@ admission_since() { date -u -d "$AQ_DRAIN_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
 admit() {
   local from=$1 priority=$2 tags=$3 project=$4 slug=$5 title=$6 now r l d
   ! admission_exempt "$priority" "$tags" || return 0
+  # fleet-dispatch reconcile_epics files one verify item per landed epic: it closes an epic and shrinks
+  # the board, so holding it only keeps landed_unverified up.
+  [ "$from" != auto:epics ] || return 0
   now="$(admission_now)" && read -r r l d <<<"$now" && [[ "$r" =~ ^[0-9]+$ && "$l" =~ ^[0-9]+$ ]] ||
     { echo "agent-queue: admission could not read the queue, so this automated add goes in unchecked" >&2; return 0; }
   [ "$r" -ge "$l" ] || return 0
@@ -390,18 +406,23 @@ after_status() {
 # hold_for <after> <tags> [<project> <priority>] -> sets HOLD to hold_reason's answer for these
 # header values.
 hold_for() {
-  local after="$1" tags="$2" tag now stamp nday MEMO_V AST
+  local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
+  local -a afters
   HOLD=""
-  if [ -n "$after" ]; then
-    after_status "$after"
+  # Every slug in after: must have closed ok. The hold names the slugs still live; a dead one wins,
+  # since it never releases.
+  read -ra afters <<<"$after"
+  for s in "${afters[@]}"; do
+    after_status "$s"
     case "$AST" in
       ok) ;;
-      "") HOLD="after $after"; return ;;
+      "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD="after $after closed $AST, dead: cancel it or set after=<slug>"; return ;;
+      *) HOLD="after $s closed $AST, dead: cancel it or set after=<slug>"; return ;;
     esac
-  fi
+  done
+  [ -z "$live" ] || { HOLD="after $live"; return; }
   focus_hold "${3-}" "${4-}" "$tags"
   [ -z "$HOLD" ] || return 0
   [ -n "$tags" ] || return 0
@@ -558,12 +579,12 @@ queue_index() {
 # and phases). done/ holds most of the queue, so
 # a listing of active items reads there only the files of the slugs its items wait on.
 index_load() { # <listed file>...
-  local f
+  local f s
   local -A want=()
   index_rows "$(queue_index active)"
   for f in "$@"; do
     case "$f" in "$AQ_DIR"/done/*) index_rows "$(queue_index done)"; return ;; esac
-    [ -z "${QI_AFTER[$f]-}" ] || want[${QI_AFTER[$f]}]=1
+    for s in ${QI_AFTER[$f]-}; do want[$s]=1; done
   done
   [ ${#want[@]} -eq 0 ] || index_rows "$(queue_index done "${!want[@]}")"
 }
@@ -605,10 +626,10 @@ item_recs() {
     printf "%s\037%s\037%s\037%s\037%s\036", st, f, task, w, kv }'
 }
 
-# The side table (items_json, by file: hold, derived weight, the finish of its `after:` item), a \x1d,
+# The side table (items_json, by file: hold, derived weight, the latest finish of its `after:` items), a \x1d,
 # then item_recs records -> a JSON array of items: every header key, plus state, file, task, ready
 # and, for a held queued item, hold. `ready` is when the item could first start: queued, or the finish of
-# its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
+# its last `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
 # `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
 # An item with no weight line gets weight_of's answer, so every reader sees a weight, and one with
 # no priority line reads high, add's default: a missing key there broke every read of the queue (ar-1399).
@@ -648,7 +669,7 @@ item_side() {
 # A listing reads every header in the queue once (index_load) and the listed files once
 # (item_recs), and asks each hold once (memo), never a fork per file or per `after:` slug.
 items_json() {
-  local filter="$1" f a w p mo ph
+  local filter="$1" f a w p mo ph s afin
   shift
   [ $# -gt 0 ] || { jq -nc "[] | $filter"; return; }
   local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=() QI_FOCUS=()
@@ -656,22 +677,26 @@ items_json() {
   index_load "$@"
   {
     for f in "$@"; do
-      a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" fp="" fpr=""
+      a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" fp="" fpr="" afin=""
+      for s in $a; do [[ "${QI_FIN[$s]-}" < "$afin" ]] || afin="${QI_FIN[$s]-}"; done
       [ -z "${QI_WMETA[$f]+x}" ] || { w=""; IFS=$'\x1f' read -r p mo ph <<<"${QI_WMETA[$f]}"; }
       [ -z "${QI_FOCUS[$f]+x}" ] || IFS=$'\x1f' read -r fp fpr <<<"${QI_FOCUS[$f]}"
-      item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "${a:+${QI_FIN[$a]-}}" "$fp" "$fpr"
+      item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "$afin" "$fp" "$fpr"
     done
     printf '\x1d'
     item_recs "$@"
   } | jq -Rsc "$ITEM_JQ | $filter"
 }
 
-# item_json <file> -> that item as one JSON object. One item asks the store for its own `after:`
+# item_json <file> -> that item as one JSON object. One item asks the store for its own `after:` items
 # instead of reading the whole queue's index.
 item_json() {
-  local f m slug fin st a tags project mode phases w pr d afin=""
+  local f m slug fin st a tags project mode phases w pr d s fs afin=""
   IFS=$'\x1f' read -r f m slug fin st a tags project mode phases w pr < <(printf '0\t%s\n' "$1" | header_rows)
-  [ -z "$a" ] || { d="$(latest_done "$a")"; [ -z "$d" ] || afin="$(fm_get "$d" finished)"; }
+  for s in $a; do
+    d="$(latest_done "$s")"; [ -n "$d" ] || continue
+    fs="$(fm_get "$d" finished)"; [[ "$fs" < "$afin" ]] || afin="$fs"
+  done
   { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin" "$project" "$pr"; printf '\x1d'; item_recs "$1"; } |
     jq -Rsc "$ITEM_JQ | .[]"
 }
@@ -760,14 +785,16 @@ move_to() {
 }
 
 # project_resolve <name> -> the project an item is filed under, or nothing when dispatch could not
-# start it: an alias becomes its project, a repo key with an `owner` in the registry becomes that
-# lab project (dotfiles has no sheet; its work counts on agent-runtime's), and the project must
-# reach a checkout through the registry (project-name.sh's project_repo_path). A game inside a
-# repo is runnable; a notes-only project is not. With no map there is nothing to ask.
+# start it: another spelling becomes its project (project_lookup; an unknown name stays as given), a repo key with an `owner` in
+# the registry becomes that lab project (dotfiles has no sheet; its work counts on agent-runtime's),
+# and the project must reach a checkout through the registry (project-name.sh's project_repo_path).
+# A game inside a repo is runnable; a notes-only project is not. With no map there is nothing to ask.
 project_resolve() {
   [ -f "$AQ_MAP" ] || { printf '%s\n' "$1"; return 0; }
-  local name
-  name="$(jq -r --arg p "$1" '(.aliases[$p] // $p) as $n | (.trackers[$n] | objects | .owner) // $n' "$AQ_MAP" 2>/dev/null)"
+  local name owner
+  name="$(project_lookup "$1")" || name="$1"
+  owner="$(project_field "$name" owner)"
+  name="${owner:-$name}"
   [ -n "$name" ] && [ -n "$(project_repo_path "$name")" ] && printf '%s\n' "$name"
 }
 
@@ -781,10 +808,7 @@ project_resolve() {
 project_credit() {
   local p="" dir
   case "$2" in board:*) p="${2#board:}"; p="${p%%:*}" ;; esac
-  if [ -z "$p" ] && [ -n "$3" ] && [ -f "$AQ_MAP" ]; then
-    p="$(jq -r --arg c "${3%-*}" \
-      'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$AQ_MAP")"
-  fi
+  [ -n "$p" ] || [ -z "$3" ] || p="$(project_of_code "${3%-*}")"
   if [ -n "$p" ] && [ "$p" != "$1" ] && p="$(project_resolve "$p")" &&
     dir="$(project_repo_path "$1")" && [ -n "$dir" ] && [ "$(project_repo_path "$p")" = "$dir" ]; then
     printf '%s\n' "$p"
@@ -885,7 +909,7 @@ named_row() {
 prior_story() {
   local f row prof board
   f="$(latest_done "$1")"; [ -n "$f" ] || return 0
-  row="$(fm_get "$f" row)"; prof="$(fm_get "$f" profile)"
+  row="$(item_row "$f")"; prof="$(fm_get "$f" profile)"
   board="$(project_board "$2" | cut -f1)"
   [ "${row%%:*}" = "$board" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
   notes --profile "$prof" ptask "$board" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
@@ -902,8 +926,8 @@ cmd_add() {
       --mode) mode="${2:?}"; shift 2 ;;
       --priority) priority="${2:?}"; shift 2 ;;
       --weight) weight="${2:?}"; shift 2 ;;
-      --tags) tags="$(printf '%s' "${2:?}" | tr ',' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"; shift 2 ;;
-      --after) after="${2:?}"; shift 2 ;;
+      --tags) tags="$(word_list "${2:?}")"; shift 2 ;;
+      --after) after="$after ${2:?}"; shift 2 ;;
       --from) from="${2:?}"; from_given=1; shift 2 ;;
       --agent) agent="${2:?}"; shift 2 ;;
       --slug) slug="${2:?}"; shift 2 ;;
@@ -921,6 +945,7 @@ cmd_add() {
       *) task+=("$1"); shift ;;
     esac
   done
+  after="$(word_list "$after")"
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
@@ -949,7 +974,7 @@ cmd_add() {
     case "$from" in board:* | canary) die "--row is for an item not promoted from the board and not a canary, not --from $from" ;; esac
   fi
   check_tags "$tags"
-  # A hand-started session records itself and its window, on the agent world only.
+  # A hand-started session records itself and its window, in a worktree session on any world.
   local window=''
   if [ -n "$running" ] && [ -z "$session" ]; then
     session="$(agent_session)" || session=""
@@ -992,9 +1017,7 @@ cmd_add() {
   if [ -n "$auto" ] && [ -z "$running" ] && [ -z "${AQ_ADMITTED:-}" ]; then
     admit "$from" "$priority" "$tags" "$project" "$slug" "${title:-$(head -1 <<<"$text")}" || exit "$AQ_EX_HELD"
   fi
-  if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
-    die "--after $after: no item has that slug"
-  fi
+  check_after "$after" "$slug"
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
   # `type(area): title` on the task's first line or its --title, parsed by the grammar's one home.
@@ -1151,9 +1174,7 @@ add_plan() {
   while IFS=$'\t' read -r s dep ph text _; do
     [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
   done <<<"$rows"
-  if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
-    die "--after $after: no item has that slug"
-  fi
+  check_after "$after"
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
   local n=0 total why skipped=0
@@ -1358,8 +1379,9 @@ cmd_bump() {
   [ "$prio" = urgent ] && [ -n "$after" ] && [[ "$f" == */queued/* ]] || return 0
   hold="$(hold_reason "$f")"
   case "$hold" in
-    "after $after") echo "agent-queue: $slug is held after $after: it starts when that lands; agent-queue set $slug after= runs it now" >&2 ;;
-    after\ *) echo "agent-queue: $slug is held $hold" >&2 ;;
+    "after "*" closed "*) echo "agent-queue: $slug is held $hold" >&2 ;;
+    "after "*" "*) echo "agent-queue: $slug is held $hold: it starts when those land; agent-queue set $slug after= runs it now" >&2 ;;
+    "after "*) echo "agent-queue: $slug is held $hold: it starts when that lands; agent-queue set $slug after= runs it now" >&2 ;;
   esac
 }
 
@@ -1376,6 +1398,7 @@ cmd_set() {
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
+    [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
@@ -1384,6 +1407,11 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # The row it works before the set, with the profile and lane that row is on (item_row).
+  local left_row="" left_prof="" left_lane=""
+  case " $* " in *" row="* | *" from="*)
+    left_row="$(item_row "$f")" left_prof="$(fm_get "$f" profile)" left_lane="$(fm_get "$f" lane)" ;;
+  esac
   # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
   # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
   case " $* " in
@@ -1393,11 +1421,36 @@ cmd_set() {
       done ;;
   esac
   for kv in "$@"; do
-    case "$kv" in session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;; esac
+    case "$kv" in
+      session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
+      after=*) kv="after=$(word_list "${kv#*=}")" ;;
+    esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
   done
   item_event item-set "$f" --why "$*"
   echo "$slug: $*"
+  [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
+}
+
+# repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
+# (`set row=` or `from=board:`) no longer works <row> (on <profile> and <lane>, as it was before the
+# set), so that row is un-started now instead of reading as board_orphan_started until reap's orphan
+# pass, and the row it works now is marked as a move to its state would mark it (mark_row). A row
+# another active item names is that item's, and a done item's rows are its close's business.
+repoint_row() {
+  local slug=$1 f=$2 row=$3 prof=$4 flag=() other
+  [ "$(state_of "$f")" != done ] && command -v notes >/dev/null || return 0
+  case "$5" in '' | agent) flag=(--agent) ;; esac
+  other="$(collect $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
+    { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
+  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  if [ -n "$other" ]; then :
+  elif notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1; then
+    echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
+  else
+    echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}" >&2
+  fi
+  case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
@@ -1554,7 +1607,7 @@ cmd_move() {
 # The item is the state and the row its view, so a row the write cannot reach warns and the move stands.
 mark_row() {
   local row prof flag=()
-  row="$(fm_get "$1" row)" prof="$(fm_get "$1" profile)"
+  row="$(item_row "$1")" prof="$(fm_get "$1" profile)"
   [ -n "$row" ] && command -v notes >/dev/null || return 0
   case "$(fm_get "$1" lane)" in '' | agent) flag=(--agent) ;; esac
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" "$2" "${row#*:}" >/dev/null 2>&1 ||
@@ -1585,6 +1638,22 @@ close_row_on_item() {
     return 0
   fi
   echo "agent-queue: $slug is done, but its board row ${row#*:} on ${row%%:*} may still be open (${out##*$'\n'}): notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} done ${row#*:} --proof item:$slug" >&2
+}
+
+# word_list <value> -> a comma or space list as one line of words split by single spaces, each once:
+# the form `tags:` and `after:` store.
+word_list() {
+  printf '%s' "$1" | tr ',' ' ' | awk '{ for (i = 1; i <= NF; i++) if (!seen[$i]++) o = o (o == "" ? "" : " ") $i } END { print o }'
+}
+
+# check_after <slugs> [<own slug>] -- die on an `after:` slug no item has, or one naming the item
+# itself, since neither ever releases: add, add --plan and `set after=` check.
+check_after() {
+  local s
+  for s in $1; do
+    [ "$s" != "${2-}" ] || die "--after $s: an item cannot wait on itself"
+    [ -n "$(find_item "$s")" ] || [ -n "$(done_status "$s")" ] || die "--after $s: no item has that slug"
+  done
 }
 
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
@@ -1751,7 +1820,7 @@ cmd_reopen() {
   echo "$slug: done -> $to (reopened, was $status)"
   # The row, through notes, the rows' one writer (it leaves a row already started as it is), read as
   # fleet-dispatch's settle_row un-started it: no profile is notes' default, no lane is the agent lane.
-  row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
+  row="$(item_row "$dest")" prof="$(fm_get "$dest" profile)"
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
   exec 8>&-
@@ -1785,11 +1854,27 @@ lane_outcome() {
   [ -z "$o" ] || model-lane outcome "$1" "$o" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o failed" >&2
 }
 
-# dependents <slug> -> the slugs of the queued items `after:` it, oldest first.
+# waits_on <file> <slug> -- the item's `after:` names that slug.
+waits_on() {
+  local s
+  local -a a
+  read -ra a <<<"$(fm_get "$1" after)"
+  for s in "${a[@]}"; do [ "$s" != "$2" ] || return 0; done
+  return 1
+}
+
+# dependents <slug> -> the slugs of the queued items its ok close releases, oldest first: `after:`
+# it, with every other slug they name already done ok.
 dependents() {
-  local f
+  local f s AST free
   while IFS= read -r f; do
-    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] && fm_get "$f" slug
+    [ -n "$f" ] && waits_on "$f" "$1" || continue
+    free=1
+    for s in $(fm_get "$f" after); do
+      [ "$s" != "$1" ] || continue
+      after_status "$s"; [ "$AST" = ok ] || { free=""; break; }
+    done
+    [ -z "$free" ] || fm_get "$f" slug
   done < <(items_in "$AQ_DIR/queued")
 }
 
@@ -1805,17 +1890,21 @@ phases_ticked() {
     | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null
 }
 
-# start_next <slug> -- the items `after:` this one start the moment it closes ok. Each takes the
+# start_next <slug> -- the items `after:` this one start the moment it closes ok, unless another slug
+# in their `after:` (or any other hold) still holds them. Each takes the
 # slot the closing session frees, so it waits for no dispatch pass and none of its load gates: a
 # plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it. One
 # whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
 start_next() {
-  local f s next=() landed=() self
+  local f s h next=() landed=() self
   self="$(realpath "${BASH_SOURCE[0]}")"
   while IFS= read -r f; do
-    [ -n "$f" ] && [ "$(fm_get "$f" after)" = "$1" ] || continue
+    [ -n "$f" ] && waits_on "$f" "$1" || continue
+    # Another slug in its after: still holds it: neither started nor closed as landed.
+    h="$(hold_reason "$f")"
+    case "$h" in "after "*) continue ;; esac
     if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
-    elif [ -z "$(hold_reason "$f")" ]; then next+=("$(fm_get "$f" slug)")
+    elif [ -z "$h" ]; then next+=("$(fm_get "$f" slug)")
     fi
   done < <(items_in "$AQ_DIR/queued")
   [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0

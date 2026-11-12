@@ -105,6 +105,57 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
 }
 
+# epics_fixture <json> -- what `notes projects --stats --json` prints: the stateful notes stub answers
+# every other call.
+epics_fixture() {
+  [ -f "$SANDBOX/bin/notes.rows" ] || mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.rows"
+  printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"
+  stub notes '[[ " $* " == *" projects --stats --json "* ]] && { cat "$NOTES_FIXTURE/stats.json"; exit 0; }; exec notes.rows "$@"'
+}
+
+@test "reap queues one verify item per epic whose leaves have all landed, once per landing round" {
+  project game beta "$SANDBOX/repos/game"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [
+      {"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 3},
+      {"id": "gm-6", "title": "still building", "system": "ui", "open": 1, "done": 2},
+      {"id": "gm-7", "title": "childless", "system": "", "open": 0, "done": 0}]},
+    {"name": "game", "profile": "work", "automation": false, "epics": [{"id": "gm-8", "title": "off", "open": 0, "done": 1}]}]'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+  it=$(agent-queue show verify-gm-5-3 --json)
+  assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
+  run jq -r .task <<<"$it"
+  assert_output --partial 'Verify epic gm-5 on game: "ranked matches".'
+  assert_output --partial 'notes --profile bnb ptask game done gm-5 --proof "<evidence>"'
+  assert_output --partial 'post one agent-ask'
+  # once: the next pass, and one after the item was cancelled, add nothing
+  reconcile_epics
+  agent-queue cancel verify-gm-5-3 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # a gap row landing raises the done count: the next round gets its own check
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+}
+
+@test "reap queues no verify item when it is off or the epics or the queue cannot be read" {
+  project game beta "$SANDBOX/repos/game"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  DISPATCH_EPIC_VERIFY=0 run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  epics_fixture 'not json'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # negative control: the same fixture readable queues it
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+}
+
 @test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
@@ -802,9 +853,12 @@ OUT
 
 @test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
   project game beta "$SANDBOX/repos/game"
+  # after: is a list (ar-39): zero is done ok, so first alone still holds.
+  agent-queue add --project game --slug zero "the zeroth part" >/dev/null
+  agent-queue move zero done --status ok >/dev/null
   agent-queue add --project game --slug first "the first part" >/dev/null
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   run cmd_reap
   assert_success
   assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
@@ -812,7 +866,7 @@ OUT
   # Negative control: once its after: item is done, the unclosed run is the run's own failure.
   rm "$AGENT_QUEUE_DIR"/queued/*-second.md
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   agent-queue move first done --status ok >/dev/null
   run cmd_reap
   assert_output --partial 'failed queue item second'

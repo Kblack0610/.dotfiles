@@ -28,7 +28,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
    - Cut a worktree off the remote tip per `~/.claude/CLAUDE.md` (`wt new`, or `git worktree add ~/.worktrees/<repo>-<slug> -b <branch> origin/<base>`). If the session already sits in a clean, current agent worktree, branch there instead.
-   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session when that is on the agent world; anywhere else it records none, and `--item` carries the landing); `<slug>` below is that item. When the task is a row already on the agent board, name it with `--row <id>`; otherwise `add` files the row. Either way the item closes it when it lands, so never write or close one by hand.
+   - The task's record is its agent-queue item, and only that. A session fleet-dispatch started already has one: `$AGENT_QUEUE_ITEM`. Otherwise add it as running, `agent-queue add --running --project <project> --slug <slug> "<task>"` (it records this tmux session on any world, unless a manifest declares it, like `hub:dotfiles`; then it records none, and `--item` carries the landing); `<slug>` below is that item. When the task is a row already on the agent board, name it with `--row <id>`; otherwise `add` files the row. Either way the item closes it when it lands, so never write or close one by hand.
 
 3. **Implement.** Make the smallest change that fully solves the task, matching the surrounding code. Send broad exploration to Explore subagents. Update the docs the project CLAUDE.md says a change of this kind must touch.
 
@@ -43,7 +43,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
-   - A repo whose canonical forge is Forgejo (home-config): `agent-land` cannot run there; read `references/landing.md` "Forgejo repo".
+   - A Forgejo repo (home-config, bnb-game-servers): `gh` cannot see its PRs, so open the PR through the `forgejo-ops` PR API; `agent-land` lands it the same way, through that API.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes, and lands once that head's checks are green). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
@@ -52,7 +52,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - Work that can only run after a set time, a day of data or a night's log: land what is done and queue the rest, never `sleep`; read `references/landing.md` "Work that can only run later".
    - Work blocked on another queue item (one that fixes its red, or a PR that must land first): do not wait in this session; read `references/landing.md` "Blocked on another queue item".
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
-   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> review` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof (reap reads only GitHub; a Forgejo repo: `references/landing.md` "Forgejo repo").
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> review` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof (a Forgejo PR: whoever merges it runs `agent-land <N> --item <slug>`, which merges and records it).
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.

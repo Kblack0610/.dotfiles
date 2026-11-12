@@ -6,7 +6,7 @@
 // session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -40,12 +40,16 @@ function phasesText(a) {
 st.approving = null;
 function approveButtons(a) {
   if (!a || !(a.actions || []).includes("approve-plan")) return "";
-  const t = esc(a.target);
-  return st.approving === a.target
+  const t = esc(a.target), err = st.approveErr[a.target] ? `<span class="err">${esc(st.approveErr[a.target])}</span>` : "";
+  // A sent approval draws busy on every surface (Home, the pinned card, a Queue item) until the
+  // session list says the dialog is gone, so a slow approve never reads as a dead click.
+  if (askst.sending[`ses:${a.target}`]) return `<button class="btn sm primary" disabled><span class="spin"></span>Approving...</button>`;
+  return err + (st.approving === a.target
     ? `<button class="btn sm primary" data-approve-go="${t}">Yes, approve the plan</button><button class="btn sm" data-approve-no>Cancel</button>`
-    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
+    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`);
 }
 function rerenderApprove() {
+  sst.render();
   if (st.tab === "home") renderHome();
   if (st.tab === "queue") qst.render();
 }
@@ -57,10 +61,15 @@ document.addEventListener("click", async (e) => {
   const t = b.dataset.approveGo;
   st.approving = null;
   if (!t) { rerenderApprove(); return; }
-  const err = b.closest(".card") && b.closest(".card").querySelector(".err");
-  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); if (err) err.textContent = ""; }
-  catch (x) { if (err) err.textContent = x.message; }
-  refreshAgents();
+  const key = `ses:${t}`;
+  if (askst.sending[key]) return;
+  delete st.approveErr[t];
+  askst.sending[key] = "the plan approval";
+  rerenderApprove();
+  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); await refreshAgents(); }
+  catch (x) { st.approveErr[t] = x.message; }
+  delete askst.sending[key];
+  rerenderApprove();
 }, true);
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
@@ -71,6 +80,8 @@ const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpar
   stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
 const actLabel = (n) => ACT_LABEL[n] || n;
 st.act = { confirm: null, busy: false, msg: "", err: false };
+// Why the last Approve plan failed, by session target, shown beside its button.
+st.approveErr = {};
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
@@ -302,14 +313,18 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "board", "sessions", "infra", "log", "fleet", "schedules", "costs", "releases"];
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "fleet", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
-const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "projects/all": ["board", ""] };
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
+  "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"], "projects/all": ["board", ""] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":["health","red"],"tabs":[["reds","Reds",["fixes"]],["machines","Machines",["machines","ci","governor"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","governor"]],["ci","CI",["ci"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+// hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
+// the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
 // holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
@@ -327,6 +342,12 @@ const lastInner = {};
 function innerRoute(r) {
   const g = INNER_TABS[r.tab];
   if (!g) return r;
+  // A record's page (`#infra/machines/<host>`) opens its inner tab and keeps `word/id` as `page`.
+  const at = (r.arg || "").indexOf("/");
+  const word = at < 0 ? "" : r.arg.slice(0, at).toLowerCase();
+  const pages = Object.hasOwn(ENTITY_PAGES, r.tab) ? ENTITY_PAGES[r.tab] : {};
+  const inner = Object.hasOwn(pages, word) ? pages[word] : undefined;
+  if (inner && r.arg.slice(at + 1)) return { ...r, arg: inner, page: word + "/" + r.arg.slice(at + 1) };
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
@@ -373,6 +394,7 @@ function route(hash) {
 // the groups' visibility and the strip's marks flip without a repaint.
 function innerGo(tab, id) {
   st.arg = lastInner[tab] = id;
+  st.page = "";
   showUrl();
   const board = $(tab);
   if (!board) return;
@@ -427,9 +449,11 @@ document.addEventListener("keydown", (e) => {
 });
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
 // button leaves as it was. A tab button replaces the URL, so tab hopping makes no history; an
-// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
-function setTab(t, arg, query) {
+// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns. page is the record an
+// inner tab opens on (innerRoute's `machines/<host>`), blank for none.
+function setTab(t, arg, query, page) {
   st.tab = t;
+  st.page = page || "";
   // A tab button (no arg) brings back the inner tab that tab last showed.
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
   if (INNER_TABS[t]) lastInner[t] = st.arg;
@@ -446,7 +470,10 @@ function setTab(t, arg, query) {
 }
 function showUrl() {
   const t = st.tab, q = st.views[t];
-  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
+  // A page's id is one segment whatever it holds: `#infra/machines/<id>`.
+  const at = st.page ? st.page.indexOf("/") : -1;
+  const segs = st.page ? [st.page.slice(0, at), st.page.slice(at + 1)] : st.arg ? st.arg.split("/") : [];
+  const frag = (segs.length ? "#" + t + "/" + segs.map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
   try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !q ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 // The open tab's view state changed: the URL follows it without a history entry.
@@ -505,7 +532,7 @@ function connect() {
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
   if (r.section) st.section = r.section;
-  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
+  if (r.tab !== st.tab || r.arg !== st.arg || (r.page || "") !== st.page || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query, r.page);
 });
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
@@ -513,6 +540,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
-  setTab(r.tab, r.arg, r.query);
+  setTab(r.tab, r.arg, r.query, r.page);
   connect();
 });

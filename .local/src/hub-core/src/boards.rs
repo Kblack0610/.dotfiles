@@ -40,6 +40,11 @@ pub fn fleet_cost() -> PathBuf {
     fleet_state().with_file_name("fleet-cost.json")
 }
 
+/// `agent-usage budget --json`'s file, which fleet-bench's budget step writes beside fleet-cost.json.
+pub fn budget() -> PathBuf {
+    fleet_state().with_file_name("budget.json")
+}
+
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
@@ -335,16 +340,15 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
 }
 
 /// The project a merged PR counts under: the `project` day-log writes, or for a record from
-/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+/// before it did, its repo, each read through the name index (`project_map::canonical`), so an
+/// old spelling counts under today's key.
 pub fn pr_project(pr: &Value) -> String {
-    match pr["project"].as_str() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => pr["repo"]
-            .as_str()
-            .map(|r| r.trim_start_matches('.').to_string())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "other".into()),
-    }
+    let name = [&pr["project"], &pr["repo"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(project_map::canonical)
+        .find(|p| !p.is_empty());
+    name.unwrap_or_else(|| "other".into())
 }
 
 /// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
@@ -568,7 +572,11 @@ pub struct Watch {
 
 pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
     let state = self::state(state, r);
-    let log = std::fs::read_to_string(log).unwrap_or_default();
+    // Only the end is read: the log only grows (4.8 MB by 2026-11), and a line averages under
+    // 100 bytes, so a kilobyte per line kept covers the last `WATCH_LOG_LINES` with room.
+    let log = crate::fleet::tail(log, WATCH_LOG_LINES as u64 * 1024)
+        .map(|(t, _)| t)
+        .unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
     Watch {
