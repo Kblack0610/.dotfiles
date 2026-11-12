@@ -1,7 +1,7 @@
 //! Inner tabs (`hub_core::layout::Inner`): the strip of sub-views under a tab, drawn and named
 //! the same way on every tab that has one (Costs, Releases, Infra), as agent-web's `innerStrip` draws it.
 
-use hub_core::layout::{self, Tab};
+use hub_core::layout::{self, Inner, Tab};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -19,22 +19,38 @@ pub fn named(tab: &Tab, word: &str) -> Option<&'static str> {
 
 /// The inner tab after (or with `back`, before) `on`, wrapping at the ends; "" on a tab with none.
 pub fn step(tab: &Tab, on: &str, back: bool) -> &'static str {
-    let ids: Vec<&'static str> = tab.inner.iter().map(|i| i.id).collect();
-    let n = ids.len();
+    step_of(tab.inner, on, back)
+}
+
+/// `step` over any inner list, such as the project page's (`layout::PROJECT_PAGE`).
+pub fn step_of(inner: &[Inner], on: &str, back: bool) -> &'static str {
+    let n = inner.len();
     if n == 0 {
         return "";
     }
-    let i = ids.iter().position(|x| *x == on).unwrap_or(0);
-    ids[if back { (i + n - 1) % n } else { (i + 1) % n }]
+    let i = inner.iter().position(|x| x.id == on).unwrap_or(0);
+    inner[if back { (i + n - 1) % n } else { (i + 1) % n }].id
 }
 
 /// The strip, its tab's first line: the open one in brackets, bold and reversed (amber when its
 /// sections need a look) so it reads at a glance, the rest plain; a count beside one with sections
 /// needing a look (`flagged`, `layout::inner_count`), and the keys that switch.
 pub fn strip(tab: &Tab, on: &str, flagged: &[&str], p: Palette, w: usize) -> Line<'static> {
+    strip_of(tab.inner, on, |i| layout::inner_count(i, flagged), p, w)
+}
+
+/// [`strip`] over any inner list (a record page's, `layout::PROJECT_PAGE`), `count` giving the
+/// number beside each.
+pub fn strip_of(
+    inner: &[Inner],
+    on: &str,
+    count: impl Fn(&Inner) -> usize,
+    p: Palette,
+    w: usize,
+) -> Line<'static> {
     let mut s = vec![];
-    for i in tab.inner {
-        let n = layout::inner_count(i, flagged);
+    for i in inner {
+        let n = count(i);
         let label = if n > 0 {
             format!("{} {n}", i.title)
         } else {
