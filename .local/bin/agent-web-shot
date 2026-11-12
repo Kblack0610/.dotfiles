@@ -6,7 +6,7 @@ usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
 as DIR/<hash>-<width>.png, the whole page. The cookie signs the browser in: `agent_web=dev` for the
 dev instance in .local/src/agent-web/README.md ("look at a change"). A page is shot once its tab
-element has drawn and says neither "Loading..." nor "reading...", watched by a MutationObserver.
+element has drawn and says neither "Loading..." nor "Reading..." (in any case), watched by a MutationObserver.
 
 The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
 started is stopped, by its process group. Never point this at the live Firefox profile.
@@ -26,7 +26,7 @@ import time
 # The page has drawn when this holds; the observer re-checks it on every DOM change.
 READY = r"""
 const [tab, done] = [arguments[0], arguments[arguments.length - 1]];
-const ok = () => { const el = document.getElementById(tab); return el && el.innerHTML.trim() && !/Loading\.\.\.|reading\.\.\./.test(el.textContent); };
+const ok = () => { const el = document.getElementById(tab); return el && el.innerHTML.trim() && !/loading\.\.\.|reading\.\.\./i.test(el.textContent); };
 if (ok()) return done(true);
 const mo = new MutationObserver(() => { if (ok()) { mo.disconnect(); done(true); } });
 mo.observe(document.body, { childList: true, subtree: true, characterData: true });
