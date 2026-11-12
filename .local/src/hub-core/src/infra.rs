@@ -274,11 +274,8 @@ impl Infra {
     /// never both a slot and lent. Any other withheld runner is held back for load, a pin, a
     /// drain or no work.
     pub fn lent(&self) -> HashMap<&str, &str> {
-        let held: std::collections::HashSet<&str> = self
-            .get("withheld")
-            .iter()
-            .map(|s| s.label("name"))
-            .collect();
+        let held: std::collections::HashSet<&str> =
+            self.get("withheld").iter().map(|s| s.label("name")).collect();
         self.get("lent")
             .iter()
             .filter(|s| held.contains(s.label("name")))

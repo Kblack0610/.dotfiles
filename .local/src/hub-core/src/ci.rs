@@ -687,9 +687,8 @@ impl Row for Slot {
     const COLUMNS: &'static [&'static str] = &[
         "host", "slot", "state", "pool", "ran", "usual", "job", "ref",
     ];
-    const STATES: &'static [&'static str] = &[
-        "all", "busy", "idle", "lent", "withheld", "standby", "off", "late",
-    ];
+    const STATES: &'static [&'static str] =
+        &["all", "busy", "idle", "lent", "withheld", "standby", "off", "late"];
     const FACETS: &'static [&'static str] = &["host", "state", "pool"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "host";

@@ -820,10 +820,7 @@ pub(crate) mod tests {
         );
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(
-            ws.pools,
-            ["unity 1/1", "unity lent 0/1", "unity-local 1/1+1"]
-        );
+        assert_eq!(ws.pools, ["unity 1/1", "unity lent 0/1", "unity-local 1/1+1"]);
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
