@@ -1590,7 +1590,12 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
-  # holding the next phase too, the plan is queued
+  # an item holding the next phase but not a later one leaves that one this session's
+  phase_item 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 3: docs' ]
+  # holding every open phase, the plan is queued
   phase_item '2 3'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
@@ -3108,6 +3113,8 @@ verdict() {
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
+  # Only a STALLED row: a NEEDS row with its own ask open waits on the human (the ask rule).
+  [ "$(verdict '{bucket: "NEEDS", reason: "1 pending ask(s)", asks: 1, own_asks: 1, finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "after: the human answers its ask" ]
   # Negative control: anything else open beside the item is still STALLED's.
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging", "its item s is still open with every phase done or queued"]}')" = "keep: stalled: PR #9 closed without merging" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]

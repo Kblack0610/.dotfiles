@@ -904,11 +904,18 @@ fn plan_file(text: &str) -> String {
             .map(|(at, _)| at)
             .find(|&at| !line_of(at).contains(REATTACHED))
             .unwrap_or(i);
-        let rest = &text[i + KEY.len()..];
+        let rest = &text[chosen + KEY.len()..];
         let mode = rest.find('"').map(|end| &rest[..end]);
         // The same file through another account's plans dir (a link to ~/.claude/plans) keeps
         // the path plan mode wrote.
-        if let Some(name) = plans_landed(&text[chosen..]).pop() {
+        // agent-land is rare in a transcript, so the per-line parse runs only when it is there.
+        let after = &text[chosen..];
+        let landed = if after.contains("agent-land") {
+            plans_landed(after).pop()
+        } else {
+            None
+        };
+        if let Some(name) = landed {
             if mode.and_then(|m| m.rsplit('/').next()) != Some(name.as_str()) {
                 return plans.join(name).to_string_lossy().into_owned();
             }
@@ -2227,7 +2234,13 @@ mod tests {
         let copied = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/mode-file.md ~/.claude/plans/copy.md && agent-land 9 --item x --plan ~/.claude/plans/copy.md --phase 1"}}]}}"#;
         let reattached = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude/plans/mode-file.md"}}"#;
         let edited = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/sibling.md","old_string":"","new_string":""}}]}}"#;
+        let other_mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/other-mode.md"}"#;
         for (name, lines, want) in [
+            (
+                "reattached-older",
+                vec![mode, other_mode, reattached],
+                "/h/.claude/plans/other-mode.md",
+            ),
             ("landed-copy", vec![mode, copied], "/.claude/plans/copy.md"),
             (
                 "compacted",

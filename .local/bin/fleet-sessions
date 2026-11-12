@@ -1383,19 +1383,24 @@ collect() {
     # The plan's unchecked phases are queue items of their own: its next phase is not this session's.
     # An item that records `phases:` holds only those checklist numbers, so later phases queued
     # while this session works the next one do not make it queued (ar-267: agent-2 read DONE
-    # mid-phase 3 because phases 4 and on were items); one with no `phases:` cannot say, and counts.
+    # mid-phase 3 because phases 4 and on were items); one with no `phases:` cannot say, and holds
+    # all. The plan is queued only when every open phase is held; else its first free one is next.
     local dsp=- n=0 e=0
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
     if [ "$phases" != - ] && [ "$phases" != none ] && [ "$pdone" -lt "$ptotal" ]; then
       local qd
       qd="$(jq -rs --arg p "$planf" --arg own "${dsp#*: }" \
-              --argjson open "$(plan_phase_list "$planf" | jq -c '[to_entries[] | select(.value.state == "open") | .key + 1 | tostring]')" \
-              "$PLAN_ITEMS_JQ"' map(select(.slug != $own and names_plan($p)))
-              | select(any(.[]; (.phases // "" | tostring | split(" ") | map(select(. != ""))) as $ph
-                                | ($ph | length) == 0 or ($ph | index($open[0])) != null))
-              | map(.slug) | join(",")' <<<"$qjson" 2>/dev/null)"
-      [ -z "$qd" ] || pq="queued:$qd"
+              --argjson open "$(plan_phase_list "$planf" | jq -c '[to_entries[] | select(.value.state == "open") | {n: (.key + 1 | tostring), name: .value.name}]')" \
+              "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and names_plan($p))
+                 | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != "")))}] as $it
+              | def holds($n): (.ph | length) == 0 or (.ph | index($n)) != null;
+              [$it[] | select(. as $i | any($open[]; .n as $n | $i | holds($n)))] as $holders
+              | [$open[] | select(.n as $n | any($it[]; holds($n)) | not)] as $free
+              | if ($holders | length) == 0 then empty
+                elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(","))
+                else $free[0].name end' <<<"$qjson" 2>/dev/null)"
+      [ -z "$qd" ] || pq="$qd"
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
@@ -1719,7 +1724,7 @@ CLOSE_JQ='
     | ($other | map(select(test("dirty file|not on the default branch|^PR #[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
-    | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
+    | (.bucket == "STALLED" and ($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
       elif .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
       elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
