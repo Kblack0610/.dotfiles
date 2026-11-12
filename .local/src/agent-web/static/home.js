@@ -281,13 +281,16 @@ function cardHtml(c) {
     (c.error ? `<div class="cline warn">${esc(c.error)}</div>` : "") +
     (first ? `<div class="kfh">${esc(c.first_head)}</div>${first}` : "") + "</section>";
 }
-const cardsHtml = (cards) => `<div class="kgrid">${cards.map(cardHtml).join("")}</div>`;
+// A refresh that failed while cards are held says so, so the last grid never reads as current.
+const staleSaid = () => `cards not refreshed: ${hst.cardsErr}`;
+const cardsHtml = (cards) => (hst.cardsErr ? `<div class="cline warn">${esc(staleSaid())}</div>` : "") + `<div class="kgrid">${cards.map(cardHtml).join("")}</div>`;
 // The phone's one status line: green collapses to one chip, only what is not green is named.
 function cardsLine(cards) {
   if (!cards) return `<span class="muted">${esc(hst.cardsErr || "reading")}</span>`;
   const bad = cards.filter((c) => c.level !== "ok");
-  if (!bad.length) return cchip("ok", `all green (${cards.length})`);
-  return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ");
+  const stale = hst.cardsErr ? ` <span class="warn">${esc(staleSaid())}</span>` : "";
+  if (!bad.length) return cchip("ok", `all green (${cards.length})`) + stale;
+  return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ") + stale;
 }
 
 const sec = (title, n, body, extra = "") => `<h2 class="sec" id="sec-${title.split(" ")[0].toLowerCase()}">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;

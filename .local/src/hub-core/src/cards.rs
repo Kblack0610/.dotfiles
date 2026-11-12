@@ -211,10 +211,6 @@ pub fn queue(
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
 ) -> Card {
     use crate::queue::State;
-    let mut flow = crate::flow::Strip::build(Some(q));
-    if let Some(p) = pipeline {
-        flow.set_pipeline(p);
-    }
     let (ready, held) = q.up_next();
     let (waiting, running, review) = (
         q.count(State::Waiting),
@@ -234,11 +230,14 @@ pub fn queue(
     c.big = q.count(State::Queued).to_string();
     c.unit = format!("queued, {running} running");
     c.first_head = "Bottleneck";
-    if let Some(b) = &flow.bottleneck {
-        // `bottleneck: up next, age p90 9h (bound 4h)`: the step, and its age under it.
-        let b = b.strip_prefix("bottleneck: ").unwrap_or(b);
-        let (step, age) = b.split_once(", ").unwrap_or((b, ""));
-        c = c.first([row(step, age, Level::Warn, None)]);
+    let read = pipeline.map(Result::as_ref);
+    let bottleneck = match read {
+        Some(Ok(Some(p))) => p.bottleneck.as_ref().map(|b| (b, p.bottleneck_age())),
+        _ => None,
+    };
+    if let Some((b, age)) = bottleneck {
+        let step = crate::flow::step_label(&b.step);
+        c = c.first([row(step, age.unwrap_or_default(), Level::Warn, None)]);
     } else {
         c.first_head = "Waiting on you";
         c = c.first(q.in_state(State::Waiting).map(|i| {
@@ -250,8 +249,14 @@ pub fn queue(
             )
         }));
     }
-    if !q.errors.is_empty() {
-        c.error = Some(q.errors.join("; "));
+    // A pipeline that could not be read is said, so it never reads as no bottleneck.
+    let pipe_err = match read {
+        Some(Err(e)) => Some(format!("pipeline: {e}")),
+        _ => None,
+    };
+    let errors: Vec<_> = q.errors.iter().cloned().chain(pipe_err).collect();
+    if !errors.is_empty() {
+        c.error = Some(errors.join("; "));
     }
     c
 }
@@ -405,6 +410,16 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
     if !errors.is_empty() {
         c.error = Some(errors.join("; "));
     }
+    // A cost that could not be read is no data, and a partial read is never green.
+    if fc.why.is_some() {
+        c.level = Level::Nodata;
+    } else if !k.errors.is_empty() && c.level == Level::Ok {
+        c.level = Level::Warn;
+    }
+    c.bar = vec![Seg {
+        level: c.level,
+        n: 1,
+    }];
     c.first(head.into_iter().chain(needs).collect::<Vec<_>>())
 }
 
@@ -681,8 +696,13 @@ mod tests {
             (c.first[0].text.as_str(), c.first[0].sub.as_str()),
             ("needs you", "age p90 9h (bound 4h)")
         );
+        // A snapshot that could not be read is said on the card, beside what waits on you.
+        let c = queue(&q(), Some(&Err("state.json: bad json".into())));
+        assert_eq!(c.first_head, "Waiting on you");
+        assert_eq!(c.error.as_deref(), Some("pipeline: state.json: bad json"));
         // No snapshot read: the item that waits on the human is where to look.
         let c = queue(&q(), None);
+        assert_eq!(c.error, None);
         assert_eq!(c.first_head, "Waiting on you");
         assert_eq!(c.first[0].link.as_ref().unwrap().href(), "#queue/d");
         assert_eq!(
@@ -812,7 +832,15 @@ mod tests {
         k.budget.needs = vec!["projected over cap".into()];
         let c = costs(&k);
         assert_eq!((c.big.as_str(), c.level), ("$573", Level::Warn));
+        // Negative control: a cost that could not be read must not paint green, and a partial
+        // read never reads as all clear.
         k.fleet_cost.why = Some("file missing".into());
-        assert_eq!(costs(&k).big, "-");
+        let c = costs(&k);
+        assert_eq!((c.big.as_str(), c.level), ("-", Level::Nodata));
+        assert_eq!(c.bar[0].level, Level::Nodata);
+        k.fleet_cost.why = None;
+        k.budget.needs.clear();
+        k.errors = vec!["ccusage: timed out".into()];
+        assert_eq!(costs(&k).level, Level::Warn);
     }
 }

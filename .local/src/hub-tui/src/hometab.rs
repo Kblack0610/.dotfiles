@@ -316,7 +316,7 @@ fn card_lines(c: &Card, p: Palette, cw: usize) -> [Line<'static>; 4] {
                     let want = if rest == 0 {
                         left
                     } else {
-                        (s.n * cw / total).max(1).min(left - rest)
+                        (s.n * cw / total).max(1).min(left.saturating_sub(rest))
                     };
                     left -= want;
                     let ch = match s.level {
@@ -782,6 +782,13 @@ mod tests {
         let bar = &grid_text(&[c], 40)[1];
         assert!(bar.ends_with('!') && bar.matches('!').count() == 1, "{bar}");
         assert_eq!(bar.chars().count(), 40);
+        // Narrower than its runs, the bar is cut short and never panics on an underflow.
+        let three = card(
+            "alerts",
+            Level::Red,
+            &[(Level::Ok, 1), (Level::Warn, 1), (Level::Red, 1)],
+        );
+        assert_eq!(grid_text(&[three], 1)[1].chars().count(), 1);
         let f = hub_core::cards::Card::failed("costs", "Costs", "", "prometheus: timeout");
         let out = grid_text(&[f], 40);
         assert!(out[0].starts_with("COSTS  NO DATA"), "{out:?}");

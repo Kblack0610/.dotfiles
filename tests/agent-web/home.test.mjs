@@ -391,6 +391,16 @@ test("the phone line names only what is not green, all green is one chip, and un
   assert.match(line(null), /<span class="muted">reading<\/span>/);
 });
 
+test("cards held after a failed refresh say they are stale, on the grid and the phone line", () => {
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = 'HTTP 502'", ctx);
+  const html = draw(home());
+  assert.match(html, /<div class="cline warn">cards not refreshed: HTTP 502<\/div><div class="kgrid">/);
+  assert.match(vm.runInContext("cardsLine(list)", ctx), /all green \(8\)<\/span> <span class="warn">cards not refreshed: HTTP 502<\/span>/);
+  vm.runInContext("hst.cardsErr = null", ctx);
+  assert.doesNotMatch(draw(home()), /not refreshed/, "a good refresh clears it");
+});
+
 test("Home asks for the cards as their own read, beside /api/home", async () => {
   reads.length = 0;
   await vm.runInContext("refreshHome()", ctx);

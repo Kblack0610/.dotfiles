@@ -1697,7 +1697,9 @@ impl App {
                 if self.tab == Tab::Releases {
                     self.sync_changelog();
                 }
-                if self.tab == Tab::Alerts
+                // Home's cards read each tab's reads at that tab's own cadence.
+                let home = self.tab == Tab::Home;
+                if (home || self.tab == Tab::Alerts)
                     && self.reds_at.is_none_or(|t| t.elapsed() >= REDS_REFRESH)
                 {
                     self.read_reds();
@@ -1709,7 +1711,7 @@ impl App {
                 {
                     self.read_deliverables();
                 }
-                if self.tab == Tab::Costs
+                if (home || self.tab == Tab::Costs)
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
                     self.read_costs();
@@ -1722,7 +1724,7 @@ impl App {
                 if self.watch_failed.is_some() {
                     self.read_boards();
                     self.read_queue();
-                    if self.tab == Tab::Releases {
+                    if home || self.tab == Tab::Releases {
                         self.read_releases();
                     }
                     if reads_runs(self.tab) {
@@ -1731,12 +1733,14 @@ impl App {
                 }
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
+                }
+                if home || self.tab == Tab::Sessions {
                     self.read_sessions();
                 }
                 if self.tab == Tab::Fleet {
                     self.read_fleet_shown();
                 }
-                if self.tab == Tab::Schedules && self.schedules_due() {
+                if (home || self.tab == Tab::Schedules) && self.schedules_due() {
                     self.read_schedules();
                 }
                 if self.tab == Tab::Queue {
@@ -1751,8 +1755,9 @@ impl App {
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
-                if self.tab == Tab::Home {
+                if home {
                     self.read_home();
+                    self.read_cards();
                 }
             }
             Msg::Files => {
@@ -1765,7 +1770,9 @@ impl App {
             }
             Msg::TokenFiles if self.tab == Tab::Costs => self.read_costs(),
             Msg::TokenFiles => {}
-            Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
+            Msg::ReleaseFile if matches!(self.tab, Tab::Releases | Tab::Home) => {
+                self.read_releases()
+            }
             Msg::ReleaseFile => {}
             Msg::BuildFile if reads_runs(self.tab) => self.read_builds(),
             Msg::BuildFile => {}
@@ -1800,14 +1807,14 @@ impl App {
             Msg::Costs(c) => {
                 self.costs = Some(*c);
                 self.costs_at = Some(std::time::Instant::now());
-                if self.costs_read.done() && self.tab == Tab::Costs {
+                if self.costs_read.done() && matches!(self.tab, Tab::Costs | Tab::Home) {
                     self.read_costs();
                 }
             }
             Msg::Reds(r) => {
                 self.reds = Some(r);
                 self.reds_at = Some(std::time::Instant::now());
-                if self.reds_read.done() && self.tab == Tab::Alerts {
+                if self.reds_read.done() && matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_reds();
                 }
                 if matches!(self.tab, Tab::Alerts | Tab::Home) {
@@ -1822,7 +1829,7 @@ impl App {
                     .map(alertstab::row_id);
                 self.av.reselect(&a, id);
                 self.alerts = Some(*a);
-                if self.alerts_read.done() && self.tab == Tab::Alerts {
+                if self.alerts_read.done() && matches!(self.tab, Tab::Alerts | Tab::Home) {
                     self.read_alerts();
                 }
                 if self
@@ -1852,7 +1859,7 @@ impl App {
                 if let Some(s) = &self.schedules {
                     self.sv.reselect(s, id);
                 }
-                if self.schedules_read.done() && self.tab == Tab::Schedules {
+                if self.schedules_read.done() && matches!(self.tab, Tab::Schedules | Tab::Home) {
                     self.read_schedules();
                 }
             }
@@ -1864,7 +1871,7 @@ impl App {
                     self.rv.reselect(s, id);
                 }
                 self.sync_changelog();
-                if self.releases_read.done() && self.tab == Tab::Releases {
+                if self.releases_read.done() && matches!(self.tab, Tab::Releases | Tab::Home) {
                     self.read_releases();
                 }
             }
@@ -3182,12 +3189,17 @@ impl App {
                 s.spawn(|| hub_core::schedules::read(&hub_core::fleet::Paths::from_env(), runner));
             let releases = s.spawn(|| hub_core::releases::read(runner, &items));
             let projects = s.spawn(|| projtab::load(runner));
-            let alerts = self.infra.as_ref().map(|i| {
-                s.spawn(move || {
-                    let reds = hub_core::reds::read(runner);
-                    (hub_core::alerts::read(i, reds.clone(), now), reds)
-                })
-            });
+            // `--once` with no tab has read Alerts already; it is not read twice.
+            let alerts = self
+                .infra
+                .as_ref()
+                .filter(|_| self.alerts.is_none())
+                .map(|i| {
+                    s.spawn(move || {
+                        let reds = hub_core::reds::read(runner);
+                        (hub_core::alerts::read(i, reds.clone(), now), reds)
+                    })
+                });
             if let Ok((snap, feed)) = sessions.join() {
                 self.controls.set(snap);
                 self.controls.read_feed(feed);

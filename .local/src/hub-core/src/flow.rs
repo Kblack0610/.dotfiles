@@ -167,14 +167,7 @@ impl Strip {
             c.hot = hot == Some(c.key);
         }
         // The step in the strip's own words: the record's `queued` is the up next chip.
-        let chips = &self.chips;
-        self.bottleneck = p.bottleneck_text(|step| {
-            let key = chip_key(step);
-            chips
-                .iter()
-                .find(|c| c.key == key)
-                .map_or(step.to_string(), |c| c.label.to_string())
-        });
+        self.bottleneck = p.bottleneck_text(step_label);
         self.as_of = p.as_of_label();
     }
 
@@ -189,6 +182,16 @@ impl Strip {
 }
 
 /// The record names the board `backlog`, the human's turn `waiting` and a parked PR `review`.
+/// A pipeline step in the strip's own words: the record's `queued` is the up next chip.
+pub fn step_label(step: &str) -> String {
+    let key = chip_key(step);
+    Strip::build(None)
+        .chips
+        .iter()
+        .find(|c| c.key == key)
+        .map_or(step.to_string(), |c| c.label.to_string())
+}
+
 fn chip_key(step: &str) -> &str {
     match step {
         "backlog" => "board",

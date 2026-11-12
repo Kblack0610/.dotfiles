@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::Json;
 use hub_core::cards::{self, Card};
 use hub_core::projects::{self, Projects};
-use hub_core::releases;
+use hub_core::releases::{self, Releases};
 use hub_core::session_actions::System;
 
 use crate::cache::{off, ReadCache};
@@ -15,6 +15,10 @@ use crate::Shared;
 /// The Projects tab reads its list fresh on each open; the card keeps one for a minute, the
 /// cadence Home re-reads at, so the grid does not run its CLIs on every repaint.
 static PROJECTS: ReadCache<Projects, 60> = ReadCache::new();
+
+/// release-state's read takes seconds and Home re-reads on every queue event, so the card keeps
+/// one for half a minute; the Releases tab reads its own fresh.
+static RELEASES: ReadCache<Releases, 30> = ReadCache::new();
 
 /// A read as the grid takes it, through any pointer the cache keeps it behind.
 fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> cards::Got<'_, T> {
@@ -33,10 +37,11 @@ pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
     );
     let items = queue.items.clone();
     let (releases, pipeline) = tokio::join!(
-        off(move || releases::read(&System, &items)),
+        RELEASES.get((), off(move || releases::read(&System, &items))),
         off(hub_core::pipeline::read),
     );
-    let pipeline = pipeline.ok();
+    // A worker that died is a failed read, said on the Queue card, never no bottleneck.
+    let pipeline = pipeline.and_then(|r| r);
     Json(cards::grid(&cards::Reads {
         sessions: Some(
             sessions
@@ -45,11 +50,11 @@ pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
                 .map_err(String::as_str),
         ),
         queue: Some(Ok(&queue)),
-        pipeline: pipeline.as_ref(),
+        pipeline: Some(&pipeline),
         alerts: Some(alerts.as_ref().map_err(String::as_str)),
         infra: Some(Ok(&infra)),
         costs: got(&costs),
-        releases: Some(releases.as_ref().map_err(String::as_str)),
+        releases: got(&releases),
         schedules: got(&schedules),
         projects: got(&projects),
     }))
